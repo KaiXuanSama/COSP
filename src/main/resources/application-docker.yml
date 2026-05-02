@@ -1,0 +1,9 @@
+spring:
+  application:
+    name: copilot-ollama-proxy
+  config:
+    activate:
+      on-profile: docker
+
+server:
+  port: ${SERVER_PORT:11434}
