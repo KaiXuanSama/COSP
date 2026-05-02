@@ -1,0 +1,22 @@
+{"properties": [
+  {
+    "name": "mimo.api-key",
+    "type": "java.lang.String",
+    "description": "A description for 'mimo.api-key'"
+  },
+  {
+    "name": "mimo.base-url",
+    "type": "java.lang.String",
+    "description": "A description for 'mimo.base-url'"
+  },
+  {
+    "name": "mimo.default-model",
+    "type": "java.lang.String",
+    "description": "A description for 'mimo.default-model'"
+  },
+  {
+    "name": "ollama.version",
+    "type": "java.lang.String",
+    "description": "A description for 'ollama.version'"
+  }
+]}
