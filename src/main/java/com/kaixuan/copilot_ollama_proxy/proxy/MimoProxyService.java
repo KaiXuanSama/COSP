@@ -46,6 +46,14 @@ public class MimoProxyService {
     private final String defaultModel;
 
     /**
+     * 获取 WebClient 实例，供 OpenAI 兼容控制器复用。
+     * WebClient 已预设了 Mimo 后端的 base URL 和认证头。
+     */
+    public WebClient getWebClient() {
+        return webClient;
+    }
+
+    /**
      * 构造函数 —— 初始化 WebClient 并注入配置。
      * WebClient 是 Spring WebFlux 提供的非阻塞 HTTP 客户端，
      * 这里预设了 Mimo 后端的 base URL 和认证头，后续调用时无需重复设置。
