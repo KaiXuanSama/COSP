@@ -22,16 +22,12 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * OpenAI 兼容 API 控制器 —— 处理 Copilot 发出的 OpenAI 格式请求。
- * <p>
  * 端点：POST /v1/chat/completions
- * <p>
  * 工作流程：
- * <ol>
- *   <li>接收 OpenAI 格式的请求（{@link OpenAiChatRequest}）</li>
- *   <li>转换为 Anthropic Messages API 格式（{@link #convertToAnthropicRequest}）</li>
- *   <li>调用 Mimo 后端的 Anthropic 兼容接口</li>
- *   <li>将 Anthropic 响应转换为 OpenAI 格式返回给 Copilot</li>
- * </ol>
+ *   接收 OpenAI 格式的请求（{@link OpenAiChatRequest}）
+ *   转换为 Anthropic Messages API 格式（{@link #convertToAnthropicRequest}）
+ *   调用 Mimo 后端的 Anthropic 兼容接口
+ *   将 Anthropic 响应转换为 OpenAI 格式返回给 Copilot
  */
 @RestController
 public class OpenAiController {

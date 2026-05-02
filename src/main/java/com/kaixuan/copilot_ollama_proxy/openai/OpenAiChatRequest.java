@@ -6,12 +6,9 @@ import java.util.Map;
 
 /**
  * OpenAI Chat Completions API 请求体 —— Copilot 发送给本代理的请求格式。
- * <p>
  * 本代理接收此格式后，会将其转换为 Anthropic Messages API 格式，
  * 然后调用 Mimo 后端的 Anthropic 兼容接口。
- * <p>
  * OpenAI 格式示例：
- * <pre>
  * {
  *   "model": "mimo-v2.5-pro",
  *   "messages": [
@@ -21,15 +18,11 @@ import java.util.Map;
  *   "stream": true,
  *   "tools": [...]
  * }
- * </pre>
- * <p>
  * 与 Anthropic 格式的主要区别：
- * <ul>
- *   <li>system 消息在 messages 数组中（Anthropic 是独立顶层字段）</li>
- *   <li>工具结果用 role=tool 的消息（Anthropic 用 user 消息 + tool_result 块）</li>
- *   <li>工具定义用 parameters 字段（Anthropic 用 input_schema）</li>
- *   <li>content 可以是 String 或 List&lt;ContentPart&gt;（多模态场景）</li>
- * </ul>
+ *   system 消息在 messages 数组中（Anthropic 是独立顶层字段）
+ *   工具结果用 role=tool 的消息（Anthropic 用 user 消息 + tool_result 块）
+ *   工具定义用 parameters 字段（Anthropic 用 input_schema）
+ *   content 可以是 String 或 List&lt;ContentPart&gt;（多模态场景）
  */
 public class OpenAiChatRequest {
 
