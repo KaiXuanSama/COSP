@@ -50,7 +50,7 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
         if (bodyBytes.length > 0) {
             String bodyStr = new String(bodyBytes, StandardCharsets.UTF_8);
             if (bodyStr.length() > 500) {
-                bodyStr = bodyStr.substring(500) + "... (truncated, total " + bodyStr.length() + " chars)";
+                bodyStr = bodyStr.substring(0, 500) + "... ( 余 " + (bodyStr.length() - 500) + " 字符 )";
             }
             log.info("Body   : {}", bodyStr);
         } else {
