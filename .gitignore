@@ -34,3 +34,6 @@ build/
 
 ### Runtime configuration ###
 application.yml
+
+## Log
+*.log
