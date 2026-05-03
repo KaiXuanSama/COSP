@@ -82,6 +82,17 @@ public class OpenAiController {
 
         // finishSent 标记是否已发送过流式结束 chunk（包含 finish_reason），避免重复发送
         AtomicReference<Boolean> finishSent = new AtomicReference<>(false);
+        // 汇总 thinking 文本，当文本回复为空时用于生成可见 fallback 回复
+        AtomicReference<StringBuilder> textContentBuffer = new AtomicReference<>(new StringBuilder());
+        // thinkingContentBuffer：累积所有 thinking 文本，用于 fallback 场景（thinking 耗尽 token 预算无文本输出时提取部分内容）
+        AtomicReference<StringBuilder> thinkingContentBuffer = new AtomicReference<>(new StringBuilder());
+        // thinkingSignature：累积当前 thinking 块的签名，在 content_block_stop 时通过 reasoning_opaque 发送给 Copilot
+        AtomicReference<StringBuilder> thinkingSignature = new AtomicReference<>(new StringBuilder());
+        // thinkingBlockIndex：跟踪当前 thinking 块的索引，用于构造 thinking_<index> 作为 reasoning_opaque 的 ID
+        AtomicReference<Integer> thinkingBlockIndex = new AtomicReference<>(-1);
+        // stopReason / outputTokens：从 message_delta 事件中捕获，用于 fallback 消息的诊断
+        AtomicReference<String> stopReason = new AtomicReference<>(null);
+        AtomicReference<Integer> outputTokens = new AtomicReference<>(0);
 
         // subscriptionRef 用于在发生异常或客户端断开时取消订阅
         AtomicReference<Disposable> subscriptionRef = new AtomicReference<>();
@@ -90,7 +101,8 @@ public class OpenAiController {
         Disposable subscription = proxyService.streamAnthropicMessages(anthropicBody).subscribe(event -> {
             try {
                 log.debug("Anthropic 事件 [{}]: {}", event.getType(), toLogJson(event));
-                List<String> chunks = convertSseEventToOpenAi(event, messageId, finishSent, model);
+                List<String> chunks = convertSseEventToOpenAi(event, messageId, finishSent, textContentBuffer,
+                        thinkingContentBuffer, thinkingSignature, thinkingBlockIndex, stopReason, outputTokens, model);
                 for (String chunk : chunks) {
                     if (chunk != null) {
                         log.debug("OpenAI  chunk: {}", chunk);
@@ -148,7 +160,10 @@ public class OpenAiController {
      * 返回空列表表示此事件不需要输出。
      */
     private List<String> convertSseEventToOpenAi(AnthropicStreamEvent event, AtomicReference<String> messageId,
-            AtomicReference<Boolean> finishSent, String model) {
+            AtomicReference<Boolean> finishSent, AtomicReference<StringBuilder> textContentBuffer,
+            AtomicReference<StringBuilder> thinkingContentBuffer, AtomicReference<StringBuilder> thinkingSignature,
+            AtomicReference<Integer> thinkingBlockIndex, AtomicReference<String> stopReason,
+            AtomicReference<Integer> outputTokens, String model) {
         try {
             List<String> result = new ArrayList<>();
 
@@ -161,11 +176,23 @@ public class OpenAiController {
                 }
                 result.add(buildOpenAiChunk(messageId.get(), model, "assistant", null, null));
             }
-            // content_block_delta 事件：根据 delta.type 进一步区分文本增量、思考块增量和工具参数增量，构建不同的 OpenAI chunk
             case "content_block_start" -> {
                 Map<String, Object> block = event.getContentBlock();
                 if (block != null) {
-                    if ("tool_use".equals(block.get("type"))) {
+                    String blockType = (String) block.get("type");
+                    if ("thinking".equals(blockType)) {
+                        // 初始化 thinking 块：累积签名、记录索引，发送初始 reasoning_opaque + reasoning_text
+                        int idx = event.getIndex() != null ? event.getIndex() : 0;
+                        thinkingBlockIndex.set(idx);
+                        thinkingSignature.set(new StringBuilder());
+                        result.add(buildOpenAiReasoningChunk(messageId.get(), model, "thinking_" + idx, null));
+                    } else if ("redacted_thinking".equals(blockType)) {
+                        // 被编辑的思考块：data 字段作为 reasoning_opaque 直接发送
+                        String data = (String) block.get("data");
+                        if (data != null) {
+                            result.add(buildOpenAiReasoningChunk(messageId.get(), model, data, null));
+                        }
+                    } else if ("tool_use".equals(blockType)) {
                         String toolId = (String) block.get("id");
                         String toolName = (String) block.get("name");
                         result.add(buildOpenAiToolStartChunk(messageId.get(), model, toolId, toolName));
@@ -180,17 +207,26 @@ public class OpenAiController {
                     // text_delta：普通文本增量，转换为 role=assistant 的文本 chunk
                     if ("text_delta".equals(deltaType)) {
                         String text = (String) delta.get("text");
-                        if (text != null)
+                        if (text != null) {
+                            textContentBuffer.get().append(text);
                             result.add(buildOpenAiChunk(messageId.get(), model, null, text, null));
+                        }
                     }
-                    // thinking_delta：思考块增量，转换为 type=thinking_delta 的特殊 chunk，Copilot 会渲染为可折叠的思考过程块
+                    // thinking_delta：思考块增量，通过 reasoning_text 发送给 Copilot
                     else if ("thinking_delta".equals(deltaType)) {
-                        // 思考块：转换为 Copilot 可识别的 thinking_delta 格式
                         String thinking = (String) delta.get("thinking");
-                        if (thinking != null)
-                            result.add(buildOpenAiThinkingChunk(messageId.get(), model, thinking));
+                        if (thinking != null) {
+                            thinkingContentBuffer.get().append(thinking);
+                            result.add(buildOpenAiReasoningChunk(messageId.get(), model, null, thinking));
+                        }
                     }
-                    // input_json_delta：工具参数增量，转换为 role=assistant 且包含 tool_calls 的 chunk，Copilot 会识别并传给工具执行
+                    // signature_delta：累积签名，在 content_block_stop 时通过 reasoning_opaque 一次性发送
+                    else if ("signature_delta".equals(deltaType)) {
+                        String signature = (String) delta.get("signature");
+                        if (signature != null)
+                            thinkingSignature.get().append(signature);
+                    }
+                    // input_json_delta：工具参数增量，转换为 role=assistant 且包含 tool_calls 的 chunk
                     else if ("input_json_delta".equals(deltaType)) {
                         String json = (String) delta.get("partial_json");
                         if (json != null)
@@ -198,25 +234,45 @@ public class OpenAiController {
                     }
                 }
             }
-            // content_block_stop 事件：当前没有对应的 OpenAI chunk 格式，暂不输出
+            // content_block_stop 事件：如果是 thinking 块结束，发送累积的签名作为 reasoning_opaque
             case "content_block_stop" -> {
+                if (thinkingBlockIndex.get() >= 0) {
+                    String sig = thinkingSignature.get().toString();
+                    if (!sig.isEmpty()) {
+                        result.add(buildOpenAiReasoningChunk(messageId.get(), model, sig, null));
+                    }
+                    thinkingBlockIndex.set(-1);
+                    thinkingSignature.set(new StringBuilder());
+                }
             }
             // message_delta 事件：如果 stop_reason 是 tool_use，则发送一个特殊的结束 chunk，finish_reason 设置为 "tool_calls"，并标记已发送结束
             case "message_delta" -> {
-                // 消息级别更新：包含 stop_reason（"end_turn" 或 "tool_use"）
+                // 消息级别更新：包含 stop_reason（"end_turn" 或 "tool_use"）和 usage
                 Map<String, Object> delta = event.getDelta();
                 if (delta != null) {
-                    String stopReason = (String) delta.get("stop_reason");
-                    if ("tool_use".equals(stopReason)) {
+                    String reason = (String) delta.get("stop_reason");
+                    if (reason != null)
+                        stopReason.set(reason);
+                    if ("tool_use".equals(reason)) {
                         result.add(buildOpenAiFinishChunk(messageId.get(), model, "tool_calls"));
                         finishSent.set(true);
                     }
                 }
+                Map<String, Object> usage = event.getUsage();
+                if (usage != null && usage.get("output_tokens") instanceof Number n) {
+                    outputTokens.set(n.intValue());
+                }
             }
             // message_stop 事件：如果之前没有发送过结束 chunk，则发送一个 finish_reason 为 "stop" 的结束 chunk
+            // 如果整个流中没有任何 text content 输出，发送一个 fallback 文本 chunk 防止 Copilot 报 "no response"
             case "message_stop" -> {
-                // 消息结束。如果 message_delta 已发送过 finish chunk，则跳过
                 if (!finishSent.get()) {
+                    if (textContentBuffer.get().isEmpty()) {
+                        // 没有实际文本输出 —— 从累积的 thinking 内容中提取摘要作为 fallback 文本
+                        String fallback = buildThinkingFallback(thinkingContentBuffer, stopReason.get(),
+                                outputTokens.get());
+                        result.add(buildOpenAiChunk(messageId.get(), model, null, fallback, null));
+                    }
                     result.add(buildOpenAiFinishChunk(messageId.get(), model, "stop"));
                 }
             }
@@ -295,14 +351,19 @@ public class OpenAiController {
     }
 
     /**
-     * 构建思考块 chunk —— delta 中携带 type: "thinking_delta" 和 thinking 字段。
-     * Copilot 会将此格式渲染为可折叠的思考过程块。
+     * 构建思考块 chunk —— delta 中携带 reasoning_opaque（签名/ID）和/或 reasoning_text（思考文本）。
+     * Copilot 的 Chat Completions 处理器（NEn 函数）从 delta 中提取这两个字段来渲染可折叠思考块。
+     *
+     * @param opaque 签名或 ID，设置后 Copilot 会创建/折叠思考块。可为 null。
+     * @param text   思考增量文本。可为 null。
      */
-    private String buildOpenAiThinkingChunk(String id, String model, String thinking) {
+    private String buildOpenAiReasoningChunk(String id, String model, String opaque, String text) {
         try {
             Map<String, Object> delta = new LinkedHashMap<>();
-            delta.put("type", "thinking_delta");
-            delta.put("thinking", thinking);
+            if (opaque != null)
+                delta.put("reasoning_opaque", opaque);
+            if (text != null)
+                delta.put("reasoning_text", text);
 
             Map<String, Object> choice = new LinkedHashMap<>();
             choice.put("index", 0);
@@ -343,6 +404,34 @@ public class OpenAiController {
         } catch (Exception e) {
             return "{}";
         }
+    }
+
+    /**
+     * 当模型无 text content 输出时，生成 fallback 文本。
+     * 根据 stop_reason 和 output_tokens 判断原因：
+     * - output_tokens 极少（<100）且 stop_reason=end_turn：上游 API 异常终止
+     * - output_tokens 较多但无 text：thinking 耗尽了输出预算
+     * 从累积的 thinking 内容中截取末尾部分作为摘要。
+     */
+    private String buildThinkingFallback(AtomicReference<StringBuilder> thinkingContentBuffer, String stopReason,
+            int outputTokens) {
+        String thinking = thinkingContentBuffer.get().toString();
+
+        // 判断原因
+        String reason;
+        if (outputTokens < 100 && !"tool_use".equals(stopReason)) {
+            reason = "上游 API 异常终止 (stop_reason=" + stopReason + ", output_tokens=" + outputTokens + ")";
+        } else {
+            reason = "模型思考过程耗尽了输出预算 (output_tokens=" + outputTokens + ")";
+        }
+
+        if (thinking.isEmpty()) {
+            return "（" + reason + "，未产生可见文本回复）";
+        }
+        // 截取最后 2000 个字符作为摘要，避免过长
+        int maxLen = 2000;
+        String tail = thinking.length() > maxLen ? "..." + thinking.substring(thinking.length() - maxLen) : thinking;
+        return "[" + reason + "]\n\n" + tail;
     }
 
     // ========== 非流式：Anthropic 响应 → OpenAI 响应 ==========
@@ -425,7 +514,7 @@ public class OpenAiController {
     private Map<String, Object> convertToAnthropicRequest(OpenAiChatRequest req) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", req.getModel());
-        body.put("max_tokens", req.getMaxTokens() != null ? req.getMaxTokens() : 8192);
+        body.put("max_tokens", req.getMaxTokens() != null ? req.getMaxTokens() : 65536);
 
         List<Map<String, Object>> systemParts = new ArrayList<>();
         List<Map<String, Object>> messages = new ArrayList<>();
