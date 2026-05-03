@@ -101,7 +101,6 @@ public class OpenAiController {
                     if (activeSubscription != null) {
                         activeSubscription.dispose();
                     }
-                    emitter.complete();
                     return;
                 }
                 log.error("OpenAI SSE 转发异常", exception);
@@ -113,7 +112,6 @@ public class OpenAiController {
             }
         }, error -> {
             if (isClientDisconnect(error)) {
-                emitter.complete();
                 return;
             }
             log.error("Anthropic API 调用异常", error);
@@ -124,7 +122,6 @@ public class OpenAiController {
                 emitter.complete();
             } catch (Exception exception) {
                 if (isClientDisconnect(exception)) {
-                    emitter.complete();
                     return;
                 }
                 log.error("OpenAI SSE 结束发送失败", exception);
@@ -265,7 +262,6 @@ public class OpenAiController {
 
     /**
      * 构建工具调用起始 chunk —— 包含 tool call id、type 和 function name。
-     * 这是 Copilot 识别工具调用的关键 chunk。
      */
     private String buildOpenAiToolStartChunk(String id, String model, String toolId, String toolName) {
         try {
