@@ -164,7 +164,10 @@ public class OpenAiController {
                         if (text != null)
                             result.add(buildOpenAiChunk(messageId.get(), model, null, text, null));
                     } else if ("thinking_delta".equals(deltaType)) {
-                        // thinking 块在 OpenAI 格式中无对应，直接丢弃
+                        // 思考块：转换为 Copilot 可识别的 thinking_delta 格式
+                        String thinking = (String) delta.get("thinking");
+                        if (thinking != null)
+                            result.add(buildOpenAiThinkingChunk(messageId.get(), model, thinking));
                     } else if ("input_json_delta".equals(deltaType)) {
                         String json = (String) delta.get("partial_json");
                         if (json != null)
@@ -249,6 +252,34 @@ public class OpenAiController {
 
             Map<String, Object> delta = new LinkedHashMap<>();
             delta.put("tool_calls", List.of(toolCall));
+
+            Map<String, Object> choice = new LinkedHashMap<>();
+            choice.put("index", 0);
+            choice.put("delta", delta);
+            choice.put("finish_reason", null);
+
+            Map<String, Object> chunk = new LinkedHashMap<>();
+            chunk.put("id", id);
+            chunk.put("object", "chat.completion.chunk");
+            chunk.put("created", System.currentTimeMillis() / 1000);
+            chunk.put("model", model);
+            chunk.put("choices", List.of(choice));
+
+            return objectMapper.writeValueAsString(chunk);
+        } catch (Exception e) {
+            return "{}";
+        }
+    }
+
+    /**
+     * 构建思考块 chunk —— delta 中携带 type: "thinking_delta" 和 thinking 字段。
+     * Copilot 会将此格式渲染为可折叠的思考过程块。
+     */
+    private String buildOpenAiThinkingChunk(String id, String model, String thinking) {
+        try {
+            Map<String, Object> delta = new LinkedHashMap<>();
+            delta.put("type", "thinking_delta");
+            delta.put("thinking", thinking);
 
             Map<String, Object> choice = new LinkedHashMap<>();
             choice.put("index", 0);
