@@ -54,6 +54,16 @@ public class MimoProxyService {
     }
 
     /**
+     * 直接透传 Anthropic SSE 事件流。
+     * OpenAI 兼容控制器会在拿到事件后立即转换并回传给客户端，
+     * 避免先把整段流全部缓冲完再处理造成首包延迟。
+     */
+    public Flux<AnthropicStreamEvent> streamAnthropicMessages(Map<String, Object> requestBody) {
+        return webClient.post().uri("/v1/messages").contentType(MediaType.APPLICATION_JSON).bodyValue(requestBody)
+                .retrieve().bodyToFlux(AnthropicStreamEvent.class).filter(event -> event.getType() != null);
+    }
+
+    /**
      * 构造函数 —— 初始化 WebClient 并注入配置。
      * WebClient 是 Spring WebFlux 提供的非阻塞 HTTP 客户端，
      * 这里预设了 Mimo 后端的 base URL 和认证头，后续调用时无需重复设置。

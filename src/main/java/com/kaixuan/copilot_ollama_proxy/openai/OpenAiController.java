@@ -3,19 +3,17 @@ package com.kaixuan.copilot_ollama_proxy.openai;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.anthropic.AnthropicStreamEvent;
 import com.kaixuan.copilot_ollama_proxy.proxy.MimoProxyService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.core.io.buffer.DataBuffer;
-import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.reactive.function.BodyExtractors;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import reactor.core.Disposable;
 
-import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -50,104 +48,119 @@ public class OpenAiController {
      * 接收 OpenAI 格式请求，转换为 Anthropic 格式调用 Mimo，
      * 再将 Anthropic 响应转换回 OpenAI 格式返回。
      */
-    @PostMapping(value = "/v1/chat/completions", produces = MediaType.APPLICATION_JSON_VALUE)
-    public Mono<ResponseEntity<String>> chatCompletions(@RequestBody OpenAiChatRequest request) {
+    @PostMapping(value = "/v1/chat/completions")
+    public ResponseEntity<?> chatCompletions(@RequestBody OpenAiChatRequest request) {
         Map<String, Object> anthropicBody = convertToAnthropicRequest(request);
         log.info("OpenAI -> Anthropic 转换完成，模型: {}, 流式: {}", request.getModel(), request.isStream());
 
         if (request.isStream()) {
-            return streamChat(anthropicBody, request.getModel());
+            SseEmitter emitter = streamChat(anthropicBody, request.getModel());
+            return ResponseEntity.ok().contentType(new MediaType("text", "event-stream"))
+                    .header("Cache-Control", "no-cache").body(emitter);
         }
 
         // 非流式：调用 Anthropic API，将响应转换为 OpenAI 格式
-        return proxyService.getWebClient().post().uri("/v1/messages").bodyValue(anthropicBody).retrieve()
-                .bodyToMono(String.class)
-                .map(anthropicResp -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON)
-                        .body(convertAnthropicToOpenAi(anthropicResp, request.getModel())));
+        String anthropicResp = proxyService.getWebClient().post().uri("/v1/messages")
+                .contentType(MediaType.APPLICATION_JSON).bodyValue(anthropicBody).retrieve().bodyToMono(String.class)
+                .block();
+        return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON)
+                .body(convertAnthropicToOpenAi(anthropicResp, request.getModel()));
     }
 
     // ========== 流式处理：Anthropic SSE → OpenAI SSE ==========
 
     /**
-     * 流式对话 —— 将 Anthropic SSE 事件逐步转换为 OpenAI 格式的 SSE chunk。
-     * Anthropic SSE 格式：
-     *   event: content_block_delta
-     *   data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}
-     * OpenAI SSE 格式（Copilot 期望的格式）：
-     *   data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","choices":[{"delta":{"content":"Hello"}}]}
+     * 流式对话 —— 将 Anthropic SSE 事件转换为 OpenAI 格式的 SSE chunk，通过 SseEmitter 逐条发送。
+     * 这里直接订阅上游的 Anthropic 事件流，收到一个事件就转换并立即回传，
+     * 避免先把整段响应缓冲完成再统一处理导致明显首包延迟。
      */
-    private Mono<ResponseEntity<String>> streamChat(Map<String, Object> anthropicBody, String model) {
+    private SseEmitter streamChat(Map<String, Object> anthropicBody, String model) {
         anthropicBody.put("stream", true);
+        SseEmitter emitter = new SseEmitter(300_000L); // 5 分钟超时
 
         AtomicReference<String> messageId = new AtomicReference<>(
                 "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12));
-        AtomicReference<String> currentBlockType = new AtomicReference<>();
         AtomicReference<Boolean> finishSent = new AtomicReference<>(false);
 
-        Flux<String> openAiChunks = proxyService.getWebClient().post().uri("/v1/messages")
-                .contentType(MediaType.APPLICATION_JSON).bodyValue(anthropicBody).exchangeToFlux(response -> {
-                    Flux<DataBuffer> dataBuffers = response.body(BodyExtractors.toDataBuffers());
-                    return DataBufferUtils.join(dataBuffers).flux().concatMap(joined -> {
-                        String raw = joined.toString(StandardCharsets.UTF_8);
-                        DataBufferUtils.release(joined);
-                        return Flux.fromArray(raw.split("\n"));
-                    });
-                })
-                // 累积 event: 和 data: 行，遇到空行时处理完整 SSE 事件
-                .bufferUntil(line -> line.isBlank()).concatMap(lines -> {
-                    String eventType = null;
-                    String dataJson = null;
-                    for (String line : lines) {
-                        if (line.startsWith("event: "))
-                            eventType = line.substring(7).trim();
-                        if (line.startsWith("data: "))
-                            dataJson = line.substring(6).trim();
+        AtomicReference<Disposable> subscriptionRef = new AtomicReference<>();
+        Disposable subscription = proxyService.streamAnthropicMessages(anthropicBody).subscribe(event -> {
+            try {
+                List<String> chunks = convertSseEventToOpenAi(event, messageId, finishSent, model);
+                for (String chunk : chunks) {
+                    if (chunk != null) {
+                        emitter.send(SseEmitter.event().data(chunk));
                     }
-                    if (eventType == null || dataJson == null)
-                        return Flux.empty();
-                    return Flux.fromIterable(convertSseEventToOpenAi(eventType, dataJson, messageId, currentBlockType,
-                            finishSent, model));
-                }).filter(Objects::nonNull);
-
-        // 拼接所有 chunk + 结束标记
-        return openAiChunks.collectList().map(chunks -> {
-            StringBuilder sb = new StringBuilder();
-            for (String chunk : chunks) {
-                sb.append("data: ").append(chunk).append("\n\n");
+                }
+            } catch (Exception exception) {
+                if (isClientDisconnect(exception)) {
+                    Disposable activeSubscription = subscriptionRef.get();
+                    if (activeSubscription != null) {
+                        activeSubscription.dispose();
+                    }
+                    emitter.complete();
+                    return;
+                }
+                log.error("OpenAI SSE 转发异常", exception);
+                Disposable activeSubscription = subscriptionRef.get();
+                if (activeSubscription != null) {
+                    activeSubscription.dispose();
+                }
+                emitter.completeWithError(exception);
             }
-            sb.append("data: [DONE]\n\n");
-            return ResponseEntity.ok().contentType(new MediaType("text", "event-stream"))
-                    .header("Cache-Control", "no-cache").header("x-request-id", messageId.get()).body(sb.toString());
+        }, error -> {
+            if (isClientDisconnect(error)) {
+                emitter.complete();
+                return;
+            }
+            log.error("Anthropic API 调用异常", error);
+            emitter.completeWithError(error);
+        }, () -> {
+            try {
+                emitter.send(SseEmitter.event().data("[DONE]"));
+                emitter.complete();
+            } catch (Exception exception) {
+                if (isClientDisconnect(exception)) {
+                    emitter.complete();
+                    return;
+                }
+                log.error("OpenAI SSE 结束发送失败", exception);
+                emitter.completeWithError(exception);
+            }
         });
+        subscriptionRef.set(subscription);
+
+        emitter.onCompletion(subscription::dispose);
+        emitter.onTimeout(() -> {
+            log.warn("OpenAI SSE emitter 超时，模型: {}", model);
+            subscription.dispose();
+            emitter.complete();
+        });
+        emitter.onError(error -> subscription.dispose());
+
+        return emitter;
     }
 
     /**
      * 将单个 Anthropic SSE 事件转换为 OpenAI chunk JSON。
      * 返回空列表表示此事件不需要输出。
      */
-    private List<String> convertSseEventToOpenAi(String eventType, String dataJson, AtomicReference<String> messageId,
-            AtomicReference<String> currentBlockType, AtomicReference<Boolean> finishSent, String model) {
+    private List<String> convertSseEventToOpenAi(AnthropicStreamEvent event, AtomicReference<String> messageId,
+            AtomicReference<Boolean> finishSent, String model) {
         try {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> data = objectMapper.readValue(dataJson, Map.class);
             List<String> result = new ArrayList<>();
 
-            switch (eventType) {
+            switch (event.getType()) {
             case "message_start" -> {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> message = (Map<String, Object>) data.get("message");
+                Map<String, Object> message = event.getMessage();
                 if (message != null && message.get("id") != null) {
                     messageId.set("chatcmpl-" + message.get("id"));
                 }
                 result.add(buildOpenAiChunk(messageId.get(), model, "assistant", null, null));
             }
             case "content_block_start" -> {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> block = (Map<String, Object>) data.get("content_block");
+                Map<String, Object> block = event.getContentBlock();
                 if (block != null) {
-                    String blockType = (String) block.get("type");
-                    currentBlockType.set(blockType);
-                    if ("tool_use".equals(blockType)) {
+                    if ("tool_use".equals(block.get("type"))) {
                         String toolId = (String) block.get("id");
                         String toolName = (String) block.get("name");
                         result.add(buildOpenAiToolStartChunk(messageId.get(), model, toolId, toolName));
@@ -155,8 +168,7 @@ public class OpenAiController {
                 }
             }
             case "content_block_delta" -> {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> delta = (Map<String, Object>) data.get("delta");
+                Map<String, Object> delta = event.getDelta();
                 if (delta != null) {
                     String deltaType = (String) delta.get("type");
                     if ("text_delta".equals(deltaType)) {
@@ -176,12 +188,10 @@ public class OpenAiController {
                 }
             }
             case "content_block_stop" -> {
-                currentBlockType.set(null);
             }
             case "message_delta" -> {
                 // 消息级别更新：包含 stop_reason（"end_turn" 或 "tool_use"）
-                @SuppressWarnings("unchecked")
-                Map<String, Object> delta = (Map<String, Object>) data.get("delta");
+                Map<String, Object> delta = event.getDelta();
                 if (delta != null) {
                     String stopReason = (String) delta.get("stop_reason");
                     if ("tool_use".equals(stopReason)) {
@@ -199,7 +209,7 @@ public class OpenAiController {
             }
             return result;
         } catch (Exception e) {
-            log.warn("SSE 事件解析失败: {}", dataJson, e);
+            log.warn("SSE 事件解析失败: {}", event.getType(), e);
             return List.of();
         }
     }
@@ -503,5 +513,22 @@ public class OpenAiController {
             log.warn("工具参数 JSON 解析失败: {}", arguments);
             return Map.of();
         }
+    }
+
+    private boolean isClientDisconnect(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof AsyncRequestNotUsableException) {
+                return true;
+            }
+
+            String simpleName = current.getClass().getSimpleName();
+            if ("ClientAbortException".equals(simpleName) || "EOFException".equals(simpleName)) {
+                return true;
+            }
+
+            current = current.getCause();
+        }
+        return false;
     }
 }
