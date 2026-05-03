@@ -89,9 +89,11 @@ public class OpenAiController {
         // 订阅上游 Anthropic SSE 事件流，逐条转换并发送给 Copilot
         Disposable subscription = proxyService.streamAnthropicMessages(anthropicBody).subscribe(event -> {
             try {
+                log.debug("Anthropic 事件 [{}]: {}", event.getType(), toLogJson(event));
                 List<String> chunks = convertSseEventToOpenAi(event, messageId, finishSent, model);
                 for (String chunk : chunks) {
                     if (chunk != null) {
+                        log.debug("OpenAI  chunk: {}", chunk);
                         emitter.send(SseEmitter.event().data(chunk));
                     }
                 }
@@ -523,6 +525,18 @@ public class OpenAiController {
         } catch (JsonProcessingException e) {
             log.warn("工具参数 JSON 解析失败: {}", arguments);
             return Map.of();
+        }
+    }
+
+    /**
+     * 将 AnthropicStreamEvent 序列化为 JSON 字符串，仅用于日志输出。
+     * 反序列化过程中发生异常时返回原始 toString()，不中断主流程。
+     */
+    private String toLogJson(AnthropicStreamEvent event) {
+        try {
+            return objectMapper.writeValueAsString(event);
+        } catch (JsonProcessingException exception) {
+            return String.valueOf(event);
         }
     }
 
