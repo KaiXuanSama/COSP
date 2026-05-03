@@ -49,8 +49,8 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
         CachedBodyHttpServletRequest wrappedRequest = new CachedBodyHttpServletRequest(request, bodyBytes);
 
         // 打印请求日志
-        log.info("================ API 请求 ================");
-        log.info("URL    : {} {}", wrappedRequest.getMethod(), wrappedRequest.getRequestURL());
+        log.debug("================ API 请求 ================");
+        log.debug("URL    : {} {}", wrappedRequest.getMethod(), wrappedRequest.getRequestURL());
 
         // 打印请求体（超过 500 字符则截断，避免刷屏）
         if (bodyBytes.length > 0) {
@@ -58,11 +58,11 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
             if (bodyStr.length() > 500) {
                 bodyStr = bodyStr.substring(0, 500) + "... ( 余 " + (bodyStr.length() - 500) + " 字符 )";
             }
-            log.info("Body   : {}", bodyStr);
+            log.debug("Body   : {}", bodyStr);
         } else {
-            log.info("Body   : (empty)");
+            log.debug("Body   : (empty)");
         }
-        log.info("==========================================");
+        log.debug("==========================================");
 
         // 将包装后的请求传递给后续的 Controller 处理
         filterChain.doFilter(wrappedRequest, response);

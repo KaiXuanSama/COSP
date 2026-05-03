@@ -84,13 +84,13 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
 
         long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos);
 
-        log.info("=============== API 响应 ================");
-        log.info("URL    : {} {}", request.getMethod(), request.getRequestURL());
-        log.info("Status : {}", response.getStatus());
-        log.info("Type   : {}", response.getContentType() != null ? response.getContentType() : "(unknown)");
-        log.info("Time   : {} ms", elapsedMillis);
-        log.info("Body   : {}", renderBody(response));
-        log.info("==========================================");
+        log.debug("=============== API 响应 ================");
+        log.debug("URL    : {} {}", request.getMethod(), request.getRequestURL());
+        log.debug("Status : {}", response.getStatus());
+        log.debug("Type   : {}", response.getContentType() != null ? response.getContentType() : "(unknown)");
+        log.debug("Time   : {} ms", elapsedMillis);
+        log.debug("Body   : {}", renderBody(response));
+        log.debug("==========================================");
     }
 
     private String renderBody(LoggingHttpServletResponse response) {
