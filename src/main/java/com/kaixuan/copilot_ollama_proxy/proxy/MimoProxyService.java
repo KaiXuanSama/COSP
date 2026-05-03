@@ -46,11 +46,13 @@ public class MimoProxyService {
     private final String defaultModel;
 
     /**
-     * 获取 WebClient 实例，供 OpenAI 兼容控制器复用。
-     * WebClient 已预设了 Mimo 后端的 base URL 和认证头。
+     * 直接发送一个非流式 Anthropic Messages 请求，并保留原始 JSON 响应。
+     * OpenAI 兼容控制器使用这一路径避免直接持有底层 WebClient，
+     * 同时也避免在 controller 中调用 block() 造成 servlet 线程阻塞。
      */
-    public WebClient getWebClient() {
-        return webClient;
+    public Mono<String> sendAnthropicMessage(Map<String, Object> requestBody) {
+        return webClient.post().uri("/v1/messages").contentType(MediaType.APPLICATION_JSON).bodyValue(requestBody)
+                .retrieve().bodyToMono(String.class);
     }
 
     /**

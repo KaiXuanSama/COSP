@@ -49,7 +49,7 @@ public class OpenAiController {
      * 再将 Anthropic 响应转换回 OpenAI 格式返回。
      */
     @PostMapping(value = "/v1/chat/completions")
-    public ResponseEntity<?> chatCompletions(@RequestBody OpenAiChatRequest request) {
+    public Object chatCompletions(@RequestBody OpenAiChatRequest request) {
         Map<String, Object> anthropicBody = convertToAnthropicRequest(request);
         log.info("OpenAI -> Anthropic 转换完成，模型: {}, 流式: {}", request.getModel(), request.isStream());
 
@@ -59,12 +59,10 @@ public class OpenAiController {
                     .header("Cache-Control", "no-cache").body(emitter);
         }
 
-        // 非流式：调用 Anthropic API，将响应转换为 OpenAI 格式
-        String anthropicResp = proxyService.getWebClient().post().uri("/v1/messages")
-                .contentType(MediaType.APPLICATION_JSON).bodyValue(anthropicBody).retrieve().bodyToMono(String.class)
-                .block();
-        return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON)
-                .body(convertAnthropicToOpenAi(anthropicResp, request.getModel()));
+        // 非流式：异步调用 Anthropic API，避免在 servlet 线程里 block()
+        return proxyService.sendAnthropicMessage(anthropicBody)
+                .map(anthropicResp -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON)
+                        .body(convertAnthropicToOpenAi(anthropicResp, request.getModel())));
     }
 
     // ========== 流式处理：Anthropic SSE → OpenAI SSE ==========
@@ -78,11 +76,17 @@ public class OpenAiController {
         anthropicBody.put("stream", true);
         SseEmitter emitter = new SseEmitter(300_000L); // 5 分钟超时
 
+        // messageId 用于构建 OpenAI chunk 的 id 字段，初始值随机生成，后续如果收到 message_start 事件则更新为上游消息 ID
         AtomicReference<String> messageId = new AtomicReference<>(
                 "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12));
+
+        // finishSent 标记是否已发送过流式结束 chunk（包含 finish_reason），避免重复发送
         AtomicReference<Boolean> finishSent = new AtomicReference<>(false);
 
+        // subscriptionRef 用于在发生异常或客户端断开时取消订阅
         AtomicReference<Disposable> subscriptionRef = new AtomicReference<>();
+
+        // 订阅上游 Anthropic SSE 事件流，逐条转换并发送给 Copilot
         Disposable subscription = proxyService.streamAnthropicMessages(anthropicBody).subscribe(event -> {
             try {
                 List<String> chunks = convertSseEventToOpenAi(event, messageId, finishSent, model);
@@ -150,6 +154,7 @@ public class OpenAiController {
             List<String> result = new ArrayList<>();
 
             switch (event.getType()) {
+            // message_start 事件：生成一个包含 message ID 的 OpenAI chunk，role 固定为 assistant
             case "message_start" -> {
                 Map<String, Object> message = event.getMessage();
                 if (message != null && message.get("id") != null) {
@@ -157,6 +162,7 @@ public class OpenAiController {
                 }
                 result.add(buildOpenAiChunk(messageId.get(), model, "assistant", null, null));
             }
+            // content_block_delta 事件：根据 delta.type 进一步区分文本增量、思考块增量和工具参数增量，构建不同的 OpenAI chunk
             case "content_block_start" -> {
                 Map<String, Object> block = event.getContentBlock();
                 if (block != null) {
@@ -167,28 +173,36 @@ public class OpenAiController {
                     }
                 }
             }
+            // content_block_delta 事件：根据 delta.type 进一步区分文本增量、思考块增量和工具参数增量，构建不同的 OpenAI chunk
             case "content_block_delta" -> {
                 Map<String, Object> delta = event.getDelta();
                 if (delta != null) {
                     String deltaType = (String) delta.get("type");
+                    // text_delta：普通文本增量，转换为 role=assistant 的文本 chunk
                     if ("text_delta".equals(deltaType)) {
                         String text = (String) delta.get("text");
                         if (text != null)
                             result.add(buildOpenAiChunk(messageId.get(), model, null, text, null));
-                    } else if ("thinking_delta".equals(deltaType)) {
+                    }
+                    // thinking_delta：思考块增量，转换为 type=thinking_delta 的特殊 chunk，Copilot 会渲染为可折叠的思考过程块
+                    else if ("thinking_delta".equals(deltaType)) {
                         // 思考块：转换为 Copilot 可识别的 thinking_delta 格式
                         String thinking = (String) delta.get("thinking");
                         if (thinking != null)
                             result.add(buildOpenAiThinkingChunk(messageId.get(), model, thinking));
-                    } else if ("input_json_delta".equals(deltaType)) {
+                    }
+                    // input_json_delta：工具参数增量，转换为 role=assistant 且包含 tool_calls 的 chunk，Copilot 会识别并传给工具执行
+                    else if ("input_json_delta".equals(deltaType)) {
                         String json = (String) delta.get("partial_json");
                         if (json != null)
                             result.add(buildOpenAiChunk(messageId.get(), model, null, null, json));
                     }
                 }
             }
+            // content_block_stop 事件：当前没有对应的 OpenAI chunk 格式，暂不输出
             case "content_block_stop" -> {
             }
+            // message_delta 事件：如果 stop_reason 是 tool_use，则发送一个特殊的结束 chunk，finish_reason 设置为 "tool_calls"，并标记已发送结束
             case "message_delta" -> {
                 // 消息级别更新：包含 stop_reason（"end_turn" 或 "tool_use"）
                 Map<String, Object> delta = event.getDelta();
@@ -200,6 +214,7 @@ public class OpenAiController {
                     }
                 }
             }
+            // message_stop 事件：如果之前没有发送过结束 chunk，则发送一个 finish_reason 为 "stop" 的结束 chunk
             case "message_stop" -> {
                 // 消息结束。如果 message_delta 已发送过 finish chunk，则跳过
                 if (!finishSent.get()) {
