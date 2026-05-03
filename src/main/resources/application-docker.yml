@@ -5,13 +5,24 @@ spring:
     activate:
       on-profile: docker
 
+# ===== 服务器端口 =====
 server:
+  # 环境变量：SERVER_PORT
   port: ${SERVER_PORT:11434}
 
+# ===== Ollama 伪装配置 =====
 ollama:
+  # 环境变量：OLLAMA_VERSION
   version: ${OLLAMA_VERSION:0.6.4}
 
+# ===== MiMo 上游 API 配置 =====
 mimo:
+  # 环境变量：MIMO_API_KEY（Docker 环境必须通过环境变量注入，无默认值）
   api-key: ${MIMO_API_KEY:}
-  base-url: ${MIMO_BASE_URL:https://api.xiaomimimo.com/anthropic}
+  # 环境变量：MIMO_BASE_URL
+  # 小米提供两种接口地址，根据使用场景选择：
+  #   - plan 订阅接口：https://token-plan-cn.xiaomimimo.com/anthropic （按 token 套餐计费）
+  #   - 标准接口     ：https://api.xiaomimimo.com/anthropic           （按量付费）
+  base-url: ${MIMO_BASE_URL:https://token-plan-cn.xiaomimimo.com/anthropic}
+  # 环境变量：MIMO_DEFAULT_MODEL
   default-model: ${MIMO_DEFAULT_MODEL:mimo-v2.5-pro}
