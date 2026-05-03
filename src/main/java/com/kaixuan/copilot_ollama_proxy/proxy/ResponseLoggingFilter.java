@@ -40,6 +40,19 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
+        // 非 DEBUG 模式直接放行，不做任何包装和日志记录
+        if (!log.isDebugEnabled()) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        // DEBUG 模式下，如果请求明确要求流式响应（Accept 头包含 event-stream 或 ndjson），
+        // 则直接放行，不包装响应，因为流式事件日志已经在协议转换层打印。
+        if (isStreamingRequest(request)) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
         // 强制将响应字符编码设置为 UTF-8，防止 Spring 的 StringHttpMessageConverter
         // 使用 ISO-8859-1 导致汉字在日志的 Tee 缓冲区中出现乱码。
         if (response.getCharacterEncoding() == null
@@ -103,6 +116,21 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
         return normalized.startsWith("text/") || normalized.contains("json") || normalized.contains("xml")
                 || normalized.contains("javascript") || normalized.contains("x-www-form-urlencoded")
                 || normalized.contains("ndjson");
+    }
+
+    /**
+     * 判断当前请求是否期望流式响应（Accept 头包含 event-stream 或 ndjson）。
+     * DEBUG 模式下流式请求直接放行，不包装响应，因为流式事件日志已在协议转换层打印。
+     */
+    private boolean isStreamingRequest(HttpServletRequest request) {
+        String accept = request.getHeader("Accept");
+        if (accept != null) {
+            String normalized = accept.toLowerCase(Locale.ROOT);
+            if (normalized.contains("event-stream") || normalized.contains("ndjson")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Charset resolveCharset(String encoding) {

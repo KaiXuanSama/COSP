@@ -37,6 +37,12 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
+        // 非 DEBUG 模式直接放行，不做任何 body 读取和包装，零开销
+        if (!log.isDebugEnabled()) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
         // 读取请求体的原始字节（一次性读完）
         byte[] bodyBytes = request.getInputStream().readAllBytes();
         // 用缓存后的 body 包装原始请求，这样 body 可以被多次读取
@@ -46,7 +52,7 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
         log.info("================ API 请求 ================");
         log.info("URL    : {} {}", wrappedRequest.getMethod(), wrappedRequest.getRequestURL());
 
-        // 打印请求体（超过 5000 字符则截断，避免刷屏）
+        // 打印请求体（超过 500 字符则截断，避免刷屏）
         if (bodyBytes.length > 0) {
             String bodyStr = new String(bodyBytes, StandardCharsets.UTF_8);
             if (bodyStr.length() > 500) {
