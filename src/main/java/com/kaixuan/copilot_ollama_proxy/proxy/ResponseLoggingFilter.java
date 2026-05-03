@@ -46,13 +46,6 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
             return;
         }
 
-        // DEBUG 模式下，如果请求明确要求流式响应（Accept 头包含 event-stream 或 ndjson），
-        // 则直接放行，不包装响应，因为流式事件日志已经在协议转换层打印。
-        if (isStreamingRequest(request)) {
-            filterChain.doFilter(request, response);
-            return;
-        }
-
         // 强制将响应字符编码设置为 UTF-8，防止 Spring 的 StringHttpMessageConverter
         // 使用 ISO-8859-1 导致汉字在日志的 Tee 缓冲区中出现乱码。
         if (response.getCharacterEncoding() == null
@@ -89,7 +82,12 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
         log.debug("Status : {}", response.getStatus());
         log.debug("Type   : {}", response.getContentType() != null ? response.getContentType() : "(unknown)");
         log.debug("Time   : {} ms", elapsedMillis);
-        log.debug("Body   : {}", renderBody(response));
+        // 流式响应（SSE/NDJSON）不打印 body，因为流式事件日志已在协议转换层逐条打印
+        if (isStreamingResponse(response)) {
+            log.debug("Body   : (streaming, skipped)");
+        } else {
+            log.debug("Body   : {}", renderBody(response));
+        }
         log.debug("==========================================");
     }
 
@@ -119,18 +117,16 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
     }
 
     /**
-     * 判断当前请求是否期望流式响应（Accept 头包含 event-stream 或 ndjson）。
-     * DEBUG 模式下流式请求直接放行，不包装响应，因为流式事件日志已在协议转换层打印。
+     * 判断当前响应是否为流式响应（Content-Type 包含 event-stream 或 ndjson）。
+     * 在 controller 设置完 Content-Type 之后调用，因此能准确判断。
      */
-    private boolean isStreamingRequest(HttpServletRequest request) {
-        String accept = request.getHeader("Accept");
-        if (accept != null) {
-            String normalized = accept.toLowerCase(Locale.ROOT);
-            if (normalized.contains("event-stream") || normalized.contains("ndjson")) {
-                return true;
-            }
+    private boolean isStreamingResponse(HttpServletResponse response) {
+        String contentType = response.getContentType();
+        if (contentType == null) {
+            return false;
         }
-        return false;
+        String normalized = contentType.toLowerCase(Locale.ROOT);
+        return normalized.contains("event-stream") || normalized.contains("ndjson");
     }
 
     private Charset resolveCharset(String encoding) {
