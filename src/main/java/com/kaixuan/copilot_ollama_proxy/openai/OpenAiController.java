@@ -1,4 +1,4 @@
-﻿package com.kaixuan.copilot_ollama_proxy.openai;
+package com.kaixuan.copilot_ollama_proxy.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.proxy.UpstreamChatService;
@@ -97,6 +97,12 @@ public class OpenAiController {
     private Map<String, Object> buildRequestBody(OpenAiChatRequest request) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", request.getModel());
+        if (request.getTemperature() != null) {
+            body.put("temperature", request.getTemperature());
+        }
+        if (request.getTopP() != null) {
+            body.put("top_p", request.getTopP());
+        }
         if (request.getMaxTokens() != null) {
             body.put("max_tokens", request.getMaxTokens());
         }
@@ -104,6 +110,15 @@ public class OpenAiController {
         body.put("messages", objectMapper.convertValue(request.getMessages(), List.class));
         if (request.getTools() != null) {
             body.put("tools", objectMapper.convertValue(request.getTools(), List.class));
+        }
+        if (request.getToolChoice() != null) {
+            body.put("tool_choice", objectMapper.convertValue(request.getToolChoice(), Object.class));
+        }
+        if (request.getN() != null) {
+            body.put("n", request.getN());
+        }
+        if (request.getStreamOptions() != null) {
+            body.put("stream_options", objectMapper.convertValue(request.getStreamOptions(), Object.class));
         }
         return body;
     }

@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.anthropic.AnthropicStreamEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -17,7 +18,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * Anthropic API 实现 —— 将 OpenAI 格式请求转换为 Anthropic Messages API 调用，
  * 再将 Anthropic 响应转换回 OpenAI 格式。
  */
-@Service
+@Service @ConditionalOnProperty(name = "proxy.upstream-chat-service", havingValue = "anthropic")
 public class AnthropicChatService implements UpstreamChatService {
 
     private static final Logger log = LoggerFactory.getLogger(AnthropicChatService.class);

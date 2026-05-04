@@ -6,8 +6,9 @@ import java.util.Map;
 
 /**
  * OpenAI Chat Completions API 请求体 —— Copilot 发送给本代理的请求格式。
- * 本代理接收此格式后，会将其转换为 Anthropic Messages API 格式，
- * 然后调用 Mimo 后端的 Anthropic 兼容接口。
+ * 本代理接收此格式后，会交给 {@link com.kaixuan.copilot_ollama_proxy.proxy.UpstreamChatService}
+ * 的具体实现处理；默认实现会直接调用 MiMo 的 OpenAI 兼容接口，
+ * 其他实现也可以在内部转换到 Anthropic 等协议。
  * OpenAI 格式示例：
  * {
  *   "model": "mimo-v2.5-pro",
@@ -18,7 +19,7 @@ import java.util.Map;
  *   "stream": true,
  *   "tools": [...]
  * }
- * 与 Anthropic 格式的主要区别：
+ * 对于需要做协议转换的实现，与 Anthropic 格式的主要区别是：
  *   system 消息在 messages 数组中（Anthropic 是独立顶层字段）
  *   工具结果用 role=tool 的消息（Anthropic 用 user 消息 + tool_result 块）
  *   工具定义用 parameters 字段（Anthropic 用 input_schema）
