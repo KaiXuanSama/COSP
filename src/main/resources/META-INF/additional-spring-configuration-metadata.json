@@ -1,0 +1,32 @@
+{"properties": [
+  {
+    "name": "ollama.version",
+    "type": "java.lang.String",
+    "description": "伪装的 Ollama 版本号，Copilot 调用 GET /api/version 时返回此值。",
+    "defaultValue": "0.6.4"
+  },
+  {
+    "name": "mimo.api-key",
+    "type": "java.lang.String",
+    "description": "MiMo API 认证密钥，设置在请求头 x-api-key 中。",
+    "defaultValue": ""
+  },
+  {
+    "name": "mimo.base-url",
+    "type": "java.lang.String",
+    "description": "MiMo Anthropic 兼容接口的基础 URL。plan 订阅: https://token-plan-cn.xiaomimimo.com/anthropic，标准: https://api.xiaomimimo.com/anthropic",
+    "defaultValue": "https://token-plan-cn.xiaomimimo.com/anthropic"
+  },
+  {
+    "name": "mimo.default-model",
+    "type": "java.lang.String",
+    "description": "当 Copilot 请求中未指定模型时的回退模型名。",
+    "defaultValue": "mimo-v2.5-pro"
+  },
+  {
+    "name": "logging.level.com.kaixuan.copilot_ollama_proxy",
+    "type": "java.lang.String",
+    "description": "日志级别配置。",
+    "defaultValue": "DEBUG"
+  }
+]}
