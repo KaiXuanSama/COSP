@@ -64,7 +64,7 @@ public class OpenAiChatService implements UpstreamChatService {
         AtomicBoolean reasoningEmitted = new AtomicBoolean(false);
         return webClient.post().uri("/chat/completions").contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody).retrieve().bodyToFlux(STRING_SSE_TYPE)
-                .map(ServerSentEvent::data).filter(Objects::nonNull).filter(chunk -> !chunk.isBlank())
+                .mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank())
                 .doOnNext(raw -> log.debug("OpenAI 原始: {}", raw)).map(chunk -> translateChunk(chunk, reasoningEmitted))
                 .doOnNext(chunk -> log.debug("OpenAI 翻译: {}", chunk));
     }
