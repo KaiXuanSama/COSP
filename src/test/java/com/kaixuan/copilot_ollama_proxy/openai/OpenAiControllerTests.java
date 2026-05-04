@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.openai;
 
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 
 import java.time.Duration;
@@ -14,7 +15,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
-import com.kaixuan.copilot_ollama_proxy.proxy.MimoProxyService;
+import com.kaixuan.copilot_ollama_proxy.proxy.UpstreamChatService;
 
 import reactor.core.publisher.Mono;
 
@@ -25,7 +26,7 @@ class OpenAiControllerTests {
     private int port;
 
     @SuppressWarnings("removal") @MockBean
-    private MimoProxyService proxyService;
+    private UpstreamChatService upstreamChatService;
 
     private WebTestClient webTestClient;
 
@@ -37,19 +38,26 @@ class OpenAiControllerTests {
 
     @Test
     void returnsNonStreamingOpenAiChatCompletionsWithoutBlockingTheControllerPath() {
-        given(proxyService.sendAnthropicMessage(anyMap())).willReturn(Mono.just("""
+        given(upstreamChatService.chatCompletion(anyMap(), anyString())).willReturn(Mono.just("""
                 {
-                  "id": "msg_123",
-                  "content": [
+                  "id": "chatcmpl-msg_123",
+                  "object": "chat.completion",
+                  "created": 1735689600,
+                  "model": "mimo-v2.5-pro",
+                  "choices": [
                     {
-                      "type": "text",
-                      "text": "hello from mimo"
+                      "index": 0,
+                      "message": {
+                        "role": "assistant",
+                        "content": "hello from mimo"
+                      },
+                      "finish_reason": "stop"
                     }
                   ],
-                  "stop_reason": "end_turn",
                   "usage": {
-                    "input_tokens": 11,
-                    "output_tokens": 7
+                    "prompt_tokens": 11,
+                    "completion_tokens": 7,
+                    "total_tokens": 18
                   }
                 }
                 """));
