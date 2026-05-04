@@ -6,15 +6,21 @@
     "defaultValue": "0.6.4"
   },
   {
+    "name": "proxy.upstream-chat-service",
+    "type": "java.lang.String",
+    "description": "OpenAI 控制器使用的上游实现，支持 openai 和 anthropic，默认 openai。",
+    "defaultValue": "openai"
+  },
+  {
     "name": "mimo.api-key",
     "type": "java.lang.String",
-    "description": "MiMo API 认证密钥，设置在请求头 x-api-key 中。",
+    "description": "MiMo API 认证密钥，OpenAI 兼容接口使用 api-key，请求兼容层也会附带 x-api-key。",
     "defaultValue": ""
   },
   {
     "name": "mimo.base-url",
     "type": "java.lang.String",
-    "description": "MiMo Anthropic 兼容接口的基础 URL。plan 订阅: https://token-plan-cn.xiaomimimo.com/anthropic，标准: https://api.xiaomimimo.com/anthropic",
+    "description": "MiMo 上游基础 URL，可填写根地址、/v1 或 /anthropic，系统会按所选实现自动归一化。",
     "defaultValue": "https://token-plan-cn.xiaomimimo.com/anthropic"
   },
   {
