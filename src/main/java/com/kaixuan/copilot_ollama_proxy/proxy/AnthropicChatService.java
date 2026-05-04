@@ -37,7 +37,7 @@ public class AnthropicChatService implements UpstreamChatService {
     public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model) {
         Map<String, Object> anthropicBody = convertToAnthropicRequest(openAiRequest);
         log.info("OpenAI -> Anthropic 转换完成，模型: {}, 流式: false", model);
-        log.debug("Anthropic 请求体: {}", toLogJson(anthropicBody));
+        // log.debug("Anthropic 请求体: {}", toLogJson(anthropicBody));
 
         return proxyService.sendAnthropicMessage(anthropicBody)
                 .map(anthropicResp -> convertAnthropicToOpenAi(anthropicResp, model));
@@ -48,7 +48,7 @@ public class AnthropicChatService implements UpstreamChatService {
         Map<String, Object> anthropicBody = convertToAnthropicRequest(openAiRequest);
         anthropicBody.put("stream", true);
         log.info("OpenAI -> Anthropic 转换完成，模型: {}, 流式: true", model);
-        log.debug("Anthropic 请求体: {}", toLogJson(anthropicBody));
+        // log.debug("Anthropic 请求体: {}", toLogJson(anthropicBody));
 
         AtomicReference<String> messageId = new AtomicReference<>(
                 "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12));
@@ -500,11 +500,11 @@ public class AnthropicChatService implements UpstreamChatService {
         }
     }
 
-    private String toLogJson(Map<String, Object> map) {
-        try {
-            return objectMapper.writeValueAsString(map);
-        } catch (JsonProcessingException exception) {
-            return String.valueOf(map);
-        }
-    }
+    // private String toLogJson(Map<String, Object> map) {
+    //     try {
+    //         return objectMapper.writeValueAsString(map);
+    //     } catch (JsonProcessingException exception) {
+    //         return String.valueOf(map);
+    //     }
+    // }
 }
