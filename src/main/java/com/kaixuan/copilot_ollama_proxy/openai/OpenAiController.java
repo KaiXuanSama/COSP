@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.openai;
+﻿package com.kaixuan.copilot_ollama_proxy.openai;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -52,6 +52,7 @@ public class OpenAiController {
     public Object chatCompletions(@RequestBody OpenAiChatRequest request) {
         Map<String, Object> anthropicBody = convertToAnthropicRequest(request);
         log.info("OpenAI -> Anthropic 转换完成，模型: {}, 流式: {}", request.getModel(), request.isStream());
+        log.debug("Anthropic 请求体: {}", toLogJson(anthropicBody));
 
         if (request.isStream()) {
             SseEmitter emitter = streamChat(anthropicBody, request.getModel());
@@ -629,6 +630,23 @@ public class OpenAiController {
         }
     }
 
+    /**
+     * 将 map 序列化为 JSON 字符串，仅用于日志输出。
+     * 反序列化过程中发生异常时返回原始 toString()，不中断主流程。
+     */
+    private String toLogJson(Map<String, Object> map) {
+        try {
+            return objectMapper.writeValueAsString(map);
+        } catch (JsonProcessingException exception) {
+            return String.valueOf(map);
+        }
+    }
+
+    /**
+     * 判断异常是否由客户端断开连接引起。
+     * @param throwable 异常对象
+     * @return
+     */
     private boolean isClientDisconnect(Throwable throwable) {
         Throwable current = throwable;
         while (current != null) {
