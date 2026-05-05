@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.proxy;
 
-// import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -65,7 +65,7 @@ public class OpenAiChatService implements UpstreamChatService {
     public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model);
         log.info("OpenAI 上游直连，模型: {}, 流式: true", requestBody.get("model"));
-        // log.debug("OpenAI 请求体: {}", toLogJson(requestBody));
+        log.debug("OpenAI 请求体: {}", toLogJson(requestBody));
 
         AtomicBoolean reasoningEmitted = new AtomicBoolean(false);
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
@@ -92,10 +92,56 @@ public class OpenAiChatService implements UpstreamChatService {
 
     private Map<String, Object> prepareRequestBody(Map<String, Object> openAiRequest, boolean stream, String model) {
         Map<String, Object> body = new LinkedHashMap<>(openAiRequest);
-        body.put("model", resolveModel(body.get("model"), model));
+        String resolvedModel = resolveModel(body.get("model"), model);
+        body.put("model", resolvedModel);
         body.put("stream", stream);
         body.values().removeIf(Objects::isNull);
+
+        if (resolvedModel.contains("mimo")) {
+            convertImageFormatForMimo(body);
+        }
+
         return body;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void convertImageFormatForMimo(Map<String, Object> body) {
+        Object messagesObj = body.get("messages");
+        if (!(messagesObj instanceof List<?> messages)) {
+            return;
+        }
+        for (Object msgObj : messages) {
+            if (!(msgObj instanceof Map<?, ?> msg)) {
+                continue;
+            }
+            Object contentObj = msg.get("content");
+            if (!(contentObj instanceof List<?> contentList)) {
+                continue;
+            }
+            boolean hasImage = false;
+            for (Object itemObj : contentList) {
+                if (!(itemObj instanceof Map<?, ?> item)) {
+                    continue;
+                }
+                if (!"image_url".equals(item.get("type"))) {
+                    continue;
+                }
+                hasImage = true;
+                Object imageObj = item.get("image_url");
+                if (imageObj instanceof Map<?, ?> imageMap) {
+                    if (imageMap.containsKey("media_type")) {
+                        ((Map<String, Object>) imageMap).remove("media_type");
+                        ((Map<String, Object>) imageMap).put("type", "image_url");
+                        log.debug("MiMo 图片格式转换: media_type -> type=image_url");
+                    }
+                }
+            }
+            if (hasImage && "tool".equals(msg.get("role"))) {
+                ((Map<String, Object>) msg).put("role", "user");
+                ((Map<String, Object>) msg).remove("tool_call_id");
+                log.debug("MiMo 图片消息 role 转换: tool -> user");
+            }
+        }
     }
 
     private String resolveModel(Object requestModel, String fallbackModel) {
@@ -134,13 +180,13 @@ public class OpenAiChatService implements UpstreamChatService {
         return normalized;
     }
 
-    // private String toLogJson(Map<String, Object> map) {
-    //     try {
-    //         return objectMapper.writeValueAsString(map);
-    //     } catch (JsonProcessingException exception) {
-    //         return String.valueOf(map);
-    //     }
-    // }
+    private String toLogJson(Map<String, Object> map) {
+        try {
+            return objectMapper.writeValueAsString(map);
+        } catch (JsonProcessingException exception) {
+            return String.valueOf(map);
+        }
+    }
 
     /**
      * 将 MiMo 的 reasoning_content 字段翻译为 Copilot 可识别的 reasoning_opaque + reasoning_text。
