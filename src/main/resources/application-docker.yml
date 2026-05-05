@@ -10,6 +10,10 @@ server:
   # 环境变量：SERVER_PORT
   port: ${SERVER_PORT:11434}
 
+proxy:
+  # 环境变量：PROXY_UPSTREAM_CHAT_SERVICE，可选 openai / anthropic
+  upstream-chat-service: ${PROXY_UPSTREAM_CHAT_SERVICE:openai}
+
 # ===== Ollama 伪装配置 =====
 ollama:
   # 环境变量：OLLAMA_VERSION

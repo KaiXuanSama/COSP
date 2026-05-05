@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.proxy;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 
 import java.time.Duration;
@@ -29,7 +30,7 @@ class ResponseLoggingFilterTests {
     private int port;
 
     @SuppressWarnings("removal") @MockBean
-    private MimoProxyService proxyService;
+    private UpstreamChatService upstreamChatService;
 
     private WebTestClient webTestClient;
 
@@ -41,16 +42,22 @@ class ResponseLoggingFilterTests {
 
     @Test
     void logsTheResponseBodyForAsyncJsonEndpoints(CapturedOutput output) {
-        given(proxyService.sendAnthropicMessage(anyMap())).willReturn(Mono.just("""
+        given(upstreamChatService.chatCompletion(anyMap(), anyString())).willReturn(Mono.just("""
                 {
-                  "id": "msg_123",
-                  "content": [
+                  "id": "chatcmpl-msg_123",
+                  "object": "chat.completion",
+                  "created": 1735689600,
+                  "model": "mimo-v2.5-pro",
+                  "choices": [
                     {
-                      "type": "text",
-                      "text": "hello from mimo"
+                      "index": 0,
+                      "message": {
+                        "role": "assistant",
+                        "content": "hello from mimo"
+                      },
+                      "finish_reason": "stop"
                     }
-                  ],
-                  "stop_reason": "end_turn"
+                  ]
                 }
                 """));
 
