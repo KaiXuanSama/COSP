@@ -109,7 +109,7 @@ public class OpenAiChatService implements UpstreamChatService {
     }
 
     private Retry buildRetrySpec(String method) {
-        return Retry.fixedDelay(3, Duration.ofSeconds(3))
+        return Retry.fixedDelay(5, Duration.ofSeconds(5))
                 .filter(ex -> (ex instanceof WebClientResponseException
                         && (((WebClientResponseException) ex).getStatusCode().is5xxServerError()
                                 || ((WebClientResponseException) ex).getStatusCode().value() == 400))
