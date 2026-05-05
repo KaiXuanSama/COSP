@@ -12,6 +12,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -82,7 +83,7 @@ public class OpenAiChatService implements UpstreamChatService {
                         String fallbackContent = buildFallbackContentChunk(chunkId.get(), model,
                                 reasoningBuffer.toString());
                         String fallbackFinish = buildFallbackFinishChunk(chunkId.get(), model);
-                        return Flux.just(fallbackContent, fallbackFinish, "[DONE]");
+                        return Flux.just(fallbackContent, fallbackFinish);
                     }
                     return Flux.just(translateChunk(chunk, reasoningEmitted, contentEmitted, reasoningBuffer, chunkId,
                             finishReason));
@@ -109,9 +110,10 @@ public class OpenAiChatService implements UpstreamChatService {
 
     private Retry buildRetrySpec(String method) {
         return Retry.fixedDelay(3, Duration.ofSeconds(3))
-                .filter(ex -> ex instanceof WebClientResponseException
+                .filter(ex -> (ex instanceof WebClientResponseException
                         && (((WebClientResponseException) ex).getStatusCode().is5xxServerError()
                                 || ((WebClientResponseException) ex).getStatusCode().value() == 400))
+                        || ex instanceof WebClientRequestException)
                 .doBeforeRetry(signal -> log.warn("[{}] 上游 API 调用失败，重试第 {} 次: {}", method, signal.totalRetries() + 1,
                         signal.failure().getMessage()));
     }
