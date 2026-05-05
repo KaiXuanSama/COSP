@@ -14,6 +14,7 @@ import com.kaixuan.copilot_ollama_proxy.provider.mimo.anthropic.MimoAnthropicCli
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -33,7 +34,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 流式模式下，Mimo 后端通过 SSE（Server-Sent Events）逐步返回内容增量，
  * 本类通过 {@link #processStreamEvents} 逐个处理这些增量，实时转换为 Ollama 的 NDJSON 格式。
  */
-@Service
+@Service @ConditionalOnProperty(name = "proxy.provider", havingValue = "mimo", matchIfMissing = true)
 public class MimoOllamaService implements OllamaService {
 
     private static final Logger log = LoggerFactory.getLogger(MimoOllamaService.class);
@@ -228,7 +229,8 @@ public class MimoOllamaService implements OllamaService {
         // bodyToFlux 将 SSE 流反序列化为 AnthropicStreamEvent 对象流
         // .filter 过滤掉 type 为 null 的无效事件
         // .transform 将 Anthropic 事件流转换为 Ollama NDJSON chunk 流
-        return anthropicClient.streamMessages(anthropicReq).transform(flux -> processStreamEvents(flux, request.getModel()));
+        return anthropicClient.streamMessages(anthropicReq)
+                .transform(flux -> processStreamEvents(flux, request.getModel()));
     }
 
     /**

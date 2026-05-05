@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * OpenAI 上游实现 —— 将 OpenAI Chat Completions 请求直接转发到 MiMo 的 OpenAI 兼容端点。
  */
-@Service @ConditionalOnProperty(name = "proxy.upstream-chat-service", havingValue = "openai", matchIfMissing = true)
+@Service @ConditionalOnProperty(name = "proxy.provider", havingValue = "mimo", matchIfMissing = true) @ConditionalOnProperty(name = "proxy.upstream-chat-service", havingValue = "openai", matchIfMissing = true)
 public class MimoOpenAiChatService implements UpstreamChatService {
 
     private static final Logger log = LoggerFactory.getLogger(MimoOpenAiChatService.class);

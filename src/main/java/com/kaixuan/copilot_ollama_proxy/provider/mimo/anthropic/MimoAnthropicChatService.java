@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * Anthropic API 实现 —— 将 OpenAI 格式请求转换为 Anthropic Messages API 调用，
  * 再将 Anthropic 响应转换回 OpenAI 格式。
  */
-@Service @ConditionalOnProperty(name = "proxy.upstream-chat-service", havingValue = "anthropic")
+@Service @ConditionalOnProperty(name = "proxy.provider", havingValue = "mimo", matchIfMissing = true) @ConditionalOnProperty(name = "proxy.upstream-chat-service", havingValue = "anthropic")
 public class MimoAnthropicChatService implements UpstreamChatService {
 
     private static final Logger log = LoggerFactory.getLogger(MimoAnthropicChatService.class);
