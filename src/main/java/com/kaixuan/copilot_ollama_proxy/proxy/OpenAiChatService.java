@@ -12,9 +12,12 @@ import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.util.retry.Retry;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,7 +56,8 @@ public class OpenAiChatService implements UpstreamChatService {
         // log.debug("OpenAI 请求体: {}", toLogJson(requestBody));
 
         return webClient.post().uri("/chat/completions").contentType(MediaType.APPLICATION_JSON).bodyValue(requestBody)
-                .retrieve().bodyToMono(String.class).doOnNext(response -> log.debug("OpenAI 响应: {}", response));
+                .retrieve().bodyToMono(String.class).retryWhen(buildRetrySpec("chatCompletion"))
+                .doOnNext(response -> log.debug("OpenAI 响应: {}", response));
     }
 
     @Override
@@ -70,8 +74,8 @@ public class OpenAiChatService implements UpstreamChatService {
 
         return webClient.post().uri("/chat/completions").contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody).retrieve().bodyToFlux(STRING_SSE_TYPE)
-                .mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank())
-                .doOnNext(raw -> log.debug("OpenAI 原始: {}", raw)).concatMap(chunk -> {
+                .retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data)
+                .filter(chunk -> !chunk.isBlank()).doOnNext(raw -> log.debug("OpenAI 原始: {}", raw)).concatMap(chunk -> {
                     if (!"[DONE]".equals(chunk) && chunk.contains("\"finish_reason\":\"stop\"") && !contentEmitted.get()
                             && !reasoningBuffer.isEmpty()) {
                         log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
@@ -101,6 +105,15 @@ public class OpenAiChatService implements UpstreamChatService {
             return fallbackModel;
         }
         return defaultModel;
+    }
+
+    private Retry buildRetrySpec(String method) {
+        return Retry.fixedDelay(3, Duration.ofSeconds(3))
+                .filter(ex -> ex instanceof WebClientResponseException
+                        && (((WebClientResponseException) ex).getStatusCode().is5xxServerError()
+                                || ((WebClientResponseException) ex).getStatusCode().value() == 400))
+                .doBeforeRetry(signal -> log.warn("[{}] 上游 API 调用失败，重试第 {} 次: {}", method, signal.totalRetries() + 1,
+                        signal.failure().getMessage()));
     }
 
     private String normalizeOpenAiBaseUrl(String rawBaseUrl) {
