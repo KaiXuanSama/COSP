@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * OpenAI 上游实现 —— 将 OpenAI Chat Completions 请求直接转发到 MiMo 的 OpenAI 兼容端点。
@@ -62,11 +63,26 @@ public class OpenAiChatService implements UpstreamChatService {
         // log.debug("OpenAI 请求体: {}", toLogJson(requestBody));
 
         AtomicBoolean reasoningEmitted = new AtomicBoolean(false);
+        AtomicBoolean contentEmitted = new AtomicBoolean(false);
+        StringBuilder reasoningBuffer = new StringBuilder();
+        AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
+        AtomicReference<String> finishReason = new AtomicReference<>(null);
+
         return webClient.post().uri("/chat/completions").contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody).retrieve().bodyToFlux(STRING_SSE_TYPE)
                 .mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank())
-                .doOnNext(raw -> log.debug("OpenAI 原始: {}", raw)).map(chunk -> translateChunk(chunk, reasoningEmitted))
-                .doOnNext(chunk -> log.debug("OpenAI 翻译: {}", chunk));
+                .doOnNext(raw -> log.debug("OpenAI 原始: {}", raw)).concatMap(chunk -> {
+                    if (!"[DONE]".equals(chunk) && chunk.contains("\"finish_reason\":\"stop\"") && !contentEmitted.get()
+                            && !reasoningBuffer.isEmpty()) {
+                        log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
+                        String fallbackContent = buildFallbackContentChunk(chunkId.get(), model,
+                                reasoningBuffer.toString());
+                        String fallbackFinish = buildFallbackFinishChunk(chunkId.get(), model);
+                        return Flux.just(fallbackContent, fallbackFinish, "[DONE]");
+                    }
+                    return Flux.just(translateChunk(chunk, reasoningEmitted, contentEmitted, reasoningBuffer, chunkId,
+                            finishReason));
+                }).doOnNext(chunk -> log.debug("OpenAI 翻译: {}", chunk));
     }
 
     private Map<String, Object> prepareRequestBody(Map<String, Object> openAiRequest, boolean stream, String model) {
@@ -114,22 +130,49 @@ public class OpenAiChatService implements UpstreamChatService {
     /**
      * 将 MiMo 的 reasoning_content 字段翻译为 Copilot 可识别的 reasoning_opaque + reasoning_text。
      * 首个思考 chunk 输出 reasoning_opaque:"thinking" 标记，后续 chunk 只输出 reasoning_text。
+     * 同时追踪是否有正文输出，用于回退逻辑。
      */
     @SuppressWarnings("unchecked")
-    private String translateChunk(String chunkJson, AtomicBoolean reasoningEmitted) {
+    private String translateChunk(String chunkJson, AtomicBoolean reasoningEmitted, AtomicBoolean contentEmitted,
+            StringBuilder reasoningBuffer, AtomicReference<String> chunkId, AtomicReference<String> finishReason) {
         try {
             Map<String, Object> chunk = objectMapper.readValue(chunkJson, Map.class);
+
+            // 记录 chunk ID
+            Object id = chunk.get("id");
+            if (id instanceof String idStr && !idStr.isEmpty()) {
+                chunkId.set(idStr);
+            }
+
             List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
             if (choices == null || choices.isEmpty()) {
                 return chunkJson;
             }
             Map<String, Object> delta = (Map<String, Object>) choices.get(0).get("delta");
             if (delta == null) {
+                // 检查 finish_reason
+                Object fr = choices.get(0).get("finish_reason");
+                if (fr instanceof String reason) {
+                    finishReason.set(reason);
+                }
                 return chunkJson;
+            }
+
+            // 追踪正文输出
+            Object contentObj = delta.get("content");
+            if (contentObj instanceof String content && !content.isEmpty()) {
+                contentEmitted.set(true);
+            }
+
+            // 追踪 finish_reason
+            Object fr = choices.get(0).get("finish_reason");
+            if (fr instanceof String reason) {
+                finishReason.set(reason);
             }
 
             Object reasoningObj = delta.get("reasoning_content");
             if (reasoningObj instanceof String reasoning && !reasoning.isEmpty()) {
+                reasoningBuffer.append(reasoning);
                 delta.remove("reasoning_content");
                 delta.put("content", null);
                 if (!reasoningEmitted.getAndSet(true)) {
@@ -141,6 +184,57 @@ public class OpenAiChatService implements UpstreamChatService {
             return chunkJson;
         } catch (Exception e) {
             return chunkJson;
+        }
+    }
+
+    /**
+     * 构建回退内容 chunk：当模型未输出正文但有思考内容时，将思考内容作为正文输出。
+     */
+    private String buildFallbackContentChunk(String id, String model, String reasoningContent) {
+        try {
+            Map<String, Object> chunk = new LinkedHashMap<>();
+            chunk.put("id", id);
+            chunk.put("object", "chat.completion.chunk");
+            chunk.put("created", System.currentTimeMillis() / 1000);
+            chunk.put("model", model);
+
+            Map<String, Object> delta = new LinkedHashMap<>();
+            delta.put("role", "assistant");
+            delta.put("content", reasoningContent);
+
+            Map<String, Object> choice = new LinkedHashMap<>();
+            choice.put("index", 0);
+            choice.put("delta", delta);
+            choice.put("finish_reason", null);
+
+            chunk.put("choices", List.of(choice));
+            return objectMapper.writeValueAsString(chunk);
+        } catch (Exception e) {
+            return "{}";
+        }
+    }
+
+    private String buildFallbackFinishChunk(String id, String model) {
+        try {
+            Map<String, Object> chunk = new LinkedHashMap<>();
+            chunk.put("id", id);
+            chunk.put("object", "chat.completion.chunk");
+            chunk.put("created", System.currentTimeMillis() / 1000);
+            chunk.put("model", model);
+
+            Map<String, Object> delta = new LinkedHashMap<>();
+            delta.put("role", null);
+            delta.put("content", null);
+
+            Map<String, Object> choice = new LinkedHashMap<>();
+            choice.put("index", 0);
+            choice.put("delta", delta);
+            choice.put("finish_reason", "stop");
+
+            chunk.put("choices", List.of(choice));
+            return objectMapper.writeValueAsString(chunk);
+        } catch (Exception e) {
+            return "{}";
         }
     }
 }
