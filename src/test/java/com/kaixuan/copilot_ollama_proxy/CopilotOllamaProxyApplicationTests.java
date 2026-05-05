@@ -6,8 +6,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
-import com.kaixuan.copilot_ollama_proxy.proxy.OpenAiChatService;
-import com.kaixuan.copilot_ollama_proxy.proxy.UpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.provider.mimo.openai.MimoOpenAiChatService;
 
 @SpringBootTest
 class CopilotOllamaProxyApplicationTests {
@@ -21,7 +21,7 @@ class CopilotOllamaProxyApplicationTests {
 
 	@Test
 	void usesOpenAiUpstreamImplementationByDefault() {
-		assertThat(upstreamChatService).isInstanceOf(OpenAiChatService.class);
+		assertThat(upstreamChatService).isInstanceOf(MimoOpenAiChatService.class);
 	}
 
 }
