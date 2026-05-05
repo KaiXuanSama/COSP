@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.proxy;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
+// import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -65,7 +65,7 @@ public class OpenAiChatService implements UpstreamChatService {
     public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model);
         log.info("OpenAI 上游直连，模型: {}, 流式: true", requestBody.get("model"));
-        log.debug("OpenAI 请求体: {}", toLogJson(requestBody));
+        // log.debug("OpenAI 请求体: {}", toLogJson(requestBody));
 
         AtomicBoolean reasoningEmitted = new AtomicBoolean(false);
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
@@ -180,13 +180,13 @@ public class OpenAiChatService implements UpstreamChatService {
         return normalized;
     }
 
-    private String toLogJson(Map<String, Object> map) {
-        try {
-            return objectMapper.writeValueAsString(map);
-        } catch (JsonProcessingException exception) {
-            return String.valueOf(map);
-        }
-    }
+    // private String toLogJson(Map<String, Object> map) {
+    //     try {
+    //         return objectMapper.writeValueAsString(map);
+    //     } catch (JsonProcessingException exception) {
+    //         return String.valueOf(map);
+    //     }
+    // }
 
     /**
      * 将 MiMo 的 reasoning_content 字段翻译为 Copilot 可识别的 reasoning_opaque + reasoning_text。
