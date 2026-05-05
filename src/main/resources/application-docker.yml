@@ -11,7 +11,9 @@ server:
   port: ${SERVER_PORT:11434}
 
 proxy:
-  # 环境变量：PROXY_UPSTREAM_CHAT_SERVICE，可选 openai / anthropic
+  # 环境变量：PROXY_PROVIDER，可选 mimo / longcat
+  provider: ${PROXY_PROVIDER:mimo}
+  # 环境变量：PROXY_UPSTREAM_CHAT_SERVICE，可选 openai / anthropic（仅 mimo 生效）
   upstream-chat-service: ${PROXY_UPSTREAM_CHAT_SERVICE:openai}
 
 # ===== Ollama 伪装配置 =====
@@ -30,3 +32,12 @@ mimo:
   base-url: ${MIMO_BASE_URL:https://token-plan-cn.xiaomimimo.com/anthropic}
   # 环境变量：MIMO_DEFAULT_MODEL
   default-model: ${MIMO_DEFAULT_MODEL:mimo-v2.5-pro}
+
+# ===== LongCat 上游 API 配置 =====
+longcat:
+  # 环境变量：LONGCAT_API_KEY
+  api-key: ${LONGCAT_API_KEY:}
+  # 环境变量：LONGCAT_BASE_URL
+  base-url: ${LONGCAT_BASE_URL:https://api.longcat.chat}
+  # 环境变量：LONGCAT_DEFAULT_MODEL
+  default-model: ${LONGCAT_DEFAULT_MODEL:LongCat-Flash-Chat}
