@@ -37,7 +37,7 @@ public class AdminPortFilter extends OncePerRequestFilter {
         // 如果请求来自管理端口，但路径不是管理路径，直接返回 404
         if (localPort == adminPort) {
             String path = request.getRequestURI();
-            if (!ADMIN_PATHS.contains(path)) {
+            if (!ADMIN_PATHS.contains(path) && !path.startsWith("/admin/css/")) {
                 response.sendError(HttpServletResponse.SC_NOT_FOUND);
                 return;
             }
