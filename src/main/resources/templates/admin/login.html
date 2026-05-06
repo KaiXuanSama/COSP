@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            background:
+                radial-gradient(circle at top left, rgba(245, 158, 11, 0.18), transparent 35%),
+                radial-gradient(circle at bottom right, rgba(14, 165, 233, 0.18), transparent 35%),
+                #0b1220;
+            color: #e2e8f0;
+            font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        }
+
+        .panel {
+            width: min(420px, calc(100vw - 32px));
+            padding: 32px;
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: 20px;
+            background: rgba(15, 23, 42, 0.88);
+            box-shadow: 0 24px 80px rgba(2, 6, 23, 0.45);
+            backdrop-filter: blur(14px);
+        }
+
+        h1 {
+            margin: 0 0 8px;
+            font-size: 28px;
+        }
+
+        p {
+            margin: 0 0 24px;
+            color: #94a3b8;
+            line-height: 1.6;
+        }
+
+        label {
+            display: block;
+            margin: 0 0 8px;
+            font-size: 14px;
+            color: #cbd5e1;
+        }
+
+        input {
+            width: 100%;
+            margin: 0 0 18px;
+            padding: 12px 14px;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            background: #020617;
+            color: #e2e8f0;
+            font-size: 15px;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #38bdf8;
+            box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.15);
+        }
+
+        button {
+            width: 100%;
+            padding: 12px 16px;
+            border: 0;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #0ea5e9, #22c55e);
+            color: white;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .hint {
+            margin-top: 18px;
+            font-size: 13px;
+            color: #64748b;
+        }
+
+        .message {
+            margin-bottom: 18px;
+            padding: 12px 14px;
+            border-radius: 12px;
+            font-size: 14px;
+        }
+
+        .message.error {
+            border: 1px solid rgba(248, 113, 113, 0.35);
+            background: rgba(127, 29, 29, 0.25);
+            color: #fecaca;
+        }
+
+        .message.info {
+            border: 1px solid rgba(56, 189, 248, 0.35);
+            background: rgba(12, 74, 110, 0.25);
+            color: #bae6fd;
+        }
+
+        .message.success {
+            border: 1px solid rgba(74, 222, 128, 0.35);
+            background: rgba(20, 83, 45, 0.28);
+            color: #bbf7d0;
+        }
+    </style>
+</head>
+
+<body>
+    <main class="panel">
+        <h1>管理页登录</h1>
+        <p>当前只开放最小登录能力。登录成功后会跳转到配置页。</p>
+
+        <div class="message info" th:if="${param.unauthorized}">无权限，请先登录。</div>
+        <div class="message error" th:if="${param.error}">用户名或密码错误，请重新输入。</div>
+        <div class="message success" th:if="${param.logout}">已退出登录。</div>
+
+        <form th:action="@{/login}" method="post">
+            <label for="username">用户名</label>
+            <input id="username" name="username" type="text" autocomplete="username" required autofocus>
+
+            <label for="password">密码</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required>
+
+            <button type="submit">登录</button>
+        </form>
+
+        <div class="hint">未登录时直接访问 /config 会被重定向回当前页面。</div>
+    </main>
+</body>
+
+</html>

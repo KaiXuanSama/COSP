@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>配置页</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: linear-gradient(180deg, #f8fafc, #e2e8f0);
+            color: #0f172a;
+            font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        }
+
+        .shell {
+            max-width: 880px;
+            margin: 48px auto;
+            padding: 0 20px;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.82);
+            border: 1px solid rgba(148, 163, 184, 0.32);
+            border-radius: 24px;
+            padding: 28px;
+            box-shadow: 0 24px 60px rgba(15, 23, 42, 0.08);
+            backdrop-filter: blur(10px);
+        }
+
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 28px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 30px;
+        }
+
+        p {
+            margin: 0;
+            line-height: 1.7;
+            color: #475569;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            background: #dbeafe;
+            color: #1d4ed8;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .logout {
+            padding: 10px 16px;
+            border: 0;
+            border-radius: 12px;
+            background: #0f172a;
+            color: white;
+            cursor: pointer;
+            font-weight: 700;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            margin-top: 24px;
+        }
+
+        .item {
+            padding: 18px;
+            border-radius: 18px;
+            background: #f8fafc;
+            border: 1px solid #cbd5e1;
+        }
+
+        .item strong {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 14px;
+            color: #0f172a;
+        }
+
+        .item span {
+            color: #334155;
+            font-size: 14px;
+        }
+    </style>
+</head>
+
+<body>
+    <main class="shell">
+        <section class="card">
+            <div class="topbar">
+                <div>
+                    <h1>配置页</h1>
+                    <p>当前先只实现登录和退出登录能力，后续配置项可以直接扩展到这里。</p>
+                </div>
+                <form th:action="@{/logout}" method="post">
+                    <button class="logout" type="submit">退出登录</button>
+                </form>
+            </div>
+
+            <div class="badge">已登录用户：<span th:text="${username}">root</span></div>
+
+            <div class="grid">
+                <div class="item">
+                    <strong>页面状态</strong>
+                    <span>已受 Spring Security 保护，未登录访问会被重定向回登录页。</span>
+                </div>
+                <div class="item">
+                    <strong>账号来源</strong>
+                    <span>默认管理员账户保存在 SQLite 中，首次启动自动初始化。</span>
+                </div>
+                <div class="item">
+                    <strong>数据库文件</strong>
+                    <span>admin.db</span>
+                </div>
+            </div>
+        </section>
+    </main>
+</body>
+
+</html>
