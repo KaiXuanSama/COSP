@@ -73,8 +73,12 @@
                             <div class="model-list" id="longcat-models">
                                 <div class="model-list-header">
                                     <span class="model-list-title">模型列表</span>
-                                    <button type="button" class="btn-add-model" onclick="addModel('longcat')">+
-                                        添加模型</button>
+                                    <div class="model-list-actions">
+                                        <a href="https://longcat.chat/platform/docs/zh/#%E9%99%90%E6%B5%81%E8%A7%84%E5%88%99"
+                                            target="_blank" rel="noopener" class="model-doc-link">官方文档</a>
+                                        <button type="button" class="btn-add-model" onclick="addModel('longcat')">+
+                                            添加模型</button>
+                                    </div>
                                 </div>
                                 <div class="model-list-items"></div>
                             </div>
@@ -131,8 +135,12 @@
                             <div class="model-list" id="mimo-models">
                                 <div class="model-list-header">
                                     <span class="model-list-title">模型列表</span>
-                                    <button type="button" class="btn-add-model" onclick="addModel('mimo')">+
-                                        添加模型</button>
+                                    <div class="model-list-actions">
+                                        <a href="https://platform.xiaomimimo.com/docs/zh-CN/pricing" target="_blank"
+                                            rel="noopener" class="model-doc-link">官方文档</a>
+                                        <button type="button" class="btn-add-model" onclick="addModel('mimo')">+
+                                            添加模型</button>
+                                    </div>
                                 </div>
                                 <div class="model-list-items"></div>
                             </div>
@@ -282,6 +290,22 @@
             color: var(--text-muted);
         }
 
+        .model-list-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .model-doc-link {
+            font-size: 12px;
+            color: #2563eb;
+            text-decoration: none;
+        }
+
+        .model-doc-link:hover {
+            text-decoration: underline;
+        }
+
         .btn-add-model {
             font-size: 12px;
             padding: 4px 12px;
@@ -371,11 +395,13 @@
         select option:disabled {
             color: #aaa;
         }
+
         .switch-wrap {
             position: relative;
             display: inline-flex;
             align-items: center;
         }
+
         .switch-tooltip {
             display: none;
             margin-left: 10px;
@@ -383,6 +409,7 @@
             color: #e53;
             white-space: nowrap;
         }
+
         .switch-tooltip:not(:empty) {
             display: inline;
         }
@@ -425,10 +452,10 @@
             }
         }
 
-        ['longcat', 'mimo'].forEach(function(provider) {
+        ['longcat', 'mimo'].forEach(function (provider) {
             var keyInput = document.getElementById(provider + 'ApiKey');
-            keyInput.addEventListener('input', function() { checkToggle(provider); });
-            keyInput.addEventListener('change', function() { checkToggle(provider); });
+            keyInput.addEventListener('input', function () { checkToggle(provider); });
+            keyInput.addEventListener('change', function () { checkToggle(provider); });
             checkToggle(provider);
         });
     </script>
