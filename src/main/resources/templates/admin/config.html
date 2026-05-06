@@ -1,224 +1,37 @@
 ﻿<!DOCTYPE html>
 <html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>配置页 · Ollama-Switch</title>
-
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link
-        href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;600&family=Crimson+Pro:wght@300;400;500&family=DM+Mono:wght@300;400;500&display=swap"
-        rel="stylesheet">
-    <link rel="stylesheet" th:href="@{/admin/css/admin-common.css}" href="/admin/css/admin-common.css">
-    <link rel="stylesheet" th:href="@{/admin/css/admin-config.css}" href="/admin/css/admin-config.css">
-</head>
+<head th:replace="~{admin/fragments :: head(title=${pageTitleFull})}"></head>
 
 <body>
+    <!-- 遮罩层 -->
+    <th:block th:replace="~{admin/fragments :: sidebar-overlay}"></th:block>
 
-    <!-- ── 遮罩层 ── -->
-    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+    <!-- 侧边栏 -->
+    <th:block th:replace="~{admin/sidebar :: sidebar}"></th:block>
 
-    <!-- ── 侧边栏 ── -->
-    <aside class="sidebar" id="sidebar">
-        <div class="sidebar-brand">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                stroke-linejoin="round">
-                <path d="M12 2L2 7l10 5 10-5-10-5z" />
-                <path d="M2 17l10 5 10-5" />
-                <path d="M2 12l10 5 10-5" />
-            </svg>
-            Ollama-Switch
-        </div>
-
-        <nav class="sidebar-nav">
-            <div class="nav-section-label">管理</div>
-            <a class="nav-item active" href="/config">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                    stroke-linejoin="round">
-                    <path d="M12 20V10" />
-                    <path d="M18 20V4" />
-                    <path d="M6 20v-4" />
-                </svg>
-                概览
-            </a>
-            <a class="nav-item" href="#">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                    stroke-linejoin="round">
-                    <circle cx="12" cy="12" r="3" />
-                    <path
-                        d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-                </svg>
-                配置
-            </a>
-            <a class="nav-item" href="#">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                    stroke-linejoin="round">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                    <polyline points="14 2 14 8 20 8" />
-                    <line x1="16" y1="13" x2="8" y2="13" />
-                    <line x1="16" y1="17" x2="8" y2="17" />
-                </svg>
-                日志
-            </a>
-
-            <div class="nav-section-label">系统</div>
-            <a class="nav-item" href="#">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                    stroke-linejoin="round">
-                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-                    <line x1="8" y1="21" x2="16" y2="21" />
-                    <line x1="12" y1="17" x2="12" y2="21" />
-                </svg>
-                状态
-            </a>
-        </nav>
-
-        <div class="sidebar-footer">
-            <div class="sidebar-user">
-                <div class="sidebar-avatar" th:text="${#strings.substring(username, 0, 1)}">R</div>
-                <div class="sidebar-user-info">
-                    <div class="sidebar-user-name" th:text="${username}">root</div>
-                    <div class="sidebar-user-role">管理员</div>
-                </div>
-            </div>
-        </div>
-    </aside>
-
-    <!-- ── 主内容 ── -->
+    <!-- 主内容区 -->
     <div class="main">
-        <header class="header">
-            <div class="header-left">
-                <button class="hamburger-btn" id="hamburgerBtn" aria-label="切换菜单">
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                </button>
-                <div class="header-title">概览</div>
-            </div>
-            <div class="header-actions">
-                <button class="header-btn" title="刷新">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                        stroke-linejoin="round">
-                        <polyline points="23 4 23 10 17 10" />
-                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-                    </svg>
-                </button>
-                <form th:action="@{/logout}" method="post">
-                    <button class="logout-btn" type="submit">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-                            stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-                            <polyline points="16 17 21 12 16 7" />
-                            <line x1="21" y1="12" x2="9" y2="12" />
-                        </svg>
-                        <span>退出登录</span>
-                    </button>
-                </form>
-            </div>
-        </header>
+        <!-- 页头 -->
+        <th:block th:replace="~{admin/header :: header(pageTitle=${pageTitle})}"></th:block>
 
-        <main class="content">
-            <!-- 统计卡片 -->
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-card-top accent"></div>
-                    <div class="stat-card-label">认证状态</div>
-                    <div class="stat-card-value" style="font-size: 20px; margin-top: 4px;">已登录</div>
-                    <div class="stat-card-desc">Spring Security 保护中</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-card-top success"></div>
-                    <div class="stat-card-label">账号来源</div>
-                    <div class="stat-card-value" style="font-size: 20px; margin-top: 4px;">SQLite</div>
-                    <div class="stat-card-desc">本地嵌入式数据库</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-card-top blue"></div>
-                    <div class="stat-card-label">数据库文件</div>
-                    <div class="stat-card-value" style="font-size: 20px; margin-top: 4px;">admin.db</div>
-                    <div class="stat-card-desc">首次启动自动初始化</div>
-                </div>
-            </div>
-
-            <!-- 信息卡片 -->
-            <div class="info-card">
-                <div class="info-card-title">系统信息</div>
-                <div class="info-list">
-                    <div class="info-row">
-                        <span class="info-row-label">当前用户</span>
-                        <span class="info-row-value" th:text="${username}">root</span>
-                    </div>
-                    <div class="info-row">
-                        <span class="info-row-label">页面状态</span>
-                        <span class="status-badge success">已受保护</span>
-                    </div>
-                    <div class="info-row">
-                        <span class="info-row-label">认证方式</span>
-                        <span class="info-row-value">JdbcUserDetailsManager + BCrypt</span>
-                    </div>
-                    <div class="info-row">
-                        <span class="info-row-label">会话管理</span>
-                        <span class="info-row-value">Spring Security 默认会话</span>
-                    </div>
-                </div>
-            </div>
-        </main>
+        <!-- 页面内容 — 由子页面注入 -->
+        <th:block th:if="${contentPage == 'admin/overview :: overview'}">
+            <th:block th:replace="~{admin/overview :: overview}"></th:block>
+        </th:block>
+        <th:block th:if="${contentPage == 'admin/settings :: settings'}">
+            <th:block th:replace="~{admin/settings :: settings}"></th:block>
+        </th:block>
+        <th:block th:if="${contentPage == 'admin/logs :: logs'}">
+            <th:block th:replace="~{admin/logs :: logs}"></th:block>
+        </th:block>
+        <th:block th:if="${contentPage == 'admin/status :: status'}">
+            <th:block th:replace="~{admin/status :: status}"></th:block>
+        </th:block>
     </div>
 
-    <script>
-        (function () {
-            var sidebar = document.getElementById('sidebar');
-            var overlay = document.getElementById('sidebarOverlay');
-            var hamburger = document.getElementById('hamburgerBtn');
-
-            function openSidebar() {
-                sidebar.classList.add('open');
-                overlay.classList.add('visible');
-                hamburger.classList.add('active');
-                document.body.style.overflow = 'hidden';
-            }
-
-            function closeSidebar() {
-                sidebar.classList.remove('open');
-                overlay.classList.remove('visible');
-                hamburger.classList.remove('active');
-                document.body.style.overflow = '';
-            }
-
-            function toggleSidebar() {
-                if (sidebar.classList.contains('open')) {
-                    closeSidebar();
-                } else {
-                    openSidebar();
-                }
-            }
-
-            hamburger.addEventListener('click', toggleSidebar);
-            overlay.addEventListener('click', closeSidebar);
-
-            sidebar.querySelectorAll('.nav-item').forEach(function (link) {
-                link.addEventListener('click', function () {
-                    if (window.innerWidth <= 1024) {
-                        closeSidebar();
-                    }
-                });
-            });
-
-            document.addEventListener('keydown', function (e) {
-                if (e.key === 'Escape' && sidebar.classList.contains('open')) {
-                    closeSidebar();
-                }
-            });
-
-            window.addEventListener('resize', function () {
-                if (window.innerWidth > 1024) {
-                    closeSidebar();
-                }
-            });
-        })();
-    </script>
-
+    <!-- 侧边栏 JS -->
+    <th:block th:replace="~{admin/fragments :: sidebar-js}"></th:block>
 </body>
 
 </html>

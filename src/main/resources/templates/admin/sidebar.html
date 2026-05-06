@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+
+<!-- ============================================================
+     侧边栏组件 — 管理后台左侧导航
+     使用方式：th:replace="~{admin/sidebar :: sidebar}"
+     ============================================================ -->
+
+<aside th:fragment="sidebar" class="sidebar" id="sidebar">
+    <!-- 品牌标识 -->
+    <div class="sidebar-brand">
+        <th:block th:replace="~{admin/fragments :: icon-logo}"></th:block>
+        Ollama-Switch
+    </div>
+
+    <!-- 导航菜单 -->
+    <nav class="sidebar-nav">
+        <!-- 管理分组 -->
+        <div class="nav-section-label">管理</div>
+        <a class="nav-item" th:classappend="${nav == 'overview' ? 'active' : ''}" href="/config">
+            <th:block th:replace="~{admin/fragments :: icon-overview}"></th:block>
+            概览
+        </a>
+        <a class="nav-item" th:classappend="${nav == 'settings' ? 'active' : ''}" href="/config/settings">
+            <th:block th:replace="~{admin/fragments :: icon-settings}"></th:block>
+            配置
+        </a>
+        <a class="nav-item" th:classappend="${nav == 'logs' ? 'active' : ''}" href="/config/logs">
+            <th:block th:replace="~{admin/fragments :: icon-logs}"></th:block>
+            日志
+        </a>
+
+        <!-- 系统分组 -->
+        <div class="nav-section-label">系统</div>
+        <a class="nav-item" th:classappend="${nav == 'status' ? 'active' : ''}" href="/config/status">
+            <th:block th:replace="~{admin/fragments :: icon-status}"></th:block>
+            状态
+        </a>
+    </nav>
+
+    <!-- 底部用户信息 -->
+    <div class="sidebar-footer">
+        <div class="sidebar-user">
+            <div class="sidebar-avatar" th:text="${#strings.substring(username, 0, 1)}">R</div>
+            <div class="sidebar-user-info">
+                <div class="sidebar-user-name" th:text="${username}">root</div>
+                <div class="sidebar-user-role">管理员</div>
+            </div>
+        </div>
+    </div>
+</aside>
+
+</html>

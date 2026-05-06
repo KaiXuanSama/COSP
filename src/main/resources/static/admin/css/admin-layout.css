@@ -1,3 +1,7 @@
+/* ============================================================
+   admin-layout.css — 布局样式（侧边栏、页头、主内容区、遮罩层）
+   ============================================================ */
+
 /* ── 侧边栏 ── */
 .sidebar {
     width: 240px;
@@ -314,158 +318,6 @@
     max-width: 960px;
 }
 
-/* ── 统计卡片 ── */
-.stats-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
-    margin-bottom: 24px;
-}
-
-.stat-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    padding: 24px;
-    position: relative;
-    overflow: hidden;
-    opacity: 0;
-    animation: fadeUp 0.5s ease forwards;
-    transition: transform 0.25s ease, box-shadow 0.25s ease;
-}
-
-.stat-card:nth-child(1) {
-    animation-delay: 0.15s;
-}
-
-.stat-card:nth-child(2) {
-    animation-delay: 0.23s;
-}
-
-.stat-card:nth-child(3) {
-    animation-delay: 0.31s;
-}
-
-.stat-card:hover {
-    transform: translateY(-2px);
-    box-shadow: var(--shadow-md);
-}
-
-.stat-card-top {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 3px;
-}
-
-.stat-card-top.accent {
-    background: var(--accent);
-}
-
-.stat-card-top.success {
-    background: var(--success);
-}
-
-.stat-card-top.blue {
-    background: var(--blue);
-}
-
-.stat-card-label {
-    font-family: 'DM Mono', monospace;
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--text-muted);
-    margin-bottom: 12px;
-}
-
-.stat-card-value {
-    font-family: 'DM Mono', monospace;
-    font-size: 28px;
-    font-weight: 500;
-    color: var(--text-primary);
-}
-
-.stat-card-desc {
-    font-size: 13px;
-    color: var(--text-muted);
-    margin-top: 6px;
-}
-
-/* ── 信息卡片 ── */
-.info-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    padding: 24px;
-    opacity: 0;
-    animation: fadeUp 0.5s ease forwards;
-    animation-delay: 0.39s;
-}
-
-.info-card-title {
-    font-family: 'Cormorant Garamond', serif;
-    font-size: 17px;
-    font-weight: 600;
-    color: var(--text-primary);
-    margin-bottom: 20px;
-}
-
-.info-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-}
-
-.info-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 14px 0;
-    border-bottom: 1px solid var(--border-light);
-}
-
-.info-row:last-child {
-    border-bottom: none;
-}
-
-.info-row-label {
-    font-family: 'DM Mono', monospace;
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--text-muted);
-}
-
-.info-row-value {
-    font-size: 14px;
-    color: var(--text-body);
-}
-
-.status-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-family: 'DM Mono', monospace;
-    font-size: 11px;
-    padding: 4px 10px;
-    border-radius: 6px;
-}
-
-.status-badge.success {
-    background: rgba(58, 138, 92, 0.08);
-    color: var(--success);
-}
-
-.status-badge::before {
-    content: '';
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: currentColor;
-}
-
 /* ── 动画 ── */
 @keyframes fadeDown {
     from {
@@ -529,10 +381,6 @@
 
 /* 手机：单列紧凑布局 */
 @media (max-width: 640px) {
-    .stats-grid {
-        grid-template-columns: 1fr;
-    }
-
     .header {
         padding: 12px 16px;
     }
@@ -543,21 +391,6 @@
 
     .content {
         padding: 16px;
-    }
-
-    .stat-card-value {
-        font-size: 22px;
-    }
-
-    .info-row {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 4px;
-    }
-
-    .info-card,
-    .stat-card {
-        padding: 18px;
     }
 
     .logout-btn span {
@@ -577,17 +410,5 @@
 
     .header {
         padding: 10px 12px;
-    }
-
-    .stat-card {
-        padding: 14px;
-    }
-
-    .stat-card-value {
-        font-size: 18px;
-    }
-
-    .info-card-title {
-        font-size: 15px;
     }
 }

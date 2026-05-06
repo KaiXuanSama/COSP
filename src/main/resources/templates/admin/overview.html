@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+
+<!-- ============================================================
+     概览页组件 — 管理后台首页统计信息
+     使用方式：th:replace="~{admin/overview :: overview}"
+     ============================================================ -->
+
+<main th:fragment="overview" class="content">
+    <!-- 统计卡片 -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-card-top accent"></div>
+            <div class="stat-card-label">认证状态</div>
+            <div class="stat-card-value stat-card-value--sm">已登录</div>
+            <div class="stat-card-desc">Spring Security 保护中</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-top success"></div>
+            <div class="stat-card-label">账号来源</div>
+            <div class="stat-card-value stat-card-value--sm">SQLite</div>
+            <div class="stat-card-desc">本地嵌入式数据库</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-top blue"></div>
+            <div class="stat-card-label">数据库文件</div>
+            <div class="stat-card-value stat-card-value--sm">admin.db</div>
+            <div class="stat-card-desc">首次启动自动初始化</div>
+        </div>
+    </div>
+
+    <!-- 信息卡片 -->
+    <div class="info-card">
+        <div class="info-card-title">系统信息</div>
+        <div class="info-list">
+            <div class="info-row">
+                <span class="info-row-label">当前用户</span>
+                <span class="info-row-value" th:text="${username}">root</span>
+            </div>
+            <div class="info-row">
+                <span class="info-row-label">页面状态</span>
+                <span class="status-badge success">已受保护</span>
+            </div>
+            <div class="info-row">
+                <span class="info-row-label">认证方式</span>
+                <span class="info-row-value">JdbcUserDetailsManager + BCrypt</span>
+            </div>
+            <div class="info-row">
+                <span class="info-row-label">会话管理</span>
+                <span class="info-row-value">Spring Security 默认会话</span>
+            </div>
+        </div>
+    </div>
+</main>
+
+</html>

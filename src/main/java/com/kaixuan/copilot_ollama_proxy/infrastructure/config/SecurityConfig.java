@@ -20,9 +20,10 @@ public class SecurityConfig {
 
     @Bean
     public SecurityFilterChain adminSecurityFilterChain(HttpSecurity http) throws Exception {
-        http.securityMatcher("/login", "/config", "/logout")
-                .authorizeHttpRequests(auth -> auth.requestMatchers("/login").permitAll().requestMatchers("/config")
-                        .authenticated().requestMatchers("/logout").permitAll().anyRequest().permitAll())
+        http.securityMatcher("/login", "/config/**", "/logout")
+                .authorizeHttpRequests(
+                        auth -> auth.requestMatchers("/login", "/admin/**").permitAll().requestMatchers("/config/**")
+                                .authenticated().requestMatchers("/logout").permitAll().anyRequest().permitAll())
                 .formLogin(form -> form.loginPage("/login").loginProcessingUrl("/login")
                         .defaultSuccessUrl("/config", true).failureUrl("/login?error=true"))
                 .logout(logout -> logout.logoutUrl("/logout").logoutSuccessUrl("/login?logout=true"))

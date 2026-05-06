@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+
+<!-- ============================================================
+     配置页组件 — 管理后台代理配置表单
+     使用方式：th:replace="~{admin/settings :: settings}"
+     ============================================================ -->
+
+<main th:fragment="settings" class="content">
+    <!-- 消息提示（保存成功/失败时显示） -->
+    <div class="message success" th:if="${saveSuccess}">
+        <th:block th:replace="~{admin/fragments :: icon-success}"></th:block>
+        <span>配置已保存。</span>
+    </div>
+    <div class="message error" th:if="${saveError}">
+        <th:block th:replace="~{admin/fragments :: icon-error}"></th:block>
+        <span th:text="${saveError}">保存失败，请检查输入。</span>
+    </div>
+
+    <!-- 代理配置表单 -->
+    <form class="settings-form" th:action="@{/config/settings}" method="post">
+        <!-- 服务器配置卡片 -->
+        <div class="card">
+            <div class="card-title">服务器配置</div>
+            <div class="card-body">
+                <div class="field-group">
+                    <label class="field-label" for="serverPort">监听端口</label>
+                    <div class="field-input-wrap">
+                        <input class="field-input" id="serverPort" name="serverPort" type="number" placeholder="11434"
+                            th:value="${config.serverPort}">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 上游代理配置卡片 -->
+        <div class="card">
+            <div class="card-title">上游代理配置</div>
+            <div class="card-body">
+                <div class="field-group">
+                    <label class="field-label" for="proxyProvider">上游提供商</label>
+                    <div class="field-input-wrap field-input-wrap--select">
+                        <select class="field-input field-input--select" id="proxyProvider" name="proxyProvider">
+                            <option value="longcat" th:selected="${config.proxyProvider == 'longcat'}">LongCat</option>
+                            <option value="mimo" th:selected="${config.proxyProvider == 'mimo'}">MiMo</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="field-group">
+                    <label class="field-label" for="upstreamChatService">上游协议</label>
+                    <div class="field-input-wrap field-input-wrap--select">
+                        <select class="field-input field-input--select" id="upstreamChatService"
+                            name="upstreamChatService">
+                            <option value="openai" th:selected="${config.upstreamChatService == 'openai'}">OpenAI
+                            </option>
+                            <option value="anthropic" th:selected="${config.upstreamChatService == 'anthropic'}">
+                                Anthropic（仅 MiMo）</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- LongCat 配置卡片 -->
+        <div class="card">
+            <div class="card-title">LongCat 配置</div>
+            <div class="card-body">
+                <div class="field-group">
+                    <label class="field-label" for="longcatApiKey">API Key</label>
+                    <div class="field-input-wrap">
+                        <input class="field-input" id="longcatApiKey" name="longcatApiKey" type="password"
+                            placeholder="请输入 LongCat API Key" th:value="${config.longcatApiKey}">
+                    </div>
+                </div>
+                <div class="field-group">
+                    <label class="field-label" for="longcatBaseUrl">Base URL</label>
+                    <div class="field-input-wrap">
+                        <input class="field-input" id="longcatBaseUrl" name="longcatBaseUrl" type="url"
+                            placeholder="https://api.longcat.chat" th:value="${config.longcatBaseUrl}">
+                    </div>
+                </div>
+                <div class="field-group">
+                    <label class="field-label" for="longcatDefaultModel">默认模型</label>
+                    <div class="field-input-wrap">
+                        <input class="field-input" id="longcatDefaultModel" name="longcatDefaultModel" type="text"
+                            placeholder="LongCat-Flash-Chat" th:value="${config.longcatDefaultModel}">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- MiMo 配置卡片 -->
+        <div class="card">
+            <div class="card-title">MiMo 配置</div>
+            <div class="card-body">
+                <div class="field-group">
+                    <label class="field-label" for="mimoApiKey">API Key</label>
+                    <div class="field-input-wrap">
+                        <input class="field-input" id="mimoApiKey" name="mimoApiKey" type="password"
+                            placeholder="请输入 MiMo API Key" th:value="${config.mimoApiKey}">
+                    </div>
+                </div>
+                <div class="field-group">
+                    <label class="field-label" for="mimoBaseUrl">Base URL</label>
+                    <div class="field-input-wrap">
+                        <input class="field-input" id="mimoBaseUrl" name="mimoBaseUrl" type="url"
+                            placeholder="https://token-plan-cn.xiaomimimo.com/anthropic"
+                            th:value="${config.mimoBaseUrl}">
+                    </div>
+                </div>
+                <div class="field-group">
+                    <label class="field-label" for="mimoDefaultModel">默认模型</label>
+                    <div class="field-input-wrap">
+                        <input class="field-input" id="mimoDefaultModel" name="mimoDefaultModel" type="text"
+                            placeholder="mimo-v2.5-pro" th:value="${config.mimoDefaultModel}">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Ollama 伪装配置卡片 -->
+        <div class="card">
+            <div class="card-title">Ollama 伪装配置</div>
+            <div class="card-body">
+                <div class="field-group">
+                    <label class="field-label" for="ollamaVersion">伪装版本号</label>
+                    <div class="field-input-wrap">
+                        <input class="field-input" id="ollamaVersion" name="ollamaVersion" type="text"
+                            placeholder="0.6.4" th:value="${config.ollamaVersion}">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 提交按钮 -->
+        <div class="form-actions">
+            <button class="submit-btn" type="submit">
+                <span>保存配置</span>
+            </button>
+        </div>
+    </form>
+</main>
+
+</html>

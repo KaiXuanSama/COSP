@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+
+<!-- ============================================================
+     状态页组件 — 管理后台系统状态监控
+     使用方式：th:replace="~{admin/status :: status}"
+     ============================================================ -->
+
+<main th:fragment="status" class="content">
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-card-top accent"></div>
+            <div class="stat-card-label">服务端口</div>
+            <div class="stat-card-value" th:text="${config.serverPort}">11434</div>
+            <div class="stat-card-desc">Ollama 代理端口</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-top success"></div>
+            <div class="stat-card-label">当前提供商</div>
+            <div class="stat-card-value stat-card-value--sm" th:text="${config.proxyProvider}">longcat</div>
+            <div class="stat-card-desc">上游 API 提供商</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-top blue"></div>
+            <div class="stat-card-label">上游协议</div>
+            <div class="stat-card-value stat-card-value--sm" th:text="${config.upstreamChatService}">openai</div>
+            <div class="stat-card-desc">请求转发协议</div>
+        </div>
+    </div>
+
+    <div class="info-card">
+        <div class="info-card-title">运行状态</div>
+        <div class="info-list">
+            <div class="info-row">
+                <span class="info-row-label">服务状态</span>
+                <span class="status-badge success">运行中</span>
+            </div>
+            <div class="info-row">
+                <span class="info-row-label">默认模型</span>
+                <span class="info-row-value" th:text="${config.defaultModel}">LongCat-Flash-Chat</span>
+            </div>
+            <div class="info-row">
+                <span class="info-row-label">上游 Base URL</span>
+                <span class="info-row-value" th:text="${config.activeBaseUrl}">https://api.longcat.chat</span>
+            </div>
+            <div class="info-row">
+                <span class="info-row-label">伪装版本</span>
+                <span class="info-row-value" th:text="${config.ollamaVersion}">0.6.4</span>
+            </div>
+        </div>
+    </div>
+</main>
+
+</html>
