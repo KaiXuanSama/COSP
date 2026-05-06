@@ -4,6 +4,7 @@ import com.kaixuan.copilot_ollama_proxy.protocol.anthropic.AnthropicRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.anthropic.AnthropicResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.anthropic.AnthropicStreamEvent;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -12,7 +13,7 @@ import reactor.core.publisher.Mono;
 
 import java.util.Map;
 
-@Service
+@Service @ConditionalOnProperty(name = "proxy.provider", havingValue = "mimo", matchIfMissing = true)
 public class MimoAnthropicClient {
 
     private final WebClient webClient;

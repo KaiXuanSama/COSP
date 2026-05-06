@@ -34,5 +34,35 @@
     "type": "java.lang.String",
     "description": "日志级别配置。",
     "defaultValue": "DEBUG"
+  },
+  {
+    "name": "server.port",
+    "type": "java.lang.Integer",
+    "description": "服务器监听端口。环境变量：SERVER_PORT",
+    "defaultValue": "11434"
+  },
+  {
+    "name": "proxy.provider",
+    "type": "java.lang.String",
+    "description": "上游提供商，可选 mimo / longcat，默认 longcat。环境变量：PROXY_PROVIDER",
+    "defaultValue": "longcat"
+  },
+  {
+    "name": "longcat.api-key",
+    "type": "java.lang.String",
+    "description": "LongCat API 认证密钥。环境变量：LONGCAT_API_KEY",
+    "defaultValue": ""
+  },
+  {
+    "name": "longcat.base-url",
+    "type": "java.lang.String",
+    "description": "LongCat 上游基础 URL。环境变量：LONGCAT_BASE_URL",
+    "defaultValue": "https://api.longcat.chat"
+  },
+  {
+    "name": "longcat.default-model",
+    "type": "java.lang.String",
+    "description": "LongCat 默认模型名称，当请求中未指定模型时使用。环境变量：LONGCAT_DEFAULT_MODEL",
+    "defaultValue": "LongCat-Flash-Chat"
   }
 ]}
