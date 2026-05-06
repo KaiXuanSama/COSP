@@ -1,7 +1,9 @@
 package com.kaixuan.copilot_ollama_proxy.api.openai;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiChatRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,6 +17,7 @@ import reactor.core.Disposable;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * OpenAI 兼容 API 控制器 —— 处理 Copilot 发出的 OpenAI 格式请求。
@@ -31,10 +34,13 @@ public class OpenAiController {
 
     private final UpstreamChatService upstreamChatService;
     private final ObjectMapper objectMapper;
+    private final ApiUsageCollector apiUsageCollector;
 
-    public OpenAiController(UpstreamChatService upstreamChatService, ObjectMapper objectMapper) {
+    public OpenAiController(UpstreamChatService upstreamChatService, ObjectMapper objectMapper,
+            ApiUsageCollector apiUsageCollector) {
         this.upstreamChatService = upstreamChatService;
         this.objectMapper = objectMapper;
+        this.apiUsageCollector = apiUsageCollector;
     }
 
     @PostMapping(value = "/v1/chat/completions")
@@ -45,16 +51,20 @@ public class OpenAiController {
             return streamResponse(requestBody, request.getModel());
         }
 
-        return upstreamChatService.chatCompletion(requestBody, request.getModel())
+        return upstreamChatService.chatCompletion(requestBody, request.getModel()).doOnNext(this::recordUsage)
                 .map(openAiJson -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(openAiJson));
     }
 
     private ResponseEntity<SseEmitter> streamResponse(Map<String, Object> requestBody, String model) {
         SseEmitter emitter = new SseEmitter(300_000L);
 
+        AtomicInteger streamInputTokens = new AtomicInteger(0);
+        AtomicInteger streamOutputTokens = new AtomicInteger(0);
+
         Disposable subscription = upstreamChatService.chatCompletionStream(requestBody, model).subscribe(chunk -> {
             try {
                 emitter.send(SseEmitter.event().data(chunk));
+                accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens);
             } catch (Exception exception) {
                 if (isClientDisconnect(exception)) {
                     return;
@@ -68,6 +78,7 @@ public class OpenAiController {
             log.error("上游 API 调用异常", error);
             emitter.completeWithError(error);
         }, () -> {
+            apiUsageCollector.record(streamInputTokens.get(), streamOutputTokens.get());
             try {
                 emitter.complete();
             } catch (Exception exception) {
@@ -122,6 +133,40 @@ public class OpenAiController {
             body.put("stream_options", objectMapper.convertValue(request.getStreamOptions(), Object.class));
         }
         return body;
+    }
+
+    /**
+     * 从非流式响应 JSON 中提取 usage 并记录。
+     */
+    private void recordUsage(String openAiJson) {
+        try {
+            JsonNode root = objectMapper.readTree(openAiJson);
+            JsonNode usage = root.path("usage");
+            if (usage.isObject()) {
+                int inputTokens = usage.path("prompt_tokens").asInt(0);
+                int outputTokens = usage.path("completion_tokens").asInt(0);
+                apiUsageCollector.record(inputTokens, outputTokens);
+            }
+        } catch (Exception e) {
+            log.warn("非流式响应 usage 提取失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 从流式 SSE chunk 中累加 token 数。
+     * 流式响应中 usage 可能出现在最后一个 content chunk 或单独的 usage chunk 中。
+     */
+    private void accumulateStreamUsage(String chunk, AtomicInteger inputTokens, AtomicInteger outputTokens) {
+        try {
+            JsonNode root = objectMapper.readTree(chunk);
+            JsonNode usage = root.path("usage");
+            if (usage.isObject()) {
+                inputTokens.set(usage.path("prompt_tokens").asInt(0));
+                outputTokens.set(usage.path("completion_tokens").asInt(0));
+            }
+        } catch (Exception e) {
+            // 流式 chunk 可能不是合法 JSON（如 [DONE]），忽略
+        }
     }
 
     private boolean isClientDisconnect(Throwable throwable) {

@@ -11,23 +11,59 @@
     <div class="stats-grid">
         <div class="stat-card">
             <div class="stat-card-top accent"></div>
-            <div class="stat-card-label">认证状态</div>
-            <div class="stat-card-value stat-card-value--sm">已登录</div>
-            <div class="stat-card-desc">Spring Security 保护中</div>
+            <div class="stat-card-label">API 调用总次数</div>
+            <div class="stat-card-value" th:text="${totalApiCalls}">0</div>
+            <div class="stat-card-desc">自服务启动以来累计</div>
         </div>
         <div class="stat-card">
             <div class="stat-card-top success"></div>
-            <div class="stat-card-label">账号来源</div>
-            <div class="stat-card-value stat-card-value--sm">SQLite</div>
-            <div class="stat-card-desc">本地嵌入式数据库</div>
+            <div class="stat-card-label">今日 API 调用次数</div>
+            <div class="stat-card-value" th:text="${todayApiCalls}">0</div>
+            <div class="stat-card-desc">当日 00:00 ~ 23:59</div>
         </div>
         <div class="stat-card">
             <div class="stat-card-top blue"></div>
-            <div class="stat-card-label">数据库文件</div>
-            <div class="stat-card-value stat-card-value--sm">admin.db</div>
-            <div class="stat-card-desc">首次启动自动初始化</div>
+            <div class="stat-card-label">今日 Token 消耗</div>
+            <div class="stat-card-value stat-card-value--sm">
+                <span
+                    th:text="${#numbers.formatDecimal(todayInputTokens >= 1000 ? todayInputTokens / 1000.0 : todayInputTokens, 1, todayInputTokens >= 1000 ? 1 : 0)}">0</span><span
+                    th:if="${todayInputTokens >= 1000}">k</span>
+                <span class="stat-card-token-sep">/</span>
+                <span
+                    th:text="${#numbers.formatDecimal(todayOutputTokens >= 1000 ? todayOutputTokens / 1000.0 : todayOutputTokens, 1, todayOutputTokens >= 1000 ? 1 : 0)}">0</span><span
+                    th:if="${todayOutputTokens >= 1000}">k</span>
+            </div>
+            <div class="stat-card-desc">输入 / 输出</div>
         </div>
     </div>
+
+    <!-- 短轮询脚本：每 5 秒刷新一次统计数据 -->
+    <script>
+        (function () {
+            var POLL_INTERVAL = 5000;
+            function formatTokens(val) {
+                if (val >= 1000) { return (val / 1000).toFixed(1) + 'k'; }
+                return val.toString();
+            }
+            function fetchStats() {
+                fetch('/config/api/stats')
+                    .then(function (r) { return r.json(); })
+                    .then(function (d) {
+                        // 总调用次数
+                        var el = document.querySelector('.stat-card:nth-child(1) .stat-card-value');
+                        if (el) el.textContent = d.totalApiCalls;
+                        // 今日调用次数
+                        el = document.querySelector('.stat-card:nth-child(2) .stat-card-value');
+                        if (el) el.textContent = d.todayApiCalls;
+                        // 今日 Token
+                        el = document.querySelector('.stat-card:nth-child(3) .stat-card-value');
+                        if (el) el.innerHTML = formatTokens(d.todayInputTokens) + '<span class="stat-card-token-sep">/</span>' + formatTokens(d.todayOutputTokens);
+                    })
+                    .catch(function () { });
+            }
+            setInterval(fetchStats, POLL_INTERVAL);
+        })();
+    </script>
 
     <!-- 信息卡片 -->
     <div class="info-card">

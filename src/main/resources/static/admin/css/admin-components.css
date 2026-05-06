@@ -81,6 +81,11 @@
     margin-top: 4px;
 }
 
+.stat-card-token-sep {
+    margin: 0 3px;
+    color: var(--text-muted);
+}
+
 .stat-card-desc {
     font-size: 13px;
     color: var(--text-muted);

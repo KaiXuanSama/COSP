@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.api;
 
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
@@ -13,6 +14,8 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+
+import org.springframework.http.ResponseEntity;
 
 /**
  * 管理后台页面控制器 — 负责渲染登录页和各管理子页面。
@@ -57,10 +60,13 @@ public class AdminPageController {
 
     private final JdbcUserDetailsManager userDetailsManager;
     private final PasswordEncoder passwordEncoder;
+    private final ApiUsageRepository apiUsageRepository;
 
-    public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder) {
+    public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder,
+            ApiUsageRepository apiUsageRepository) {
         this.userDetailsManager = userDetailsManager;
         this.passwordEncoder = passwordEncoder;
+        this.apiUsageRepository = apiUsageRepository;
     }
 
     // ==================== 登录页 ====================
@@ -83,7 +89,26 @@ public class AdminPageController {
         model.addAttribute("pageTitleFull", "概览 · Ollama-Switch");
         model.addAttribute("nav", "overview");
         model.addAttribute("config", buildConfigModel());
+        // API 调用统计
+        model.addAttribute("totalApiCalls", apiUsageRepository.countTotal());
+        model.addAttribute("todayApiCalls", apiUsageRepository.countToday());
+        int[] tokens = apiUsageRepository.sumTokensToday();
+        model.addAttribute("todayInputTokens", tokens[0]);
+        model.addAttribute("todayOutputTokens", tokens[1]);
         return "admin/pages/overview";
+    }
+
+    // ==================== API 统计接口（JSON） ====================
+
+    @GetMapping("/config/api/stats") @ResponseBody
+    public ResponseEntity<Map<String, Object>> apiStats() {
+        int[] tokens = apiUsageRepository.sumTokensToday();
+        Map<String, Object> stats = new LinkedHashMap<>();
+        stats.put("totalApiCalls", apiUsageRepository.countTotal());
+        stats.put("todayApiCalls", apiUsageRepository.countToday());
+        stats.put("todayInputTokens", tokens[0]);
+        stats.put("todayOutputTokens", tokens[1]);
+        return ResponseEntity.ok(stats);
     }
 
     // ==================== 配置页 ====================
@@ -145,13 +170,11 @@ public class AdminPageController {
     }
 
     @PostMapping("/config/account")
-    public String saveAccount(
-            Authentication authentication,
+    public String saveAccount(Authentication authentication,
             @RequestParam(value = "newUsername", required = false) String newUsername,
             @RequestParam(value = "currentPassword", required = false) String currentPassword,
             @RequestParam(value = "newPassword", required = false) String newPassword,
-            @RequestParam(value = "confirmPassword", required = false) String confirmPassword,
-            Model model) {
+            @RequestParam(value = "confirmPassword", required = false) String confirmPassword, Model model) {
 
         String currentUsername = authentication.getName();
 
@@ -167,8 +190,8 @@ public class AdminPageController {
         }
 
         // 确定最终用户名和密码
-        final String finalUsername = (newUsername != null && !newUsername.isBlank() && !newUsername.equals(currentUsername))
-                ? newUsername.trim() : currentUsername;
+        final String finalUsername = (newUsername != null && !newUsername.isBlank()
+                && !newUsername.equals(currentUsername)) ? newUsername.trim() : currentUsername;
         final String finalPassword;
         boolean passwordChanged = false;
 
@@ -201,10 +224,7 @@ public class AdminPageController {
         if (!finalUsername.equals(currentUsername) || passwordChanged) {
             userDetailsManager.deleteUser(currentUsername);
             String passwordToUse = passwordChanged ? finalPassword : currentUser.getPassword();
-            UserDetails newUser = User.withUsername(finalUsername)
-                    .password(passwordToUse)
-                    .roles("ADMIN")
-                    .build();
+            UserDetails newUser = User.withUsername(finalUsername).password(passwordToUse).roles("ADMIN").build();
             userDetailsManager.createUser(newUser);
             model.addAttribute("saveSuccess", "账号信息已修改，请使用新账号重新登录。");
         } else {
