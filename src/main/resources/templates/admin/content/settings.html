@@ -19,116 +19,81 @@
 
     <!-- 代理配置表单 -->
     <form class="settings-form" th:action="@{/config/settings}" method="post">
-        <!-- 服务器配置卡片 -->
-        <div class="card">
-            <div class="card-title">服务器配置</div>
-            <div class="card-body">
-                <div class="field-group">
-                    <label class="field-label" for="serverPort">监听端口</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="serverPort" name="serverPort" type="number" placeholder="11434"
-                            th:value="${config.serverPort}">
-                    </div>
-                </div>
-            </div>
-        </div>
 
-        <!-- 上游代理配置卡片 -->
+        <!-- 服务商配置 — 折叠面板 -->
         <div class="card">
-            <div class="card-title">上游代理配置</div>
-            <div class="card-body">
-                <div class="field-group">
-                    <label class="field-label" for="proxyProvider">上游提供商</label>
-                    <div class="field-input-wrap field-input-wrap--select">
-                        <select class="field-input field-input--select" id="proxyProvider" name="proxyProvider">
-                            <option value="longcat" th:selected="${config.proxyProvider == 'longcat'}">LongCat</option>
-                            <option value="mimo" th:selected="${config.proxyProvider == 'mimo'}">MiMo</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="upstreamChatService">上游协议</label>
-                    <div class="field-input-wrap field-input-wrap--select">
-                        <select class="field-input field-input--select" id="upstreamChatService"
-                            name="upstreamChatService">
-                            <option value="openai" th:selected="${config.upstreamChatService == 'openai'}">OpenAI
-                            </option>
-                            <option value="anthropic" th:selected="${config.upstreamChatService == 'anthropic'}">
-                                Anthropic（仅 MiMo）</option>
-                        </select>
-                    </div>
-                </div>
-            </div>
-        </div>
+            <div class="card-title">服务商配置</div>
+            <div class="card-body" style="padding:0">
 
-        <!-- LongCat 配置卡片 -->
-        <div class="card">
-            <div class="card-title">LongCat 配置</div>
-            <div class="card-body">
-                <div class="field-group">
-                    <label class="field-label" for="longcatApiKey">API Key</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="longcatApiKey" name="longcatApiKey" type="password"
-                            placeholder="请输入 LongCat API Key" th:value="${config.longcatApiKey}">
+                <!-- LongCat 折叠项 -->
+                <div class="accordion">
+                    <div class="accordion-header"
+                        onclick="this.nextElementSibling.classList.toggle('open');this.classList.toggle('open')">
+                        <span class="accordion-title">LongCat</span>
+                        <span class="accordion-arrow">▸</span>
+                    </div>
+                    <div class="accordion-body">
+                        <div class="accordion-inner">
+                            <div class="field-group">
+                                <label class="field-label">启用</label>
+                                <label class="switch">
+                                    <input type="checkbox" name="longcatEnabled" checked>
+                                    <span class="switch-slider"></span>
+                                </label>
+                            </div>
+                            <div class="field-group">
+                                <label class="field-label" for="longcatBaseUrl">API URL</label>
+                                <div class="field-input-wrap">
+                                    <input class="field-input" id="longcatBaseUrl" name="longcatBaseUrl" type="url"
+                                        placeholder="https://api.longcat.chat" th:value="${config.longcatBaseUrl}">
+                                </div>
+                            </div>
+                            <div class="field-group">
+                                <label class="field-label" for="longcatApiKey">API Key</label>
+                                <div class="field-input-wrap">
+                                    <input class="field-input" id="longcatApiKey" name="longcatApiKey" type="password"
+                                        placeholder="请输入 LongCat API Key" th:value="${config.longcatApiKey}">
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
-                <div class="field-group">
-                    <label class="field-label" for="longcatBaseUrl">Base URL</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="longcatBaseUrl" name="longcatBaseUrl" type="url"
-                            placeholder="https://api.longcat.chat" th:value="${config.longcatBaseUrl}">
-                    </div>
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="longcatDefaultModel">默认模型</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="longcatDefaultModel" name="longcatDefaultModel" type="text"
-                            placeholder="LongCat-Flash-Chat" th:value="${config.longcatDefaultModel}">
-                    </div>
-                </div>
-            </div>
-        </div>
 
-        <!-- MiMo 配置卡片 -->
-        <div class="card">
-            <div class="card-title">MiMo 配置</div>
-            <div class="card-body">
-                <div class="field-group">
-                    <label class="field-label" for="mimoApiKey">API Key</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="mimoApiKey" name="mimoApiKey" type="password"
-                            placeholder="请输入 MiMo API Key" th:value="${config.mimoApiKey}">
+                <!-- MiMo 折叠项 -->
+                <div class="accordion">
+                    <div class="accordion-header"
+                        onclick="this.nextElementSibling.classList.toggle('open');this.classList.toggle('open')">
+                        <span class="accordion-title">MiMo</span>
+                        <span class="accordion-arrow">▸</span>
+                    </div>
+                    <div class="accordion-body">
+                        <div class="accordion-inner">
+                            <div class="field-group">
+                                <label class="field-label">启用</label>
+                                <label class="switch">
+                                    <input type="checkbox" name="mimoEnabled">
+                                    <span class="switch-slider"></span>
+                                </label>
+                            </div>
+                            <div class="field-group">
+                                <label class="field-label" for="mimoBaseUrl">API URL</label>
+                                <div class="field-input-wrap">
+                                    <input class="field-input" id="mimoBaseUrl" name="mimoBaseUrl" type="url"
+                                        placeholder="https://token-plan-cn.xiaomimimo.com/"
+                                        th:value="${config.mimoBaseUrl}">
+                                </div>
+                            </div>
+                            <div class="field-group">
+                                <label class="field-label" for="mimoApiKey">API Key</label>
+                                <div class="field-input-wrap">
+                                    <input class="field-input" id="mimoApiKey" name="mimoApiKey" type="password"
+                                        placeholder="请输入 MiMo API Key" th:value="${config.mimoApiKey}">
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
-                <div class="field-group">
-                    <label class="field-label" for="mimoBaseUrl">Base URL</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="mimoBaseUrl" name="mimoBaseUrl" type="url"
-                            placeholder="https://token-plan-cn.xiaomimimo.com/anthropic"
-                            th:value="${config.mimoBaseUrl}">
-                    </div>
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="mimoDefaultModel">默认模型</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="mimoDefaultModel" name="mimoDefaultModel" type="text"
-                            placeholder="mimo-v2.5-pro" th:value="${config.mimoDefaultModel}">
-                    </div>
-                </div>
-            </div>
-        </div>
 
-        <!-- Ollama 伪装配置卡片 -->
-        <div class="card">
-            <div class="card-title">Ollama 伪装配置</div>
-            <div class="card-body">
-                <div class="field-group">
-                    <label class="field-label" for="ollamaVersion">伪装版本号</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="ollamaVersion" name="ollamaVersion" type="text"
-                            placeholder="0.6.4" th:value="${config.ollamaVersion}">
-                    </div>
-                </div>
             </div>
         </div>
 
@@ -139,6 +104,109 @@
             </button>
         </div>
     </form>
+
+    <style>
+        .accordion {
+            border-bottom: 1px solid var(--border);
+        }
+
+        .accordion:last-child {
+            border-bottom: none;
+        }
+
+        .accordion-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 24px;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.15s;
+        }
+
+        .accordion-header:hover {
+            background: var(--surface-hover, #f8f9fa);
+        }
+
+        .accordion-title {
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        .accordion-arrow {
+            font-size: 12px;
+            transition: transform 0.2s;
+            color: var(--text-muted);
+        }
+
+        .accordion-header.open .accordion-arrow {
+            transform: rotate(90deg);
+        }
+
+        .accordion-body {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.25s ease;
+        }
+
+        .accordion-body.open {
+            max-height: 500px;
+        }
+
+        .accordion-inner {
+            padding: 4px 24px 20px;
+        }
+
+        .accordion-inner .field-group {
+            margin-bottom: 16px;
+        }
+
+        .accordion-inner .field-group:last-child {
+            margin-bottom: 0;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 40px;
+            height: 22px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .switch-slider {
+            position: absolute;
+            inset: 0;
+            background: var(--border);
+            border-radius: 22px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        .switch-slider::before {
+            content: '';
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            left: 3px;
+            bottom: 3px;
+            background: #fff;
+            border-radius: 50%;
+            transition: 0.2s;
+        }
+
+        .switch input:checked+.switch-slider {
+            background: var(--accent, #4f46e5);
+        }
+
+        .switch input:checked+.switch-slider::before {
+            transform: translateX(18px);
+        }
+    </style>
 </main>
 
 </html>
