@@ -55,6 +55,16 @@
                                         placeholder="请输入 LongCat API Key" th:value="${config.longcatApiKey}">
                                 </div>
                             </div>
+
+                            <!-- 模型列表 -->
+                            <div class="model-list" id="longcat-models">
+                                <div class="model-list-header">
+                                    <span class="model-list-title">模型列表</span>
+                                    <button type="button" class="btn-add-model" onclick="addModel('longcat')">+
+                                        添加模型</button>
+                                </div>
+                                <div class="model-list-items"></div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -89,6 +99,16 @@
                                     <input class="field-input" id="mimoApiKey" name="mimoApiKey" type="password"
                                         placeholder="请输入 MiMo API Key" th:value="${config.mimoApiKey}">
                                 </div>
+                            </div>
+
+                            <!-- 模型列表 -->
+                            <div class="model-list" id="mimo-models">
+                                <div class="model-list-header">
+                                    <span class="model-list-title">模型列表</span>
+                                    <button type="button" class="btn-add-model" onclick="addModel('mimo')">+
+                                        添加模型</button>
+                                </div>
+                                <div class="model-list-items"></div>
                             </div>
                         </div>
                     </div>
@@ -206,7 +226,131 @@
         .switch input:checked+.switch-slider::before {
             transform: translateX(18px);
         }
+
+        /* 模型列表 */
+        .model-list {
+            margin-top: 20px;
+            border-top: 1px solid var(--border);
+            padding-top: 16px;
+        }
+
+        .model-list-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+
+        .model-list-title {
+            font-weight: 500;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .btn-add-model {
+            font-size: 12px;
+            padding: 4px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--surface);
+            cursor: pointer;
+            color: var(--text);
+            transition: background 0.15s;
+        }
+
+        .btn-add-model:hover {
+            background: var(--surface-hover, #f0f0f0);
+        }
+
+        .model-list-items {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .model-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--surface);
+        }
+
+        .model-item input[type="text"],
+        .model-item input[type="number"] {
+            flex: 1;
+            padding: 6px 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 13px;
+            background: var(--bg, #fff);
+            color: var(--text);
+        }
+
+        .model-item input::placeholder {
+            color: var(--text-muted);
+        }
+
+        .model-caps {
+            display: flex;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .model-cap {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+            color: var(--text-muted);
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .model-cap input {
+            accent-color: var(--accent, #4f46e5);
+        }
+
+        .btn-remove-model {
+            flex-shrink: 0;
+            width: 24px;
+            height: 24px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            font-size: 16px;
+            color: var(--text-muted);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .btn-remove-model:hover {
+            background: #fee;
+            color: #e53;
+        }
     </style>
+
+    <script>
+        function addModel(provider) {
+            var container = document.getElementById(provider + '-models').querySelector('.model-list-items');
+            var idx = container.children.length;
+            var div = document.createElement('div');
+            div.className = 'model-item';
+            div.innerHTML =
+                '<input type="text" name="' + provider + 'Models[' + idx + '].name" placeholder="模型名称" />' +
+                '<input type="number" name="' + provider + 'Models[' + idx + '].contextSize" placeholder="上下文大小" />' +
+                '<div class="model-caps">' +
+                '<label class="model-cap"><input type="checkbox" name="' + provider + 'Models[' + idx + '].caps" value="tools" />工具</label>' +
+                '<label class="model-cap"><input type="checkbox" name="' + provider + 'Models[' + idx + '].caps" value="vision" />视觉</label>' +
+                '</div>' +
+                '<button type="button" class="btn-remove-model" onclick="this.parentElement.remove()">✕</button>';
+            container.appendChild(div);
+        }
+    </script>
 </main>
 
 </html>
