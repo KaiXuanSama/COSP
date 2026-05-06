@@ -59,7 +59,7 @@ public class AdminPageController {
                 && !(authentication instanceof AnonymousAuthenticationToken)) {
             return "redirect:/config";
         }
-        return "admin/login";
+        return "admin/pages/login";
     }
 
     // ==================== 概览页 ====================
@@ -71,7 +71,7 @@ public class AdminPageController {
         model.addAttribute("pageTitleFull", "概览 · Ollama-Switch");
         model.addAttribute("nav", "overview");
         model.addAttribute("config", buildConfigModel());
-        return "admin/config-overview";
+        return "admin/pages/overview";
     }
 
     // ==================== 配置页 ====================
@@ -83,14 +83,11 @@ public class AdminPageController {
         model.addAttribute("pageTitleFull", "配置 · Ollama-Switch");
         model.addAttribute("nav", "settings");
         model.addAttribute("config", buildConfigModel());
-        return "admin/config-settings";
+        return "admin/pages/settings";
     }
 
     @PostMapping("/config/settings")
-    public String saveSettings(
-            Authentication authentication,
-            Model model,
-            @RequestParam Map<String, String> params) {
+    public String saveSettings(Authentication authentication, Model model, @RequestParam Map<String, String> params) {
         // TODO: 持久化配置到 application.yml 或数据库
         model.addAttribute("username", authentication.getName());
         model.addAttribute("pageTitle", "配置");
@@ -98,7 +95,7 @@ public class AdminPageController {
         model.addAttribute("nav", "settings");
         model.addAttribute("config", buildConfigModel());
         model.addAttribute("saveSuccess", true);
-        return "admin/config-settings";
+        return "admin/pages/settings";
     }
 
     // ==================== 日志页 ====================
@@ -109,7 +106,7 @@ public class AdminPageController {
         model.addAttribute("pageTitle", "日志");
         model.addAttribute("pageTitleFull", "日志 · Ollama-Switch");
         model.addAttribute("nav", "logs");
-        return "admin/config-logs";
+        return "admin/pages/logs";
     }
 
     // ==================== 状态页 ====================
@@ -121,7 +118,7 @@ public class AdminPageController {
         model.addAttribute("pageTitleFull", "状态 · Ollama-Switch");
         model.addAttribute("nav", "status");
         model.addAttribute("config", buildConfigModel());
-        return "admin/config-status";
+        return "admin/pages/status";
     }
 
     // ==================== 辅助方法 ====================

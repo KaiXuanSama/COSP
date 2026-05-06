@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
 
 <head>
@@ -59,6 +59,7 @@
             </svg>
             <span>无权限，请先登录。</span>
         </div>
+
         <div class="message error" th:if="${param.error}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
                 stroke-linejoin="round">
@@ -66,15 +67,7 @@
                 <line x1="15" y1="9" x2="9" y2="15" />
                 <line x1="9" y1="9" x2="15" y2="15" />
             </svg>
-            <span>用户名或密码错误，请重新输入。</span>
-        </div>
-        <div class="message success" th:if="${param.logout}">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                stroke-linejoin="round">
-                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-                <polyline points="22 4 12 14.01 9 11.01" />
-            </svg>
-            <span>已退出登录。</span>
+            <span>用户名或密码错误。</span>
         </div>
 
         <form class="login-form" th:action="@{/login}" method="post">

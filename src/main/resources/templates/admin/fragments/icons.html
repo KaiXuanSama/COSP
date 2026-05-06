@@ -2,28 +2,11 @@
 <html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
 
 <!-- ============================================================
-     公共片段库 — 所有管理页面共享的 Thymeleaf 片段
+     片段：SVG 图标库 — 所有管理页面共享的图标
+     使用方式：th:replace="~{admin/fragments/icons :: icon-xxx}"
      ============================================================ -->
 
-<!-- 片段：页面 head（CSS 引用 + 字体） -->
-<th:block th:fragment="head(title)">
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title th:text="${title}">管理后台 · Ollama-Switch</title>
-
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link
-        href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;600&family=Crimson+Pro:wght@300;400;500&family=DM+Mono:wght@300;400;500&display=swap"
-        rel="stylesheet">
-    <link rel="stylesheet" th:href="@{/admin/css/admin-common.css}" href="/admin/css/admin-common.css">
-    <link rel="stylesheet" th:href="@{/admin/css/admin-layout.css}" href="/admin/css/admin-layout.css">
-    <link rel="stylesheet" th:href="@{/admin/css/admin-components.css}" href="/admin/css/admin-components.css">
-</th:block>
-
-<!-- 片段：侧边栏遮罩层 -->
-<div th:fragment="sidebar-overlay" class="sidebar-overlay" id="sidebarOverlay"></div>
-
-<!-- 片段：SVG 图标 — Logo -->
+<!-- Logo -->
 <th:block th:fragment="icon-logo">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
         stroke-linejoin="round">
@@ -33,7 +16,7 @@
     </svg>
 </th:block>
 
-<!-- 片段：SVG 图标 — 概览 -->
+<!-- 概览 -->
 <th:block th:fragment="icon-overview">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
         stroke-linejoin="round">
@@ -43,7 +26,7 @@
     </svg>
 </th:block>
 
-<!-- 片段：SVG 图标 — 配置 -->
+<!-- 配置 -->
 <th:block th:fragment="icon-settings">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
         stroke-linejoin="round">
@@ -53,7 +36,7 @@
     </svg>
 </th:block>
 
-<!-- 片段：SVG 图标 — 日志 -->
+<!-- 日志 -->
 <th:block th:fragment="icon-logs">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
         stroke-linejoin="round">
@@ -64,7 +47,7 @@
     </svg>
 </th:block>
 
-<!-- 片段：SVG 图标 — 状态 -->
+<!-- 状态 -->
 <th:block th:fragment="icon-status">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
         stroke-linejoin="round">
@@ -74,7 +57,7 @@
     </svg>
 </th:block>
 
-<!-- 片段：SVG 图标 — 刷新 -->
+<!-- 刷新 -->
 <th:block th:fragment="icon-refresh">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
         stroke-linejoin="round">
@@ -83,7 +66,7 @@
     </svg>
 </th:block>
 
-<!-- 片段：SVG 图标 — 退出 -->
+<!-- 退出 -->
 <th:block th:fragment="icon-logout">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
         stroke-linejoin="round">
@@ -93,7 +76,7 @@
     </svg>
 </th:block>
 
-<!-- 片段：SVG 图标 — 信息提示 -->
+<!-- 信息提示 -->
 <th:block th:fragment="icon-info">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
         stroke-linejoin="round">
@@ -103,7 +86,7 @@
     </svg>
 </th:block>
 
-<!-- 片段：SVG 图标 — 错误提示 -->
+<!-- 错误提示 -->
 <th:block th:fragment="icon-error">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
         stroke-linejoin="round">
@@ -113,71 +96,13 @@
     </svg>
 </th:block>
 
-<!-- 片段：SVG 图标 — 成功提示 -->
+<!-- 成功提示 -->
 <th:block th:fragment="icon-success">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
         stroke-linejoin="round">
         <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
         <polyline points="22 4 12 14.01 9 11.01" />
     </svg>
-</th:block>
-
-<!-- 片段：侧边栏 JS（移动端抽屉逻辑） -->
-<th:block th:fragment="sidebar-js">
-    <script>
-        (function () {
-            var sidebar = document.getElementById('sidebar');
-            var overlay = document.getElementById('sidebarOverlay');
-            var hamburger = document.getElementById('hamburgerBtn');
-
-            function openSidebar() {
-                sidebar.classList.add('open');
-                overlay.classList.add('visible');
-                hamburger.classList.add('active');
-                document.body.style.overflow = 'hidden';
-            }
-
-            function closeSidebar() {
-                sidebar.classList.remove('open');
-                overlay.classList.remove('visible');
-                hamburger.classList.remove('active');
-                document.body.style.overflow = '';
-            }
-
-            function toggleSidebar() {
-                if (sidebar.classList.contains('open')) {
-                    closeSidebar();
-                } else {
-                    openSidebar();
-                }
-            }
-
-            if (hamburger) hamburger.addEventListener('click', toggleSidebar);
-            if (overlay) overlay.addEventListener('click', closeSidebar);
-
-            if (sidebar) {
-                sidebar.querySelectorAll('.nav-item').forEach(function (link) {
-                    link.addEventListener('click', function () {
-                        if (window.innerWidth <= 1024) {
-                            closeSidebar();
-                        }
-                    });
-                });
-            }
-
-            document.addEventListener('keydown', function (e) {
-                if (e.key === 'Escape' && sidebar && sidebar.classList.contains('open')) {
-                    closeSidebar();
-                }
-            });
-
-            window.addEventListener('resize', function () {
-                if (window.innerWidth > 1024) {
-                    closeSidebar();
-                }
-            });
-        })();
-    </script>
 </th:block>
 
 </html>

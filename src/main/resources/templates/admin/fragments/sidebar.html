@@ -2,14 +2,18 @@
 <html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
 
 <!-- ============================================================
-     侧边栏组件 — 管理后台左侧导航
-     使用方式：th:replace="~{admin/sidebar :: sidebar}"
+     片段：侧边栏 — 管理后台左侧导航
+     使用方式：th:replace="~{admin/fragments/sidebar :: sidebar}"
      ============================================================ -->
 
+<!-- 遮罩层（移动端抽屉时用） -->
+<div th:fragment="sidebar-overlay" class="sidebar-overlay" id="sidebarOverlay"></div>
+
+<!-- 侧边栏导航 -->
 <aside th:fragment="sidebar" class="sidebar" id="sidebar">
     <!-- 品牌标识 -->
     <div class="sidebar-brand">
-        <th:block th:replace="~{admin/fragments :: icon-logo}"></th:block>
+        <th:block th:replace="~{admin/fragments/icons :: icon-logo}"></th:block>
         Ollama-Switch
     </div>
 
@@ -18,22 +22,22 @@
         <!-- 管理分组 -->
         <div class="nav-section-label">管理</div>
         <a class="nav-item" th:classappend="${nav == 'overview' ? 'active' : ''}" href="/config">
-            <th:block th:replace="~{admin/fragments :: icon-overview}"></th:block>
+            <th:block th:replace="~{admin/fragments/icons :: icon-overview}"></th:block>
             概览
         </a>
         <a class="nav-item" th:classappend="${nav == 'settings' ? 'active' : ''}" href="/config/settings">
-            <th:block th:replace="~{admin/fragments :: icon-settings}"></th:block>
+            <th:block th:replace="~{admin/fragments/icons :: icon-settings}"></th:block>
             配置
         </a>
         <a class="nav-item" th:classappend="${nav == 'logs' ? 'active' : ''}" href="/config/logs">
-            <th:block th:replace="~{admin/fragments :: icon-logs}"></th:block>
+            <th:block th:replace="~{admin/fragments/icons :: icon-logs}"></th:block>
             日志
         </a>
 
         <!-- 系统分组 -->
         <div class="nav-section-label">系统</div>
         <a class="nav-item" th:classappend="${nav == 'status' ? 'active' : ''}" href="/config/status">
-            <th:block th:replace="~{admin/fragments :: icon-status}"></th:block>
+            <th:block th:replace="~{admin/fragments/icons :: icon-status}"></th:block>
             状态
         </a>
     </nav>

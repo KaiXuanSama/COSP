@@ -2,8 +2,8 @@
 <html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
 
 <!-- ============================================================
-     日志页组件 — 管理后台日志查看
-     使用方式：th:replace="~{admin/logs :: logs}"
+     内容片段：日志页 — 管理后台日志查看
+     使用方式：th:replace="~{admin/content/logs :: logs}"
      ============================================================ -->
 
 <main th:fragment="logs" class="content">
@@ -12,7 +12,7 @@
         <div class="card-body">
             <div class="empty-state">
                 <div class="empty-state-icon">
-                    <th:block th:replace="~{admin/fragments :: icon-logs}"></th:block>
+                    <th:block th:replace="~{admin/fragments/icons :: icon-logs}"></th:block>
                 </div>
                 <div class="empty-state-text">暂无日志记录</div>
                 <div class="empty-state-desc">代理请求日志将在此处显示</div>

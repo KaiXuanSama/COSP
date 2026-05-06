@@ -2,18 +2,18 @@
 <html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
 
 <!-- ============================================================
-     配置页组件 — 管理后台代理配置表单
-     使用方式：th:replace="~{admin/settings :: settings}"
+     内容片段：配置页 — 管理后台代理配置表单
+     使用方式：th:replace="~{admin/content/settings :: settings}"
      ============================================================ -->
 
 <main th:fragment="settings" class="content">
     <!-- 消息提示（保存成功/失败时显示） -->
     <div class="message success" th:if="${saveSuccess}">
-        <th:block th:replace="~{admin/fragments :: icon-success}"></th:block>
+        <th:block th:replace="~{admin/fragments/icons :: icon-success}"></th:block>
         <span>配置已保存。</span>
     </div>
     <div class="message error" th:if="${saveError}">
-        <th:block th:replace="~{admin/fragments :: icon-error}"></th:block>
+        <th:block th:replace="~{admin/fragments/icons :: icon-error}"></th:block>
         <span th:text="${saveError}">保存失败，请检查输入。</span>
     </div>
 
