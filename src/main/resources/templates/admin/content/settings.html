@@ -55,6 +55,16 @@
                                         placeholder="请输入 LongCat API Key" th:value="${config.longcatApiKey}">
                                 </div>
                             </div>
+                            <div class="field-group">
+                                <label class="field-label" for="longcatApiFormat">API 格式</label>
+                                <div class="field-input-wrap field-input-wrap--select">
+                                    <select class="field-input field-input--select" id="longcatApiFormat"
+                                        name="longcatApiFormat">
+                                        <option value="openai" selected>OpenAI</option>
+                                        <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
+                                    </select>
+                                </div>
+                            </div>
 
                             <!-- 模型列表 -->
                             <div class="model-list" id="longcat-models">
@@ -98,6 +108,16 @@
                                 <div class="field-input-wrap">
                                     <input class="field-input" id="mimoApiKey" name="mimoApiKey" type="password"
                                         placeholder="请输入 MiMo API Key" th:value="${config.mimoApiKey}">
+                                </div>
+                            </div>
+                            <div class="field-group">
+                                <label class="field-label" for="mimoApiFormat">API 格式</label>
+                                <div class="field-input-wrap field-input-wrap--select">
+                                    <select class="field-input field-input--select" id="mimoApiFormat"
+                                        name="mimoApiFormat">
+                                        <option value="openai">OpenAI（推荐）</option>
+                                        <option value="anthropic">AnthropicAPI（有Bug，不推荐使用）</option>
+                                    </select>
                                 </div>
                             </div>
 
@@ -331,6 +351,10 @@
         .btn-remove-model:hover {
             background: #fee;
             color: #e53;
+        }
+
+        select option:disabled {
+            color: #aaa;
         }
     </style>
 
