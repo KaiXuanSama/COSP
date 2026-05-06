@@ -148,6 +148,30 @@
     color: rgba(245, 243, 238, 0.3);
 }
 
+/* ── 侧边栏编辑按钮 ── */
+.sidebar-user-edit {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    color: rgba(245, 243, 238, 0.35);
+    text-decoration: none;
+    flex-shrink: 0;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.sidebar-user-edit:hover {
+    background: rgba(245, 243, 238, 0.08);
+    color: var(--accent);
+}
+
+.sidebar-user-edit svg {
+    width: 14px;
+    height: 14px;
+}
+
 /* ── 主内容区 ── */
 .main {
     flex: 1;

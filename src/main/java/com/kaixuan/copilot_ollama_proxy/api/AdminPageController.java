@@ -3,6 +3,10 @@ package com.kaixuan.copilot_ollama_proxy.api;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.provisioning.JdbcUserDetailsManager;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.*;
@@ -50,6 +54,14 @@ public class AdminPageController {
 
     @Value("${mimo.default-model:mimo-v2.5-pro}")
     private String mimoDefaultModel;
+
+    private final JdbcUserDetailsManager userDetailsManager;
+    private final PasswordEncoder passwordEncoder;
+
+    public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder) {
+        this.userDetailsManager = userDetailsManager;
+        this.passwordEncoder = passwordEncoder;
+    }
 
     // ==================== 登录页 ====================
 
@@ -119,6 +131,92 @@ public class AdminPageController {
         model.addAttribute("nav", "status");
         model.addAttribute("config", buildConfigModel());
         return "admin/pages/status";
+    }
+
+    // ==================== 账号修改页 ====================
+
+    @GetMapping("/config/account")
+    public String account(Authentication authentication, Model model) {
+        model.addAttribute("username", authentication.getName());
+        model.addAttribute("pageTitle", "账号设置");
+        model.addAttribute("pageTitleFull", "账号设置 · Ollama-Switch");
+        model.addAttribute("nav", "account");
+        return "admin/pages/account";
+    }
+
+    @PostMapping("/config/account")
+    public String saveAccount(
+            Authentication authentication,
+            @RequestParam(value = "newUsername", required = false) String newUsername,
+            @RequestParam(value = "currentPassword", required = false) String currentPassword,
+            @RequestParam(value = "newPassword", required = false) String newPassword,
+            @RequestParam(value = "confirmPassword", required = false) String confirmPassword,
+            Model model) {
+
+        String currentUsername = authentication.getName();
+
+        // 验证当前密码
+        UserDetails currentUser = userDetailsManager.loadUserByUsername(currentUsername);
+        if (currentPassword == null || !passwordEncoder.matches(currentPassword, currentUser.getPassword())) {
+            model.addAttribute("username", currentUsername);
+            model.addAttribute("pageTitle", "账号设置");
+            model.addAttribute("pageTitleFull", "账号设置 · Ollama-Switch");
+            model.addAttribute("nav", "account");
+            model.addAttribute("saveError", "当前密码不正确。");
+            return "admin/pages/account";
+        }
+
+        // 确定最终用户名和密码
+        final String finalUsername = (newUsername != null && !newUsername.isBlank() && !newUsername.equals(currentUsername))
+                ? newUsername.trim() : currentUsername;
+        final String finalPassword;
+        boolean passwordChanged = false;
+
+        if (newPassword != null && !newPassword.isBlank()) {
+            if (newPassword.length() < 4) {
+                model.addAttribute("username", currentUsername);
+                model.addAttribute("pageTitle", "账号设置");
+                model.addAttribute("pageTitleFull", "账号设置 · Ollama-Switch");
+                model.addAttribute("nav", "account");
+                model.addAttribute("newUsername", newUsername);
+                model.addAttribute("saveError", "新密码长度至少 4 位。");
+                return "admin/pages/account";
+            }
+            if (!newPassword.equals(confirmPassword)) {
+                model.addAttribute("username", currentUsername);
+                model.addAttribute("pageTitle", "账号设置");
+                model.addAttribute("pageTitleFull", "账号设置 · Ollama-Switch");
+                model.addAttribute("nav", "account");
+                model.addAttribute("newUsername", newUsername);
+                model.addAttribute("saveError", "两次输入的新密码不一致。");
+                return "admin/pages/account";
+            }
+            finalPassword = passwordEncoder.encode(newPassword);
+            passwordChanged = true;
+        } else {
+            finalPassword = null;
+        }
+
+        // 如果用户名或密码有变化，删除旧用户后重新创建
+        if (!finalUsername.equals(currentUsername) || passwordChanged) {
+            userDetailsManager.deleteUser(currentUsername);
+            String passwordToUse = passwordChanged ? finalPassword : currentUser.getPassword();
+            UserDetails newUser = User.withUsername(finalUsername)
+                    .password(passwordToUse)
+                    .roles("ADMIN")
+                    .build();
+            userDetailsManager.createUser(newUser);
+            model.addAttribute("saveSuccess", "账号信息已修改，请使用新账号重新登录。");
+        } else {
+            model.addAttribute("saveSuccess", "未做任何修改。");
+        }
+
+        model.addAttribute("username", finalUsername);
+        model.addAttribute("pageTitle", "账号设置");
+        model.addAttribute("pageTitleFull", "账号设置 · Ollama-Switch");
+        model.addAttribute("nav", "account");
+        model.addAttribute("newUsername", finalUsername);
+        return "admin/pages/account";
     }
 
     // ==================== 辅助方法 ====================
