@@ -36,10 +36,13 @@
                         <div class="accordion-inner">
                             <div class="field-group">
                                 <label class="field-label">启用</label>
-                                <label class="switch">
-                                    <input type="checkbox" name="longcatEnabled" checked>
-                                    <span class="switch-slider"></span>
-                                </label>
+                                <div class="switch-wrap">
+                                    <label class="switch">
+                                        <input type="checkbox" name="longcatEnabled" checked>
+                                        <span class="switch-slider"></span>
+                                    </label>
+                                    <span class="switch-tooltip" id="longcat-tooltip"></span>
+                                </div>
                             </div>
                             <div class="field-group">
                                 <label class="field-label" for="longcatBaseUrl">API URL</label>
@@ -90,10 +93,13 @@
                         <div class="accordion-inner">
                             <div class="field-group">
                                 <label class="field-label">启用</label>
-                                <label class="switch">
-                                    <input type="checkbox" name="mimoEnabled">
-                                    <span class="switch-slider"></span>
-                                </label>
+                                <div class="switch-wrap">
+                                    <label class="switch">
+                                        <input type="checkbox" name="mimoEnabled">
+                                        <span class="switch-slider"></span>
+                                    </label>
+                                    <span class="switch-tooltip" id="mimo-tooltip"></span>
+                                </div>
                             </div>
                             <div class="field-group">
                                 <label class="field-label" for="mimoBaseUrl">API URL</label>
@@ -243,6 +249,15 @@
             background: var(--accent, #4f46e5);
         }
 
+        .switch input:disabled+.switch-slider {
+            background: #ddd;
+            cursor: not-allowed;
+        }
+
+        .switch input:disabled~.switch-slider::before {
+            background: #f5f5f5;
+        }
+
         .switch input:checked+.switch-slider::before {
             transform: translateX(18px);
         }
@@ -356,6 +371,21 @@
         select option:disabled {
             color: #aaa;
         }
+        .switch-wrap {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+        }
+        .switch-tooltip {
+            display: none;
+            margin-left: 10px;
+            font-size: 12px;
+            color: #e53;
+            white-space: nowrap;
+        }
+        .switch-tooltip:not(:empty) {
+            display: inline;
+        }
     </style>
 
     <script>
@@ -371,9 +401,36 @@
                 '<label class="model-cap"><input type="checkbox" name="' + provider + 'Models[' + idx + '].caps" value="tools" />工具</label>' +
                 '<label class="model-cap"><input type="checkbox" name="' + provider + 'Models[' + idx + '].caps" value="vision" />视觉</label>' +
                 '</div>' +
-                '<button type="button" class="btn-remove-model" onclick="this.parentElement.remove()">✕</button>';
+                '<button type="button" class="btn-remove-model" onclick="this.parentElement.remove(); checkToggle(\'' + provider + '\')">✕</button>';
             container.appendChild(div);
+            checkToggle(provider);
         }
+
+        function checkToggle(provider) {
+            var keyInput = document.getElementById(provider + 'ApiKey');
+            var toggle = document.querySelector('input[name="' + provider + 'Enabled"]');
+            var items = document.getElementById(provider + '-models').querySelectorAll('.model-item');
+            var tooltip = document.getElementById(provider + '-tooltip');
+            var reasons = [];
+            if (!keyInput.value.trim()) reasons.push('请先填写 API Key');
+            if (items.length === 0) reasons.push('请至少添加一个模型');
+            if (reasons.length > 0) {
+                toggle.checked = false;
+                toggle.disabled = true;
+                tooltip.textContent = reasons.join('，');
+                tooltip.style.display = '';
+            } else {
+                toggle.disabled = false;
+                tooltip.style.display = 'none';
+            }
+        }
+
+        ['longcat', 'mimo'].forEach(function(provider) {
+            var keyInput = document.getElementById(provider + 'ApiKey');
+            keyInput.addEventListener('input', function() { checkToggle(provider); });
+            keyInput.addEventListener('change', function() { checkToggle(provider); });
+            checkToggle(provider);
+        });
     </script>
 </main>
 
