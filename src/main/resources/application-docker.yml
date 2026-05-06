@@ -4,11 +4,23 @@ spring:
   config:
     activate:
       on-profile: docker
+  datasource:
+    url: ${SQLITE_URL:jdbc:sqlite:/app/data/admin.db}
+    driver-class-name: org.sqlite.JDBC
+    hikari:
+      maximum-pool-size: 1
+  sql:
+    init:
+      mode: always
 
 # ===== 服务器端口 =====
 server:
   # 环境变量：SERVER_PORT
   port: ${SERVER_PORT:11434}
+
+admin:
+  username: ${ADMIN_USERNAME:root}
+  password: ${ADMIN_PASSWORD:root}
 
 proxy:
   # 环境变量：PROXY_PROVIDER，可选 mimo / longcat
