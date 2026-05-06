@@ -65,25 +65,30 @@
         })();
     </script>
 
-    <!-- 信息卡片 -->
+    <!-- 关于卡片 -->
     <div class="info-card">
-        <div class="info-card-title">系统信息</div>
+        <div class="info-card-title">关于本服务</div>
         <div class="info-list">
             <div class="info-row">
-                <span class="info-row-label">当前用户</span>
-                <span class="info-row-value" th:text="${username}">root</span>
+                <span class="info-row-label">项目</span>
+                <span class="info-row-value">Copilot Ollama Proxy</span>
             </div>
             <div class="info-row">
-                <span class="info-row-label">页面状态</span>
-                <span class="status-badge success">已受保护</span>
+                <span class="info-row-label">描述</span>
+                <span class="info-row-value">基于 Spring Boot 的 Ollama 代理中间件，支持多 Provider 切换与 API 调用统计</span>
             </div>
             <div class="info-row">
-                <span class="info-row-label">认证方式</span>
-                <span class="info-row-value">JdbcUserDetailsManager + BCrypt</span>
+                <span class="info-row-label">技术栈</span>
+                <span class="info-row-value">Spring Boot · Spring Security · Thymeleaf · SQLite</span>
             </div>
             <div class="info-row">
-                <span class="info-row-label">会话管理</span>
-                <span class="info-row-value">Spring Security 默认会话</span>
+                <span class="info-row-label">开源地址</span>
+                <span class="info-row-value"><a href="https://github.com/"
+                        target="_blank" rel="noopener">GitHub</a></span>
+            </div>
+            <div class="info-row">
+                <span class="info-row-label">作者</span>
+                <span class="info-row-value">KaiXuan</span>
             </div>
         </div>
     </div>
