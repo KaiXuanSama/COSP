@@ -12,6 +12,12 @@
     "defaultValue": "root"
   },
   {
+    "name": "admin.server.port",
+    "type": "java.lang.Integer",
+    "description": "管理后台 Web 端口，专供 /login、/config、/logout 页面访问。环境变量：ADMIN_SERVER_PORT",
+    "defaultValue": "80"
+  },
+  {
     "name": "spring.datasource.url",
     "type": "java.lang.String",
     "description": "SQLite 数据库 JDBC URL。环境变量：SQLITE_URL",
