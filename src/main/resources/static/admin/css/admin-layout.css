@@ -13,8 +13,6 @@
     position: sticky;
     top: 0;
     height: 100vh;
-    opacity: 0;
-    animation: slideIn 0.35s ease forwards;
 }
 
 /* ── 遮罩层 ── */
@@ -169,9 +167,6 @@
     position: sticky;
     top: 0;
     z-index: 10;
-    opacity: 0;
-    animation: fadeDown 0.4s ease forwards;
-    animation-delay: 0.1s;
 }
 
 .header-left {
@@ -316,31 +311,6 @@
     flex: 1;
     padding: 32px 40px;
     max-width: 960px;
-}
-
-/* ── 动画 ── */
-@keyframes fadeDown {
-    from {
-        opacity: 0;
-        transform: translateY(-10px);
-    }
-
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-@keyframes slideIn {
-    from {
-        transform: translateX(-20px);
-        opacity: 0;
-    }
-
-    to {
-        transform: translateX(0);
-        opacity: 1;
-    }
 }
 
 /* ── 响应式 ── */
