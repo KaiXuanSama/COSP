@@ -1,138 +1,884 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>配置页</title>
+    <title>配置页 · Ollama-Switch</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;600&family=Crimson+Pro:wght@300;400;500&family=DM+Mono:wght@300;400;500&display=swap"
+        rel="stylesheet">
+
     <style>
-        * {
+        :root {
+            --bg: #f5f3ee;
+            --surface: #ffffff;
+            --sidebar: #1a1917;
+            --sidebar-hover: #2a2825;
+            --accent: #c27a3e;
+            --accent-light: rgba(194, 122, 62, 0.08);
+            --accent-mid: rgba(194, 122, 62, 0.15);
+            --accent-glow: rgba(194, 122, 62, 0.25);
+            --text-primary: #1a1917;
+            --text-body: #4a4740;
+            --text-muted: #9a9590;
+            --text-light: #f5f3ee;
+            --border: #e8e5de;
+            --border-light: #f0ede6;
+            --success: #3a8a5c;
+            --danger: #b84a4a;
+            --warning: #b89a3a;
+            --blue: #5a7ab8;
+            --radius: 10px;
+            --radius-lg: 14px;
+            --shadow-sm: 0 1px 3px rgba(26, 25, 23, 0.04);
+            --shadow-md: 0 4px 16px rgba(26, 25, 23, 0.06);
+            --shadow-lg: 0 12px 40px rgba(26, 25, 23, 0.12);
+        }
+
+        *,
+        *::before,
+        *::after {
             box-sizing: border-box;
+            margin: 0;
+            padding: 0;
         }
 
         body {
-            margin: 0;
             min-height: 100vh;
-            background: linear-gradient(180deg, #f8fafc, #e2e8f0);
-            color: #0f172a;
-            font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            display: flex;
+            font-family: 'Crimson Pro', serif;
+            font-size: 15px;
+            color: var(--text-body);
+            background: var(--bg);
+            line-height: 1.6;
         }
 
-        .shell {
-            max-width: 880px;
-            margin: 48px auto;
-            padding: 0 20px;
+        body::after {
+            content: '';
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 1000;
+            opacity: 0.025;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
         }
 
-        .card {
-            background: rgba(255, 255, 255, 0.82);
-            border: 1px solid rgba(148, 163, 184, 0.32);
-            border-radius: 24px;
-            padding: 28px;
-            box-shadow: 0 24px 60px rgba(15, 23, 42, 0.08);
-            backdrop-filter: blur(10px);
+        /* ── 侧边栏 ── */
+        .sidebar {
+            width: 240px;
+            flex-shrink: 0;
+            background: var(--sidebar);
+            display: flex;
+            flex-direction: column;
+            padding: 28px 0;
+            position: sticky;
+            top: 0;
+            height: 100vh;
+            opacity: 0;
+            animation: slideIn 0.35s ease forwards;
         }
 
-        .topbar {
+        /* ── 遮罩层 ── */
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 199;
+            background: rgba(26, 25, 23, 0.5);
+            backdrop-filter: blur(2px);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.35s ease;
+        }
+
+        .sidebar-overlay.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .sidebar-brand {
+            padding: 0 28px 24px;
+            font-family: 'Cormorant Garamond', serif;
+            font-size: 22px;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            color: var(--text-light);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .sidebar-brand svg {
+            width: 24px;
+            height: 24px;
+            color: var(--accent);
+        }
+
+        .nav-section-label {
+            font-family: 'DM Mono', monospace;
+            font-size: 9px;
+            font-weight: 500;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            color: rgba(245, 243, 238, 0.25);
+            padding: 20px 28px 8px;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 28px;
+            font-size: 14.5px;
+            color: rgba(245, 243, 238, 0.55);
+            text-decoration: none;
+            position: relative;
+            transition: color 0.2s ease, background 0.2s ease;
+        }
+
+        .nav-item:hover {
+            color: var(--text-light);
+            background: var(--sidebar-hover);
+        }
+
+        .nav-item.active {
+            color: var(--accent);
+            background: var(--accent-mid);
+        }
+
+        .nav-item.active::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 3px;
+            height: 18px;
+            background: var(--accent);
+            border-radius: 0 3px 3px 0;
+        }
+
+        .nav-item svg {
+            width: 18px;
+            height: 18px;
+            flex-shrink: 0;
+        }
+
+        .sidebar-footer {
+            margin-top: auto;
+            padding: 16px 28px;
+            border-top: 1px solid rgba(245, 243, 238, 0.08);
+        }
+
+        .sidebar-user {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .sidebar-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, var(--accent), #d4956a);
+            display: grid;
+            place-items: center;
+            font-family: 'Cormorant Garamond', serif;
+            font-size: 14px;
+            font-weight: 600;
+            color: white;
+            flex-shrink: 0;
+        }
+
+        .sidebar-user-info {
+            overflow: hidden;
+        }
+
+        .sidebar-user-name {
+            font-size: 13.5px;
+            color: var(--text-light);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .sidebar-user-role {
+            font-family: 'DM Mono', monospace;
+            font-size: 9px;
+            font-weight: 500;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: rgba(245, 243, 238, 0.3);
+        }
+
+        /* ── 主内容区 ── */
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+
+        /* ── 页头 ── */
+        .header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            gap: 16px;
-            margin-bottom: 28px;
+            padding: 20px 40px;
+            border-bottom: 1px solid var(--border);
+            background: var(--surface);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            opacity: 0;
+            animation: fadeDown 0.4s ease forwards;
+            animation-delay: 0.1s;
         }
 
-        h1 {
-            margin: 0;
-            font-size: 30px;
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
         }
 
-        p {
-            margin: 0;
-            line-height: 1.7;
-            color: #475569;
+        .header-title {
+            font-family: 'Cormorant Garamond', serif;
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--text-primary);
         }
 
-        .badge {
-            display: inline-flex;
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .header-btn {
+            width: 38px;
+            height: 38px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text-body);
+            display: grid;
+            place-items: center;
+            cursor: pointer;
+            transition: border-color 0.2s ease, color 0.2s ease;
+        }
+
+        .header-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .header-btn svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        /* ── 汉堡菜单按钮（仅移动端显示）── */
+        .hamburger-btn {
+            display: none;
+            width: 44px;
+            height: 44px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text-body);
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+            cursor: pointer;
+            transition: border-color 0.2s ease, color 0.2s ease;
+            padding: 0;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+            position: relative;
+            z-index: 11;
+        }
+
+        .hamburger-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .hamburger-btn span {
+            display: block;
+            width: 18px;
+            height: 2px;
+            background: currentColor;
+            border-radius: 2px;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+        }
+
+        .hamburger-btn.active span:nth-child(1) {
+            transform: translateY(7px) rotate(45deg);
+        }
+
+        .hamburger-btn.active span:nth-child(2) {
+            opacity: 0;
+        }
+
+        .hamburger-btn.active span:nth-child(3) {
+            transform: translateY(-7px) rotate(-45deg);
+        }
+
+        .logout-btn {
+            display: flex;
             align-items: center;
             gap: 8px;
-            padding: 8px 12px;
-            border-radius: 999px;
-            background: #dbeafe;
-            color: #1d4ed8;
-            font-size: 14px;
-            font-weight: 700;
-        }
-
-        .logout {
-            padding: 10px 16px;
-            border: 0;
-            border-radius: 12px;
-            background: #0f172a;
+            padding: 8px 16px;
+            border: none;
+            border-radius: var(--radius);
+            background: var(--sidebar);
             color: white;
+            font-family: 'Cormorant Garamond', serif;
+            font-size: 14px;
+            font-weight: 600;
             cursor: pointer;
-            font-weight: 700;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            position: relative;
+            overflow: hidden;
         }
 
-        .grid {
+        .logout-btn::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(135deg, var(--accent), #d4956a);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .logout-btn span,
+        .logout-btn svg {
+            position: relative;
+            z-index: 1;
+        }
+
+        .logout-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 24px var(--accent-glow);
+        }
+
+        .logout-btn:hover::before {
+            opacity: 1;
+        }
+
+        .logout-btn svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        /* ── 内容区 ── */
+        .content {
+            flex: 1;
+            padding: 32px 40px;
+            max-width: 960px;
+        }
+
+        /* ── 统计卡片 ── */
+        .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            grid-template-columns: repeat(3, 1fr);
             gap: 16px;
-            margin-top: 24px;
+            margin-bottom: 24px;
         }
 
-        .item {
-            padding: 18px;
-            border-radius: 18px;
-            background: #f8fafc;
-            border: 1px solid #cbd5e1;
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 24px;
+            position: relative;
+            overflow: hidden;
+            opacity: 0;
+            animation: fadeUp 0.5s ease forwards;
+            transition: transform 0.25s ease, box-shadow 0.25s ease;
         }
 
-        .item strong {
-            display: block;
-            margin-bottom: 8px;
+        .stat-card:nth-child(1) {
+            animation-delay: 0.15s;
+        }
+
+        .stat-card:nth-child(2) {
+            animation-delay: 0.23s;
+        }
+
+        .stat-card:nth-child(3) {
+            animation-delay: 0.31s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-md);
+        }
+
+        .stat-card-top {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+        }
+
+        .stat-card-top.accent {
+            background: var(--accent);
+        }
+
+        .stat-card-top.success {
+            background: var(--success);
+        }
+
+        .stat-card-top.blue {
+            background: var(--blue);
+        }
+
+        .stat-card-label {
+            font-family: 'DM Mono', monospace;
+            font-size: 10px;
+            font-weight: 500;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+        }
+
+        .stat-card-value {
+            font-family: 'DM Mono', monospace;
+            font-size: 28px;
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        .stat-card-desc {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-top: 6px;
+        }
+
+        /* ── 信息卡片 ── */
+        .info-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 24px;
+            opacity: 0;
+            animation: fadeUp 0.5s ease forwards;
+            animation-delay: 0.39s;
+        }
+
+        .info-card-title {
+            font-family: 'Cormorant Garamond', serif;
+            font-size: 17px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 20px;
+        }
+
+        .info-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 0;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .info-row:last-child {
+            border-bottom: none;
+        }
+
+        .info-row-label {
+            font-family: 'DM Mono', monospace;
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-muted);
+        }
+
+        .info-row-value {
             font-size: 14px;
-            color: #0f172a;
+            color: var(--text-body);
         }
 
-        .item span {
-            color: #334155;
-            font-size: 14px;
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-family: 'DM Mono', monospace;
+            font-size: 11px;
+            padding: 4px 10px;
+            border-radius: 6px;
+        }
+
+        .status-badge.success {
+            background: rgba(58, 138, 92, 0.08);
+            color: var(--success);
+        }
+
+        .status-badge::before {
+            content: '';
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        /* ── 动画 ── */
+        @keyframes fadeUp {
+            from {
+                opacity: 0;
+                transform: translateY(16px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes fadeDown {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(-20px);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        /* ── 响应式 ── */
+
+        /* 平板：侧边栏收起为抽屉 */
+        @media (max-width: 1024px) {
+            .sidebar {
+                position: fixed;
+                left: 0;
+                top: 0;
+                z-index: 200;
+                transform: translateX(-100%);
+                transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+                animation: none;
+                opacity: 1;
+            }
+
+            .sidebar.open {
+                transform: translateX(0);
+            }
+
+            .sidebar-overlay {
+                display: block;
+            }
+
+            .hamburger-btn {
+                display: flex;
+            }
+
+            .header {
+                padding: 16px 24px;
+            }
+
+            .content {
+                padding: 24px;
+            }
+        }
+
+        /* 手机：单列紧凑布局 */
+        @media (max-width: 640px) {
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .header {
+                padding: 12px 16px;
+            }
+
+            .header-title {
+                font-size: 20px;
+            }
+
+            .content {
+                padding: 16px;
+            }
+
+            .stat-card-value {
+                font-size: 22px;
+            }
+
+            .info-row {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 4px;
+            }
+
+            .info-card,
+            .stat-card {
+                padding: 18px;
+            }
+
+            .logout-btn span {
+                display: none;
+            }
+
+            .logout-btn {
+                padding: 8px 10px;
+            }
+        }
+
+        /* 超小屏 */
+        @media (max-width: 400px) {
+            .content {
+                padding: 12px;
+            }
+
+            .header {
+                padding: 10px 12px;
+            }
+
+            .stat-card {
+                padding: 14px;
+            }
+
+            .stat-card-value {
+                font-size: 18px;
+            }
+
+            .info-card-title {
+                font-size: 15px;
+            }
         }
     </style>
 </head>
 
 <body>
-    <main class="shell">
-        <section class="card">
-            <div class="topbar">
-                <div>
-                    <h1>配置页</h1>
-                    <p>当前先只实现登录和退出登录能力，后续配置项可以直接扩展到这里。</p>
+
+    <!-- ── 遮罩层 ── -->
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+    <!-- ── 侧边栏 ── -->
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-brand">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                stroke-linejoin="round">
+                <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                <path d="M2 17l10 5 10-5" />
+                <path d="M2 12l10 5 10-5" />
+            </svg>
+            Ollama-Switch
+        </div>
+
+        <nav class="sidebar-nav">
+            <div class="nav-section-label">管理</div>
+            <a class="nav-item active" href="/config">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <path d="M12 20V10" />
+                    <path d="M18 20V4" />
+                    <path d="M6 20v-4" />
+                </svg>
+                概览
+            </a>
+            <a class="nav-item" href="#">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3" />
+                    <path
+                        d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                </svg>
+                配置
+            </a>
+            <a class="nav-item" href="#">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                    <line x1="16" y1="13" x2="8" y2="13" />
+                    <line x1="16" y1="17" x2="8" y2="17" />
+                </svg>
+                日志
+            </a>
+
+            <div class="nav-section-label">系统</div>
+            <a class="nav-item" href="#">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                    <line x1="8" y1="21" x2="16" y2="21" />
+                    <line x1="12" y1="17" x2="12" y2="21" />
+                </svg>
+                状态
+            </a>
+        </nav>
+
+        <div class="sidebar-footer">
+            <div class="sidebar-user">
+                <div class="sidebar-avatar" th:text="${#strings.substring(username, 0, 1)}">R</div>
+                <div class="sidebar-user-info">
+                    <div class="sidebar-user-name" th:text="${username}">root</div>
+                    <div class="sidebar-user-role">管理员</div>
                 </div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- ── 主内容 ── -->
+    <div class="main">
+        <header class="header">
+            <div class="header-left">
+                <button class="hamburger-btn" id="hamburgerBtn" aria-label="切换菜单">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </button>
+                <div class="header-title">概览</div>
+            </div>
+            <div class="header-actions">
+                <button class="header-btn" title="刷新">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <polyline points="23 4 23 10 17 10" />
+                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                    </svg>
+                </button>
                 <form th:action="@{/logout}" method="post">
-                    <button class="logout" type="submit">退出登录</button>
+                    <button class="logout-btn" type="submit">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                            stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                            <polyline points="16 17 21 12 16 7" />
+                            <line x1="21" y1="12" x2="9" y2="12" />
+                        </svg>
+                        <span>退出登录</span>
+                    </button>
                 </form>
             </div>
+        </header>
 
-            <div class="badge">已登录用户：<span th:text="${username}">root</span></div>
-
-            <div class="grid">
-                <div class="item">
-                    <strong>页面状态</strong>
-                    <span>已受 Spring Security 保护，未登录访问会被重定向回登录页。</span>
+        <main class="content">
+            <!-- 统计卡片 -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-card-top accent"></div>
+                    <div class="stat-card-label">认证状态</div>
+                    <div class="stat-card-value" style="font-size: 20px; margin-top: 4px;">已登录</div>
+                    <div class="stat-card-desc">Spring Security 保护中</div>
                 </div>
-                <div class="item">
-                    <strong>账号来源</strong>
-                    <span>默认管理员账户保存在 SQLite 中，首次启动自动初始化。</span>
+                <div class="stat-card">
+                    <div class="stat-card-top success"></div>
+                    <div class="stat-card-label">账号来源</div>
+                    <div class="stat-card-value" style="font-size: 20px; margin-top: 4px;">SQLite</div>
+                    <div class="stat-card-desc">本地嵌入式数据库</div>
                 </div>
-                <div class="item">
-                    <strong>数据库文件</strong>
-                    <span>admin.db</span>
+                <div class="stat-card">
+                    <div class="stat-card-top blue"></div>
+                    <div class="stat-card-label">数据库文件</div>
+                    <div class="stat-card-value" style="font-size: 20px; margin-top: 4px;">admin.db</div>
+                    <div class="stat-card-desc">首次启动自动初始化</div>
                 </div>
             </div>
-        </section>
-    </main>
+
+            <!-- 信息卡片 -->
+            <div class="info-card">
+                <div class="info-card-title">系统信息</div>
+                <div class="info-list">
+                    <div class="info-row">
+                        <span class="info-row-label">当前用户</span>
+                        <span class="info-row-value" th:text="${username}">root</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-row-label">页面状态</span>
+                        <span class="status-badge success">已受保护</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-row-label">认证方式</span>
+                        <span class="info-row-value">JdbcUserDetailsManager + BCrypt</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-row-label">会话管理</span>
+                        <span class="info-row-value">Spring Security 默认会话</span>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        (function () {
+            var sidebar = document.getElementById('sidebar');
+            var overlay = document.getElementById('sidebarOverlay');
+            var hamburger = document.getElementById('hamburgerBtn');
+
+            function openSidebar() {
+                sidebar.classList.add('open');
+                overlay.classList.add('visible');
+                hamburger.classList.add('active');
+                document.body.style.overflow = 'hidden';
+            }
+
+            function closeSidebar() {
+                sidebar.classList.remove('open');
+                overlay.classList.remove('visible');
+                hamburger.classList.remove('active');
+                document.body.style.overflow = '';
+            }
+
+            function toggleSidebar() {
+                if (sidebar.classList.contains('open')) {
+                    closeSidebar();
+                } else {
+                    openSidebar();
+                }
+            }
+
+            hamburger.addEventListener('click', toggleSidebar);
+            overlay.addEventListener('click', closeSidebar);
+
+            sidebar.querySelectorAll('.nav-item').forEach(function (link) {
+                link.addEventListener('click', function () {
+                    if (window.innerWidth <= 1024) {
+                        closeSidebar();
+                    }
+                });
+            });
+
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape' && sidebar.classList.contains('open')) {
+                    closeSidebar();
+                }
+            });
+
+            window.addEventListener('resize', function () {
+                if (window.innerWidth > 1024) {
+                    closeSidebar();
+                }
+            });
+        })();
+    </script>
+
 </body>
 
 </html>
