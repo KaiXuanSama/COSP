@@ -8,7 +8,7 @@ spring:
     url: ${SQLITE_URL:jdbc:sqlite:/app/data/admin.db}
     driver-class-name: org.sqlite.JDBC
     hikari:
-      maximum-pool-size: 1
+      maximum-pool-size: 10
   sql:
     init:
       mode: always

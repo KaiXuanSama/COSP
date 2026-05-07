@@ -4,6 +4,10 @@
 <!-- ============================================================
      内容片段：配置页 — 管理后台代理配置表单
      使用方式：th:replace="~{admin/content/settings :: settings}"
+     数据模型：
+       - longcat: Map (providerKey, enabled, baseUrl, apiKey, apiFormat, models)
+       - mimo:    Map (同上)
+       - models 中每项: Map (modelName, contextSize, capsTools, capsVision)
      ============================================================ -->
 
 <main th:fragment="settings" class="content">
@@ -30,7 +34,7 @@
                     <div class="accordion-header"
                         onclick="this.nextElementSibling.classList.toggle('open');this.classList.toggle('open')">
                         <span class="accordion-title">LongCat</span>
-                        <span class="accordion-arrow">▸</span>
+                        <span class="accordion-arrow">&#x25B8;</span>
                     </div>
                     <div class="accordion-body">
                         <div class="accordion-inner">
@@ -38,7 +42,7 @@
                                 <label class="field-label">启用</label>
                                 <div class="switch-wrap">
                                     <label class="switch">
-                                        <input type="checkbox" name="longcatEnabled" checked>
+                                        <input type="checkbox" name="longcatEnabled" th:checked="${longcat.enabled}">
                                         <span class="switch-slider"></span>
                                     </label>
                                     <span class="switch-tooltip" id="longcat-tooltip"></span>
@@ -48,14 +52,14 @@
                                 <label class="field-label" for="longcatBaseUrl">API URL</label>
                                 <div class="field-input-wrap">
                                     <input class="field-input" id="longcatBaseUrl" name="longcatBaseUrl" type="url"
-                                        placeholder="https://api.longcat.chat" th:value="${config.longcatBaseUrl}">
+                                        placeholder="https://api.longcat.chat" th:value="${longcat.baseUrl}">
                                 </div>
                             </div>
                             <div class="field-group">
                                 <label class="field-label" for="longcatApiKey">API Key</label>
                                 <div class="field-input-wrap">
                                     <input class="field-input" id="longcatApiKey" name="longcatApiKey" type="password"
-                                        placeholder="请输入 LongCat API Key" th:value="${config.longcatApiKey}">
+                                        placeholder="请输入 LongCat API Key" th:value="${longcat.apiKey}">
                                 </div>
                             </div>
                             <div class="field-group">
@@ -63,7 +67,8 @@
                                 <div class="field-input-wrap field-input-wrap--select">
                                     <select class="field-input field-input--select" id="longcatApiFormat"
                                         name="longcatApiFormat">
-                                        <option value="openai" selected>OpenAI</option>
+                                        <option value="openai" th:selected="${longcat.apiFormat == 'openai'}">OpenAI
+                                        </option>
                                         <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
                                     </select>
                                 </div>
@@ -80,7 +85,26 @@
                                             添加模型</button>
                                     </div>
                                 </div>
-                                <div class="model-list-items"></div>
+                                <div class="model-list-items">
+                                    <div class="model-item" th:each="model, iter : ${longcat.models}">
+                                        <input type="text" placeholder="模型名称"
+                                            th:name="'longcatModels[' + ${iter.index} + '].name'"
+                                            th:value="${model.modelName}">
+                                        <input type="number" placeholder="上下文大小" min="0"
+                                            th:name="'longcatModels[' + ${iter.index} + '].contextSize'"
+                                            th:value="${model.contextSize}">
+                                        <div class="model-caps">
+                                            <label class="model-cap"><input type="checkbox"
+                                                    th:name="'longcatModels[' + ${iter.index} + '].capsTools'"
+                                                    th:checked="${model.capsTools}">工具</label>
+                                            <label class="model-cap"><input type="checkbox"
+                                                    th:name="'longcatModels[' + ${iter.index} + '].capsVision'"
+                                                    th:checked="${model.capsVision}">视觉</label>
+                                        </div>
+                                        <button type="button" class="btn-remove-model"
+                                            onclick="this.parentElement.remove(); checkToggle('longcat')">&#x2715;</button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -91,7 +115,7 @@
                     <div class="accordion-header"
                         onclick="this.nextElementSibling.classList.toggle('open');this.classList.toggle('open')">
                         <span class="accordion-title">MiMo</span>
-                        <span class="accordion-arrow">▸</span>
+                        <span class="accordion-arrow">&#x25B8;</span>
                     </div>
                     <div class="accordion-body">
                         <div class="accordion-inner">
@@ -99,7 +123,7 @@
                                 <label class="field-label">启用</label>
                                 <div class="switch-wrap">
                                     <label class="switch">
-                                        <input type="checkbox" name="mimoEnabled">
+                                        <input type="checkbox" name="mimoEnabled" th:checked="${mimo.enabled}">
                                         <span class="switch-slider"></span>
                                     </label>
                                     <span class="switch-tooltip" id="mimo-tooltip"></span>
@@ -109,15 +133,14 @@
                                 <label class="field-label" for="mimoBaseUrl">API URL</label>
                                 <div class="field-input-wrap">
                                     <input class="field-input" id="mimoBaseUrl" name="mimoBaseUrl" type="url"
-                                        placeholder="https://token-plan-cn.xiaomimimo.com/"
-                                        th:value="${config.mimoBaseUrl}">
+                                        placeholder="https://token-plan-cn.xiaomimimo.com/" th:value="${mimo.baseUrl}">
                                 </div>
                             </div>
                             <div class="field-group">
                                 <label class="field-label" for="mimoApiKey">API Key</label>
                                 <div class="field-input-wrap">
                                     <input class="field-input" id="mimoApiKey" name="mimoApiKey" type="password"
-                                        placeholder="请输入 MiMo API Key" th:value="${config.mimoApiKey}">
+                                        placeholder="请输入 MiMo API Key" th:value="${mimo.apiKey}">
                                 </div>
                             </div>
                             <div class="field-group">
@@ -125,8 +148,10 @@
                                 <div class="field-input-wrap field-input-wrap--select">
                                     <select class="field-input field-input--select" id="mimoApiFormat"
                                         name="mimoApiFormat">
-                                        <option value="openai">OpenAI（推荐）</option>
-                                        <option value="anthropic">AnthropicAPI（有Bug，不推荐使用）</option>
+                                        <option value="openai" th:selected="${mimo.apiFormat == 'openai'}">OpenAI（推荐）
+                                        </option>
+                                        <option value="anthropic" th:selected="${mimo.apiFormat == 'anthropic'}">
+                                            AnthropicAPI（有Bug，不推荐使用）</option>
                                     </select>
                                 </div>
                             </div>
@@ -142,7 +167,26 @@
                                             添加模型</button>
                                     </div>
                                 </div>
-                                <div class="model-list-items"></div>
+                                <div class="model-list-items">
+                                    <div class="model-item" th:each="model, iter : ${mimo.models}">
+                                        <input type="text" placeholder="模型名称"
+                                            th:name="'mimoModels[' + ${iter.index} + '].name'"
+                                            th:value="${model.modelName}">
+                                        <input type="number" placeholder="上下文大小" min="0"
+                                            th:name="'mimoModels[' + ${iter.index} + '].contextSize'"
+                                            th:value="${model.contextSize}">
+                                        <div class="model-caps">
+                                            <label class="model-cap"><input type="checkbox"
+                                                    th:name="'mimoModels[' + ${iter.index} + '].capsTools'"
+                                                    th:checked="${model.capsTools}">工具</label>
+                                            <label class="model-cap"><input type="checkbox"
+                                                    th:name="'mimoModels[' + ${iter.index} + '].capsVision'"
+                                                    th:checked="${model.capsVision}">视觉</label>
+                                        </div>
+                                        <button type="button" class="btn-remove-model"
+                                            onclick="this.parentElement.remove(); checkToggle('mimo')">&#x2715;</button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -262,15 +306,10 @@
             cursor: not-allowed;
         }
 
-        .switch input:disabled~.switch-slider::before {
-            background: #f5f5f5;
-        }
-
         .switch input:checked+.switch-slider::before {
             transform: translateX(18px);
         }
 
-        /* 模型列表 */
         .model-list {
             margin-top: 20px;
             padding: 16px;
@@ -420,17 +459,17 @@
     <script>
         function addModel(provider) {
             var container = document.getElementById(provider + '-models').querySelector('.model-list-items');
-            var idx = container.children.length;
+            var idx = container.querySelectorAll('.model-item').length;
             var div = document.createElement('div');
             div.className = 'model-item';
             div.innerHTML =
                 '<input type="text" name="' + provider + 'Models[' + idx + '].name" placeholder="模型名称" />' +
-                '<input type="number" name="' + provider + 'Models[' + idx + '].contextSize" placeholder="上下文大小" />' +
+                '<input type="number" name="' + provider + 'Models[' + idx + '].contextSize" placeholder="上下文大小" min="0" />' +
                 '<div class="model-caps">' +
-                '<label class="model-cap"><input type="checkbox" name="' + provider + 'Models[' + idx + '].caps" value="tools" />工具</label>' +
-                '<label class="model-cap"><input type="checkbox" name="' + provider + 'Models[' + idx + '].caps" value="vision" />视觉</label>' +
+                '<label class="model-cap"><input type="checkbox" name="' + provider + 'Models[' + idx + '].capsTools" />工具</label>' +
+                '<label class="model-cap"><input type="checkbox" name="' + provider + 'Models[' + idx + '].capsVision" />视觉</label>' +
                 '</div>' +
-                '<button type="button" class="btn-remove-model" onclick="this.parentElement.remove(); checkToggle(\'' + provider + '\')">✕</button>';
+                '<button type="button" class="btn-remove-model" onclick="this.parentElement.remove(); checkToggle(\'' + provider + '\')">&#x2715;</button>';
             container.appendChild(div);
             checkToggle(provider);
         }
@@ -462,5 +501,3 @@
         });
     </script>
 </main>
-
-</html>

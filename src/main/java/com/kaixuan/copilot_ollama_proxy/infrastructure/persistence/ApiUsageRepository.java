@@ -1,4 +1,4 @@
-﻿package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
+package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;

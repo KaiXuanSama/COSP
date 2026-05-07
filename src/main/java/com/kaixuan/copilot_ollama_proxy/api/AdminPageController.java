@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.api;
 
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
-import org.springframework.beans.factory.annotation.Value;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.userdetails.User;
@@ -12,7 +12,9 @@ import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.springframework.http.ResponseEntity;
@@ -28,45 +30,17 @@ import org.springframework.http.ResponseEntity;
 @Controller
 public class AdminPageController {
 
-    @Value("${server.port:11434}")
-    private int serverPort;
-
-    @Value("${proxy.provider:longcat}")
-    private String proxyProvider;
-
-    @Value("${proxy.upstream-chat-service:openai}")
-    private String upstreamChatService;
-
-    @Value("${ollama.version:0.6.4}")
-    private String ollamaVersion;
-
-    @Value("${longcat.api-key:}")
-    private String longcatApiKey;
-
-    @Value("${longcat.base-url:https://api.longcat.chat}")
-    private String longcatBaseUrl;
-
-    @Value("${longcat.default-model:LongCat-Flash-Chat}")
-    private String longcatDefaultModel;
-
-    @Value("${mimo.api-key:}")
-    private String mimoApiKey;
-
-    @Value("${mimo.base-url:https://token-plan-cn.xiaomimimo.com/anthropic}")
-    private String mimoBaseUrl;
-
-    @Value("${mimo.default-model:mimo-v2.5-pro}")
-    private String mimoDefaultModel;
-
     private final JdbcUserDetailsManager userDetailsManager;
     private final PasswordEncoder passwordEncoder;
     private final ApiUsageRepository apiUsageRepository;
+    private final ProviderConfigRepository providerConfigRepository;
 
     public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder,
-            ApiUsageRepository apiUsageRepository) {
+            ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository) {
         this.userDetailsManager = userDetailsManager;
         this.passwordEncoder = passwordEncoder;
         this.apiUsageRepository = apiUsageRepository;
+        this.providerConfigRepository = providerConfigRepository;
     }
 
     // ==================== 登录页 ====================
@@ -88,7 +62,6 @@ public class AdminPageController {
         model.addAttribute("pageTitle", "概览");
         model.addAttribute("pageTitleFull", "概览 · Ollama-Switch");
         model.addAttribute("nav", "overview");
-        model.addAttribute("config", buildConfigModel());
         // API 调用统计
         model.addAttribute("totalApiCalls", apiUsageRepository.countTotal());
         model.addAttribute("todayApiCalls", apiUsageRepository.countToday());
@@ -119,20 +92,101 @@ public class AdminPageController {
         model.addAttribute("pageTitle", "配置");
         model.addAttribute("pageTitleFull", "配置 · Ollama-Switch");
         model.addAttribute("nav", "settings");
-        model.addAttribute("config", buildConfigModel());
+        // 从数据库读取服务商配置
+        model.addAttribute("longcat", loadProvider("longcat"));
+        model.addAttribute("mimo", loadProvider("mimo"));
         return "admin/pages/settings";
     }
 
     @PostMapping("/config/settings")
     public String saveSettings(Authentication authentication, Model model, @RequestParam Map<String, String> params) {
-        // TODO: 持久化配置到 application.yml 或数据库
+
+        // 解析并保存 LongCat 配置
+        boolean longcatEnabled = "on".equals(params.get("longcatEnabled"));
+        String longcatBaseUrl = params.getOrDefault("longcatBaseUrl", "").trim();
+        String longcatApiKey = params.getOrDefault("longcatApiKey", "").trim();
+        String longcatApiFormat = params.getOrDefault("longcatApiFormat", "openai").trim();
+        int longcatId = providerConfigRepository.saveProvider("longcat", longcatEnabled, longcatBaseUrl, longcatApiKey,
+                longcatApiFormat);
+        List<Map<String, Object>> longcatModels = parseModels(params, "longcat");
+        providerConfigRepository.saveModels(longcatId, longcatModels);
+
+        // 解析并保存 MiMo 配置
+        boolean mimoEnabled = "on".equals(params.get("mimoEnabled"));
+        String mimoBaseUrl = params.getOrDefault("mimoBaseUrl", "").trim();
+        String mimoApiKey = params.getOrDefault("mimoApiKey", "").trim();
+        String mimoApiFormat = params.getOrDefault("mimoApiFormat", "openai").trim();
+        int mimoId = providerConfigRepository.saveProvider("mimo", mimoEnabled, mimoBaseUrl, mimoApiKey, mimoApiFormat);
+        List<Map<String, Object>> mimoModels = parseModels(params, "mimo");
+        providerConfigRepository.saveModels(mimoId, mimoModels);
+
+        // 重新加载页面
         model.addAttribute("username", authentication.getName());
         model.addAttribute("pageTitle", "配置");
         model.addAttribute("pageTitleFull", "配置 · Ollama-Switch");
         model.addAttribute("nav", "settings");
-        model.addAttribute("config", buildConfigModel());
+        model.addAttribute("longcat", loadProvider("longcat"));
+        model.addAttribute("mimo", loadProvider("mimo"));
         model.addAttribute("saveSuccess", true);
         return "admin/pages/settings";
+    }
+
+    /**
+     * 从数据库加载单个服务商配置，如果不存在则返回默认空对象。
+     */
+    private Map<String, Object> loadProvider(String providerKey) {
+        Map<String, Object> provider = providerConfigRepository.findByKey(providerKey);
+        if (provider == null) {
+            provider = new LinkedHashMap<>();
+            provider.put("providerKey", providerKey);
+            provider.put("enabled", false);
+            provider.put("baseUrl", "");
+            provider.put("apiKey", "");
+            provider.put("apiFormat", "openai");
+            provider.put("models", new ArrayList<>());
+        }
+        return provider;
+    }
+
+    /**
+     * 从请求参数中解析模型列表。
+     * 支持格式：providerModels[i].name / providerModels[i].contextSize / providerModels[i].capsTools / providerModels[i].capsVision
+     */
+    private List<Map<String, Object>> parseModels(Map<String, String> params, String provider) {
+        List<Map<String, Object>> models = new ArrayList<>();
+        String prefix = provider + "Models[";
+        // 收集所有模型索引
+        java.util.Set<Integer> indices = new java.util.TreeSet<>();
+        for (String key : params.keySet()) {
+            if (key.startsWith(prefix) && key.contains("].")) {
+                try {
+                    int start = prefix.length();
+                    int end = key.indexOf(']', start);
+                    indices.add(Integer.parseInt(key.substring(start, end)));
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        for (int i : indices) {
+            String name = params.getOrDefault(prefix + i + "].name", "").trim();
+            if (name.isEmpty())
+                continue;
+            String contextSizeStr = params.getOrDefault(prefix + i + "].contextSize", "0").trim();
+            int contextSize = 0;
+            try {
+                contextSize = Integer.parseInt(contextSizeStr);
+            } catch (NumberFormatException ignored) {
+            }
+            boolean capsTools = "on".equals(params.get(prefix + i + "].capsTools"));
+            boolean capsVision = "on".equals(params.get(prefix + i + "].capsVision"));
+            Map<String, Object> model = new LinkedHashMap<>();
+            model.put("modelName", name);
+            model.put("contextSize", contextSize);
+            model.put("capsTools", capsTools);
+            model.put("capsVision", capsVision);
+            models.add(model);
+        }
+        return models;
     }
 
     // ==================== 日志页 ====================
@@ -154,7 +208,6 @@ public class AdminPageController {
         model.addAttribute("pageTitle", "状态");
         model.addAttribute("pageTitleFull", "状态 · Ollama-Switch");
         model.addAttribute("nav", "status");
-        model.addAttribute("config", buildConfigModel());
         return "admin/pages/status";
     }
 
@@ -239,31 +292,4 @@ public class AdminPageController {
         return "admin/pages/account";
     }
 
-    // ==================== 辅助方法 ====================
-
-    /**
-     * 构建配置页所需的配置模型 Map。
-     */
-    private Map<String, Object> buildConfigModel() {
-        Map<String, Object> config = new LinkedHashMap<>();
-        config.put("serverPort", serverPort);
-        config.put("proxyProvider", proxyProvider);
-        config.put("upstreamChatService", upstreamChatService);
-        config.put("ollamaVersion", ollamaVersion);
-        config.put("longcatApiKey", longcatApiKey);
-        config.put("longcatBaseUrl", longcatBaseUrl);
-        config.put("longcatDefaultModel", longcatDefaultModel);
-        config.put("mimoApiKey", mimoApiKey);
-        config.put("mimoBaseUrl", mimoBaseUrl);
-        config.put("mimoDefaultModel", mimoDefaultModel);
-        // 根据当前 provider 计算活跃配置
-        if ("mimo".equals(proxyProvider)) {
-            config.put("activeBaseUrl", mimoBaseUrl);
-            config.put("defaultModel", mimoDefaultModel);
-        } else {
-            config.put("activeBaseUrl", longcatBaseUrl);
-            config.put("defaultModel", longcatDefaultModel);
-        }
-        return config;
-    }
 }
