@@ -4,10 +4,10 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.protocol.anthropic.AnthropicStreamEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -19,17 +19,46 @@ import java.util.concurrent.atomic.AtomicReference;
  * Anthropic API 实现 —— 将 OpenAI 格式请求转换为 Anthropic Messages API 调用，
  * 再将 Anthropic 响应转换回 OpenAI 格式。
  */
-@Service @ConditionalOnProperty(name = "proxy.provider", havingValue = "mimo", matchIfMissing = true) @ConditionalOnProperty(name = "proxy.upstream-chat-service", havingValue = "anthropic")
+@Service
 public class MimoAnthropicChatService implements UpstreamChatService {
 
     private static final Logger log = LoggerFactory.getLogger(MimoAnthropicChatService.class);
 
     private final MimoAnthropicClient anthropicClient;
+    private final ProviderConfigRepository providerConfigRepository;
     private final ObjectMapper objectMapper;
 
-    public MimoAnthropicChatService(MimoAnthropicClient anthropicClient, ObjectMapper objectMapper) {
+    public MimoAnthropicChatService(MimoAnthropicClient anthropicClient,
+            ProviderConfigRepository providerConfigRepository, ObjectMapper objectMapper) {
         this.anthropicClient = anthropicClient;
+        this.providerConfigRepository = providerConfigRepository;
         this.objectMapper = objectMapper;
+    }
+
+    // ========== 路由支持 ==========
+
+    @Override
+    public String getProviderKey() {
+        return "mimo";
+    }
+
+    @Override
+    public boolean supportsModel(String modelName) {
+        // 检查 MiMo provider 是否启用且 api_format 为 anthropic
+        Map<String, Object> config = providerConfigRepository.findActiveProviderByKey("mimo");
+        if (config == null || !"anthropic".equals(config.get("apiFormat"))) {
+            return false;
+        }
+        int providerId = (Integer) config.get("id");
+        List<Map<String, Object>> dbModels = providerConfigRepository.findModelsByProviderId(providerId);
+        if (dbModels != null) {
+            for (Map<String, Object> m : dbModels) {
+                if (Boolean.TRUE.equals(m.get("enabled")) && modelName.equals(m.get("modelName"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     // ========== UpstreamChatService 接口实现 ==========

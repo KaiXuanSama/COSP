@@ -133,6 +133,65 @@ public class ProviderConfigRepository {
         }
     }
 
+    // ==================== 运行时读取（供 OllamaService 使用） ====================
+
+    /**
+     * 查询所有已启用的服务商配置（含已启用的模型列表）。
+     * 只返回 enabled=1 的服务商，且只返回每个服务商下 enabled=1 的模型。
+     * 如果没有已启用的模型，则不包含该服务商。
+     */
+    public List<Map<String, Object>> findAllActiveProvidersWithEnabledModels() {
+        List<Map<String, Object>> providers = jdbcTemplate
+                .query("SELECT id, provider_key, enabled, base_url, api_key, api_format "
+                        + "FROM provider_config WHERE enabled = 1 ORDER BY id", (rs, rowNum) -> {
+                            Map<String, Object> row = new java.util.LinkedHashMap<>();
+                            row.put("id", rs.getInt("id"));
+                            row.put("providerKey", rs.getString("provider_key"));
+                            row.put("enabled", rs.getInt("enabled") == 1);
+                            row.put("baseUrl", rs.getString("base_url"));
+                            row.put("apiKey", rs.getString("api_key"));
+                            row.put("apiFormat", rs.getString("api_format"));
+                            // 只查已启用的模型
+                            List<Map<String, Object>> models = jdbcTemplate.query(
+                                    "SELECT model_name, context_size, caps_tools, caps_vision "
+                                            + "FROM provider_model WHERE provider_id = ? AND enabled = 1 ORDER BY sort_order, id",
+                                    (rs2, rn2) -> {
+                                        Map<String, Object> m = new java.util.LinkedHashMap<>();
+                                        m.put("modelName", rs2.getString("model_name"));
+                                        m.put("contextSize", rs2.getInt("context_size"));
+                                        m.put("capsTools", rs2.getInt("caps_tools") == 1);
+                                        m.put("capsVision", rs2.getInt("caps_vision") == 1);
+                                        return m;
+                                    }, rs.getInt("id"));
+                            row.put("models", models);
+                            return row;
+                        });
+        // 过滤掉没有已启用模型的服务商
+        providers.removeIf(p -> ((List<?>) p.get("models")).isEmpty());
+        return providers;
+    }
+
+    /**
+     * 根据 provider_key 查询单个服务商配置（运行时使用）。
+     * 如果服务商不存在或未启用，返回 null。
+     */
+    public Map<String, Object> findActiveProviderByKey(String providerKey) {
+        return jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, api_format "
+                + "FROM provider_config WHERE provider_key = ? AND enabled = 1", rs -> {
+                    if (rs.next()) {
+                        Map<String, Object> row = new java.util.LinkedHashMap<>();
+                        row.put("id", rs.getInt("id"));
+                        row.put("providerKey", rs.getString("provider_key"));
+                        row.put("enabled", rs.getInt("enabled") == 1);
+                        row.put("baseUrl", rs.getString("base_url"));
+                        row.put("apiKey", rs.getString("api_key"));
+                        row.put("apiFormat", rs.getString("api_format"));
+                        return row;
+                    }
+                    return null;
+                }, providerKey);
+    }
+
     // ==================== 应用运行配置（app_config 键值对） ====================
 
     /**

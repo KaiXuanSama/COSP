@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.api.ollama;
 
-import com.kaixuan.copilot_ollama_proxy.application.ollama.OllamaService;
+import com.kaixuan.copilot_ollama_proxy.application.ollama.CompositeOllamaService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
@@ -13,7 +13,10 @@ import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Ollama API 兼容控制器 —— 模拟 Ollama 服务器对外暴露的 REST 接口。
@@ -28,12 +31,11 @@ import java.util.Map;
 @RestController @RequestMapping("/api")
 public class OllamaApiController {
 
-    private final OllamaService ollamaService;
+    private final CompositeOllamaService ollamaService;
     private final ProviderConfigRepository providerConfigRepository;
-    /** 伪装的 Ollama 版本号默认值，从 application.yml 的 ollama.version 配置读取 */
     private final String defaultVersion;
 
-    public OllamaApiController(OllamaService ollamaService, ProviderConfigRepository providerConfigRepository,
+    public OllamaApiController(CompositeOllamaService ollamaService, ProviderConfigRepository providerConfigRepository,
             @Value("${ollama.version}") String defaultVersion) {
         this.ollamaService = ollamaService;
         this.providerConfigRepository = providerConfigRepository;
@@ -54,12 +56,77 @@ public class OllamaApiController {
 
     /**
      * 返回可用模型列表。
-     * Copilot 会调用此接口获取所有可用模型，展示在模型选择下拉框中。
-     * 返回的是伪装的 Mimo 模型信息，格式与 Ollama 一致。
+     * 从数据库聚合所有已启用服务商下用户勾选的模型。
+     * 如果没有任何模型启用（或所有服务商均未启用），则回退返回 "nano_llm"。
      */
     @GetMapping("/tags")
     public Mono<OllamaTagsResponse> tags() {
-        return ollamaService.listModels();
+        return Mono.fromCallable(() -> {
+            var response = new OllamaTagsResponse();
+            List<OllamaTagsResponse.ModelInfo> allModels = new ArrayList<>();
+
+            // 从数据库读取所有已启用服务商及其已启用模型
+            List<Map<String, Object>> activeProviders = providerConfigRepository
+                    .findAllActiveProvidersWithEnabledModels();
+            for (Map<String, Object> provider : activeProviders) {
+                String providerKey = (String) provider.getOrDefault("providerKey", "unknown");
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> models = (List<Map<String, Object>>) provider.get("models");
+                if (models == null)
+                    continue;
+                for (Map<String, Object> m : models) {
+                    String modelName = (String) m.getOrDefault("modelName", "");
+                    if (modelName.isEmpty())
+                        continue;
+                    boolean capsTools = Boolean.TRUE.equals(m.get("capsTools"));
+                    boolean capsVision = Boolean.TRUE.equals(m.get("capsVision"));
+                    allModels.add(createModelInfo(modelName, providerKey, capsTools, capsVision));
+                }
+            }
+
+            if (allModels.isEmpty()) {
+                // 没有任何启用的模型，回退返回 nano_llm
+                allModels.add(createNanoLlmInfo());
+            }
+
+            response.setModels(allModels);
+            return response;
+        });
+    }
+
+    private OllamaTagsResponse.ModelInfo createModelInfo(String modelName, String providerKey, boolean capsTools,
+            boolean capsVision) {
+        var info = new OllamaTagsResponse.ModelInfo();
+        info.setName(modelName);
+        info.setModel(modelName);
+        info.setModifiedAt(java.time.Instant.now().toString());
+        info.setSize(0);
+        info.setDigest("sha256:" + UUID.randomUUID().toString().replace("-", ""));
+        var details = new OllamaTagsResponse.ModelDetails();
+        details.setFormat(providerKey);
+        details.setFamily(providerKey.substring(0, 1).toUpperCase() + providerKey.substring(1));
+        details.setFamilies(List.of(providerKey));
+        details.setParameterSize("unknown");
+        details.setQuantizationLevel("none");
+        info.setDetails(details);
+        return info;
+    }
+
+    private OllamaTagsResponse.ModelInfo createNanoLlmInfo() {
+        var nanoModel = new OllamaTagsResponse.ModelInfo();
+        nanoModel.setName("nano_llm");
+        nanoModel.setModel("nano_llm");
+        nanoModel.setModifiedAt(java.time.Instant.now().toString());
+        nanoModel.setSize(0);
+        nanoModel.setDigest("sha256:" + UUID.randomUUID().toString().replace("-", ""));
+        var details = new OllamaTagsResponse.ModelDetails();
+        details.setFormat("gguf");
+        details.setFamily("nano");
+        details.setFamilies(List.of("nano"));
+        details.setParameterSize("1B");
+        details.setQuantizationLevel("none");
+        nanoModel.setDetails(details);
+        return nanoModel;
     }
 
     /**

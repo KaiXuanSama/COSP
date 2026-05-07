@@ -2,10 +2,10 @@ package com.kaixuan.copilot_ollama_proxy.provider.longcat.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -28,9 +28,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * LongCat 上游 OpenAI 实现 —— 将请求转发到 LongCat 的 OpenAI 兼容端点。
+ * 所有运行时配置（API Key、Base URL）均从数据库读取。
  */
 @Service
-@ConditionalOnProperty(name = "proxy.provider", havingValue = "longcat")
 public class LongCatOpenAiChatService implements UpstreamChatService {
 
     private static final Logger log = LoggerFactory.getLogger(LongCatOpenAiChatService.class);
@@ -38,19 +38,54 @@ public class LongCatOpenAiChatService implements UpstreamChatService {
     private static final ParameterizedTypeReference<ServerSentEvent<String>> STRING_SSE_TYPE = new ParameterizedTypeReference<>() {
     };
 
-    private final WebClient webClient;
+    private final ProviderConfigRepository providerConfigRepository;
     private final ObjectMapper objectMapper;
-    private final String defaultModel;
+    private final String fallbackDefaultModel;
 
-    public LongCatOpenAiChatService(@Value("${longcat.api-key}") String apiKey,
-            @Value("${longcat.base-url}") String baseUrl, @Value("${longcat.default-model}") String defaultModel,
+    public LongCatOpenAiChatService(ProviderConfigRepository providerConfigRepository,
+            @Value("${longcat.default-model:LongCat-Flash-Chat}") String fallbackDefaultModel,
             ObjectMapper objectMapper) {
+        this.providerConfigRepository = providerConfigRepository;
         this.objectMapper = objectMapper;
-        this.defaultModel = defaultModel;
+        this.fallbackDefaultModel = fallbackDefaultModel;
+    }
+
+    /**
+     * 从数据库读取 LongCat 配置并构建 WebClient。
+     */
+    private WebClient buildWebClient() {
+        Map<String, Object> config = providerConfigRepository.findActiveProviderByKey("longcat");
+        String apiKey = config != null ? (String) config.getOrDefault("apiKey", "") : "";
+        String baseUrl = config != null ? (String) config.getOrDefault("baseUrl", "https://api.longcat.chat")
+                : "https://api.longcat.chat";
         String normalizedUrl = baseUrl.replaceAll("/+$", "") + "/openai";
-        this.webClient = WebClient.builder().baseUrl(normalizedUrl)
-                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
+        return WebClient.builder().baseUrl(normalizedUrl).defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE).build();
+    }
+
+    // ========== 路由支持 ==========
+
+    @Override
+    public String getProviderKey() {
+        return "longcat";
+    }
+
+    @Override
+    public boolean supportsModel(String modelName) {
+        Map<String, Object> config = providerConfigRepository.findActiveProviderByKey("longcat");
+        if (config == null) {
+            return false;
+        }
+        int providerId = (Integer) config.get("id");
+        List<Map<String, Object>> dbModels = providerConfigRepository.findModelsByProviderId(providerId);
+        if (dbModels != null) {
+            for (Map<String, Object> m : dbModels) {
+                if (Boolean.TRUE.equals(m.get("enabled")) && modelName.equals(m.get("modelName"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     @Override
@@ -58,7 +93,7 @@ public class LongCatOpenAiChatService implements UpstreamChatService {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, false, model);
         log.info("LongCat OpenAI 上游，模型: {}, 流式: false", requestBody.get("model"));
 
-        return webClient.post().uri("/v1/chat/completions").contentType(MediaType.APPLICATION_JSON)
+        return buildWebClient().post().uri("/v1/chat/completions").contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(requestBody).retrieve().bodyToMono(String.class).retryWhen(buildRetrySpec("chatCompletion"))
                 .doOnNext(response -> log.debug("LongCat 响应: {}", response));
     }
@@ -74,13 +109,13 @@ public class LongCatOpenAiChatService implements UpstreamChatService {
         AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
         AtomicReference<String> finishReason = new AtomicReference<>(null);
 
-        return webClient.post().uri("/v1/chat/completions").contentType(MediaType.APPLICATION_JSON)
+        return buildWebClient().post().uri("/v1/chat/completions").contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody).retrieve().bodyToFlux(STRING_SSE_TYPE)
                 .retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data)
                 .filter(chunk -> !chunk.isBlank()).doOnNext(raw -> log.debug("LongCat 原始: {}", raw))
                 .concatMap(chunk -> {
-                    if (!"[DONE]".equals(chunk) && chunk.contains("\"finish_reason\":\"stop\"")
-                            && !contentEmitted.get() && !reasoningBuffer.isEmpty()) {
+                    if (!"[DONE]".equals(chunk) && chunk.contains("\"finish_reason\":\"stop\"") && !contentEmitted.get()
+                            && !reasoningBuffer.isEmpty()) {
                         log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
                         String fallbackContent = buildFallbackContentChunk(chunkId.get(), model,
                                 reasoningBuffer.toString());
@@ -108,7 +143,7 @@ public class LongCatOpenAiChatService implements UpstreamChatService {
         if (fallbackModel != null && !fallbackModel.isBlank()) {
             return fallbackModel;
         }
-        return defaultModel;
+        return fallbackDefaultModel;
     }
 
     private Retry buildRetrySpec(String method) {

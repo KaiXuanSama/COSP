@@ -2,7 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.application.openai.CompositeUpstreamChatService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiChatRequest;
 import org.slf4j.Logger;
@@ -32,11 +32,11 @@ public class OpenAiController {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiController.class);
 
-    private final UpstreamChatService upstreamChatService;
+    private final CompositeUpstreamChatService upstreamChatService;
     private final ObjectMapper objectMapper;
     private final ApiUsageCollector apiUsageCollector;
 
-    public OpenAiController(UpstreamChatService upstreamChatService, ObjectMapper objectMapper,
+    public OpenAiController(CompositeUpstreamChatService upstreamChatService, ObjectMapper objectMapper,
             ApiUsageCollector apiUsageCollector) {
         this.upstreamChatService = upstreamChatService;
         this.objectMapper = objectMapper;

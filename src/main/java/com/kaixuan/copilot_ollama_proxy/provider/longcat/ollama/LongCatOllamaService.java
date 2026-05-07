@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.provider.longcat.ollama;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.ollama.OllamaService;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
@@ -10,7 +11,6 @@ import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -33,8 +33,9 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * LongCat Ollama 协议实现 —— 将 Ollama 格式请求转换为 OpenAI 格式调用 LongCat API，
  * 再将 OpenAI 格式响应转换回 Ollama 格式。
+ * 所有运行时配置（API Key、Base URL、模型列表）均从数据库读取。
  */
-@Service @ConditionalOnProperty(name = "proxy.provider", havingValue = "longcat")
+@Service
 public class LongCatOllamaService implements OllamaService {
 
     private static final Logger log = LoggerFactory.getLogger(LongCatOllamaService.class);
@@ -42,19 +43,82 @@ public class LongCatOllamaService implements OllamaService {
     private static final ParameterizedTypeReference<ServerSentEvent<String>> STRING_SSE_TYPE = new ParameterizedTypeReference<>() {
     };
 
-    private final WebClient webClient;
+    private final ProviderConfigRepository providerConfigRepository;
     private final ObjectMapper objectMapper;
-    private final String defaultModel;
+    private final String fallbackDefaultModel;
 
-    public LongCatOllamaService(@Value("${longcat.api-key}") String apiKey,
-            @Value("${longcat.base-url}") String baseUrl, @Value("${longcat.default-model}") String defaultModel,
+    public LongCatOllamaService(ProviderConfigRepository providerConfigRepository,
+            @Value("${longcat.default-model:LongCat-Flash-Chat}") String fallbackDefaultModel,
             ObjectMapper objectMapper) {
+        this.providerConfigRepository = providerConfigRepository;
         this.objectMapper = objectMapper;
-        this.defaultModel = defaultModel;
+        this.fallbackDefaultModel = fallbackDefaultModel;
+    }
+
+    /**
+     * 从数据库读取 LongCat 运行时配置。
+     * 返回 Map 包含: id, providerKey, enabled, baseUrl, apiKey, apiFormat
+     * 如果数据库中不存在或未启用，返回 null。
+     */
+    private Map<String, Object> getLongcatConfig() {
+        return providerConfigRepository.findActiveProviderByKey("longcat");
+    }
+
+    /**
+     * 从数据库读取第一个已启用的模型名称作为默认模型。
+     */
+    private String getDefaultModel() {
+        Map<String, Object> config = getLongcatConfig();
+        if (config != null) {
+            int providerId = (Integer) config.get("id");
+            List<Map<String, Object>> models = providerConfigRepository.findModelsByProviderId(providerId);
+            if (models != null) {
+                for (Map<String, Object> m : models) {
+                    if (Boolean.TRUE.equals(m.get("enabled"))) {
+                        return (String) m.getOrDefault("modelName", fallbackDefaultModel);
+                    }
+                }
+            }
+        }
+        return fallbackDefaultModel;
+    }
+
+    /**
+     * 根据数据库配置构建 WebClient。
+     */
+    private WebClient buildWebClient() {
+        Map<String, Object> config = getLongcatConfig();
+        String apiKey = config != null ? (String) config.getOrDefault("apiKey", "") : "";
+        String baseUrl = config != null ? (String) config.getOrDefault("baseUrl", "https://api.longcat.chat")
+                : "https://api.longcat.chat";
         String normalizedUrl = baseUrl.replaceAll("/+$", "") + "/openai";
-        this.webClient = WebClient.builder().baseUrl(normalizedUrl)
-                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
+        return WebClient.builder().baseUrl(normalizedUrl).defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE).build();
+    }
+
+    // ========== 路由支持 ==========
+
+    @Override
+    public String getProviderKey() {
+        return "longcat";
+    }
+
+    @Override
+    public boolean supportsModel(String modelName) {
+        Map<String, Object> config = getLongcatConfig();
+        if (config == null) {
+            return false;
+        }
+        int providerId = (Integer) config.get("id");
+        List<Map<String, Object>> dbModels = providerConfigRepository.findModelsByProviderId(providerId);
+        if (dbModels != null) {
+            for (Map<String, Object> m : dbModels) {
+                if (Boolean.TRUE.equals(m.get("enabled")) && modelName.equals(m.get("modelName"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     // ========== 模型管理 ==========
@@ -62,17 +126,37 @@ public class LongCatOllamaService implements OllamaService {
     @Override
     public Mono<OllamaTagsResponse> listModels() {
         var response = new OllamaTagsResponse();
-        var models = List.of(createModelInfo("LongCat-Flash-Chat", "LongCat-Flash-Chat", "Flash", "LongCat"),
-                createModelInfo("LongCat-Flash-Thinking", "LongCat-Flash-Thinking", "Flash", "LongCat"),
-                createModelInfo("LongCat-Flash-Thinking-2601", "LongCat-Flash-Thinking-2601", "Flash", "LongCat"),
-                createModelInfo("LongCat-Flash-Lite", "LongCat-Flash-Lite", "Flash", "LongCat"),
-                createModelInfo("LongCat-2.0-Preview", "LongCat-2.0-Preview", "2.0", "LongCat"),
-                createModelInfo("LongCat-Flash-Omni-2603", "LongCat-Flash-Omni-2603", "Flash", "LongCat"));
+        List<OllamaTagsResponse.ModelInfo> models = new ArrayList<>();
+
+        Map<String, Object> config = getLongcatConfig();
+        if (config == null) {
+            // LongCat 未启用，返回空列表（控制器层会处理 nano_llm 回退）
+            response.setModels(models);
+            return Mono.just(response);
+        }
+
+        int providerId = (Integer) config.get("id");
+        List<Map<String, Object>> dbModels = providerConfigRepository.findModelsByProviderId(providerId);
+        if (dbModels != null) {
+            for (Map<String, Object> m : dbModels) {
+                if (!Boolean.TRUE.equals(m.get("enabled"))) {
+                    continue;
+                }
+                String modelName = (String) m.getOrDefault("modelName", "");
+                if (modelName.isEmpty())
+                    continue;
+                boolean capsTools = Boolean.TRUE.equals(m.get("capsTools"));
+                boolean capsVision = Boolean.TRUE.equals(m.get("capsVision"));
+                models.add(createModelInfo(modelName, modelName, capsTools, capsVision));
+            }
+        }
+
         response.setModels(models);
         return Mono.just(response);
     }
 
-    private OllamaTagsResponse.ModelInfo createModelInfo(String name, String model, String paramSize, String family) {
+    private OllamaTagsResponse.ModelInfo createModelInfo(String name, String model, boolean capsTools,
+            boolean capsVision) {
         var info = new OllamaTagsResponse.ModelInfo();
         info.setName(name);
         info.setModel(model);
@@ -81,31 +165,52 @@ public class LongCatOllamaService implements OllamaService {
         info.setDigest("sha256:" + UUID.randomUUID().toString().replace("-", ""));
         var details = new OllamaTagsResponse.ModelDetails();
         details.setFormat("longcat");
-        details.setFamily(family);
-        details.setFamilies(List.of(family));
-        details.setParameterSize(paramSize);
+        details.setFamily("LongCat");
+        details.setFamilies(List.of("LongCat"));
+        details.setParameterSize("Flash");
         details.setQuantizationLevel("none");
         info.setDetails(details);
         return info;
     }
 
+    /**
+     * 从数据库读取模型的上下文长度（context_size）。
+     * 如果数据库中未配置或值为 0，抛出 IllegalStateException。
+     */
+    private int getContextLengthFromDb(String resolvedModel) {
+        Map<String, Object> config = getLongcatConfig();
+        if (config != null) {
+            int providerId = (Integer) config.get("id");
+            List<Map<String, Object>> dbModels = providerConfigRepository.findModelsByProviderId(providerId);
+            if (dbModels != null) {
+                for (Map<String, Object> m : dbModels) {
+                    if (resolvedModel.equals(m.get("modelName"))) {
+                        Object ctx = m.get("contextSize");
+                        if (ctx instanceof Number n && n.intValue() > 0) {
+                            return n.intValue();
+                        }
+                        throw new IllegalStateException("模型 " + resolvedModel + " 的 context_size 未在数据库中配置或为 0，请先完成配置");
+                    }
+                }
+            }
+        }
+        throw new IllegalStateException("在数据库中找不到模型 " + resolvedModel + " 的配置，请检查 provider_model 表");
+    }
+
     @Override
     public OllamaShowResponse showModel(String modelName) {
-        String resolvedModel = (modelName == null || modelName.isBlank()) ? defaultModel : modelName;
+        String resolvedModel = (modelName == null || modelName.isBlank()) ? getDefaultModel() : modelName;
 
-        int contextLength;
+        // 先确定能力列表（硬编码，因为能力通常由模型类型决定）
         List<String> capabilities;
-
         if (resolvedModel.contains("Omni")) {
-            contextLength = 8192;
             capabilities = List.of("completion", "tools", "vision");
-        } else if (resolvedModel.contains("2.0-Preview")) {
-            contextLength = 128000;
-            capabilities = List.of("completion", "tools");
         } else {
-            contextLength = 262144;
             capabilities = List.of("completion", "tools");
         }
+
+        // 上下文长度必须从数据库读取，未配置则直接报错
+        int contextLength = getContextLengthFromDb(resolvedModel);
 
         var response = new OllamaShowResponse();
         response.setParameters("temperature 0.7\nnum_ctx " + contextLength);
@@ -138,10 +243,11 @@ public class LongCatOllamaService implements OllamaService {
             return Mono.error(new UnsupportedOperationException("Use chatStream() for streaming"));
         }
 
+        WebClient client = buildWebClient();
         Map<String, Object> openAiRequest = convertOllamaToOpenAi(request);
         log.info("LongCat Ollama→OpenAI，模型: {}, 流式: false", openAiRequest.get("model"));
 
-        return webClient.post().uri("/v1/chat/completions").contentType(MediaType.APPLICATION_JSON)
+        return client.post().uri("/v1/chat/completions").contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(openAiRequest).retrieve().bodyToMono(String.class).retryWhen(buildRetrySpec("chat"))
                 .map(respJson -> convertOpenAiToOllama(respJson, request.getModel()));
     }
@@ -150,6 +256,7 @@ public class LongCatOllamaService implements OllamaService {
 
     @SuppressWarnings("unchecked") @Override
     public Flux<OllamaChatResponse> chatStream(OllamaChatRequest request) {
+        WebClient client = buildWebClient();
         Map<String, Object> openAiRequest = convertOllamaToOpenAi(request);
         openAiRequest.put("stream", true);
         log.info("LongCat Ollama→OpenAI，模型: {}, 流式: true", openAiRequest.get("model"));
@@ -161,7 +268,7 @@ public class LongCatOllamaService implements OllamaService {
         AtomicReference<String> currentToolName = new AtomicReference<>();
         AtomicReference<Map<String, Object>> currentToolInput = new AtomicReference<>();
 
-        return webClient.post().uri("/v1/chat/completions").contentType(MediaType.APPLICATION_JSON)
+        return client.post().uri("/v1/chat/completions").contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.TEXT_EVENT_STREAM).bodyValue(openAiRequest).retrieve().bodyToFlux(STRING_SSE_TYPE)
                 .retryWhen(buildRetrySpec("chatStream")).mapNotNull(ServerSentEvent::data)
                 .filter(chunk -> !chunk.isBlank()).concatMap(chunk -> {
@@ -184,7 +291,6 @@ public class LongCatOllamaService implements OllamaService {
                         String finishReason = (String) choice.get("finish_reason");
 
                         if (delta != null) {
-                            // 处理正文内容
                             Object contentObj = delta.get("content");
                             if (contentObj instanceof String content && !content.isEmpty()) {
                                 textBuffer.get().append(content);
@@ -192,13 +298,11 @@ public class LongCatOllamaService implements OllamaService {
                                 results.add(createStreamChunk(request.getModel(), content, false));
                             }
 
-                            // 处理思考内容
                             Object reasoningObj = delta.get("reasoning_content");
                             if (reasoningObj instanceof String reasoning && !reasoning.isEmpty()) {
                                 reasoningBuffer.append(reasoning);
                             }
 
-                            // 处理工具调用
                             List<Map<String, Object>> deltaToolCalls = (List<Map<String, Object>>) delta
                                     .get("tool_calls");
                             if (deltaToolCalls != null) {
@@ -226,7 +330,6 @@ public class LongCatOllamaService implements OllamaService {
                             }
                         }
 
-                        // finish_reason=tool_calls 时收集工具调用
                         if ("tool_calls".equals(finishReason) && currentToolName.get() != null) {
                             var tc = new OllamaChatResponse.ToolCallResult();
                             var fn = new OllamaChatResponse.ToolCallFunction();
@@ -238,7 +341,6 @@ public class LongCatOllamaService implements OllamaService {
                             currentToolInput.set(null);
                         }
 
-                        // stop 时回退逻辑
                         if ("stop".equals(finishReason) && !contentEmitted.get() && !reasoningBuffer.isEmpty()) {
                             log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
                             results.add(createStreamChunk(request.getModel(), reasoningBuffer.toString(), false));
@@ -254,6 +356,7 @@ public class LongCatOllamaService implements OllamaService {
     }
 
     // ========== Ollama → OpenAI 请求转换 ==========
+
     private Map<String, Object> convertOllamaToOpenAi(OllamaChatRequest ollamaReq) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", resolveModel(ollamaReq.getModel()));
@@ -299,7 +402,6 @@ public class LongCatOllamaService implements OllamaService {
 
         body.put("messages", messages);
 
-        // 转换工具定义
         if (ollamaReq.getTools() != null && !ollamaReq.getTools().isEmpty()) {
             List<Map<String, Object>> tools = new ArrayList<>();
             for (var ollamaTool : ollamaReq.getTools()) {
@@ -356,13 +458,11 @@ public class LongCatOllamaService implements OllamaService {
                 Object contentObj = message.get("content");
                 msg.setContent(contentObj instanceof String s ? s : "");
 
-                // 处理思考内容
                 Object reasoningObj = message.get("reasoning_content");
                 if (reasoningObj instanceof String reasoning && !reasoning.isEmpty()) {
                     msg.setThinking(reasoning);
                 }
 
-                // 处理工具调用
                 List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) message.get("tool_calls");
                 if (toolCalls != null && !toolCalls.isEmpty()) {
                     List<OllamaChatResponse.ToolCallResult> tcResults = new ArrayList<>();
@@ -443,7 +543,7 @@ public class LongCatOllamaService implements OllamaService {
 
     private String resolveModel(String ollamaModel) {
         if (ollamaModel == null || ollamaModel.isBlank()) {
-            return defaultModel;
+            return getDefaultModel();
         }
         return ollamaModel;
     }
