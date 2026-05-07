@@ -24,6 +24,20 @@
     <!-- 代理配置表单 -->
     <form class="settings-form" th:action="@{/config/settings}" method="post">
 
+        <!-- 运行配置 -->
+        <div class="card">
+            <div class="card-title">运行配置</div>
+            <div class="card-body">
+                <div class="field-group">
+                    <label class="field-label" for="fakeVersion">伪造版本号</label>
+                    <div class="field-input-wrap">
+                        <input class="field-input" id="fakeVersion" name="fakeVersion" type="text" placeholder="0.6.4"
+                            th:value="${fakeVersion}">
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- 服务商配置 — 折叠面板 -->
         <div class="card">
             <div class="card-title">服务商配置</div>

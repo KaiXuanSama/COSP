@@ -131,6 +131,33 @@ public class ProviderConfigRepository {
         }
     }
 
+    // ==================== 应用运行配置（app_config 键值对） ====================
+
+    /**
+     * 读取单个配置项。
+     */
+    public String findConfigValue(String key) {
+        return jdbcTemplate.query("SELECT config_value FROM app_config WHERE config_key = ?", rs -> {
+            if (rs.next()) {
+                return rs.getString("config_value");
+            }
+            return null;
+        }, key);
+    }
+
+    /**
+     * 保存配置项（UPSERT）。
+     */
+    public void saveConfig(String key, String value) {
+        int updated = jdbcTemplate.update(
+                "UPDATE app_config SET config_value = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') "
+                        + "WHERE config_key = ?",
+                value, key);
+        if (updated == 0) {
+            jdbcTemplate.update("INSERT INTO app_config (config_key, config_value) VALUES (?, ?)", key, value);
+        }
+    }
+
     // ==================== 工具 ====================
 
     private static int parseInt(Object value, int defaultValue) {

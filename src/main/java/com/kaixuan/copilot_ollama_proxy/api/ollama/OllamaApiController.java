@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.api.ollama;
 
 import com.kaixuan.copilot_ollama_proxy.application.ollama.OllamaService;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowRequest;
@@ -28,21 +29,27 @@ import java.util.Map;
 public class OllamaApiController {
 
     private final OllamaService ollamaService;
-    /** 伪装的 Ollama 版本号，从 application.yml 的 ollama.version 配置读取 */
-    private final String ollamaVersion;
+    private final ProviderConfigRepository providerConfigRepository;
+    /** 伪装的 Ollama 版本号默认值，从 application.yml 的 ollama.version 配置读取 */
+    private final String defaultVersion;
 
-    public OllamaApiController(OllamaService ollamaService, @Value("${ollama.version}") String ollamaVersion) {
+    public OllamaApiController(OllamaService ollamaService, ProviderConfigRepository providerConfigRepository,
+            @Value("${ollama.version}") String defaultVersion) {
         this.ollamaService = ollamaService;
-        this.ollamaVersion = ollamaVersion;
+        this.providerConfigRepository = providerConfigRepository;
+        this.defaultVersion = defaultVersion;
     }
 
     /**
      * 返回 Ollama 版本号。
+     * 优先从数据库读取用户配置的伪造版本号，不存在则使用 application.yml 默认值。
      * Copilot 在连接时会调用此接口确认 Ollama 服务是否可用。
      */
     @GetMapping("/version")
     public Map<String, String> version() {
-        return Map.of("version", ollamaVersion);
+        String dbVersion = providerConfigRepository.findConfigValue("fake_version");
+        String ver = (dbVersion != null && !dbVersion.isBlank()) ? dbVersion : defaultVersion;
+        return Map.of("version", ver);
     }
 
     /**

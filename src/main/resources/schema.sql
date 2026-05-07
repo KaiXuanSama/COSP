@@ -39,6 +39,17 @@ CREATE TABLE IF NOT EXISTS provider_model (
 
 CREATE INDEX IF NOT EXISTS idx_provider_model_provider_id ON provider_model(provider_id);
 
+-- ==================== 应用运行配置表（键值对） ====================
+
+CREATE TABLE IF NOT EXISTS app_config (
+    config_key   VARCHAR(50) NOT NULL PRIMARY KEY,  -- 配置键，如 fake_version
+    config_value TEXT        NOT NULL DEFAULT '',   -- 配置值
+    updated_at   TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
+);
+
+-- 默认运行配置
+INSERT OR IGNORE INTO app_config (config_key, config_value) VALUES ('fake_version', '0.6.4');
+
 -- ==================== API 调用按天汇总表 ====================
 
 CREATE TABLE IF NOT EXISTS api_usage_daily (

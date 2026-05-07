@@ -95,6 +95,8 @@ public class AdminPageController {
         // 从数据库读取服务商配置
         model.addAttribute("longcat", loadProvider("longcat"));
         model.addAttribute("mimo", loadProvider("mimo"));
+        // 读取运行配置
+        model.addAttribute("fakeVersion", providerConfigRepository.findConfigValue("fake_version"));
         return "admin/pages/settings";
     }
 
@@ -120,6 +122,10 @@ public class AdminPageController {
         List<Map<String, Object>> mimoModels = parseModels(params, "mimo");
         providerConfigRepository.saveModels(mimoId, mimoModels);
 
+        // 保存运行配置
+        String fakeVersion = params.getOrDefault("fakeVersion", "0.6.4").trim();
+        providerConfigRepository.saveConfig("fake_version", fakeVersion);
+
         // 重新加载页面
         model.addAttribute("username", authentication.getName());
         model.addAttribute("pageTitle", "配置");
@@ -127,6 +133,7 @@ public class AdminPageController {
         model.addAttribute("nav", "settings");
         model.addAttribute("longcat", loadProvider("longcat"));
         model.addAttribute("mimo", loadProvider("mimo"));
+        model.addAttribute("fakeVersion", providerConfigRepository.findConfigValue("fake_version"));
         model.addAttribute("saveSuccess", true);
         return "admin/pages/settings";
     }
