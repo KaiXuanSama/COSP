@@ -1,154 +1,94 @@
 package com.kaixuan.copilot_ollama_proxy.provider.mimo.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
+import com.kaixuan.copilot_ollama_proxy.provider.openai.AbstractOpenAiCompatibleUpstreamChatService;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClientRequestException;
-import org.springframework.web.reactive.function.client.WebClientResponseException;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-import reactor.util.retry.Retry;
-
-import java.time.Duration;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * MiMo 上游 OpenAI 实现 —— 将请求转发到 MiMo 的 OpenAI 兼容端点。
  * 所有运行时配置（API Key、Base URL、模型列表）均从数据库读取。
  */
 @Service
-public class MimoOpenAiChatService implements UpstreamChatService {
+public class MimoOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatService {
 
-    private static final Logger log = LoggerFactory.getLogger(MimoOpenAiChatService.class);
-
-    private static final ParameterizedTypeReference<ServerSentEvent<String>> STRING_SSE_TYPE = new ParameterizedTypeReference<>() {
-    };
-
-    private final ProviderConfigRepository providerConfigRepository;
-    private final ObjectMapper objectMapper;
-    private final String fallbackDefaultModel;
-
-    public MimoOpenAiChatService(ProviderConfigRepository providerConfigRepository,
-            @Value("${mimo.default-model:mimo-v2.5-pro}") String fallbackDefaultModel, ObjectMapper objectMapper) {
-        this.providerConfigRepository = providerConfigRepository;
-        this.objectMapper = objectMapper;
-        this.fallbackDefaultModel = fallbackDefaultModel;
+    // 构造函数，注入运行时 Provider 目录、JSON 对象映射器和默认模型名称。
+    public MimoOpenAiChatService(RuntimeProviderCatalog runtimeProviderCatalog, @Value("${mimo.default-model:mimo-v2.5-pro}") String fallbackDefaultModel, ObjectMapper objectMapper) {
+        super(runtimeProviderCatalog, objectMapper, fallbackDefaultModel);
     }
 
-    /**
-     * 从数据库读取 MiMo 运行时配置。
-     */
-    private Map<String, Object> getMimoConfig() {
-        return providerConfigRepository.findActiveProviderByKey("mimo");
-    }
-
-    /**
-     * 根据数据库配置构建 WebClient。
-     */
-    private WebClient buildWebClient() {
-        Map<String, Object> config = getMimoConfig();
-        String apiKey = config != null ? (String) config.getOrDefault("apiKey", "") : "";
-        String baseUrl = config != null ? (String) config.getOrDefault("baseUrl", "https://api.xiaomimimo.com")
-                : "https://api.xiaomimimo.com";
-        String normalizedUrl = normalizeOpenAiBaseUrl(baseUrl);
-        return WebClient.builder().baseUrl(normalizedUrl).defaultHeader("api-key", apiKey)
-                .defaultHeader("x-api-key", apiKey)
-                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE).build();
-    }
-
-    // ========== 路由支持 ==========
-
+    // MiMo 上游服务的提供者键，用于在运行时配置中标识该服务。
     @Override
     public String getProviderKey() {
         return "mimo";
     }
 
+    // MiMo 上游服务的显示名称，用于日志输出和错误提示等场景。
     @Override
-    public boolean supportsModel(String modelName) {
-        Map<String, Object> config = getMimoConfig();
-        if (config == null) {
-            return false;
+    protected String providerDisplayName() {
+        return "MiMo";
+    }
+
+    // MiMo 上游服务的默认 Base URL，如果运行时配置中没有指定则使用该值。
+    @Override
+    protected String defaultBaseUrl() {
+        return "https://api.xiaomimimo.com";
+    }
+
+    // MiMo 上游服务的 Base URL 规范化方法，确保最终的 Base URL 以 "/v1" 结尾，并去除多余的斜杠。
+    @Override
+    protected String normalizeBaseUrl(String rawBaseUrl) {
+        String normalized = rawBaseUrl == null ? "" : rawBaseUrl.trim();
+        if (normalized.isEmpty()) {
+            return "https://api.xiaomimimo.com/v1";
         }
-        int providerId = (Integer) config.get("id");
-        List<Map<String, Object>> dbModels = providerConfigRepository.findModelsByProviderId(providerId);
-        if (dbModels != null) {
-            for (Map<String, Object> m : dbModels) {
-                if (Boolean.TRUE.equals(m.get("enabled")) && modelName.equals(m.get("modelName"))) {
-                    return true;
-                }
-            }
+
+        // 去除末尾的斜杠和可能的 "/anthropic" 路径，以兼容用户输入的各种 Base URL 形式。
+        normalized = normalized.replaceAll("/+$", "");
+        if (normalized.endsWith("/anthropic")) {
+            normalized = normalized.substring(0, normalized.length() - "/anthropic".length());
         }
-        return false;
+
+        // 确保最终的 Base URL 以 "/v1" 结尾。
+        if (!normalized.endsWith("/v1")) {
+            normalized = normalized + "/v1";
+        }
+        return normalized;
     }
 
-    // ========== 上游调用 ==========
-
+    // 在请求体中添加 MiMo 特定的字段或格式转换，例如将模型名称转换为 MiMo 识别的格式。
     @Override
-    public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model) {
-        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, false, model);
-        log.info("MiMo OpenAI 上游，模型: {}, 流式: false", requestBody.get("model"));
-
-        return buildWebClient().post().uri("/chat/completions").contentType(MediaType.APPLICATION_JSON)
-                .bodyValue(requestBody).retrieve().bodyToMono(String.class).retryWhen(buildRetrySpec("chatCompletion"))
-                .doOnNext(response -> log.debug("MiMo 响应: {}", response));
-    }
-
-    @Override
-    public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
-        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model);
-        log.info("MiMo OpenAI 上游，模型: {}, 流式: true", requestBody.get("model"));
-
-        AtomicBoolean reasoningEmitted = new AtomicBoolean(false);
-        AtomicBoolean contentEmitted = new AtomicBoolean(false);
-        StringBuilder reasoningBuffer = new StringBuilder();
-        AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
-        AtomicReference<String> finishReason = new AtomicReference<>(null);
-
-        return buildWebClient().post().uri("/chat/completions").contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody).retrieve().bodyToFlux(STRING_SSE_TYPE)
-                .retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data)
-                .filter(chunk -> !chunk.isBlank()).doOnNext(raw -> log.debug("MiMo 原始: {}", raw)).concatMap(chunk -> {
-                    if (!"[DONE]".equals(chunk) && chunk.contains("\"finish_reason\":\"stop\"") && !contentEmitted.get()
-                            && !reasoningBuffer.isEmpty()) {
-                        log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
-                        String fallbackContent = buildFallbackContentChunk(chunkId.get(), model,
-                                reasoningBuffer.toString());
-                        String fallbackFinish = buildFallbackFinishChunk(chunkId.get(), model);
-                        return Flux.just(fallbackContent, fallbackFinish);
-                    }
-                    return Flux.just(translateChunk(chunk, reasoningEmitted, contentEmitted, reasoningBuffer, chunkId,
-                            finishReason));
-                }).doOnNext(chunk -> log.debug("MiMo 翻译: {}", chunk));
-    }
-
-    private Map<String, Object> prepareRequestBody(Map<String, Object> openAiRequest, boolean stream, String model) {
-        Map<String, Object> body = new LinkedHashMap<>(openAiRequest);
-        String resolvedModel = resolveModel(body.get("model"), model);
-        body.put("model", resolvedModel);
-        body.put("stream", stream);
-        body.values().removeIf(Objects::isNull);
-
+    protected void customizeRequestBody(Map<String, Object> body, String resolvedModel) {
+        // MiMo 的图片消息格式特殊，需要进行转换以兼容 MiMo 的格式要求。
         if (resolvedModel.contains("mimo")) {
             convertImageFormatForMimo(body);
         }
-
-        return body;
     }
 
+    // 在请求头中添加 MiMo 特定的认证信息，例如 API Key。
+    @Override
+    protected void applyAuthenticationHeaders(HttpHeaders headers, String apiKey) {
+        headers.set("api-key", apiKey);
+        headers.set("x-api-key", apiKey);
+    }
+
+    // MiMo 上游服务的 Chat Completions 端点 URI，通常为 "/chat/completions"。
+    @Override
+    protected String chatCompletionsUri() {
+        return "/chat/completions";
+    }
+
+    /**
+     * MiMo 的图片消息格式特殊，
+     * 需要将 content 中的图片项从 {type: "image_url", image_url: {...}} 
+     * 转换为 {type: "image_url", url: ...}，并且如果 role 是 "tool" 则转换为 "user"，
+     * 以兼容 MiMo 的格式要求。
+     * @param body 原始请求体，可能包含 messages 字段，其中的 content 可能包含图片项。
+     */
     @SuppressWarnings("unchecked")
     private void convertImageFormatForMimo(Map<String, Object> body) {
         Object messagesObj = body.get("messages");
@@ -186,129 +126,6 @@ public class MimoOpenAiChatService implements UpstreamChatService {
                 ((Map<String, Object>) msg).remove("tool_call_id");
                 log.debug("MiMo 图片消息 role 转换: tool -> user");
             }
-        }
-    }
-
-    private String resolveModel(Object requestModel, String fallbackModel) {
-        if (requestModel instanceof String value && !value.isBlank()) {
-            return value;
-        }
-        if (fallbackModel != null && !fallbackModel.isBlank()) {
-            return fallbackModel;
-        }
-        return fallbackDefaultModel;
-    }
-
-    private Retry buildRetrySpec(String method) {
-        return Retry.fixedDelay(5, Duration.ofSeconds(5))
-                .filter(ex -> (ex instanceof WebClientResponseException
-                        && (((WebClientResponseException) ex).getStatusCode().is5xxServerError()
-                                || ((WebClientResponseException) ex).getStatusCode().value() == 400))
-                        || ex instanceof WebClientRequestException)
-                .doBeforeRetry(signal -> log.warn("[{}] 上游 API 调用失败，重试第 {} 次: {}", method, signal.totalRetries() + 1,
-                        signal.failure().getMessage()));
-    }
-
-    private String normalizeOpenAiBaseUrl(String rawBaseUrl) {
-        String normalized = rawBaseUrl == null ? "" : rawBaseUrl.trim();
-        if (normalized.isEmpty()) {
-            return "https://api.xiaomimimo.com/v1";
-        }
-        normalized = normalized.replaceAll("/+$", "");
-        if (normalized.endsWith("/anthropic")) {
-            normalized = normalized.substring(0, normalized.length() - "/anthropic".length());
-        }
-        if (!normalized.endsWith("/v1")) {
-            normalized = normalized + "/v1";
-        }
-        return normalized;
-    }
-
-    @SuppressWarnings("unchecked")
-    private String translateChunk(String chunkJson, AtomicBoolean reasoningEmitted, AtomicBoolean contentEmitted,
-            StringBuilder reasoningBuffer, AtomicReference<String> chunkId, AtomicReference<String> finishReason) {
-        try {
-            Map<String, Object> chunk = objectMapper.readValue(chunkJson, Map.class);
-            Object id = chunk.get("id");
-            if (id instanceof String idStr && !idStr.isEmpty()) {
-                chunkId.set(idStr);
-            }
-            List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
-            if (choices == null || choices.isEmpty()) {
-                return chunkJson;
-            }
-            Map<String, Object> delta = (Map<String, Object>) choices.get(0).get("delta");
-            if (delta == null) {
-                Object fr = choices.get(0).get("finish_reason");
-                if (fr instanceof String reason) {
-                    finishReason.set(reason);
-                }
-                return chunkJson;
-            }
-            Object contentObj = delta.get("content");
-            if (contentObj instanceof String content && !content.isEmpty()) {
-                contentEmitted.set(true);
-            }
-            Object fr = choices.get(0).get("finish_reason");
-            if (fr instanceof String reason) {
-                finishReason.set(reason);
-            }
-            Object reasoningObj = delta.get("reasoning_content");
-            if (reasoningObj instanceof String reasoning && !reasoning.isEmpty()) {
-                reasoningBuffer.append(reasoning);
-                delta.remove("reasoning_content");
-                delta.put("content", null);
-                if (!reasoningEmitted.getAndSet(true)) {
-                    delta.put("reasoning_opaque", "thinking");
-                }
-                delta.put("reasoning_text", reasoning);
-                return objectMapper.writeValueAsString(chunk);
-            }
-            return chunkJson;
-        } catch (Exception e) {
-            return chunkJson;
-        }
-    }
-
-    private String buildFallbackContentChunk(String id, String model, String reasoningContent) {
-        try {
-            Map<String, Object> chunk = new LinkedHashMap<>();
-            chunk.put("id", id);
-            chunk.put("object", "chat.completion.chunk");
-            chunk.put("created", System.currentTimeMillis() / 1000);
-            chunk.put("model", model);
-            Map<String, Object> delta = new LinkedHashMap<>();
-            delta.put("role", "assistant");
-            delta.put("content", reasoningContent);
-            Map<String, Object> choice = new LinkedHashMap<>();
-            choice.put("index", 0);
-            choice.put("delta", delta);
-            choice.put("finish_reason", null);
-            chunk.put("choices", List.of(choice));
-            return objectMapper.writeValueAsString(chunk);
-        } catch (Exception e) {
-            return "{}";
-        }
-    }
-
-    private String buildFallbackFinishChunk(String id, String model) {
-        try {
-            Map<String, Object> chunk = new LinkedHashMap<>();
-            chunk.put("id", id);
-            chunk.put("object", "chat.completion.chunk");
-            chunk.put("created", System.currentTimeMillis() / 1000);
-            chunk.put("model", model);
-            Map<String, Object> delta = new LinkedHashMap<>();
-            delta.put("role", null);
-            delta.put("content", null);
-            Map<String, Object> choice = new LinkedHashMap<>();
-            choice.put("index", 0);
-            choice.put("delta", delta);
-            choice.put("finish_reason", "stop");
-            chunk.put("choices", List.of(choice));
-            return objectMapper.writeValueAsString(chunk);
-        } catch (Exception e) {
-            return "{}";
         }
     }
 }

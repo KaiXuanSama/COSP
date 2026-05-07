@@ -6,9 +6,7 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * 上游聊天服务组合器 —— 代理所有已注册的 UpstreamChatService 实现，
@@ -21,26 +19,20 @@ public class CompositeUpstreamChatService {
 
     private static final Logger log = LoggerFactory.getLogger(CompositeUpstreamChatService.class);
 
-    private final List<UpstreamChatService> upstreamServices;
+    private final UpstreamChatServiceResolver upstreamChatServiceResolver;
 
-    public CompositeUpstreamChatService(List<UpstreamChatService> upstreamServices) {
-        this.upstreamServices = upstreamServices;
-        log.info("CompositeUpstreamChatService 初始化，已注册 {} 个上游服务: {}", upstreamServices.size(),
-                upstreamServices.stream().map(UpstreamChatService::getProviderKey).collect(Collectors.joining(", ")));
+    public CompositeUpstreamChatService(UpstreamChatServiceResolver upstreamChatServiceResolver) {
+        this.upstreamChatServiceResolver = upstreamChatServiceResolver;
+        log.info("CompositeUpstreamChatService 初始化完成");
     }
 
+    /**
+     * 根据模型名称找到对应的上游服务实现。
+     * @param modelName 模型名称
+     * @return 对应的 UpstreamChatService 实现，如果没有找到则返回 null
+     */
     private UpstreamChatService resolveService(String modelName) {
-        for (UpstreamChatService service : upstreamServices) {
-            if (service.supportsModel(modelName)) {
-                log.debug("上游模型 [{}] 路由到 [{}]", modelName, service.getProviderKey());
-                return service;
-            }
-        }
-        if (!upstreamServices.isEmpty()) {
-            log.warn("上游模型 [{}] 未找到匹配，使用默认 [{}]", modelName, upstreamServices.get(0).getProviderKey());
-            return upstreamServices.get(0);
-        }
-        return null;
+        return upstreamChatServiceResolver.resolve(modelName);
     }
 
     public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model) {
@@ -51,11 +43,20 @@ public class CompositeUpstreamChatService {
         return service.chatCompletion(openAiRequest, model);
     }
 
+    /**
+     * 流式聊天补全，返回一个 Flux<String>，每个元素代表上游服务发送的一个 SSE 片段。
+     * @param openAiRequest OpenAI 格式的请求体，已转换为 Map 形式
+     * @param model 模型名称，用于路由到对应的上游服务
+     * @return Flux<String>，每个元素是上游服务发送的一个 SSE 片段
+     */
     public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
+        // 根据模型名称解析出对应的上游服务实现，如果没有找到则返回错误 Mono。
         UpstreamChatService service = resolveService(model);
         if (service == null) {
             return Flux.error(new RuntimeException("没有可用的上游服务来处理模型: " + model));
         }
+        
+        // 调用上游服务的 chatCompletionStream 方法，返回一个 Flux<String>，每个元素是上游服务发送的一个 SSE 片段。
         return service.chatCompletionStream(openAiRequest, model);
     }
 }
