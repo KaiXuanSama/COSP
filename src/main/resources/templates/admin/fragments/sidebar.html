@@ -29,17 +29,7 @@
             <th:block th:replace="~{admin/fragments/icons :: icon-settings}"></th:block>
             配置
         </a>
-        <a class="nav-item" th:classappend="${nav == 'logs' ? 'active' : ''}" href="/config/logs">
-            <th:block th:replace="~{admin/fragments/icons :: icon-logs}"></th:block>
-            日志
-        </a>
 
-        <!-- 系统分组 -->
-        <div class="nav-section-label">系统</div>
-        <a class="nav-item" th:classappend="${nav == 'status' ? 'active' : ''}" href="/config/status">
-            <th:block th:replace="~{admin/fragments/icons :: icon-status}"></th:block>
-            状态
-        </a>
     </nav>
 
     <!-- 底部用户信息 -->

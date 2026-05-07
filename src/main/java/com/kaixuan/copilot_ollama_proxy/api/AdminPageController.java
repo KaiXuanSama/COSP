@@ -24,7 +24,7 @@ import org.springframework.http.ResponseEntity;
  * <p>
  * 页面采用 Thymeleaf 片段化组件设计：
  * - config.html 为布局壳（侧边栏 + 页头 + 内容占位）
- * - 各子页面（overview、settings、logs、status）为独立 HTML 文件
+ * - 各子页面（overview、settings）为独立 HTML 文件
  * - 通过 th:insert 将子页面内容注入布局壳
  */
 @Controller
@@ -196,28 +196,6 @@ public class AdminPageController {
             models.add(model);
         }
         return models;
-    }
-
-    // ==================== 日志页 ====================
-
-    @GetMapping("/config/logs")
-    public String logs(Authentication authentication, Model model) {
-        model.addAttribute("username", authentication.getName());
-        model.addAttribute("pageTitle", "日志");
-        model.addAttribute("pageTitleFull", "日志 · Ollama-Switch");
-        model.addAttribute("nav", "logs");
-        return "admin/pages/logs";
-    }
-
-    // ==================== 状态页 ====================
-
-    @GetMapping("/config/status")
-    public String status(Authentication authentication, Model model) {
-        model.addAttribute("username", authentication.getName());
-        model.addAttribute("pageTitle", "状态");
-        model.addAttribute("pageTitleFull", "状态 · Ollama-Switch");
-        model.addAttribute("nav", "status");
-        return "admin/pages/status";
     }
 
     // ==================== 账号修改页 ====================
