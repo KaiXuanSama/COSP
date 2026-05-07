@@ -11,7 +11,6 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * Ollama 服务组合器 —— 代理所有已注册的 OllamaService 实现，
@@ -26,45 +25,30 @@ public class CompositeOllamaService {
     private static final Logger log = LoggerFactory.getLogger(CompositeOllamaService.class);
 
     private final List<OllamaService> ollamaServices;
+    private final OllamaServiceResolver ollamaServiceResolver;
 
-    public CompositeOllamaService(List<OllamaService> ollamaServices) {
+    public CompositeOllamaService(List<OllamaService> ollamaServices, OllamaServiceResolver ollamaServiceResolver) {
         this.ollamaServices = ollamaServices;
-        log.info("CompositeOllamaService 初始化，已注册 {} 个服务商: {}", ollamaServices.size(),
-                ollamaServices.stream().map(OllamaService::getProviderKey).collect(Collectors.joining(", ")));
+        this.ollamaServiceResolver = ollamaServiceResolver;
+        log.info("CompositeOllamaService 初始化完成，注册服务商数: {}", ollamaServices.size());
     }
 
     /**
      * 根据模型名称找到对应的服务商。
      */
     private OllamaService resolveService(String modelName) {
-        for (OllamaService service : ollamaServices) {
-            if (service.supportsModel(modelName)) {
-                log.debug("模型 [{}] 路由到服务商 [{}]", modelName, service.getProviderKey());
-                return service;
-            }
-        }
-        if (!ollamaServices.isEmpty()) {
-            log.warn("模型 [{}] 未找到匹配的服务商，使用默认 [{}]", modelName, ollamaServices.get(0).getProviderKey());
-            return ollamaServices.get(0);
-        }
-        return null;
+        return ollamaServiceResolver.resolve(modelName);
     }
 
     public Mono<OllamaTagsResponse> listModels() {
-        OllamaTagsResponse combined = new OllamaTagsResponse();
-        List<OllamaTagsResponse.ModelInfo> allModels = new java.util.ArrayList<>();
-        for (OllamaService service : ollamaServices) {
-            try {
-                OllamaTagsResponse response = service.listModels().block();
-                if (response != null && response.getModels() != null) {
-                    allModels.addAll(response.getModels());
-                }
-            } catch (Exception e) {
-                log.warn("获取服务商 [{}] 模型列表失败: {}", service.getProviderKey(), e.getMessage());
-            }
-        }
-        combined.setModels(allModels);
-        return Mono.just(combined);
+        return Flux.fromIterable(ollamaServices).flatMap(service -> service.listModels().onErrorResume(exception -> {
+            log.warn("获取服务商 [{}] 模型列表失败: {}", service.getProviderKey(), exception.getMessage());
+            return Mono.empty();
+        })).flatMapIterable(response -> response.getModels() == null ? List.of() : response.getModels()).collectList().map(models -> {
+            OllamaTagsResponse combined = new OllamaTagsResponse();
+            combined.setModels(models);
+            return combined;
+        });
     }
 
     public OllamaShowResponse showModel(String modelName) {
