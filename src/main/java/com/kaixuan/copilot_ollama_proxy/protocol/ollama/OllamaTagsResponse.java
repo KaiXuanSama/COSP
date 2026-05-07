@@ -39,6 +39,14 @@ public class OllamaTagsResponse {
         private String digest;
         /** 模型的详细信息（格式、参数量等） */
         private ModelDetails details;
+        /**
+         * 模型支持的能力列表。
+         * Copilot 根据此字段决定模型是否可用以及启用哪些功能：
+         * - "completion"：基础文本补全
+         * - "tools"：支持工具调用（function calling），Copilot 要求模型必须具备此能力才能被选中
+         * - "vision"：支持图片理解
+         */
+        private List<String> capabilities;
 
         public String getName() {
             return name;
@@ -86,6 +94,14 @@ public class OllamaTagsResponse {
 
         public void setDetails(ModelDetails details) {
             this.details = details;
+        }
+
+        public List<String> getCapabilities() {
+            return capabilities;
+        }
+
+        public void setCapabilities(List<String> capabilities) {
+            this.capabilities = capabilities;
         }
     }
 

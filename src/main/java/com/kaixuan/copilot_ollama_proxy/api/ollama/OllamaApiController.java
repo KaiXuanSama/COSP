@@ -35,8 +35,7 @@ public class OllamaApiController {
     private final ProviderConfigRepository providerConfigRepository;
     private final String defaultVersion;
 
-    public OllamaApiController(CompositeOllamaService ollamaService, ProviderConfigRepository providerConfigRepository,
-            @Value("${ollama.version}") String defaultVersion) {
+    public OllamaApiController(CompositeOllamaService ollamaService, ProviderConfigRepository providerConfigRepository, @Value("${ollama.version}") String defaultVersion) {
         this.ollamaService = ollamaService;
         this.providerConfigRepository = providerConfigRepository;
         this.defaultVersion = defaultVersion;
@@ -66,8 +65,7 @@ public class OllamaApiController {
             List<OllamaTagsResponse.ModelInfo> allModels = new ArrayList<>();
 
             // 从数据库读取所有已启用服务商及其已启用模型
-            List<Map<String, Object>> activeProviders = providerConfigRepository
-                    .findAllActiveProvidersWithEnabledModels();
+            List<Map<String, Object>> activeProviders = providerConfigRepository.findAllActiveProvidersWithEnabledModels();
             for (Map<String, Object> provider : activeProviders) {
                 String providerKey = (String) provider.getOrDefault("providerKey", "unknown");
                 @SuppressWarnings("unchecked")
@@ -94,8 +92,16 @@ public class OllamaApiController {
         });
     }
 
-    private OllamaTagsResponse.ModelInfo createModelInfo(String modelName, String providerKey, boolean capsTools,
-            boolean capsVision) {
+    /**
+     * 构造单个模型的 ModelInfo 对象。
+     * 根据提供的模型名称、服务商标识和能力列表生成符合 Ollama 规范的模型信息。
+     * @param modelName 模型显示名称（如 "mimo-v2.5-pro"）
+     * @param providerKey 服务商标识（如 "mimo"），用于构造模型详细信息
+     * @param capsTools 是否支持工具调用能力
+     * @param capsVision 是否支持视觉能力
+     * @return 构造好的 ModelInfo 对象
+     */
+    private OllamaTagsResponse.ModelInfo createModelInfo(String modelName, String providerKey, boolean capsTools, boolean capsVision) {
         var info = new OllamaTagsResponse.ModelInfo();
         info.setName(modelName);
         info.setModel(modelName);
@@ -112,6 +118,11 @@ public class OllamaApiController {
         return info;
     }
 
+    /**
+     * 构造 nano_llm 模型的 ModelInfo 对象。
+     * 这是一个兜底模型，当数据库中没有任何启用的模型时返回。
+     * 模型名称固定为 "nano_llm"，能力包含 "completion" 和 "tools"，以确保 Copilot 可以选中使用。
+     */
     private OllamaTagsResponse.ModelInfo createNanoLlmInfo() {
         var nanoModel = new OllamaTagsResponse.ModelInfo();
         nanoModel.setName("nano_llm");
@@ -126,6 +137,7 @@ public class OllamaApiController {
         details.setParameterSize("1B");
         details.setQuantizationLevel("none");
         nanoModel.setDetails(details);
+        nanoModel.setCapabilities(List.of("completion", "tools"));
         return nanoModel;
     }
 
@@ -133,10 +145,39 @@ public class OllamaApiController {
      * 返回指定模型的详细信息。
      * Copilot 会调用此接口获取模型的上下文长度、能力（completion/tools/vision）等参数。
      * 这些参数决定了 Copilot 如何使用该模型（例如上下文长度决定了单次对话的最大 token 数）。
+     * 如果请求的是兜底模型 "nano_llm"，直接构造响应，不经过 provider 链。
      */
     @PostMapping("/show")
     public OllamaShowResponse show(@RequestBody OllamaShowRequest request) {
+        if ("nano_llm".equals(request.getModel())) {
+            return createNanoLlmShowResponse();
+        }
         return ollamaService.showModel(request.getModel());
+    }
+
+    /**
+     * 构造 nano_llm 兜底模型的 /api/show 响应。
+     * 当数据库中没有任何启用的模型时，tags 接口会返回 nano_llm，
+     * Copilot 随后会调用 show 接口获取模型详情，此处直接构造响应避免 provider 链查找失败。
+     */
+    private OllamaShowResponse createNanoLlmShowResponse() {
+        OllamaShowResponse response = new OllamaShowResponse();
+        response.setParameters("temperature 0.7\nnum_ctx 4096");
+        response.setLicense("Proprietary");
+        response.setModifiedAt(java.time.Instant.now().toString());
+        response.setCapabilities(List.of("completion", "tools"));
+
+        var details = new OllamaShowResponse.ShowDetails();
+        details.setParentModel("");
+        details.setFormat("gguf");
+        details.setFamily("nano");
+        details.setFamilies(List.of("nano"));
+        details.setParameterSize("1B");
+        details.setQuantizationLevel("none");
+        response.setDetails(details);
+
+        response.setModelInfo(Map.of("general.architecture", "nano", "general.basename", "nano_llm", "nano.context_length", 4096, "nano.embedding_length", 8192));
+        return response;
     }
 
     /**
