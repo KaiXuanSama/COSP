@@ -184,10 +184,12 @@ public class AdminPageController {
                 contextSize = Integer.parseInt(contextSizeStr);
             } catch (NumberFormatException ignored) {
             }
+            boolean modelEnabled = "on".equals(params.get(prefix + i + "].enabled"));
             boolean capsTools = "on".equals(params.get(prefix + i + "].capsTools"));
             boolean capsVision = "on".equals(params.get(prefix + i + "].capsVision"));
             Map<String, Object> model = new LinkedHashMap<>();
             model.put("modelName", name);
+            model.put("enabled", modelEnabled);
             model.put("contextSize", contextSize);
             model.put("capsTools", capsTools);
             model.put("capsVision", capsVision);

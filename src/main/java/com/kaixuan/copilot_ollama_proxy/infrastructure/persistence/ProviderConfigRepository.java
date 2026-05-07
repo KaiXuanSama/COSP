@@ -69,12 +69,13 @@ public class ProviderConfigRepository {
      */
     public List<Map<String, Object>> findModelsByProviderId(int providerId) {
         return jdbcTemplate
-                .query("SELECT id, provider_id, model_name, context_size, caps_tools, caps_vision, sort_order "
+                .query("SELECT id, provider_id, model_name, enabled, context_size, caps_tools, caps_vision, sort_order "
                         + "FROM provider_model WHERE provider_id = ? ORDER BY sort_order, id", (rs, rowNum) -> {
                             Map<String, Object> row = new java.util.LinkedHashMap<>();
                             row.put("id", rs.getInt("id"));
                             row.put("providerId", rs.getInt("provider_id"));
                             row.put("modelName", rs.getString("model_name"));
+                            row.put("enabled", rs.getInt("enabled") == 1);
                             row.put("contextSize", rs.getInt("context_size"));
                             row.put("capsTools", rs.getInt("caps_tools") == 1);
                             row.put("capsVision", rs.getInt("caps_vision") == 1);
@@ -121,13 +122,14 @@ public class ProviderConfigRepository {
         for (int i = 0; i < models.size(); i++) {
             Map<String, Object> m = models.get(i);
             String modelName = (String) m.getOrDefault("modelName", "");
+            boolean modelEnabled = Boolean.TRUE.equals(m.get("enabled"));
             int contextSize = parseInt(m.get("contextSize"), 0);
             boolean capsTools = Boolean.TRUE.equals(m.get("capsTools"));
             boolean capsVision = Boolean.TRUE.equals(m.get("capsVision"));
             jdbcTemplate.update(
-                    "INSERT INTO provider_model (provider_id, model_name, context_size, caps_tools, caps_vision, sort_order) "
-                            + "VALUES (?, ?, ?, ?, ?, ?)",
-                    providerId, modelName, contextSize, capsTools ? 1 : 0, capsVision ? 1 : 0, i);
+                    "INSERT INTO provider_model (provider_id, model_name, enabled, context_size, caps_tools, caps_vision, sort_order) "
+                            + "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    providerId, modelName, modelEnabled ? 1 : 0, contextSize, capsTools ? 1 : 0, capsVision ? 1 : 0, i);
         }
     }
 

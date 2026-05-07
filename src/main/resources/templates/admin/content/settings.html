@@ -7,7 +7,7 @@
      数据模型：
        - longcat: Map (providerKey, enabled, baseUrl, apiKey, apiFormat, models)
        - mimo:    Map (同上)
-       - models 中每项: Map (modelName, contextSize, capsTools, capsVision)
+       - models 中每项: Map (modelName, enabled, contextSize, capsTools, capsVision)
      ============================================================ -->
 
 <main th:fragment="settings" class="content">
@@ -102,6 +102,9 @@
                                 </div>
                                 <div class="model-list-items">
                                     <div class="model-item" th:each="model, iter : ${longcat.models}">
+                                        <label class="model-enabled"><input type="checkbox"
+                                                th:name="'longcatModels[' + ${iter.index} + '].enabled'"
+                                                th:checked="${model.enabled}"></label>
                                         <input type="text" placeholder="模型名称"
                                             th:name="'longcatModels[' + ${iter.index} + '].name'"
                                             th:value="${model.modelName}">
@@ -185,6 +188,9 @@
                                 </div>
                                 <div class="model-list-items">
                                     <div class="model-item" th:each="model, iter : ${mimo.models}">
+                                        <label class="model-enabled"><input type="checkbox"
+                                                th:name="'mimoModels[' + ${iter.index} + '].enabled'"
+                                                th:checked="${model.enabled}"></label>
                                         <input type="text" placeholder="模型名称"
                                             th:name="'mimoModels[' + ${iter.index} + '].name'"
                                             th:value="${model.modelName}">
@@ -400,6 +406,20 @@
             background: var(--surface);
         }
 
+        .model-enabled {
+            display: flex;
+            align-items: center;
+            flex-shrink: 0;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .model-enabled input {
+            accent-color: var(--accent, #4f46e5);
+            width: 16px;
+            height: 16px;
+        }
+
         .model-item input[type="text"],
         .model-item input[type="number"] {
             flex: 1;
@@ -516,6 +536,7 @@
             var div = document.createElement('div');
             div.className = 'model-item';
             div.innerHTML =
+                '<label class="model-enabled"><input type="checkbox" name="' + provider + 'Models[' + idx + '].enabled" checked /></label>' +
                 '<input type="text" name="' + provider + 'Models[' + idx + '].name" placeholder="模型名称" />' +
                 '<input type="number" name="' + provider + 'Models[' + idx + '].contextSize" placeholder="上下文大小" min="0" />' +
                 '<div class="model-caps">' +
