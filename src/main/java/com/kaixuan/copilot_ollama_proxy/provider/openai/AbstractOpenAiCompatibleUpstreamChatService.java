@@ -27,16 +27,16 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * OpenAI 兼容上游服务的公共基类。
- * <p>
+ *
  * 这个类封装了所有与 OpenAI Chat Completions 协议交互的公共逻辑：
  * WebClient 构建、鉴权头注入、默认 Base URL 回退、请求体准备、
  * SSE 流式解包、reasoning fallback 以及统一的重试策略。
- * <p>
+ *
  * 子类只需实现四个模板方法即可接入一个新的 OpenAI 兼容 provider：
  * {@link #defaultBaseUrl()}、{@link #normalizeBaseUrl(String)}、
  * {@link #applyAuthenticationHeaders} 和 {@link #chatCompletionsUri()}。
  * 如果需要在请求体中添加 provider 特有字段，可以覆写 {@link #customizeRequestBody}。
- * <p>
+ *
  * 运行时配置（API Key、Base URL、模型列表）通过 {@link RuntimeProviderCatalog} 从数据库动态加载。
  */
 public abstract class AbstractOpenAiCompatibleUpstreamChatService implements UpstreamChatService {
@@ -76,7 +76,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
 
     /**
      * 发送一次非流式 Chat Completions 请求。
-     * <p>
+     *
      * 请求体会经过 {@link #prepareRequestBody} 处理，包括模型名称解析、
      * stream 标志设置和子类的自定义字段注入。
      *
@@ -96,7 +96,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
 
     /**
      * 发送一次流式 Chat Completions 请求。
-     * <p>
+     *
      * 该方法会把上游返回的 SSE data 解包为纯 JSON 字符串流，
      * 并在流式过程中处理 reasoning_content 的提取与回退：
      * 如果模型只输出了思考内容而没有正文，则在流末尾自动把思考内容作为回复输出。
@@ -196,18 +196,39 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
 
     /**
      * 构建 OpenAI 上游的统一重试策略。
-     * <p>
-     * 覆盖 5xx、可重试的 400 以及底层网络异常，最多重试 5 次，间隔 5 秒。
+     *
+     * 覆盖三类可恢复场景：
+     * 1. 5xx 服务端错误
+     * 2. 可重试的 400 错误
+     * 3. 网络层异常：包括 WebClientRequestException（连接建立失败）
+     *    以及 WebClientResponseException 的 cause chain 中的 IOException
+     *    （如 SocketException: Connection reset，即 HTTP 200 但 SSE 流中途断开）
      *
      * @param method 调用方方法名，用于日志区分重试来源
      * @return 配置好的 Retry 实例
      */
     protected Retry buildRetrySpec(String method) {
         return Retry.fixedDelay(5, Duration.ofSeconds(5))
-                .filter(ex -> ((ex instanceof WebClientResponseException)
-                        && (((WebClientResponseException) ex).getStatusCode().is5xxServerError() || ((WebClientResponseException) ex).getStatusCode().value() == 400))
+                .filter(ex -> ((ex instanceof WebClientResponseException responseException)
+                        && (responseException.getStatusCode().is5xxServerError() || responseException.getStatusCode().value() == 400 || hasNetworkCause(responseException)))
                         || ex instanceof WebClientRequestException)
                 .doBeforeRetry(signal -> log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, providerDisplayName(), signal.totalRetries() + 1, signal.failure().getMessage()));
+    }
+
+    /**
+     * 判断异常的 cause chain 中是否包含网络层异常（IOException 及其子类，如 SocketException）。
+     *
+     * 这类异常通常表现为 HTTP 200 但 SSE 流中途断开，需要重试。
+     */
+    private static boolean hasNetworkCause(Throwable throwable) {
+        Throwable cause = throwable.getCause();
+        while (cause != null) {
+            if (cause instanceof java.io.IOException) {
+                return true;
+            }
+            cause = cause.getCause();
+        }
+        return false;
     }
 
     /**
@@ -228,7 +249,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
 
     /**
      * 规范化 Base URL，确保最终地址符合上游端点要求。
-     * <p>
+     *
      * 子类通常在这里追加 provider 特有的路径前缀（如 "/openai"），
      * 并去除多余的尾部斜杠。
      *
@@ -254,14 +275,12 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
 
     /**
      * 翻译单个 SSE chunk 的 JSON 内容。
-     * <p>
+     *
      * 这里有两个关键职责：
-     * <ol>
-     *   <li>把 reasoning_content 从 delta 中提取出来，转成 reasoning_opaque/reasoning_text 字段，
-     *       这样上层客户端可以识别并展示思考过程。</li>
-     *   <li>如果模型只输出了 reasoning_content 而没有正文 content，
-     *       则在流末尾由调用方触发回退，把思考内容作为最终回复。</li>
-     * </ol>
+     * 1. 把 reasoning_content 从 delta 中提取出来，转成 reasoning_opaque/reasoning_text 字段，
+     *    这样上层客户端可以识别并展示思考过程。
+     * 2. 如果模型只输出了 reasoning_content 而没有正文 content，
+     *    则在流末尾由调用方触发回退，把思考内容作为最终回复。
      *
      * @param chunkJson 原始 SSE data 的 JSON 字符串
      * @param reasoningEmitted 是否已经输出过 reasoning_opaque 标记
@@ -272,12 +291,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
      * @return 翻译后的 chunk JSON 字符串
      */
     @SuppressWarnings("unchecked")
-    private String translateChunk(
-            String chunkJson,
-            AtomicBoolean reasoningEmitted,
-            AtomicBoolean contentEmitted,
-            StringBuilder reasoningBuffer,
-            AtomicReference<String> chunkId,
+    private String translateChunk(String chunkJson, AtomicBoolean reasoningEmitted, AtomicBoolean contentEmitted, StringBuilder reasoningBuffer, AtomicReference<String> chunkId,
             AtomicReference<String> finishReason) {
         try {
             Map<String, Object> chunk = objectMapper.readValue(chunkJson, Map.class);
@@ -337,7 +351,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
 
     /**
      * 构建 reasoning fallback 的正文 chunk。
-     * <p>
+     *
      * 当模型只输出了思考内容而没有正文时，用思考内容构造一个伪 content delta，
      * 使客户端看到的回复内容就是模型的思考过程。
      *
@@ -372,7 +386,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
 
     /**
      * 构建 reasoning fallback 的 finish chunk。
-     * <p>
+     *
      * 紧跟在 {@link #buildFallbackContentChunk} 之后发出，标记流的结束。
      *
      * @param id 当前流的 chunk ID

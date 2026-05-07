@@ -17,11 +17,11 @@ import java.util.UUID;
 
 /**
  * Ollama provider 的运行时基类。
- * <p>
+ *
  * 这个类把所有与具体 provider 无关的 Ollama 协议原语集中在一起：
  * 模型解析、max_tokens 解析、文本内容提取、assistant chunk/完成包组装、
  * tags 列表构造、showModel 的公共模板，以及 supportsModel 的默认实现。
- * <p>
+ *
  * 子类只需要提供 provider 特化点（providerKey、family、format、license 等），
  * 以及各自的非流式/流式编排逻辑。协议转换和流式状态机则进一步下沉到
  * 各 provider 的 converter 和 translator 中。
@@ -144,6 +144,7 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
 
     /**
      * 从请求内容中提取字符串内容，支持字符串或列表格式。
+     *
      * @param content 请求内容，可能是字符串或列表
      * @return 提取后的字符串内容，如果无法提取则返回空字符串
      */
@@ -300,7 +301,7 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
 
     /**
      * 获取 provider 的协议格式标识，如 "openai"、"mimo" 等。
-     * <p>
+     *
      * 该值会出现在 Ollama tags/show 响应的 details.format 字段中，
      * 供客户端识别模型背后的协议类型。
      *

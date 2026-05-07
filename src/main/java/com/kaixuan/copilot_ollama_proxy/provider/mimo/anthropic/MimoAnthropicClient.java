@@ -115,13 +115,35 @@ public class MimoAnthropicClient {
     /**
      * MiMo 传输层的统一重试策略。
      * <p>
-     * 这里只覆盖典型的瞬时失败：429、5xx 以及底层网络请求异常。
+     * 覆盖三类可恢复场景：
+     * <ol>
+     *   <li>429 限流、5xx 服务端错误</li>
+     *   <li>网络层异常：包括 WebClientRequestException（连接建立失败）
+     *       以及 WebClientResponseException 的 cause chain 中的 IOException
+     *      （如 SocketException: Connection reset，即 HTTP 200 但 SSE 流中途断开）</li>
+     * </ol>
      */
     private Retry buildRetrySpec(String method) {
         return Retry.fixedDelay(5, Duration.ofSeconds(5))
                 .filter(exception -> (exception instanceof WebClientResponseException responseException
-                        && (responseException.getStatusCode().value() == 429 || responseException.getStatusCode().is5xxServerError()))
+                        && (responseException.getStatusCode().value() == 429 || responseException.getStatusCode().is5xxServerError() || hasNetworkCause(responseException)))
                         || exception instanceof WebClientRequestException)
                 .doBeforeRetry(signal -> log.warn("[{}] MiMo API 调用失败，重试第 {} 次: {}", method, signal.totalRetries() + 1, signal.failure().getMessage()));
+    }
+
+    /**
+     * 判断异常的 cause chain 中是否包含网络层异常（IOException 及其子类，如 SocketException）。
+     * <p>
+     * 这类异常通常表现为 HTTP 200 但 SSE 流中途断开，需要重试。
+     */
+    private static boolean hasNetworkCause(Throwable throwable) {
+        Throwable cause = throwable.getCause();
+        while (cause != null) {
+            if (cause instanceof java.io.IOException) {
+                return true;
+            }
+            cause = cause.getCause();
+        }
+        return false;
     }
 }
