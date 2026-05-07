@@ -59,6 +59,22 @@
                     closeSidebar();
                 }
             });
+
+            // 眼睛切换按钮（显示/隐藏密码）
+            window.toggleEye = function (btn) {
+                var input = btn.parentElement.querySelector('input');
+                var showIcon = btn.querySelector('.eye-icon--show');
+                var hideIcon = btn.querySelector('.eye-icon--hide');
+                if (input.type === 'password') {
+                    input.type = 'text';
+                    showIcon.style.display = '';
+                    hideIcon.style.display = 'none';
+                } else {
+                    input.type = 'password';
+                    showIcon.style.display = 'none';
+                    hideIcon.style.display = '';
+                }
+            };
         })();
     </script>
 </th:block>

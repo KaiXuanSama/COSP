@@ -26,8 +26,8 @@
                 <div class="field-group">
                     <label class="field-label" for="newUsername">新用户名</label>
                     <div class="field-input-wrap">
-                        <input class="field-input" id="newUsername" name="newUsername" type="text"
-                            placeholder="请输入新用户名" th:value="${newUsername}">
+                        <input class="field-input" id="newUsername" name="newUsername" type="text" placeholder="请输入新用户名"
+                            th:value="${newUsername}">
                     </div>
                 </div>
             </div>
@@ -39,24 +39,18 @@
             <div class="card-body">
                 <div class="field-group">
                     <label class="field-label" for="currentPassword">当前密码</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="currentPassword" name="currentPassword" type="password"
-                            placeholder="请输入当前密码">
-                    </div>
+                    <th:block th:replace="~{admin/fragments/form-fields :: password-field-with-eye(
+                        'currentPassword', 'currentPassword', '请输入当前密码', '')}"></th:block>
                 </div>
                 <div class="field-group">
                     <label class="field-label" for="newPassword">新密码</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="newPassword" name="newPassword" type="password"
-                            placeholder="请输入新密码（至少4位）">
-                    </div>
+                    <th:block th:replace="~{admin/fragments/form-fields :: password-field-with-eye(
+                        'newPassword', 'newPassword', '请输入新密码（至少4位）', '')}"></th:block>
                 </div>
                 <div class="field-group">
                     <label class="field-label" for="confirmPassword">确认新密码</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="confirmPassword" name="confirmPassword" type="password"
-                            placeholder="请再次输入新密码">
-                    </div>
+                    <th:block th:replace="~{admin/fragments/form-fields :: password-field-with-eye(
+                        'confirmPassword', 'confirmPassword', '请再次输入新密码', '')}"></th:block>
                 </div>
             </div>
         </div>

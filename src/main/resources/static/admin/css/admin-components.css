@@ -269,6 +269,36 @@
     position: relative;
 }
 
+/* ── API Key 眼睛按钮 ── */
+.field-input-wrap--eye .field-input {
+    padding-right: 42px;
+}
+
+.field-eye-btn {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    border: none;
+    background: none;
+    cursor: pointer;
+    padding: 4px;
+    line-height: 1;
+    opacity: 0.5;
+    transition: opacity 0.15s;
+    color: var(--text-muted);
+}
+
+.field-eye-btn:hover {
+    opacity: 1;
+}
+
+.eye-icon {
+    display: block;
+    width: 18px;
+    height: 18px;
+}
+
 .field-icon {
     position: absolute;
     left: 14px;
