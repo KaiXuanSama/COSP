@@ -15,7 +15,6 @@ spring:
 
 # ===== 服务器端口 =====
 server:
-  # 环境变量：SERVER_PORT
   port: ${SERVER_PORT:11434}
 
 admin:
@@ -24,34 +23,13 @@ admin:
   server:
     port: ${ADMIN_SERVER_PORT:80}
 
-proxy:
-  # 环境变量：PROXY_PROVIDER，可选 mimo / longcat
-  provider: ${PROXY_PROVIDER:mimo}
-  # 环境变量：PROXY_UPSTREAM_CHAT_SERVICE，可选 openai / anthropic（仅 mimo 生效）
-  upstream-chat-service: ${PROXY_UPSTREAM_CHAT_SERVICE:openai}
-
-# ===== Ollama 伪装配置 =====
+# ===== Ollama 伪装版本 =====
 ollama:
-  # 环境变量：OLLAMA_VERSION
   version: ${OLLAMA_VERSION:0.6.4}
 
-# ===== MiMo 上游 API 配置 =====
+# ===== 服务商默认模型（数据库为空时的 fallback） =====
 mimo:
-  # 环境变量：MIMO_API_KEY（Docker 环境必须通过环境变量注入，无默认值）
-  api-key: ${MIMO_API_KEY:}
-  # 环境变量：MIMO_BASE_URL
-  # 小米提供两种接口地址，根据使用场景选择：
-  #   - plan 订阅接口：https://token-plan-cn.xiaomimimo.com/anthropic （按 token 套餐计费）
-  #   - 标准接口     ：https://api.xiaomimimo.com/anthropic           （按量付费）
-  base-url: ${MIMO_BASE_URL:https://token-plan-cn.xiaomimimo.com/anthropic}
-  # 环境变量：MIMO_DEFAULT_MODEL
-  default-model: ${MIMO_DEFAULT_MODEL:mimo-v2.5-pro}
+  default-model: mimo-v2.5-pro
 
-# ===== LongCat 上游 API 配置 =====
 longcat:
-  # 环境变量：LONGCAT_API_KEY
-  api-key: ${LONGCAT_API_KEY:}
-  # 环境变量：LONGCAT_BASE_URL
-  base-url: ${LONGCAT_BASE_URL:https://api.longcat.chat}
-  # 环境变量：LONGCAT_DEFAULT_MODEL
-  default-model: ${LONGCAT_DEFAULT_MODEL:LongCat-Flash-Chat}
+  default-model: LongCat-Flash-Chat
