@@ -84,6 +84,39 @@ public class AdminPageController {
         return ResponseEntity.ok(stats);
     }
 
+    /**
+     * 热力图数据 — 返回最近 N 天每天的 API 调用次数。
+     */
+    @GetMapping("/config/api/heatmap") @ResponseBody
+    public ResponseEntity<List<Map<String, Object>>> heatmapData(
+            @RequestParam(defaultValue = "360") int days) {
+        days = Math.max(7, Math.min(365, days));
+        List<Map<String, Object>> data = apiUsageRepository.listRecentDays(days);
+        // 补全缺失日期（数据库中没有记录的日期补 0）
+        Map<String, Map<String, Object>> byDate = new LinkedHashMap<>();
+        for (Map<String, Object> row : data) {
+            byDate.put((String) row.get("usageDate"), row);
+        }
+        List<Map<String, Object>> full = new ArrayList<>();
+        java.time.LocalDate today = java.time.LocalDate.now();
+        for (int i = 364; i >= 0; i--) {
+            java.time.LocalDate d = today.minusDays(i);
+            String key = d.toString();
+            Map<String, Object> row = byDate.get(key);
+            if (row != null) {
+                full.add(row);
+            } else {
+                Map<String, Object> empty = new LinkedHashMap<>();
+                empty.put("usageDate", key);
+                empty.put("callCount", 0);
+                empty.put("inputTokens", 0);
+                empty.put("outputTokens", 0);
+                full.add(empty);
+            }
+        }
+        return ResponseEntity.ok(full);
+    }
+
     // ==================== 配置页 ====================
 
     @GetMapping("/config/settings")

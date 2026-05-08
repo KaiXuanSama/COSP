@@ -100,7 +100,7 @@
     padding: 24px;
     opacity: 0;
     animation: fadeUp 0.5s ease forwards;
-    animation-delay: 0.39s;
+    animation-delay: 0.47s;
 }
 
 .info-card-title {
@@ -155,6 +155,15 @@
 
 .card+.card {
     animation-delay: 0.1s;
+}
+
+/* 热力图卡片：在统计卡片之后淡入 */
+.heatmap-card {
+    animation-delay: 0.39s;
+}
+
+.heatmap-card+.card {
+    animation-delay: 0.47s;
 }
 
 .card:hover {
@@ -485,4 +494,138 @@
     .card-title {
         font-size: 15px;
     }
+}
+
+/* ── 热力图 ── */
+.heatmap-card .card-body {
+    padding: 12px 0 16px;
+}
+
+.heatmap-container {
+    position: relative;
+    padding: 0 24px;
+}
+
+/* 滚动容器：单行，超出裁切 */
+.heatmap-scroll {
+    display: flex;
+    overflow: hidden;
+}
+
+/* 左侧星期标签 */
+.heatmap-days {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex-shrink: 0;
+    padding-right: 8px;
+    padding-top: 20px;
+}
+
+.heatmap-day-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    line-height: 16px;
+    height: 16px;
+}
+
+/* 右侧网格区域 */
+.heatmap-grid-area {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+}
+
+/* 月份标签行 */
+.heatmap-months {
+    display: flex;
+    margin-bottom: 6px;
+    height: 16px;
+}
+
+.heatmap-month-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+    line-height: 16px;
+    text-align: left;
+}
+
+/* 网格：每列是一周，单行排列，超出裁切 */
+.heatmap-grid {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.heatmap-col {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.heatmap-cell {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    cursor: default;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.heatmap-cell:hover {
+    transform: scale(1.25);
+    box-shadow: 0 0 0 1px rgba(26, 25, 23, 0.2);
+    z-index: 1;
+    position: relative;
+}
+
+.heatmap-cell.level-empty {
+    background: transparent;
+    pointer-events: none;
+}
+
+/* 热力图颜色等级 */
+.heatmap-cell.level-0 {
+    background: var(--border-light);
+}
+
+.heatmap-cell.level-1 {
+    background: rgba(194, 122, 62, 0.15);
+}
+
+.heatmap-cell.level-2 {
+    background: rgba(194, 122, 62, 0.35);
+}
+
+.heatmap-cell.level-3 {
+    background: rgba(194, 122, 62, 0.6);
+}
+
+.heatmap-cell.level-4 {
+    background: var(--accent);
+}
+
+.heatmap-tooltip {
+    display: none;
+    position: absolute;
+    z-index: 10;
+    padding: 4px 10px;
+    background: var(--sidebar);
+    color: var(--text-light);
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    border-radius: 4px;
+    white-space: nowrap;
+    pointer-events: none;
+    box-shadow: 0 4px 12px rgba(26, 25, 23, 0.2);
 }

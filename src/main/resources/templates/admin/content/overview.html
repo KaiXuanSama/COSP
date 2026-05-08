@@ -37,35 +37,16 @@
         </div>
     </div>
 
-    <!-- 短轮询脚本：每 5 秒刷新一次统计数据 -->
-    <script>
-        (function () {
-            var POLL_INTERVAL = 5000;
-            function formatTokens(val) {
-                if (val >= 1000) { return (val / 1000).toFixed(1) + 'k'; }
-                return val.toString();
-            }
-            function fetchStats() {
-                fetch('/config/api/stats')
-                    .then(function (r) { return r.json(); })
-                    .then(function (d) {
-                        // 总调用次数
-                        var el = document.querySelector('.stat-card:nth-child(1) .stat-card-value');
-                        if (el) el.textContent = d.totalApiCalls;
-                        // 今日调用次数
-                        el = document.querySelector('.stat-card:nth-child(2) .stat-card-value');
-                        if (el) el.textContent = d.todayApiCalls;
-                        // 今日 Token
-                        el = document.querySelector('.stat-card:nth-child(3) .stat-card-value');
-                        if (el) el.innerHTML = formatTokens(d.todayInputTokens) + '<span class="stat-card-token-sep">/</span>' + formatTokens(d.todayOutputTokens);
-                    })
-                    .catch(function () { });
-            }
-            setInterval(fetchStats, POLL_INTERVAL);
-        })();
-    </script>
+    <!-- 热力图 -->
+    <div class="card heatmap-card">
+        <div class="card-title">API 调用热力图</div>
+        <div class="card-body">
+            <div class="heatmap-container" id="heatmap"></div>
+            <div class="heatmap-tooltip" id="heatmap-tooltip"></div>
+        </div>
+    </div>
 
-    <!-- 关于卡片 -->
+    <!-- 关于本服务 -->
     <div class="info-card">
         <div class="info-card-title">关于本服务</div>
         <div class="info-list">
@@ -83,8 +64,8 @@
             </div>
             <div class="info-row">
                 <span class="info-row-label">开源地址</span>
-                <span class="info-row-value"><a href="https://github.com/"
-                        target="_blank" rel="noopener">GitHub</a></span>
+                <span class="info-row-value"><a href="https://github.com/" target="_blank"
+                        rel="noopener">GitHub</a></span>
             </div>
             <div class="info-row">
                 <span class="info-row-label">作者</span>
@@ -92,6 +73,202 @@
             </div>
         </div>
     </div>
+
+    <!-- 短轮询脚本：每 5 秒刷新一次统计数据 -->
+    <script>
+        (function () {
+            var POLL_INTERVAL = 5000;
+            function formatTokens(val) {
+                if (val >= 1000) { return (val / 1000).toFixed(1) + 'k'; }
+                return val.toString();
+            }
+            function fetchStats() {
+                fetch('/config/api/stats')
+                    .then(function (r) { return r.json(); })
+                    .then(function (d) {
+                        var el = document.querySelector('.stat-card:nth-child(1) .stat-card-value');
+                        if (el) el.textContent = d.totalApiCalls;
+                        el = document.querySelector('.stat-card:nth-child(2) .stat-card-value');
+                        if (el) el.textContent = d.todayApiCalls;
+                        el = document.querySelector('.stat-card:nth-child(3) .stat-card-value');
+                        if (el) el.innerHTML = formatTokens(d.todayInputTokens) + '<span class="stat-card-token-sep">/</span>' + formatTokens(d.todayOutputTokens);
+                    })
+                    .catch(function () { });
+            }
+            setInterval(fetchStats, POLL_INTERVAL);
+        })();
+    </script>
+
+    <!-- 热力图渲染脚本 -->
+    <script>
+        (function () {
+            var container = document.getElementById('heatmap');
+            var tooltip = document.getElementById('heatmap-tooltip');
+            if (!container) return;
+
+            var CELL = 16;
+            var GAP   = 4;
+            var DAYS  = 360;
+            var allWeeks = [];   // 缓存按周分组后的数据
+            var maxCount  = 0;   // 缓存最大值
+
+            function getLevel(count, max) {
+                if (count === 0) return 0;
+                if (max === 0) return 0;
+                var ratio = count / max;
+                if (ratio <= 0.25) return 1;
+                if (ratio <= 0.5) return 2;
+                if (ratio <= 0.75) return 3;
+                return 4;
+            }
+
+            function getDayOfWeek(dateStr) {
+                var p = dateStr.split('-');
+                return new Date(+p[0], +p[1] - 1, +p[2]).getDay();
+            }
+
+            function calcVisibleCols() {
+                // 容器 padding 左右各 24px，星期标签宽约 24px
+                var w = container.clientWidth - 48 - 24;
+                return Math.max(1, Math.floor((w + GAP) / (CELL + GAP)));
+            }
+
+            // ── 根据当前容器宽度渲染热力图 ──
+            function render() {
+                if (!allWeeks.length) return;
+
+                // 清空旧内容
+                container.innerHTML = '';
+                container.appendChild(tooltip);
+
+                var visibleCols = calcVisibleCols();
+                var weeks = allWeeks.slice(Math.max(0, allWeeks.length - visibleCols));
+
+                // 网格区域
+                var gridArea = document.createElement('div');
+                gridArea.className = 'heatmap-grid-area';
+
+                // 月份标签行：每个月份标签跨在该月所有列的正上方
+                var monthRow = document.createElement('div');
+                monthRow.className = 'heatmap-months';
+                // 先统计每个月份跨越多少列
+                var monthCols = []; // [{ month: 7, colCount: 5, startCol: 0 }, ...]
+                var lastMonth = -1, startCol = 0;
+                for (var w = 0; w < weeks.length; w++) {
+                    var md = null;
+                    for (var d = 0; d < weeks[w].length; d++) {
+                        if (weeks[w][d]) { md = weeks[w][d].usageDate; break; }
+                    }
+                    var m = md ? parseInt(md.split('-')[1]) : -1;
+                    if (m !== lastMonth) {
+                        if (lastMonth !== -1) {
+                            monthCols.push({ month: lastMonth, colCount: w - startCol, startCol: startCol });
+                        }
+                        lastMonth = m;
+                        startCol = w;
+                    }
+                }
+                if (lastMonth !== -1) {
+                    monthCols.push({ month: lastMonth, colCount: weeks.length - startCol, startCol: startCol });
+                }
+                // 渲染月份标签，宽度 = colCount * (CELL + GAP) - GAP
+                for (var i = 0; i < monthCols.length; i++) {
+                    var mc = monthCols[i];
+                    var label = document.createElement('span');
+                    label.className = 'heatmap-month-label';
+                    label.textContent = mc.month + '月';
+                    label.style.width = (mc.colCount * (CELL + GAP) - GAP) + 'px';
+                    label.style.flexShrink = '0';
+                    monthRow.appendChild(label);
+                }
+                gridArea.appendChild(monthRow);
+
+                // 网格列
+                var grid = document.createElement('div');
+                grid.className = 'heatmap-grid';
+                for (var w = 0; w < weeks.length; w++) {
+                    var col = document.createElement('div');
+                    col.className = 'heatmap-col';
+                    for (var d = 0; d < 7; d++) {
+                        var cell = document.createElement('div');
+                        cell.className = 'heatmap-cell';
+                        var dd = weeks[w][d];
+                        if (dd) {
+                            cell.classList.add('level-' + getLevel(dd.callCount, maxCount));
+                            cell.dataset.date = dd.usageDate;
+                            cell.dataset.count = dd.callCount;
+                            cell.addEventListener('mouseenter', function (e) {
+                                var rect = e.target.getBoundingClientRect();
+                                var cRect = container.getBoundingClientRect();
+                                tooltip.textContent = e.target.dataset.date + ' · ' + e.target.dataset.count + ' 次';
+                                tooltip.style.display = 'block';
+                                tooltip.style.left = (rect.left - cRect.left + rect.width / 2 - tooltip.offsetWidth / 2) + 'px';
+                                tooltip.style.top = (rect.top - cRect.top - tooltip.offsetHeight - 8) + 'px';
+                            });
+                            cell.addEventListener('mouseleave', function () { tooltip.style.display = 'none'; });
+                        } else {
+                            cell.classList.add('level-empty');
+                        }
+                        col.appendChild(cell);
+                    }
+                    grid.appendChild(col);
+                }
+                gridArea.appendChild(grid);
+
+                // 滚动容器
+                var scroll = document.createElement('div');
+                scroll.className = 'heatmap-scroll';
+
+                var dayLabels = document.createElement('div');
+                dayLabels.className = 'heatmap-days';
+                ['日', '一', '二', '三', '四', '五', '六'].forEach(function (n) {
+                    var s = document.createElement('span');
+                    s.className = 'heatmap-day-label';
+                    s.textContent = n;
+                    dayLabels.appendChild(s);
+                });
+                scroll.appendChild(dayLabels);
+                scroll.appendChild(gridArea);
+                container.appendChild(scroll);
+            }
+
+            // ── 获取数据 ──
+            fetch('/config/api/heatmap?days=' + DAYS)
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (!data || data.length === 0) return;
+
+                    maxCount = 0;
+                    for (var i = 0; i < data.length; i++) {
+                        if (data[i].callCount > maxCount) maxCount = data[i].callCount;
+                    }
+
+                    // 按周分组
+                    var firstDow = getDayOfWeek(data[0].usageDate);
+                    allWeeks = [];
+                    var cur = [];
+                    for (var i = 0; i < firstDow; i++) cur.push(null);
+                    for (var i = 0; i < data.length; i++) {
+                        cur.push(data[i]);
+                        if (cur.length === 7) { allWeeks.push(cur); cur = []; }
+                    }
+                    if (cur.length > 0) { while (cur.length < 7) cur.push(null); allWeeks.push(cur); }
+
+                    // 首次渲染
+                    render();
+
+                    // 监听容器宽度变化，动态重绘
+                    if (window.ResizeObserver) {
+                        var ro = new ResizeObserver(function () { render(); });
+                        ro.observe(container);
+                    } else {
+                        // 降级：监听 window resize
+                        window.addEventListener('resize', function () { render(); });
+                    }
+                })
+                .catch(function () { });
+        })();
+    </script>
 </main>
 
 </html>
