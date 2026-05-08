@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+
+<!-- ============================================================
+     片段：页头 — 管理后台顶部导航栏
+     参数：
+       pageTitle  — 当前页面标题
+     使用方式：th:replace="~{admin/fragments/header :: header(pageTitle=${pageTitle})}"
+     ============================================================ -->
+
+<header th:fragment="header(pageTitle)" class="header">
+    <div class="header-left">
+        <!-- 汉堡菜单按钮（仅移动端显示） -->
+        <button class="hamburger-btn" id="hamburgerBtn" aria-label="切换菜单">
+            <span></span>
+            <span></span>
+            <span></span>
+        </button>
+        <div class="header-title" th:text="${pageTitle}">概览</div>
+    </div>
+    <div class="header-actions">
+        <button class="header-btn" title="刷新" onclick="window.location.reload()">
+            <th:block th:replace="~{admin/fragments/icons :: icon-refresh}"></th:block>
+        </button>
+        <form th:action="@{/logout}" method="post">
+            <button class="logout-btn" type="submit">
+                <th:block th:replace="~{admin/fragments/icons :: icon-logout}"></th:block>
+                <span>退出登录</span>
+            </button>
+        </form>
+    </div>
+</header>
+
+</html>

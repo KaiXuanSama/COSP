@@ -2,26 +2,32 @@ package com.kaixuan.copilot_ollama_proxy;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.kaixuan.copilot_ollama_proxy.application.ollama.CompositeOllamaService;
+import com.kaixuan.copilot_ollama_proxy.application.openai.CompositeUpstreamChatService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
-import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
-import com.kaixuan.copilot_ollama_proxy.provider.mimo.openai.MimoOpenAiChatService;
-
-@SpringBootTest
+@SpringBootTest(properties = "admin.server.port:0")
 class CopilotOllamaProxyApplicationTests {
 
-	@Autowired
-	private UpstreamChatService upstreamChatService;
+    @Autowired
+    private CompositeOllamaService ollamaService;
 
-	@Test
-	void contextLoads() {
-	}
+    @Autowired
+    private CompositeUpstreamChatService upstreamChatService;
 
-	@Test
-	void usesOpenAiUpstreamImplementationByDefault() {
-		assertThat(upstreamChatService).isInstanceOf(MimoOpenAiChatService.class);
-	}
+    @Test
+    void contextLoads() {
+    }
 
+    @Test
+    void compositeOllamaServiceRegistered() {
+        assertThat(ollamaService).isNotNull();
+    }
+
+    @Test
+    void compositeUpstreamChatServiceRegistered() {
+        assertThat(upstreamChatService).isNotNull();
+    }
 }

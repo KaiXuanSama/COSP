@@ -4,10 +4,11 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.protocol.anthropic.AnthropicStreamEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -19,17 +20,37 @@ import java.util.concurrent.atomic.AtomicReference;
  * Anthropic API 实现 —— 将 OpenAI 格式请求转换为 Anthropic Messages API 调用，
  * 再将 Anthropic 响应转换回 OpenAI 格式。
  */
-@Service @ConditionalOnProperty(name = "proxy.provider", havingValue = "mimo", matchIfMissing = true) @ConditionalOnProperty(name = "proxy.upstream-chat-service", havingValue = "anthropic")
+@Service
 public class MimoAnthropicChatService implements UpstreamChatService {
 
     private static final Logger log = LoggerFactory.getLogger(MimoAnthropicChatService.class);
 
     private final MimoAnthropicClient anthropicClient;
+    private final RuntimeProviderCatalog runtimeProviderCatalog;
     private final ObjectMapper objectMapper;
 
-    public MimoAnthropicChatService(MimoAnthropicClient anthropicClient, ObjectMapper objectMapper) {
+    public MimoAnthropicChatService(MimoAnthropicClient anthropicClient, RuntimeProviderCatalog runtimeProviderCatalog, ObjectMapper objectMapper) {
         this.anthropicClient = anthropicClient;
+        this.runtimeProviderCatalog = runtimeProviderCatalog;
         this.objectMapper = objectMapper;
+    }
+
+    // ========== 路由支持 ==========
+
+    @Override
+    public String getProviderKey() {
+        return "mimo";
+    }
+
+    @Override
+    public String getUpstreamApiFormat() {
+        return "anthropic";
+    }
+
+    @Override
+    public boolean supportsModel(String modelName) {
+        ProviderRuntimeConfiguration config = runtimeProviderCatalog.getActiveProvider("mimo");
+        return config != null && "anthropic".equals(config.apiFormat()) && config.supportsModel(modelName);
     }
 
     // ========== UpstreamChatService 接口实现 ==========
@@ -40,8 +61,7 @@ public class MimoAnthropicChatService implements UpstreamChatService {
         log.info("OpenAI -> Anthropic 转换完成，模型: {}, 流式: false", model);
         // log.debug("Anthropic 请求体: {}", toLogJson(anthropicBody));
 
-        return anthropicClient.sendMessage(anthropicBody)
-                .map(anthropicResp -> convertAnthropicToOpenAi(anthropicResp, model));
+        return anthropicClient.sendMessage(anthropicBody).map(anthropicResp -> convertAnthropicToOpenAi(anthropicResp, model));
     }
 
     @Override
@@ -51,8 +71,7 @@ public class MimoAnthropicChatService implements UpstreamChatService {
         log.info("OpenAI -> Anthropic 转换完成，模型: {}, 流式: true", model);
         // log.debug("Anthropic 请求体: {}", toLogJson(anthropicBody));
 
-        AtomicReference<String> messageId = new AtomicReference<>(
-                "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12));
+        AtomicReference<String> messageId = new AtomicReference<>("chatcmpl-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12));
         AtomicReference<Boolean> finishSent = new AtomicReference<>(false);
         AtomicReference<StringBuilder> textContentBuffer = new AtomicReference<>(new StringBuilder());
         AtomicReference<StringBuilder> thinkingContentBuffer = new AtomicReference<>(new StringBuilder());
@@ -63,8 +82,8 @@ public class MimoAnthropicChatService implements UpstreamChatService {
 
         return anthropicClient.streamMessages(anthropicBody).flatMap(event -> {
             log.debug("Anthropic 事件 [{}]: {}", event.getType(), toLogJson(event));
-            List<String> chunks = convertSseEventToOpenAi(event, messageId, finishSent, textContentBuffer,
-                    thinkingContentBuffer, thinkingSignature, thinkingBlockIndex, stopReason, outputTokens, model);
+            List<String> chunks = convertSseEventToOpenAi(event, messageId, finishSent, textContentBuffer, thinkingContentBuffer, thinkingSignature, thinkingBlockIndex, stopReason, outputTokens,
+                    model);
             for (String chunk : chunks) {
                 log.debug("OpenAI  chunk: {}", chunk);
             }
@@ -112,8 +131,7 @@ public class MimoAnthropicChatService implements UpstreamChatService {
                         for (var tc : toolCalls) {
                             Map<String, Object> toolUse = new LinkedHashMap<>();
                             toolUse.put("type", "tool_use");
-                            toolUse.put("id", tc.get("id") != null ? tc.get("id")
-                                    : "toolu_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
+                            toolUse.put("id", tc.get("id") != null ? tc.get("id") : "toolu_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
                             Map<String, Object> func = (Map<String, Object>) tc.get("function");
                             toolUse.put("name", func.get("name"));
                             toolUse.put("input", parseJsonArguments((String) func.get("arguments")));
@@ -184,8 +202,7 @@ public class MimoAnthropicChatService implements UpstreamChatService {
                         Map<String, Object> tc = new LinkedHashMap<>();
                         tc.put("id", block.get("id"));
                         tc.put("type", "function");
-                        tc.put("function", Map.of("name", block.get("name"), "arguments",
-                                objectMapper.writeValueAsString(block.get("input"))));
+                        tc.put("function", Map.of("name", block.get("name"), "arguments", objectMapper.writeValueAsString(block.get("input"))));
                         toolCalls.add(tc);
                     }
                 }
@@ -211,11 +228,8 @@ public class MimoAnthropicChatService implements UpstreamChatService {
             @SuppressWarnings("unchecked")
             Map<String, Object> usage = (Map<String, Object>) anthropic.get("usage");
             if (usage != null) {
-                openai.put("usage",
-                        Map.of("prompt_tokens", usage.getOrDefault("input_tokens", 0), "completion_tokens",
-                                usage.getOrDefault("output_tokens", 0), "total_tokens",
-                                ((Number) usage.getOrDefault("input_tokens", 0)).intValue()
-                                        + ((Number) usage.getOrDefault("output_tokens", 0)).intValue()));
+                openai.put("usage", Map.of("prompt_tokens", usage.getOrDefault("input_tokens", 0), "completion_tokens", usage.getOrDefault("output_tokens", 0), "total_tokens",
+                        ((Number) usage.getOrDefault("input_tokens", 0)).intValue() + ((Number) usage.getOrDefault("output_tokens", 0)).intValue()));
             }
 
             return objectMapper.writeValueAsString(openai);
@@ -227,10 +241,8 @@ public class MimoAnthropicChatService implements UpstreamChatService {
 
     // ========== 流式：Anthropic SSE → OpenAI SSE ==========
 
-    private List<String> convertSseEventToOpenAi(AnthropicStreamEvent event, AtomicReference<String> messageId,
-            AtomicReference<Boolean> finishSent, AtomicReference<StringBuilder> textContentBuffer,
-            AtomicReference<StringBuilder> thinkingContentBuffer, AtomicReference<StringBuilder> thinkingSignature,
-            AtomicReference<Integer> thinkingBlockIndex, AtomicReference<String> stopReason,
+    private List<String> convertSseEventToOpenAi(AnthropicStreamEvent event, AtomicReference<String> messageId, AtomicReference<Boolean> finishSent, AtomicReference<StringBuilder> textContentBuffer,
+            AtomicReference<StringBuilder> thinkingContentBuffer, AtomicReference<StringBuilder> thinkingSignature, AtomicReference<Integer> thinkingBlockIndex, AtomicReference<String> stopReason,
             AtomicReference<Integer> outputTokens, String model) {
         try {
             List<String> result = new ArrayList<>();
@@ -320,8 +332,7 @@ public class MimoAnthropicChatService implements UpstreamChatService {
             case "message_stop" -> {
                 if (!finishSent.get()) {
                     if (textContentBuffer.get().isEmpty()) {
-                        String fallback = buildThinkingFallback(thinkingContentBuffer, stopReason.get(),
-                                outputTokens.get());
+                        String fallback = buildThinkingFallback(thinkingContentBuffer, stopReason.get(), outputTokens.get());
                         result.add(buildOpenAiChunk(messageId.get(), model, null, fallback, null));
                     }
                     result.add(buildOpenAiFinishChunk(messageId.get(), model, "stop"));
@@ -441,8 +452,7 @@ public class MimoAnthropicChatService implements UpstreamChatService {
         }
     }
 
-    private String buildThinkingFallback(AtomicReference<StringBuilder> thinkingContentBuffer, String stopReason,
-            int outputTokens) {
+    private String buildThinkingFallback(AtomicReference<StringBuilder> thinkingContentBuffer, String stopReason, int outputTokens) {
         String thinking = thinkingContentBuffer.get().toString();
 
         String reason;

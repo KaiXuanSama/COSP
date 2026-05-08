@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+
+<head th:replace="~{admin/fragments/head :: head(title=${pageTitleFull})}"></head>
+
+<body>
+    <!-- 遮罩层 -->
+    <th:block th:replace="~{admin/fragments/sidebar :: sidebar-overlay}"></th:block>
+
+    <!-- 侧边栏 -->
+    <th:block th:replace="~{admin/fragments/sidebar :: sidebar}"></th:block>
+
+    <!-- 主内容区 -->
+    <div class="main">
+        <!-- 页头 -->
+        <th:block th:replace="~{admin/fragments/header :: header(pageTitle=${pageTitle})}"></th:block>
+
+        <!-- 配置页内容 -->
+        <th:block th:replace="~{admin/content/settings :: settings}"></th:block>
+    </div>
+
+    <!-- 侧边栏 JS -->
+    <th:block th:replace="~{admin/fragments/sidebar-js :: sidebar-js}"></th:block>
+</body>
+
+</html>

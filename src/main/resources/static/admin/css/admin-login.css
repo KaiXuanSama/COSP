@@ -1,0 +1,421 @@
+/* ── 品牌面板 ── */
+.brand-panel {
+    flex: 0 0 48%;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 48px 40px;
+    position: relative;
+    overflow: hidden;
+    background:
+        radial-gradient(ellipse at 15% 80%, rgba(194, 122, 62, 0.12) 0%, transparent 55%),
+        radial-gradient(ellipse at 75% 20%, rgba(90, 122, 184, 0.06) 0%, transparent 50%),
+        var(--sidebar);
+    color: var(--text-light);
+}
+
+.brand-panel::before {
+    content: '';
+    position: absolute;
+    width: 320px;
+    height: 320px;
+    right: -80px;
+    top: 50%;
+    transform: translateY(-50%);
+    border: 1px solid rgba(194, 122, 62, 0.12);
+    border-radius: 50%;
+    animation: spin 70s linear infinite;
+}
+
+.brand-panel::after {
+    content: '';
+    position: absolute;
+    width: 220px;
+    height: 220px;
+    right: -30px;
+    top: 50%;
+    transform: translateY(-50%);
+    border: 1px solid rgba(194, 122, 62, 0.08);
+    border-radius: 50%;
+    animation: spin 50s linear infinite reverse;
+}
+
+@keyframes spin {
+    from {
+        transform: translateY(-50%) rotate(0deg);
+    }
+
+    to {
+        transform: translateY(-50%) rotate(360deg);
+    }
+}
+
+.brand-logo {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--text-light);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 1;
+}
+
+.brand-logo svg {
+    width: 28px;
+    height: 28px;
+    color: var(--accent);
+}
+
+.brand-text {
+    flex-shrink: 0;
+    margin: auto 0;
+    position: relative;
+    z-index: 1;
+}
+
+.brand-tagline {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 36px;
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--text-light);
+    margin-bottom: 20px;
+}
+
+.brand-desc {
+    font-size: 15.5px;
+    font-weight: 300;
+    line-height: 1.7;
+    color: rgba(245, 243, 238, 0.55);
+    max-width: 360px;
+}
+
+.dot-grid {
+    position: absolute;
+    bottom: 48px;
+    right: 40px;
+    display: grid;
+    grid-template-columns: repeat(5, 6px);
+    gap: 10px;
+    z-index: 1;
+}
+
+.dot-grid span {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--accent);
+    opacity: 0.15;
+}
+
+/* ── 表单面板 ── */
+.form-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 48px 56px;
+    background: var(--bg);
+}
+
+.form-header {
+    margin-bottom: 32px;
+    opacity: 0;
+    animation: fadeUp 0.5s ease forwards;
+    animation-delay: 0.1s;
+}
+
+.form-header h1 {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 32px;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.2;
+    margin-bottom: 10px;
+}
+
+.form-header p {
+    font-size: 14.5px;
+    color: var(--text-muted);
+    line-height: 1.6;
+}
+
+/* ── 消息提示 ── */
+.message {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 14px;
+    border-radius: var(--radius);
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+    margin-bottom: 20px;
+    opacity: 0;
+    animation: fadeUp 0.4s ease forwards;
+    animation-delay: 0.15s;
+}
+
+.message svg {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+}
+
+.message.error {
+    background: rgba(184, 74, 74, 0.08);
+    color: var(--danger);
+    border: 1px solid rgba(184, 74, 74, 0.15);
+}
+
+.message.info {
+    background: rgba(90, 122, 184, 0.08);
+    color: var(--blue);
+    border: 1px solid rgba(90, 122, 184, 0.15);
+}
+
+.message.success {
+    background: rgba(58, 138, 92, 0.08);
+    color: var(--success);
+    border: 1px solid rgba(58, 138, 92, 0.15);
+}
+
+/* ── 表单字段 ── */
+.field-group {
+    position: relative;
+    margin-bottom: 20px;
+    opacity: 0;
+    animation: fadeUp 0.5s ease forwards;
+}
+
+.field-group:nth-child(1) {
+    animation-delay: 0.20s;
+}
+
+.field-group:nth-child(2) {
+    animation-delay: 0.28s;
+}
+
+.field-label {
+    display: block;
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+}
+
+.field-input-wrap {
+    position: relative;
+}
+
+.field-icon {
+    position: absolute;
+    left: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 18px;
+    height: 18px;
+    color: var(--text-muted);
+    pointer-events: none;
+    transition: color 0.25s ease;
+}
+
+.field-input {
+    width: 100%;
+    font-family: 'Crimson Pro', serif;
+    font-size: 15.5px;
+    color: var(--text-primary);
+    background: var(--surface);
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius);
+    padding: 13px 14px 13px 44px;
+    outline: none;
+    transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.field-input::placeholder {
+    color: var(--text-muted);
+    font-weight: 300;
+}
+
+.field-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-light);
+}
+
+.field-input:focus~.field-icon {
+    color: var(--accent);
+}
+
+/* ── 表单选项 ── */
+.form-options {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    opacity: 0;
+    animation: fadeUp 0.5s ease forwards;
+    animation-delay: 0.34s;
+}
+
+.checkbox-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.checkbox-input {
+    display: none;
+}
+
+.checkbox-custom {
+    width: 18px;
+    height: 18px;
+    border: 1.5px solid var(--border);
+    border-radius: 5px;
+    background: var(--surface);
+    display: grid;
+    place-items: center;
+    transition: all 0.2s ease;
+}
+
+.checkbox-input:checked+.checkbox-custom {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.checkbox-custom svg {
+    width: 12px;
+    height: 12px;
+    color: white;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.checkbox-input:checked+.checkbox-custom svg {
+    opacity: 1;
+}
+
+.checkbox-label {
+    font-size: 13.5px;
+    color: var(--text-muted);
+}
+
+/* ── 登录按钮 ── */
+.submit-btn {
+    position: relative;
+    width: 100%;
+    padding: 14px 24px;
+    border: none;
+    border-radius: var(--radius);
+    background: var(--sidebar);
+    color: white;
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    overflow: hidden;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+    opacity: 0;
+    animation: fadeUp 0.5s ease forwards;
+    animation-delay: 0.40s;
+}
+
+.submit-btn::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, var(--accent), #d4956a);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.submit-btn span {
+    position: relative;
+    z-index: 1;
+}
+
+.submit-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 24px var(--accent-glow);
+}
+
+.submit-btn:hover::before {
+    opacity: 1;
+}
+
+.submit-btn:active {
+    transform: translateY(0);
+}
+
+/* ── 底部提示 ── */
+.form-footer {
+    margin-top: 24px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-muted);
+    opacity: 0;
+    animation: fadeUp 0.5s ease forwards;
+    animation-delay: 0.48s;
+}
+
+/* ── 响应式 ── */
+@media (max-width: 1024px) {
+    .brand-panel {
+        flex: 0 0 42%;
+    }
+}
+
+@media (max-width: 768px) {
+    body {
+        flex-direction: column;
+    }
+
+    .brand-panel {
+        flex: none;
+        padding: 32px 24px 24px;
+    }
+
+    .brand-tagline {
+        font-size: 28px;
+    }
+
+    .brand-desc,
+    .dot-grid,
+    .brand-panel::before,
+    .brand-panel::after {
+        display: none;
+    }
+
+    .form-panel {
+        padding: 32px 24px;
+        justify-content: flex-start;
+    }
+
+    .form-header h1 {
+        font-size: 26px;
+    }
+}
+
+@media (max-width: 400px) {
+    .form-panel {
+        padding: 24px 20px;
+    }
+
+    .form-header h1 {
+        font-size: 23px;
+    }
+
+    .form-options {
+        flex-direction: column;
+        gap: 12px;
+    }
+}

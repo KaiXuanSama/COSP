@@ -1,0 +1,837 @@
+/* ============================================================
+   admin-components.css — 组件样式（卡片、表单、消息提示等）
+   ============================================================ */
+
+/* ── 统计卡片 ── */
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    position: relative;
+    overflow: hidden;
+    opacity: 0;
+    animation: fadeUp 0.5s ease forwards;
+    transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.stat-card:nth-child(1) {
+    animation-delay: 0.15s;
+}
+
+.stat-card:nth-child(2) {
+    animation-delay: 0.23s;
+}
+
+.stat-card:nth-child(3) {
+    animation-delay: 0.31s;
+}
+
+.stat-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+}
+
+.stat-card-top {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+}
+
+.stat-card-top.accent {
+    background: var(--accent);
+}
+
+.stat-card-top.success {
+    background: var(--success);
+}
+
+.stat-card-top.blue {
+    background: var(--blue);
+}
+
+.stat-card-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+}
+
+.stat-card-value {
+    font-family: 'DM Mono', monospace;
+    font-size: 28px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.stat-card-value--sm {
+    font-size: 20px;
+    margin-top: 4px;
+}
+
+.stat-card-token-sep {
+    margin: 0 3px;
+    color: var(--text-muted);
+}
+
+.stat-card-desc {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 6px;
+}
+
+/* ── 信息卡片 ── */
+.info-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    opacity: 0;
+    animation: fadeUp 0.5s ease forwards;
+    animation-delay: 0.47s;
+}
+
+.info-card-title {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 20px;
+}
+
+.info-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border-light);
+}
+
+.info-row:last-child {
+    border-bottom: none;
+}
+
+.info-row-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+}
+
+.info-row-value {
+    font-size: 14px;
+    color: var(--text-body);
+}
+
+/* ── 通用卡片 ── */
+.card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    margin-bottom: 20px;
+    box-shadow: var(--shadow-sm);
+    opacity: 0;
+    animation: fadeUp 0.5s ease forwards;
+}
+
+.card+.card {
+    animation-delay: 0.1s;
+}
+
+/* 热力图卡片：在统计卡片之后淡入 */
+.heatmap-card {
+    animation-delay: 0.39s;
+}
+
+.heatmap-card+.card {
+    animation-delay: 0.47s;
+}
+
+.card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+    transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.card-title {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+/* ── 状态徽章 ── */
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 6px;
+}
+
+.status-badge.success {
+    background: rgba(58, 138, 92, 0.08);
+    color: var(--success);
+}
+
+.status-badge.error {
+    background: rgba(184, 74, 74, 0.08);
+    color: var(--danger);
+}
+
+.status-badge.warning {
+    background: rgba(184, 154, 58, 0.08);
+    color: var(--warning);
+}
+
+.status-badge::before {
+    content: '';
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+/* ── 消息提示 ── */
+.message {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 14px;
+    border-radius: var(--radius);
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+    margin-bottom: 20px;
+    opacity: 0;
+    animation: fadeUp 0.4s ease forwards;
+}
+
+.message svg {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+}
+
+.message.error {
+    background: rgba(184, 74, 74, 0.08);
+    color: var(--danger);
+    border: 1px solid rgba(184, 74, 74, 0.15);
+}
+
+.message.info {
+    background: rgba(90, 122, 184, 0.08);
+    color: var(--blue);
+    border: 1px solid rgba(90, 122, 184, 0.15);
+}
+
+.message.success {
+    background: rgba(58, 138, 92, 0.08);
+    color: var(--success);
+    border: 1px solid rgba(58, 138, 92, 0.15);
+}
+
+/* ── 表单字段 ── */
+.field-group {
+    position: relative;
+}
+
+.field-label {
+    display: block;
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+}
+
+.field-input-wrap {
+    position: relative;
+}
+
+/* ── API Key 眼睛按钮 ── */
+.field-input-wrap--eye .field-input {
+    padding-right: 42px;
+}
+
+.field-eye-btn {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    border: none;
+    background: none;
+    cursor: pointer;
+    padding: 4px;
+    line-height: 1;
+    opacity: 0.5;
+    transition: opacity 0.15s;
+    color: var(--text-muted);
+}
+
+.field-eye-btn:hover {
+    opacity: 1;
+}
+
+.eye-icon {
+    display: block;
+    width: 18px;
+    height: 18px;
+}
+
+.field-icon {
+    position: absolute;
+    left: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 18px;
+    height: 18px;
+    color: var(--text-muted);
+    pointer-events: none;
+    transition: color 0.25s ease;
+}
+
+.field-input {
+    width: 100%;
+    font-family: 'Crimson Pro', serif;
+    font-size: 15.5px;
+    color: var(--text-primary);
+    background: var(--surface);
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius);
+    padding: 13px 14px 13px 44px;
+    outline: none;
+    transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.field-input::placeholder {
+    color: var(--text-muted);
+    font-weight: 300;
+}
+
+.field-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-light);
+}
+
+.field-input:focus~.field-icon {
+    color: var(--accent);
+}
+
+/* 无图标输入框变体 */
+.field-input:not(.field-input--select) {
+    padding-left: 14px;
+}
+
+/* 下拉选择框 */
+.field-input-wrap--select .field-input {
+    padding-left: 14px;
+    appearance: none;
+    cursor: pointer;
+}
+
+.field-input-wrap--select::after {
+    content: '';
+    position: absolute;
+    right: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 5px solid var(--text-muted);
+    pointer-events: none;
+}
+
+/* ── 提交按钮 ── */
+.form-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 24px;
+}
+
+.submit-btn {
+    position: relative;
+    padding: 14px 48px;
+    border: none;
+    border-radius: var(--radius);
+    background: var(--sidebar);
+    color: white;
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    overflow: hidden;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.submit-btn::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, var(--accent), #d4956a);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.submit-btn span {
+    position: relative;
+    z-index: 1;
+}
+
+.submit-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 24px var(--accent-glow);
+}
+
+.submit-btn:hover::before {
+    opacity: 1;
+}
+
+.submit-btn:active {
+    transform: translateY(0);
+}
+
+/* ── 空状态 ── */
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 24px;
+    text-align: center;
+}
+
+.empty-state-icon {
+    width: 48px;
+    height: 48px;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+}
+
+.empty-state-icon svg {
+    width: 100%;
+    height: 100%;
+}
+
+.empty-state-text {
+    font-family: 'Cormson Pro', serif;
+    font-size: 15px;
+    color: var(--text-body);
+    margin-bottom: 4px;
+}
+
+.empty-state-desc {
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+/* ── 响应式 ── */
+
+@media (max-width: 640px) {
+    .stats-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .stat-card-value {
+        font-size: 22px;
+    }
+
+    .info-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+    }
+
+    .info-card,
+    .stat-card,
+    .card {
+        padding: 18px;
+    }
+}
+
+@media (max-width: 400px) {
+    .stat-card {
+        padding: 14px;
+    }
+
+    .stat-card-value {
+        font-size: 18px;
+    }
+
+    .info-card-title,
+    .card-title {
+        font-size: 15px;
+    }
+}
+
+/* ── 热力图 ── */
+.heatmap-card .card-body {
+    padding: 12px 0 16px;
+}
+
+.heatmap-container {
+    position: relative;
+    padding: 0 24px;
+}
+
+/* 滚动容器：单行，超出裁切 */
+.heatmap-scroll {
+    display: flex;
+    overflow: hidden;
+}
+
+/* 左侧星期标签 */
+.heatmap-days {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex-shrink: 0;
+    padding-right: 8px;
+    padding-top: 20px;
+}
+
+.heatmap-day-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    line-height: 16px;
+    height: 16px;
+}
+
+/* 右侧网格区域 */
+.heatmap-grid-area {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+}
+
+/* 月份标签行 */
+.heatmap-months {
+    display: flex;
+    margin-bottom: 6px;
+    height: 16px;
+}
+
+.heatmap-month-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+    line-height: 16px;
+    text-align: left;
+}
+
+/* 网格：每列是一周，单行排列，超出裁切 */
+.heatmap-grid {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.heatmap-col {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.heatmap-cell {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    cursor: default;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.heatmap-cell:hover {
+    transform: scale(1.25);
+    box-shadow: 0 0 0 1px rgba(26, 25, 23, 0.2);
+    z-index: 1;
+    position: relative;
+}
+
+/* 热力图格子：初始不可见，等待涟漪动画触发 */
+.heatmap-cell {
+    opacity: 0;
+    transform: scale(0.3);
+    pointer-events: none;
+}
+
+/* 涟漪动画完成后：格子可见且可交互 */
+.heatmap-cell-visible {
+    opacity: 1;
+    transform: scale(1);
+    pointer-events: auto;
+}
+
+/* ── 热力图切换按钮 ── */
+.heatmap-mode-switch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.heatmap-mode-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-muted);
+    letter-spacing: 0.04em;
+}
+
+.heatmap-mode-btn {
+    padding: 3px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-body);
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.heatmap-mode-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-light);
+}
+
+/* ── 四种模式的热力图颜色（用 !important 确保覆盖 level-X 规则） ── */
+/* 古铜色 - API 调用 */
+.heatmap-cell-mode-calls.level-0 {
+    background: var(--border-light) !important;
+}
+
+.heatmap-cell-mode-calls.level-1 {
+    background: rgba(194, 122, 62, 0.15) !important;
+}
+
+.heatmap-cell-mode-calls.level-2 {
+    background: rgba(194, 122, 62, 0.35) !important;
+}
+
+.heatmap-cell-mode-calls.level-3 {
+    background: rgba(194, 122, 62, 0.6) !important;
+}
+
+.heatmap-cell-mode-calls.level-4 {
+    background: var(--accent) !important;
+}
+
+/* 墨绿色 - Token 输出 */
+.heatmap-cell-mode-output.level-0 {
+    background: var(--border-light) !important;
+}
+
+.heatmap-cell-mode-output.level-1 {
+    background: rgba(58, 138, 92, 0.15) !important;
+}
+
+.heatmap-cell-mode-output.level-2 {
+    background: rgba(58, 138, 92, 0.35) !important;
+}
+
+.heatmap-cell-mode-output.level-3 {
+    background: rgba(58, 138, 92, 0.6) !important;
+}
+
+.heatmap-cell-mode-output.level-4 {
+    background: #3a8a5c !important;
+}
+
+/* 深蓝色 - Token 输入 */
+.heatmap-cell-mode-input.level-0 {
+    background: var(--border-light) !important;
+}
+
+.heatmap-cell-mode-input.level-1 {
+    background: rgba(90, 122, 184, 0.15) !important;
+}
+
+.heatmap-cell-mode-input.level-2 {
+    background: rgba(90, 122, 184, 0.35) !important;
+}
+
+.heatmap-cell-mode-input.level-3 {
+    background: rgba(90, 122, 184, 0.6) !important;
+}
+
+.heatmap-cell-mode-input.level-4 {
+    background: #5a7ab8 !important;
+}
+
+/* 暗紫色 - Token 总量 */
+.heatmap-cell-mode-total.level-0 {
+    background: var(--border-light) !important;
+}
+
+.heatmap-cell-mode-total.level-1 {
+    background: rgba(123, 94, 167, 0.15) !important;
+}
+
+.heatmap-cell-mode-total.level-2 {
+    background: rgba(123, 94, 167, 0.35) !important;
+}
+
+.heatmap-cell-mode-total.level-3 {
+    background: rgba(123, 94, 167, 0.6) !important;
+}
+
+.heatmap-cell-mode-total.level-4 {
+    background: #7b5ea7 !important;
+}
+
+/* 热力图格子涟漪入场动画 */
+.heatmap-cell-ripple {
+    animation: heatmapRippleIn 0.4s ease-out forwards;
+}
+
+/* ── 热力图翻牌动画 ── */
+.heatmap-grid {
+    perspective: 800px;
+}
+
+.heatmap-col {
+    transition: transform 0.3s ease-in-out;
+    transform-style: preserve-3d;
+    position: relative;
+}
+
+.heatmap-col.flip-forward {
+    animation: colFlipForward 0.6s ease-in-out forwards;
+}
+
+.heatmap-col.flip-backward {
+    animation: colFlipBackward 0.6s ease-in-out forwards;
+}
+
+@keyframes colFlipForward {
+    0% {
+        transform: rotateY(0deg);
+    }
+
+    50% {
+        transform: rotateY(90deg);
+    }
+
+    100% {
+        transform: rotateY(0deg);
+    }
+}
+
+@keyframes colFlipBackward {
+    0% {
+        transform: rotateY(0deg);
+    }
+
+    50% {
+        transform: rotateY(-90deg);
+    }
+
+    100% {
+        transform: rotateY(0deg);
+    }
+}
+
+@keyframes heatmapRippleIn {
+    0% {
+        opacity: 0;
+        transform: scale(0.3);
+    }
+
+    60% {
+        opacity: 1;
+        transform: scale(1.12);
+    }
+
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+.heatmap-cell.level-empty {
+    background: transparent;
+    pointer-events: none;
+}
+
+/* 热力图颜色等级 */
+.heatmap-cell.level-0 {
+    background: var(--border-light);
+}
+
+.heatmap-cell.level-1 {
+    background: rgba(194, 122, 62, 0.15);
+}
+
+.heatmap-cell.level-2 {
+    background: rgba(194, 122, 62, 0.35);
+}
+
+.heatmap-cell.level-3 {
+    background: rgba(194, 122, 62, 0.6);
+}
+
+.heatmap-cell.level-4 {
+    background: var(--accent);
+}
+
+.heatmap-tooltip {
+    display: none;
+    position: absolute;
+    z-index: 10;
+    padding: 4px 10px;
+    background: var(--sidebar);
+    color: var(--text-light);
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    border-radius: 4px;
+    white-space: nowrap;
+    pointer-events: none;
+    box-shadow: 0 4px 12px rgba(26, 25, 23, 0.2);
+}

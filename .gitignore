@@ -37,3 +37,6 @@ application.yml
 
 ## Log
 *.log
+
+## Sqlite
+*.db

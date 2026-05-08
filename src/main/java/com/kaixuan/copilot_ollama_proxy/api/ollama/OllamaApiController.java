@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.api.ollama;
 
-import com.kaixuan.copilot_ollama_proxy.application.ollama.OllamaService;
+import com.kaixuan.copilot_ollama_proxy.application.ollama.CompositeOllamaService;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowRequest;
@@ -12,7 +13,10 @@ import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Ollama API 兼容控制器 —— 模拟 Ollama 服务器对外暴露的 REST 接口。
@@ -27,42 +31,153 @@ import java.util.Map;
 @RestController @RequestMapping("/api")
 public class OllamaApiController {
 
-    private final OllamaService ollamaService;
-    /** 伪装的 Ollama 版本号，从 application.yml 的 ollama.version 配置读取 */
-    private final String ollamaVersion;
+    private final CompositeOllamaService ollamaService;
+    private final ProviderConfigRepository providerConfigRepository;
+    private final String defaultVersion;
 
-    public OllamaApiController(OllamaService ollamaService, @Value("${ollama.version}") String ollamaVersion) {
+    public OllamaApiController(CompositeOllamaService ollamaService, ProviderConfigRepository providerConfigRepository, @Value("${ollama.version}") String defaultVersion) {
         this.ollamaService = ollamaService;
-        this.ollamaVersion = ollamaVersion;
+        this.providerConfigRepository = providerConfigRepository;
+        this.defaultVersion = defaultVersion;
     }
 
     /**
      * 返回 Ollama 版本号。
+     * 优先从数据库读取用户配置的伪造版本号，不存在则使用 application.yml 默认值。
      * Copilot 在连接时会调用此接口确认 Ollama 服务是否可用。
      */
     @GetMapping("/version")
     public Map<String, String> version() {
-        return Map.of("version", ollamaVersion);
+        String dbVersion = providerConfigRepository.findConfigValue("fake_version");
+        String ver = (dbVersion != null && !dbVersion.isBlank()) ? dbVersion : defaultVersion;
+        return Map.of("version", ver);
     }
 
     /**
      * 返回可用模型列表。
-     * Copilot 会调用此接口获取所有可用模型，展示在模型选择下拉框中。
-     * 返回的是伪装的 Mimo 模型信息，格式与 Ollama 一致。
+     * 从数据库聚合所有已启用服务商下用户勾选的模型。
+     * 如果没有任何模型启用（或所有服务商均未启用），则回退返回 "nano_llm"。
      */
     @GetMapping("/tags")
     public Mono<OllamaTagsResponse> tags() {
-        return ollamaService.listModels();
+        return Mono.fromCallable(() -> {
+            var response = new OllamaTagsResponse();
+            List<OllamaTagsResponse.ModelInfo> allModels = new ArrayList<>();
+
+            // 从数据库读取所有已启用服务商及其已启用模型
+            List<Map<String, Object>> activeProviders = providerConfigRepository.findAllActiveProvidersWithEnabledModels();
+            for (Map<String, Object> provider : activeProviders) {
+                String providerKey = (String) provider.getOrDefault("providerKey", "unknown");
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> models = (List<Map<String, Object>>) provider.get("models");
+                if (models == null)
+                    continue;
+                for (Map<String, Object> m : models) {
+                    String modelName = (String) m.getOrDefault("modelName", "");
+                    if (modelName.isEmpty())
+                        continue;
+                    boolean capsTools = Boolean.TRUE.equals(m.get("capsTools"));
+                    boolean capsVision = Boolean.TRUE.equals(m.get("capsVision"));
+                    allModels.add(createModelInfo(modelName, providerKey, capsTools, capsVision));
+                }
+            }
+
+            if (allModels.isEmpty()) {
+                // 没有任何启用的模型，回退返回 nano_llm
+                allModels.add(createNanoLlmInfo());
+            }
+
+            response.setModels(allModels);
+            return response;
+        });
+    }
+
+    /**
+     * 构造单个模型的 ModelInfo 对象。
+     * 根据提供的模型名称、服务商标识和能力列表生成符合 Ollama 规范的模型信息。
+     * @param modelName 模型显示名称（如 "mimo-v2.5-pro"）
+     * @param providerKey 服务商标识（如 "mimo"），用于构造模型详细信息
+     * @param capsTools 是否支持工具调用能力
+     * @param capsVision 是否支持视觉能力
+     * @return 构造好的 ModelInfo 对象
+     */
+    private OllamaTagsResponse.ModelInfo createModelInfo(String modelName, String providerKey, boolean capsTools, boolean capsVision) {
+        var info = new OllamaTagsResponse.ModelInfo();
+        info.setName(modelName);
+        info.setModel(modelName);
+        info.setModifiedAt(java.time.Instant.now().toString());
+        info.setSize(0);
+        info.setDigest("sha256:" + UUID.randomUUID().toString().replace("-", ""));
+        var details = new OllamaTagsResponse.ModelDetails();
+        details.setFormat(providerKey);
+        details.setFamily(providerKey.substring(0, 1).toUpperCase() + providerKey.substring(1));
+        details.setFamilies(List.of(providerKey));
+        details.setParameterSize("unknown");
+        details.setQuantizationLevel("none");
+        info.setDetails(details);
+        return info;
+    }
+
+    /**
+     * 构造 nano_llm 模型的 ModelInfo 对象。
+     * 这是一个兜底模型，当数据库中没有任何启用的模型时返回。
+     * 模型名称固定为 "nano_llm"，能力包含 "completion" 和 "tools"，以确保 Copilot 可以选中使用。
+     */
+    private OllamaTagsResponse.ModelInfo createNanoLlmInfo() {
+        var nanoModel = new OllamaTagsResponse.ModelInfo();
+        nanoModel.setName("nano_llm");
+        nanoModel.setModel("nano_llm");
+        nanoModel.setModifiedAt(java.time.Instant.now().toString());
+        nanoModel.setSize(0);
+        nanoModel.setDigest("sha256:" + UUID.randomUUID().toString().replace("-", ""));
+        var details = new OllamaTagsResponse.ModelDetails();
+        details.setFormat("gguf");
+        details.setFamily("nano");
+        details.setFamilies(List.of("nano"));
+        details.setParameterSize("1B");
+        details.setQuantizationLevel("none");
+        nanoModel.setDetails(details);
+        nanoModel.setCapabilities(List.of("completion", "tools"));
+        return nanoModel;
     }
 
     /**
      * 返回指定模型的详细信息。
      * Copilot 会调用此接口获取模型的上下文长度、能力（completion/tools/vision）等参数。
      * 这些参数决定了 Copilot 如何使用该模型（例如上下文长度决定了单次对话的最大 token 数）。
+     * 如果请求的是兜底模型 "nano_llm"，直接构造响应，不经过 provider 链。
      */
     @PostMapping("/show")
     public OllamaShowResponse show(@RequestBody OllamaShowRequest request) {
+        if ("nano_llm".equals(request.getModel())) {
+            return createNanoLlmShowResponse();
+        }
         return ollamaService.showModel(request.getModel());
+    }
+
+    /**
+     * 构造 nano_llm 兜底模型的 /api/show 响应。
+     * 当数据库中没有任何启用的模型时，tags 接口会返回 nano_llm，
+     * Copilot 随后会调用 show 接口获取模型详情，此处直接构造响应避免 provider 链查找失败。
+     */
+    private OllamaShowResponse createNanoLlmShowResponse() {
+        OllamaShowResponse response = new OllamaShowResponse();
+        response.setParameters("temperature 0.7\nnum_ctx 4096");
+        response.setLicense("Proprietary");
+        response.setModifiedAt(java.time.Instant.now().toString());
+        response.setCapabilities(List.of("completion", "tools"));
+
+        var details = new OllamaShowResponse.ShowDetails();
+        details.setParentModel("");
+        details.setFormat("gguf");
+        details.setFamily("nano");
+        details.setFamilies(List.of("nano"));
+        details.setParameterSize("1B");
+        details.setQuantizationLevel("none");
+        response.setDetails(details);
+
+        response.setModelInfo(Map.of("general.architecture", "nano", "general.basename", "nano_llm", "nano.context_length", 4096, "nano.embedding_length", 8192));
+        return response;
     }
 
     /**

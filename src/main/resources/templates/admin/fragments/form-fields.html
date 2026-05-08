@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+
+<!-- ============================================================
+     form-fields.html — 可复用表单字段组件
+     包含：带眼睛切换的密码输入框
+     ============================================================ -->
+
+<!-- 眼睛图标 SVG（睁眼 = 密码可见时显示，默认隐藏） -->
+<th:block th:fragment="eye-icon-show">
+    <svg class="eye-icon eye-icon--show" viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+        stroke-linejoin="round" style="display:none">
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+        <circle cx="12" cy="12" r="3.5" />
+    </svg>
+</th:block>
+
+<!-- 眼睛图标 SVG（闭眼 = 密码隐藏时显示） -->
+<th:block th:fragment="eye-icon-hide">
+    <svg class="eye-icon eye-icon--hide" viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+        stroke-linejoin="round">
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+        <circle cx="12" cy="12" r="3.5" />
+        <line x1="3" y1="3" x2="21" y2="21" stroke-width="1.8" />
+    </svg>
+</th:block>
+
+<!-- 眼睛切换按钮（完整组件：包含睁眼+闭眼两个图标） -->
+<th:block th:fragment="eye-toggle-btn">
+    <button type="button" class="field-eye-btn" onclick="toggleEye(this)"
+        aria-label="显示/隐藏">
+        <th:block th:replace="~{admin/fragments/form-fields :: eye-icon-show}"></th:block>
+        <th:block th:replace="~{admin/fragments/form-fields :: eye-icon-hide}"></th:block>
+    </button>
+</th:block>
+
+<!-- 带眼睛按钮的密码输入框包装器 -->
+<!-- 参数：inputId, inputName, inputPlaceholder, inputValue -->
+<th:block th:fragment="password-field-with-eye(inputId, inputName, inputPlaceholder, inputValue)">
+    <div class="field-input-wrap field-input-wrap--eye">
+        <input class="field-input" th:id="${inputId}" th:name="${inputName}" type="password"
+            th:placeholder="${inputPlaceholder}" th:value="${inputValue}">
+        <th:block th:replace="~{admin/fragments/form-fields :: eye-toggle-btn}"></th:block>
+    </div>
+</th:block>
+
+</html>
