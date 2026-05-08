@@ -65,3 +65,13 @@ body::after {
         transform: translateY(0);
     }
 }
+
+/* ── 隐藏滚动条（保留滚动功能）── */
+::-webkit-scrollbar {
+    display: none;
+}
+
+* {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}

@@ -338,7 +338,6 @@
     width: 100%;
     box-sizing: border-box;
     overflow-y: auto;
-    scrollbar-gutter: stable;
 }
 
 /* ── 响应式 ── */
