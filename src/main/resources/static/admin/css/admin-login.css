@@ -249,7 +249,7 @@
     box-shadow: 0 0 0 4px var(--accent-light);
 }
 
-.field-input:focus ~ .field-icon {
+.field-input:focus~.field-icon {
     color: var(--accent);
 }
 
@@ -286,7 +286,7 @@
     transition: all 0.2s ease;
 }
 
-.checkbox-input:checked + .checkbox-custom {
+.checkbox-input:checked+.checkbox-custom {
     background: var(--accent);
     border-color: var(--accent);
 }
@@ -299,7 +299,7 @@
     transition: opacity 0.2s ease;
 }
 
-.checkbox-input:checked + .checkbox-custom svg {
+.checkbox-input:checked+.checkbox-custom svg {
     opacity: 1;
 }
 

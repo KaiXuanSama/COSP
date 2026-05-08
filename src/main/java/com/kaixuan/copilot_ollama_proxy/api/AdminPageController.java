@@ -88,8 +88,7 @@ public class AdminPageController {
      * 热力图数据 — 返回最近 N 天每天的 API 调用次数。
      */
     @GetMapping("/config/api/heatmap") @ResponseBody
-    public ResponseEntity<List<Map<String, Object>>> heatmapData(
-            @RequestParam(defaultValue = "360") int days) {
+    public ResponseEntity<List<Map<String, Object>>> heatmapData(@RequestParam(defaultValue = "360") int days) {
         days = Math.max(7, Math.min(365, days));
         List<Map<String, Object>> data = apiUsageRepository.listRecentDays(days);
         // 补全缺失日期（数据库中没有记录的日期补 0）

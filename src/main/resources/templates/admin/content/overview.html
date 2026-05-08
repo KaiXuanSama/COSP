@@ -74,27 +74,117 @@
         </div>
     </div>
 
-    <!-- 短轮询脚本：每 5 秒刷新一次统计数据 -->
+    <!-- 数字滚动动画 + 短轮询脚本 -->
     <script>
         (function () {
             var POLL_INTERVAL = 5000;
+            var FIRST_ANIM_DURATION = 2000; // 首次动画 2 秒
+            var UPDATE_ANIM_DURATION = 800;  // 后续更新 0.8 秒
+            var isFirstLoad = true;
+
+            // 当前显示值（用于后续动画的起点）
+            var currentValues = {
+                totalApiCalls: 0,
+                todayApiCalls: 0,
+                todayInputTokens: 0,
+                todayOutputTokens: 0
+            };
+
+            // 首次加载：先将 DOM 中的值重置为 0，避免先显示目标数字
+            if (isFirstLoad) {
+                var initEls = document.querySelectorAll('.stat-card-value');
+                initEls.forEach(function (el) {
+                    // 保留 token-sep 结构，只重置数字
+                    if (el.classList.contains('stat-card-value--sm')) {
+                        el.innerHTML = '0<span class="stat-card-token-sep">/</span>0';
+                    } else {
+                        el.textContent = '0';
+                    }
+                });
+            }
+
             function formatTokens(val) {
                 if (val >= 1000) { return (val / 1000).toFixed(1) + 'k'; }
                 return val.toString();
             }
+
+            function formatNumber(val) {
+                return val.toLocaleString('zh-CN');
+            }
+
+            // 数字滚动动画：从 start 到 end，持续 duration 毫秒
+            function animateNumber(element, start, end, duration, formatter) {
+                if (!element) return;
+                var startTime = null;
+                function step(timestamp) {
+                    if (!startTime) startTime = timestamp;
+                    var progress = Math.min((timestamp - startTime) / duration, 1);
+                    // easeOutCubic 缓动
+                    var eased = 1 - Math.pow(1 - progress, 3);
+                    var current = Math.round(start + (end - start) * eased);
+                    element.textContent = formatter(current);
+                    if (progress < 1) {
+                        requestAnimationFrame(step);
+                    } else {
+                        element.textContent = formatter(end);
+                    }
+                }
+                requestAnimationFrame(step);
+            }
+
+            // Token 数值动画（带 / 分隔符）
+            function animateToken(element, startIn, endIn, startOut, endOut, duration) {
+                if (!element) return;
+                var startTime = null;
+                function step(timestamp) {
+                    if (!startTime) startTime = timestamp;
+                    var progress = Math.min((timestamp - startTime) / duration, 1);
+                    var eased = 1 - Math.pow(1 - progress, 3);
+                    var curIn = Math.round(startIn + (endIn - startIn) * eased);
+                    var curOut = Math.round(startOut + (endOut - startOut) * eased);
+                    element.innerHTML = formatTokens(curIn) + '<span class="stat-card-token-sep">/</span>' + formatTokens(curOut);
+                    if (progress < 1) {
+                        requestAnimationFrame(step);
+                    } else {
+                        element.innerHTML = formatTokens(endIn) + '<span class="stat-card-token-sep">/</span>' + formatTokens(endOut);
+                    }
+                }
+                requestAnimationFrame(step);
+            }
+
             function fetchStats() {
                 fetch('/config/api/stats')
                     .then(function (r) { return r.json(); })
                     .then(function (d) {
-                        var el = document.querySelector('.stat-card:nth-child(1) .stat-card-value');
-                        if (el) el.textContent = d.totalApiCalls;
-                        el = document.querySelector('.stat-card:nth-child(2) .stat-card-value');
-                        if (el) el.textContent = d.todayApiCalls;
-                        el = document.querySelector('.stat-card:nth-child(3) .stat-card-value');
-                        if (el) el.innerHTML = formatTokens(d.todayInputTokens) + '<span class="stat-card-token-sep">/</span>' + formatTokens(d.todayOutputTokens);
+                        var duration = isFirstLoad ? FIRST_ANIM_DURATION : UPDATE_ANIM_DURATION;
+
+                        // 总调用次数
+                        var el1 = document.querySelector('.stat-card:nth-child(1) .stat-card-value');
+                        animateNumber(el1, currentValues.totalApiCalls, d.totalApiCalls, duration, formatNumber);
+
+                        // 今日调用次数
+                        var el2 = document.querySelector('.stat-card:nth-child(2) .stat-card-value');
+                        animateNumber(el2, currentValues.todayApiCalls, d.todayApiCalls, duration, formatNumber);
+
+                        // 今日 Token
+                        var el3 = document.querySelector('.stat-card:nth-child(3) .stat-card-value');
+                        animateToken(el3, currentValues.todayInputTokens, d.todayInputTokens, currentValues.todayOutputTokens, d.todayOutputTokens, duration);
+
+                        // 更新当前值
+                        currentValues.totalApiCalls = d.totalApiCalls;
+                        currentValues.todayApiCalls = d.todayApiCalls;
+                        currentValues.todayInputTokens = d.todayInputTokens;
+                        currentValues.todayOutputTokens = d.todayOutputTokens;
+
+                        isFirstLoad = false;
                     })
                     .catch(function () { });
             }
+
+            // 立即开始获取数据并与卡片淡入动画并行执行
+            fetchStats();
+
+            // 后续轮询
             setInterval(fetchStats, POLL_INTERVAL);
         })();
     </script>
@@ -107,10 +197,10 @@
             if (!container) return;
 
             var CELL = 16;
-            var GAP   = 4;
-            var DAYS  = 360;
+            var GAP = 4;
+            var DAYS = 360;
             var allWeeks = [];   // 缓存按周分组后的数据
-            var maxCount  = 0;   // 缓存最大值
+            var maxCount = 0;   // 缓存最大值
 
             function getLevel(count, max) {
                 if (count === 0) return 0;
