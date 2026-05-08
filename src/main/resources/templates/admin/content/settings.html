@@ -214,6 +214,93 @@
                     </div>
                 </div>
 
+                <!-- SenseNova 折叠项 -->
+                <div class="accordion">
+                    <div class="accordion-header"
+                        onclick="this.nextElementSibling.classList.toggle('open');this.classList.toggle('open')">
+                        <span class="accordion-title">SenseNova</span>
+                        <span class="accordion-arrow">&#x25B8;</span>
+                    </div>
+                    <div class="accordion-body">
+                        <div class="accordion-inner">
+                            <div class="field-group">
+                                <label class="field-label">启用</label>
+                                <div class="switch-wrap">
+                                    <label class="switch">
+                                        <input type="checkbox" name="sensenovaEnabled"
+                                            th:checked="${sensenova.enabled}">
+                                        <span class="switch-slider"></span>
+                                    </label>
+                                    <span class="switch-tooltip" id="sensenova-tooltip"></span>
+                                </div>
+                            </div>
+                            <div class="field-group">
+                                <label class="field-label field-label--inline" for="sensenovaBaseUrl">API URL</label>
+                                <span class="field-hint field-hint--inline">只需要输入前缀，比如 https://token.sensenova.cn</span>
+                                <div class="field-input-wrap">
+                                    <input class="field-input" id="sensenovaBaseUrl" name="sensenovaBaseUrl" type="url"
+                                        placeholder="https://token.sensenova.cn" th:value="${sensenova.baseUrl}">
+                                </div>
+                            </div>
+                            <div class="field-group">
+                                <label class="field-label" for="sensenovaApiKey">API Key</label>
+                                <th:block
+                                    th:replace="~{admin/fragments/form-fields :: password-field-with-eye(
+                                    'sensenovaApiKey', 'sensenovaApiKey', '请输入 SenseNova API Key', ${sensenova.apiKey})}">
+                                </th:block>
+                            </div>
+                            <div class="field-group">
+                                <label class="field-label" for="sensenovaApiFormat">API 格式</label>
+                                <div class="field-input-wrap field-input-wrap--select">
+                                    <select class="field-input field-input--select" id="sensenovaApiFormat"
+                                        name="sensenovaApiFormat">
+                                        <option value="openai" th:selected="${sensenova.apiFormat == 'openai'}">OpenAI
+                                        </option>
+                                        <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <!-- 模型列表 -->
+                            <div class="model-list" id="sensenova-models">
+                                <div class="model-list-header">
+                                    <span class="model-list-title">模型列表</span>
+                                    <span class="model-hint">1M = 1024K；1K = 1024，请输入具体数值</span>
+                                    <div class="model-list-actions">
+                                        <a href="https://platform.sensenova.cn/docs" target="_blank" rel="noopener"
+                                            class="model-doc-link">官方文档</a>
+                                        <button type="button" class="btn-add-model" onclick="addModel('sensenova')">+
+                                            添加模型</button>
+                                    </div>
+                                </div>
+                                <div class="model-list-items">
+                                    <div class="model-item" th:each="model, iter : ${sensenova.models}">
+                                        <label class="model-enabled"><input type="checkbox"
+                                                th:name="'sensenovaModels[' + ${iter.index} + '].enabled'"
+                                                th:checked="${model.enabled}"></label>
+                                        <input type="text" placeholder="模型名称"
+                                            th:name="'sensenovaModels[' + ${iter.index} + '].name'"
+                                            th:value="${model.modelName}">
+                                        <input type="number" placeholder="上下文大小" min="0"
+                                            th:name="'sensenovaModels[' + ${iter.index} + '].contextSize'"
+                                            th:value="${model.contextSize}">
+                                        <div class="model-caps">
+                                            <label class="model-cap"><input type="checkbox"
+                                                    th:name="'sensenovaModels[' + ${iter.index} + '].capsTools'"
+                                                    th:checked="${model.capsTools}">工具</label>
+                                            <label class="model-cap"><input type="checkbox"
+                                                    th:name="'sensenovaModels[' + ${iter.index} + '].capsVision'"
+                                                    th:checked="${model.capsVision}">视觉</label>
+                                        </div>
+                                        <button type="button" class="btn-remove-model"
+                                            onclick="this.parentElement.remove(); checkToggle('sensenova')">&#x2715;</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
             </div>
         </div>
 
@@ -561,7 +648,7 @@
             }
         }
 
-        ['longcat', 'mimo'].forEach(function (provider) {
+        ['longcat', 'mimo', 'sensenova'].forEach(function (provider) {
             var keyInput = document.getElementById(provider + 'ApiKey');
             keyInput.addEventListener('input', function () { checkToggle(provider); });
             keyInput.addEventListener('change', function () { checkToggle(provider); });

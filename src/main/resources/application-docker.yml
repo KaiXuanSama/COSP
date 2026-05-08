@@ -33,3 +33,6 @@ mimo:
 
 longcat:
   default-model: LongCat-Flash-Chat
+
+sensenova:
+  default-model: sensenova-6.7-flash-lite

@@ -35,8 +35,7 @@ public class AdminPageController {
     private final ApiUsageRepository apiUsageRepository;
     private final ProviderConfigRepository providerConfigRepository;
 
-    public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder,
-            ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository) {
+    public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder, ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository) {
         this.userDetailsManager = userDetailsManager;
         this.passwordEncoder = passwordEncoder;
         this.apiUsageRepository = apiUsageRepository;
@@ -47,8 +46,7 @@ public class AdminPageController {
 
     @GetMapping("/login")
     public String login(Authentication authentication) {
-        if (authentication != null && authentication.isAuthenticated()
-                && !(authentication instanceof AnonymousAuthenticationToken)) {
+        if (authentication != null && authentication.isAuthenticated() && !(authentication instanceof AnonymousAuthenticationToken)) {
             return "redirect:/config";
         }
         return "admin/pages/login";
@@ -127,6 +125,7 @@ public class AdminPageController {
         // 从数据库读取服务商配置
         model.addAttribute("longcat", loadProvider("longcat"));
         model.addAttribute("mimo", loadProvider("mimo"));
+        model.addAttribute("sensenova", loadProvider("sensenova"));
         // 读取运行配置
         model.addAttribute("fakeVersion", providerConfigRepository.findConfigValue("fake_version"));
         return "admin/pages/settings";
@@ -140,8 +139,7 @@ public class AdminPageController {
         String longcatBaseUrl = params.getOrDefault("longcatBaseUrl", "").trim();
         String longcatApiKey = params.getOrDefault("longcatApiKey", "").trim();
         String longcatApiFormat = params.getOrDefault("longcatApiFormat", "openai").trim();
-        int longcatId = providerConfigRepository.saveProvider("longcat", longcatEnabled, longcatBaseUrl, longcatApiKey,
-                longcatApiFormat);
+        int longcatId = providerConfigRepository.saveProvider("longcat", longcatEnabled, longcatBaseUrl, longcatApiKey, longcatApiFormat);
         List<Map<String, Object>> longcatModels = parseModels(params, "longcat");
         providerConfigRepository.saveModels(longcatId, longcatModels);
 
@@ -154,6 +152,15 @@ public class AdminPageController {
         List<Map<String, Object>> mimoModels = parseModels(params, "mimo");
         providerConfigRepository.saveModels(mimoId, mimoModels);
 
+        // 解析并保存 SenseNova 配置
+        boolean sensenovaEnabled = "on".equals(params.get("sensenovaEnabled"));
+        String sensenovaBaseUrl = params.getOrDefault("sensenovaBaseUrl", "").trim();
+        String sensenovaApiKey = params.getOrDefault("sensenovaApiKey", "").trim();
+        String sensenovaApiFormat = params.getOrDefault("sensenovaApiFormat", "openai").trim();
+        int sensenovaId = providerConfigRepository.saveProvider("sensenova", sensenovaEnabled, sensenovaBaseUrl, sensenovaApiKey, sensenovaApiFormat);
+        List<Map<String, Object>> sensenovaModels = parseModels(params, "sensenova");
+        providerConfigRepository.saveModels(sensenovaId, sensenovaModels);
+
         // 保存运行配置
         String fakeVersion = params.getOrDefault("fakeVersion", "0.6.4").trim();
         providerConfigRepository.saveConfig("fake_version", fakeVersion);
@@ -165,6 +172,7 @@ public class AdminPageController {
         model.addAttribute("nav", "settings");
         model.addAttribute("longcat", loadProvider("longcat"));
         model.addAttribute("mimo", loadProvider("mimo"));
+        model.addAttribute("sensenova", loadProvider("sensenova"));
         model.addAttribute("fakeVersion", providerConfigRepository.findConfigValue("fake_version"));
         model.addAttribute("saveSuccess", true);
         return "admin/pages/settings";
@@ -242,10 +250,8 @@ public class AdminPageController {
     }
 
     @PostMapping("/config/account")
-    public String saveAccount(Authentication authentication,
-            @RequestParam(value = "newUsername", required = false) String newUsername,
-            @RequestParam(value = "currentPassword", required = false) String currentPassword,
-            @RequestParam(value = "newPassword", required = false) String newPassword,
+    public String saveAccount(Authentication authentication, @RequestParam(value = "newUsername", required = false) String newUsername,
+            @RequestParam(value = "currentPassword", required = false) String currentPassword, @RequestParam(value = "newPassword", required = false) String newPassword,
             @RequestParam(value = "confirmPassword", required = false) String confirmPassword, Model model) {
 
         String currentUsername = authentication.getName();
@@ -262,8 +268,7 @@ public class AdminPageController {
         }
 
         // 确定最终用户名和密码
-        final String finalUsername = (newUsername != null && !newUsername.isBlank()
-                && !newUsername.equals(currentUsername)) ? newUsername.trim() : currentUsername;
+        final String finalUsername = (newUsername != null && !newUsername.isBlank() && !newUsername.equals(currentUsername)) ? newUsername.trim() : currentUsername;
         final String finalPassword;
         boolean passwordChanged = false;
 

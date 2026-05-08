@@ -106,5 +106,10 @@
     "type": "java.lang.String",
     "description": "LongCat 默认模型名称，当请求中未指定模型时使用。环境变量：LONGCAT_DEFAULT_MODEL",
     "defaultValue": "LongCat-Flash-Chat"
+  },
+  {
+    "name": "sensenova.default-model",
+    "type": "java.lang.String",
+    "description": "A description for 'sensenova.default-model'"
   }
 ]}
