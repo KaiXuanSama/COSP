@@ -38,8 +38,7 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(ResponseLoggingFilter.class);
 
     @Override
-    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
-            throws ServletException, IOException {
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain) throws ServletException, IOException {
         // 非 DEBUG 模式直接放行，不做任何包装和日志记录
         if (!log.isDebugEnabled()) {
             filterChain.doFilter(request, response);
@@ -48,8 +47,7 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
 
         // 强制将响应字符编码设置为 UTF-8，防止 Spring 的 StringHttpMessageConverter
         // 使用 ISO-8859-1 导致汉字在日志的 Tee 缓冲区中出现乱码。
-        if (response.getCharacterEncoding() == null
-                || StandardCharsets.ISO_8859_1.name().equalsIgnoreCase(response.getCharacterEncoding())) {
+        if (response.getCharacterEncoding() == null || StandardCharsets.ISO_8859_1.name().equalsIgnoreCase(response.getCharacterEncoding())) {
             response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         }
 
@@ -60,8 +58,7 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
 
         if (request.isAsyncStarted()) {
             AtomicBoolean logged = new AtomicBoolean(false);
-            request.getAsyncContext().addListener(
-                    new ResponseLoggingAsyncListener(this, request, wrappedResponse, startedAtNanos, logged));
+            request.getAsyncContext().addListener(new ResponseLoggingAsyncListener(this, request, wrappedResponse, startedAtNanos, logged));
             return;
         }
 
@@ -105,6 +102,10 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
             return "(html " + body.length + " bytes, skipped)";
         }
 
+        if (isCssResponse(response.getContentType())) {
+            return "(css " + body.length + " bytes, skipped)";
+        }
+
         Charset charset = resolveCharset(response.getCharacterEncoding());
         return new String(body, charset);
     }
@@ -115,8 +116,7 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
         }
 
         String normalized = contentType.toLowerCase(Locale.ROOT);
-        return normalized.startsWith("text/") || normalized.contains("json") || normalized.contains("xml")
-                || normalized.contains("javascript") || normalized.contains("x-www-form-urlencoded")
+        return normalized.startsWith("text/") || normalized.contains("json") || normalized.contains("xml") || normalized.contains("javascript") || normalized.contains("x-www-form-urlencoded")
                 || normalized.contains("ndjson");
     }
 
@@ -130,6 +130,14 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
         }
         String normalized = contentType.toLowerCase(Locale.ROOT);
         return normalized.contains("text/html") || normalized.contains("application/xhtml+xml");
+    }
+
+    private boolean isCssResponse(String contentType) {
+        if (contentType == null) {
+            return false;
+        }
+        String normalized = contentType.toLowerCase(Locale.ROOT);
+        return normalized.contains("text/css") || normalized.contains("application/css") || normalized.contains("x-css");
     }
 
     /**
@@ -165,8 +173,7 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
         private final long startedAtNanos;
         private final AtomicBoolean logged;
 
-        private ResponseLoggingAsyncListener(ResponseLoggingFilter filter, HttpServletRequest request,
-                LoggingHttpServletResponse response, long startedAtNanos, AtomicBoolean logged) {
+        private ResponseLoggingAsyncListener(ResponseLoggingFilter filter, HttpServletRequest request, LoggingHttpServletResponse response, long startedAtNanos, AtomicBoolean logged) {
             this.filter = filter;
             this.request = request;
             this.response = response;
@@ -227,8 +234,7 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
 
             if (writer == null) {
                 outputStream = new TeeServletOutputStream(super.getOutputStream(), teeBuffer);
-                writer = new PrintWriter(new OutputStreamWriter(outputStream, resolveEncoding(getCharacterEncoding())),
-                        true);
+                writer = new PrintWriter(new OutputStreamWriter(outputStream, resolveEncoding(getCharacterEncoding())), true);
             }
             return writer;
         }
