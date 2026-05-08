@@ -101,6 +101,10 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
             return "(binary " + body.length + " bytes captured)";
         }
 
+        if (isHtmlResponse(response.getContentType())) {
+            return "(html " + body.length + " bytes, skipped)";
+        }
+
         Charset charset = resolveCharset(response.getCharacterEncoding());
         return new String(body, charset);
     }
@@ -114,6 +118,18 @@ public class ResponseLoggingFilter extends OncePerRequestFilter {
         return normalized.startsWith("text/") || normalized.contains("json") || normalized.contains("xml")
                 || normalized.contains("javascript") || normalized.contains("x-www-form-urlencoded")
                 || normalized.contains("ndjson");
+    }
+
+    /**
+     * 判断当前响应是否为 HTML 响应（Content-Type 包含 text/html 或 application/xhtml+xml）。
+     * HTML 响应体通常较长且包含大量模板内容，打印到日志中意义不大，直接跳过。
+     */
+    private boolean isHtmlResponse(String contentType) {
+        if (contentType == null) {
+            return false;
+        }
+        String normalized = contentType.toLowerCase(Locale.ROOT);
+        return normalized.contains("text/html") || normalized.contains("application/xhtml+xml");
     }
 
     /**
