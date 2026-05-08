@@ -587,6 +587,42 @@
     position: relative;
 }
 
+/* 热力图格子：初始不可见，等待涟漪动画触发 */
+.heatmap-cell {
+    opacity: 0;
+    transform: scale(0.3);
+    pointer-events: none;
+}
+
+/* 涟漪动画完成后：格子可见且可交互 */
+.heatmap-cell-visible {
+    opacity: 1;
+    transform: scale(1);
+    pointer-events: auto;
+}
+
+/* 热力图格子涟漪入场动画 */
+.heatmap-cell-ripple {
+    animation: heatmapRippleIn 0.4s ease-out forwards;
+}
+
+@keyframes heatmapRippleIn {
+    0% {
+        opacity: 0;
+        transform: scale(0.3);
+    }
+
+    60% {
+        opacity: 1;
+        transform: scale(1.12);
+    }
+
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
 .heatmap-cell.level-empty {
     background: transparent;
     pointer-events: none;

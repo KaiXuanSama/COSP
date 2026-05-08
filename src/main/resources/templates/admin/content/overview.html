@@ -201,6 +201,7 @@
             var DAYS = 360;
             var allWeeks = [];   // 缓存按周分组后的数据
             var maxCount = 0;   // 缓存最大值
+            var hasRippled = false; // 首次涟漪动画是否已完成
 
             function getLevel(count, max) {
                 if (count === 0) return 0;
@@ -227,8 +228,10 @@
             function render() {
                 if (!allWeeks.length) return;
 
-                // 清空旧内容
-                container.innerHTML = '';
+                // 清空旧内容（保留 tooltip 引用）
+                while (container.firstChild) {
+                    container.removeChild(container.firstChild);
+                }
                 container.appendChild(tooltip);
 
                 var visibleCols = calcVisibleCols();
@@ -273,20 +276,30 @@
                 }
                 gridArea.appendChild(monthRow);
 
-                // 网格列
+                // 网格列 — 涟漪动画：从左下到右上
                 var grid = document.createElement('div');
                 grid.className = 'heatmap-grid';
+
+                // 涟漪动画参数
+                var RIPPLE_DELAY = 25;
+                var RIPPLE_DURATION = 400;
+                var CARD_FADE_DELAY = 900; // 等卡片淡入完成（0.39s delay + 0.5s duration ≈ 0.9s）
+
+                // 按原始列结构创建格子，初始无动画（opacity: 0 由 CSS 控制）
+                // 涟漪方向：从左下到右上
+                var colElements = [];
                 for (var w = 0; w < weeks.length; w++) {
                     var col = document.createElement('div');
                     col.className = 'heatmap-col';
                     for (var d = 0; d < 7; d++) {
                         var cell = document.createElement('div');
-                        cell.className = 'heatmap-cell';
                         var dd = weeks[w][d];
                         if (dd) {
+                            cell.className = 'heatmap-cell';
                             cell.classList.add('level-' + getLevel(dd.callCount, maxCount));
                             cell.dataset.date = dd.usageDate;
                             cell.dataset.count = dd.callCount;
+                            cell.dataset.rippleDist = w + (6 - d);
                             cell.addEventListener('mouseenter', function (e) {
                                 var rect = e.target.getBoundingClientRect();
                                 var cRect = container.getBoundingClientRect();
@@ -297,10 +310,11 @@
                             });
                             cell.addEventListener('mouseleave', function () { tooltip.style.display = 'none'; });
                         } else {
-                            cell.classList.add('level-empty');
+                            cell.className = 'heatmap-cell level-empty';
                         }
                         col.appendChild(cell);
                     }
+                    colElements.push(col);
                     grid.appendChild(col);
                 }
                 gridArea.appendChild(grid);
@@ -320,6 +334,31 @@
                 scroll.appendChild(dayLabels);
                 scroll.appendChild(gridArea);
                 container.appendChild(scroll);
+
+                // 首次渲染：等卡片淡入完成后触发涟漪动画
+                if (!hasRippled) {
+                    hasRippled = true;
+                    setTimeout(function () {
+                        var cells = container.querySelectorAll('.heatmap-cell[data-ripple-dist]');
+                        cells.forEach(function (cell) {
+                            var dist = parseInt(cell.dataset.rippleDist);
+                            cell.classList.add('heatmap-cell-ripple');
+                            cell.style.animationDelay = (dist * RIPPLE_DELAY) + 'ms';
+                            var totalDelay = dist * RIPPLE_DELAY + RIPPLE_DURATION;
+                            setTimeout(function () {
+                                cell.classList.remove('heatmap-cell-ripple');
+                                cell.classList.add('heatmap-cell-visible');
+                            }, totalDelay + 50);
+                        });
+                    }, CARD_FADE_DELAY);
+                } else {
+                    // 后续 resize：格子直接可见，无需动画
+                    var cells = container.querySelectorAll('.heatmap-cell');
+                    cells.forEach(function (cell) {
+                        cell.classList.remove('heatmap-cell-ripple');
+                        cell.classList.add('heatmap-cell-visible');
+                    });
+                }
             }
 
             // ── 获取数据 ──
