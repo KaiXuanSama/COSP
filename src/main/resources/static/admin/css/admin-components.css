@@ -703,30 +703,77 @@
     background: #5a7ab8 !important;
 }
 
-/* 暗红色 - Token 总量 */
+/* 暗紫色 - Token 总量 */
 .heatmap-cell-mode-total.level-0 {
     background: var(--border-light) !important;
 }
 
 .heatmap-cell-mode-total.level-1 {
-    background: rgba(184, 74, 74, 0.15) !important;
+    background: rgba(123, 94, 167, 0.15) !important;
 }
 
 .heatmap-cell-mode-total.level-2 {
-    background: rgba(184, 74, 74, 0.35) !important;
+    background: rgba(123, 94, 167, 0.35) !important;
 }
 
 .heatmap-cell-mode-total.level-3 {
-    background: rgba(184, 74, 74, 0.6) !important;
+    background: rgba(123, 94, 167, 0.6) !important;
 }
 
 .heatmap-cell-mode-total.level-4 {
-    background: #b84a4a !important;
+    background: #7b5ea7 !important;
 }
 
 /* 热力图格子涟漪入场动画 */
 .heatmap-cell-ripple {
     animation: heatmapRippleIn 0.4s ease-out forwards;
+}
+
+/* ── 热力图翻牌动画 ── */
+.heatmap-grid {
+    perspective: 800px;
+}
+
+.heatmap-col {
+    transition: transform 0.3s ease-in-out;
+    transform-style: preserve-3d;
+    position: relative;
+}
+
+.heatmap-col.flip-forward {
+    animation: colFlipForward 0.6s ease-in-out forwards;
+}
+
+.heatmap-col.flip-backward {
+    animation: colFlipBackward 0.6s ease-in-out forwards;
+}
+
+@keyframes colFlipForward {
+    0% {
+        transform: rotateY(0deg);
+    }
+
+    50% {
+        transform: rotateY(90deg);
+    }
+
+    100% {
+        transform: rotateY(0deg);
+    }
+}
+
+@keyframes colFlipBackward {
+    0% {
+        transform: rotateY(0deg);
+    }
+
+    50% {
+        transform: rotateY(-90deg);
+    }
+
+    100% {
+        transform: rotateY(0deg);
+    }
 }
 
 @keyframes heatmapRippleIn {

@@ -330,16 +330,18 @@
                             cell.dataset.date = dd.usageDate;
                             cell.dataset.value = val;
                             cell.dataset.rippleDist = w + (6 - d);
-                            (function (ddVal, dateStr) {
+                            (function (dateStr) {
                                 cell.addEventListener('mouseenter', function (e) {
                                     var rect = e.target.getBoundingClientRect();
                                     var cRect = container.getBoundingClientRect();
-                                    tooltip.textContent = dateStr + ' · ' + ddVal.toLocaleString('zh-CN') + ' ' + modeLabel;
+                                    var currentVal = parseInt(e.target.dataset.value) || 0;
+                                    var currentLabel = MODE_CONFIG[currentMode].label;
+                                    tooltip.textContent = dateStr + ' · ' + currentVal.toLocaleString('zh-CN') + ' ' + currentLabel;
                                     tooltip.style.display = 'block';
                                     tooltip.style.left = (rect.left - cRect.left + rect.width / 2 - tooltip.offsetWidth / 2) + 'px';
                                     tooltip.style.top = (rect.top - cRect.top - tooltip.offsetHeight - 8) + 'px';
                                 });
-                            })(val, dd.usageDate);
+                            })(dd.usageDate);
                             cell.addEventListener('mouseleave', function () { tooltip.style.display = 'none'; });
                         } else {
                             cell.className = 'heatmap-cell level-empty';
@@ -390,17 +392,72 @@
                 }
             }
 
-            // ── 切换模式（循环） ──
+            // ── 切换模式（循环）带翻牌动画 ──
             function switchMode() {
                 var idx = MODE_ORDER.indexOf(currentMode);
-                currentMode = MODE_ORDER[(idx + 1) % MODE_ORDER.length];
+                var newMode = MODE_ORDER[(idx + 1) % MODE_ORDER.length];
+                var newColorClass = MODE_CONFIG[newMode].colorClass;
 
                 // 更新显示文字
                 var labelEl = document.getElementById('heatmap-mode-label');
-                if (labelEl) labelEl.textContent = MODE_CONFIG[currentMode].display;
+                if (labelEl) labelEl.textContent = MODE_CONFIG[newMode].display;
 
-                // 重新渲染
-                render();
+                // 预计算新模式的最大值
+                var newMaxCount = 0;
+                for (var i = 0; i < allWeeks.length; i++) {
+                    for (var d = 0; d < 7; d++) {
+                        var dd = allWeeks[i][d];
+                        if (dd) {
+                            var v = newMode === 'total'
+                                ? (dd.inputTokens || 0) + (dd.outputTokens || 0)
+                                : (dd[MODE_CONFIG[newMode].field] || 0);
+                            if (v > newMaxCount) newMaxCount = v;
+                        }
+                    }
+                }
+
+                // 获取所有列
+                var cols = container.querySelectorAll('.heatmap-col');
+                var FLIP_DELAY = 50;
+                var FLIP_DURATION = 250;
+
+                cols.forEach(function (col, colIdx) {
+                    setTimeout(function () {
+                        col.classList.add('flip-forward');
+
+                        // 翻到 90° 时更新数据和颜色
+                        setTimeout(function () {
+                            var cells = col.querySelectorAll('.heatmap-cell[data-value]');
+                            cells.forEach(function (cell) {
+                                // 用新模式重新计算该格子的值
+                                var dateStr = cell.dataset.date;
+                                var newVal = 0;
+                                for (var i = 0; i < allWeeks.length; i++) {
+                                    for (var d = 0; d < 7; d++) {
+                                        var dd = allWeeks[i][d];
+                                        if (dd && dd.usageDate === dateStr) {
+                                            newVal = newMode === 'total'
+                                                ? (dd.inputTokens || 0) + (dd.outputTokens || 0)
+                                                : (dd[MODE_CONFIG[newMode].field] || 0);
+                                        }
+                                    }
+                                }
+                                cell.dataset.value = newVal;
+
+                                // 更新颜色类和 level
+                                var level = getLevel(newVal, newMaxCount);
+                                cell.className = 'heatmap-cell heatmap-cell-mode-' + newColorClass
+                                    + ' level-' + level + ' heatmap-cell-visible';
+                            });
+                        }, FLIP_DURATION / 2);
+
+                        setTimeout(function () {
+                            col.classList.remove('flip-forward');
+                        }, FLIP_DURATION);
+                    }, colIdx * FLIP_DELAY);
+                });
+
+                currentMode = newMode;
             }
 
             // ── 绑定切换按钮事件 ──
