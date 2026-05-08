@@ -16,7 +16,12 @@ import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.UnsupportedEncodingException;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * 请求日志过滤器 —— 在所有请求到达 Controller 之前拦截并打印日志。
@@ -41,8 +46,7 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
     }
 
     @Override
-    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
-            throws ServletException, IOException {
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain) throws ServletException, IOException {
         // 非 DEBUG 模式直接放行，不做任何 body 读取和包装，零开销
         if (!log.isDebugEnabled()) {
             filterChain.doFilter(request, response);
@@ -85,6 +89,9 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
         /** 缓存的请求体字节数组 */
         private final byte[] cachedBody;
 
+        /** 从缓存 body 中解析出的表单参数，延迟初始化 */
+        private Map<String, String[]> parsedParameters;
+
         CachedBodyHttpServletRequest(HttpServletRequest request, byte[] cachedBody) {
             super(request);
             this.cachedBody = cachedBody;
@@ -101,6 +108,71 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
         public BufferedReader getReader() {
             ByteArrayInputStream bais = new ByteArrayInputStream(cachedBody);
             return new BufferedReader(new InputStreamReader(bais, StandardCharsets.UTF_8));
+        }
+
+        /**
+         * 重写 getParameterMap，从缓存的 body 中解析表单参数。
+         * 原始请求的输入流已被日志读取耗尽，直接委托给原始请求会导致参数为空。
+         */
+        @Override
+        public Map<String, String[]> getParameterMap() {
+            return Collections.unmodifiableMap(parseParameters());
+        }
+
+        /**
+         * 重写 getParameter，从解析后的参数 Map 中取值。
+         */
+        @Override
+        public String getParameter(String name) {
+            String[] values = parseParameters().get(name);
+            return values != null && values.length > 0 ? values[0] : null;
+        }
+
+        /**
+         * 重写 getParameterValues，从解析后的参数 Map 中取值。
+         */
+        @Override
+        public String[] getParameterValues(String name) {
+            return parseParameters().get(name);
+        }
+
+        /**
+         * 从缓存的 body 字节数组中解析 application/x-www-form-urlencoded 参数。
+         * 延迟初始化，只在首次访问参数时解析一次。
+         */
+        private Map<String, String[]> parseParameters() {
+            if (parsedParameters != null) {
+                return parsedParameters;
+            }
+
+            if (cachedBody == null || cachedBody.length == 0) {
+                parsedParameters = Collections.emptyMap();
+                return parsedParameters;
+            }
+
+            // 使用 LinkedHashMap 保持参数插入顺序
+            Map<String, java.util.List<String>> temp = new LinkedHashMap<>();
+            String bodyStr = new String(cachedBody, StandardCharsets.UTF_8);
+            for (String pair : bodyStr.split("&")) {
+                if (pair.isEmpty()) {
+                    continue;
+                }
+                int eqIdx = pair.indexOf('=');
+                try {
+                    String key = URLDecoder.decode(eqIdx >= 0 ? pair.substring(0, eqIdx) : pair, "UTF-8");
+                    String value = URLDecoder.decode(eqIdx >= 0 ? pair.substring(eqIdx + 1) : "", "UTF-8");
+                    temp.computeIfAbsent(key, k -> new java.util.ArrayList<>()).add(value);
+                } catch (UnsupportedEncodingException e) {
+                    // UTF-8 不可能不支持，忽略
+                }
+            }
+
+            // 将 List<String> 转为 String[]
+            parsedParameters = new LinkedHashMap<>();
+            for (Map.Entry<String, java.util.List<String>> entry : temp.entrySet()) {
+                parsedParameters.put(entry.getKey(), entry.getValue().toArray(new String[0]));
+            }
+            return parsedParameters;
         }
 
         /**
