@@ -39,7 +39,13 @@
 
     <!-- 热力图 -->
     <div class="card heatmap-card">
-        <div class="card-title">API 调用热力图</div>
+        <div class="card-title">
+            热力图
+            <div class="heatmap-mode-switch">
+                <span class="heatmap-mode-label" id="heatmap-mode-label">API 调用</span>
+                <button class="heatmap-mode-btn" id="heatmap-mode-btn">切换</button>
+            </div>
+        </div>
         <div class="card-body">
             <div class="heatmap-container" id="heatmap"></div>
             <div class="heatmap-tooltip" id="heatmap-tooltip"></div>
@@ -199,9 +205,25 @@
             var CELL = 16;
             var GAP = 4;
             var DAYS = 360;
-            var allWeeks = [];   // 缓存按周分组后的数据
-            var maxCount = 0;   // 缓存最大值
-            var hasRippled = false; // 首次涟漪动画是否已完成
+            var allWeeks = [];
+            var currentMode = 'calls'; // calls | output | input | total
+            var hasRippled = false;
+
+            // 四种模式的配置（按切换顺序）
+            var MODE_ORDER = ['calls', 'output', 'input', 'total'];
+            var MODE_CONFIG = {
+                calls: { field: 'callCount', label: '次', display: 'API 调用', colorClass: 'calls' },
+                output: { field: 'outputTokens', label: 'token', display: '输出Token', colorClass: 'output' },
+                input: { field: 'inputTokens', label: 'token', display: '输入Token', colorClass: 'input' },
+                total: { field: null, label: 'token', display: '总Token', colorClass: 'total' }
+            };
+
+            function getValue(dd) {
+                if (currentMode === 'total') {
+                    return (dd.inputTokens || 0) + (dd.outputTokens || 0);
+                }
+                return dd[MODE_CONFIG[currentMode].field] || 0;
+            }
 
             function getLevel(count, max) {
                 if (count === 0) return 0;
@@ -219,16 +241,27 @@
             }
 
             function calcVisibleCols() {
-                // 容器 padding 左右各 24px，星期标签宽约 24px
                 var w = container.clientWidth - 48 - 24;
                 return Math.max(1, Math.floor((w + GAP) / (CELL + GAP)));
             }
 
-            // ── 根据当前容器宽度渲染热力图 ──
+            // ── 渲染热力图 ──
             function render() {
                 if (!allWeeks.length) return;
 
-                // 清空旧内容（保留 tooltip 引用）
+                // 计算当前模式下的最大值
+                var maxCount = 0;
+                for (var i = 0; i < allWeeks.length; i++) {
+                    for (var d = 0; d < 7; d++) {
+                        var dd = allWeeks[i][d];
+                        if (dd) {
+                            var v = getValue(dd);
+                            if (v > maxCount) maxCount = v;
+                        }
+                    }
+                }
+
+                // 清空旧内容
                 while (container.firstChild) {
                     container.removeChild(container.firstChild);
                 }
@@ -241,11 +274,9 @@
                 var gridArea = document.createElement('div');
                 gridArea.className = 'heatmap-grid-area';
 
-                // 月份标签行：每个月份标签跨在该月所有列的正上方
+                // 月份标签行
                 var monthRow = document.createElement('div');
                 monthRow.className = 'heatmap-months';
-                // 先统计每个月份跨越多少列
-                var monthCols = []; // [{ month: 7, colCount: 5, startCol: 0 }, ...]
                 var lastMonth = -1, startCol = 0;
                 for (var w = 0; w < weeks.length; w++) {
                     var md = null;
@@ -255,39 +286,37 @@
                     var m = md ? parseInt(md.split('-')[1]) : -1;
                     if (m !== lastMonth) {
                         if (lastMonth !== -1) {
-                            monthCols.push({ month: lastMonth, colCount: w - startCol, startCol: startCol });
+                            var label = document.createElement('span');
+                            label.className = 'heatmap-month-label';
+                            label.textContent = lastMonth + '月';
+                            label.style.width = ((w - startCol) * (CELL + GAP) - GAP) + 'px';
+                            label.style.flexShrink = '0';
+                            monthRow.appendChild(label);
                         }
                         lastMonth = m;
                         startCol = w;
                     }
                 }
                 if (lastMonth !== -1) {
-                    monthCols.push({ month: lastMonth, colCount: weeks.length - startCol, startCol: startCol });
-                }
-                // 渲染月份标签，宽度 = colCount * (CELL + GAP) - GAP
-                for (var i = 0; i < monthCols.length; i++) {
-                    var mc = monthCols[i];
                     var label = document.createElement('span');
                     label.className = 'heatmap-month-label';
-                    label.textContent = mc.month + '月';
-                    label.style.width = (mc.colCount * (CELL + GAP) - GAP) + 'px';
+                    label.textContent = lastMonth + '月';
+                    label.style.width = ((weeks.length - startCol) * (CELL + GAP) - GAP) + 'px';
                     label.style.flexShrink = '0';
                     monthRow.appendChild(label);
                 }
                 gridArea.appendChild(monthRow);
 
-                // 网格列 — 涟漪动画：从左下到右上
+                // 网格列
                 var grid = document.createElement('div');
                 grid.className = 'heatmap-grid';
 
-                // 涟漪动画参数
                 var RIPPLE_DELAY = 25;
                 var RIPPLE_DURATION = 400;
-                var CARD_FADE_DELAY = 900; // 等卡片淡入完成（0.39s delay + 0.5s duration ≈ 0.9s）
+                var CARD_FADE_DELAY = 900;
+                var modeLabel = MODE_CONFIG[currentMode].label;
+                var colorClass = MODE_CONFIG[currentMode].colorClass;
 
-                // 按原始列结构创建格子，初始无动画（opacity: 0 由 CSS 控制）
-                // 涟漪方向：从左下到右上
-                var colElements = [];
                 for (var w = 0; w < weeks.length; w++) {
                     var col = document.createElement('div');
                     col.className = 'heatmap-col';
@@ -295,26 +324,28 @@
                         var cell = document.createElement('div');
                         var dd = weeks[w][d];
                         if (dd) {
-                            cell.className = 'heatmap-cell';
-                            cell.classList.add('level-' + getLevel(dd.callCount, maxCount));
+                            var val = getValue(dd);
+                            var level = getLevel(val, maxCount);
+                            cell.className = 'heatmap-cell heatmap-cell-mode-' + colorClass + ' level-' + level;
                             cell.dataset.date = dd.usageDate;
-                            cell.dataset.count = dd.callCount;
+                            cell.dataset.value = val;
                             cell.dataset.rippleDist = w + (6 - d);
-                            cell.addEventListener('mouseenter', function (e) {
-                                var rect = e.target.getBoundingClientRect();
-                                var cRect = container.getBoundingClientRect();
-                                tooltip.textContent = e.target.dataset.date + ' · ' + e.target.dataset.count + ' 次';
-                                tooltip.style.display = 'block';
-                                tooltip.style.left = (rect.left - cRect.left + rect.width / 2 - tooltip.offsetWidth / 2) + 'px';
-                                tooltip.style.top = (rect.top - cRect.top - tooltip.offsetHeight - 8) + 'px';
-                            });
+                            (function (ddVal, dateStr) {
+                                cell.addEventListener('mouseenter', function (e) {
+                                    var rect = e.target.getBoundingClientRect();
+                                    var cRect = container.getBoundingClientRect();
+                                    tooltip.textContent = dateStr + ' · ' + ddVal.toLocaleString('zh-CN') + ' ' + modeLabel;
+                                    tooltip.style.display = 'block';
+                                    tooltip.style.left = (rect.left - cRect.left + rect.width / 2 - tooltip.offsetWidth / 2) + 'px';
+                                    tooltip.style.top = (rect.top - cRect.top - tooltip.offsetHeight - 8) + 'px';
+                                });
+                            })(val, dd.usageDate);
                             cell.addEventListener('mouseleave', function () { tooltip.style.display = 'none'; });
                         } else {
                             cell.className = 'heatmap-cell level-empty';
                         }
                         col.appendChild(cell);
                     }
-                    colElements.push(col);
                     grid.appendChild(col);
                 }
                 gridArea.appendChild(grid);
@@ -322,7 +353,6 @@
                 // 滚动容器
                 var scroll = document.createElement('div');
                 scroll.className = 'heatmap-scroll';
-
                 var dayLabels = document.createElement('div');
                 dayLabels.className = 'heatmap-days';
                 ['日', '一', '二', '三', '四', '五', '六'].forEach(function (n) {
@@ -335,7 +365,7 @@
                 scroll.appendChild(gridArea);
                 container.appendChild(scroll);
 
-                // 首次渲染：等卡片淡入完成后触发涟漪动画
+                // 涟漪动画
                 if (!hasRippled) {
                     hasRippled = true;
                     setTimeout(function () {
@@ -352,7 +382,6 @@
                         });
                     }, CARD_FADE_DELAY);
                 } else {
-                    // 后续 resize：格子直接可见，无需动画
                     var cells = container.querySelectorAll('.heatmap-cell');
                     cells.forEach(function (cell) {
                         cell.classList.remove('heatmap-cell-ripple');
@@ -361,16 +390,27 @@
                 }
             }
 
+            // ── 切换模式（循环） ──
+            function switchMode() {
+                var idx = MODE_ORDER.indexOf(currentMode);
+                currentMode = MODE_ORDER[(idx + 1) % MODE_ORDER.length];
+
+                // 更新显示文字
+                var labelEl = document.getElementById('heatmap-mode-label');
+                if (labelEl) labelEl.textContent = MODE_CONFIG[currentMode].display;
+
+                // 重新渲染
+                render();
+            }
+
+            // ── 绑定切换按钮事件 ──
+            document.getElementById('heatmap-mode-btn').addEventListener('click', switchMode);
+
             // ── 获取数据 ──
             fetch('/config/api/heatmap?days=' + DAYS)
                 .then(function (r) { return r.json(); })
                 .then(function (data) {
                     if (!data || data.length === 0) return;
-
-                    maxCount = 0;
-                    for (var i = 0; i < data.length; i++) {
-                        if (data[i].callCount > maxCount) maxCount = data[i].callCount;
-                    }
 
                     // 按周分组
                     var firstDow = getDayOfWeek(data[0].usageDate);
@@ -383,15 +423,12 @@
                     }
                     if (cur.length > 0) { while (cur.length < 7) cur.push(null); allWeeks.push(cur); }
 
-                    // 首次渲染
                     render();
 
-                    // 监听容器宽度变化，动态重绘
                     if (window.ResizeObserver) {
                         var ro = new ResizeObserver(function () { render(); });
                         ro.observe(container);
                     } else {
-                        // 降级：监听 window resize
                         window.addEventListener('resize', function () { render(); });
                     }
                 })

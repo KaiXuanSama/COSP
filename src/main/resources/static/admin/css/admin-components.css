@@ -178,6 +178,9 @@
     font-weight: 600;
     color: var(--text-primary);
     margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
 }
 
 .card-body {
@@ -599,6 +602,126 @@
     opacity: 1;
     transform: scale(1);
     pointer-events: auto;
+}
+
+/* ── 热力图切换按钮 ── */
+.heatmap-mode-switch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.heatmap-mode-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-muted);
+    letter-spacing: 0.04em;
+}
+
+.heatmap-mode-btn {
+    padding: 3px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-body);
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.heatmap-mode-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-light);
+}
+
+/* ── 四种模式的热力图颜色（用 !important 确保覆盖 level-X 规则） ── */
+/* 古铜色 - API 调用 */
+.heatmap-cell-mode-calls.level-0 {
+    background: var(--border-light) !important;
+}
+
+.heatmap-cell-mode-calls.level-1 {
+    background: rgba(194, 122, 62, 0.15) !important;
+}
+
+.heatmap-cell-mode-calls.level-2 {
+    background: rgba(194, 122, 62, 0.35) !important;
+}
+
+.heatmap-cell-mode-calls.level-3 {
+    background: rgba(194, 122, 62, 0.6) !important;
+}
+
+.heatmap-cell-mode-calls.level-4 {
+    background: var(--accent) !important;
+}
+
+/* 墨绿色 - Token 输出 */
+.heatmap-cell-mode-output.level-0 {
+    background: var(--border-light) !important;
+}
+
+.heatmap-cell-mode-output.level-1 {
+    background: rgba(58, 138, 92, 0.15) !important;
+}
+
+.heatmap-cell-mode-output.level-2 {
+    background: rgba(58, 138, 92, 0.35) !important;
+}
+
+.heatmap-cell-mode-output.level-3 {
+    background: rgba(58, 138, 92, 0.6) !important;
+}
+
+.heatmap-cell-mode-output.level-4 {
+    background: #3a8a5c !important;
+}
+
+/* 深蓝色 - Token 输入 */
+.heatmap-cell-mode-input.level-0 {
+    background: var(--border-light) !important;
+}
+
+.heatmap-cell-mode-input.level-1 {
+    background: rgba(90, 122, 184, 0.15) !important;
+}
+
+.heatmap-cell-mode-input.level-2 {
+    background: rgba(90, 122, 184, 0.35) !important;
+}
+
+.heatmap-cell-mode-input.level-3 {
+    background: rgba(90, 122, 184, 0.6) !important;
+}
+
+.heatmap-cell-mode-input.level-4 {
+    background: #5a7ab8 !important;
+}
+
+/* 暗红色 - Token 总量 */
+.heatmap-cell-mode-total.level-0 {
+    background: var(--border-light) !important;
+}
+
+.heatmap-cell-mode-total.level-1 {
+    background: rgba(184, 74, 74, 0.15) !important;
+}
+
+.heatmap-cell-mode-total.level-2 {
+    background: rgba(184, 74, 74, 0.35) !important;
+}
+
+.heatmap-cell-mode-total.level-3 {
+    background: rgba(184, 74, 74, 0.6) !important;
+}
+
+.heatmap-cell-mode-total.level-4 {
+    background: #b84a4a !important;
 }
 
 /* 热力图格子涟漪入场动画 */
