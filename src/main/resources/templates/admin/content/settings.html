@@ -107,6 +107,7 @@
 
         function openSlidePanel(provider) {
             currentProvider = provider;
+            document.getElementById('slidePanel').setAttribute('data-current-provider', provider);
             var names = { longcat: 'LongCat', mimo: 'MiMo', sensenova: 'SenseNova', deepseek: 'DeepSeek' };
             document.getElementById('slidePanelTitle').textContent = names[provider] + ' · 编辑';
             document.querySelectorAll('.provider-edit-panel').forEach(function (el) { el.classList.remove('active'); });
@@ -185,29 +186,30 @@
             var btn = document.querySelector('.slide-panel-save');
             btn.disabled = true;
 
-            // 收集所有表单数据
+            // 只获取当前打开的服务商标识
+            var providerKey = currentProvider || document.getElementById('slidePanel').getAttribute('data-current-provider');
+            if (!providerKey) { btn.disabled = false; return; }
+
+            var panel = document.getElementById('panel-' + providerKey);
+            if (!panel) { btn.disabled = false; return; }
+
+            // 只收集当前面板内的表单数据，去掉 provider 前缀
             var data = {};
-
-            // 运行配置
-            var fakeVersion = document.getElementById('fakeVersion');
-            if (fakeVersion) data.fakeVersion = fakeVersion.value;
-
-            // 遍历所有 provider 面板
-            ['longcat', 'mimo', 'sensenova', 'deepseek'].forEach(function (provider) {
-                var panel = document.getElementById('panel-' + provider);
-                if (!panel) return;
-
-                var inputs = panel.querySelectorAll('input[name], select[name]');
-                inputs.forEach(function (el) {
-                    if (el.type === 'checkbox') {
-                        if (el.checked) data[el.name] = 'on';
-                    } else {
-                        data[el.name] = el.value;
-                    }
-                });
+            var prefix = providerKey;
+            var inputs = panel.querySelectorAll('input[name], select[name]');
+            inputs.forEach(function (el) {
+                var name = el.name;
+                // 去掉 providerKey 前缀：longcatBaseUrl → BaseUrl → baseUrl
+                if (name.startsWith(prefix)) {
+                    name = name.charAt(prefix.length).toLowerCase() + name.slice(prefix.length + 1);
+                }
+                if (el.type === 'checkbox') {
+                    if (el.checked) data[name] = 'on';
+                } else {
+                    data[name] = el.value;
+                }
             });
 
-            // 构建 URL 编码的请求体
             var formBody = Object.keys(data).map(function (key) {
                 return encodeURIComponent(key) + '=' + encodeURIComponent(data[key]);
             }).join('&');
@@ -224,10 +226,7 @@
                 }, 200);
             }
 
-            // 动画时间线（纯时间驱动，不受 AJAX 响应影响）：
-            //   0ms:   绿色 + "保存..."
-            //   800ms: 绿色 + "成功"
-            //   2000ms: 黑色 + "保存"
+            // 动画时间线
             btn.classList.add('btn-saved');
             setBtnText('保存...');
 
@@ -241,14 +240,13 @@
                 btn.disabled = false;
             }, 2000);
 
-            // AJAX 提交（不干扰动画）
-            fetch('/config/settings', {
+            // AJAX 提交到单个服务商保存接口
+            fetch('/config/api/providers/' + providerKey + '/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 body: formBody
             }).then(function (r) {
                 if (!r.ok) {
-                    // 失败时立即显示红色
                     btn.classList.remove('btn-saved');
                     btn.style.backgroundColor = '#c62828';
                     setBtnText('失败');
