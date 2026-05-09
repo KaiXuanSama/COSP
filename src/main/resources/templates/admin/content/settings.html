@@ -13,15 +13,6 @@
      ============================================================ -->
 
 <main th:fragment="settings" class="content">
-    <!-- 消息提示（保存成功/失败时显示） -->
-    <div class="message success" th:if="${saveSuccess}">
-        <th:block th:replace="~{admin/fragments/icons :: icon-success}"></th:block>
-        <span>配置已保存。</span>
-    </div>
-    <div class="message error" th:if="${saveError}">
-        <th:block th:replace="~{admin/fragments/icons :: icon-error}"></th:block>
-        <span th:text="${saveError}">保存失败，请检查输入。</span>
-    </div>
 
     <!-- 运行配置 -->
     <div class="card">
@@ -110,9 +101,6 @@
         </div>
     </div>
 
-    <!-- 隐藏表单（用于提交） -->
-    <form id="settingsForm" th:action="@{/config/settings}" method="post" style="display:none"></form>
-
     <script>
         // ===== 侧滑面板控制 =====
         var currentProvider = null;
@@ -192,49 +180,65 @@
             }
         });
 
-        // ===== 保存侧滑面板内容 =====
+        // ===== 保存侧滑面板内容（AJAX 提交） =====
         function saveSlidePanel() {
-            // 收集当前面板的所有表单字段，追加到隐藏表单并提交
-            var form = document.getElementById('settingsForm');
-            form.innerHTML = '';
+            var btn = document.querySelector('.slide-panel-save');
+            btn.disabled = true;
+
+            // 收集所有表单数据
+            var data = {};
 
             // 运行配置
             var fakeVersion = document.getElementById('fakeVersion');
-            if (fakeVersion) {
-                var input = document.createElement('input');
-                input.type = 'hidden';
-                input.name = 'fakeVersion';
-                input.value = fakeVersion.value;
-                form.appendChild(input);
-            }
+            if (fakeVersion) data.fakeVersion = fakeVersion.value;
 
             // 遍历所有 provider 面板
             ['longcat', 'mimo', 'sensenova', 'deepseek'].forEach(function (provider) {
                 var panel = document.getElementById('panel-' + provider);
                 if (!panel) return;
 
-                // 收集面板内所有带 name 的输入
                 var inputs = panel.querySelectorAll('input[name], select[name]');
                 inputs.forEach(function (el) {
                     if (el.type === 'checkbox') {
-                        if (el.checked) {
-                            var input = document.createElement('input');
-                            input.type = 'hidden';
-                            input.name = el.name;
-                            input.value = 'on';
-                            form.appendChild(input);
-                        }
+                        if (el.checked) data[el.name] = 'on';
                     } else {
-                        var input = document.createElement('input');
-                        input.type = 'hidden';
-                        input.name = el.name;
-                        input.value = el.value;
-                        form.appendChild(input);
+                        data[el.name] = el.value;
                     }
                 });
             });
 
-            form.submit();
+            // 构建 URL 编码的请求体
+            var formBody = Object.keys(data).map(function (key) {
+                return encodeURIComponent(key) + '=' + encodeURIComponent(data[key]);
+            }).join('&');
+
+            fetch('/config/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: formBody
+            }).then(function (r) {
+                if (r.ok) {
+                    btn.classList.add('btn-saved');
+                    btn.innerHTML = '<span>成功</span>';
+                    setTimeout(function () {
+                        btn.classList.remove('btn-saved');
+                        btn.innerHTML = '<span>保存</span>';
+                        btn.disabled = false;
+                    }, 1000);
+                } else {
+                    btn.innerHTML = '<span>失败</span>';
+                    setTimeout(function () {
+                        btn.innerHTML = '<span>保存</span>';
+                        btn.disabled = false;
+                    }, 1000);
+                }
+            }).catch(function () {
+                btn.innerHTML = '<span>失败</span>';
+                setTimeout(function () {
+                    btn.innerHTML = '<span>保存</span>';
+                    btn.disabled = false;
+                }, 1000);
+            });
         }
 
         // ===== 快速启用/禁用 =====
