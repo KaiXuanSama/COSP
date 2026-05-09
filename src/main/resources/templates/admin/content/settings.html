@@ -44,70 +44,90 @@
             <div class="provider-grid">
 
                 <!-- LongCat 卡片 -->
-                <div class="provider-card" onclick="openSlidePanel('longcat')">
+                <div class="provider-card">
                     <div class="provider-card-top accent"></div>
                     <div class="provider-card-header">
                         <span class="provider-card-name">LongCat</span>
-                        <span class="provider-badge" th:classappend="${longcat.enabled} ? 'badge-on' : 'badge-off'"
-                            th:text="${longcat.enabled} ? '已启用' : '未启用'">已启用</span>
+                        <label class="switch provider-card-switch" onclick="event.stopPropagation()">
+                            <input type="checkbox" id="card-longcat-enabled" th:checked="${longcat.enabled}"
+                                onchange="toggleProvider('longcat', this.checked)">
+                            <span class="switch-slider"></span>
+                        </label>
                     </div>
-                    <div class="provider-card-stats">
-                        <span th:text="${#lists.size(longcat.models)} + ' 个模型'">3 个模型</span>
-                        <span th:text="${longcat.apiFormat}">OpenAI</span>
-                    </div>
-                    <div class="provider-card-action">
-                        <span class="provider-card-edit">编辑 →</span>
+                    <div class="provider-card-body" onclick="openSlidePanel('longcat')">
+                        <div class="provider-card-stats">
+                            <span th:text="${#lists.size(longcat.models)} + ' 个模型'">3 个模型</span>
+                            <span th:text="${longcat.apiFormat}">OpenAI</span>
+                        </div>
+                        <div class="provider-card-action">
+                            <span class="provider-card-edit">编辑 →</span>
+                        </div>
                     </div>
                 </div>
 
                 <!-- MiMo 卡片 -->
-                <div class="provider-card" onclick="openSlidePanel('mimo')">
+                <div class="provider-card">
                     <div class="provider-card-top blue"></div>
                     <div class="provider-card-header">
                         <span class="provider-card-name">MiMo</span>
-                        <span class="provider-badge" th:classappend="${mimo.enabled} ? 'badge-on' : 'badge-off'"
-                            th:text="${mimo.enabled} ? '已启用' : '未启用'">已启用</span>
+                        <label class="switch provider-card-switch" onclick="event.stopPropagation()">
+                            <input type="checkbox" id="card-mimo-enabled" th:checked="${mimo.enabled}"
+                                onchange="toggleProvider('mimo', this.checked)">
+                            <span class="switch-slider"></span>
+                        </label>
                     </div>
-                    <div class="provider-card-stats">
-                        <span th:text="${#lists.size(mimo.models)} + ' 个模型'">5 个模型</span>
-                        <span th:text="${mimo.apiFormat}">Anthropic</span>
-                    </div>
-                    <div class="provider-card-action">
-                        <span class="provider-card-edit">编辑 →</span>
+                    <div class="provider-card-body" onclick="openSlidePanel('mimo')">
+                        <div class="provider-card-stats">
+                            <span th:text="${#lists.size(mimo.models)} + ' 个模型'">5 个模型</span>
+                            <span th:text="${mimo.apiFormat}">Anthropic</span>
+                        </div>
+                        <div class="provider-card-action">
+                            <span class="provider-card-edit">编辑 →</span>
+                        </div>
                     </div>
                 </div>
 
                 <!-- SenseNova 卡片 -->
-                <div class="provider-card" onclick="openSlidePanel('sensenova')">
+                <div class="provider-card">
                     <div class="provider-card-top success"></div>
                     <div class="provider-card-header">
                         <span class="provider-card-name">SenseNova</span>
-                        <span class="provider-badge" th:classappend="${sensenova.enabled} ? 'badge-on' : 'badge-off'"
-                            th:text="${sensenova.enabled} ? '已启用' : '未启用'">未启用</span>
+                        <label class="switch provider-card-switch" onclick="event.stopPropagation()">
+                            <input type="checkbox" id="card-sensenova-enabled" th:checked="${sensenova.enabled}"
+                                onchange="toggleProvider('sensenova', this.checked)">
+                            <span class="switch-slider"></span>
+                        </label>
                     </div>
-                    <div class="provider-card-stats">
-                        <span th:text="${#lists.size(sensenova.models)} + ' 个模型'">0 个模型</span>
-                        <span th:text="${sensenova.apiFormat}">OpenAI</span>
-                    </div>
-                    <div class="provider-card-action">
-                        <span class="provider-card-edit">编辑 →</span>
+                    <div class="provider-card-body" onclick="openSlidePanel('sensenova')">
+                        <div class="provider-card-stats">
+                            <span th:text="${#lists.size(sensenova.models)} + ' 个模型'">0 个模型</span>
+                            <span th:text="${sensenova.apiFormat}">OpenAI</span>
+                        </div>
+                        <div class="provider-card-action">
+                            <span class="provider-card-edit">编辑 →</span>
+                        </div>
                     </div>
                 </div>
 
                 <!-- DeepSeek 卡片 -->
-                <div class="provider-card" onclick="openSlidePanel('deepseek')">
+                <div class="provider-card">
                     <div class="provider-card-top warning"></div>
                     <div class="provider-card-header">
                         <span class="provider-card-name">DeepSeek</span>
-                        <span class="provider-badge" th:classappend="${deepseek.enabled} ? 'badge-on' : 'badge-off'"
-                            th:text="${deepseek.enabled} ? '已启用' : '未启用'">已启用</span>
+                        <label class="switch provider-card-switch" onclick="event.stopPropagation()">
+                            <input type="checkbox" id="card-deepseek-enabled" th:checked="${deepseek.enabled}"
+                                onchange="toggleProvider('deepseek', this.checked)">
+                            <span class="switch-slider"></span>
+                        </label>
                     </div>
-                    <div class="provider-card-stats">
-                        <span th:text="${#lists.size(deepseek.models)} + ' 个模型'">2 个模型</span>
-                        <span th:text="${deepseek.apiFormat}">OpenAI</span>
-                    </div>
-                    <div class="provider-card-action">
-                        <span class="provider-card-edit">编辑 →</span>
+                    <div class="provider-card-body" onclick="openSlidePanel('deepseek')">
+                        <div class="provider-card-stats">
+                            <span th:text="${#lists.size(deepseek.models)} + ' 个模型'">2 个模型</span>
+                            <span th:text="${deepseek.apiFormat}">OpenAI</span>
+                        </div>
+                        <div class="provider-card-action">
+                            <span class="provider-card-edit">编辑 →</span>
+                        </div>
                     </div>
                 </div>
 
@@ -524,6 +544,22 @@
             });
 
             form.submit();
+        }
+
+        // ===== 快速启用/禁用 =====
+        function toggleProvider(provider, enabled) {
+            fetch('/config/api/providers/' + provider + '/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: enabled })
+            }).then(function (r) {
+                if (!r.ok) {
+                    // 恢复开关状态
+                    document.getElementById('card-' + provider + '-enabled').checked = !enabled;
+                }
+            }).catch(function () {
+                document.getElementById('card-' + provider + '-enabled').checked = !enabled;
+            });
         }
 
         // ===== 添加模型行 =====

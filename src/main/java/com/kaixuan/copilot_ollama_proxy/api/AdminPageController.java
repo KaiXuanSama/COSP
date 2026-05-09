@@ -114,6 +114,29 @@ public class AdminPageController {
         return ResponseEntity.ok(full);
     }
 
+    // ==================== 服务商快速启用/禁用 ====================
+
+    /**
+     * 快速切换服务商的启用状态（不修改其他配置）。
+     * 请求体：{"enabled": true/false}
+     */
+    @PostMapping("/config/api/providers/{providerKey}/toggle") @ResponseBody
+    public ResponseEntity<Map<String, Object>> toggleProvider(@PathVariable String providerKey, @RequestBody Map<String, Object> body) {
+        boolean enabled = Boolean.TRUE.equals(body.get("enabled"));
+        Map<String, Object> provider = providerConfigRepository.findByKey(providerKey);
+        if (provider == null) {
+            return ResponseEntity.notFound().build();
+        }
+        String baseUrl = (String) provider.getOrDefault("baseUrl", "");
+        String apiKey = (String) provider.getOrDefault("apiKey", "");
+        String apiFormat = (String) provider.getOrDefault("apiFormat", "openai");
+        providerConfigRepository.saveProvider(providerKey, enabled, baseUrl, apiKey, apiFormat);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("providerKey", providerKey);
+        result.put("enabled", enabled);
+        return ResponseEntity.ok(result);
+    }
+
     // ==================== 配置页 ====================
 
     @GetMapping("/config/settings")

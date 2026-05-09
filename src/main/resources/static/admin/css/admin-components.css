@@ -584,6 +584,15 @@
     margin-bottom: 10px;
 }
 
+.provider-card-switch {
+    position: relative;
+    z-index: 1;
+}
+
+.provider-card-body {
+    cursor: pointer;
+}
+
 .provider-card-name {
     font-family: 'Cormorant Garamond', serif;
     font-size: 18px;
@@ -1085,6 +1094,32 @@
 
     .model-row-details {
         width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    .model-row-ctx {
+        width: 90px;
+        flex-shrink: 0;
+    }
+
+    .model-row-cap {
+        font-size: 9px;
+    }
+
+    .provider-card {
+        padding: 16px;
+    }
+
+    .provider-card-name {
+        font-size: 16px;
+    }
+
+    .provider-card-stats {
+        font-size: 12px;
+        gap: 12px;
     }
 }
 
