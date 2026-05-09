@@ -515,8 +515,14 @@
 
 .provider-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 16px;
+}
+
+@media (max-width: 1100px) {
+    .provider-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
 }
 
 .provider-card {
@@ -744,7 +750,7 @@
 
 .slide-panel-save:hover {
     transform: translateY(-1px);
-    box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
 }
 
 .slide-panel-save:hover::before {
