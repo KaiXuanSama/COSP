@@ -213,6 +213,15 @@ public class AdminPageController {
     }
 
     /**
+     * 仅保存伪造版本号（AJAX），不碰其他配置。
+     */
+    @PostMapping("/config/api/fake-version") @ResponseBody
+    public ResponseEntity<Map<String, Object>> saveFakeVersion(@RequestParam String fakeVersion) {
+        providerConfigRepository.saveConfig("fake_version", fakeVersion.trim());
+        return ResponseEntity.ok(Map.of("ok", true));
+    }
+
+    /**
      * 从数据库加载单个服务商配置，如果不存在则返回默认空对象。
      */
     private Map<String, Object> loadProvider(String providerKey) {

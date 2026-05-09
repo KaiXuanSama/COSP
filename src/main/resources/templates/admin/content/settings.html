@@ -16,7 +16,7 @@
 
     <!-- 运行配置 -->
     <div class="card">
-        <div class="card-title">运行配置</div>
+        <div class="card-title">运行配置（修改后按回车保存）</div>
         <div class="card-body">
             <div class="field-group">
                 <label class="field-label" for="fakeVersion">伪造版本号</label>
@@ -269,6 +269,46 @@
                 }, 2000);
             });
         }
+
+        // ===== 伪造版本号 — 回车保存 =====
+        document.addEventListener('DOMContentLoaded', function () {
+            var input = document.getElementById('fakeVersion');
+            if (!input) return;
+            input.addEventListener('keydown', function (e) {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                var val = input.value.trim();
+                if (!val) return;
+                input.disabled = true;
+                fetch('/config/api/fake-version', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: 'fakeVersion=' + encodeURIComponent(val)
+                }).then(function (r) {
+                    if (r.ok) {
+                        input.style.borderColor = '#2e7d32';
+                        input.style.backgroundColor = '#f0faf0';
+                        setTimeout(function () {
+                            input.style.borderColor = '';
+                            input.style.backgroundColor = '';
+                            input.disabled = false;
+                        }, 2000);
+                    } else {
+                        input.style.borderColor = '#c62828';
+                        setTimeout(function () {
+                            input.style.borderColor = '';
+                            input.disabled = false;
+                        }, 2000);
+                    }
+                }).catch(function () {
+                    input.style.borderColor = '#c62828';
+                    setTimeout(function () {
+                        input.style.borderColor = '';
+                        input.disabled = false;
+                    }, 2000);
+                });
+            });
+        });
 
         // ===== 快速启用/禁用 =====
         function toggleProvider(provider, enabled) {
