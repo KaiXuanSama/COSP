@@ -501,8 +501,7 @@
 
 /* ── 热力图 ── */
 .heatmap-card .card-body {
-    padding: 12px 0 16px;
-    margin-bottom: 12px;
+    padding: 0 16px;
 }
 
 .heatmap-container {
@@ -514,6 +513,7 @@
 .heatmap-scroll {
     display: flex;
     overflow: hidden;
+    padding-bottom: 12px;
 }
 
 /* 左侧星期标签 */

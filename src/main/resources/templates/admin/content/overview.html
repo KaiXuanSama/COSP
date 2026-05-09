@@ -185,6 +185,22 @@
                         isFirstLoad = false;
                     })
                     .catch(function () { });
+
+                // 同步更新热力图数据
+                fetchHeatmapData();
+            }
+
+            // ── 热力图数据更新（短轮询调用） ──
+            function fetchHeatmapData() {
+                // 如果热力图渲染脚本还未加载完成，跳过
+                if (!window.updateHeatmapData) return;
+                fetch('/config/api/heatmap?days=360')
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        if (!data || data.length === 0) return;
+                        window.updateHeatmapData(data);
+                    })
+                    .catch(function () { });
             }
 
             // 立即开始获取数据并与卡片淡入动画并行执行
@@ -205,7 +221,6 @@
             var CELL = 16;
             var GAP = 4;
             var DAYS = 360;
-            var allWeeks = [];
             var currentMode = 'calls'; // calls | output | input | total
             var hasRippled = false;
 
@@ -490,6 +505,25 @@
                     }
                 })
                 .catch(function () { });
+
+            // ── 暴露热力图数据更新函数（供短轮询调用） ──
+            window.updateHeatmapData = function (newData) {
+                if (!newData || newData.length === 0) return;
+
+                // 重新按周分组
+                var firstDow = getDayOfWeek(newData[0].usageDate);
+                allWeeks = [];
+                var cur = [];
+                for (var i = 0; i < firstDow; i++) cur.push(null);
+                for (var i = 0; i < newData.length; i++) {
+                    cur.push(newData[i]);
+                    if (cur.length === 7) { allWeeks.push(cur); cur = []; }
+                }
+                if (cur.length > 0) { while (cur.length < 7) cur.push(null); allWeeks.push(cur); }
+
+                // 重新渲染（不触发涟漪动画）
+                render();
+            };
         })();
     </script>
 </main>
