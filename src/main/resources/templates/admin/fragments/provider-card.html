@@ -74,15 +74,14 @@
          apiFormatOptions=~{:: longcat-format-options})}"
      ============================================================ -->
 
-<th:block
-    th:fragment="edit-panel(providerKey, displayName, provider, apiUrlPlaceholder, docUrl, apiFormatOptions)">
+<th:block th:fragment="edit-panel(providerKey, displayName, provider, apiUrlPlaceholder, docUrl, apiFormatOptions)">
     <div class="provider-edit-panel" th:id="'panel-' + ${providerKey}">
         <div class="field-group">
             <label class="field-label" th:for="${providerKey} + 'BaseUrl'">API URL</label>
             <div class="field-input-wrap">
                 <input class="field-input" type="url" th:id="${providerKey} + 'BaseUrl'"
                     th:name="${providerKey} + 'BaseUrl'" th:placeholder="${apiUrlPlaceholder}"
-                    th:value="${provider.baseUrl}">
+                    th:value="${provider.baseUrl} ?: ${apiUrlPlaceholder}">
             </div>
             <span class="slide-field-hint">只需要输入前缀，如 https://api.example.com</span>
         </div>

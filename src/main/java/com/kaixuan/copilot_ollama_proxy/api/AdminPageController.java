@@ -230,10 +230,16 @@ public class AdminPageController {
             provider = new LinkedHashMap<>();
             provider.put("providerKey", providerKey);
             provider.put("enabled", false);
-            provider.put("baseUrl", "");
+            provider.put("baseUrl", null);
             provider.put("apiKey", "");
             provider.put("apiFormat", "openai");
             provider.put("models", new ArrayList<>());
+        } else {
+            // 空字符串转为 null，以便 Thymeleaf Elvis 运算符 ?: 能正确回退到默认值
+            String baseUrl = (String) provider.get("baseUrl");
+            if (baseUrl != null && baseUrl.isEmpty()) {
+                provider.put("baseUrl", null);
+            }
         }
         return provider;
     }
