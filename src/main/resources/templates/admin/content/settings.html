@@ -43,93 +43,21 @@
         <div class="card-body">
             <div class="provider-grid">
 
-                <!-- LongCat 卡片 -->
-                <div class="provider-card">
-                    <div class="provider-card-top accent"></div>
-                    <div class="provider-card-header">
-                        <span class="provider-card-name">LongCat</span>
-                        <label class="switch provider-card-switch" onclick="event.stopPropagation()">
-                            <input type="checkbox" id="card-longcat-enabled" th:checked="${longcat.enabled}"
-                                onchange="toggleProvider('longcat', this.checked)">
-                            <span class="switch-slider"></span>
-                        </label>
-                    </div>
-                    <div class="provider-card-body" onclick="openSlidePanel('longcat')">
-                        <div class="provider-card-stats">
-                            <span th:text="${#lists.size(longcat.models)} + ' 个模型'">3 个模型</span>
-                            <span th:text="${longcat.apiFormat}">OpenAI</span>
-                        </div>
-                        <div class="provider-card-action">
-                            <span class="provider-card-edit">编辑 →</span>
-                        </div>
-                    </div>
-                </div>
+                <th:block th:replace="~{admin/fragments/provider-card :: card(
+                    providerKey='longcat', displayName='LongCat',
+                    colorClass='accent', provider=${longcat})}"></th:block>
 
-                <!-- MiMo 卡片 -->
-                <div class="provider-card">
-                    <div class="provider-card-top blue"></div>
-                    <div class="provider-card-header">
-                        <span class="provider-card-name">MiMo</span>
-                        <label class="switch provider-card-switch" onclick="event.stopPropagation()">
-                            <input type="checkbox" id="card-mimo-enabled" th:checked="${mimo.enabled}"
-                                onchange="toggleProvider('mimo', this.checked)">
-                            <span class="switch-slider"></span>
-                        </label>
-                    </div>
-                    <div class="provider-card-body" onclick="openSlidePanel('mimo')">
-                        <div class="provider-card-stats">
-                            <span th:text="${#lists.size(mimo.models)} + ' 个模型'">5 个模型</span>
-                            <span th:text="${mimo.apiFormat}">Anthropic</span>
-                        </div>
-                        <div class="provider-card-action">
-                            <span class="provider-card-edit">编辑 →</span>
-                        </div>
-                    </div>
-                </div>
+                <th:block th:replace="~{admin/fragments/provider-card :: card(
+                    providerKey='mimo', displayName='MiMo',
+                    colorClass='blue', provider=${mimo})}"></th:block>
 
-                <!-- SenseNova 卡片 -->
-                <div class="provider-card">
-                    <div class="provider-card-top success"></div>
-                    <div class="provider-card-header">
-                        <span class="provider-card-name">SenseNova</span>
-                        <label class="switch provider-card-switch" onclick="event.stopPropagation()">
-                            <input type="checkbox" id="card-sensenova-enabled" th:checked="${sensenova.enabled}"
-                                onchange="toggleProvider('sensenova', this.checked)">
-                            <span class="switch-slider"></span>
-                        </label>
-                    </div>
-                    <div class="provider-card-body" onclick="openSlidePanel('sensenova')">
-                        <div class="provider-card-stats">
-                            <span th:text="${#lists.size(sensenova.models)} + ' 个模型'">0 个模型</span>
-                            <span th:text="${sensenova.apiFormat}">OpenAI</span>
-                        </div>
-                        <div class="provider-card-action">
-                            <span class="provider-card-edit">编辑 →</span>
-                        </div>
-                    </div>
-                </div>
+                <th:block th:replace="~{admin/fragments/provider-card :: card(
+                    providerKey='sensenova', displayName='SenseNova',
+                    colorClass='success', provider=${sensenova})}"></th:block>
 
-                <!-- DeepSeek 卡片 -->
-                <div class="provider-card">
-                    <div class="provider-card-top warning"></div>
-                    <div class="provider-card-header">
-                        <span class="provider-card-name">DeepSeek</span>
-                        <label class="switch provider-card-switch" onclick="event.stopPropagation()">
-                            <input type="checkbox" id="card-deepseek-enabled" th:checked="${deepseek.enabled}"
-                                onchange="toggleProvider('deepseek', this.checked)">
-                            <span class="switch-slider"></span>
-                        </label>
-                    </div>
-                    <div class="provider-card-body" onclick="openSlidePanel('deepseek')">
-                        <div class="provider-card-stats">
-                            <span th:text="${#lists.size(deepseek.models)} + ' 个模型'">2 个模型</span>
-                            <span th:text="${deepseek.apiFormat}">OpenAI</span>
-                        </div>
-                        <div class="provider-card-action">
-                            <span class="provider-card-edit">编辑 →</span>
-                        </div>
-                    </div>
-                </div>
+                <th:block th:replace="~{admin/fragments/provider-card :: card(
+                    providerKey='deepseek', displayName='DeepSeek',
+                    colorClass='warning', provider=${deepseek})}"></th:block>
 
             </div>
         </div>

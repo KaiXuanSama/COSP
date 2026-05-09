@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+
+<!-- ============================================================
+     provider-card.html — 服务商卡片组件
+     参数：
+       providerKey   — 服务商标识，如 "longcat"
+       displayName   — 显示名称，如 "LongCat"
+       colorClass    — 顶条颜色类名，如 "accent" / "blue" / "success" / "warning"
+       provider      — 服务商数据 Map (enabled, models, apiFormat)
+     使用方式：
+       th:replace="~{admin/fragments/provider-card :: card(
+         providerKey='longcat', displayName='LongCat',
+         colorClass='accent', provider=${longcat})}"
+     ============================================================ -->
+
+<th:block th:fragment="card(providerKey, displayName, colorClass, provider)">
+    <div class="provider-card">
+        <div class="provider-card-top" th:classappend="${colorClass}"></div>
+        <div class="provider-card-header">
+            <span class="provider-card-name" th:text="${displayName}">LongCat</span>
+            <label class="switch provider-card-switch" onclick="event.stopPropagation()">
+                <input type="checkbox" th:id="'card-' + ${providerKey} + '-enabled'" th:checked="${provider.enabled}"
+                    th:attr="onchange='toggleProvider(\'' + ${providerKey} + '\', this.checked)'">
+                <span class="switch-slider"></span>
+            </label>
+        </div>
+        <div class="provider-card-body" th:attr="onclick='openSlidePanel(\'' + ${providerKey} + '\')'">
+            <div class="provider-card-stats">
+                <span th:text="${#lists.size(provider.models)} + ' 个模型'">3 个模型</span>
+                <span th:text="${provider.apiFormat}">OpenAI</span>
+            </div>
+            <div class="provider-card-action">
+                <span class="provider-card-edit">编辑 →</span>
+            </div>
+        </div>
+    </div>
+</th:block>
+
+</html>
