@@ -1083,7 +1083,7 @@
    悬浮文档窗口
    ============================================================ */
 
-/* 遮罩 */
+/* 遮罩 — 默认隐藏（桌面端不需要） */
 .doc-float-overlay {
     display: none;
     position: fixed;
@@ -1094,19 +1094,22 @@
     -webkit-backdrop-filter: blur(2px);
 }
 
-.doc-float-overlay.visible {
-    display: block;
+/* 仅在触摸设备（移动端）显示遮罩 */
+@media (pointer: coarse) {
+    .doc-float-overlay.visible {
+        display: block;
+    }
 }
 
 /* 窗口主体 */
 .doc-float-window {
     display: none;
     position: fixed;
-    top: 100px;
+    top: 80px;
     left: 50%;
     transform: translateX(-50%);
-    width: 700px;
-    height: 500px;
+    width: 560px;
+    height: 420px;
     min-width: 320px;
     min-height: 200px;
     max-width: calc(100vw - 40px);

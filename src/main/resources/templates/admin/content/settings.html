@@ -185,7 +185,10 @@
                 floatTitle.textContent = title || '官方文档';
                 floatNewtab.href = url;
                 floatWin.classList.add('open');
-                floatOverlay.classList.add('visible');
+                // 仅在触摸设备（移动端）显示遮罩
+                if (isTouchDevice) {
+                    floatOverlay.classList.add('visible');
+                }
             };
 
             // 关闭悬浮窗
@@ -197,11 +200,14 @@
             };
 
             // 关闭按钮
-            floatClose.addEventListener('click', closeDocFloat);
-            // 遮罩层点击关闭（拖拽/调整大小时不触发）
+            floatClose.addEventListeneFr('click', closeDocFloat);
+            // 遮罩层点击关闭（仅移动端有效，拖拽/调整大小时不触发）
             floatOverlay.addEventListener('click', function () {
                 if (!dragging && !resizing) closeDocFloat();
             });
+
+            // 检测是否为触摸设备
+            var isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
 
             // 事件委托：点击 .doc-link-inline 打开悬浮窗
             document.addEventListener('click', function (e) {
