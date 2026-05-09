@@ -105,6 +105,35 @@
         </div>
     </div>
 
+    <!-- ===== 悬浮文档窗口 ===== -->
+    <div class="doc-float-overlay" id="docFloatOverlay"></div>
+    <div class="doc-float-window" id="docFloatWindow">
+        <div class="doc-float-header" id="docFloatHeader">
+            <span class="doc-float-title" id="docFloatTitle">官方文档</span>
+            <div class="doc-float-header-actions">
+                <a class="doc-float-newtab" id="docFloatNewtab" href="#" target="_blank" rel="noopener" title="在新标签页打开">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                        <polyline points="15 3 21 3 21 9"></polyline>
+                        <line x1="10" y1="14" x2="21" y2="3"></line>
+                    </svg>
+                </a>
+                <button class="doc-float-close" id="docFloatClose" title="关闭">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+        </div>
+        <div class="doc-float-body">
+            <iframe class="doc-float-iframe" id="docFloatIframe" src="" frameborder="0"></iframe>
+        </div>
+        <div class="doc-float-resize-handle" id="docFloatResize"></div>
+    </div>
+
     <script>
         // ===== 侧滑面板控制 =====
         var currentProvider = null;
@@ -130,8 +159,138 @@
 
         // ESC 键关闭
         document.addEventListener('keydown', function (e) {
-            if (e.key === 'Escape') closeSlidePanel();
+            if (e.key === 'Escape') {
+                closeSlidePanel();
+                closeDocFloat();
+            }
         });
+
+        // ===== 悬浮文档窗口 =====
+        (function () {
+            var floatWin = document.getElementById('docFloatWindow');
+            var floatOverlay = document.getElementById('docFloatOverlay');
+            var floatIframe = document.getElementById('docFloatIframe');
+            var floatTitle = document.getElementById('docFloatTitle');
+            var floatNewtab = document.getElementById('docFloatNewtab');
+            var floatClose = document.getElementById('docFloatClose');
+            var floatHeader = document.getElementById('docFloatHeader');
+            var floatResize = document.getElementById('docFloatResize');
+            var currentDocUrl = '';
+
+            // 打开悬浮窗
+            window.openDocFloat = function (url, title) {
+                if (!url) return;
+                currentDocUrl = url;
+                floatIframe.src = url;
+                floatTitle.textContent = title || '官方文档';
+                floatNewtab.href = url;
+                floatWin.classList.add('open');
+                floatOverlay.classList.add('visible');
+            };
+
+            // 关闭悬浮窗
+            window.closeDocFloat = function () {
+                floatWin.classList.remove('open');
+                floatOverlay.classList.remove('visible');
+                floatIframe.src = '';
+                currentDocUrl = '';
+            };
+
+            // 关闭按钮
+            floatClose.addEventListener('click', closeDocFloat);
+            // 遮罩层点击关闭（拖拽/调整大小时不触发）
+            floatOverlay.addEventListener('click', function () {
+                if (!dragging && !resizing) closeDocFloat();
+            });
+
+            // 事件委托：点击 .doc-link-inline 打开悬浮窗
+            document.addEventListener('click', function (e) {
+                var link = e.target.closest('.doc-link-inline');
+                if (link) {
+                    e.preventDefault();
+                    var url = link.getAttribute('data-doc-url');
+                    var text = link.textContent.trim();
+                    openDocFloat(url, text);
+                }
+            });
+
+            // --- 拖拽 ---
+            var dragging = false;
+            var dragOffsetX = 0;
+            var dragOffsetY = 0;
+
+            floatHeader.addEventListener('mousedown', function (e) {
+                if (e.target.closest('.doc-float-close') || e.target.closest('.doc-float-newtab')) return;
+                dragging = true;
+                var rect = floatWin.getBoundingClientRect();
+                dragOffsetX = e.clientX - rect.left;
+                dragOffsetY = e.clientY - rect.top;
+                floatWin.classList.add('dragging');
+                e.preventDefault();
+            });
+
+            window.addEventListener('mousemove', function (e) {
+                if (!dragging) return;
+                e.preventDefault();
+                var x = e.clientX - dragOffsetX;
+                var y = e.clientY - dragOffsetY;
+                // 限制不超出视口
+                var winW = floatWin.offsetWidth;
+                var winH = floatWin.offsetHeight;
+                x = Math.max(0, Math.min(x, window.innerWidth - winW));
+                y = Math.max(0, Math.min(y, window.innerHeight - winH));
+                floatWin.style.left = x + 'px';
+                floatWin.style.top = y + 'px';
+                floatWin.style.transform = 'none';
+                floatWin.style.right = 'auto';
+                floatWin.style.bottom = 'auto';
+            });
+
+            window.addEventListener('mouseup', function () {
+                if (dragging) {
+                    dragging = false;
+                    floatWin.classList.remove('dragging');
+                }
+            });
+
+            // --- 调整大小 ---
+            var resizing = false;
+            var resizeStartX = 0;
+            var resizeStartY = 0;
+            var resizeStartW = 0;
+            var resizeStartH = 0;
+
+            floatResize.addEventListener('mousedown', function (e) {
+                resizing = true;
+                resizeStartX = e.clientX;
+                resizeStartY = e.clientY;
+                resizeStartW = floatWin.offsetWidth;
+                resizeStartH = floatWin.offsetHeight;
+                floatWin.classList.add('resizing');
+                e.preventDefault();
+                e.stopPropagation();
+            });
+
+            window.addEventListener('mousemove', function (e) {
+                if (!resizing) return;
+                e.preventDefault();
+                var dx = e.clientX - resizeStartX;
+                var dy = e.clientY - resizeStartY;
+                var newW = Math.max(320, resizeStartW + dx);
+                var newH = Math.max(200, resizeStartH + dy);
+                newW = Math.min(newW, window.innerWidth - 20);
+                newH = Math.min(newH, window.innerHeight - 20);
+                floatWin.style.width = newW + 'px';
+                floatWin.style.height = newH + 'px';
+            });
+
+            window.addEventListener('mouseup', function () {
+                if (resizing) {
+                    resizing = false;
+                    floatWin.classList.remove('resizing');
+                }
+            });
+        })();
 
         // ===== 事件委托：卡片点击打开侧滑面板 =====
         document.addEventListener('click', function (e) {

@@ -1079,6 +1079,170 @@
     cursor: pointer;
 }
 
+/* ============================================================
+   悬浮文档窗口
+   ============================================================ */
+
+/* 遮罩 */
+.doc-float-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.15);
+    z-index: 9998;
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+}
+
+.doc-float-overlay.visible {
+    display: block;
+}
+
+/* 窗口主体 */
+.doc-float-window {
+    display: none;
+    position: fixed;
+    top: 100px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 700px;
+    height: 500px;
+    min-width: 320px;
+    min-height: 200px;
+    max-width: calc(100vw - 40px);
+    max-height: calc(100vh - 40px);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18), 0 4px 16px rgba(0, 0, 0, 0.08);
+    z-index: 9999;
+    overflow: hidden;
+    flex-direction: column;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    opacity: 0;
+}
+
+.doc-float-window.open {
+    display: flex;
+    opacity: 1;
+    animation: docFloatIn 0.25s ease;
+}
+
+.doc-float-window.dragging,
+.doc-float-window.resizing {
+    transition: none;
+}
+
+@keyframes docFloatIn {
+    from {
+        opacity: 0;
+        transform: translateX(-50%) scale(0.95);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateX(-50%) scale(1);
+    }
+}
+
+/* 标题栏 */
+.doc-float-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    cursor: move;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.doc-float-title {
+    font-family: 'Crimson Pro', serif;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-body);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: calc(100% - 70px);
+}
+
+.doc-float-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.doc-float-newtab,
+.doc-float-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 6px;
+    transition: background 0.15s ease, color 0.15s ease;
+    text-decoration: none;
+    flex-shrink: 0;
+}
+
+.doc-float-newtab:hover,
+.doc-float-close:hover {
+    background: var(--accent-light);
+    color: var(--accent);
+}
+
+/* 内容区 */
+.doc-float-body {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+}
+
+.doc-float-iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    display: block;
+}
+
+/* 调整大小手柄 */
+.doc-float-resize-handle {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 18px;
+    height: 18px;
+    cursor: nwse-resize;
+    z-index: 1;
+}
+
+.doc-float-resize-handle::after {
+    content: '';
+    position: absolute;
+    right: 3px;
+    bottom: 3px;
+    width: 10px;
+    height: 10px;
+    border-right: 2px solid var(--text-muted);
+    border-bottom: 2px solid var(--text-muted);
+    border-radius: 0 0 4px 0;
+    opacity: 0.4;
+    transition: opacity 0.15s ease;
+}
+
+.doc-float-resize-handle:hover::after,
+.doc-float-window.resizing .doc-float-resize-handle::after {
+    opacity: 1;
+    border-color: var(--accent);
+}
+
 .btn-remove-model {
     flex-shrink: 0;
     width: 26px;

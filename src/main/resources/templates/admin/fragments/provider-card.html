@@ -110,7 +110,8 @@
             <div class="model-section-header">
                 <span class="model-section-title">模型列表</span>
                 <div class="model-section-actions">
-                    <a th:href="${docUrl}" target="_blank" rel="noopener" class="model-doc-link">官方文档</a>
+                    <a href="javascript:void(0)" th:data-doc-url="${docUrl}"
+                        class="model-doc-link doc-link-inline">官方文档</a>
                     <button type="button" class="btn-fetch-models" th:if="${fetchModelsSupported}"
                         th:attr="data-provider-key=${providerKey}">
                         拉取
