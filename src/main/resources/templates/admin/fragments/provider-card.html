@@ -124,9 +124,24 @@
                         <input type="text" class="model-row-name-input" placeholder="模型名称"
                             th:name="${providerKey} + 'Models[' + ${iter.index} + '].name'"
                             th:value="${model.modelName}">
-                        <input type="number" class="model-row-ctx" placeholder="上下文大小" min="0"
-                            th:name="${providerKey} + 'Models[' + ${iter.index} + '].contextSize'"
-                            th:value="${model.contextSize}">
+                        <div class="model-row-ctx-wrap">
+                            <input type="text" class="model-row-ctx" placeholder="上下文大小"
+                                th:name="${providerKey} + 'Models[' + ${iter.index} + '].contextSize'"
+                                th:value="${model.contextSize}" inputmode="numeric">
+                            <button type="button" class="model-row-ctx-btn" tabindex="-1"
+                                th:attr="data-provider=${providerKey},data-idx=${iter.index}">
+                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                                    <path d="M3 4L5 6L7 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </button>
+                            <div class="model-row-ctx-menu">
+                                <button type="button" data-value="65536">64K</button>
+                                <button type="button" data-value="131072">128K</button>
+                                <button type="button" data-value="262144">256K</button>
+                                <button type="button" data-value="524288">512K</button>
+                                <button type="button" data-value="1048576">1M</button>
+                            </div>
+                        </div>
                         <div class="model-row-caps">
                             <label class="model-row-cap">
                                 <input type="checkbox"

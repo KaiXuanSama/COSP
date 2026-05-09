@@ -936,10 +936,17 @@
     flex-shrink: 0;
 }
 
-.model-row-ctx {
+.model-row-ctx-wrap {
     flex: 1;
     min-width: 50px;
-    padding: 4px 6px;
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.model-row-ctx {
+    width: 100%;
+    padding: 4px 22px 4px 6px;
     border: 1px solid var(--border);
     border-radius: 5px;
     font-family: 'DM Mono', monospace;
@@ -950,6 +957,12 @@
     transition: border-color 0.2s ease;
 }
 
+.model-row-ctx::-webkit-inner-spin-button,
+.model-row-ctx::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
 .model-row-ctx:focus {
     border-color: var(--accent);
 }
@@ -957,6 +970,70 @@
 .model-row-ctx::placeholder {
     color: var(--text-muted);
     font-size: 10px;
+}
+
+.model-row-ctx-btn {
+    position: absolute;
+    right: 1px;
+    top: 1px;
+    bottom: 1px;
+    width: 18px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    border-radius: 0 4px 4px 0;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.model-row-ctx-btn:hover {
+    background: var(--accent-light);
+    color: var(--accent);
+}
+
+.model-row-ctx-menu {
+    display: none;
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--shadow-md);
+    z-index: 10;
+    min-width: 90px;
+    overflow: hidden;
+}
+
+.model-row-ctx-menu.open {
+    display: block;
+}
+
+.model-row-ctx-menu button {
+    display: block;
+    width: 100%;
+    padding: 7px 14px;
+    border: none;
+    background: none;
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    color: var(--text-body);
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.12s ease, color 0.12s ease;
+}
+
+.model-row-ctx-menu button:hover {
+    background: var(--accent-light);
+    color: var(--accent);
+}
+
+.model-row-ctx-menu button:last-child {
+    border-bottom: none;
 }
 
 .model-row-cap {
