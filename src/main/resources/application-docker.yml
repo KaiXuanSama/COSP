@@ -36,3 +36,6 @@ longcat:
 
 sensenova:
   default-model: sensenova-6.7-flash-lite
+
+deepseek:
+  default-model: deepseek-v4-flash
