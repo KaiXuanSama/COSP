@@ -731,12 +731,34 @@
 .slide-panel-save {
     padding: 10px 24px !important;
     font-size: 15px !important;
-    transition: background-color 0.3s, color 0.3s;
+    width: 130px;
+    text-align: center;
+    box-sizing: border-box;
+    transition: background-color 0.5s ease, color 0.5s ease, width 0.3s ease, transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.slide-panel-save span {
+    transition: opacity 0.2s ease;
+    display: block;
+}
+
+.slide-panel-save:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+}
+
+.slide-panel-save:hover::before {
+    opacity: 0 !important;
 }
 
 .slide-panel-save.btn-saved {
     background-color: #2e7d32 !important;
     color: #fff !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+
+.slide-panel-save.btn-saved:hover {
     transform: none !important;
     box-shadow: none !important;
 }

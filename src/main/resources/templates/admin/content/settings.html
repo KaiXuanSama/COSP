@@ -212,32 +212,61 @@
                 return encodeURIComponent(key) + '=' + encodeURIComponent(data[key]);
             }).join('&');
 
+            // 淡入淡出切换文本
+            function setBtnText(text, done) {
+                var span = btn.querySelector('span');
+                if (!span) { btn.innerHTML = '<span>' + text + '</span>'; if (done) done(); return; }
+                span.style.opacity = '0';
+                setTimeout(function () {
+                    span.textContent = text;
+                    span.style.opacity = '1';
+                    if (done) done();
+                }, 200);
+            }
+
+            // 动画时间线（纯时间驱动，不受 AJAX 响应影响）：
+            //   0ms:   绿色 + "保存..."
+            //   800ms: 绿色 + "成功"
+            //   2000ms: 黑色 + "保存"
+            btn.classList.add('btn-saved');
+            setBtnText('保存...');
+
+            setTimeout(function () {
+                setBtnText('成功');
+            }, 800);
+
+            setTimeout(function () {
+                btn.classList.remove('btn-saved');
+                setBtnText('保存');
+                btn.disabled = false;
+            }, 2000);
+
+            // AJAX 提交（不干扰动画）
             fetch('/config/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 body: formBody
             }).then(function (r) {
-                if (r.ok) {
-                    btn.classList.add('btn-saved');
-                    btn.innerHTML = '<span>成功</span>';
+                if (!r.ok) {
+                    // 失败时立即显示红色
+                    btn.classList.remove('btn-saved');
+                    btn.style.backgroundColor = '#c62828';
+                    setBtnText('失败');
                     setTimeout(function () {
-                        btn.classList.remove('btn-saved');
-                        btn.innerHTML = '<span>保存</span>';
+                        btn.style.backgroundColor = '';
+                        setBtnText('保存');
                         btn.disabled = false;
-                    }, 1000);
-                } else {
-                    btn.innerHTML = '<span>失败</span>';
-                    setTimeout(function () {
-                        btn.innerHTML = '<span>保存</span>';
-                        btn.disabled = false;
-                    }, 1000);
+                    }, 2000);
                 }
             }).catch(function () {
-                btn.innerHTML = '<span>失败</span>';
+                btn.classList.remove('btn-saved');
+                btn.style.backgroundColor = '#c62828';
+                setBtnText('失败');
                 setTimeout(function () {
-                    btn.innerHTML = '<span>保存</span>';
+                    btn.style.backgroundColor = '';
+                    setBtnText('保存');
                     btn.disabled = false;
-                }, 1000);
+                }, 2000);
             });
         }
 
