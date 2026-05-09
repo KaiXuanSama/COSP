@@ -83,318 +83,29 @@
         </div>
         <div class="slide-panel-body">
 
-            <!-- ===== LongCat 编辑面板 ===== -->
-            <div class="provider-edit-panel" id="panel-longcat">
-                <div class="field-group">
-                    <label class="field-label">启用</label>
-                    <div class="slide-switch-wrap">
-                        <label class="switch">
-                            <input type="checkbox" name="longcatEnabled" id="longcatEnabled"
-                                th:checked="${longcat.enabled}">
-                            <span class="switch-slider"></span>
-                        </label>
-                        <span class="slide-switch-tooltip" id="longcat-tooltip"></span>
-                    </div>
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="longcatBaseUrl">API URL</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="longcatBaseUrl" name="longcatBaseUrl" type="url"
-                            placeholder="https://api.longcat.chat" th:value="${longcat.baseUrl}">
-                    </div>
-                    <span class="slide-field-hint">只需要输入前缀，比如 https://api.longcat.chat</span>
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="longcatApiKey">API Key</label>
-                    <th:block th:replace="~{admin/fragments/form-fields :: password-field-with-eye(
-                        'longcatApiKey', 'longcatApiKey', '请输入 LongCat API Key', ${longcat.apiKey})}"></th:block>
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="longcatApiFormat">API 格式</label>
-                    <div class="slide-select-wrap">
-                        <select class="slide-select" id="longcatApiFormat" name="longcatApiFormat">
-                            <option value="openai" th:selected="${longcat.apiFormat == 'openai'}">OpenAI</option>
-                            <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
-                        </select>
-                    </div>
-                </div>
+            <th:block th:replace="~{admin/fragments/provider-card :: edit-panel(
+                providerKey='longcat', displayName='LongCat', provider=${longcat},
+                apiUrlPlaceholder='https://api.longcat.chat',
+                docUrl='https://longcat.chat/platform/docs/zh/#%E9%99%90%E6%B5%81%E8%A7%84%E5%88%99',
+                apiFormatOptions=~{admin/fragments/provider-card :: longcat-format-options})}"></th:block>
 
-                <!-- 模型列表 -->
-                <div class="model-section">
-                    <div class="model-section-header">
-                        <span class="model-section-title">模型列表</span>
-                        <div class="model-section-actions">
-                            <a href="https://longcat.chat/platform/docs/zh/#%E9%99%90%E6%B5%81%E8%A7%84%E5%88%99"
-                                target="_blank" rel="noopener" class="model-doc-link">官方文档</a>
-                            <button type="button" class="btn-add-model" onclick="addModel('longcat')">+ 添加模型</button>
-                        </div>
-                    </div>
-                    <div class="model-rows" id="longcat-models">
-                        <div class="model-row" th:each="model, iter : ${longcat.models}">
-                            <label class="model-row-enabled">
-                                <input type="checkbox" th:name="'longcatModels[' + ${iter.index} + '].enabled'"
-                                    th:checked="${model.enabled}">
-                            </label>
-                            <div class="model-row-body">
-                                <input type="text" class="model-row-name-input" placeholder="模型名称"
-                                    th:name="'longcatModels[' + ${iter.index} + '].name'" th:value="${model.modelName}">
-                                <div class="model-row-details">
-                                    <input type="number" class="model-row-ctx" placeholder="上下文大小" min="0"
-                                        th:name="'longcatModels[' + ${iter.index} + '].contextSize'"
-                                        th:value="${model.contextSize}">
-                                    <label class="model-row-cap">
-                                        <input type="checkbox"
-                                            th:name="'longcatModels[' + ${iter.index} + '].capsTools'"
-                                            th:checked="${model.capsTools}">工具
-                                    </label>
-                                    <label class="model-row-cap">
-                                        <input type="checkbox"
-                                            th:name="'longcatModels[' + ${iter.index} + '].capsVision'"
-                                            th:checked="${model.capsVision}">视觉
-                                    </label>
-                                </div>
-                            </div>
-                            <button type="button" class="btn-remove-model"
-                                onclick="this.closest('.model-row').remove(); checkToggle('longcat')">&#x2715;</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <th:block th:replace="~{admin/fragments/provider-card :: edit-panel(
+                providerKey='mimo', displayName='MiMo', provider=${mimo},
+                apiUrlPlaceholder='https://token-plan-cn.xiaomimimo.com/',
+                docUrl='https://platform.xiaomimimo.com/docs/zh-CN/pricing',
+                apiFormatOptions=~{admin/fragments/provider-card :: mimo-format-options})}"></th:block>
 
-            <!-- ===== MiMo 编辑面板 ===== -->
-            <div class="provider-edit-panel" id="panel-mimo">
-                <div class="field-group">
-                    <label class="field-label">启用</label>
-                    <div class="slide-switch-wrap">
-                        <label class="switch">
-                            <input type="checkbox" name="mimoEnabled" id="mimoEnabled" th:checked="${mimo.enabled}">
-                            <span class="switch-slider"></span>
-                        </label>
-                        <span class="slide-switch-tooltip" id="mimo-tooltip"></span>
-                    </div>
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="mimoBaseUrl">API URL</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="mimoBaseUrl" name="mimoBaseUrl" type="url"
-                            placeholder="https://token-plan-cn.xiaomimimo.com/" th:value="${mimo.baseUrl}">
-                    </div>
-                    <span class="slide-field-hint">只需要输入前缀，比如 https://token-plan-cn.xiaomimimo.com</span>
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="mimoApiKey">API Key</label>
-                    <th:block th:replace="~{admin/fragments/form-fields :: password-field-with-eye(
-                        'mimoApiKey', 'mimoApiKey', '请输入 MiMo API Key', ${mimo.apiKey})}"></th:block>
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="mimoApiFormat">API 格式</label>
-                    <div class="slide-select-wrap">
-                        <select class="slide-select" id="mimoApiFormat" name="mimoApiFormat">
-                            <option value="openai" th:selected="${mimo.apiFormat == 'openai'}">OpenAI（推荐）</option>
-                            <option value="anthropic" th:selected="${mimo.apiFormat == 'anthropic'}">
-                                AnthropicAPI（有Bug，不推荐使用）</option>
-                        </select>
-                    </div>
-                </div>
+            <th:block th:replace="~{admin/fragments/provider-card :: edit-panel(
+                providerKey='sensenova', displayName='SenseNova', provider=${sensenova},
+                apiUrlPlaceholder='https://token.sensenova.cn',
+                docUrl='https://platform.sensenova.cn/docs',
+                apiFormatOptions=~{admin/fragments/provider-card :: sensenova-format-options})}"></th:block>
 
-                <!-- 模型列表 -->
-                <div class="model-section">
-                    <div class="model-section-header">
-                        <span class="model-section-title">模型列表</span>
-                        <div class="model-section-actions">
-                            <a href="https://platform.xiaomimimo.com/docs/zh-CN/pricing" target="_blank" rel="noopener"
-                                class="model-doc-link">官方文档</a>
-                            <button type="button" class="btn-add-model" onclick="addModel('mimo')">+ 添加模型</button>
-                        </div>
-                    </div>
-                    <div class="model-rows" id="mimo-models">
-                        <div class="model-row" th:each="model, iter : ${mimo.models}">
-                            <label class="model-row-enabled">
-                                <input type="checkbox" th:name="'mimoModels[' + ${iter.index} + '].enabled'"
-                                    th:checked="${model.enabled}">
-                            </label>
-                            <div class="model-row-body">
-                                <input type="text" class="model-row-name-input" placeholder="模型名称"
-                                    th:name="'mimoModels[' + ${iter.index} + '].name'" th:value="${model.modelName}">
-                                <div class="model-row-details">
-                                    <input type="number" class="model-row-ctx" placeholder="上下文大小" min="0"
-                                        th:name="'mimoModels[' + ${iter.index} + '].contextSize'"
-                                        th:value="${model.contextSize}">
-                                    <label class="model-row-cap">
-                                        <input type="checkbox" th:name="'mimoModels[' + ${iter.index} + '].capsTools'"
-                                            th:checked="${model.capsTools}">工具
-                                    </label>
-                                    <label class="model-row-cap">
-                                        <input type="checkbox" th:name="'mimoModels[' + ${iter.index} + '].capsVision'"
-                                            th:checked="${model.capsVision}">视觉
-                                    </label>
-                                </div>
-                            </div>
-                            <button type="button" class="btn-remove-model"
-                                onclick="this.closest('.model-row').remove(); checkToggle('mimo')">&#x2715;</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- ===== SenseNova 编辑面板 ===== -->
-            <div class="provider-edit-panel" id="panel-sensenova">
-                <div class="field-group">
-                    <label class="field-label">启用</label>
-                    <div class="slide-switch-wrap">
-                        <label class="switch">
-                            <input type="checkbox" name="sensenovaEnabled" id="sensenovaEnabled"
-                                th:checked="${sensenova.enabled}">
-                            <span class="switch-slider"></span>
-                        </label>
-                        <span class="slide-switch-tooltip" id="sensenova-tooltip"></span>
-                    </div>
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="sensenovaBaseUrl">API URL</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="sensenovaBaseUrl" name="sensenovaBaseUrl" type="url"
-                            placeholder="https://token.sensenova.cn" th:value="${sensenova.baseUrl}">
-                    </div>
-                    <span class="slide-field-hint">只需要输入前缀，比如 https://token.sensenova.cn</span>
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="sensenovaApiKey">API Key</label>
-                    <th:block th:replace="~{admin/fragments/form-fields :: password-field-with-eye(
-                        'sensenovaApiKey', 'sensenovaApiKey', '请输入 SenseNova API Key', ${sensenova.apiKey})}">
-                    </th:block>
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="sensenovaApiFormat">API 格式</label>
-                    <div class="slide-select-wrap">
-                        <select class="slide-select" id="sensenovaApiFormat" name="sensenovaApiFormat">
-                            <option value="openai" th:selected="${sensenova.apiFormat == 'openai'}">OpenAI</option>
-                            <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
-                        </select>
-                    </div>
-                </div>
-
-                <!-- 模型列表 -->
-                <div class="model-section">
-                    <div class="model-section-header">
-                        <span class="model-section-title">模型列表</span>
-                        <div class="model-section-actions">
-                            <a href="https://platform.sensenova.cn/docs" target="_blank" rel="noopener"
-                                class="model-doc-link">官方文档</a>
-                            <button type="button" class="btn-add-model" onclick="addModel('sensenova')">+ 添加模型</button>
-                        </div>
-                    </div>
-                    <div class="model-rows" id="sensenova-models">
-                        <div class="model-row" th:each="model, iter : ${sensenova.models}">
-                            <label class="model-row-enabled">
-                                <input type="checkbox" th:name="'sensenovaModels[' + ${iter.index} + '].enabled'"
-                                    th:checked="${model.enabled}">
-                            </label>
-                            <div class="model-row-body">
-                                <input type="text" class="model-row-name-input" placeholder="模型名称"
-                                    th:name="'sensenovaModels[' + ${iter.index} + '].name'"
-                                    th:value="${model.modelName}">
-                                <div class="model-row-details">
-                                    <input type="number" class="model-row-ctx" placeholder="上下文大小" min="0"
-                                        th:name="'sensenovaModels[' + ${iter.index} + '].contextSize'"
-                                        th:value="${model.contextSize}">
-                                    <label class="model-row-cap">
-                                        <input type="checkbox"
-                                            th:name="'sensenovaModels[' + ${iter.index} + '].capsTools'"
-                                            th:checked="${model.capsTools}">工具
-                                    </label>
-                                    <label class="model-row-cap">
-                                        <input type="checkbox"
-                                            th:name="'sensenovaModels[' + ${iter.index} + '].capsVision'"
-                                            th:checked="${model.capsVision}">视觉
-                                    </label>
-                                </div>
-                            </div>
-                            <button type="button" class="btn-remove-model"
-                                onclick="this.closest('.model-row').remove(); checkToggle('sensenova')">&#x2715;</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- ===== DeepSeek 编辑面板 ===== -->
-            <div class="provider-edit-panel" id="panel-deepseek">
-                <div class="field-group">
-                    <label class="field-label">启用</label>
-                    <div class="slide-switch-wrap">
-                        <label class="switch">
-                            <input type="checkbox" name="deepseekEnabled" id="deepseekEnabled"
-                                th:checked="${deepseek.enabled}">
-                            <span class="switch-slider"></span>
-                        </label>
-                        <span class="slide-switch-tooltip" id="deepseek-tooltip"></span>
-                    </div>
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="deepseekBaseUrl">API URL</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="deepseekBaseUrl" name="deepseekBaseUrl" type="url"
-                            placeholder="https://api.deepseek.com" th:value="${deepseek.baseUrl}">
-                    </div>
-                    <span class="slide-field-hint">只需要输入前缀，比如 https://api.deepseek.com</span>
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="deepseekApiKey">API Key</label>
-                    <th:block th:replace="~{admin/fragments/form-fields :: password-field-with-eye(
-                        'deepseekApiKey', 'deepseekApiKey', '请输入 DeepSeek API Key', ${deepseek.apiKey})}"></th:block>
-                </div>
-                <div class="field-group">
-                    <label class="field-label" for="deepseekApiFormat">API 格式</label>
-                    <div class="slide-select-wrap">
-                        <select class="slide-select" id="deepseekApiFormat" name="deepseekApiFormat">
-                            <option value="openai" th:selected="${deepseek.apiFormat == 'openai'}">OpenAI</option>
-                            <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
-                        </select>
-                    </div>
-                </div>
-
-                <!-- 模型列表 -->
-                <div class="model-section">
-                    <div class="model-section-header">
-                        <span class="model-section-title">模型列表</span>
-                        <div class="model-section-actions">
-                            <a href="https://api-docs.deepseek.com/zh-cn/" target="_blank" rel="noopener"
-                                class="model-doc-link">官方文档</a>
-                            <button type="button" class="btn-add-model" onclick="addModel('deepseek')">+ 添加模型</button>
-                        </div>
-                    </div>
-                    <div class="model-rows" id="deepseek-models">
-                        <div class="model-row" th:each="model, iter : ${deepseek.models}">
-                            <label class="model-row-enabled">
-                                <input type="checkbox" th:name="'deepseekModels[' + ${iter.index} + '].enabled'"
-                                    th:checked="${model.enabled}">
-                            </label>
-                            <div class="model-row-body">
-                                <input type="text" class="model-row-name-input" placeholder="模型名称"
-                                    th:name="'deepseekModels[' + ${iter.index} + '].name'"
-                                    th:value="${model.modelName}">
-                                <div class="model-row-details">
-                                    <input type="number" class="model-row-ctx" placeholder="上下文大小" min="0"
-                                        th:name="'deepseekModels[' + ${iter.index} + '].contextSize'"
-                                        th:value="${model.contextSize}">
-                                    <label class="model-row-cap">
-                                        <input type="checkbox"
-                                            th:name="'deepseekModels[' + ${iter.index} + '].capsTools'"
-                                            th:checked="${model.capsTools}">工具
-                                    </label>
-                                    <label class="model-row-cap">
-                                        <input type="checkbox"
-                                            th:name="'deepseekModels[' + ${iter.index} + '].capsVision'"
-                                            th:checked="${model.capsVision}">视觉
-                                    </label>
-                                </div>
-                            </div>
-                            <button type="button" class="btn-remove-model"
-                                onclick="this.closest('.model-row').remove(); checkToggle('deepseek')">&#x2715;</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <th:block th:replace="~{admin/fragments/provider-card :: edit-panel(
+                providerKey='deepseek', displayName='DeepSeek', provider=${deepseek},
+                apiUrlPlaceholder='https://api.deepseek.com',
+                docUrl='https://api-docs.deepseek.com/zh-cn/',
+                apiFormatOptions=~{admin/fragments/provider-card :: deepseek-format-options})}"></th:block>
 
         </div>
     </div>
@@ -427,6 +138,58 @@
         // ESC 键关闭
         document.addEventListener('keydown', function (e) {
             if (e.key === 'Escape') closeSlidePanel();
+        });
+
+        // ===== 事件委托：卡片点击打开侧滑面板 =====
+        document.addEventListener('click', function (e) {
+            var body = e.target.closest('.provider-card-body');
+            if (body) {
+                var provider = body.getAttribute('data-provider-key');
+                if (provider) openSlidePanel(provider);
+            }
+        });
+
+        // ===== 事件委托：快速启用/禁用开关 =====
+        document.addEventListener('change', function (e) {
+            if (e.target.classList.contains('provider-toggle')) {
+                var card = e.target.closest('.provider-card');
+                var provider = card ? card.getAttribute('data-provider-key') : null;
+                if (provider) {
+                    var enabled = e.target.checked;
+                    fetch('/config/api/providers/' + provider + '/toggle', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ enabled: enabled })
+                    }).then(function (r) {
+                        if (!r.ok) {
+                            document.getElementById('card-' + provider + '-enabled').checked = !enabled;
+                        }
+                    }).catch(function () {
+                        document.getElementById('card-' + provider + '-enabled').checked = !enabled;
+                    });
+                }
+            }
+        });
+
+        // ===== 事件委托：添加模型 =====
+        document.addEventListener('click', function (e) {
+            if (e.target.classList.contains('btn-add-model')) {
+                var provider = e.target.getAttribute('data-provider-key');
+                if (provider) addModel(provider);
+            }
+        });
+
+        // ===== 事件委托：删除模型 =====
+        document.addEventListener('click', function (e) {
+            if (e.target.classList.contains('btn-remove-model')) {
+                var row = e.target.closest('.model-row');
+                if (row) {
+                    var panel = row.closest('.provider-edit-panel');
+                    var provider = panel ? panel.id.replace('panel-', '') : null;
+                    row.remove();
+                    if (provider) checkToggle(provider);
+                }
+            }
         });
 
         // ===== 保存侧滑面板内容 =====
@@ -505,7 +268,7 @@
                 '<label class="model-row-cap"><input type="checkbox" name="' + provider + 'Models[' + idx + '].capsTools">工具</label>' +
                 '<label class="model-row-cap"><input type="checkbox" name="' + provider + 'Models[' + idx + '].capsVision">视觉</label>' +
                 '</div></div>' +
-                '<button type="button" class="btn-remove-model" onclick="this.closest(\'.model-row\').remove(); checkToggle(\'' + provider + '\')">&#x2715;</button>';
+                '<button type="button" class="btn-remove-model">&#x2715;</button>';
             container.appendChild(div);
             checkToggle(provider);
         }
