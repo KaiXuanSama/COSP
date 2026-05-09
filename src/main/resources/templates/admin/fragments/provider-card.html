@@ -78,17 +78,6 @@
     th:fragment="edit-panel(providerKey, displayName, provider, apiUrlPlaceholder, docUrl, apiFormatOptions)">
     <div class="provider-edit-panel" th:id="'panel-' + ${providerKey}">
         <div class="field-group">
-            <label class="field-label">启用</label>
-            <div class="slide-switch-wrap">
-                <label class="switch">
-                    <input type="checkbox" th:id="${providerKey} + 'Enabled'" th:name="${providerKey} + 'Enabled'"
-                        th:checked="${provider.enabled}">
-                    <span class="switch-slider"></span>
-                </label>
-                <span class="slide-switch-tooltip" th:id="${providerKey} + '-tooltip'"></span>
-            </div>
-        </div>
-        <div class="field-group">
             <label class="field-label" th:for="${providerKey} + 'BaseUrl'">API URL</label>
             <div class="field-input-wrap">
                 <input class="field-input" type="url" th:id="${providerKey} + 'BaseUrl'"
