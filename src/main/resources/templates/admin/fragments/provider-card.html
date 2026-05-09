@@ -124,10 +124,10 @@
                         <input type="text" class="model-row-name-input" placeholder="模型名称"
                             th:name="${providerKey} + 'Models[' + ${iter.index} + '].name'"
                             th:value="${model.modelName}">
-                        <div class="model-row-details">
-                            <input type="number" class="model-row-ctx" placeholder="上下文大小" min="0"
-                                th:name="${providerKey} + 'Models[' + ${iter.index} + '].contextSize'"
-                                th:value="${model.contextSize}">
+                        <input type="number" class="model-row-ctx" placeholder="上下文大小" min="0"
+                            th:name="${providerKey} + 'Models[' + ${iter.index} + '].contextSize'"
+                            th:value="${model.contextSize}">
+                        <div class="model-row-caps">
                             <label class="model-row-cap">
                                 <input type="checkbox"
                                     th:name="${providerKey} + 'Models[' + ${iter.index} + '].capsTools'"
