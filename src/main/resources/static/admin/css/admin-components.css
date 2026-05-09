@@ -864,6 +864,27 @@
     color: var(--accent);
 }
 
+.btn-fetch-models {
+    font-family: 'Crimson Pro', serif;
+    font-size: 13px;
+    padding: 6px 14px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--accent);
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease, opacity 0.2s ease;
+}
+
+.btn-fetch-models:hover {
+    background: var(--accent-light);
+}
+
+.btn-fetch-models:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 .model-rows {
     display: flex;
     flex-direction: column;

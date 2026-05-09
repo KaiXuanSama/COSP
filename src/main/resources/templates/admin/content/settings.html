@@ -78,25 +78,29 @@
                 providerKey='longcat', displayName='LongCat', provider=${longcat},
                 apiUrlPlaceholder='https://api.longcat.chat',
                 docUrl='https://longcat.chat/platform/docs/zh/#%E9%99%90%E6%B5%81%E8%A7%84%E5%88%99',
-                apiFormatOptions=~{admin/fragments/provider-card :: longcat-format-options})}"></th:block>
+                apiFormatOptions=~{admin/fragments/provider-card :: longcat-format-options},
+                fetchModelsSupported=false)}"></th:block>
 
             <th:block th:replace="~{admin/fragments/provider-card :: edit-panel(
                 providerKey='mimo', displayName='MiMo', provider=${mimo},
                 apiUrlPlaceholder='https://token-plan-cn.xiaomimimo.com/',
                 docUrl='https://platform.xiaomimimo.com/docs/zh-CN/pricing',
-                apiFormatOptions=~{admin/fragments/provider-card :: mimo-format-options})}"></th:block>
+                apiFormatOptions=~{admin/fragments/provider-card :: mimo-format-options},
+                fetchModelsSupported=true)}"></th:block>
 
             <th:block th:replace="~{admin/fragments/provider-card :: edit-panel(
                 providerKey='sensenova', displayName='SenseNova', provider=${sensenova},
                 apiUrlPlaceholder='https://token.sensenova.cn',
                 docUrl='https://platform.sensenova.cn/docs',
-                apiFormatOptions=~{admin/fragments/provider-card :: sensenova-format-options})}"></th:block>
+                apiFormatOptions=~{admin/fragments/provider-card :: sensenova-format-options},
+                fetchModelsSupported=true)}"></th:block>
 
             <th:block th:replace="~{admin/fragments/provider-card :: edit-panel(
                 providerKey='deepseek', displayName='DeepSeek', provider=${deepseek},
                 apiUrlPlaceholder='https://api.deepseek.com',
                 docUrl='https://api-docs.deepseek.com/zh-cn/',
-                apiFormatOptions=~{admin/fragments/provider-card :: deepseek-format-options})}"></th:block>
+                apiFormatOptions=~{admin/fragments/provider-card :: deepseek-format-options},
+                fetchModelsSupported=true)}"></th:block>
 
         </div>
     </div>
@@ -157,6 +161,61 @@
                         document.getElementById('card-' + provider + '-enabled').checked = !enabled;
                     });
                 }
+            }
+        });
+
+        // ===== 事件委托：拉取模型列表 =====
+        document.addEventListener('click', function (e) {
+            if (e.target.classList.contains('btn-fetch-models')) {
+                var provider = e.target.getAttribute('data-provider-key');
+                if (!provider) return;
+                var panel = document.getElementById('panel-' + provider);
+                if (!panel) return;
+                var baseUrlInput = panel.querySelector('#' + provider + 'BaseUrl');
+                var apiKeyInput = panel.querySelector('#' + provider + 'ApiKey');
+                var baseUrl = baseUrlInput ? baseUrlInput.value.trim() : '';
+                var apiKey = apiKeyInput ? apiKeyInput.value.trim() : '';
+                if (!baseUrl) { alert('请先填写 API URL'); return; }
+                if (!apiKey) { alert('请先填写 API Key'); return; }
+                // 规范化 baseUrl，拼接 /v1/models
+                if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
+                var modelsUrl = baseUrl + '/v1/models';
+                e.target.disabled = true;
+                e.target.textContent = '拉取中…';
+                fetch(modelsUrl, {
+                    method: 'GET',
+                    headers: { 'Authorization': 'Bearer ' + apiKey }
+                }).then(function (r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status + '：' + r.statusText);
+                    return r.json();
+                }).then(function (data) {
+                    e.target.disabled = false;
+                    e.target.textContent = '拉取';
+                    // 兼容 {data: [...]} 和直接数组两种格式
+                    var rawModels = Array.isArray(data) ? data : (data.data || []);
+                    if (rawModels.length === 0) {
+                        alert('未获取到任何模型');
+                        return;
+                    }
+                    // 清空现有模型行，只取 id 字段作为模型名称
+                    var container = document.getElementById(provider + '-models');
+                    if (!container) return;
+                    container.innerHTML = '';
+                    rawModels.forEach(function (m) {
+                        var modelName = typeof m === 'string' ? m : (m.id || m.name || m.model || '');
+                        if (!modelName) return;
+                        addModel(provider);
+                        var row = container.lastElementChild;
+                        if (!row) return;
+                        var nameInput = row.querySelector('.model-row-name-input');
+                        if (nameInput) nameInput.value = modelName;
+                    });
+                    checkToggle(provider);
+                }).catch(function (err) {
+                    e.target.disabled = false;
+                    e.target.textContent = '拉取';
+                    alert('拉取失败: ' + err.message);
+                });
             }
         });
 
