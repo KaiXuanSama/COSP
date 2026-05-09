@@ -126,6 +126,7 @@ public class AdminPageController {
         model.addAttribute("longcat", loadProvider("longcat"));
         model.addAttribute("mimo", loadProvider("mimo"));
         model.addAttribute("sensenova", loadProvider("sensenova"));
+        model.addAttribute("deepseek", loadProvider("deepseek"));
         // 读取运行配置
         model.addAttribute("fakeVersion", providerConfigRepository.findConfigValue("fake_version"));
         return "admin/pages/settings";
@@ -161,6 +162,15 @@ public class AdminPageController {
         List<Map<String, Object>> sensenovaModels = parseModels(params, "sensenova");
         providerConfigRepository.saveModels(sensenovaId, sensenovaModels);
 
+        // 解析并保存 DeepSeek 配置
+        boolean deepseekEnabled = "on".equals(params.get("deepseekEnabled"));
+        String deepseekBaseUrl = params.getOrDefault("deepseekBaseUrl", "").trim();
+        String deepseekApiKey = params.getOrDefault("deepseekApiKey", "").trim();
+        String deepseekApiFormat = params.getOrDefault("deepseekApiFormat", "openai").trim();
+        int deepseekId = providerConfigRepository.saveProvider("deepseek", deepseekEnabled, deepseekBaseUrl, deepseekApiKey, deepseekApiFormat);
+        List<Map<String, Object>> deepseekModels = parseModels(params, "deepseek");
+        providerConfigRepository.saveModels(deepseekId, deepseekModels);
+
         // 保存运行配置
         String fakeVersion = params.getOrDefault("fakeVersion", "0.6.4").trim();
         providerConfigRepository.saveConfig("fake_version", fakeVersion);
@@ -173,6 +183,7 @@ public class AdminPageController {
         model.addAttribute("longcat", loadProvider("longcat"));
         model.addAttribute("mimo", loadProvider("mimo"));
         model.addAttribute("sensenova", loadProvider("sensenova"));
+        model.addAttribute("deepseek", loadProvider("deepseek"));
         model.addAttribute("fakeVersion", providerConfigRepository.findConfigValue("fake_version"));
         model.addAttribute("saveSuccess", true);
         return "admin/pages/settings";
