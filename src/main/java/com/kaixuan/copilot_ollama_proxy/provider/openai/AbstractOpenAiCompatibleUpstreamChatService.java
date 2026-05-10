@@ -113,7 +113,6 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
         StringBuilder reasoningBuffer = new StringBuilder();
         AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
-        AtomicReference<String> finishReason = new AtomicReference<>(null);
 
         return buildWebClient().post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody).retrieve()
                 .bodyToFlux(STRING_SSE_TYPE).retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank())
@@ -124,7 +123,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                         String fallbackFinish = buildFallbackFinishChunk(chunkId.get(), model);
                         return Flux.just(fallbackContent, fallbackFinish);
                     }
-                    return Flux.just(translateChunk(chunk, contentEmitted, reasoningBuffer, chunkId, finishReason));
+                    return Flux.just(translateChunk(chunk, contentEmitted, reasoningBuffer, chunkId));
                 }).doOnNext(chunk -> log.debug("{} 翻译: {}", providerDisplayName(), chunk));
     }
 
@@ -285,11 +284,10 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
      * @param contentEmitted 是否已经输出过正文 content
      * @param reasoningBuffer 累积 reasoning_content 的缓冲区
      * @param chunkId 当前流的 chunk ID 引用
-     * @param finishReason 当前流的 finish_reason 引用
      * @return 翻译后的 chunk JSON 字符串
      */
     @SuppressWarnings("unchecked")
-    private String translateChunk(String chunkJson, AtomicBoolean contentEmitted, StringBuilder reasoningBuffer, AtomicReference<String> chunkId, AtomicReference<String> finishReason) {
+    private String translateChunk(String chunkJson, AtomicBoolean contentEmitted, StringBuilder reasoningBuffer, AtomicReference<String> chunkId) {
         try {
             Map<String, Object> chunk = objectMapper.readValue(chunkJson, Map.class);
 
@@ -307,10 +305,6 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
             // delta 为 null 说明是纯 finish_reason chunk，直接透传。
             Map<String, Object> delta = (Map<String, Object>) choices.get(0).get("delta");
             if (delta == null) {
-                Object fr = choices.get(0).get("finish_reason");
-                if (fr instanceof String reason) {
-                    finishReason.set(reason);
-                }
                 return chunkJson;
             }
 
@@ -318,11 +312,6 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
             Object contentObj = delta.get("content");
             if (contentObj instanceof String content && !content.isEmpty()) {
                 contentEmitted.set(true);
-            }
-
-            Object fr = choices.get(0).get("finish_reason");
-            if (fr instanceof String reason) {
-                finishReason.set(reason);
             }
 
             // reasoning_content 需要转成 reasoning_text 字段，
