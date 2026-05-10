@@ -114,6 +114,29 @@ public class AdminPageController {
         return ResponseEntity.ok(full);
     }
 
+    // ==================== 服务商快速启用/禁用 ====================
+
+    /**
+     * 快速切换服务商的启用状态（不修改其他配置）。
+     * 请求体：{"enabled": true/false}
+     */
+    @PostMapping("/config/api/providers/{providerKey}/toggle") @ResponseBody
+    public ResponseEntity<Map<String, Object>> toggleProvider(@PathVariable String providerKey, @RequestBody Map<String, Object> body) {
+        boolean enabled = Boolean.TRUE.equals(body.get("enabled"));
+        Map<String, Object> provider = providerConfigRepository.findByKey(providerKey);
+        if (provider == null) {
+            return ResponseEntity.notFound().build();
+        }
+        String baseUrl = (String) provider.getOrDefault("baseUrl", "");
+        String apiKey = (String) provider.getOrDefault("apiKey", "");
+        String apiFormat = (String) provider.getOrDefault("apiFormat", "openai");
+        providerConfigRepository.saveProvider(providerKey, enabled, baseUrl, apiKey, apiFormat);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("providerKey", providerKey);
+        result.put("enabled", enabled);
+        return ResponseEntity.ok(result);
+    }
+
     // ==================== 配置页 ====================
 
     @GetMapping("/config/settings")
@@ -132,88 +155,28 @@ public class AdminPageController {
         return "admin/pages/settings";
     }
 
-    @PostMapping("/config/settings")
-    public String saveSettings(Authentication authentication, Model model, @RequestParam Map<String, String> params) {
-
-        // 解析并保存 LongCat 配置
-        boolean longcatEnabled = "on".equals(params.get("longcatEnabled"));
-        String longcatBaseUrl = params.getOrDefault("longcatBaseUrl", "").trim();
-        String longcatApiKey = params.getOrDefault("longcatApiKey", "").trim();
-        String longcatApiFormat = params.getOrDefault("longcatApiFormat", "openai").trim();
-        int longcatId = providerConfigRepository.saveProvider("longcat", longcatEnabled, longcatBaseUrl, longcatApiKey, longcatApiFormat);
-        List<Map<String, Object>> longcatModels = parseModels(params, "longcat");
-        providerConfigRepository.saveModels(longcatId, longcatModels);
-
-        // 解析并保存 MiMo 配置
-        boolean mimoEnabled = "on".equals(params.get("mimoEnabled"));
-        String mimoBaseUrl = params.getOrDefault("mimoBaseUrl", "").trim();
-        String mimoApiKey = params.getOrDefault("mimoApiKey", "").trim();
-        String mimoApiFormat = params.getOrDefault("mimoApiFormat", "openai").trim();
-        int mimoId = providerConfigRepository.saveProvider("mimo", mimoEnabled, mimoBaseUrl, mimoApiKey, mimoApiFormat);
-        List<Map<String, Object>> mimoModels = parseModels(params, "mimo");
-        providerConfigRepository.saveModels(mimoId, mimoModels);
-
-        // 解析并保存 SenseNova 配置
-        boolean sensenovaEnabled = "on".equals(params.get("sensenovaEnabled"));
-        String sensenovaBaseUrl = params.getOrDefault("sensenovaBaseUrl", "").trim();
-        String sensenovaApiKey = params.getOrDefault("sensenovaApiKey", "").trim();
-        String sensenovaApiFormat = params.getOrDefault("sensenovaApiFormat", "openai").trim();
-        int sensenovaId = providerConfigRepository.saveProvider("sensenova", sensenovaEnabled, sensenovaBaseUrl, sensenovaApiKey, sensenovaApiFormat);
-        List<Map<String, Object>> sensenovaModels = parseModels(params, "sensenova");
-        providerConfigRepository.saveModels(sensenovaId, sensenovaModels);
-
-        // 解析并保存 DeepSeek 配置
-        boolean deepseekEnabled = "on".equals(params.get("deepseekEnabled"));
-        String deepseekBaseUrl = params.getOrDefault("deepseekBaseUrl", "").trim();
-        String deepseekApiKey = params.getOrDefault("deepseekApiKey", "").trim();
-        String deepseekApiFormat = params.getOrDefault("deepseekApiFormat", "openai").trim();
-        int deepseekId = providerConfigRepository.saveProvider("deepseek", deepseekEnabled, deepseekBaseUrl, deepseekApiKey, deepseekApiFormat);
-        List<Map<String, Object>> deepseekModels = parseModels(params, "deepseek");
-        providerConfigRepository.saveModels(deepseekId, deepseekModels);
-
-        // 保存运行配置
-        String fakeVersion = params.getOrDefault("fakeVersion", "0.6.4").trim();
-        providerConfigRepository.saveConfig("fake_version", fakeVersion);
-
-        // 重新加载页面
-        model.addAttribute("username", authentication.getName());
-        model.addAttribute("pageTitle", "配置");
-        model.addAttribute("pageTitleFull", "配置 · Ollama-Switch");
-        model.addAttribute("nav", "settings");
-        model.addAttribute("longcat", loadProvider("longcat"));
-        model.addAttribute("mimo", loadProvider("mimo"));
-        model.addAttribute("sensenova", loadProvider("sensenova"));
-        model.addAttribute("deepseek", loadProvider("deepseek"));
-        model.addAttribute("fakeVersion", providerConfigRepository.findConfigValue("fake_version"));
-        model.addAttribute("saveSuccess", true);
-        return "admin/pages/settings";
+    /**
+     * 仅保存伪造版本号（AJAX），不碰其他配置。
+     */
+    @PostMapping("/config/api/fake-version") @ResponseBody
+    public ResponseEntity<Map<String, Object>> saveFakeVersion(@RequestParam String fakeVersion) {
+        providerConfigRepository.saveConfig("fake_version", fakeVersion.trim());
+        return ResponseEntity.ok(Map.of("ok", true));
     }
 
     /**
-     * 从数据库加载单个服务商配置，如果不存在则返回默认空对象。
+     * 保存单个服务商的编辑面板数据（AJAX）。
+     * 只更新 baseUrl / apiKey / apiFormat / models，不修改 enabled 状态。
      */
-    private Map<String, Object> loadProvider(String providerKey) {
-        Map<String, Object> provider = providerConfigRepository.findByKey(providerKey);
-        if (provider == null) {
-            provider = new LinkedHashMap<>();
-            provider.put("providerKey", providerKey);
-            provider.put("enabled", false);
-            provider.put("baseUrl", "");
-            provider.put("apiKey", "");
-            provider.put("apiFormat", "openai");
-            provider.put("models", new ArrayList<>());
-        }
-        return provider;
-    }
-
-    /**
-     * 从请求参数中解析模型列表。
-     * 支持格式：providerModels[i].name / providerModels[i].contextSize / providerModels[i].capsTools / providerModels[i].capsVision
-     */
-    private List<Map<String, Object>> parseModels(Map<String, String> params, String provider) {
+    @PostMapping("/config/api/providers/{providerKey}/config") @ResponseBody
+    public ResponseEntity<Map<String, Object>> saveProviderConfig(@PathVariable String providerKey, @RequestParam Map<String, String> params) {
+        String baseUrl = params.getOrDefault("baseUrl", "").trim();
+        String apiKey = params.getOrDefault("apiKey", "").trim();
+        String apiFormat = params.getOrDefault("apiFormat", "openai").trim();
+        int providerId = providerConfigRepository.updateProviderConfig(providerKey, baseUrl, apiKey, apiFormat);
+        // 解析模型列表
         List<Map<String, Object>> models = new ArrayList<>();
-        String prefix = provider + "Models[";
-        // 收集所有模型索引
+        String prefix = "models[";
         java.util.Set<Integer> indices = new java.util.TreeSet<>();
         for (String key : params.keySet()) {
             if (key.startsWith(prefix) && key.contains("].")) {
@@ -226,27 +189,39 @@ public class AdminPageController {
             }
         }
         for (int i : indices) {
-            String name = params.getOrDefault(prefix + i + "].name", "").trim();
-            if (name.isEmpty())
-                continue;
-            String contextSizeStr = params.getOrDefault(prefix + i + "].contextSize", "0").trim();
-            int contextSize = 0;
-            try {
-                contextSize = Integer.parseInt(contextSizeStr);
-            } catch (NumberFormatException ignored) {
-            }
-            boolean modelEnabled = "on".equals(params.get(prefix + i + "].enabled"));
-            boolean capsTools = "on".equals(params.get(prefix + i + "].capsTools"));
-            boolean capsVision = "on".equals(params.get(prefix + i + "].capsVision"));
-            Map<String, Object> model = new LinkedHashMap<>();
-            model.put("modelName", name);
-            model.put("enabled", modelEnabled);
-            model.put("contextSize", contextSize);
-            model.put("capsTools", capsTools);
-            model.put("capsVision", capsVision);
-            models.add(model);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("modelName", params.getOrDefault(prefix + i + "].name", "").trim());
+            m.put("enabled", "on".equals(params.get(prefix + i + "].enabled")));
+            m.put("contextSize", params.getOrDefault(prefix + i + "].contextSize", "0").trim());
+            m.put("capsTools", "on".equals(params.get(prefix + i + "].capsTools")));
+            m.put("capsVision", "on".equals(params.get(prefix + i + "].capsVision")));
+            models.add(m);
         }
-        return models;
+        providerConfigRepository.saveModels(providerId, models);
+        return ResponseEntity.ok(Map.of("ok", true));
+    }
+
+    /**
+     * 从数据库加载单个服务商配置，如果不存在则返回默认空对象。
+     */
+    private Map<String, Object> loadProvider(String providerKey) {
+        Map<String, Object> provider = providerConfigRepository.findByKey(providerKey);
+        if (provider == null) {
+            provider = new LinkedHashMap<>();
+            provider.put("providerKey", providerKey);
+            provider.put("enabled", false);
+            provider.put("baseUrl", null);
+            provider.put("apiKey", "");
+            provider.put("apiFormat", "openai");
+            provider.put("models", new ArrayList<>());
+        } else {
+            // 空字符串转为 null，以便 Thymeleaf Elvis 运算符 ?: 能正确回退到默认值
+            String baseUrl = (String) provider.get("baseUrl");
+            if (baseUrl != null && baseUrl.isEmpty()) {
+                provider.put("baseUrl", null);
+            }
+        }
+        return provider;
     }
 
     // ==================== 账号修改页 ====================

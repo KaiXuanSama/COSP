@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+
+<!-- ============================================================
+     provider-card.html — 服务商卡片组件
+     参数：
+       providerKey   — 服务商标识，如 "longcat"
+       displayName   — 显示名称，如 "LongCat"
+       colorClass    — 顶条颜色类名，如 "accent" / "blue" / "success" / "warning"
+       provider      — 服务商数据 Map (enabled, models, apiFormat)
+     使用方式：
+       th:replace="~{admin/fragments/provider-card :: card(
+         providerKey='longcat', displayName='LongCat',
+         colorClass='accent', provider=${longcat})}"
+     ============================================================ -->
+
+<th:block th:fragment="card(providerKey, displayName, colorClass, provider)">
+    <div class="provider-card" th:attr="data-provider-key=${providerKey}">
+        <div class="provider-card-top" th:classappend="${colorClass}"></div>
+        <div class="provider-card-header">
+            <span class="provider-card-name" th:text="${displayName}">LongCat</span>
+            <label class="switch provider-card-switch" onclick="event.stopPropagation()">
+                <input type="checkbox" class="provider-toggle" th:id="'card-' + ${providerKey} + '-enabled'"
+                    th:checked="${provider.enabled}">
+                <span class="switch-slider"></span>
+            </label>
+        </div>
+        <div class="provider-card-body" th:attr="data-provider-key=${providerKey}">
+            <div class="provider-card-stats">
+                <span th:text="${#lists.size(provider.models)} + ' 个模型'">3 个模型</span>
+                <span th:text="${provider.apiFormat}">OpenAI</span>
+            </div>
+            <div class="provider-card-action">
+                <span class="provider-card-edit">编辑 →</span>
+            </div>
+        </div>
+    </div>
+</th:block>
+
+<!-- ===== API 格式选项片段 ===== -->
+<th:block th:fragment="longcat-format-options">
+    <option value="openai" th:selected="${longcat.apiFormat == 'openai'}">OpenAI</option>
+    <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
+</th:block>
+<th:block th:fragment="mimo-format-options">
+    <option value="openai" th:selected="${mimo.apiFormat == 'openai'}">OpenAI（推荐）</option>
+    <option value="anthropic" th:selected="${mimo.apiFormat == 'anthropic'}">AnthropicAPI（有Bug，不推荐使用）
+    </option>
+</th:block>
+<th:block th:fragment="sensenova-format-options">
+    <option value="openai" th:selected="${sensenova.apiFormat == 'openai'}">OpenAI</option>
+    <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
+</th:block>
+<th:block th:fragment="deepseek-format-options">
+    <option value="openai" th:selected="${deepseek.apiFormat == 'openai'}">OpenAI</option>
+    <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
+</th:block>
+
+<!-- ============================================================
+     provider-edit-panel — 服务商编辑面板组件（侧滑面板内使用）
+     参数：
+       providerKey   — 服务商标识，如 "longcat"
+       displayName   — 显示名称，如 "LongCat"
+       provider      — 服务商数据 Map (enabled, baseUrl, apiKey, apiFormat, models)
+       apiUrlPlaceholder — API URL 输入框 placeholder
+       docUrl        — 官方文档链接
+       apiFormatOptions — API 格式选项 HTML 片段（含 th:selected）
+     使用方式：
+       th:replace="~{admin/fragments/provider-card :: edit-panel(
+         providerKey='longcat', displayName='LongCat',
+         provider=${longcat},
+         apiUrlPlaceholder='https://api.longcat.chat',
+         docUrl='https://longcat.chat/platform/docs/zh/...',
+         apiFormatOptions=~{:: longcat-format-options})}"
+     ============================================================ -->
+
+<th:block
+    th:fragment="edit-panel(providerKey, displayName, provider, apiUrlPlaceholder, docUrl, apiFormatOptions, fetchModelsSupported)">
+    <div class="provider-edit-panel" th:id="'panel-' + ${providerKey}">
+        <div class="field-group">
+            <label class="field-label" th:for="${providerKey} + 'BaseUrl'">API URL</label>
+            <div class="field-input-wrap">
+                <input class="field-input" type="url" th:id="${providerKey} + 'BaseUrl'"
+                    th:name="${providerKey} + 'BaseUrl'" th:placeholder="${apiUrlPlaceholder}"
+                    th:value="${provider.baseUrl} ?: ${apiUrlPlaceholder}">
+            </div>
+            <span class="slide-field-hint">只需要输入前缀，如 https://api.example.com</span>
+        </div>
+        <div class="field-group">
+            <label class="field-label" th:for="${providerKey} + 'ApiKey'">API Key</label>
+            <th:block th:replace="~{admin/fragments/form-fields :: password-field-with-eye(
+                    ${providerKey} + 'ApiKey',
+                    ${providerKey} + 'ApiKey',
+                    '请输入 ' + ${displayName} + ' API Key',
+                    ${provider.apiKey})}">
+            </th:block>
+        </div>
+        <div class="field-group">
+            <label class="field-label" th:for="${providerKey} + 'ApiFormat'">API 格式</label>
+            <div class="slide-select-wrap">
+                <select class="slide-select" th:id="${providerKey} + 'ApiFormat'"
+                    th:name="${providerKey} + 'ApiFormat'">
+                    <th:block th:replace="${apiFormatOptions}"></th:block>
+                </select>
+            </div>
+        </div>
+
+        <!-- 模型列表 -->
+        <div class="model-section">
+            <div class="model-section-header">
+                <span class="model-section-title">模型列表</span>
+                <div class="model-section-actions">
+                    <a href="javascript:void(0)" th:data-doc-url="${docUrl}"
+                        class="model-doc-link doc-link-inline">官方文档</a>
+                    <button type="button" class="btn-fetch-models" th:if="${fetchModelsSupported}"
+                        th:attr="data-provider-key=${providerKey}">
+                        拉取
+                    </button>
+                    <button type="button" class="btn-add-model" th:attr="data-provider-key=${providerKey}">+
+                        添加模型</button>
+                </div>
+            </div>
+            <div class="model-rows" th:id="${providerKey} + '-models'">
+                <div class="model-row" th:each="model, iter : ${provider.models}">
+                    <label class="model-row-enabled">
+                        <input type="checkbox" th:name="${providerKey} + 'Models[' + ${iter.index} + '].enabled'"
+                            th:checked="${model.enabled}">
+                    </label>
+                    <div class="model-row-body">
+                        <input type="text" class="model-row-name-input" placeholder="模型名称"
+                            th:name="${providerKey} + 'Models[' + ${iter.index} + '].name'"
+                            th:value="${model.modelName}">
+                        <div class="model-row-ctx-wrap">
+                            <input type="text" class="model-row-ctx" placeholder="上下文大小"
+                                th:name="${providerKey} + 'Models[' + ${iter.index} + '].contextSize'"
+                                th:value="${model.contextSize}" inputmode="numeric">
+                            <button type="button" class="model-row-ctx-btn" tabindex="-1"
+                                th:attr="data-provider=${providerKey},data-idx=${iter.index}">
+                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                                    <path d="M3 4L5 6L7 4" stroke="currentColor" stroke-width="1.2"
+                                        stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                            </button>
+                            <div class="model-row-ctx-menu">
+                                <button type="button" data-value="1048576">1M</button>
+                                <button type="button" data-value="524288">512K</button>
+                                <button type="button" data-value="262144">256K</button>
+                                <button type="button" data-value="131072">128K</button>
+                                <button type="button" data-value="65536">64K</button>
+                            </div>
+                        </div>
+                        <div class="model-row-caps">
+                            <label class="model-row-cap">
+                                <input type="checkbox"
+                                    th:name="${providerKey} + 'Models[' + ${iter.index} + '].capsTools'"
+                                    th:checked="${model.capsTools}">工具
+                            </label>
+                            <label class="model-row-cap">
+                                <input type="checkbox"
+                                    th:name="${providerKey} + 'Models[' + ${iter.index} + '].capsVision'"
+                                    th:checked="${model.capsVision}">视觉
+                            </label>
+                        </div>
+                    </div>
+                    <button type="button" class="btn-remove-model">&#x2715;</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</th:block>
+
+</html>

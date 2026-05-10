@@ -7,738 +7,643 @@
      数据模型：
        - longcat: Map (providerKey, enabled, baseUrl, apiKey, apiFormat, models)
        - mimo:    Map (同上)
+       - sensenova: Map (同上)
+       - deepseek: Map (同上)
        - models 中每项: Map (modelName, enabled, contextSize, capsTools, capsVision)
      ============================================================ -->
 
 <main th:fragment="settings" class="content">
-    <!-- 消息提示（保存成功/失败时显示） -->
-    <div class="message success" th:if="${saveSuccess}">
-        <th:block th:replace="~{admin/fragments/icons :: icon-success}"></th:block>
-        <span>配置已保存。</span>
-    </div>
-    <div class="message error" th:if="${saveError}">
-        <th:block th:replace="~{admin/fragments/icons :: icon-error}"></th:block>
-        <span th:text="${saveError}">保存失败，请检查输入。</span>
-    </div>
 
-    <!-- 代理配置表单 -->
-    <form class="settings-form" th:action="@{/config/settings}" method="post">
-
-        <!-- 运行配置 -->
-        <div class="card">
-            <div class="card-title">运行配置</div>
-            <div class="card-body">
-                <div class="field-group">
-                    <label class="field-label" for="fakeVersion">伪造版本号</label>
-                    <div class="field-input-wrap">
-                        <input class="field-input" id="fakeVersion" name="fakeVersion" type="text" placeholder="0.6.4"
-                            th:value="${fakeVersion}">
-                    </div>
+    <!-- 运行配置 -->
+    <div class="card">
+        <div class="card-title">运行配置（修改后按回车保存）</div>
+        <div class="card-body">
+            <div class="field-group">
+                <label class="field-label" for="fakeVersion">伪造版本号</label>
+                <div class="field-input-wrap">
+                    <input class="field-input" id="fakeVersion" name="fakeVersion" type="text" placeholder="0.6.4"
+                        th:value="${fakeVersion}">
                 </div>
             </div>
         </div>
+    </div>
 
-        <!-- 服务商配置 — 折叠面板 -->
-        <div class="card">
-            <div class="card-title">服务商配置</div>
-            <div class="card-body" style="padding:0">
+    <!-- 服务商配置 — 卡片网格 -->
+    <div class="card">
+        <div class="card-title">服务商配置</div>
+        <div class="card-body">
+            <div class="provider-grid">
 
-                <!-- LongCat 折叠项 -->
-                <div class="accordion">
-                    <div class="accordion-header"
-                        onclick="this.nextElementSibling.classList.toggle('open');this.classList.toggle('open')">
-                        <span class="accordion-title">LongCat</span>
-                        <span class="accordion-arrow">&#x25B8;</span>
-                    </div>
-                    <div class="accordion-body">
-                        <div class="accordion-inner">
-                            <div class="field-group">
-                                <label class="field-label">启用</label>
-                                <div class="switch-wrap">
-                                    <label class="switch">
-                                        <input type="checkbox" name="longcatEnabled" th:checked="${longcat.enabled}">
-                                        <span class="switch-slider"></span>
-                                    </label>
-                                    <span class="switch-tooltip" id="longcat-tooltip"></span>
-                                </div>
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label field-label--inline" for="longcatBaseUrl">API URL</label>
-                                <span class="field-hint field-hint--inline">只需要输入前缀，比如 https://api.longcat.chat</span>
-                                <div class="field-input-wrap">
-                                    <input class="field-input" id="longcatBaseUrl" name="longcatBaseUrl" type="url"
-                                        placeholder="https://api.longcat.chat" th:value="${longcat.baseUrl}">
-                                </div>
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label" for="longcatApiKey">API Key</label>
-                                <th:block th:replace="~{admin/fragments/form-fields :: password-field-with-eye(
-                                    'longcatApiKey', 'longcatApiKey', '请输入 LongCat API Key', ${longcat.apiKey})}">
-                                </th:block>
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label" for="longcatApiFormat">API 格式</label>
-                                <div class="field-input-wrap field-input-wrap--select">
-                                    <select class="field-input field-input--select" id="longcatApiFormat"
-                                        name="longcatApiFormat">
-                                        <option value="openai" th:selected="${longcat.apiFormat == 'openai'}">OpenAI
-                                        </option>
-                                        <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
-                                    </select>
-                                </div>
-                            </div>
+                <th:block th:replace="~{admin/fragments/provider-card :: card(
+                    providerKey='longcat', displayName='LongCat',
+                    colorClass='accent', provider=${longcat})}"></th:block>
 
-                            <!-- 模型列表 -->
-                            <div class="model-list" id="longcat-models">
-                                <div class="model-list-header">
-                                    <span class="model-list-title">模型列表</span>
-                                    <span class="model-hint">1M = 1024K；1K = 1024，请输入具体数值</span>
-                                    <div class="model-list-actions">
-                                        <a href="https://longcat.chat/platform/docs/zh/#%E9%99%90%E6%B5%81%E8%A7%84%E5%88%99"
-                                            target="_blank" rel="noopener" class="model-doc-link">官方文档</a>
-                                        <button type="button" class="btn-add-model" onclick="addModel('longcat')">+
-                                            添加模型</button>
-                                    </div>
-                                </div>
-                                <div class="model-list-items">
-                                    <div class="model-item" th:each="model, iter : ${longcat.models}">
-                                        <label class="model-enabled"><input type="checkbox"
-                                                th:name="'longcatModels[' + ${iter.index} + '].enabled'"
-                                                th:checked="${model.enabled}"></label>
-                                        <input type="text" placeholder="模型名称"
-                                            th:name="'longcatModels[' + ${iter.index} + '].name'"
-                                            th:value="${model.modelName}">
-                                        <input type="number" placeholder="上下文大小" min="0"
-                                            th:name="'longcatModels[' + ${iter.index} + '].contextSize'"
-                                            th:value="${model.contextSize}">
-                                        <div class="model-caps">
-                                            <label class="model-cap"><input type="checkbox"
-                                                    th:name="'longcatModels[' + ${iter.index} + '].capsTools'"
-                                                    th:checked="${model.capsTools}">工具</label>
-                                            <label class="model-cap"><input type="checkbox"
-                                                    th:name="'longcatModels[' + ${iter.index} + '].capsVision'"
-                                                    th:checked="${model.capsVision}">视觉</label>
-                                        </div>
-                                        <button type="button" class="btn-remove-model"
-                                            onclick="this.parentElement.remove(); checkToggle('longcat')">&#x2715;</button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                <th:block th:replace="~{admin/fragments/provider-card :: card(
+                    providerKey='mimo', displayName='MiMo',
+                    colorClass='blue', provider=${mimo})}"></th:block>
 
-                <!-- MiMo 折叠项 -->
-                <div class="accordion">
-                    <div class="accordion-header"
-                        onclick="this.nextElementSibling.classList.toggle('open');this.classList.toggle('open')">
-                        <span class="accordion-title">MiMo</span>
-                        <span class="accordion-arrow">&#x25B8;</span>
-                    </div>
-                    <div class="accordion-body">
-                        <div class="accordion-inner">
-                            <div class="field-group">
-                                <label class="field-label">启用</label>
-                                <div class="switch-wrap">
-                                    <label class="switch">
-                                        <input type="checkbox" name="mimoEnabled" th:checked="${mimo.enabled}">
-                                        <span class="switch-slider"></span>
-                                    </label>
-                                    <span class="switch-tooltip" id="mimo-tooltip"></span>
-                                </div>
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label field-label--inline" for="mimoBaseUrl">API URL</label>
-                                <span class="field-hint field-hint--inline">只需要输入前缀，比如
-                                    https://token-plan-cn.xiaomimimo.com</span>
-                                <div class="field-input-wrap">
-                                    <input class="field-input" id="mimoBaseUrl" name="mimoBaseUrl" type="url"
-                                        placeholder="https://token-plan-cn.xiaomimimo.com/" th:value="${mimo.baseUrl}">
-                                </div>
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label" for="mimoApiKey">API Key</label>
-                                <th:block th:replace="~{admin/fragments/form-fields :: password-field-with-eye(
-                                    'mimoApiKey', 'mimoApiKey', '请输入 MiMo API Key', ${mimo.apiKey})}"></th:block>
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label" for="mimoApiFormat">API 格式</label>
-                                <div class="field-input-wrap field-input-wrap--select">
-                                    <select class="field-input field-input--select" id="mimoApiFormat"
-                                        name="mimoApiFormat">
-                                        <option value="openai" th:selected="${mimo.apiFormat == 'openai'}">OpenAI（推荐）
-                                        </option>
-                                        <option value="anthropic" th:selected="${mimo.apiFormat == 'anthropic'}">
-                                            AnthropicAPI（有Bug，不推荐使用）</option>
-                                    </select>
-                                </div>
-                            </div>
+                <th:block th:replace="~{admin/fragments/provider-card :: card(
+                    providerKey='sensenova', displayName='SenseNova',
+                    colorClass='success', provider=${sensenova})}"></th:block>
 
-                            <!-- 模型列表 -->
-                            <div class="model-list" id="mimo-models">
-                                <div class="model-list-header">
-                                    <span class="model-list-title">模型列表</span>
-                                    <span class="model-hint">1M = 1024K；1K = 1024，请输入具体数值</span>
-                                    <div class="model-list-actions">
-                                        <a href="https://platform.xiaomimimo.com/docs/zh-CN/pricing" target="_blank"
-                                            rel="noopener" class="model-doc-link">官方文档</a>
-                                        <button type="button" class="btn-add-model" onclick="addModel('mimo')">+
-                                            添加模型</button>
-                                    </div>
-                                </div>
-                                <div class="model-list-items">
-                                    <div class="model-item" th:each="model, iter : ${mimo.models}">
-                                        <label class="model-enabled"><input type="checkbox"
-                                                th:name="'mimoModels[' + ${iter.index} + '].enabled'"
-                                                th:checked="${model.enabled}"></label>
-                                        <input type="text" placeholder="模型名称"
-                                            th:name="'mimoModels[' + ${iter.index} + '].name'"
-                                            th:value="${model.modelName}">
-                                        <input type="number" placeholder="上下文大小" min="0"
-                                            th:name="'mimoModels[' + ${iter.index} + '].contextSize'"
-                                            th:value="${model.contextSize}">
-                                        <div class="model-caps">
-                                            <label class="model-cap"><input type="checkbox"
-                                                    th:name="'mimoModels[' + ${iter.index} + '].capsTools'"
-                                                    th:checked="${model.capsTools}">工具</label>
-                                            <label class="model-cap"><input type="checkbox"
-                                                    th:name="'mimoModels[' + ${iter.index} + '].capsVision'"
-                                                    th:checked="${model.capsVision}">视觉</label>
-                                        </div>
-                                        <button type="button" class="btn-remove-model"
-                                            onclick="this.parentElement.remove(); checkToggle('mimo')">&#x2715;</button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- SenseNova 折叠项 -->
-                <div class="accordion">
-                    <div class="accordion-header"
-                        onclick="this.nextElementSibling.classList.toggle('open');this.classList.toggle('open')">
-                        <span class="accordion-title">SenseNova</span>
-                        <span class="accordion-arrow">&#x25B8;</span>
-                    </div>
-                    <div class="accordion-body">
-                        <div class="accordion-inner">
-                            <div class="field-group">
-                                <label class="field-label">启用</label>
-                                <div class="switch-wrap">
-                                    <label class="switch">
-                                        <input type="checkbox" name="sensenovaEnabled"
-                                            th:checked="${sensenova.enabled}">
-                                        <span class="switch-slider"></span>
-                                    </label>
-                                    <span class="switch-tooltip" id="sensenova-tooltip"></span>
-                                </div>
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label field-label--inline" for="sensenovaBaseUrl">API URL</label>
-                                <span class="field-hint field-hint--inline">只需要输入前缀，比如 https://token.sensenova.cn</span>
-                                <div class="field-input-wrap">
-                                    <input class="field-input" id="sensenovaBaseUrl" name="sensenovaBaseUrl" type="url"
-                                        placeholder="https://token.sensenova.cn" th:value="${sensenova.baseUrl}">
-                                </div>
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label" for="sensenovaApiKey">API Key</label>
-                                <th:block
-                                    th:replace="~{admin/fragments/form-fields :: password-field-with-eye(
-                                    'sensenovaApiKey', 'sensenovaApiKey', '请输入 SenseNova API Key', ${sensenova.apiKey})}">
-                                </th:block>
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label" for="sensenovaApiFormat">API 格式</label>
-                                <div class="field-input-wrap field-input-wrap--select">
-                                    <select class="field-input field-input--select" id="sensenovaApiFormat"
-                                        name="sensenovaApiFormat">
-                                        <option value="openai" th:selected="${sensenova.apiFormat == 'openai'}">OpenAI
-                                        </option>
-                                        <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <!-- 模型列表 -->
-                            <div class="model-list" id="sensenova-models">
-                                <div class="model-list-header">
-                                    <span class="model-list-title">模型列表</span>
-                                    <span class="model-hint">1M = 1024K；1K = 1024，请输入具体数值</span>
-                                    <div class="model-list-actions">
-                                        <a href="https://platform.sensenova.cn/docs" target="_blank" rel="noopener"
-                                            class="model-doc-link">官方文档</a>
-                                        <button type="button" class="btn-add-model" onclick="addModel('sensenova')">+
-                                            添加模型</button>
-                                    </div>
-                                </div>
-                                <div class="model-list-items">
-                                    <div class="model-item" th:each="model, iter : ${sensenova.models}">
-                                        <label class="model-enabled"><input type="checkbox"
-                                                th:name="'sensenovaModels[' + ${iter.index} + '].enabled'"
-                                                th:checked="${model.enabled}"></label>
-                                        <input type="text" placeholder="模型名称"
-                                            th:name="'sensenovaModels[' + ${iter.index} + '].name'"
-                                            th:value="${model.modelName}">
-                                        <input type="number" placeholder="上下文大小" min="0"
-                                            th:name="'sensenovaModels[' + ${iter.index} + '].contextSize'"
-                                            th:value="${model.contextSize}">
-                                        <div class="model-caps">
-                                            <label class="model-cap"><input type="checkbox"
-                                                    th:name="'sensenovaModels[' + ${iter.index} + '].capsTools'"
-                                                    th:checked="${model.capsTools}">工具</label>
-                                            <label class="model-cap"><input type="checkbox"
-                                                    th:name="'sensenovaModels[' + ${iter.index} + '].capsVision'"
-                                                    th:checked="${model.capsVision}">视觉</label>
-                                        </div>
-                                        <button type="button" class="btn-remove-model"
-                                            onclick="this.parentElement.remove(); checkToggle('sensenova')">&#x2715;</button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- DeepSeek 折叠项 -->
-                <div class="accordion">
-                    <div class="accordion-header"
-                        onclick="this.nextElementSibling.classList.toggle('open');this.classList.toggle('open')">
-                        <span class="accordion-title">DeepSeek</span>
-                        <span class="accordion-arrow">&#x25B8;</span>
-                    </div>
-                    <div class="accordion-body">
-                        <div class="accordion-inner">
-                            <div class="field-group">
-                                <label class="field-label">启用</label>
-                                <div class="switch-wrap">
-                                    <label class="switch">
-                                        <input type="checkbox" name="deepseekEnabled" th:checked="${deepseek.enabled}">
-                                        <span class="switch-slider"></span>
-                                    </label>
-                                    <span class="switch-tooltip" id="deepseek-tooltip"></span>
-                                </div>
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label field-label--inline" for="deepseekBaseUrl">API URL</label>
-                                <span class="field-hint field-hint--inline">只需要输入前缀，比如 https://api.deepseek.com</span>
-                                <div class="field-input-wrap">
-                                    <input class="field-input" id="deepseekBaseUrl" name="deepseekBaseUrl" type="url"
-                                        placeholder="https://api.deepseek.com" th:value="${deepseek.baseUrl}">
-                                </div>
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label" for="deepseekApiKey">API Key</label>
-                                <th:block th:replace="~{admin/fragments/form-fields :: password-field-with-eye(
-                                    'deepseekApiKey', 'deepseekApiKey', '请输入 DeepSeek API Key', ${deepseek.apiKey})}">
-                                </th:block>
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label" for="deepseekApiFormat">API 格式</label>
-                                <div class="field-input-wrap field-input-wrap--select">
-                                    <select class="field-input field-input--select" id="deepseekApiFormat"
-                                        name="deepseekApiFormat">
-                                        <option value="openai" th:selected="${deepseek.apiFormat == 'openai'}">OpenAI
-                                        </option>
-                                        <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <!-- 模型列表 -->
-                            <div class="model-list" id="deepseek-models">
-                                <div class="model-list-header">
-                                    <span class="model-list-title">模型列表</span>
-                                    <span class="model-hint">1M = 1024K；1K = 1024，请输入具体数值</span>
-                                    <div class="model-list-actions">
-                                        <a href="https://api-docs.deepseek.com/zh-cn/" target="_blank" rel="noopener"
-                                            class="model-doc-link">官方文档</a>
-                                        <button type="button" class="btn-add-model" onclick="addModel('deepseek')">+
-                                            添加模型</button>
-                                    </div>
-                                </div>
-                                <div class="model-list-items">
-                                    <div class="model-item" th:each="model, iter : ${deepseek.models}">
-                                        <label class="model-enabled"><input type="checkbox"
-                                                th:name="'deepseekModels[' + ${iter.index} + '].enabled'"
-                                                th:checked="${model.enabled}"></label>
-                                        <input type="text" placeholder="模型名称"
-                                            th:name="'deepseekModels[' + ${iter.index} + '].name'"
-                                            th:value="${model.modelName}">
-                                        <input type="number" placeholder="上下文大小" min="0"
-                                            th:name="'deepseekModels[' + ${iter.index} + '].contextSize'"
-                                            th:value="${model.contextSize}">
-                                        <div class="model-caps">
-                                            <label class="model-cap"><input type="checkbox"
-                                                    th:name="'deepseekModels[' + ${iter.index} + '].capsTools'"
-                                                    th:checked="${model.capsTools}">工具</label>
-                                            <label class="model-cap"><input type="checkbox"
-                                                    th:name="'deepseekModels[' + ${iter.index} + '].capsVision'"
-                                                    th:checked="${model.capsVision}">视觉</label>
-                                        </div>
-                                        <button type="button" class="btn-remove-model"
-                                            onclick="this.parentElement.remove(); checkToggle('deepseek')">&#x2715;</button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                <th:block th:replace="~{admin/fragments/provider-card :: card(
+                    providerKey='deepseek', displayName='DeepSeek',
+                    colorClass='warning', provider=${deepseek})}"></th:block>
 
             </div>
         </div>
+    </div>
 
-        <!-- 提交按钮 -->
-        <div class="form-actions">
-            <button class="submit-btn" type="submit">
-                <span>保存配置</span>
+    <!-- 侧滑面板遮罩层 -->
+    <div class="slide-panel-overlay" id="slidePanelOverlay" onclick="closeSlidePanel()"></div>
+
+    <!-- 侧滑面板 -->
+    <div class="slide-panel" id="slidePanel">
+        <div class="slide-panel-header">
+            <button class="slide-panel-back" onclick="closeSlidePanel()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <polyline points="15 18 9 12 15 6"></polyline>
+                </svg>
+                返回
+            </button>
+            <span class="slide-panel-title" id="slidePanelTitle">LongCat</span>
+            <button class="submit-btn slide-panel-save" type="button" onclick="saveSlidePanel()">
+                <span>保存</span>
             </button>
         </div>
-    </form>
+        <div class="slide-panel-body">
 
-    <style>
-        .accordion {
-            border-bottom: 1px solid var(--border);
-        }
+            <th:block th:replace="~{admin/fragments/provider-card :: edit-panel(
+                providerKey='longcat', displayName='LongCat', provider=${longcat},
+                apiUrlPlaceholder='https://api.longcat.chat',
+                docUrl='https://longcat.chat/platform/docs/zh/#%E9%99%90%E6%B5%81%E8%A7%84%E5%88%99',
+                apiFormatOptions=~{admin/fragments/provider-card :: longcat-format-options},
+                fetchModelsSupported=false)}"></th:block>
 
-        .accordion:last-child {
-            border-bottom: none;
-        }
+            <th:block th:replace="~{admin/fragments/provider-card :: edit-panel(
+                providerKey='mimo', displayName='MiMo', provider=${mimo},
+                apiUrlPlaceholder='https://token-plan-cn.xiaomimimo.com/',
+                docUrl='https://platform.xiaomimimo.com/docs/zh-CN/pricing',
+                apiFormatOptions=~{admin/fragments/provider-card :: mimo-format-options},
+                fetchModelsSupported=true)}"></th:block>
 
-        .accordion-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 14px 24px;
-            cursor: pointer;
-            user-select: none;
-            transition: background 0.15s;
-        }
+            <th:block th:replace="~{admin/fragments/provider-card :: edit-panel(
+                providerKey='sensenova', displayName='SenseNova', provider=${sensenova},
+                apiUrlPlaceholder='https://token.sensenova.cn',
+                docUrl='https://platform.sensenova.cn/docs',
+                apiFormatOptions=~{admin/fragments/provider-card :: sensenova-format-options},
+                fetchModelsSupported=true)}"></th:block>
 
-        .accordion-header:hover {
-            background: var(--surface-hover, #f8f9fa);
-        }
+            <th:block th:replace="~{admin/fragments/provider-card :: edit-panel(
+                providerKey='deepseek', displayName='DeepSeek', provider=${deepseek},
+                apiUrlPlaceholder='https://api.deepseek.com',
+                docUrl='https://api-docs.deepseek.com/zh-cn/',
+                apiFormatOptions=~{admin/fragments/provider-card :: deepseek-format-options},
+                fetchModelsSupported=true)}"></th:block>
 
-        .accordion-title {
-            font-weight: 500;
-            font-size: 14px;
-        }
+        </div>
+    </div>
 
-        .accordion-arrow {
-            font-size: 12px;
-            transition: transform 0.2s;
-            color: var(--text-muted);
-        }
-
-        .accordion-header.open .accordion-arrow {
-            transform: rotate(90deg);
-        }
-
-        .accordion-body {
-            max-height: 0;
-            overflow: hidden;
-            transition: max-height 0.3s ease, padding 0.3s ease;
-            padding: 0 24px;
-        }
-
-        .accordion-body.open {
-            max-height: 999px;
-            padding: 4px 24px 20px;
-        }
-
-        .accordion-inner .field-group {
-            margin-bottom: 16px;
-        }
-
-        .accordion-inner .field-group:last-child {
-            margin-bottom: 0;
-        }
-
-        .switch {
-            position: relative;
-            display: inline-block;
-            width: 40px;
-            height: 22px;
-        }
-
-        .switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-
-        .switch-slider {
-            position: absolute;
-            inset: 0;
-            background: var(--border);
-            border-radius: 22px;
-            cursor: pointer;
-            transition: 0.2s;
-        }
-
-        .switch-slider::before {
-            content: '';
-            position: absolute;
-            width: 16px;
-            height: 16px;
-            left: 3px;
-            bottom: 3px;
-            background: #fff;
-            border-radius: 50%;
-            transition: 0.2s;
-        }
-
-        .switch input:checked+.switch-slider {
-            background: var(--accent, #4f46e5);
-        }
-
-        .switch input:disabled+.switch-slider {
-            background: #ddd;
-            cursor: not-allowed;
-        }
-
-        .switch input:checked+.switch-slider::before {
-            transform: translateX(18px);
-        }
-
-        .model-list {
-            margin-top: 20px;
-            padding: 16px;
-            background: var(--bg, #f8f9fa);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-        }
-
-        .model-list-header {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 12px;
-            flex-wrap: wrap;
-        }
-
-        .model-list-title {
-            font-weight: 500;
-            font-size: 13px;
-            color: var(--text-muted);
-        }
-
-        .model-list-actions {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-left: auto;
-        }
-
-        .model-doc-link {
-            font-size: 12px;
-            color: #2563eb;
-            text-decoration: none;
-        }
-
-        .model-doc-link:hover {
-            text-decoration: underline;
-        }
-
-        .btn-add-model {
-            font-size: 12px;
-            padding: 4px 12px;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            background: var(--surface);
-            cursor: pointer;
-            color: var(--text);
-            transition: background 0.15s;
-        }
-
-        .btn-add-model:hover {
-            background: var(--surface-hover, #f0f0f0);
-        }
-
-        .model-list-items {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-
-        .model-item {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 10px 12px;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            background: var(--surface);
-        }
-
-        .model-enabled {
-            display: flex;
-            align-items: center;
-            flex-shrink: 0;
-            cursor: pointer;
-            user-select: none;
-        }
-
-        .model-enabled input {
-            accent-color: var(--accent, #4f46e5);
-            width: 16px;
-            height: 16px;
-        }
-
-        .model-item input[type="text"],
-        .model-item input[type="number"] {
-            flex: 1;
-            padding: 6px 10px;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            font-size: 13px;
-            background: var(--bg, #fff);
-            color: var(--text);
-        }
-
-        .model-item input::placeholder {
-            color: var(--text-muted);
-        }
-
-        .model-caps {
-            display: flex;
-            gap: 8px;
-            flex-shrink: 0;
-        }
-
-        .model-cap {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            font-size: 12px;
-            color: var(--text-muted);
-            cursor: pointer;
-            user-select: none;
-        }
-
-        .model-cap input {
-            accent-color: var(--accent, #4f46e5);
-        }
-
-        .btn-remove-model {
-            flex-shrink: 0;
-            width: 24px;
-            height: 24px;
-            border: none;
-            background: none;
-            cursor: pointer;
-            font-size: 16px;
-            color: var(--text-muted);
-            border-radius: 4px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .btn-remove-model:hover {
-            background: #fee;
-            color: #e53;
-        }
-
-        select option:disabled {
-            color: #aaa;
-        }
-
-        .switch-wrap {
-            position: relative;
-            display: inline-flex;
-            align-items: center;
-        }
-
-        .switch-tooltip {
-            display: none;
-            margin-left: 10px;
-            font-size: 12px;
-            color: #e53;
-            white-space: nowrap;
-        }
-
-        .switch-tooltip:not(:empty) {
-            display: inline;
-        }
-
-        /* ── 字段提示文本 ── */
-        .field-hint {
-            display: block;
-            font-size: 11px;
-            color: var(--text-muted);
-            margin: -4px 0 8px;
-            font-style: italic;
-        }
-
-        .field-label--inline {
-            display: inline-block;
-            margin-bottom: 0;
-            margin-right: 8px;
-        }
-
-        .field-hint--inline {
-            display: inline;
-            font-size: 11px;
-            color: var(--text-muted);
-            font-style: italic;
-        }
-
-        /* ── 模型列表提示 ── */
-        .model-hint {
-            font-size: 11px;
-            color: var(--text-muted);
-            font-style: italic;
-            white-space: nowrap;
-            flex-shrink: 0;
-        }
-    </style>
+    <!-- ===== 悬浮文档窗口 ===== -->
+    <div class="doc-float-overlay" id="docFloatOverlay"></div>
+    <div class="doc-float-window" id="docFloatWindow">
+        <div class="doc-float-header" id="docFloatHeader">
+            <span class="doc-float-title" id="docFloatTitle">官方文档</span>
+            <div class="doc-float-header-actions">
+                <a class="doc-float-newtab" id="docFloatNewtab" href="#" target="_blank" rel="noopener" title="在新标签页打开">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                        <polyline points="15 3 21 3 21 9"></polyline>
+                        <line x1="10" y1="14" x2="21" y2="3"></line>
+                    </svg>
+                </a>
+                <button class="doc-float-close" id="docFloatClose" title="关闭">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+        </div>
+        <div class="doc-float-body">
+            <iframe class="doc-float-iframe" id="docFloatIframe" src="" frameborder="0"></iframe>
+        </div>
+        <div class="doc-float-resize-handle" id="docFloatResize"></div>
+    </div>
 
     <script>
+        // ===== 侧滑面板控制 =====
+        var currentProvider = null;
+
+        function openSlidePanel(provider) {
+            currentProvider = provider;
+            document.getElementById('slidePanel').setAttribute('data-current-provider', provider);
+            var names = { longcat: 'LongCat', mimo: 'MiMo', sensenova: 'SenseNova', deepseek: 'DeepSeek' };
+            document.getElementById('slidePanelTitle').textContent = names[provider] + ' · 编辑';
+            document.querySelectorAll('.provider-edit-panel').forEach(function (el) { el.classList.remove('active'); });
+            document.getElementById('panel-' + provider).classList.add('active');
+            document.getElementById('slidePanel').classList.add('open');
+            document.getElementById('slidePanelOverlay').classList.add('visible');
+            document.body.style.overflow = 'hidden';
+            checkToggle(provider);
+        }
+
+        function closeSlidePanel() {
+            document.getElementById('slidePanel').classList.remove('open');
+            document.getElementById('slidePanelOverlay').classList.remove('visible');
+            document.body.style.overflow = '';
+        }
+
+        // ESC 键关闭
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') {
+                closeSlidePanel();
+                closeDocFloat();
+            }
+        });
+
+        // ===== 悬浮文档窗口 =====
+        (function () {
+            var floatWin = document.getElementById('docFloatWindow');
+            var floatOverlay = document.getElementById('docFloatOverlay');
+            var floatIframe = document.getElementById('docFloatIframe');
+            var floatTitle = document.getElementById('docFloatTitle');
+            var floatNewtab = document.getElementById('docFloatNewtab');
+            var floatClose = document.getElementById('docFloatClose');
+            var floatHeader = document.getElementById('docFloatHeader');
+            var floatResize = document.getElementById('docFloatResize');
+            var currentDocUrl = '';
+
+            // 打开悬浮窗
+            window.openDocFloat = function (url, title) {
+                if (!url) return;
+                currentDocUrl = url;
+                floatIframe.src = url;
+                floatTitle.textContent = title || '官方文档';
+                floatNewtab.href = url;
+                floatWin.classList.add('open');
+                // 仅在触摸设备（移动端）显示遮罩
+                if (isTouchDevice) {
+                    floatOverlay.classList.add('visible');
+                }
+            };
+
+            // 关闭悬浮窗
+            window.closeDocFloat = function () {
+                floatWin.classList.remove('open');
+                floatOverlay.classList.remove('visible');
+                floatIframe.src = '';
+                currentDocUrl = '';
+            };
+
+            // 关闭按钮
+            floatClose.addEventListener('click', closeDocFloat);
+            // 遮罩层点击关闭（仅移动端有效，拖拽/调整大小时不触发）
+            floatOverlay.addEventListener('click', function () {
+                if (!dragging && !resizing) closeDocFloat();
+            });
+
+            // 检测是否为触摸设备
+            var isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
+
+            // 事件委托：点击 .doc-link-inline 打开悬浮窗
+            document.addEventListener('click', function (e) {
+                var link = e.target.closest('.doc-link-inline');
+                if (link) {
+                    e.preventDefault();
+                    var url = link.getAttribute('data-doc-url');
+                    var text = link.textContent.trim();
+                    openDocFloat(url, text);
+                }
+            });
+
+            // --- 拖拽 ---
+            var dragging = false;
+            var dragOffsetX = 0;
+            var dragOffsetY = 0;
+
+            floatHeader.addEventListener('mousedown', function (e) {
+                if (e.target.closest('.doc-float-close') || e.target.closest('.doc-float-newtab')) return;
+                dragging = true;
+                // 清除初始的 translateX(-50%) 居中 transform，改为 left 定位
+                var rect = floatWin.getBoundingClientRect();
+                floatWin.style.left = rect.left + 'px';
+                floatWin.style.transform = 'none';
+                dragOffsetX = e.clientX - rect.left;
+                dragOffsetY = e.clientY - rect.top;
+                floatWin.classList.add('dragging');
+                e.preventDefault();
+            });
+
+            window.addEventListener('mousemove', function (e) {
+                if (!dragging) return;
+                e.preventDefault();
+                var x = e.clientX - dragOffsetX;
+                var y = e.clientY - dragOffsetY;
+                // 限制不超出视口
+                var winW = floatWin.offsetWidth;
+                var winH = floatWin.offsetHeight;
+                x = Math.max(0, Math.min(x, window.innerWidth - winW));
+                y = Math.max(0, Math.min(y, window.innerHeight - winH));
+                floatWin.style.left = x + 'px';
+                floatWin.style.top = y + 'px';
+                floatWin.style.transform = 'none';
+                floatWin.style.right = 'auto';
+                floatWin.style.bottom = 'auto';
+            });
+
+            window.addEventListener('mouseup', function () {
+                if (dragging) {
+                    dragging = false;
+                    floatWin.classList.remove('dragging');
+                }
+            });
+
+            // --- 调整大小 ---
+            var resizing = false;
+            var resizeStartX = 0;
+            var resizeStartY = 0;
+            var resizeStartW = 0;
+            var resizeStartH = 0;
+
+            floatResize.addEventListener('mousedown', function (e) {
+                resizing = true;
+                resizeStartX = e.clientX;
+                resizeStartY = e.clientY;
+                resizeStartW = floatWin.offsetWidth;
+                resizeStartH = floatWin.offsetHeight;
+                floatWin.classList.add('resizing');
+                e.preventDefault();
+                e.stopPropagation();
+            });
+
+            window.addEventListener('mousemove', function (e) {
+                if (!resizing) return;
+                e.preventDefault();
+                var dx = e.clientX - resizeStartX;
+                var dy = e.clientY - resizeStartY;
+                var newW = Math.max(320, resizeStartW + dx);
+                var newH = Math.max(200, resizeStartH + dy);
+                newW = Math.min(newW, window.innerWidth - 20);
+                newH = Math.min(newH, window.innerHeight - 20);
+                floatWin.style.width = newW + 'px';
+                floatWin.style.height = newH + 'px';
+            });
+
+            window.addEventListener('mouseup', function () {
+                if (resizing) {
+                    resizing = false;
+                    floatWin.classList.remove('resizing');
+                }
+            });
+        })();
+
+        // ===== 事件委托：卡片点击打开侧滑面板 =====
+        document.addEventListener('click', function (e) {
+            var body = e.target.closest('.provider-card-body');
+            if (body) {
+                var provider = body.getAttribute('data-provider-key');
+                if (provider) openSlidePanel(provider);
+            }
+        });
+
+        // ===== 事件委托：快速启用/禁用开关 =====
+        document.addEventListener('change', function (e) {
+            if (e.target.classList.contains('provider-toggle')) {
+                var card = e.target.closest('.provider-card');
+                var provider = card ? card.getAttribute('data-provider-key') : null;
+                if (provider) {
+                    var enabled = e.target.checked;
+                    fetch('/config/api/providers/' + provider + '/toggle', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ enabled: enabled })
+                    }).then(function (r) {
+                        if (!r.ok) {
+                            document.getElementById('card-' + provider + '-enabled').checked = !enabled;
+                        }
+                    }).catch(function () {
+                        document.getElementById('card-' + provider + '-enabled').checked = !enabled;
+                    });
+                }
+            }
+        });
+
+        // ===== 事件委托：拉取模型列表 =====
+        document.addEventListener('click', function (e) {
+            if (e.target.classList.contains('btn-fetch-models')) {
+                var provider = e.target.getAttribute('data-provider-key');
+                if (!provider) return;
+                var panel = document.getElementById('panel-' + provider);
+                if (!panel) return;
+                var baseUrlInput = panel.querySelector('#' + provider + 'BaseUrl');
+                var apiKeyInput = panel.querySelector('#' + provider + 'ApiKey');
+                var baseUrl = baseUrlInput ? baseUrlInput.value.trim() : '';
+                var apiKey = apiKeyInput ? apiKeyInput.value.trim() : '';
+                if (!baseUrl) { alert('请先填写 API URL'); return; }
+                if (!apiKey) { alert('请先填写 API Key'); return; }
+                // 规范化 baseUrl，拼接 /v1/models
+                if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
+                var modelsUrl = baseUrl + '/v1/models';
+                e.target.disabled = true;
+                e.target.textContent = '拉取中…';
+                fetch(modelsUrl, {
+                    method: 'GET',
+                    headers: { 'Authorization': 'Bearer ' + apiKey }
+                }).then(function (r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status + '：' + r.statusText);
+                    return r.json();
+                }).then(function (data) {
+                    e.target.disabled = false;
+                    e.target.textContent = '拉取';
+                    // 兼容 {data: [...]} 和直接数组两种格式
+                    var rawModels = Array.isArray(data) ? data : (data.data || []);
+                    if (rawModels.length === 0) {
+                        alert('未获取到任何模型');
+                        return;
+                    }
+                    // 清空现有模型行，只取 id 字段作为模型名称
+                    var container = document.getElementById(provider + '-models');
+                    if (!container) return;
+                    container.innerHTML = '';
+                    rawModels.forEach(function (m) {
+                        var modelName = typeof m === 'string' ? m : (m.id || m.name || m.model || '');
+                        if (!modelName) return;
+                        addModel(provider);
+                        var row = container.lastElementChild;
+                        if (!row) return;
+                        var nameInput = row.querySelector('.model-row-name-input');
+                        if (nameInput) nameInput.value = modelName;
+                    });
+                    checkToggle(provider);
+                }).catch(function (err) {
+                    e.target.disabled = false;
+                    e.target.textContent = '拉取';
+                    alert('拉取失败: ' + err.message);
+                });
+            }
+        });
+
+        // ===== 事件委托：添加模型 =====
+        document.addEventListener('click', function (e) {
+            if (e.target.classList.contains('btn-add-model')) {
+                var provider = e.target.getAttribute('data-provider-key');
+                if (provider) addModel(provider);
+            }
+        });
+
+        // ===== 上下文预设下拉菜单 =====
+        document.addEventListener('click', function (e) {
+            var btn = e.target.closest('.model-row-ctx-btn');
+            if (btn) {
+                e.preventDefault();
+                var menu = btn.parentElement.querySelector('.model-row-ctx-menu');
+                if (menu) {
+                    var open = menu.classList.contains('open');
+                    closeAllCtxMenus();
+                    if (!open) menu.classList.add('open');
+                }
+                return;
+            }
+            var menuItem = e.target.closest('.model-row-ctx-menu button');
+            if (menuItem) {
+                e.preventDefault();
+                var input = menuItem.closest('.model-row-ctx-wrap').querySelector('.model-row-ctx');
+                if (input) {
+                    input.value = menuItem.getAttribute('data-value');
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+                closeAllCtxMenus();
+                return;
+            }
+            if (!e.target.closest('.model-row-ctx-wrap')) {
+                closeAllCtxMenus();
+            }
+        });
+
+        function closeAllCtxMenus() {
+            document.querySelectorAll('.model-row-ctx-menu.open').forEach(function (m) {
+                m.classList.remove('open');
+            });
+        }
+
+        // ===== 事件委托：删除模型 =====
+        document.addEventListener('click', function (e) {
+            if (e.target.classList.contains('btn-remove-model')) {
+                var row = e.target.closest('.model-row');
+                if (row) {
+                    var panel = row.closest('.provider-edit-panel');
+                    var provider = panel ? panel.id.replace('panel-', '') : null;
+                    row.remove();
+                    if (provider) checkToggle(provider);
+                }
+            }
+        });
+
+        // ===== 保存侧滑面板内容（AJAX 提交） =====
+        function saveSlidePanel() {
+            var btn = document.querySelector('.slide-panel-save');
+            btn.disabled = true;
+
+            // 只获取当前打开的服务商标识
+            var providerKey = currentProvider || document.getElementById('slidePanel').getAttribute('data-current-provider');
+            if (!providerKey) { btn.disabled = false; return; }
+
+            var panel = document.getElementById('panel-' + providerKey);
+            if (!panel) { btn.disabled = false; return; }
+
+            // 只收集当前面板内的表单数据，去掉 provider 前缀
+            var data = {};
+            var prefix = providerKey;
+            var inputs = panel.querySelectorAll('input[name], select[name]');
+            inputs.forEach(function (el) {
+                var name = el.name;
+                // 去掉 providerKey 前缀：longcatBaseUrl → BaseUrl → baseUrl
+                if (name.startsWith(prefix)) {
+                    name = name.charAt(prefix.length).toLowerCase() + name.slice(prefix.length + 1);
+                }
+                if (el.type === 'checkbox') {
+                    if (el.checked) data[name] = 'on';
+                } else {
+                    data[name] = el.value;
+                }
+            });
+
+            var formBody = Object.keys(data).map(function (key) {
+                return encodeURIComponent(key) + '=' + encodeURIComponent(data[key]);
+            }).join('&');
+
+            // 淡入淡出切换文本
+            function setBtnText(text, done) {
+                var span = btn.querySelector('span');
+                if (!span) { btn.innerHTML = '<span>' + text + '</span>'; if (done) done(); return; }
+                span.style.opacity = '0';
+                setTimeout(function () {
+                    span.textContent = text;
+                    span.style.opacity = '1';
+                    if (done) done();
+                }, 200);
+            }
+
+            // 动画时间线
+            btn.classList.add('btn-saved');
+            setBtnText('保存...');
+
+            setTimeout(function () {
+                setBtnText('成功');
+            }, 800);
+
+            setTimeout(function () {
+                btn.classList.remove('btn-saved');
+                setBtnText('保存');
+                btn.disabled = false;
+            }, 2000);
+
+            // AJAX 提交到单个服务商保存接口
+            fetch('/config/api/providers/' + providerKey + '/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: formBody
+            }).then(function (r) {
+                if (!r.ok) {
+                    btn.classList.remove('btn-saved');
+                    btn.style.backgroundColor = '#c62828';
+                    setBtnText('失败');
+                    setTimeout(function () {
+                        btn.style.backgroundColor = '';
+                        setBtnText('保存');
+                        btn.disabled = false;
+                    }, 2000);
+                }
+            }).catch(function () {
+                btn.classList.remove('btn-saved');
+                btn.style.backgroundColor = '#c62828';
+                setBtnText('失败');
+                setTimeout(function () {
+                    btn.style.backgroundColor = '';
+                    setBtnText('保存');
+                    btn.disabled = false;
+                }, 2000);
+            });
+        }
+
+        // ===== 伪造版本号 — 回车保存 =====
+        document.addEventListener('DOMContentLoaded', function () {
+            var input = document.getElementById('fakeVersion');
+            if (!input) return;
+            input.addEventListener('keydown', function (e) {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                var val = input.value.trim();
+                if (!val) return;
+                input.disabled = true;
+                fetch('/config/api/fake-version', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: 'fakeVersion=' + encodeURIComponent(val)
+                }).then(function (r) {
+                    if (r.ok) {
+                        input.style.borderColor = '#2e7d32';
+                        input.style.backgroundColor = '#f0faf0';
+                        setTimeout(function () {
+                            input.style.borderColor = '';
+                            input.style.backgroundColor = '';
+                            input.disabled = false;
+                        }, 2000);
+                    } else {
+                        input.style.borderColor = '#c62828';
+                        setTimeout(function () {
+                            input.style.borderColor = '';
+                            input.disabled = false;
+                        }, 2000);
+                    }
+                }).catch(function () {
+                    input.style.borderColor = '#c62828';
+                    setTimeout(function () {
+                        input.style.borderColor = '';
+                        input.disabled = false;
+                    }, 2000);
+                });
+            });
+        });
+
+        // ===== 快速启用/禁用 =====
+        function toggleProvider(provider, enabled) {
+            fetch('/config/api/providers/' + provider + '/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: enabled })
+            }).then(function (r) {
+                if (!r.ok) {
+                    // 恢复开关状态
+                    document.getElementById('card-' + provider + '-enabled').checked = !enabled;
+                }
+            }).catch(function () {
+                document.getElementById('card-' + provider + '-enabled').checked = !enabled;
+            });
+        }
+
+        // ===== 添加模型行 =====
         function addModel(provider) {
-            var container = document.getElementById(provider + '-models').querySelector('.model-list-items');
-            var idx = container.querySelectorAll('.model-item').length;
+            var container = document.getElementById(provider + '-models');
+            var idx = container.querySelectorAll('.model-row').length;
             var div = document.createElement('div');
-            div.className = 'model-item';
+            div.className = 'model-row';
             div.innerHTML =
-                '<label class="model-enabled"><input type="checkbox" name="' + provider + 'Models[' + idx + '].enabled" checked /></label>' +
-                '<input type="text" name="' + provider + 'Models[' + idx + '].name" placeholder="模型名称" />' +
-                '<input type="number" name="' + provider + 'Models[' + idx + '].contextSize" placeholder="上下文大小" min="0" />' +
-                '<div class="model-caps">' +
-                '<label class="model-cap"><input type="checkbox" name="' + provider + 'Models[' + idx + '].capsTools" />工具</label>' +
-                '<label class="model-cap"><input type="checkbox" name="' + provider + 'Models[' + idx + '].capsVision" />视觉</label>' +
-                '</div>' +
-                '<button type="button" class="btn-remove-model" onclick="this.parentElement.remove(); checkToggle(\'' + provider + '\')">&#x2715;</button>';
+                '<label class="model-row-enabled"><input type="checkbox" name="' + provider + 'Models[' + idx + '].enabled" checked></label>' +
+                '<div class="model-row-body">' +
+                '<input type="text" class="model-row-name-input" name="' + provider + 'Models[' + idx + '].name" placeholder="模型名称">' +
+                '<div class="model-row-ctx-wrap">' +
+                '<input type="text" class="model-row-ctx" name="' + provider + 'Models[' + idx + '].contextSize" placeholder="上下文大小" inputmode="numeric">' +
+                '<button type="button" class="model-row-ctx-btn" tabindex="-1">' +
+                '<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3 4L5 6L7 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+                '</button>' +
+                '<div class="model-row-ctx-menu">' +
+                '<button type="button" data-value="1048576">1M</button>' +
+                '<button type="button" data-value="524288">512K</button>' +
+                '<button type="button" data-value="262144">256K</button>' +
+                '<button type="button" data-value="131072">128K</button>' +
+                '<button type="button" data-value="65536">64K</button>' +
+                '</div></div>' +
+                '<div class="model-row-caps">' +
+                '<label class="model-row-cap"><input type="checkbox" name="' + provider + 'Models[' + idx + '].capsTools">工具</label>' +
+                '<label class="model-row-cap"><input type="checkbox" name="' + provider + 'Models[' + idx + '].capsVision">视觉</label>' +
+                '</div></div>' +
+                '<button type="button" class="btn-remove-model">&#x2715;</button>';
             container.appendChild(div);
             checkToggle(provider);
         }
 
+        // ===== 启用开关校验 =====
         function checkToggle(provider) {
             var keyInput = document.getElementById(provider + 'ApiKey');
-            var toggle = document.querySelector('input[name="' + provider + 'Enabled"]');
-            var items = document.getElementById(provider + '-models').querySelectorAll('.model-item');
+            var toggle = document.getElementById(provider + 'Enabled');
+            var items = document.getElementById(provider + '-models').querySelectorAll('.model-row');
             var tooltip = document.getElementById(provider + '-tooltip');
             var reasons = [];
+            if (!keyInput || !toggle || !tooltip) return;
             if (!keyInput.value.trim()) reasons.push('请先填写 API Key');
             if (items.length === 0) reasons.push('请至少添加一个模型');
             if (reasons.length > 0) {
                 toggle.checked = false;
                 toggle.disabled = true;
                 tooltip.textContent = reasons.join('，');
-                tooltip.style.display = '';
             } else {
                 toggle.disabled = false;
-                tooltip.style.display = 'none';
+                tooltip.textContent = '';
             }
         }
 
-        ['longcat', 'mimo', 'sensenova'].forEach(function (provider) {
+        // ===== 初始化校验 =====
+        ['longcat', 'mimo', 'sensenova', 'deepseek'].forEach(function (provider) {
             var keyInput = document.getElementById(provider + 'ApiKey');
-            keyInput.addEventListener('input', function () { checkToggle(provider); });
-            keyInput.addEventListener('change', function () { checkToggle(provider); });
-            checkToggle(provider);
+            if (keyInput) {
+                keyInput.addEventListener('input', function () { checkToggle(provider); });
+                keyInput.addEventListener('change', function () { checkToggle(provider); });
+            }
         });
-
     </script>
 </main>
