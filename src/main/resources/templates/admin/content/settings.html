@@ -200,7 +200,7 @@
             };
 
             // 关闭按钮
-            floatClose.addEventListeneFr('click', closeDocFloat);
+            floatClose.addEventListener('click', closeDocFloat);
             // 遮罩层点击关闭（仅移动端有效，拖拽/调整大小时不触发）
             floatOverlay.addEventListener('click', function () {
                 if (!dragging && !resizing) closeDocFloat();
@@ -228,7 +228,10 @@
             floatHeader.addEventListener('mousedown', function (e) {
                 if (e.target.closest('.doc-float-close') || e.target.closest('.doc-float-newtab')) return;
                 dragging = true;
+                // 清除初始的 translateX(-50%) 居中 transform，改为 left 定位
                 var rect = floatWin.getBoundingClientRect();
+                floatWin.style.left = rect.left + 'px';
+                floatWin.style.transform = 'none';
                 dragOffsetX = e.clientX - rect.left;
                 dragOffsetY = e.clientY - rect.top;
                 floatWin.classList.add('dragging');
