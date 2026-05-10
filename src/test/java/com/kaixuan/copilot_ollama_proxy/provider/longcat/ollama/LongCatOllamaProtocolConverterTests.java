@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.provider.longcat.ollama;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.provider.ollama.OllamaProtocolConverter;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import org.junit.jupiter.api.Test;
@@ -14,9 +15,9 @@ class LongCatOllamaProtocolConverterTests {
 
     private static final String FIXED_TIMESTAMP = "2026-05-07T12:00:00Z";
 
-    private final LongCatOllamaProtocolConverter converter = new LongCatOllamaProtocolConverter(new ObjectMapper());
+    private final OllamaProtocolConverter converter = new OllamaProtocolConverter(new ObjectMapper());
 
-    private final LongCatOllamaProtocolConverter.Support support = new LongCatOllamaProtocolConverter.Support(model -> model == null || model.isBlank() ? "fallback-model" : model,
+    private final OllamaProtocolConverter.Support support = new OllamaProtocolConverter.Support(model -> model == null || model.isBlank() ? "fallback-model" : model,
             options -> options != null && options.get("num_predict") instanceof Number number ? number.intValue() : 8192, this::extractStringContent, () -> FIXED_TIMESTAMP);
 
     @Test

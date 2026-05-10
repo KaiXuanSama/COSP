@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.provider.longcat.openai;
 
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
+import com.kaixuan.copilot_ollama_proxy.provider.openai.OpenAiTransportClient;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -31,7 +32,10 @@ class LongCatOpenAiTransportClientTests {
                 };
 
                 RuntimeProviderCatalog catalog = () -> List.of(new ProviderRuntimeConfiguration("longcat", "", "secret-key", "openai", List.of()));
-                LongCatOpenAiTransportClient client = new LongCatOpenAiTransportClient(catalog, WebClient.builder().exchangeFunction(exchangeFunction));
+                OpenAiTransportClient client = new OpenAiTransportClient(catalog, WebClient.builder().exchangeFunction(exchangeFunction),
+                        new OpenAiTransportClient.Config("longcat", "https://api.longcat.chat", "/v1/chat/completions",
+                                (headers, apiKey) -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey),
+                                raw -> raw.replaceAll("/+$", "") + "/openai"));
 
                 String response = client.sendChatCompletion(Map.of("model", "LongCat-Flash-Chat")).block();
 
@@ -54,7 +58,10 @@ class LongCatOpenAiTransportClientTests {
                 };
 
                 RuntimeProviderCatalog catalog = () -> List.of(new ProviderRuntimeConfiguration("longcat", "https://custom.longcat.example/", "secret-key", "openai", List.of()));
-                LongCatOpenAiTransportClient client = new LongCatOpenAiTransportClient(catalog, WebClient.builder().exchangeFunction(exchangeFunction));
+                OpenAiTransportClient client = new OpenAiTransportClient(catalog, WebClient.builder().exchangeFunction(exchangeFunction),
+                        new OpenAiTransportClient.Config("longcat", "https://api.longcat.chat", "/v1/chat/completions",
+                                (headers, apiKey) -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey),
+                                raw -> raw.replaceAll("/+$", "") + "/openai"));
 
                 List<String> chunks = client.streamChatCompletion(Map.of("model", "LongCat-Flash-Chat")).collectList().block();
 

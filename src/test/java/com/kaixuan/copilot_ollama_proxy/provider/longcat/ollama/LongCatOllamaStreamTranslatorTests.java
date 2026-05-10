@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.provider.longcat.ollama;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.provider.ollama.OllamaStreamTranslator;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import org.junit.jupiter.api.Test;
 
@@ -17,7 +18,7 @@ class LongCatOllamaStreamTranslatorTests {
 
     @Test
     void streamsContentAndFinalDoneChunk() throws Exception {
-        LongCatOllamaStreamTranslator translator = newTranslator();
+        OllamaStreamTranslator translator = newTranslator();
         Map<String, Object> choice = new LinkedHashMap<>();
         choice.put("delta", Map.of("content", "hello"));
         choice.put("finish_reason", null);
@@ -39,7 +40,7 @@ class LongCatOllamaStreamTranslatorTests {
 
     @Test
     void accumulatesToolCallUntilDoneChunk() throws Exception {
-        LongCatOllamaStreamTranslator translator = newTranslator();
+        OllamaStreamTranslator translator = newTranslator();
         String toolCallChunk = new ObjectMapper().writeValueAsString(Map.of("choices",
                 List.of(Map.of("delta", Map.of("tool_calls", List.of(Map.of("function", Map.of("name", "read_file", "arguments", "{\"path\":\"README.md\"}")))), "finish_reason", "tool_calls"))));
 
@@ -57,7 +58,7 @@ class LongCatOllamaStreamTranslatorTests {
 
     @Test
     void fallsBackToReasoningWhenNoContentWasEmitted() throws Exception {
-        LongCatOllamaStreamTranslator translator = newTranslator();
+        OllamaStreamTranslator translator = newTranslator();
         String reasoningChunk = new ObjectMapper().writeValueAsString(Map.of("choices", List.of(Map.of("delta", Map.of("reasoning_content", "thinking"), "finish_reason", "stop"))));
 
         List<OllamaChatResponse> results = translator.translate(reasoningChunk, "LongCat-Flash-Chat");
@@ -70,8 +71,8 @@ class LongCatOllamaStreamTranslatorTests {
         assertThat(results.get(1).getMessage().getContent()).isEqualTo("thinking");
     }
 
-    private LongCatOllamaStreamTranslator newTranslator() {
-        return new LongCatOllamaStreamTranslator(new ObjectMapper(), new LongCatOllamaStreamTranslator.Support(this::createChunk, this::createCompletion));
+    private OllamaStreamTranslator newTranslator() {
+        return new OllamaStreamTranslator(new ObjectMapper(), new OllamaStreamTranslator.Support(this::createChunk, this::createCompletion));
     }
 
     private OllamaChatResponse createChunk(String modelName, String content) {
