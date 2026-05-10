@@ -110,11 +110,9 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model);
         log.info("{} OpenAI 上游，模型: {}, 流式: true", providerDisplayName(), requestBody.get("model"));
 
-        AtomicBoolean reasoningEmitted = new AtomicBoolean(false);
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
         StringBuilder reasoningBuffer = new StringBuilder();
         AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
-        AtomicReference<String> finishReason = new AtomicReference<>(null);
 
         return buildWebClient().post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody).retrieve()
                 .bodyToFlux(STRING_SSE_TYPE).retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank())
@@ -125,7 +123,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                         String fallbackFinish = buildFallbackFinishChunk(chunkId.get(), model);
                         return Flux.just(fallbackContent, fallbackFinish);
                     }
-                    return Flux.just(translateChunk(chunk, reasoningEmitted, contentEmitted, reasoningBuffer, chunkId, finishReason));
+                    return Flux.just(translateChunk(chunk, contentEmitted, reasoningBuffer, chunkId));
                 }).doOnNext(chunk -> log.debug("{} 翻译: {}", providerDisplayName(), chunk));
     }
 
@@ -277,22 +275,19 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
      * 翻译单个 SSE chunk 的 JSON 内容。
      *
      * 这里有两个关键职责：
-     * 1. 把 reasoning_content 从 delta 中提取出来，转成 reasoning_opaque/reasoning_text 字段，
+     * 1. 把 reasoning_content 从 delta 中提取出来，转成 reasoning_text 字段，
      *    这样上层客户端可以识别并展示思考过程。
      * 2. 如果模型只输出了 reasoning_content 而没有正文 content，
      *    则在流末尾由调用方触发回退，把思考内容作为最终回复。
      *
      * @param chunkJson 原始 SSE data 的 JSON 字符串
-     * @param reasoningEmitted 是否已经输出过 reasoning_opaque 标记
      * @param contentEmitted 是否已经输出过正文 content
      * @param reasoningBuffer 累积 reasoning_content 的缓冲区
      * @param chunkId 当前流的 chunk ID 引用
-     * @param finishReason 当前流的 finish_reason 引用
      * @return 翻译后的 chunk JSON 字符串
      */
     @SuppressWarnings("unchecked")
-    private String translateChunk(String chunkJson, AtomicBoolean reasoningEmitted, AtomicBoolean contentEmitted, StringBuilder reasoningBuffer, AtomicReference<String> chunkId,
-            AtomicReference<String> finishReason) {
+    private String translateChunk(String chunkJson, AtomicBoolean contentEmitted, StringBuilder reasoningBuffer, AtomicReference<String> chunkId) {
         try {
             Map<String, Object> chunk = objectMapper.readValue(chunkJson, Map.class);
 
@@ -310,10 +305,6 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
             // delta 为 null 说明是纯 finish_reason chunk，直接透传。
             Map<String, Object> delta = (Map<String, Object>) choices.get(0).get("delta");
             if (delta == null) {
-                Object fr = choices.get(0).get("finish_reason");
-                if (fr instanceof String reason) {
-                    finishReason.set(reason);
-                }
                 return chunkJson;
             }
 
@@ -323,21 +314,15 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                 contentEmitted.set(true);
             }
 
-            Object fr = choices.get(0).get("finish_reason");
-            if (fr instanceof String reason) {
-                finishReason.set(reason);
-            }
-
-            // reasoning_content 需要转成 reasoning_opaque/reasoning_text 字段，
+            // reasoning_content 需要转成 reasoning_text 字段，
             // 这样上层客户端可以识别并展示思考过程。
+            // 注意：不设置 reasoning_opaque，因为上游返回的是明文思考内容而非加密内容。
+            // Copilot 客户端通过 reasoning_text 识别明文思考，通过 reasoning_opaque 识别加密思考。
             Object reasoningObj = delta.get("reasoning_content");
             if (reasoningObj instanceof String reasoning && !reasoning.isEmpty()) {
                 reasoningBuffer.append(reasoning);
                 delta.remove("reasoning_content");
                 delta.put("content", null);
-                if (!reasoningEmitted.getAndSet(true)) {
-                    delta.put("reasoning_opaque", "thinking");
-                }
                 delta.put("reasoning_text", reasoning);
                 return objectMapper.writeValueAsString(chunk);
             }
