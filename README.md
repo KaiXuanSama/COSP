@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/cosp-banner.png" alt="COSP Banner" width="100%">
+  <img src="docs/images/cosp-banner.png" alt="COSP Banner" width="60%">
 </p>
 
 <h1 align="center">Copilot Ollama SpringBoot Proxy (COSP)</h1>
