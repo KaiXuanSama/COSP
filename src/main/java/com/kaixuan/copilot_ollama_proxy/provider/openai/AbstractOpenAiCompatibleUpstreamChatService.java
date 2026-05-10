@@ -195,10 +195,11 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     /**
      * 构建 OpenAI 上游的统一重试策略。
      *
-     * 覆盖三类可恢复场景：
-     * 1. 5xx 服务端错误
-     * 2. 可重试的 400 错误
-     * 3. 网络层异常：包括 WebClientRequestException（连接建立失败）
+     * 覆盖四类可恢复场景：
+     * 1. 429 上游限速（使用指数退避，避免加重上游压力）
+     * 2. 5xx 服务端错误
+     * 3. 可重试的 400 错误
+     * 4. 网络层异常：包括 WebClientRequestException（连接建立失败）
      *    以及 WebClientResponseException 的 cause chain 中的 IOException
      *    （如 SocketException: Connection reset，即 HTTP 200 但 SSE 流中途断开）
      *
@@ -206,11 +207,17 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
      * @return 配置好的 Retry 实例
      */
     protected Retry buildRetrySpec(String method) {
-        return Retry.fixedDelay(5, Duration.ofSeconds(5))
-                .filter(ex -> ((ex instanceof WebClientResponseException responseException)
-                        && (responseException.getStatusCode().is5xxServerError() || responseException.getStatusCode().value() == 400 || hasNetworkCause(responseException)))
-                        || ex instanceof WebClientRequestException)
-                .doBeforeRetry(signal -> log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, providerDisplayName(), signal.totalRetries() + 1, signal.failure().getMessage()));
+        return Retry.backoff(5, Duration.ofSeconds(2)).maxBackoff(Duration.ofSeconds(30))
+                .filter(ex -> ((ex instanceof WebClientResponseException responseException) && (responseException.getStatusCode().value() == 429 || responseException.getStatusCode().is5xxServerError()
+                        || responseException.getStatusCode().value() == 400 || hasNetworkCause(responseException))) || ex instanceof WebClientRequestException)
+                .doBeforeRetry(signal -> {
+                    if (signal.failure() instanceof WebClientResponseException responseException && responseException.getStatusCode().value() == 429) {
+                        String retryAfter = responseException.getHeaders().getFirst("Retry-After");
+                        log.warn("[{}] {} API 限速 (429)，重试第 {} 次{}", method, providerDisplayName(), signal.totalRetries() + 1, retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
+                    } else {
+                        log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, providerDisplayName(), signal.totalRetries() + 1, signal.failure().getMessage());
+                    }
+                });
     }
 
     /**

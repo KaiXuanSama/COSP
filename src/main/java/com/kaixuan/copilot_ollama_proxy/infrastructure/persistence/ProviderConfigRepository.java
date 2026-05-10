@@ -106,10 +106,15 @@ public class ProviderConfigRepository {
     /**
      * 仅更新服务商的配置字段（base_url, api_key, api_format），不修改 enabled 状态。
      * @return 对应的 provider_config.id
+     * @throws IllegalArgumentException 如果指定的 providerKey 不存在
      */
     public int updateProviderConfig(String providerKey, String baseUrl, String apiKey, String apiFormat) {
-        jdbcTemplate.update("UPDATE provider_config SET base_url = ?, api_key = ?, api_format = ?, " + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?", baseUrl,
-                apiKey, apiFormat, providerKey);
+        int affected = jdbcTemplate.update(
+                "UPDATE provider_config SET base_url = ?, api_key = ?, api_format = ?, " + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?", baseUrl, apiKey,
+                apiFormat, providerKey);
+        if (affected == 0) {
+            throw new IllegalArgumentException("服务商 " + providerKey + " 不存在，无法更新配置");
+        }
         return jdbcTemplate.queryForObject("SELECT id FROM provider_config WHERE provider_key = ?", Integer.class, providerKey);
     }
 

@@ -85,11 +85,17 @@ public class OpenAiTransportClient {
     }
 
     private Retry buildRetrySpec(String method) {
-        return Retry.fixedDelay(5, Duration.ofSeconds(5))
-                .filter(ex -> (ex instanceof WebClientResponseException responseException
-                        && (responseException.getStatusCode().is5xxServerError() || responseException.getStatusCode().value() == 400 || hasNetworkCause(responseException)))
-                        || ex instanceof WebClientRequestException)
-                .doBeforeRetry(signal -> log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, config.providerKey, signal.totalRetries() + 1, signal.failure().getMessage()));
+        return Retry.backoff(5, Duration.ofSeconds(2)).maxBackoff(Duration.ofSeconds(30))
+                .filter(ex -> (ex instanceof WebClientResponseException responseException && (responseException.getStatusCode().value() == 429 || responseException.getStatusCode().is5xxServerError()
+                        || responseException.getStatusCode().value() == 400 || hasNetworkCause(responseException))) || ex instanceof WebClientRequestException)
+                .doBeforeRetry(signal -> {
+                    if (signal.failure() instanceof WebClientResponseException responseException && responseException.getStatusCode().value() == 429) {
+                        String retryAfter = responseException.getHeaders().getFirst("Retry-After");
+                        log.warn("[{}] {} API 限速 (429)，重试第 {} 次{}", method, config.providerKey, signal.totalRetries() + 1, retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
+                    } else {
+                        log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, config.providerKey, signal.totalRetries() + 1, signal.failure().getMessage());
+                    }
+                });
     }
 
     private static boolean hasNetworkCause(Throwable throwable) {
