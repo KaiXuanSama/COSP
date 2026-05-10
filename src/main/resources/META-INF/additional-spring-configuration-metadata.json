@@ -50,7 +50,7 @@
   {
     "name": "proxy.upstream-chat-service",
     "type": "java.lang.String",
-    "description": "OpenAI 控制器使用的上游实现，支持 openai 和 anthropic，默认 openai。",
+    "description": "OpenAI 控制器使用的上游实现，支持 openai。",
     "defaultValue": "openai"
   },
   {
@@ -62,8 +62,8 @@
   {
     "name": "mimo.base-url",
     "type": "java.lang.String",
-    "description": "MiMo 上游基础 URL，可填写根地址、/v1 或 /anthropic，系统会按所选实现自动归一化。",
-    "defaultValue": "https://token-plan-cn.xiaomimimo.com/anthropic"
+    "description": "MiMo 上游基础 URL，可填写根地址或 /v1 路径，系统会自动归一化。",
+    "defaultValue": "https://api.xiaomimimo.com"
   },
   {
     "name": "mimo.default-model",

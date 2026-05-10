@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS provider_config (
     enabled       INTEGER      NOT NULL DEFAULT 0, -- 是否启用（0=禁用，1=启用）
     base_url      TEXT         NOT NULL DEFAULT '', -- API 基础 URL
     api_key       TEXT         NOT NULL DEFAULT '', -- API Key
-    api_format    VARCHAR(20)  NOT NULL DEFAULT 'openai', -- API 格式：openai / anthropic
+    api_format    VARCHAR(20)  NOT NULL DEFAULT 'openai', -- API 格式：openai
     updated_at    TEXT         NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
 );
 

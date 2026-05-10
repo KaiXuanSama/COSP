@@ -40,20 +40,15 @@
 <!-- ===== API 格式选项片段 ===== -->
 <th:block th:fragment="longcat-format-options">
     <option value="openai" th:selected="${longcat.apiFormat == 'openai'}">OpenAI</option>
-    <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
 </th:block>
 <th:block th:fragment="mimo-format-options">
-    <option value="openai" th:selected="${mimo.apiFormat == 'openai'}">OpenAI（推荐）</option>
-    <option value="anthropic" th:selected="${mimo.apiFormat == 'anthropic'}">AnthropicAPI（有Bug，不推荐使用）
-    </option>
+    <option value="openai" th:selected="${mimo.apiFormat == 'openai'}">OpenAI</option>
 </th:block>
 <th:block th:fragment="sensenova-format-options">
     <option value="openai" th:selected="${sensenova.apiFormat == 'openai'}">OpenAI</option>
-    <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
 </th:block>
 <th:block th:fragment="deepseek-format-options">
     <option value="openai" th:selected="${deepseek.apiFormat == 'openai'}">OpenAI</option>
-    <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
 </th:block>
 
 <!-- ============================================================

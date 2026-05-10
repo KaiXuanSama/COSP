@@ -7,8 +7,7 @@ import java.util.Map;
 /**
  * OpenAI Chat Completions API 请求体 —— Copilot 发送给本代理的请求格式。
  * 本代理接收此格式后，会交给 {@link com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService}
- * 的具体实现处理；默认实现会直接调用 MiMo 的 OpenAI 兼容接口，
- * 其他实现也可以在内部转换到 Anthropic 等协议。
+ * 的具体实现处理，默认实现会直接调用各供应商的 OpenAI 兼容接口。
  * OpenAI 格式示例：
  * {
  *   "model": "mimo-v2.5-pro",
@@ -19,11 +18,7 @@ import java.util.Map;
  *   "stream": true,
  *   "tools": [...]
  * }
- * 对于需要做协议转换的实现，与 Anthropic 格式的主要区别是：
- *   system 消息在 messages 数组中（Anthropic 是独立顶层字段）
- *   工具结果用 role=tool 的消息（Anthropic 用 user 消息 + tool_result 块）
- *   工具定义用 parameters 字段（Anthropic 用 input_schema）
- *   content 可以是 String 或 List&lt;ContentPart&gt;（多模态场景）
+ * content 可以是 String 或 List&lt;ContentPart&gt;（多模态场景）
  */
 public class OpenAiChatRequest {
 
@@ -54,10 +49,10 @@ public class OpenAiChatRequest {
     @JsonProperty("tool_choice")
     private Object toolChoice;
 
-    /** 请求数量（Copilot 固定为 1，Anthropic API 不使用此字段） */
+    /** 请求数量（Copilot 固定为 1） */
     private Integer n;
 
-    /** 流式选项（Copilot 用于请求 usage 统计，Anthropic API 不使用此字段） */
+    /** 流式选项（Copilot 用于请求 usage 统计） */
     @JsonProperty("stream_options")
     private Object streamOptions;
 
@@ -340,7 +335,7 @@ public class OpenAiChatRequest {
     /** 工具调用的函数详情 */
     public static class ToolCallFunction {
         private String name;
-        /** JSON 字符串格式的参数（OpenAI 用字符串，Anthropic 用对象） */
+        /** JSON 字符串格式的参数 */
         private String arguments;
 
         public String getName() {

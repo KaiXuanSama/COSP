@@ -47,11 +47,8 @@ public class MimoOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatS
             return "https://api.xiaomimimo.com/v1";
         }
 
-        // 去除末尾的斜杠和可能的 "/anthropic" 路径，以兼容用户输入的各种 Base URL 形式。
+        // 去除末尾的斜杠，以兼容用户输入的各种 Base URL 形式。
         normalized = normalized.replaceAll("/+$", "");
-        if (normalized.endsWith("/anthropic")) {
-            normalized = normalized.substring(0, normalized.length() - "/anthropic".length());
-        }
 
         // 确保最终的 Base URL 以 "/v1" 结尾。
         if (!normalized.endsWith("/v1")) {
