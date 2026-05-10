@@ -6,8 +6,10 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatal
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
-import com.kaixuan.copilot_ollama_proxy.provider.mimo.openai.MimoOpenAiTransportClient;
 import com.kaixuan.copilot_ollama_proxy.provider.ollama.AbstractRuntimeCatalogOllamaService;
+import com.kaixuan.copilot_ollama_proxy.provider.ollama.OllamaProtocolConverter;
+import com.kaixuan.copilot_ollama_proxy.provider.ollama.OllamaStreamTranslator;
+import com.kaixuan.copilot_ollama_proxy.provider.openai.OpenAiTransportClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,18 +29,27 @@ public class MimoOllamaService extends AbstractRuntimeCatalogOllamaService {
 
     private static final Logger log = LoggerFactory.getLogger(MimoOllamaService.class);
 
-    private final MimoOpenAiTransportClient transportClient;
-    private final MimoOllamaProtocolConverter protocolConverter;
-    private final MimoOllamaProtocolConverter.Support protocolSupport;
-    private final MimoOllamaStreamTranslator streamTranslator;
+    private final OpenAiTransportClient transportClient;
+    private final OllamaProtocolConverter protocolConverter;
+    private final OllamaProtocolConverter.Support protocolSupport;
+    private final OllamaStreamTranslator streamTranslator;
 
     public MimoOllamaService(RuntimeProviderCatalog runtimeProviderCatalog, @Value("${mimo.default-model:mimo-v2.5-pro}") String fallbackDefaultModel, ObjectMapper objectMapper,
-            MimoOpenAiTransportClient transportClient) {
+            org.springframework.web.reactive.function.client.WebClient.Builder webClientBuilder) {
         super(runtimeProviderCatalog, fallbackDefaultModel);
-        this.transportClient = transportClient;
-        this.protocolConverter = new MimoOllamaProtocolConverter(objectMapper);
-        this.protocolSupport = new MimoOllamaProtocolConverter.Support(this::resolveRequestModel, this::resolveMaxTokens, this::extractStringContent, this::currentTimestamp);
-        this.streamTranslator = new MimoOllamaStreamTranslator(objectMapper, new MimoOllamaStreamTranslator.Support(this::createStreamingChunk, this::createStreamingCompletion));
+        this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder,
+                new OpenAiTransportClient.Config("mimo", "https://api.xiaomimimo.com", "/v1/chat/completions", (headers, apiKey) -> {
+                    if (apiKey != null && !apiKey.isBlank()) {
+                        headers.set("api-key", apiKey);
+                        headers.set("x-api-key", apiKey);
+                    }
+                }, raw -> {
+                    String normalized = raw.trim().replaceAll("/+$", "");
+                    return normalized.endsWith("/v1") ? normalized : normalized + "/v1";
+                }));
+        this.protocolConverter = new OllamaProtocolConverter(objectMapper);
+        this.protocolSupport = new OllamaProtocolConverter.Support(this::resolveRequestModel, this::resolveMaxTokens, this::extractStringContent, this::currentTimestamp);
+        this.streamTranslator = new OllamaStreamTranslator(objectMapper, new OllamaStreamTranslator.Support(this::createStreamingChunk, this::createStreamingCompletion));
     }
 
     @Override

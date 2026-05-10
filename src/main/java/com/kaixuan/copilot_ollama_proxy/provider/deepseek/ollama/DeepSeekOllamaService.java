@@ -5,8 +5,10 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatal
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
-import com.kaixuan.copilot_ollama_proxy.provider.deepseek.openai.DeepSeekOpenAiTransportClient;
 import com.kaixuan.copilot_ollama_proxy.provider.ollama.AbstractRuntimeCatalogOllamaService;
+import com.kaixuan.copilot_ollama_proxy.provider.ollama.OllamaProtocolConverter;
+import com.kaixuan.copilot_ollama_proxy.provider.ollama.OllamaStreamTranslator;
+import com.kaixuan.copilot_ollama_proxy.provider.openai.OpenAiTransportClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,18 +29,32 @@ public class DeepSeekOllamaService extends AbstractRuntimeCatalogOllamaService {
 
     private static final Logger log = LoggerFactory.getLogger(DeepSeekOllamaService.class);
 
-    private final DeepSeekOllamaProtocolConverter protocolConverter;
-    private final DeepSeekOllamaProtocolConverter.Support protocolSupport;
-    private final DeepSeekOllamaStreamTranslator streamTranslator;
-    private final DeepSeekOpenAiTransportClient transportClient;
+    private final OllamaProtocolConverter protocolConverter;
+    private final OllamaProtocolConverter.Support protocolSupport;
+    private final OllamaStreamTranslator streamTranslator;
+    private final OpenAiTransportClient transportClient;
 
     public DeepSeekOllamaService(RuntimeProviderCatalog runtimeProviderCatalog, @Value("${deepseek.default-model:deepseek-v4-flash}") String fallbackDefaultModel, ObjectMapper objectMapper,
-            DeepSeekOpenAiTransportClient transportClient) {
+            org.springframework.web.reactive.function.client.WebClient.Builder webClientBuilder) {
         super(runtimeProviderCatalog, fallbackDefaultModel);
-        this.transportClient = transportClient;
-        this.protocolConverter = new DeepSeekOllamaProtocolConverter(objectMapper);
-        this.protocolSupport = new DeepSeekOllamaProtocolConverter.Support(this::resolveRequestModel, this::resolveMaxTokens, this::extractStringContent, this::currentTimestamp);
-        this.streamTranslator = new DeepSeekOllamaStreamTranslator(objectMapper, new DeepSeekOllamaStreamTranslator.Support(this::createStreamingChunk, this::createStreamingCompletion));
+        this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder, new OpenAiTransportClient.Config("deepseek", "https://api.deepseek.com", "/chat/completions",
+                (headers, apiKey) -> headers.set(org.springframework.http.HttpHeaders.AUTHORIZATION, "Bearer " + apiKey), raw -> raw.replaceAll("/+$", "")));
+        this.protocolConverter = new OllamaProtocolConverter(objectMapper, (body, ollamaReq) -> {
+            // DeepSeek 特有字段：thinking 和 reasoning_effort
+            if (ollamaReq.getOptions() != null) {
+                if (ollamaReq.getOptions().containsKey("thinking")) {
+                    Object thinking = ollamaReq.getOptions().get("thinking");
+                    if (thinking instanceof String s) {
+                        body.put("thinking", Map.of("type", s));
+                    }
+                }
+                if (ollamaReq.getOptions().containsKey("reasoning_effort")) {
+                    body.put("reasoning_effort", ollamaReq.getOptions().get("reasoning_effort"));
+                }
+            }
+        });
+        this.protocolSupport = new OllamaProtocolConverter.Support(this::resolveRequestModel, this::resolveMaxTokens, this::extractStringContent, this::currentTimestamp);
+        this.streamTranslator = new OllamaStreamTranslator(objectMapper, new OllamaStreamTranslator.Support(this::createStreamingChunk, this::createStreamingCompletion));
     }
 
     // ========== 路由支持 ==========

@@ -1,6 +1,5 @@
-package com.kaixuan.copilot_ollama_proxy.provider.deepseek.ollama;
+package com.kaixuan.copilot_ollama_proxy.provider.ollama;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
@@ -12,25 +11,27 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.ToIntFunction;
 
 /**
- * DeepSeek 模型的 Ollama 协议转换器。
+ * 通用的 Ollama 协议转换器。
  * <p>
- * 负责非流式协议映射：
- * 把 OllamaChatRequest 转成 DeepSeek 可接受的 OpenAI Chat Completions 请求体，
- * 再把 DeepSeek 返回的 OpenAI JSON 响应还原成 OllamaChatResponse。
+ * 把 OllamaChatRequest 转成 OpenAI Chat Completions 请求体，
+ * 再把 OpenAI JSON 响应还原成 OllamaChatResponse。
  * <p>
- * DeepSeek 特有字段：
- * - thinking: 控制思考模式 (enabled/disabled)
- * - reasoning_effort: 推理强度 (high/max)
+ * 各 provider 的特化行为（如 DeepSeek 的 thinking/reasoning_effort）通过
+ * {@link #customizeOpenAiRequest} 钩子注入。
  */
-final class DeepSeekOllamaProtocolConverter {
+public class OllamaProtocolConverter {
 
-    record Support(Function<String, String> modelResolver, ToIntFunction<Map<String, Object>> maxTokensResolver, Function<Object, String> contentExtractor, Supplier<String> timestampSupplier) {
-        Support {
+    /**
+     * 转换器依赖的一组运行时能力。
+     */
+    public record Support(Function<String, String> modelResolver, ToIntFunction<Map<String, Object>> maxTokensResolver, Function<Object, String> contentExtractor, Supplier<String> timestampSupplier) {
+        public Support {
             Objects.requireNonNull(modelResolver, "modelResolver");
             Objects.requireNonNull(maxTokensResolver, "maxTokensResolver");
             Objects.requireNonNull(contentExtractor, "contentExtractor");
@@ -39,34 +40,31 @@ final class DeepSeekOllamaProtocolConverter {
     }
 
     private final ObjectMapper objectMapper;
+    private final BiConsumer<Map<String, Object>, OllamaChatRequest> customizeOpenAiRequest;
 
-    DeepSeekOllamaProtocolConverter(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
+    /**
+     * @param objectMapper          用于协议字段序列化与反序列化
+     * @param customizeOpenAiRequest 可选钩子，用于在请求体中添加 provider 特有字段（如 DeepSeek 的 thinking）
+     */
+    public OllamaProtocolConverter(ObjectMapper objectMapper, BiConsumer<Map<String, Object>, OllamaChatRequest> customizeOpenAiRequest) {
+        this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
+        this.customizeOpenAiRequest = customizeOpenAiRequest;
     }
 
     /**
-     * 将 Ollama 请求映射为 DeepSeek OpenAI 兼容请求。
-     * <p>
-     * DeepSeek 支持 thinking 和 reasoning_effort 参数，
-     * 这些参数在转换时保留以充分利用 DeepSeek 的思考能力。
+     * 无特化钩子的构造器。
      */
-    Map<String, Object> toOpenAiRequest(OllamaChatRequest ollamaReq, Support support) {
+    public OllamaProtocolConverter(ObjectMapper objectMapper) {
+        this(objectMapper, null);
+    }
+
+    /**
+     * 将 Ollama 请求映射为 OpenAI 兼容请求。
+     */
+    public Map<String, Object> toOpenAiRequest(OllamaChatRequest ollamaReq, Support support) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", support.modelResolver().apply(ollamaReq.getModel()));
         body.put("max_tokens", support.maxTokensResolver().applyAsInt(ollamaReq.getOptions()));
-
-        // 保留 DeepSeek 特有的 thinking 控制
-        if (ollamaReq.getOptions() != null && ollamaReq.getOptions().containsKey("thinking")) {
-            Object thinking = ollamaReq.getOptions().get("thinking");
-            if (thinking instanceof String s) {
-                body.put("thinking", Map.of("type", s));
-            }
-        }
-
-        // 保留 DeepSeek 特有的 reasoning_effort
-        if (ollamaReq.getOptions() != null && ollamaReq.getOptions().containsKey("reasoning_effort")) {
-            body.put("reasoning_effort", ollamaReq.getOptions().get("reasoning_effort"));
-        }
 
         List<Map<String, Object>> messages = new ArrayList<>();
         for (var ollamaMsg : ollamaReq.getMessages()) {
@@ -121,16 +119,19 @@ final class DeepSeekOllamaProtocolConverter {
             body.put("tools", tools);
         }
 
+        // 调用 provider 特化钩子
+        if (customizeOpenAiRequest != null) {
+            customizeOpenAiRequest.accept(body, ollamaReq);
+        }
+
         return body;
     }
 
     /**
-     * 将 DeepSeek 的 OpenAI 非流式响应还原为 OllamaChatResponse。
-     * <p>
-     * DeepSeek 返回的 reasoning_content 会被映射到 Ollama 的 thinking 字段。
+     * 将 OpenAI 非流式响应还原为 OllamaChatResponse。
      */
     @SuppressWarnings("unchecked")
-    OllamaChatResponse toOllamaResponse(String openAiJson, String requestModel, Support support) throws IOException {
+    public OllamaChatResponse toOllamaResponse(String openAiJson, String requestModel, Support support) throws IOException {
         Map<String, Object> openAi = objectMapper.readValue(openAiJson, Map.class);
         List<Map<String, Object>> choices = (List<Map<String, Object>>) openAi.get("choices");
 
@@ -149,54 +150,42 @@ final class DeepSeekOllamaProtocolConverter {
             Object contentObj = message.get("content");
             ollamaMessage.setContent(contentObj instanceof String stringContent ? stringContent : "");
 
-            // DeepSeek 的 reasoning_content → Ollama thinking
+            // 提取 reasoning_content → thinking 字段
             Object reasoningObj = message.get("reasoning_content");
             if (reasoningObj instanceof String reasoning && !reasoning.isEmpty()) {
                 ollamaMessage.setThinking(reasoning);
             }
 
+            // 处理工具调用
             List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) message.get("tool_calls");
             if (toolCalls != null && !toolCalls.isEmpty()) {
-                List<OllamaChatResponse.ToolCallResult> toolCallResults = new ArrayList<>();
-                for (var toolCall : toolCalls) {
-                    Map<String, Object> function = (Map<String, Object>) toolCall.get("function");
-                    if (function != null) {
-                        var toolCallResult = new OllamaChatResponse.ToolCallResult();
-                        var toolFunction = new OllamaChatResponse.ToolCallFunction();
-                        toolFunction.setName((String) function.get("name"));
-                        toolFunction.setArguments(parseArguments(function.get("arguments")));
-                        toolCallResult.setFunction(toolFunction);
-                        toolCallResults.add(toolCallResult);
+                List<OllamaChatResponse.ToolCallResult> results = new ArrayList<>();
+                for (Map<String, Object> tc : toolCalls) {
+                    Map<String, Object> func = (Map<String, Object>) tc.get("function");
+                    if (func != null) {
+                        var result = new OllamaChatResponse.ToolCallResult();
+                        var fn = new OllamaChatResponse.ToolCallFunction();
+                        fn.setName((String) func.get("name"));
+                        Object args = func.get("arguments");
+                        if (args instanceof String argsStr) {
+                            try {
+                                fn.setArguments(objectMapper.readValue(argsStr, Map.class));
+                            } catch (Exception e) {
+                                fn.setArguments(Map.of());
+                            }
+                        } else if (args instanceof Map) {
+                            fn.setArguments((Map<String, Object>) args);
+                        }
+                        result.setFunction(fn);
+                        results.add(result);
                     }
                 }
-                ollamaMessage.setToolCalls(toolCallResults);
+                ollamaMessage.setToolCalls(results);
             }
         }
 
-        return createResponse(requestModel, true, "tool_calls".equals(finishReason) ? "tool_calls" : "stop", ollamaMessage, support);
-    }
-
-    private String serializeArguments(Map<String, Object> arguments) {
-        try {
-            return arguments != null ? objectMapper.writeValueAsString(arguments) : "{}";
-        } catch (Exception ignored) {
-            return "{}";
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> parseArguments(Object arguments) {
-        if (arguments instanceof Map<?, ?> map) {
-            return (Map<String, Object>) map;
-        }
-        if (arguments instanceof String json) {
-            try {
-                return objectMapper.readValue(json, new TypeReference<>() {
-                });
-            } catch (Exception ignored) {
-            }
-        }
-        return Map.of();
+        boolean done = "stop".equals(finishReason) || "tool_calls".equals(finishReason);
+        return createResponse(requestModel, done, finishReason != null ? finishReason : "stop", ollamaMessage, support);
     }
 
     private OllamaChatResponse createResponse(String model, boolean done, String doneReason, OllamaChatResponse.ResponseMessage message, Support support) {
@@ -209,10 +198,21 @@ final class DeepSeekOllamaProtocolConverter {
         return response;
     }
 
-    private OllamaChatResponse.ResponseMessage createMessage(String role, String content) {
-        var message = new OllamaChatResponse.ResponseMessage();
-        message.setRole(role);
-        message.setContent(content);
-        return message;
+    private static OllamaChatResponse.ResponseMessage createMessage(String role, String content) {
+        var msg = new OllamaChatResponse.ResponseMessage();
+        msg.setRole(role);
+        msg.setContent(content);
+        return msg;
+    }
+
+    private String serializeArguments(Map<String, Object> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return "{}";
+        }
+        try {
+            return objectMapper.writeValueAsString(arguments);
+        } catch (Exception e) {
+            return "{}";
+        }
     }
 }

@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.provider.mimo.ollama;
+package com.kaixuan.copilot_ollama_proxy.provider.ollama;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -12,26 +12,34 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-final class MimoOllamaStreamTranslator {
+/**
+ * 通用的 Ollama 流式响应翻译器。
+ * <p>
+ * 接收 OpenAI SSE 的 data chunk，维护文本缓冲、思考缓冲和工具调用缓冲，
+ * 再把这些状态翻译成 Ollama 所需的增量 chunk 与最终完成包。
+ * <p>
+ * 所有 provider 的 OpenAI SSE 格式一致，因此此类可通用。
+ */
+public class OllamaStreamTranslator {
 
     @FunctionalInterface
-    interface AssistantChunkFactory {
+    public interface AssistantChunkFactory {
         OllamaChatResponse create(String modelName, String content);
     }
 
     @FunctionalInterface
-    interface AssistantCompletionFactory {
+    public interface AssistantCompletionFactory {
         OllamaChatResponse create(String modelName, String content, List<OllamaChatResponse.ToolCallResult> toolCalls);
     }
 
-    record Support(AssistantChunkFactory assistantChunkFactory, AssistantCompletionFactory assistantCompletionFactory) {
-        Support {
+    public record Support(AssistantChunkFactory assistantChunkFactory, AssistantCompletionFactory assistantCompletionFactory) {
+        public Support {
             Objects.requireNonNull(assistantChunkFactory, "assistantChunkFactory");
             Objects.requireNonNull(assistantCompletionFactory, "assistantCompletionFactory");
         }
     }
 
-    private static final Logger log = LoggerFactory.getLogger(MimoOllamaStreamTranslator.class);
+    private static final Logger log = LoggerFactory.getLogger(OllamaStreamTranslator.class);
 
     private final ObjectMapper objectMapper;
     private final Support support;
@@ -43,13 +51,20 @@ final class MimoOllamaStreamTranslator {
     private String currentToolName;
     private Map<String, Object> currentToolInput;
 
-    MimoOllamaStreamTranslator(ObjectMapper objectMapper, Support support) {
-        this.objectMapper = objectMapper;
-        this.support = support;
+    public OllamaStreamTranslator(ObjectMapper objectMapper, Support support) {
+        this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
+        this.support = Objects.requireNonNull(support, "support");
     }
 
+    /**
+     * 翻译单个 SSE data chunk。
+     *
+     * @param chunk     SSE data 字段的原始内容
+     * @param modelName 当前请求的模型名称
+     * @return 由这个 chunk 导出的 0 到多个 Ollama 响应对象
+     */
     @SuppressWarnings("unchecked")
-    List<OllamaChatResponse> translate(String chunk, String modelName) {
+    public List<OllamaChatResponse> translate(String chunk, String modelName) {
         List<OllamaChatResponse> results = new ArrayList<>();
 
         if ("[DONE]".equals(chunk)) {
@@ -69,6 +84,7 @@ final class MimoOllamaStreamTranslator {
             String finishReason = (String) choice.get("finish_reason");
 
             if (delta != null) {
+                // 处理 content 增量
                 Object contentObj = delta.get("content");
                 if (contentObj instanceof String content && !content.isEmpty()) {
                     textBuffer.append(content);
@@ -76,11 +92,13 @@ final class MimoOllamaStreamTranslator {
                     results.add(support.assistantChunkFactory().create(modelName, content));
                 }
 
+                // 处理 reasoning_content 增量
                 Object reasoningObj = delta.get("reasoning_content");
                 if (reasoningObj instanceof String reasoning && !reasoning.isEmpty()) {
                     reasoningBuffer.append(reasoning);
                 }
 
+                // 处理工具调用增量
                 List<Map<String, Object>> deltaToolCalls = (List<Map<String, Object>>) delta.get("tool_calls");
                 if (deltaToolCalls != null) {
                     for (Map<String, Object> toolCall : deltaToolCalls) {
@@ -97,6 +115,7 @@ final class MimoOllamaStreamTranslator {
                                     });
                                     currentToolInput.putAll(partial);
                                 } catch (Exception ignored) {
+                                    log.debug("工具参数 JSON 片段累积: {}", args);
                                 }
                             }
                         }
@@ -104,6 +123,7 @@ final class MimoOllamaStreamTranslator {
                 }
             }
 
+            // tool_calls finish_reason 收束
             if ("tool_calls".equals(finishReason) && currentToolName != null) {
                 var toolCall = new OllamaChatResponse.ToolCallResult();
                 var function = new OllamaChatResponse.ToolCallFunction();
@@ -115,13 +135,15 @@ final class MimoOllamaStreamTranslator {
                 currentToolInput = null;
             }
 
+            // 仅输出 reasoning 未输出 content → 回退用 reasoning 作为回复
             if ("stop".equals(finishReason) && !contentEmitted && !reasoningBuffer.isEmpty()) {
                 String fallbackContent = reasoningBuffer.toString();
                 results.add(support.assistantChunkFactory().create(modelName, fallbackContent));
-                results.add(support.assistantCompletionFactory().create(modelName, fallbackContent, List.copyOf(toolCalls)));
+                results.add(support.assistantCompletionFactory().create(modelName, fallbackContent, List.of()));
             }
+
         } catch (Exception e) {
-            log.warn("MiMo SSE parse failed: {}", chunk, e);
+            log.warn("SSE chunk 解析失败: {}", e.getMessage());
         }
 
         return results;

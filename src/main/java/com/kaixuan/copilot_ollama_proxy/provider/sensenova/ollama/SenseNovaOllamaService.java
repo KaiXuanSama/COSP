@@ -6,7 +6,9 @@ import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
 import com.kaixuan.copilot_ollama_proxy.provider.ollama.AbstractRuntimeCatalogOllamaService;
-import com.kaixuan.copilot_ollama_proxy.provider.sensenova.openai.SenseNovaOpenAiTransportClient;
+import com.kaixuan.copilot_ollama_proxy.provider.ollama.OllamaProtocolConverter;
+import com.kaixuan.copilot_ollama_proxy.provider.ollama.OllamaStreamTranslator;
+import com.kaixuan.copilot_ollama_proxy.provider.openai.OpenAiTransportClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,18 +29,22 @@ public class SenseNovaOllamaService extends AbstractRuntimeCatalogOllamaService 
 
     private static final Logger log = LoggerFactory.getLogger(SenseNovaOllamaService.class);
 
-    private final SenseNovaOllamaProtocolConverter protocolConverter;
-    private final SenseNovaOllamaProtocolConverter.Support protocolSupport;
-    private final SenseNovaOllamaStreamTranslator streamTranslator;
-    private final SenseNovaOpenAiTransportClient transportClient;
+    private final OllamaProtocolConverter protocolConverter;
+    private final OllamaProtocolConverter.Support protocolSupport;
+    private final OllamaStreamTranslator streamTranslator;
+    private final OpenAiTransportClient transportClient;
 
     public SenseNovaOllamaService(RuntimeProviderCatalog runtimeProviderCatalog, @Value("${sensenova.default-model:sensenova-6.7-flash-lite}") String fallbackDefaultModel, ObjectMapper objectMapper,
-            SenseNovaOpenAiTransportClient transportClient) {
+            org.springframework.web.reactive.function.client.WebClient.Builder webClientBuilder) {
         super(runtimeProviderCatalog, fallbackDefaultModel);
-        this.transportClient = transportClient;
-        this.protocolConverter = new SenseNovaOllamaProtocolConverter(objectMapper);
-        this.protocolSupport = new SenseNovaOllamaProtocolConverter.Support(this::resolveRequestModel, this::resolveMaxTokens, this::extractStringContent, this::currentTimestamp);
-        this.streamTranslator = new SenseNovaOllamaStreamTranslator(objectMapper, new SenseNovaOllamaStreamTranslator.Support(this::createStreamingChunk, this::createStreamingCompletion));
+        this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder, new OpenAiTransportClient.Config("sensenova", "https://token.sensenova.cn", "/v1/chat/completions",
+                (headers, apiKey) -> headers.set(org.springframework.http.HttpHeaders.AUTHORIZATION, "Bearer " + apiKey), raw -> {
+                    String url = raw.replaceAll("/+$", "");
+                    return url.endsWith("/v1") ? url.substring(0, url.length() - 3) : url;
+                }));
+        this.protocolConverter = new OllamaProtocolConverter(objectMapper);
+        this.protocolSupport = new OllamaProtocolConverter.Support(this::resolveRequestModel, this::resolveMaxTokens, this::extractStringContent, this::currentTimestamp);
+        this.streamTranslator = new OllamaStreamTranslator(objectMapper, new OllamaStreamTranslator.Support(this::createStreamingChunk, this::createStreamingCompletion));
     }
 
     // ========== 路由支持 ==========
