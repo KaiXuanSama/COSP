@@ -28,7 +28,6 @@
         <div class="provider-card-body" th:attr="data-provider-key=${providerKey}">
             <div class="provider-card-stats">
                 <span th:text="${#lists.size(provider.models)} + ' 个模型'">3 个模型</span>
-                <span th:text="${provider.apiFormat}">OpenAI</span>
             </div>
             <div class="provider-card-action">
                 <span class="provider-card-edit">编辑 →</span>
@@ -37,24 +36,7 @@
     </div>
 </th:block>
 
-<!-- ===== API 格式选项片段 ===== -->
-<th:block th:fragment="longcat-format-options">
-    <option value="openai" th:selected="${longcat.apiFormat == 'openai'}">OpenAI</option>
-    <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
-</th:block>
-<th:block th:fragment="mimo-format-options">
-    <option value="openai" th:selected="${mimo.apiFormat == 'openai'}">OpenAI（推荐）</option>
-    <option value="anthropic" th:selected="${mimo.apiFormat == 'anthropic'}">AnthropicAPI（有Bug，不推荐使用）
-    </option>
-</th:block>
-<th:block th:fragment="sensenova-format-options">
-    <option value="openai" th:selected="${sensenova.apiFormat == 'openai'}">OpenAI</option>
-    <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
-</th:block>
-<th:block th:fragment="deepseek-format-options">
-    <option value="openai" th:selected="${deepseek.apiFormat == 'openai'}">OpenAI</option>
-    <option value="anthropic" disabled>AnthropicAPI（未适配）</option>
-</th:block>
+<!-- ===== API 格式选项片段（已废弃，所有供应商仅支持 OpenAI） ===== -->
 
 <!-- ============================================================
      provider-edit-panel — 服务商编辑面板组件（侧滑面板内使用）
@@ -74,8 +56,7 @@
          apiFormatOptions=~{:: longcat-format-options})}"
      ============================================================ -->
 
-<th:block
-    th:fragment="edit-panel(providerKey, displayName, provider, apiUrlPlaceholder, docUrl, apiFormatOptions, fetchModelsSupported)">
+<th:block th:fragment="edit-panel(providerKey, displayName, provider, apiUrlPlaceholder, docUrl, fetchModelsSupported)">
     <div class="provider-edit-panel" th:id="'panel-' + ${providerKey}">
         <div class="field-group">
             <label class="field-label" th:for="${providerKey} + 'BaseUrl'">API URL</label>
@@ -94,15 +75,6 @@
                     '请输入 ' + ${displayName} + ' API Key',
                     ${provider.apiKey})}">
             </th:block>
-        </div>
-        <div class="field-group">
-            <label class="field-label" th:for="${providerKey} + 'ApiFormat'">API 格式</label>
-            <div class="slide-select-wrap">
-                <select class="slide-select" th:id="${providerKey} + 'ApiFormat'"
-                    th:name="${providerKey} + 'ApiFormat'">
-                    <th:block th:replace="${apiFormatOptions}"></th:block>
-                </select>
-            </div>
         </div>
 
         <!-- 模型列表 -->

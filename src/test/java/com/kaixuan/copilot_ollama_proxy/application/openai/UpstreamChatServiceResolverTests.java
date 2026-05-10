@@ -23,24 +23,10 @@ class UpstreamChatServiceResolverTests {
         given(catalog.getActiveProviders()).willReturn(List.of(provider("mimo", "openai", "mimo-v2.5-pro")));
 
         UpstreamChatService openAi = new StubUpstreamChatService("mimo", "openai");
-        UpstreamChatService anthropic = new StubUpstreamChatService("mimo", "anthropic");
 
-        UpstreamChatServiceResolver resolver = new UpstreamChatServiceResolver(catalog, List.of(openAi, anthropic));
+        UpstreamChatServiceResolver resolver = new UpstreamChatServiceResolver(catalog, List.of(openAi));
 
         assertThat(resolver.resolve("mimo-v2.5-pro")).isSameAs(openAi);
-    }
-
-    @Test
-    void resolvesAnthropicImplementationByProviderKeyAndApiFormat() {
-        RuntimeProviderCatalog catalog = mock(RuntimeProviderCatalog.class);
-        given(catalog.getActiveProviders()).willReturn(List.of(provider("mimo", "anthropic", "mimo-v2.5-pro")));
-
-        UpstreamChatService openAi = new StubUpstreamChatService("mimo", "openai");
-        UpstreamChatService anthropic = new StubUpstreamChatService("mimo", "anthropic");
-
-        UpstreamChatServiceResolver resolver = new UpstreamChatServiceResolver(catalog, List.of(openAi, anthropic));
-
-        assertThat(resolver.resolve("mimo-v2.5-pro")).isSameAs(anthropic);
     }
 
     @Test

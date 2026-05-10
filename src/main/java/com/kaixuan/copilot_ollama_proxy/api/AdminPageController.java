@@ -129,8 +129,7 @@ public class AdminPageController {
         }
         String baseUrl = (String) provider.getOrDefault("baseUrl", "");
         String apiKey = (String) provider.getOrDefault("apiKey", "");
-        String apiFormat = (String) provider.getOrDefault("apiFormat", "openai");
-        providerConfigRepository.saveProvider(providerKey, enabled, baseUrl, apiKey, apiFormat);
+        providerConfigRepository.saveProvider(providerKey, enabled, baseUrl, apiKey, "openai");
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("providerKey", providerKey);
         result.put("enabled", enabled);
@@ -166,14 +165,13 @@ public class AdminPageController {
 
     /**
      * 保存单个服务商的编辑面板数据（AJAX）。
-     * 只更新 baseUrl / apiKey / apiFormat / models，不修改 enabled 状态。
+     * 只更新 baseUrl / apiKey / models，不修改 enabled 状态。
      */
     @PostMapping("/config/api/providers/{providerKey}/config") @ResponseBody
     public ResponseEntity<Map<String, Object>> saveProviderConfig(@PathVariable String providerKey, @RequestParam Map<String, String> params) {
         String baseUrl = params.getOrDefault("baseUrl", "").trim();
         String apiKey = params.getOrDefault("apiKey", "").trim();
-        String apiFormat = params.getOrDefault("apiFormat", "openai").trim();
-        int providerId = providerConfigRepository.updateProviderConfig(providerKey, baseUrl, apiKey, apiFormat);
+        int providerId = providerConfigRepository.updateProviderConfig(providerKey, baseUrl, apiKey, "openai");
         // 解析模型列表
         List<Map<String, Object>> models = new ArrayList<>();
         String prefix = "models[";

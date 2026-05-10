@@ -16,7 +16,7 @@ public interface UpstreamChatService {
 
     /**
      * 返回该上游实现所对接的协议格式。
-     * 当前使用与 provider_config.api_format 相同的取值，如 openai / anthropic。
+     * 当前使用与 provider_config.api_format 相同的取值，如 openai。
      */
     default String getUpstreamApiFormat() {
         return "openai";

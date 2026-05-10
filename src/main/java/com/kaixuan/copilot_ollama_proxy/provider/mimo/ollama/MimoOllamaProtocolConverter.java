@@ -1,12 +1,13 @@
 package com.kaixuan.copilot_ollama_proxy.provider.mimo.ollama;
 
-import com.kaixuan.copilot_ollama_proxy.protocol.anthropic.AnthropicRequest;
-import com.kaixuan.copilot_ollama_proxy.protocol.anthropic.AnthropicResponse;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 
+import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -16,18 +17,13 @@ import java.util.function.Supplier;
 import java.util.function.ToIntFunction;
 
 /**
- * Mimo 模型的 Ollama 协议转换器。
+ * MiMo 模型的 Ollama 协议转换器（OpenAI 格式）。
  * <p>
- * 它负责 MiMo 非流式链路中的协议映射：
- * 把 OllamaChatRequest 映射为 AnthropicRequest，
- * 再把 AnthropicResponse 还原成 OllamaChatResponse。
- * 与流式状态累计相关的逻辑则由 MimoOllamaStreamTranslator 负责。
+ * 把 OllamaChatRequest 转成 MiMo 可接受的 OpenAI Chat Completions 请求体，
+ * 再把 MiMo 返回的 OpenAI JSON 响应还原成 OllamaChatResponse。
  */
 final class MimoOllamaProtocolConverter {
 
-    /**
-     * 转换器依赖的运行时能力集合。
-     */
     record Support(Function<String, String> modelResolver, ToIntFunction<Map<String, Object>> maxTokensResolver, Function<Object, String> contentExtractor, Supplier<String> timestampSupplier) {
         Support {
             Objects.requireNonNull(modelResolver, "modelResolver");
@@ -37,135 +33,155 @@ final class MimoOllamaProtocolConverter {
         }
     }
 
-    /**
-        * 将 Ollama 请求映射为 MiMo Anthropic 兼容请求。
-        * <p>
-        * 这里最重要的差异不是字段名，而是消息组织方式：
-        * system 要上提到顶层字段，tool 消息要改写成 user/tool_result block，
-        * assistant 的 tool_calls 则需要转成 Anthropic 的 tool_use block。
-        *
-        * @param ollamaReq Ollama 请求对象
-        * @param support 转换时依赖的运行时能力
-        * @return 可直接发送给 MiMo Anthropic 兼容端点的请求对象
-     */
-    AnthropicRequest toAnthropicRequest(OllamaChatRequest ollamaReq, Support support) {
-        var request = new AnthropicRequest();
-        request.setModel(support.modelResolver().apply(ollamaReq.getModel()));
-        request.setMaxTokens(support.maxTokensResolver().applyAsInt(ollamaReq.getOptions()));
-        request.setStream(false);
+    private final ObjectMapper objectMapper;
 
-        List<AnthropicRequest.SystemContent> systemParts = new ArrayList<>();
-        List<AnthropicRequest.Message> messages = new ArrayList<>();
+    MimoOllamaProtocolConverter(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
 
+    Map<String, Object> toOpenAiRequest(OllamaChatRequest ollamaReq, Support support) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", support.modelResolver().apply(ollamaReq.getModel()));
+        body.put("max_tokens", support.maxTokensResolver().applyAsInt(ollamaReq.getOptions()));
+
+        List<Map<String, Object>> messages = new ArrayList<>();
         for (var ollamaMsg : ollamaReq.getMessages()) {
             String role = ollamaMsg.getRole();
 
             if ("system".equals(role)) {
-                systemParts.add(new AnthropicRequest.SystemContent(support.contentExtractor().apply(ollamaMsg.getContent())));
+                messages.add(Map.of("role", "system", "content", support.contentExtractor().apply(ollamaMsg.getContent())));
             } else if ("tool".equals(role)) {
-                List<Map<String, Object>> toolResultContent = new ArrayList<>();
-                Map<String, Object> block = new HashMap<>();
-                block.put("type", "tool_result");
-                block.put("tool_use_id", "toolu_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
-                block.put("content", support.contentExtractor().apply(ollamaMsg.getContent()));
-                toolResultContent.add(block);
-                messages.add(new AnthropicRequest.Message("user", toolResultContent));
-            } else {
-                List<Object> contentBlocks = new ArrayList<>();
-
-                if (ollamaMsg.getToolCalls() != null) {
-                    for (var toolCall : ollamaMsg.getToolCalls()) {
-                        Map<String, Object> toolUseBlock = new HashMap<>();
-                        toolUseBlock.put("type", "tool_use");
-                        toolUseBlock.put("id", "toolu_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
-                        toolUseBlock.put("name", toolCall.getFunction().getName());
-                        toolUseBlock.put("input", toolCall.getFunction().getArguments() != null ? toolCall.getFunction().getArguments() : Map.of());
-                        contentBlocks.add(toolUseBlock);
-                    }
-                }
-
+                messages.add(Map.of("role", "tool", "content", support.contentExtractor().apply(ollamaMsg.getContent())));
+            } else if ("assistant".equals(role) && ollamaMsg.getToolCalls() != null) {
+                Map<String, Object> message = new LinkedHashMap<>();
+                message.put("role", "assistant");
                 String text = support.contentExtractor().apply(ollamaMsg.getContent());
-                if (text != null && !text.isEmpty()) {
-                    if (contentBlocks.isEmpty()) {
-                        messages.add(new AnthropicRequest.Message(role, text));
-                        continue;
-                    }
-                    Map<String, Object> textBlock = new HashMap<>();
-                    textBlock.put("type", "text");
-                    textBlock.put("text", text);
-                    contentBlocks.add(0, textBlock);
-                }
+                message.put("content", text != null ? text : "");
 
-                if (!contentBlocks.isEmpty()) {
-                    messages.add(new AnthropicRequest.Message(role, contentBlocks));
+                List<Map<String, Object>> toolCalls = new ArrayList<>();
+                for (var toolCall : ollamaMsg.getToolCalls()) {
+                    Map<String, Object> openAiToolCall = new LinkedHashMap<>();
+                    openAiToolCall.put("id", "call_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12));
+                    openAiToolCall.put("type", "function");
+                    openAiToolCall.put("function", Map.of("name", toolCall.getFunction().getName(), "arguments", serializeArguments(toolCall.getFunction().getArguments())));
+                    toolCalls.add(openAiToolCall);
                 }
+                message.put("tool_calls", toolCalls);
+                messages.add(message);
+            } else {
+                String text = support.contentExtractor().apply(ollamaMsg.getContent());
+                messages.add(Map.of("role", role, "content", text != null ? text : ""));
             }
         }
-
-        if (!systemParts.isEmpty()) {
-            request.setSystem(systemParts);
-        }
-        request.setMessages(messages);
+        body.put("messages", messages);
 
         if (ollamaReq.getTools() != null && !ollamaReq.getTools().isEmpty()) {
-            List<AnthropicRequest.Tool> tools = new ArrayList<>();
+            List<Map<String, Object>> tools = new ArrayList<>();
             for (var ollamaTool : ollamaReq.getTools()) {
                 if (ollamaTool.getFunction() != null) {
-                    var tool = new AnthropicRequest.Tool();
-                    tool.setName(ollamaTool.getFunction().getName());
-                    tool.setDescription(ollamaTool.getFunction().getDescription());
-                    tool.setInputSchema(ollamaTool.getFunction().getParameters());
+                    Map<String, Object> tool = new LinkedHashMap<>();
+                    tool.put("type", "function");
+                    Map<String, Object> function = new LinkedHashMap<>();
+                    function.put("name", ollamaTool.getFunction().getName());
+                    if (ollamaTool.getFunction().getDescription() != null) {
+                        function.put("description", ollamaTool.getFunction().getDescription());
+                    }
+                    if (ollamaTool.getFunction().getParameters() != null) {
+                        function.put("parameters", ollamaTool.getFunction().getParameters());
+                    }
+                    tool.put("function", function);
                     tools.add(tool);
                 }
             }
-            request.setTools(tools);
+            body.put("tools", tools);
         }
 
-        return request;
+        return body;
     }
 
-    /**
-     * 将 MiMo Anthropic 非流式响应还原成 Ollama 响应对象。
-     * <p>
-     * 文本、thinking 和 tool_use 三类 block 都会在这里被保留下来，
-     * 以便 Copilot 在非流式场景下仍能拿到完整的能力信息。
-     */
-    OllamaChatResponse toOllamaResponse(AnthropicResponse anthropicResp, String requestModel, Support support) {
-        var response = new OllamaChatResponse();
-        response.setModel(requestModel);
-        response.setCreatedAt(support.timestampSupplier().get());
-        response.setDone(true);
-        response.setDoneReason("stop".equals(anthropicResp.getStopReason()) ? "stop" : "tool_calls");
+    @SuppressWarnings("unchecked")
+    OllamaChatResponse toOllamaResponse(String openAiJson, String requestModel, Support support) throws IOException {
+        Map<String, Object> openAi = objectMapper.readValue(openAiJson, Map.class);
+        List<Map<String, Object>> choices = (List<Map<String, Object>>) openAi.get("choices");
 
-        var message = new OllamaChatResponse.ResponseMessage();
-        message.setRole("assistant");
+        if (choices == null || choices.isEmpty()) {
+            return createResponse(requestModel, true, "stop", createMessage("assistant", ""), support);
+        }
 
-        if (anthropicResp.getContent() != null) {
-            StringBuilder textBuilder = new StringBuilder();
-            List<OllamaChatResponse.ToolCallResult> toolCalls = new ArrayList<>();
+        Map<String, Object> choice = choices.get(0);
+        Map<String, Object> message = (Map<String, Object>) choice.get("message");
+        String finishReason = (String) choice.get("finish_reason");
 
-            for (var block : anthropicResp.getContent()) {
-                if ("text".equals(block.getType())) {
-                    textBuilder.append(block.getText());
-                } else if ("thinking".equals(block.getType())) {
-                    message.setThinking(block.getThinking());
-                } else if ("tool_use".equals(block.getType())) {
-                    var toolCallResult = new OllamaChatResponse.ToolCallResult();
-                    var function = new OllamaChatResponse.ToolCallFunction();
-                    function.setName(block.getName());
-                    function.setArguments(block.getInput());
-                    toolCallResult.setFunction(function);
-                    toolCalls.add(toolCallResult);
-                }
+        var ollamaMessage = new OllamaChatResponse.ResponseMessage();
+        ollamaMessage.setRole("assistant");
+
+        if (message != null) {
+            Object contentObj = message.get("content");
+            ollamaMessage.setContent(contentObj instanceof String stringContent ? stringContent : "");
+
+            Object reasoningObj = message.get("reasoning_content");
+            if (reasoningObj instanceof String reasoning && !reasoning.isEmpty()) {
+                ollamaMessage.setThinking(reasoning);
             }
 
-            message.setContent(textBuilder.toString());
-            if (!toolCalls.isEmpty()) {
-                message.setToolCalls(toolCalls);
+            List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) message.get("tool_calls");
+            if (toolCalls != null && !toolCalls.isEmpty()) {
+                List<OllamaChatResponse.ToolCallResult> toolCallResults = new ArrayList<>();
+                for (var toolCall : toolCalls) {
+                    Map<String, Object> function = (Map<String, Object>) toolCall.get("function");
+                    if (function != null) {
+                        var toolCallResult = new OllamaChatResponse.ToolCallResult();
+                        var toolFunction = new OllamaChatResponse.ToolCallFunction();
+                        toolFunction.setName((String) function.get("name"));
+                        toolFunction.setArguments(parseArguments(function.get("arguments")));
+                        toolCallResult.setFunction(toolFunction);
+                        toolCallResults.add(toolCallResult);
+                    }
+                }
+                ollamaMessage.setToolCalls(toolCallResults);
             }
         }
 
+        return createResponse(requestModel, true, "tool_calls".equals(finishReason) ? "tool_calls" : "stop", ollamaMessage, support);
+    }
+
+    private String serializeArguments(Map<String, Object> arguments) {
+        try {
+            return arguments != null ? objectMapper.writeValueAsString(arguments) : "{}";
+        } catch (Exception ignored) {
+            return "{}";
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> parseArguments(Object arguments) {
+        if (arguments instanceof Map) {
+            return (Map<String, Object>) arguments;
+        }
+        if (arguments instanceof String json) {
+            try {
+                return objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {
+                });
+            } catch (Exception ignored) {
+            }
+        }
+        return Map.of();
+    }
+
+    private OllamaChatResponse createResponse(String model, boolean done, String doneReason, OllamaChatResponse.ResponseMessage message, Support support) {
+        var response = new OllamaChatResponse();
+        response.setModel(model);
+        response.setCreatedAt(support.timestampSupplier().get());
+        response.setDone(done);
+        response.setDoneReason(doneReason);
         response.setMessage(message);
         return response;
+    }
+
+    private OllamaChatResponse.ResponseMessage createMessage(String role, String content) {
+        var message = new OllamaChatResponse.ResponseMessage();
+        message.setRole(role);
+        message.setContent(content);
+        return message;
     }
 }
