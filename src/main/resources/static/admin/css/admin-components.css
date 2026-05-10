@@ -1342,45 +1342,6 @@
     transform: translateX(18px);
 }
 
-/* ── 侧滑内 Select ── */
-.slide-select-wrap {
-    position: relative;
-}
-
-.slide-select {
-    width: 100%;
-    padding: 11px 36px 11px 14px;
-    border: 1.5px solid var(--border);
-    border-radius: var(--radius);
-    font-family: 'Crimson Pro', serif;
-    font-size: 15px;
-    color: var(--text-primary);
-    background: var(--surface);
-    appearance: none;
-    cursor: pointer;
-    outline: none;
-    transition: border-color 0.25s ease, box-shadow 0.25s ease;
-}
-
-.slide-select:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 4px var(--accent-light);
-}
-
-.slide-select-wrap::after {
-    content: '';
-    position: absolute;
-    right: 14px;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 0;
-    height: 0;
-    border-left: 5px solid transparent;
-    border-right: 5px solid transparent;
-    border-top: 5px solid var(--text-muted);
-    pointer-events: none;
-}
-
 /* ── 响应式 ── */
 
 @media (max-width: 640px) {

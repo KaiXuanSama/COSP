@@ -5,7 +5,7 @@
      内容片段：配置页 — 管理后台代理配置表单
      使用方式：th:replace="~{admin/content/settings :: settings}"
      数据模型：
-       - longcat: Map (providerKey, enabled, baseUrl, apiKey, apiFormat, models)
+       - longcat: Map (providerKey, enabled, baseUrl, apiKey, models)
        - mimo:    Map (同上)
        - sensenova: Map (同上)
        - deepseek: Map (同上)
@@ -78,28 +78,24 @@
                 providerKey='longcat', displayName='LongCat', provider=${longcat},
                 apiUrlPlaceholder='https://api.longcat.chat',
                 docUrl='https://longcat.chat/platform/docs/zh/#%E9%99%90%E6%B5%81%E8%A7%84%E5%88%99',
-                apiFormatOptions=~{admin/fragments/provider-card :: longcat-format-options},
                 fetchModelsSupported=false)}"></th:block>
 
             <th:block th:replace="~{admin/fragments/provider-card :: edit-panel(
                 providerKey='mimo', displayName='MiMo', provider=${mimo},
                 apiUrlPlaceholder='https://token-plan-cn.xiaomimimo.com/',
                 docUrl='https://platform.xiaomimimo.com/docs/zh-CN/pricing',
-                apiFormatOptions=~{admin/fragments/provider-card :: mimo-format-options},
                 fetchModelsSupported=true)}"></th:block>
 
             <th:block th:replace="~{admin/fragments/provider-card :: edit-panel(
                 providerKey='sensenova', displayName='SenseNova', provider=${sensenova},
                 apiUrlPlaceholder='https://token.sensenova.cn',
                 docUrl='https://platform.sensenova.cn/docs',
-                apiFormatOptions=~{admin/fragments/provider-card :: sensenova-format-options},
                 fetchModelsSupported=true)}"></th:block>
 
             <th:block th:replace="~{admin/fragments/provider-card :: edit-panel(
                 providerKey='deepseek', displayName='DeepSeek', provider=${deepseek},
                 apiUrlPlaceholder='https://api.deepseek.com',
                 docUrl='https://api-docs.deepseek.com/zh-cn/',
-                apiFormatOptions=~{admin/fragments/provider-card :: deepseek-format-options},
                 fetchModelsSupported=true)}"></th:block>
 
         </div>
