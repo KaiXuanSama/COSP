@@ -118,6 +118,10 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                 .bodyToFlux(STRING_SSE_TYPE).retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank())
                 .doOnNext(raw -> log.debug("{} 原始: {}", providerDisplayName(), raw)).doOnNext(raw -> onRawStreamChunk(raw)).concatMap(chunk -> {
                     if (!"[DONE]".equals(chunk) && chunk.contains("\"finish_reason\":\"stop\"") && !contentEmitted.get() && !reasoningBuffer.isEmpty()) {
+                        Flux<String> customFinish = onStreamFinish(chunkId.get(), model, reasoningBuffer, contentEmitted.get());
+                        if (customFinish != null) {
+                            return customFinish;
+                        }
                         log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
                         String fallbackContent = buildFallbackContentChunk(chunkId.get(), model, reasoningBuffer.toString());
                         String fallbackFinish = buildFallbackFinishChunk(chunkId.get(), model);
@@ -418,5 +422,26 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         } catch (Exception exception) {
             return "{}";
         }
+    }
+
+    /**
+     * 流结束时调用，子类可返回替换的 chunks 来覆盖默认的 reasoning fallback 逻辑。
+     *
+     * 当模型只输出了思考内容而未输出正文（contentEmitted 为 false），
+     * 并且 reasoningBuffer 非空时，基类会在发送 finish_reason:stop 之前调用此方法。
+     * 子类可以在此方法中检测特殊情况（如 XML 格式的工具调用意图），
+     * 并返回自定义的替代 chunk 序列。
+     *
+     * 返回 null 表示子类不做特殊处理，基类将执行默认的 reasoning fallback，
+     * 即把思考内容作为正文回复发送给客户端。
+     *
+     * @param chunkId 当前流的 chunk ID
+     * @param model 模型名称
+     * @param reasoningBuffer 累积的思考内容
+     * @param contentEmitted 是否已输出过正文 content
+     * @return 替代的 chunk 序列，或 null 表示使用默认 fallback
+     */
+    protected Flux<String> onStreamFinish(String chunkId, String model, StringBuilder reasoningBuffer, boolean contentEmitted) {
+        return null;
     }
 }
