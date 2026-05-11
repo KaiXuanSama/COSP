@@ -53,6 +53,20 @@ INSERT OR IGNORE INTO app_config (config_key, config_value) VALUES ('fake_versio
 
 -- ==================== API 调用按天汇总表 ====================
 
+-- ==================== 工具调用思考链缓存表 ====================
+-- 用于存储 DeepSeek 等模型在工具调用时的 reasoning_content，
+-- 以便在下一轮请求中回填，满足上游对工具调用历史的校验要求。
+
+CREATE TABLE IF NOT EXISTS reasoning_cache (
+    tool_call_id      TEXT    NOT NULL PRIMARY KEY,   -- 工具调用 ID（messages[x].tool_calls[y].id）
+    reasoning_content TEXT    NOT NULL,                -- 本次工具调用对应的思考链文本
+    created_at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_reasoning_cache_created_at ON reasoning_cache(created_at);
+
+-- ==================== API 调用按天汇总表 ====================
+
 CREATE TABLE IF NOT EXISTS api_usage_daily (
     usage_date    TEXT    NOT NULL PRIMARY KEY,   -- 日期，格式 YYYY-MM-DD
     call_count    INTEGER NOT NULL DEFAULT 0,     -- 当天调用次数
