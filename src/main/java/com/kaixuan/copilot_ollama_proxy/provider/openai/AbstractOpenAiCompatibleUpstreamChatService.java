@@ -116,7 +116,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
 
         return buildWebClient().post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody).retrieve()
                 .bodyToFlux(STRING_SSE_TYPE).retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank())
-                .doOnNext(raw -> log.debug("{} 原始: {}", providerDisplayName(), raw)).concatMap(chunk -> {
+                .doOnNext(raw -> log.debug("{} 原始: {}", providerDisplayName(), raw)).doOnNext(raw -> onRawStreamChunk(raw)).concatMap(chunk -> {
                     if (!"[DONE]".equals(chunk) && chunk.contains("\"finish_reason\":\"stop\"") && !contentEmitted.get() && !reasoningBuffer.isEmpty()) {
                         log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
                         String fallbackContent = buildFallbackContentChunk(chunkId.get(), model, reasoningBuffer.toString());
@@ -174,6 +174,17 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
      * @param resolvedModel 已经解析出的模型名称，子类可以根据该名称来决定是否进行特定的字段添加或格式转换
      */
     protected void customizeRequestBody(Map<String, Object> body, String resolvedModel) {
+    }
+
+    /**
+     * 子类可以重写此方法来拦截并处理上游返回的原始 SSE chunk（在 translateChunk 之前调用）。
+     * <p>
+     * 典型用途：捕获 tool_calls 相关的 reasoning_content 并存入缓存，
+     * 以便在下一轮请求中通过 {@link #customizeRequestBody} 回填。
+     *
+     * @param rawChunkJson 上游返回的原始 SSE data JSON 字符串（不含 "data: " 前缀）
+     */
+    protected void onRawStreamChunk(String rawChunkJson) {
     }
 
     /**
