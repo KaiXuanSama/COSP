@@ -26,42 +26,55 @@ public class MimoOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatS
         super(runtimeProviderCatalog, objectMapper, fallbackDefaultModel);
     }
 
-    // ==================== XML 工具调用检测状态字段 ====================
+    // ==================== 字符串替换 XML 拦截状态字段 ====================
 
-    /** 进入可疑模式后缓存的原始 chunk JSON 字符串 */
+    /** 进入字符串替换模式后缓存的原始 chunk JSON 字符串 */
     private final List<String> pendingChunks = new ArrayList<>(32);
 
-    /** 是否已进入可疑模式（检测到 &lt;tool_call 开标签后切换） */
-    private boolean suspiciousMode = false;
+    /** 是否已进入字符串替换模式（检测到 newString> 或 oldString> 后切换） */
+    private boolean stringReplaceMode = false;
 
-    /** 专用的 reasoning 缓冲区，累积 XML 格式的思考内容 */
-    private final StringBuilder xmlReasoningBuffer = new StringBuilder();
+    /** 累积的原始 XML 文本，用于解析参数 */
+    private final StringBuilder xmlAccumulator = new StringBuilder();
+
+    /** 提取到的 oldString 值 */
+    private String extractedOldString = null;
+
+    /** 提取到的 newString 值 */
+    private String extractedNewString = null;
+
+    /** 是否检测到 </tool_call> 闭标签 */
+    private boolean hasToolCallEndTag = false;
 
     // ==================== 流式处理覆写 ====================
 
     @Override
     public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
-        // 每次新请求前重置 XML 检测状态
+        // 每次新请求前重置状态
         pendingChunks.clear();
-        suspiciousMode = false;
-        xmlReasoningBuffer.setLength(0);
+        stringReplaceMode = false;
+        xmlAccumulator.setLength(0);
+        extractedOldString = null;
+        extractedNewString = null;
+        hasToolCallEndTag = false;
         return super.chatCompletionStream(openAiRequest, model);
     }
 
+    @Override
     protected void onRawStreamChunk(String rawChunkJson) {
         if ("[DONE]".equals(rawChunkJson)) {
             return;
         }
-        if (!suspiciousMode) {
-            checkXmlStart(rawChunkJson);
+        if (!stringReplaceMode) {
+            checkStringReplaceStart(rawChunkJson);
             return;
         }
-        bufferSuspiciousChunk(rawChunkJson);
+        bufferStringReplaceChunk(rawChunkJson);
     }
 
-    /** 在正常模式下检查 reasoning_content 是否包含 XML 工具调用开标签 */
+    /** 在正常模式下检查 reasoning_content 或 content 是否包含 newString>、oldString> 或 </tool_call> 关键字 */
     @SuppressWarnings("unchecked")
-    private void checkXmlStart(String rawChunkJson) {
+    private void checkStringReplaceStart(String rawChunkJson) {
         try {
             Map<String, Object> chunk = objectMapper.readValue(rawChunkJson, Map.class);
             List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
@@ -72,24 +85,34 @@ public class MimoOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatS
             if (delta == null) {
                 return;
             }
-            Object reasoningObj = delta.get("reasoning_content");
-            if (!(reasoningObj instanceof String reasoning) || reasoning.isEmpty()) {
-                return;
-            }
-            if (reasoning.contains("<tool_call")) {
-                suspiciousMode = true;
-                log.info("MiMo XML 工具调用检测: 发现 <tool_call 开标签，可能有 XML 工具调用意图");
-                xmlReasoningBuffer.append(reasoning);
+
+            // 同时检查 reasoning_content 和 content 字段
+            String reasoning = delta.get("reasoning_content") instanceof String s ? s : "";
+            String content = delta.get("content") instanceof String c ? c : "";
+
+            // 检测 newString>、oldString> 或 </tool_call> 关键字
+            if (reasoning.contains("newString>") || reasoning.contains("oldString>") || content.contains("newString>") || content.contains("oldString>") || content.contains("</tool_call>")) {
+                stringReplaceMode = true;
+                log.info("MiMo 字符串替换检测: 发现关键字 (reasoning 含关键字={}, content 含关键字={}, content 含</tool_call>={})，进入拦截模式", reasoning.contains("newString>") || reasoning.contains("oldString>"),
+                        content.contains("newString>") || content.contains("oldString>"), content.contains("</tool_call>"));
+                if (!reasoning.isEmpty()) {
+                    xmlAccumulator.append(reasoning);
+                }
+                if (!content.isEmpty()) {
+                    xmlAccumulator.append(content);
+                }
                 pendingChunks.add(rawChunkJson);
+                // 尝试从当前 chunk 提取参数
+                extractStringReplaceParams();
             }
         } catch (Exception e) {
             // 解析异常不影响主流程
         }
     }
 
-    /** 在可疑模式下缓存 chunk 并累积 reasoning */
+    /** 在字符串替换模式下缓存 chunk 并持续提取参数 */
     @SuppressWarnings("unchecked")
-    private void bufferSuspiciousChunk(String rawChunkJson) {
+    private void bufferStringReplaceChunk(String rawChunkJson) {
         try {
             Map<String, Object> chunk = objectMapper.readValue(rawChunkJson, Map.class);
             List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
@@ -99,15 +122,53 @@ public class MimoOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatS
             }
             Map<String, Object> delta = (Map<String, Object>) choices.get(0).get("delta");
             if (delta != null) {
-                Object reasoningObj = delta.get("reasoning_content");
-                if (reasoningObj instanceof String reasoning && !reasoning.isEmpty()) {
-                    xmlReasoningBuffer.append(reasoning);
+                // 同时累积 reasoning_content 和 content
+                String reasoning = delta.get("reasoning_content") instanceof String s ? s : "";
+                String content = delta.get("content") instanceof String c ? c : "";
+                if (!reasoning.isEmpty()) {
+                    xmlAccumulator.append(reasoning);
+                }
+                if (!content.isEmpty()) {
+                    xmlAccumulator.append(content);
                 }
             }
             pendingChunks.add(rawChunkJson);
+            // 持续提取参数
+            extractStringReplaceParams();
         } catch (Exception e) {
             // 解析异常不影响主流程
         }
+    }
+
+    /** 从累积的 XML 中提取 oldString、newString 并检测 </tool_call> */
+    private void extractStringReplaceParams() {
+        String xml = xmlAccumulator.toString();
+
+        // 检测 </tool_call> 闭标签
+        if (!hasToolCallEndTag && xml.contains("</tool_call>")) {
+            hasToolCallEndTag = true;
+            log.info("MiMo 字符串替换检测: 发现 </tool_call> 闭标签");
+        }
+
+        // 提取 oldString（只在未提取到时执行）
+        if (extractedOldString == null) {
+            extractedOldString = extractXmlParam(xml, "oldString");
+        }
+
+        // 提取 newString（只在未提取到时执行）
+        if (extractedNewString == null) {
+            extractedNewString = extractXmlParam(xml, "newString");
+        }
+    }
+
+    /** 从 XML 中提取指定参数名的值，匹配 <parameter=name>value</parameter> 格式 */
+    private String extractXmlParam(String xml, String paramName) {
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("<parameter=" + paramName + ">\\s*(.*?)\\s*</parameter>", java.util.regex.Pattern.DOTALL);
+        java.util.regex.Matcher matcher = pattern.matcher(xml);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+        return null;
     }
 
     // MiMo 上游服务的提供者键，用于在运行时配置中标识该服务。
@@ -176,118 +237,68 @@ public class MimoOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatS
         return "/chat/completions";
     }
 
-    // ==================== XML 工具调用检测：流结束处理 ====================
+    // ==================== 字符串替换拦截：流结束处理 ====================
 
     @Override
     protected Flux<String> onStreamFinish(String chunkId, String model, StringBuilder reasoningBuffer, boolean contentEmitted) {
-        if (!suspiciousMode || xmlReasoningBuffer.isEmpty()) {
+        if (!stringReplaceMode || xmlAccumulator.isEmpty()) {
             return null;
         }
-        String accumulatedXml = xmlReasoningBuffer.toString();
-        boolean hasToolCallEnd = accumulatedXml.contains("</tool_call>");
 
-        if (!hasToolCallEnd) {
-            // 场景 1: 只有 <tool_call 开标签，无闭标签 → 普通文本描述，放行所有缓存 chunk
-            log.info("MiMo XML 工具调用检测: 虚惊一场，仅有 <tool_call 开标签无闭标签，不是 XML 工具调用");
+        if (!hasToolCallEndTag) {
+            // 有 newString>/oldString> 但无 </tool_call> → 不是真正的工具调用，放行
+            log.info("MiMo 字符串替换检测: 有 newString>/oldString> 但无 </tool_call>，不是工具调用，放行");
             return releasePendingChunks();
         }
 
-        // 场景 3: </tool_call> + stop 同时满足 → 真正的工具调用意图
-        log.info("MiMo XML 工具调用检测: 确实是 XML 工具调用，开始转换为 JSON tool_calls (reasoning 长度: {})", accumulatedXml.length());
-        return convertXmlToToolCallFlux(chunkId, model);
+        // 检查参数是否完整
+        if (extractedOldString == null || extractedNewString == null) {
+            log.warn("MiMo 字符串替换检测: 参数不完整 (oldString={}, newString={})，回退放行", extractedOldString != null ? "✓" : "✗", extractedNewString != null ? "✓" : "✗");
+            return releasePendingChunks();
+        }
+
+        log.info("MiMo 字符串替换检测: 参数完整，构建 replace_string_in_file 工具调用 (oldString 长度: {}, newString 长度: {})", extractedOldString.length(), extractedNewString.length());
+        return buildStringReplaceToolCallFlux(chunkId, model);
     }
 
-    /** 场景 1/2: 放行所有缓存的 chunk */
+    /** 放行所有缓存的 chunk */
     private Flux<String> releasePendingChunks() {
         List<String> chunks = new ArrayList<>(pendingChunks);
         pendingChunks.clear();
         return Flux.fromIterable(chunks);
     }
 
-    /** 场景 3: 将 XML reasoning 内容转换为标准 OpenAI tool_calls JSON chunks */
-    private Flux<String> convertXmlToToolCallFlux(String chunkId, String model) {
+    /** 构建 replace_string_in_file 工具调用的标准 OpenAI tool_calls JSON chunks */
+    private Flux<String> buildStringReplaceToolCallFlux(String chunkId, String model) {
         try {
-            String accumulatedXml = xmlReasoningBuffer.toString();
-
-            // 提取 <parameter=name>value</parameter> 键值对
-            // 特殊语法: <parameter=oldString>而非 <parameter name="oldString">
-            Map<String, String> params = parseXmlParameters(accumulatedXml);
-            if (params.isEmpty()) {
-                log.warn("MiMo XML 转换失败: 未提取到参数，回退放行原始 chunk");
-                return releasePendingChunks();
-            }
-
-            // 根据参数名推断函数名
-            String functionName = inferFunctionName(params.keySet());
-
             // 构造 arguments JSON
-            String argumentsJson = objectMapper.writeValueAsString(params);
+            Map<String, String> args = new LinkedHashMap<>();
+            args.put("oldString", extractedOldString);
+            args.put("newString", extractedNewString);
+            String argumentsJson = objectMapper.writeValueAsString(args);
 
             // 生成唯一的 tool_call ID
             String toolCallId = "call_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
 
             // 构建 tool_calls delta chunk
-            String toolCallChunk = buildXmlToolCallChunk(chunkId, model, toolCallId, functionName, argumentsJson);
+            String toolCallChunk = buildToolCallChunk(chunkId, model, toolCallId, "replace_string_in_file", argumentsJson);
 
             // 构建 finish_reason: "tool_calls" 的 finish chunk
-            String finishChunk = buildXmlToolCallFinishChunk(chunkId, model);
+            String finishChunk = buildToolCallFinishChunk(chunkId, model);
 
             // 清理状态
             pendingChunks.clear();
-            log.info("MiMo XML 转换完成: {} ({}), 参数: {}, arguments 长度: {}", functionName, toolCallId, params.keySet(), argumentsJson.length());
+            log.info("MiMo 字符串替换转换完成: {} ({}), oldString 长度: {}, newString 长度: {}", toolCallId, "replace_string_in_file", extractedOldString.length(), extractedNewString.length());
 
             return Flux.just(toolCallChunk, finishChunk);
         } catch (Exception e) {
-            log.warn("MiMo XML 转换异常，回退放行原始 chunk: {}", e.getMessage());
+            log.warn("MiMo 字符串替换转换异常，回退放行原始 chunk: {}", e.getMessage());
             return releasePendingChunks();
         }
     }
 
-    /** 解析 XML reasoning 中的 <parameter=name>value</parameter> 键值对 */
-    private Map<String, String> parseXmlParameters(String xml) {
-        Map<String, String> params = new LinkedHashMap<>();
-
-        // 匹配 <parameter=name> 开标签：等号紧接标签名，非标准 XML
-        // 示例: <parameter=oldString> value </parameter>
-        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("<parameter=([^>]+)>\\s*(.*?)\\s*</parameter>", java.util.regex.Pattern.DOTALL);
-        java.util.regex.Matcher matcher = pattern.matcher(xml);
-
-        while (matcher.find()) {
-            String paramName = matcher.group(1).trim();
-            String paramValue = matcher.group(2);
-            if (!paramName.isEmpty() && !params.containsKey(paramName)) {
-                params.put(paramName, paramValue);
-            }
-        }
-
-        return params;
-    }
-
-    /** 根据参数名集合推断函数名 */
-    private String inferFunctionName(java.util.Set<String> paramNames) {
-        // 多个参数时，按字母序拼接 key 用于匹配
-        String key = String.join("+", paramNames.stream().sorted().toList());
-
-        // 已知的常用函数参数模式 → 函数名映射
-        if (key.contains("oldString") && key.contains("newString")) {
-            return "replace_string_in_file";
-        }
-        if (key.contains("content") && key.contains("filePath") && !key.contains("endLine")) {
-            return "create_file";
-        }
-        if (key.contains("command") && key.contains("explanation")) {
-            return "run_in_terminal";
-        }
-        if (key.contains("endLine") && key.contains("filePath") && key.contains("startLine")) {
-            return "read_file";
-        }
-
-        log.warn("MiMo XML: 无法根据参数推断函数名 (参数: {})，回退为 run_in_terminal", paramNames);
-        return "run_in_terminal";
-    }
-
     /** 构建标准 OpenAI tool_calls delta chunk JSON */
-    private String buildXmlToolCallChunk(String chunkId, String model, String toolCallId, String functionName, String argumentsJson) {
+    private String buildToolCallChunk(String chunkId, String model, String toolCallId, String functionName, String argumentsJson) {
         try {
             Map<String, Object> functionMap = new LinkedHashMap<>();
             functionMap.put("name", functionName);
@@ -323,7 +334,7 @@ public class MimoOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatS
     }
 
     /** 构建 tool_calls 的 finish chunk */
-    private String buildXmlToolCallFinishChunk(String chunkId, String model) {
+    private String buildToolCallFinishChunk(String chunkId, String model) {
         try {
             Map<String, Object> delta = new LinkedHashMap<>();
             delta.put("role", null);

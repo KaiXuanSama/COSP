@@ -117,15 +117,19 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         return buildWebClient().post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody).retrieve()
                 .bodyToFlux(STRING_SSE_TYPE).retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank())
                 .doOnNext(raw -> log.debug("{} 原始: {}", providerDisplayName(), raw)).doOnNext(raw -> onRawStreamChunk(raw)).concatMap(chunk -> {
-                    if (!"[DONE]".equals(chunk) && chunk.contains("\"finish_reason\":\"stop\"") && !contentEmitted.get() && !reasoningBuffer.isEmpty()) {
+                    // 对所有 finish chunk（stop/tool_calls）都调用 onStreamFinish 钩子
+                    if (!"[DONE]".equals(chunk) && (chunk.contains("\"finish_reason\":\"stop\"") || chunk.contains("\"finish_reason\":\"tool_calls\""))) {
                         Flux<String> customFinish = onStreamFinish(chunkId.get(), model, reasoningBuffer, contentEmitted.get());
                         if (customFinish != null) {
                             return customFinish;
                         }
-                        log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
-                        String fallbackContent = buildFallbackContentChunk(chunkId.get(), model, reasoningBuffer.toString());
-                        String fallbackFinish = buildFallbackFinishChunk(chunkId.get(), model);
-                        return Flux.just(fallbackContent, fallbackFinish);
+                        // 仅当 contentEmitted=false 且 reasoningBuffer 非空时触发 reasoning fallback
+                        if (chunk.contains("\"finish_reason\":\"stop\"") && !contentEmitted.get() && !reasoningBuffer.isEmpty()) {
+                            log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
+                            String fallbackContent = buildFallbackContentChunk(chunkId.get(), model, reasoningBuffer.toString());
+                            String fallbackFinish = buildFallbackFinishChunk(chunkId.get(), model);
+                            return Flux.just(fallbackContent, fallbackFinish);
+                        }
                     }
                     return Flux.just(translateChunk(chunk, contentEmitted, reasoningBuffer, chunkId));
                 }).doOnNext(chunk -> log.debug("{} 翻译: {}", providerDisplayName(), chunk));
