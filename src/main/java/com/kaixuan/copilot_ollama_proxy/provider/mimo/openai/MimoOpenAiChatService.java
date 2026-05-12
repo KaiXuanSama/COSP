@@ -153,6 +153,14 @@ public class MimoOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatS
         if (resolvedModel.contains("mimo")) {
             convertImageFormatForMimo(body);
         }
+        // 注入 XML 工具调用格式指导，纠正 MiMo 的 XML 格式问题
+        injectXmlToolCallGuidance(body);
+        // 打印最终请求体，确认提示词注入生效
+        try {
+            log.debug("MiMo 最终请求体:\n{}", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(body));
+        } catch (Exception e) {
+            log.debug("MiMo 请求体序列化失败: {}", e.getMessage());
+        }
     }
 
     // 在请求头中添加 MiMo 特定的认证信息，例如 API Key。
@@ -338,6 +346,68 @@ public class MimoOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatS
         } catch (Exception e) {
             return "{}";
         }
+    }
+
+    /**
+     * 向 system prompt 注入约束，禁止 MiMo 输出 XML 格式的工具调用，
+     * 要求其使用标准 JSON tool_calls 格式。
+     * <p>
+     * MiMo 在需要调用工具（尤其是字符串替换场景）时，倾向于输出残缺的
+     * XML 格式（如 &lt;parameter=oldString&gt;），这会导致 Copilot 解析失败。
+     * 通过明确禁止 XML 并给出 JSON 示例来规范其行为。
+     */
+    @SuppressWarnings("unchecked")
+    private void injectXmlToolCallGuidance(Map<String, Object> body) {
+        Object messagesObj = body.get("messages");
+        if (!(messagesObj instanceof List<?> rawMessages)) {
+            return;
+        }
+        List<Map<String, Object>> messages = (List<Map<String, Object>>) rawMessages;
+
+        String guidance = """
+                IMPORTANT: When you need to call tools, you MUST use the standard JSON tool_calls format. NEVER use XML format.
+
+                Correct JSON format example:
+                {
+                  "tool_calls": [
+                    {
+                      "id": "call_xxx",
+                      "type": "function",
+                      "function": {
+                        "name": "replace_string_in_file",
+                        "arguments": {
+                          "filePath": "/path/to/file",
+                          "oldString": "old text",
+                          "newString": "new text"
+                        }
+                      }
+                    }
+                  ]
+                }
+
+                Special notes:
+                1. Do NOT use any XML tags such as <tool_calls>, <tool_call>, <function>, <parameter>.
+                2. Do NOT output placeholder text like "...existing code...".
+                3. For string replacement scenarios (oldString/newString), always use JSON format, never XML.
+                4. Always use standard JSON format for all tool calls.
+                """;
+
+        // 查找已有的 system 消息
+        for (Object msgObj : messages) {
+            if (msgObj instanceof Map<?, ?> msg && "system".equals(msg.get("role"))) {
+                String existingContent = msg.get("content") instanceof String s ? s : "";
+                ((Map<String, Object>) msgObj).put("content", existingContent + "\n\n" + guidance);
+                log.info("MiMo 已注入 JSON 工具调用约束到 system prompt");
+                return;
+            }
+        }
+
+        // 没有 system 消息则新建一个
+        Map<String, Object> systemMsg = new LinkedHashMap<>();
+        systemMsg.put("role", "system");
+        systemMsg.put("content", guidance);
+        messages.add(0, systemMsg);
+        log.info("MiMo 已新建 system prompt 并注入 JSON 工具调用约束");
     }
 
     /**
