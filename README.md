@@ -16,6 +16,57 @@
 
 COSP（Copilot Ollama SpringBoot Proxy）是一个专为 GitHub Copilot 设计的协议适配层服务。它模拟 Ollama API 接口，将 Copilot 的请求转换为不同 AI 服务提供商的 API 格式，让 Copilot 能够直接使用多种第三方 AI 模型。
 
+## 模型适配度
+
+> 就目前的测试来看，出问题的只是部分带有思考链的模型，而不带思考链的模型一定没有问题。
+
+<table style="text-align: center">
+  <thead>
+    <tr>
+      <th style="text-align: center">服务商</th>
+      <th style="text-align: center">模型 ID</th>
+      <th style="text-align: center">适配度</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td rowspan="2" style="text-align: center"><strong>DeepSeek</strong></td>
+      <td style="text-align: center"><code>deepseek-v4-pro</code></td>
+      <td style="text-align: center">完美</td>
+    </tr>
+    <tr>
+      <td style="text-align: center"><code>deepseek-v4-flash</code></td>
+      <td style="text-align: center">完美</td>
+    </tr>
+    <tr>
+      <td rowspan="4" style="text-align: center"><strong>MiMo</strong></td>
+      <td style="text-align: center"><code>mimo-v2.5-pro</code></td>
+      <td style="text-align: center"><a href="MODEL_COMPATIBILITY.md#xiaomi-mimo-v25-pro--缺陷问题报告">⚠️ 缺陷</a></td>
+    </tr>
+    <tr>
+      <td style="text-align: center"><code>mimo-v2.5</code></td>
+      <td style="text-align: center">可用</td>
+    </tr>
+    <tr>
+      <td style="text-align: center"><code>mimo-v2-pro</code></td>
+      <td style="text-align: center">完美</td>
+    </tr>
+    <tr>
+      <td style="text-align: center"><code>mimo-v2-omni</code></td>
+      <td style="text-align: center">❓ 未验证</td>
+    </tr>
+    <tr>
+      <td rowspan="2" style="text-align: center"><strong>LongCat</strong></td>
+      <td style="text-align: center"><code>LongCat-2.0-Preview</code></td>
+      <td style="text-align: center">完美</td>
+    </tr>
+    <tr>
+      <td style="text-align: center"><code>LongCat-Flash-Thinking-2601</code></td>
+      <td style="text-align: center"><a href="MODEL_COMPATIBILITY.md#longcat--兼容适配">⚠️ 缺陷</a></td>
+    </tr>
+  </tbody>
+</table>
+
 ## 现有支持第三方模型供应商
 
 | 供应商 | 说明 | 默认模型 |
