@@ -40,21 +40,36 @@ public class AdminPageController {
     // ==================== SPA 路由支持 ====================
 
     /**
-     * Vue Router 的 createWebHistory('/admin/') 模式下，
-     * 所有 /admin/* 路径都需要返回 index.html 让 Vue 接管路由。
-     * 静态资源（/admin/assets/*, /admin/img/*）由 Spring Boot 默认处理。
+     * 根路径重定向到登录页。
      */
-    @GetMapping("/admin/")
-    public String spaFallback() {
-        return "forward:/admin/index.html";
+    @GetMapping("/")
+    public String rootRedirect() {
+        return "redirect:/login";
     }
 
     /**
-     * Vue 子路由回退 — 处理 /admin/overview, /admin/settings, /admin/account 等。
+     * Vue Router 的 createWebHistory() 模式下，
+     * 所有 SPA 路由需要返回 index.html 让 Vue 接管。
+     * 静态资源（/assets/*, /img/*）由 Spring Boot 默认处理。
      */
-    @GetMapping("/admin/{path:[a-z]+}")
-    public String spaSubRouteFallback() {
-        return "forward:/admin/index.html";
+    @GetMapping("/login")
+    public String spaLogin() {
+        return "forward:/index.html";
+    }
+
+    @GetMapping("/overview")
+    public String spaOverview() {
+        return "forward:/index.html";
+    }
+
+    @GetMapping("/settings")
+    public String spaSettings() {
+        return "forward:/index.html";
+    }
+
+    @GetMapping("/account")
+    public String spaAccount() {
+        return "forward:/index.html";
     }
 
     // ==================== API 统计接口（JSON） ====================

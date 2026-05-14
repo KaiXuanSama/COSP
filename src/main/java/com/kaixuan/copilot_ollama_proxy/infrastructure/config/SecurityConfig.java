@@ -22,15 +22,15 @@ public class SecurityConfig {
     public SecurityFilterChain adminSecurityFilterChain(HttpSecurity http) throws Exception {
         http.securityMatcher("/login", "/config/**", "/logout")
                 .authorizeHttpRequests(
-                        auth -> auth.requestMatchers("/login", "/admin/**", "/config/api/stats", "/config/api/providers", "/config/api/heatmap").permitAll()
+                        auth -> auth.requestMatchers("/login", "/config/api/stats", "/config/api/providers", "/config/api/heatmap").permitAll()
                                 .requestMatchers("/config/**").authenticated()
                                 .requestMatchers("/logout").permitAll()
                                 .anyRequest().permitAll())
-                .formLogin(form -> form.loginPage("/admin/").loginProcessingUrl("/login")
-                        .defaultSuccessUrl("/admin/overview", true).failureUrl("/admin/?login=error"))
-                .logout(logout -> logout.logoutUrl("/logout").logoutSuccessUrl("/admin/?login=logout"))
+                .formLogin(form -> form.loginPage("/login").loginProcessingUrl("/login")
+                        .defaultSuccessUrl("/overview", true).failureUrl("/login?login=error"))
+                .logout(logout -> logout.logoutUrl("/logout").logoutSuccessUrl("/login?login=logout"))
                 .exceptionHandling(exception -> exception.authenticationEntryPoint(
-                        (request, response, authException) -> response.sendRedirect("/admin/?unauthorized=true")))
+                        (request, response, authException) -> response.sendRedirect("/login?unauthorized=true")))
                 .csrf(csrf -> csrf.disable());
 
         return http.build();

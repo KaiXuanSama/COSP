@@ -8,6 +8,10 @@ import Account from '@/views/Account.vue'
 const routes = [
   {
     path: '/',
+    redirect: '/login',
+  },
+  {
+    path: '/login',
     name: 'login',
     component: Login,
   },
@@ -47,7 +51,7 @@ const routes = [
 ]
 
 const router = createRouter({
-  history: createWebHistory('/admin/'),
+  history: createWebHistory(),
   routes,
 })
 

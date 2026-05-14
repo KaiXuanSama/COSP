@@ -4,15 +4,15 @@ import { resolve } from 'path'
 
 export default defineConfig({
   plugins: [vue()],
-  base: '/admin/',
+  base: '/',
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),
     },
   },
-  // 构建输出到 Spring Boot 的静态资源目录
+  // 构建输出到 Spring Boot 的静态资源根目录
   build: {
-    outDir: resolve(__dirname, '../src/main/resources/static/admin'),
+    outDir: resolve(__dirname, '../src/main/resources/static'),
     emptyOutDir: true,
   },
   server: {

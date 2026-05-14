@@ -10,7 +10,7 @@ const sidebarOpen = ref(false)
 const username = ref('')
 
 const navItems = [
-  { path: '/', label: '概览', icon: 'overview' },
+  { path: '/overview', label: '概览', icon: 'overview' },
   { path: '/settings', label: '配置', icon: 'settings' },
 ]
 
@@ -117,7 +117,7 @@ onBeforeUnmount(() => {
         <span></span>
       </button>
       <div class="header-title">
-        <router-link to="/">COSP 管理后台</router-link>
+        <router-link to="/overview">COSP 管理后台</router-link>
       </div>
     </header>
 
