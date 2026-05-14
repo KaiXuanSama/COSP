@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
+import { NCard, NNumberAnimation, NTag, NSkeleton } from 'naive-ui'
 import { useStatsStore } from '@/stores/stats'
 
 const statsStore = useStatsStore()
@@ -7,50 +8,75 @@ const statsStore = useStatsStore()
 onMounted(() => {
   statsStore.fetchStats()
 })
-
-function formatToken(val: number): string {
-  if (val >= 1000) {
-    return (val / 1000).toFixed(1) + 'k'
-  }
-  return String(val)
-}
 </script>
 
 <template>
   <div class="overview-page">
-    <!-- 统计卡片 -->
     <div class="stats-grid">
-      <div class="stat-card">
-        <div class="stat-card-top accent"></div>
-        <div class="stat-card-label">API 调用总次数</div>
-        <div class="stat-card-value">{{ statsStore.stats?.totalApiCalls ?? '—' }}</div>
+      <n-card class="stat-card" :bordered="true">
+        <template #header>
+          <div class="stat-card-label">API 调用总次数</div>
+        </template>
+        <div class="stat-card-value">
+          <n-number-animation
+            v-if="statsStore.stats"
+            :from="0"
+            :to="statsStore.stats.totalApiCalls"
+            :duration="800"
+          />
+          <span v-else class="stat-card-placeholder">—</span>
+        </div>
         <div class="stat-card-desc">自服务启动以来累计</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-card-top success"></div>
-        <div class="stat-card-label">今日 API 调用次数</div>
-        <div class="stat-card-value">{{ statsStore.stats?.todayApiCalls ?? '—' }}</div>
+      </n-card>
+
+      <n-card class="stat-card" :bordered="true">
+        <template #header>
+          <div class="stat-card-label">今日 API 调用次数</div>
+        </template>
+        <div class="stat-card-value">
+          <n-number-animation
+            v-if="statsStore.stats"
+            :from="0"
+            :to="statsStore.stats.todayApiCalls"
+            :duration="800"
+          />
+          <span v-else class="stat-card-placeholder">—</span>
+        </div>
         <div class="stat-card-desc">当日 00:00 ~ 23:59</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-card-top blue"></div>
-        <div class="stat-card-label">今日 Token 消耗</div>
+      </n-card>
+
+      <n-card class="stat-card" :bordered="true">
+        <template #header>
+          <div class="stat-card-label">今日 Token 消耗</div>
+        </template>
         <div class="stat-card-value stat-card-value--sm">
-          <span>{{ statsStore.stats ? formatToken(statsStore.stats.todayInputTokens) : '—' }}</span>
-          <span class="stat-card-token-sep">/</span>
-          <span>{{ statsStore.stats ? formatToken(statsStore.stats.todayOutputTokens) : '—' }}</span>
+          <template v-if="statsStore.stats">
+            <n-number-animation
+              :from="0"
+              :to="statsStore.stats.todayInputTokens"
+              :duration="800"
+            />
+            <span class="stat-card-token-sep">/</span>
+            <n-number-animation
+              :from="0"
+              :to="statsStore.stats.todayOutputTokens"
+              :duration="800"
+            />
+          </template>
+          <span v-else class="stat-card-placeholder">—</span>
         </div>
         <div class="stat-card-desc">输入 / 输出</div>
-      </div>
+      </n-card>
     </div>
 
-    <!-- 加载状态 -->
-    <div v-if="statsStore.loading" class="loading-text">加载中...</div>
-    <div v-else-if="statsStore.error" class="error-text">{{ statsStore.error }}</div>
+    <div v-if="statsStore.loading" class="loading-area">
+      <n-skeleton text :repeat="3" />
+    </div>
+    <div v-else-if="statsStore.error" class="error-area">
+      <n-tag type="error">{{ statsStore.error }}</n-tag>
+    </div>
 
-    <!-- 关于本服务 -->
-    <div class="card info-card">
-      <div class="card-title">关于本服务</div>
+    <n-card title="关于本服务" class="info-card" :bordered="true">
       <div class="info-list">
         <div class="info-row">
           <span class="info-row-label">项目</span>
@@ -73,12 +99,11 @@ function formatToken(val: number): string {
           <span class="info-row-value">KaiXuan</span>
         </div>
       </div>
-    </div>
+    </n-card>
   </div>
 </template>
 
 <style lang="scss" scoped>
-@use 'sass:color';
 @use '@/styles/variables' as *;
 
 .stats-grid {
@@ -93,31 +118,9 @@ function formatToken(val: number): string {
 }
 
 .stat-card {
-  background: $surface;
-  border: 1px solid $border;
-  border-radius: $radius-lg;
-  padding: $space-lg;
-  box-shadow: $shadow-sm;
-  transition: transform 0.25s ease, box-shadow 0.25s ease;
-  position: relative;
-  overflow: hidden;
-
-  &:hover {
-    transform: translateY(-2px);
-    box-shadow: $shadow-md;
+  :deep(.n-card-header) {
+    padding-bottom: 0;
   }
-}
-
-.stat-card-top {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-
-  &.accent { background: $accent; }
-  &.success { background: $success; }
-  &.blue { background: $blue; }
 }
 
 .stat-card-label {
@@ -127,7 +130,6 @@ function formatToken(val: number): string {
   letter-spacing: 0.15em;
   text-transform: uppercase;
   color: $text-muted;
-  margin-bottom: $space-sm;
 }
 
 .stat-card-value {
@@ -142,6 +144,10 @@ function formatToken(val: number): string {
   }
 }
 
+.stat-card-placeholder {
+  color: $text-muted;
+}
+
 .stat-card-token-sep {
   color: $text-muted;
   margin: 0 4px;
@@ -154,7 +160,6 @@ function formatToken(val: number): string {
   color: $text-muted;
 }
 
-/* ── 关于卡片 ── */
 .info-card {
   margin-top: $space-lg;
 }
@@ -162,7 +167,6 @@ function formatToken(val: number): string {
 .info-list {
   display: flex;
   flex-direction: column;
-  gap: 0;
 }
 
 .info-row {
@@ -197,8 +201,16 @@ function formatToken(val: number): string {
     text-underline-offset: 2px;
 
     &:hover {
-      color: color.adjust($accent, $lightness: -10%);
+      color: #9c6231;
     }
   }
+}
+
+.loading-area {
+  padding: $space-lg 0;
+}
+
+.error-area {
+  padding: $space-lg 0;
 }
 </style>

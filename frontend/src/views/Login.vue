@@ -1,22 +1,24 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
+import { useRoute } from 'vue-router'
+import { NInput, NButton, NCheckbox, useMessage } from 'naive-ui'
 
-const router = useRouter()
 const route = useRoute()
+const message = useMessage()
 const username = ref('')
 const password = ref('')
-const error = ref('')
-const unauthorized = ref(false)
-const logout = ref(false)
+const loading = ref(false)
 
-unauthorized.value = !!route.query.unauthorized
-logout.value = route.query.login === 'logout'
-error.value = route.query.login === 'error' ? '用户名或密码错误。' : ''
+const unauthorized = !!route.query.unauthorized
+const logout = route.query.login === 'logout'
+const loginError = route.query.login === 'error'
+
+if (unauthorized) message.warning('无权限，请先登录。')
+if (logout) message.info('已成功退出登录。')
+if (loginError) message.error('用户名或密码错误。')
 
 async function handleSubmit() {
-  // Form submission handled by Spring Security's form login
-  // This is a placeholder - actual login uses standard form POST
+  loading.value = true
   const form = document.querySelector('form') as HTMLFormElement
   if (form) form.submit()
 }
@@ -24,7 +26,6 @@ async function handleSubmit() {
 
 <template>
   <div class="login-page">
-    <!-- 品牌面板 -->
     <section class="brand-panel">
       <div class="brand-logo">
         <svg class="brand-logo-icon" viewBox="0 0 28 28" fill="none">
@@ -45,79 +46,63 @@ async function handleSubmit() {
       </div>
     </section>
 
-    <!-- 表单面板 -->
     <section class="form-panel">
       <div class="form-header">
         <h1>欢迎回来</h1>
         <p>请输入管理员账号密码以访问配置页面。</p>
       </div>
 
-      <div v-if="unauthorized" class="message info">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10" />
-          <line x1="12" y1="8" x2="12" y2="12" />
-          <line x1="12" y1="16" x2="12.01" y2="16" />
-        </svg>
-        <span>无权限，请先登录。</span>
-      </div>
-
-      <div v-if="logout" class="message info">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10" />
-          <line x1="12" y1="8" x2="12" y2="12" />
-          <line x1="12" y1="16" x2="12.01" y2="16" />
-        </svg>
-        <span>已成功退出登录。</span>
-      </div>
-
-      <div v-if="error" class="message error">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10" />
-          <line x1="15" y1="9" x2="9" y2="15" />
-          <line x1="9" y1="9" x2="15" y2="15" />
-        </svg>
-        <span>{{ error }}</span>
-      </div>
-
-      <form class="login-form" action="/login" method="post" @submit="handleSubmit">
+      <form action="/login" method="post" @submit="handleSubmit">
         <div class="field-group">
           <label class="field-label" for="username">用户名</label>
-          <div class="field-input-wrap">
-            <input class="field-input field-input--with-icon" id="username" name="username" type="text" placeholder="请输入用户名" autocomplete="username" required autofocus v-model="username">
-            <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-              <circle cx="12" cy="7" r="4" />
-            </svg>
-          </div>
+          <n-input
+            id="username"
+            name="username"
+            v-model:value="username"
+            type="text"
+            placeholder="请输入用户名"
+            autocomplete="username"
+            required
+            autofocus
+          >
+            <template #prefix>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+            </template>
+          </n-input>
         </div>
 
         <div class="field-group">
           <label class="field-label" for="password">密码</label>
-          <div class="field-input-wrap">
-            <input class="field-input field-input--with-icon" id="password" name="password" type="password" placeholder="请输入密码" autocomplete="current-password" required v-model="password">
-            <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </svg>
-          </div>
+          <n-input
+            id="password"
+            name="password"
+            v-model:value="password"
+            type="password"
+            placeholder="请输入密码"
+            autocomplete="current-password"
+            required
+            show-password-on="click"
+          >
+            <template #prefix>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+            </template>
+          </n-input>
         </div>
 
         <div class="form-options">
-          <label class="checkbox-wrap">
-            <input class="checkbox-input" type="checkbox" name="remember-me">
-            <span class="checkbox-custom">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="20 6 9 17 4 12"></polyline>
-              </svg>
-            </span>
-            <span>记住我</span>
-          </label>
+          <n-checkbox name="remember-me">记住我</n-checkbox>
         </div>
 
         <div class="form-actions">
-          <button class="submit-btn" type="submit">
-            <span>登录</span>
-          </button>
+          <n-button type="primary" attr-type="submit" :loading="loading" size="large" class="login-btn">
+            登录
+          </n-button>
         </div>
       </form>
     </section>
@@ -132,7 +117,6 @@ async function handleSubmit() {
   min-height: 100vh;
 }
 
-/* ── 品牌面板 ── */
 .brand-panel {
   flex: 0 0 48%;
   background: $sidebar-bg;
@@ -209,7 +193,6 @@ async function handleSubmit() {
   }
 }
 
-/* ── 表单面板 ── */
 .form-panel {
   flex: 1;
   display: flex;
@@ -243,11 +226,33 @@ async function handleSubmit() {
   }
 }
 
+.field-group {
+  margin-bottom: $space-md;
+}
+
+.field-label {
+  display: block;
+  font-family: $font-mono;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: $text-muted;
+  margin-bottom: 6px;
+}
+
 .form-options {
   margin-top: $space-md;
 }
 
-.login-form {
-  animation: fadeUp 0.5s ease forwards;
+.form-actions {
+  margin-top: $space-lg;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.login-btn {
+  padding-left: 32px;
+  padding-right: 32px;
 }
 </style>
