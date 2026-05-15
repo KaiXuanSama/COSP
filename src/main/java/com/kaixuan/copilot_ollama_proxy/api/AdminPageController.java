@@ -29,8 +29,7 @@ public class AdminPageController {
     private final ApiUsageRepository apiUsageRepository;
     private final ProviderConfigRepository providerConfigRepository;
 
-    public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder,
-            ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository) {
+    public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder, ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository) {
         this.userDetailsManager = userDetailsManager;
         this.passwordEncoder = passwordEncoder;
         this.apiUsageRepository = apiUsageRepository;
@@ -74,8 +73,7 @@ public class AdminPageController {
 
     // ==================== API 统计接口（JSON） ====================
 
-    @GetMapping("/config/api/stats")
-    @ResponseBody
+    @GetMapping("/config/api/stats") @ResponseBody
     public ResponseEntity<Map<String, Object>> apiStats() {
         int[] tokens = apiUsageRepository.sumTokensToday();
         Map<String, Object> stats = new LinkedHashMap<>();
@@ -88,8 +86,7 @@ public class AdminPageController {
 
     // ==================== 服务商配置 JSON 接口 ====================
 
-    @GetMapping("/config/api/providers")
-    @ResponseBody
+    @GetMapping("/config/api/providers") @ResponseBody
     public ResponseEntity<Map<String, Object>> listProviders() {
         List<Map<String, Object>> all = providerConfigRepository.findAllWithModels();
         Map<String, Object> result = new LinkedHashMap<>();
@@ -102,8 +99,7 @@ public class AdminPageController {
     /**
      * 热力图数据 — 返回最近 N 天每天的 API 调用次数。
      */
-    @GetMapping("/config/api/heatmap")
-    @ResponseBody
+    @GetMapping("/config/api/heatmap") @ResponseBody
     public ResponseEntity<List<Map<String, Object>>> heatmapData(@RequestParam(defaultValue = "360") int days) {
         days = Math.max(7, Math.min(365, days));
         List<Map<String, Object>> data = apiUsageRepository.listRecentDays(days);
@@ -133,10 +129,8 @@ public class AdminPageController {
 
     // ==================== 服务商快速启用/禁用 ====================
 
-    @PostMapping("/config/api/providers/{providerKey}/toggle")
-    @ResponseBody
-    public ResponseEntity<Map<String, Object>> toggleProvider(@PathVariable String providerKey,
-            @RequestBody Map<String, Object> body) {
+    @PostMapping("/config/api/providers/{providerKey}/toggle") @ResponseBody
+    public ResponseEntity<Map<String, Object>> toggleProvider(@PathVariable String providerKey, @RequestBody Map<String, Object> body) {
         boolean enabled = Boolean.TRUE.equals(body.get("enabled"));
         Map<String, Object> provider = providerConfigRepository.findByKey(providerKey);
         if (provider == null) {
@@ -153,8 +147,7 @@ public class AdminPageController {
 
     // ==================== 运行配置 ====================
 
-    @PostMapping("/config/api/fake-version")
-    @ResponseBody
+    @PostMapping("/config/api/fake-version") @ResponseBody
     public ResponseEntity<Map<String, Object>> saveFakeVersion(@RequestParam String fakeVersion) {
         providerConfigRepository.saveConfig("fake_version", fakeVersion.trim());
         return ResponseEntity.ok(Map.of("ok", true));
@@ -162,10 +155,8 @@ public class AdminPageController {
 
     // ==================== 服务商编辑保存 ====================
 
-    @PostMapping("/config/api/providers/{providerKey}/config")
-    @ResponseBody
-    public ResponseEntity<Map<String, Object>> saveProviderConfig(@PathVariable String providerKey,
-            @RequestParam Map<String, String> params) {
+    @PostMapping("/config/api/providers/{providerKey}/config") @ResponseBody
+    public ResponseEntity<Map<String, Object>> saveProviderConfig(@PathVariable String providerKey, @RequestParam Map<String, String> params) {
         String baseUrl = params.getOrDefault("baseUrl", "").trim();
         String apiKey = params.getOrDefault("apiKey", "").trim();
         int providerId = providerConfigRepository.updateProviderConfig(providerKey, baseUrl, apiKey, "openai");
@@ -197,12 +188,20 @@ public class AdminPageController {
 
     // ==================== 账号修改（JSON API） ====================
 
-    @PostMapping("/config/api/account")
-    @ResponseBody
-    public ResponseEntity<Map<String, Object>> saveAccountApi(Authentication authentication,
-            @RequestParam(value = "newUsername", required = false) String newUsername,
-            @RequestParam(value = "currentPassword", required = false) String currentPassword,
-            @RequestParam(value = "newPassword", required = false) String newPassword,
+    /**
+     * 获取当前登录用户信息。
+     */
+    @GetMapping("/config/api/me") @ResponseBody
+    public ResponseEntity<Map<String, Object>> currentUser(Authentication authentication) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("username", authentication.getName());
+        result.put("role", authentication.getAuthorities().stream().findFirst().map(Object::toString).orElse(""));
+        return ResponseEntity.ok(result);
+    }
+
+    @PostMapping("/config/api/account") @ResponseBody
+    public ResponseEntity<Map<String, Object>> saveAccountApi(Authentication authentication, @RequestParam(value = "newUsername", required = false) String newUsername,
+            @RequestParam(value = "currentPassword", required = false) String currentPassword, @RequestParam(value = "newPassword", required = false) String newPassword,
             @RequestParam(value = "confirmPassword", required = false) String confirmPassword) {
 
         String currentUsername = authentication.getName();
@@ -216,8 +215,7 @@ public class AdminPageController {
             return ResponseEntity.ok(result);
         }
 
-        final String finalUsername = (newUsername != null && !newUsername.isBlank()
-                && !newUsername.equals(currentUsername)) ? newUsername.trim() : currentUsername;
+        final String finalUsername = (newUsername != null && !newUsername.isBlank() && !newUsername.equals(currentUsername)) ? newUsername.trim() : currentUsername;
         final String finalPassword;
         boolean passwordChanged = false;
 
