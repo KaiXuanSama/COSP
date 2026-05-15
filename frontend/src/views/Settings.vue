@@ -57,8 +57,15 @@ async function saveEditPanel() {
   })
   try {
     await providerStore.saveProviderConfig(key, params)
+    // 更新本地缓存
+    if (providerStore.providers[key]) {
+      providerStore.providers[key].baseUrl = editForm.value.baseUrl
+      providerStore.providers[key].apiKey = editForm.value.apiKey
+      providerStore.providers[key].models = editForm.value.models.map(m => ({ ...m }))
+    }
     message.success('保存成功')
-    closeEditPanel()
+    // 延迟关闭，让通知可见
+    setTimeout(() => closeEditPanel(), 600)
   } catch {
     message.error('保存失败')
   }
