@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NIcon, useMessage } from 'naive-ui'
+import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NIcon, NCheckbox, NForm, NFormItem, useMessage } from 'naive-ui'
 import { useProviderStore } from '@/stores/providers'
 
 const providerStore = useProviderStore()
@@ -141,46 +141,59 @@ function removeModel(index: number) {
         </div>
 
         <div class="field-group">
-          <label class="field-label">模型列表</label>
+          <div class="field-label-row">
+            <label class="field-label">模型列表</label>
+            <n-button text size="tiny" @click="addModel" class="add-model-btn">
+              <template #icon>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </template>
+              添加模型
+            </n-button>
+          </div>
           <div v-for="(m, i) in editForm.models" :key="i" class="model-card">
-            <div class="model-row">
-              <n-input v-model:value="m.modelName" placeholder="模型名称" class="model-input" />
-              <n-switch v-model:value="m.enabled" class="model-toggle" />
-              <n-button quaternary circle size="small" @click="removeModel(i)" class="model-remove-btn">
-                <template #icon>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                    stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </template>
-              </n-button>
-            </div>
-            <div class="model-detail-row">
-              <div class="model-detail-item">
-                <label class="model-detail-label">上下文</label>
-                <n-input v-model:value="m.contextSize" placeholder="4096" size="small" class="model-detail-input" />
+            <div class="model-card-inner">
+              <div class="model-checkbox-col">
+                <n-checkbox v-model:checked="m.enabled" />
               </div>
-              <div class="model-detail-item">
-                <label class="model-detail-label">工具</label>
-                <n-switch v-model:value="m.capsTools" size="small" />
+              <div class="model-divider"></div>
+              <div class="model-content-col">
+                <n-form :model="m" label-placement="left" :show-feedback="false" size="small">
+                  <div class="model-form-row">
+                    <n-form-item label="模型id" class="model-name-item">
+                      <n-input v-model:value="m.modelName" placeholder="模型名称" />
+                    </n-form-item>
+                  </div>
+                  <div class="model-form-row model-form-row--details">
+                    <n-form-item label="上下文" class="model-detail-item model-detail-item--grow">
+                      <n-input v-model:value="m.contextSize" placeholder="4096" />
+                    </n-form-item>
+                    <n-form-item label="工具" class="model-detail-item model-detail-item--switch">
+                      <n-switch v-model:value="m.capsTools" size="small" />
+                    </n-form-item>
+                    <n-form-item label="视觉" class="model-detail-item model-detail-item--switch">
+                      <n-switch v-model:value="m.capsVision" size="small" />
+                    </n-form-item>
+                  </div>
+                </n-form>
               </div>
-              <div class="model-detail-item">
-                <label class="model-detail-label">视觉</label>
-                <n-switch v-model:value="m.capsVision" size="small" />
+              <div class="model-divider"></div>
+              <div class="model-remove-col">
+                <n-button tertiary circle size="small" @click="removeModel(i)" class="model-remove-btn" title="删除此模型">
+                  <template #icon>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                      stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </template>
+                </n-button>
               </div>
             </div>
           </div>
-          <n-button dashed size="small" @click="addModel" class="add-model-btn">
-            <template #icon>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                stroke-linecap="round" stroke-linejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-            </template>
-            添加模型
-          </n-button>
         </div>
 
         <template #footer>
@@ -198,6 +211,13 @@ function removeModel(index: number) {
   margin-bottom: $space-md;
 }
 
+.field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
 .field-label {
   display: block;
   font-family: $font-mono;
@@ -206,7 +226,6 @@ function removeModel(index: number) {
   letter-spacing: 0.15em;
   text-transform: uppercase;
   color: $text-muted;
-  margin-bottom: 6px;
 }
 
 .fake-version-row {
@@ -289,63 +308,134 @@ function removeModel(index: number) {
   color: $text-muted;
 }
 
-.model-row {
-  display: flex;
-  align-items: center;
-  gap: $space-sm;
-  margin-bottom: $space-sm;
-}
-
 .model-card {
   background: $bg;
   border: 1px solid $border;
   border-radius: $radius;
-  padding: $space-sm $space-md;
+  padding: $space-sm;
   margin-bottom: $space-sm;
 }
 
-.model-detail-row {
+.model-card-inner {
+  display: flex;
+  gap: $space-sm;
+}
+
+.model-checkbox-col {
   display: flex;
   align-items: center;
-  gap: $space-md;
-  margin-top: $space-sm;
-  padding-top: $space-sm;
-  border-top: 1px solid $border-light;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+}
+
+.model-divider {
+  width: 1px;
+  flex-shrink: 0;
+  background: $border-light;
+  align-self: stretch;
+  margin: 2px 0;
+}
+
+.model-content-col {
+  flex: 1;
+  min-width: 0;
+}
+
+.model-remove-col {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+}
+
+.model-form-row {
+  display: flex;
+  align-items: center;
+  gap: $space-sm;
+
+  &--details {
+    margin-top: 2px;
+  }
+}
+
+.model-name-item {
+  flex: 1;
+  margin-bottom: 0 !important;
+
+  :deep(.n-form-item-label) {
+    font-family: $font-mono;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: $text-muted;
+    width: 45px;
+    flex-shrink: 0;
+    padding-right: 8px;
+    text-align: left;
+  }
+
+  :deep(.n-form-item-blank) {
+    flex: 1;
+  }
 }
 
 .model-detail-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
+  margin-bottom: 0 !important;
 
-.model-detail-label {
-  font-family: $font-mono;
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: $text-muted;
-  white-space: nowrap;
-}
+  :deep(.n-form-item-label) {
+    font-family: $font-mono;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: $text-muted;
+    width: 45px;
+    flex-shrink: 0;
+    padding-right: 6px;
+    text-align: left;
+  }
 
-.model-detail-input {
-  width: 80px;
-}
+  :deep(.n-form-item-blank) {
+    flex: 1;
+  }
 
-.model-input {
-  flex: 1;
-}
+  &--grow {
+    flex: 1;
+    min-width: 0;
+  }
 
-.model-toggle {
-  flex-shrink: 0;
+  &--switch {
+    flex-shrink: 0;
+
+    :deep(.n-form-item-label) {
+      width: auto;
+      padding-right: 4px;
+    }
+
+    :deep(.n-form-item-blank) {
+      flex: 0;
+    }
+  }
 }
 
 .model-remove-btn {
   flex-shrink: 0;
+  color: $text-muted !important;
+
+  &:hover {
+    color: $danger !important;
+  }
 }
 
 .add-model-btn {
-  margin-top: $space-sm;
+  flex-shrink: 0;
+  color: $text-muted !important;
+
+  &:hover {
+    color: $accent !important;
+  }
 }
 </style>
