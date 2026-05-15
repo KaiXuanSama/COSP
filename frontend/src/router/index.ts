@@ -23,6 +23,7 @@ const routes = [
         path: '',
         name: 'overview',
         component: Overview,
+        meta: { requiresAuth: true },
       },
     ],
   },
@@ -34,6 +35,7 @@ const routes = [
         path: '',
         name: 'settings',
         component: Settings,
+        meta: { requiresAuth: true },
       },
     ],
   },
@@ -45,6 +47,7 @@ const routes = [
         path: '',
         name: 'account',
         component: Account,
+        meta: { requiresAuth: true },
       },
     ],
   },
@@ -53,6 +56,25 @@ const routes = [
 const router = createRouter({
   history: createWebHistory(),
   routes,
+})
+
+// 路由守卫：检查认证状态
+// 使用 fetch + redirect: manual 避免 Axios 自动跟随 Spring Security 的 302 重定向
+router.beforeEach(async (to, from, next) => {
+  if (to.meta.requiresAuth) {
+    try {
+      const res = await fetch('/config/api/me', { redirect: 'manual' })
+      if (res.status === 200) {
+        next()
+      } else {
+        next('/login?unauthorized=true')
+      }
+    } catch {
+      next('/login?unauthorized=true')
+    }
+  } else {
+    next()
+  }
 })
 
 export default router
