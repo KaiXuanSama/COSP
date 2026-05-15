@@ -104,28 +104,21 @@ function removeModel(index: number) {
     <!-- 服务商配置 -->
     <n-card title="服务商配置" :bordered="true" style="margin-top: 16px;">
       <div class="provider-grid">
-        <div
-          v-for="(meta, key) in providerMeta"
-          :key="key"
-          class="provider-card"
-          @click="openEditPanel(key)"
-        >
+        <div v-for="(meta, key) in providerMeta" :key="key" class="provider-card" @click="openEditPanel(key)">
           <div class="provider-card-top" :class="meta.colorClass"></div>
           <div class="provider-card-header">
             <span class="provider-card-name">{{ meta.displayName }}</span>
-            <n-switch
-              :value="providerStore.providers[key]?.enabled"
-              @click.stop
-              @update:value="(val) => toggleProvider(key, val)"
-            />
+            <n-switch :value="providerStore.providers[key]?.enabled" @click.stop
+              @update:value="(val) => toggleProvider(key, val)" />
           </div>
           <div class="provider-card-status">
-            <n-tag v-if="providerStore.providers[key]?.enabled" type="success" size="small" :bordered="false">已启用</n-tag>
+            <n-tag v-if="providerStore.providers[key]?.enabled" type="success" size="small"
+              :bordered="false">已启用</n-tag>
             <n-tag v-else size="small" :bordered="false">已禁用</n-tag>
           </div>
           <div class="provider-card-models">
             <span v-if="providerStore.providers[key]?.models?.length">
-              {{ providerStore.providers[key].models.filter((m: any) => m.enabled).length }} 个模型
+              {{providerStore.providers[key].models.filter((m: any) => m.enabled).length}} 个模型
             </span>
             <span v-else class="text-muted">未配置</span>
           </div>
@@ -135,10 +128,12 @@ function removeModel(index: number) {
 
     <!-- 侧滑面板 -->
     <n-drawer :show="!!editingKey" :width="480" placement="right" @mask-click="closeEditPanel" @esc="closeEditPanel">
-      <n-drawer-content :title="editingKey ? providerMeta[editingKey]?.displayName : ''" closable @close="closeEditPanel">
+      <n-drawer-content :title="editingKey ? providerMeta[editingKey]?.displayName : ''" closable
+        @close="closeEditPanel">
         <div class="field-group">
           <label class="field-label">API 地址</label>
-          <n-input v-model:value="editForm.baseUrl" :placeholder="editingKey ? providerMeta[editingKey]?.apiUrlPlaceholder : ''" />
+          <n-input v-model:value="editForm.baseUrl"
+            :placeholder="editingKey ? providerMeta[editingKey]?.apiUrlPlaceholder : ''" />
         </div>
         <div class="field-group">
           <label class="field-label">API Key</label>
@@ -152,7 +147,8 @@ function removeModel(index: number) {
             <n-switch v-model:value="m.enabled" class="model-toggle" />
             <n-button quaternary circle size="small" @click="removeModel(i)" class="model-remove-btn">
               <template #icon>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round">
                   <line x1="18" y1="6" x2="6" y2="18" />
                   <line x1="6" y1="6" x2="18" y2="18" />
                 </svg>
@@ -161,7 +157,8 @@ function removeModel(index: number) {
           </div>
           <n-button dashed size="small" @click="addModel" class="add-model-btn">
             <template #icon>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
                 <line x1="12" y1="5" x2="12" y2="19" />
                 <line x1="5" y1="12" x2="19" y2="12" />
               </svg>
@@ -231,10 +228,21 @@ function removeModel(index: number) {
   right: 0;
   height: 3px;
 
-  &.accent { background: $accent; }
-  &.blue { background: $blue; }
-  &.success { background: $success; }
-  &.warning { background: $warning; }
+  &.accent {
+    background: $accent;
+  }
+
+  &.blue {
+    background: $blue;
+  }
+
+  &.success {
+    background: $success;
+  }
+
+  &.warning {
+    background: $warning;
+  }
 }
 
 .provider-card-header {

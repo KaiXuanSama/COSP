@@ -65,15 +65,18 @@ async function handleSubmit() {
       <n-card title="修改密码" :bordered="true" style="margin-top: 16px;">
         <div class="field-group">
           <label class="field-label" for="currentPassword">当前密码</label>
-          <n-input id="currentPassword" v-model:value="currentPassword" type="password" placeholder="请输入当前密码" show-password-on="click" />
+          <n-input id="currentPassword" v-model:value="currentPassword" type="password" placeholder="请输入当前密码"
+            show-password-on="click" />
         </div>
         <div class="field-group">
           <label class="field-label" for="newPassword">新密码</label>
-          <n-input id="newPassword" v-model:value="newPassword" type="password" placeholder="请输入新密码（至少4位）" show-password-on="click" />
+          <n-input id="newPassword" v-model:value="newPassword" type="password" placeholder="请输入新密码（至少4位）"
+            show-password-on="click" />
         </div>
         <div class="field-group">
           <label class="field-label" for="confirmPassword">确认新密码</label>
-          <n-input id="confirmPassword" v-model:value="confirmPassword" type="password" placeholder="请再次输入新密码" show-password-on="click" />
+          <n-input id="confirmPassword" v-model:value="confirmPassword" type="password" placeholder="请再次输入新密码"
+            show-password-on="click" />
         </div>
       </n-card>
 

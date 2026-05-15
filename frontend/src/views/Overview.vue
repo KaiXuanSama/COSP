@@ -18,12 +18,7 @@ onMounted(() => {
           <div class="stat-card-label">API 调用总次数</div>
         </template>
         <div class="stat-card-value">
-          <n-number-animation
-            v-if="statsStore.stats"
-            :from="0"
-            :to="statsStore.stats.totalApiCalls"
-            :duration="800"
-          />
+          <n-number-animation v-if="statsStore.stats" :from="0" :to="statsStore.stats.totalApiCalls" :duration="800" />
           <span v-else class="stat-card-placeholder">—</span>
         </div>
         <div class="stat-card-desc">自服务启动以来累计</div>
@@ -34,12 +29,7 @@ onMounted(() => {
           <div class="stat-card-label">今日 API 调用次数</div>
         </template>
         <div class="stat-card-value">
-          <n-number-animation
-            v-if="statsStore.stats"
-            :from="0"
-            :to="statsStore.stats.todayApiCalls"
-            :duration="800"
-          />
+          <n-number-animation v-if="statsStore.stats" :from="0" :to="statsStore.stats.todayApiCalls" :duration="800" />
           <span v-else class="stat-card-placeholder">—</span>
         </div>
         <div class="stat-card-desc">当日 00:00 ~ 23:59</div>
@@ -51,17 +41,9 @@ onMounted(() => {
         </template>
         <div class="stat-card-value stat-card-value--sm">
           <template v-if="statsStore.stats">
-            <n-number-animation
-              :from="0"
-              :to="statsStore.stats.todayInputTokens"
-              :duration="800"
-            />
+            <n-number-animation :from="0" :to="statsStore.stats.todayInputTokens" :duration="800" />
             <span class="stat-card-token-sep">/</span>
-            <n-number-animation
-              :from="0"
-              :to="statsStore.stats.todayOutputTokens"
-              :duration="800"
-            />
+            <n-number-animation :from="0" :to="statsStore.stats.todayOutputTokens" :duration="800" />
           </template>
           <span v-else class="stat-card-placeholder">—</span>
         </div>

@@ -71,30 +71,17 @@ async function handleSubmit() {
         <p>请输入管理员账号密码以访问配置页面。</p>
       </div>
 
-      <n-form
-        ref="formRef"
-        :model="formValue"
-        label-placement="top"
-        :show-label="false"
-        :show-feedback="false"
-        size="large"
-        @submit.prevent="handleSubmit"
-      >
+      <n-form ref="formRef" :model="formValue" label-placement="top" :show-label="false" :show-feedback="false"
+        size="large" @submit.prevent="handleSubmit">
         <n-form-item path="username">
-          <n-input
-            v-model:value="formValue.username"
-            type="text"
-            placeholder="请输入用户名"
-            autofocus
-
-            :input-props="{
-              name: 'username',
-              autocomplete: 'username',
-              required: true,
-            }"
-          >
+          <n-input v-model:value="formValue.username" type="text" placeholder="请输入用户名" autofocus :input-props="{
+            name: 'username',
+            autocomplete: 'username',
+            required: true,
+          }">
             <template #prefix>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round">
                 <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
                 <circle cx="12" cy="7" r="4" />
               </svg>
@@ -103,20 +90,15 @@ async function handleSubmit() {
         </n-form-item>
 
         <n-form-item path="password">
-          <n-input
-            v-model:value="formValue.password"
-            type="password"
-            placeholder="请输入密码"
-
-            show-password-on="click"
+          <n-input v-model:value="formValue.password" type="password" placeholder="请输入密码" show-password-on="click"
             :input-props="{
               name: 'password',
               autocomplete: 'current-password',
               required: true,
-            }"
-          >
+            }">
             <template #prefix>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round">
                 <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                 <path d="M7 11V7a5 5 0 0 1 10 0v4" />
               </svg>
