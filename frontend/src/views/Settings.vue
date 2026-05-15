@@ -6,6 +6,7 @@ import { useProviderStore } from '@/stores/providers'
 const providerStore = useProviderStore()
 const message = useMessage()
 const fakeVersion = ref('')
+const versionPlaceholder = ref('0.6.4')
 
 const providerMeta: Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string }> = {
   longcat: { displayName: 'LongCat', colorClass: 'accent', apiUrlPlaceholder: 'https://api.longcat.chat' },
@@ -23,6 +24,11 @@ const editForm = ref({
 
 onMounted(async () => {
   await providerStore.fetchAll()
+  await providerStore.fetchFakeVersion()
+  if (providerStore.fakeVersion) {
+    fakeVersion.value = providerStore.fakeVersion
+    versionPlaceholder.value = providerStore.fakeVersion
+  }
 })
 
 function openEditPanel(key: string) {
@@ -77,6 +83,7 @@ async function toggleProvider(key: string, val: boolean) {
 
 async function saveFakeVersion() {
   await providerStore.saveFakeVersion(fakeVersion.value)
+  versionPlaceholder.value = fakeVersion.value
   message.success('版本号已保存')
 }
 
@@ -102,7 +109,8 @@ function removeModel(index: number) {
       <div class="field-group">
         <label class="field-label" for="fakeVersion">伪造版本号</label>
         <div class="fake-version-row">
-          <n-input id="fakeVersion" v-model:value="fakeVersion" placeholder="0.6.4" @keyup.enter="saveFakeVersion" />
+          <n-input id="fakeVersion" v-model:value="fakeVersion" :placeholder="versionPlaceholder"
+            @keyup.enter="saveFakeVersion" />
           <n-button type="primary" @click="saveFakeVersion">保存</n-button>
         </div>
       </div>

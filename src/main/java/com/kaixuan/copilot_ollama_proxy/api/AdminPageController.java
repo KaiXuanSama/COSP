@@ -147,6 +147,12 @@ public class AdminPageController {
 
     // ==================== 运行配置 ====================
 
+    @GetMapping("/config/api/fake-version") @ResponseBody
+    public ResponseEntity<Map<String, Object>> getFakeVersion() {
+        String version = providerConfigRepository.findConfigValue("fake_version");
+        return ResponseEntity.ok(Map.of("fakeVersion", version != null ? version : ""));
+    }
+
     @PostMapping("/config/api/fake-version") @ResponseBody
     public ResponseEntity<Map<String, Object>> saveFakeVersion(@RequestParam String fakeVersion) {
         providerConfigRepository.saveConfig("fake_version", fakeVersion.trim());

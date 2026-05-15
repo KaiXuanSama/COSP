@@ -58,5 +58,14 @@ export const useProviderStore = defineStore('providers', () => {
     fakeVersion.value = version
   }
 
-  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, saveFakeVersion }
+  async function fetchFakeVersion() {
+    try {
+      const res = await http.get('/fake-version')
+      fakeVersion.value = res.data.fakeVersion || ''
+    } catch {
+      // ignore
+    }
+  }
+
+  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, saveFakeVersion, fetchFakeVersion }
 })
