@@ -142,18 +142,34 @@ function removeModel(index: number) {
 
         <div class="field-group">
           <label class="field-label">模型列表</label>
-          <div v-for="(m, i) in editForm.models" :key="i" class="model-row">
-            <n-input v-model:value="m.modelName" placeholder="模型名称" class="model-input" />
-            <n-switch v-model:value="m.enabled" class="model-toggle" />
-            <n-button quaternary circle size="small" @click="removeModel(i)" class="model-remove-btn">
-              <template #icon>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                  stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </template>
-            </n-button>
+          <div v-for="(m, i) in editForm.models" :key="i" class="model-card">
+            <div class="model-row">
+              <n-input v-model:value="m.modelName" placeholder="模型名称" class="model-input" />
+              <n-switch v-model:value="m.enabled" class="model-toggle" />
+              <n-button quaternary circle size="small" @click="removeModel(i)" class="model-remove-btn">
+                <template #icon>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </template>
+              </n-button>
+            </div>
+            <div class="model-detail-row">
+              <div class="model-detail-item">
+                <label class="model-detail-label">上下文</label>
+                <n-input v-model:value="m.contextSize" placeholder="4096" size="small" class="model-detail-input" />
+              </div>
+              <div class="model-detail-item">
+                <label class="model-detail-label">工具</label>
+                <n-switch v-model:value="m.capsTools" size="small" />
+              </div>
+              <div class="model-detail-item">
+                <label class="model-detail-label">视觉</label>
+                <n-switch v-model:value="m.capsVision" size="small" />
+              </div>
+            </div>
           </div>
           <n-button dashed size="small" @click="addModel" class="add-model-btn">
             <template #icon>
@@ -278,6 +294,43 @@ function removeModel(index: number) {
   align-items: center;
   gap: $space-sm;
   margin-bottom: $space-sm;
+}
+
+.model-card {
+  background: $bg;
+  border: 1px solid $border;
+  border-radius: $radius;
+  padding: $space-sm $space-md;
+  margin-bottom: $space-sm;
+}
+
+.model-detail-row {
+  display: flex;
+  align-items: center;
+  gap: $space-md;
+  margin-top: $space-sm;
+  padding-top: $space-sm;
+  border-top: 1px solid $border-light;
+}
+
+.model-detail-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-detail-label {
+  font-family: $font-mono;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: $text-muted;
+  white-space: nowrap;
+}
+
+.model-detail-input {
+  width: 80px;
 }
 
 .model-input {
