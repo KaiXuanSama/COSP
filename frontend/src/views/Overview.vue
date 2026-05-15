@@ -7,29 +7,22 @@ const statsStore = useStatsStore()
 const animActive = ref(true)
 
 // 记录刷新前的旧值，作为动画起点
-const prevTotal = ref(0)
-const prevToday = ref(0)
-const prevInput = ref(0)
-const prevOutput = ref(0)
+const prev = ref({ total: 0, today: 0, input: 0, output: 0 })
 
 let timer: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
   statsStore.fetchStats()
   timer = setInterval(async () => {
-    // 1. 记录旧值（当前显示的值）
+    // 1. 记录旧值
     if (statsStore.stats) {
-      prevTotal.value = statsStore.stats.totalApiCalls
-      prevToday.value = statsStore.stats.todayApiCalls
-      prevInput.value = statsStore.stats.todayInputTokens
-      prevOutput.value = statsStore.stats.todayOutputTokens
+      const s = statsStore.stats
+      prev.value = { total: s.totalApiCalls, today: s.todayApiCalls, input: s.todayInputTokens, output: s.todayOutputTokens }
     }
-    // 2. 停用动画
+    // 2. 停用动画 → nextTick → 获取新数据 → 重新激活动画
     animActive.value = false
     await nextTick()
-    // 3. 获取新数据
     await statsStore.fetchStats()
-    // 4. 重新激活动画 → watchEffect 触发 animate(from=旧值, to=新值)
     animActive.value = true
   }, 5000)
 })
@@ -47,7 +40,7 @@ onUnmounted(() => {
           <div class="stat-card-label">API 调用总次数</div>
         </template>
         <div class="stat-card-value">
-          <n-number-animation v-if="statsStore.stats" :active="animActive" :from="prevTotal"
+          <n-number-animation v-if="statsStore.stats" :active="animActive" :from="prev.total"
             :to="statsStore.stats.totalApiCalls" :duration="800" />
           <span v-else class="stat-card-placeholder">—</span>
         </div>
@@ -59,7 +52,7 @@ onUnmounted(() => {
           <div class="stat-card-label">今日 API 调用次数</div>
         </template>
         <div class="stat-card-value">
-          <n-number-animation v-if="statsStore.stats" :active="animActive" :from="prevToday"
+          <n-number-animation v-if="statsStore.stats" :active="animActive" :from="prev.today"
             :to="statsStore.stats.todayApiCalls" :duration="800" />
           <span v-else class="stat-card-placeholder">—</span>
         </div>
@@ -72,10 +65,10 @@ onUnmounted(() => {
         </template>
         <div class="stat-card-value stat-card-value--sm">
           <template v-if="statsStore.stats">
-            <n-number-animation :active="animActive" :from="prevInput" :to="statsStore.stats.todayInputTokens"
+            <n-number-animation :active="animActive" :from="prev.input" :to="statsStore.stats.todayInputTokens"
               :duration="800" />
             <span class="stat-card-token-sep">/</span>
-            <n-number-animation :active="animActive" :from="prevOutput" :to="statsStore.stats.todayOutputTokens"
+            <n-number-animation :active="animActive" :from="prev.output" :to="statsStore.stats.todayOutputTokens"
               :duration="800" />
           </template>
           <span v-else class="stat-card-placeholder">—</span>
