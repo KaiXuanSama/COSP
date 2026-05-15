@@ -7,7 +7,7 @@ const router = useRouter()
 const route = useRoute()
 
 const sidebarOpen = ref(false)
-const username = ref('')
+const username = ref('root')
 
 const navItems = [
   { path: '/overview', label: '概览', icon: 'overview' },
@@ -15,6 +15,8 @@ const navItems = [
 ]
 
 const isActive = (path: string) => route.path === path
+
+const avatarLetter = computed(() => username.value.charAt(0).toUpperCase())
 
 function toggleSidebar() {
   sidebarOpen.value = !sidebarOpen.value
@@ -27,10 +29,10 @@ function navigate(path: string) {
 
 async function fetchUsername() {
   try {
-    const res = await http.get('/stats')
-    // Username is not in stats, we'll get it from a different endpoint
+    const res = await http.get('/me')
+    username.value = res.data.username
   } catch {
-    // ignore
+    // 默认使用 'root' 作为 fallback
   }
 }
 
@@ -41,6 +43,7 @@ function handleResize() {
 }
 
 onMounted(() => {
+  fetchUsername()
   window.addEventListener('resize', handleResize)
 })
 
@@ -86,9 +89,9 @@ onBeforeUnmount(() => {
 
     <div class="sidebar-footer">
       <div class="sidebar-user">
-        <div class="sidebar-avatar">R</div>
+        <div class="sidebar-avatar">{{ avatarLetter }}</div>
         <div class="sidebar-user-info">
-          <div class="sidebar-user-name">root</div>
+          <div class="sidebar-user-name">{{ username }}</div>
           <div class="sidebar-user-role">管理员</div>
         </div>
         <router-link to="/account" class="sidebar-user-edit" title="修改账号">
