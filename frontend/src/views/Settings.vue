@@ -79,6 +79,11 @@ async function saveEditPanel() {
 
 async function toggleProvider(key: string, val: boolean) {
   await providerStore.toggleProvider(key, val)
+  if (val) {
+    message.success(`${providerMeta[key]?.displayName || key} 已启用`)
+  } else {
+    message.info(`${providerMeta[key]?.displayName || key} 已禁用`)
+  }
 }
 
 async function saveFakeVersion() {
