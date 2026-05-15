@@ -24,6 +24,7 @@ async function handleSubmit() {
       username: formValue.value.username,
       password: formValue.value.password,
     })
+    // 直接使用 fetch 发送登录请求，避免 Axios 自动跟随 Spring Security 的 302 重定向
     const res = await fetch('/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
