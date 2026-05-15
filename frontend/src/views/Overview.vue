@@ -1,12 +1,23 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
-import { NCard, NNumberAnimation, NTag, NSkeleton } from 'naive-ui'
+import { onMounted, onUnmounted, ref } from 'vue'
+import { NCard, NNumberAnimation } from 'naive-ui'
 import { useStatsStore } from '@/stores/stats'
 
 const statsStore = useStatsStore()
+const refreshKey = ref(0)
+let timer: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
   statsStore.fetchStats()
+  // 每 30 秒自动刷新统计数据
+  timer = setInterval(() => {
+    statsStore.fetchStats()
+    refreshKey.value++
+  }, 5000)
+})
+
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
 })
 </script>
 
@@ -18,7 +29,8 @@ onMounted(() => {
           <div class="stat-card-label">API 调用总次数</div>
         </template>
         <div class="stat-card-value">
-          <n-number-animation v-if="statsStore.stats" :from="0" :to="statsStore.stats.totalApiCalls" :duration="800" />
+          <n-number-animation v-if="statsStore.stats" :key="refreshKey" :from="0" :to="statsStore.stats.totalApiCalls"
+            :duration="800" />
           <span v-else class="stat-card-placeholder">—</span>
         </div>
         <div class="stat-card-desc">自服务启动以来累计</div>
@@ -29,7 +41,8 @@ onMounted(() => {
           <div class="stat-card-label">今日 API 调用次数</div>
         </template>
         <div class="stat-card-value">
-          <n-number-animation v-if="statsStore.stats" :from="0" :to="statsStore.stats.todayApiCalls" :duration="800" />
+          <n-number-animation v-if="statsStore.stats" :key="refreshKey" :from="0" :to="statsStore.stats.todayApiCalls"
+            :duration="800" />
           <span v-else class="stat-card-placeholder">—</span>
         </div>
         <div class="stat-card-desc">当日 00:00 ~ 23:59</div>
@@ -41,21 +54,16 @@ onMounted(() => {
         </template>
         <div class="stat-card-value stat-card-value--sm">
           <template v-if="statsStore.stats">
-            <n-number-animation :from="0" :to="statsStore.stats.todayInputTokens" :duration="800" />
+            <n-number-animation :key="'in-' + refreshKey" :from="0" :to="statsStore.stats.todayInputTokens"
+              :duration="800" />
             <span class="stat-card-token-sep">/</span>
-            <n-number-animation :from="0" :to="statsStore.stats.todayOutputTokens" :duration="800" />
+            <n-number-animation :key="'out-' + refreshKey" :from="0" :to="statsStore.stats.todayOutputTokens"
+              :duration="800" />
           </template>
           <span v-else class="stat-card-placeholder">—</span>
         </div>
         <div class="stat-card-desc">输入 / 输出</div>
       </n-card>
-    </div>
-
-    <div v-if="statsStore.loading" class="loading-area">
-      <n-skeleton text :repeat="3" />
-    </div>
-    <div v-else-if="statsStore.error" class="error-area">
-      <n-tag type="error">{{ statsStore.error }}</n-tag>
     </div>
 
     <n-card title="关于本服务" class="info-card" :bordered="true">
@@ -186,13 +194,5 @@ onMounted(() => {
       color: #9c6231;
     }
   }
-}
-
-.loading-area {
-  padding: $space-lg 0;
-}
-
-.error-area {
-  padding: $space-lg 0;
 }
 </style>
