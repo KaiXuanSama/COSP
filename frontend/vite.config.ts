@@ -17,10 +17,13 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // 开发时代理 API 请求到 Spring Boot 后端
     proxy: {
       '/config/api': {
-        target: 'http://localhost:11434',
+        target: 'http://localhost:80',
+        changeOrigin: true,
+      },
+      '/login': {
+        target: 'http://localhost:80',
         changeOrigin: true,
       },
     },
