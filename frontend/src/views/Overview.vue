@@ -142,6 +142,10 @@ function switchHeatmapMode() {
   const currentIndex = heatmapModeOrder.indexOf(heatmapMode.value)
   heatmapMode.value = heatmapModeOrder[(currentIndex + 1) % heatmapModeOrder.length]
 }
+
+function toKUnit(value: number): number {
+  return value >= 100_000 ? value / 1000 : value
+}
 </script>
 
 <template>
@@ -177,11 +181,17 @@ function switchHeatmapMode() {
         </template>
         <div class="stat-card-value stat-card-value--sm">
           <template v-if="statsStore.stats">
-            <n-number-animation :active="animActive" :from="prev.input" :to="statsStore.stats.todayInputTokens"
-              :duration="800" />
+            <span class="stat-card-token-group">
+              <n-number-animation :active="animActive" :from="toKUnit(prev.input)" :to="toKUnit(statsStore.stats.todayInputTokens)"
+                :precision="statsStore.stats.todayInputTokens >= 100_000 ? 2 : 0" :duration="800" />
+              <span v-if="statsStore.stats.todayInputTokens >= 100_000" class="stat-card-token-k">k</span>
+            </span>
             <span class="stat-card-token-sep">/</span>
-            <n-number-animation :active="animActive" :from="prev.output" :to="statsStore.stats.todayOutputTokens"
-              :duration="800" />
+            <span class="stat-card-token-group">
+              <n-number-animation :active="animActive" :from="toKUnit(prev.output)" :to="toKUnit(statsStore.stats.todayOutputTokens)"
+                :precision="statsStore.stats.todayOutputTokens >= 100_000 ? 2 : 0" :duration="800" />
+              <span v-if="statsStore.stats.todayOutputTokens >= 100_000" class="stat-card-token-k">k</span>
+            </span>
           </template>
           <span v-else class="stat-card-placeholder">—</span>
         </div>
@@ -280,6 +290,17 @@ function switchHeatmapMode() {
   color: $text-muted;
   margin: 0 4px;
   font-size: 18px;
+}
+
+.stat-card-token-group {
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.stat-card-token-k {
+  font-size: 14px;
+  color: $text-muted;
+  margin-left: 1px;
 }
 
 .stat-card-desc {
