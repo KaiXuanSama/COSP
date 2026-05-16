@@ -127,6 +127,10 @@ async function handleSubmit() {
 .login-page {
   display: flex;
   min-height: 100vh;
+
+  @media (max-width: 768px) {
+    flex-direction: column;
+  }
 }
 
 .brand-panel {
@@ -142,7 +146,7 @@ async function handleSubmit() {
   @media (max-width: 768px) {
     flex: none;
     padding: $space-lg;
-    min-height: 200px;
+    min-height: 180px;
     justify-content: flex-start;
   }
 }
@@ -156,6 +160,11 @@ async function handleSubmit() {
   font-weight: 600;
   color: $text-light;
   margin-bottom: $space-xl;
+
+  @media (max-width: 768px) {
+    font-size: 20px;
+    margin-bottom: $space-md;
+  }
 }
 
 .brand-logo-icon {
@@ -175,6 +184,10 @@ async function handleSubmit() {
   font-weight: 300;
   color: $text-light;
   margin-bottom: $space-md;
+
+  @media (max-width: 768px) {
+    font-size: 24px;
+  }
 }
 
 .brand-desc {
@@ -182,6 +195,10 @@ async function handleSubmit() {
   font-size: 15px;
   color: rgba(245, 243, 238, 0.6);
   line-height: 1.7;
+
+  @media (max-width: 768px) {
+    font-size: 13px;
+  }
 }
 
 .dot-grid {
@@ -229,6 +246,10 @@ async function handleSubmit() {
     font-weight: 600;
     color: $text-primary;
     margin-bottom: $space-sm;
+
+    @media (max-width: 768px) {
+      font-size: 22px;
+    }
   }
 
   p {
@@ -251,10 +272,18 @@ async function handleSubmit() {
 .form-actions {
   display: flex;
   justify-content: flex-end;
+
+  @media (max-width: 768px) {
+    justify-content: stretch;
+  }
 }
 
 .login-btn {
   padding-left: 32px;
   padding-right: 32px;
+
+  @media (max-width: 768px) {
+    width: 100%;
+  }
 }
 </style>
