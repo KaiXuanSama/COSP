@@ -24,10 +24,12 @@
  *    - 不要把页面业务请求逻辑重新放回组件内部。
  *    - 如果要调整动画行为，优先修改时间线 composable，而不是在模板层叠加状态。
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { ActivityHeatmapProps, HeatmapRecord, HeatmapTooltipPayload, NormalizedHeatmapDay } from './heatmap'
 import { useHeatmapData } from './useHeatmapData'
 import { useHeatmapTimeline } from './useHeatmapTimeline'
+
+const DEFAULT_DAY_LABELS_WIDTH = 72
 
 const props = withDefaults(defineProps<ActivityHeatmapProps>(), {
   activeMode: '',
@@ -50,10 +52,11 @@ const props = withDefaults(defineProps<ActivityHeatmapProps>(), {
 const heatmapRef = ref<HTMLElement | null>(null)
 const dayLabelsRef = ref<HTMLElement | null>(null)
 const containerWidth = ref(0)
-const dayLabelsWidth = ref(72)
+const dayLabelsWidth = ref(DEFAULT_DAY_LABELS_WIDTH)
 const tooltip = ref({ visible: false, left: 0, top: 0, text: '' })
 
 let resizeObserver: ResizeObserver | null = null
+let observedDayLabelsEl: HTMLElement | null = null
 
 // 样式变量只保留给模板真正需要的尺寸与动画节奏。
 const rootStyle = computed(() => ({
@@ -89,6 +92,13 @@ const { revealState, setColumnRef, getColumnMode } = useHeatmapTimeline({
   hideTooltip,
 })
 
+watch(() => visibleWeeks.value.length, async () => {
+  // 星期标签列只有在网格真正出现后才会挂载，因此需要在可见列变化后重新测量一次。
+  await nextTick()
+  syncDayLabelsObserver()
+  updateContainerWidth()
+}, { flush: 'post' })
+
 onMounted(() => {
   updateContainerWidth()
 
@@ -99,7 +109,7 @@ onMounted(() => {
     })
 
     if (heatmapRef.value) resizeObserver.observe(heatmapRef.value)
-    if (dayLabelsRef.value) resizeObserver.observe(dayLabelsRef.value)
+    syncDayLabelsObserver()
   } else {
     window.addEventListener('resize', updateContainerWidth)
   }
@@ -116,7 +126,21 @@ onUnmounted(() => {
 function updateContainerWidth() {
   // 左侧星期标签区会直接影响可见列数，所以和容器宽度一起测量。
   containerWidth.value = heatmapRef.value?.clientWidth ?? 0
-  dayLabelsWidth.value = dayLabelsRef.value?.clientWidth ?? 72
+  dayLabelsWidth.value = dayLabelsRef.value?.clientWidth ?? DEFAULT_DAY_LABELS_WIDTH
+}
+
+function syncDayLabelsObserver() {
+  if (!resizeObserver) return
+
+  if (observedDayLabelsEl && observedDayLabelsEl !== dayLabelsRef.value) {
+    resizeObserver.unobserve(observedDayLabelsEl)
+    observedDayLabelsEl = null
+  }
+
+  if (dayLabelsRef.value && observedDayLabelsEl !== dayLabelsRef.value) {
+    resizeObserver.observe(dayLabelsRef.value)
+    observedDayLabelsEl = dayLabelsRef.value
+  }
 }
 
 function getLevelColor(modeKey: string, level: number) {
