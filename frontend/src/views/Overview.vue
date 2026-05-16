@@ -211,7 +211,8 @@ function toKUnit(value: number): number {
       </template>
 
       <ActivityHeatmap :data="heatmapData" :modes="heatmapModes" :active-mode="heatmapMode" :loading="heatmapLoading"
-        :failed="heatmapFailed" empty-text="热力图暂无数据" loading-text="热力图加载中" error-text="热力图加载失败" />
+        :failed="heatmapFailed" :cell-size="25" empty-text="热力图暂无数据" loading-text="热力图加载中"
+        error-text="热力图加载失败" />
     </n-card>
 
     <n-card title="关于本服务" class="info-card" :bordered="true">
