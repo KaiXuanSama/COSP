@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NIcon, NCheckbox, NForm, NFormItem, useMessage } from 'naive-ui'
 import { useProviderStore } from '@/stores/providers'
 
@@ -7,6 +7,16 @@ const providerStore = useProviderStore()
 const message = useMessage()
 const fakeVersion = ref('')
 const versionPlaceholder = ref('0.6.4')
+
+const windowWidth = ref(window.innerWidth)
+const drawerWidth = computed(() => Math.min(480, windowWidth.value - 16))
+
+function onResize() {
+  windowWidth.value = window.innerWidth
+}
+
+onMounted(() => window.addEventListener('resize', onResize))
+onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 
 const providerMeta: Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string }> = {
   longcat: { displayName: 'LongCat', colorClass: 'accent', apiUrlPlaceholder: 'https://api.longcat.chat' },
@@ -147,7 +157,8 @@ function removeModel(index: number) {
     </n-card>
 
     <!-- 侧滑面板 -->
-    <n-drawer :show="!!editingKey" :width="480" placement="right" @mask-click="closeEditPanel" @esc="closeEditPanel">
+    <n-drawer :show="!!editingKey" :width="drawerWidth" placement="right" @mask-click="closeEditPanel"
+      @esc="closeEditPanel" class="edit-drawer">
       <n-drawer-content :title="editingKey ? providerMeta[editingKey]?.displayName : ''" closable
         @close="closeEditPanel">
         <div class="field-group">
@@ -456,6 +467,25 @@ function removeModel(index: number) {
 
   &:hover {
     color: $accent !important;
+  }
+}
+
+/* ── 移动端抽屉适配 ── */
+@media (max-width: 768px) {
+  .edit-drawer {
+    :deep(.n-drawer-content) {
+      overflow-x: hidden;
+    }
+  }
+
+  /* 模型行在小屏时换行排列 */
+  .model-form-row--details {
+    flex-wrap: wrap;
+
+    .model-detail-item--grow {
+      flex: 1 1 100%;
+      min-width: 0;
+    }
   }
 }
 </style>
