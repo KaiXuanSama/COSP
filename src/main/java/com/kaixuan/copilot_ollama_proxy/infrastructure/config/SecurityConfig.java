@@ -20,13 +20,17 @@ public class SecurityConfig {
 
     @Bean
     public SecurityFilterChain adminSecurityFilterChain(HttpSecurity http) throws Exception {
-        http.securityMatcher("/login", "/config/**", "/logout")
+        http.securityMatcher("/login", "/config/**", "/logout", "/overview", "/settings", "/account", "/")
                 .authorizeHttpRequests(
-                        auth -> auth.requestMatchers("/login", "/admin/**").permitAll().requestMatchers("/config/**")
-                                .authenticated().requestMatchers("/logout").permitAll().anyRequest().permitAll())
+                        auth -> auth.requestMatchers("/login", "/config/api/stats", "/config/api/providers", "/config/api/heatmap").permitAll()
+                                .requestMatchers("/config/**").authenticated()
+                                .requestMatchers("/overview", "/settings", "/account").authenticated()
+                                .requestMatchers("/logout").permitAll()
+                                .requestMatchers("/").permitAll()
+                                .anyRequest().permitAll())
                 .formLogin(form -> form.loginPage("/login").loginProcessingUrl("/login")
-                        .defaultSuccessUrl("/config", true).failureUrl("/login?error=true"))
-                .logout(logout -> logout.logoutUrl("/logout").logoutSuccessUrl("/login?logout=true"))
+                        .defaultSuccessUrl("/overview", true).failureUrl("/login?login=error"))
+                .logout(logout -> logout.logoutUrl("/logout").logoutSuccessUrl("/login?login=logout"))
                 .exceptionHandling(exception -> exception.authenticationEntryPoint(
                         (request, response, authException) -> response.sendRedirect("/login?unauthorized=true")))
                 .csrf(csrf -> csrf.disable());

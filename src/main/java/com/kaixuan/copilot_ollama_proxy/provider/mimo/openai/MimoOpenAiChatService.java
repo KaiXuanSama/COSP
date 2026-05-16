@@ -413,11 +413,13 @@ public class MimoOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatS
             }
         }
 
-        // 没有 system 消息则新建一个
+        // 没有 system 消息则新建一个，使用可变列表避免 UnsupportedOperationException
+        List<Map<String, Object>> mutableMessages = new ArrayList<>(messages);
         Map<String, Object> systemMsg = new LinkedHashMap<>();
         systemMsg.put("role", "system");
         systemMsg.put("content", guidance);
-        messages.add(0, systemMsg);
+        mutableMessages.add(0, systemMsg);
+        body.put("messages", mutableMessages);
         log.info("MiMo 已新建 system prompt 并注入 JSON 工具调用约束");
     }
 

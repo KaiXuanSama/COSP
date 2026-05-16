@@ -2,30 +2,28 @@ package com.kaixuan.copilot_ollama_proxy.api;
 
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.provisioning.JdbcUserDetailsManager;
 import org.springframework.stereotype.Controller;
-import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.springframework.http.ResponseEntity;
-
 /**
- * 管理后台页面控制器 — 负责渲染登录页和各管理子页面。
+ * 管理后台 API 控制器 — 提供 SPA 路由回退和 JSON API 接口。
  * <p>
- * 页面采用 Thymeleaf 片段化组件设计：
- * - config.html 为布局壳（侧边栏 + 页头 + 内容占位）
- * - 各子页面（overview、settings）为独立 HTML 文件
- * - 通过 th:insert 将子页面内容注入布局壳
+ * 前端由 Vue 3 SPA 完全接管，后端仅提供数据接口。
  */
 @Controller
 public class AdminPageController {
@@ -34,39 +32,50 @@ public class AdminPageController {
     private final PasswordEncoder passwordEncoder;
     private final ApiUsageRepository apiUsageRepository;
     private final ProviderConfigRepository providerConfigRepository;
+    private final WebClient.Builder webClientBuilder;
 
-    public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder, ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository) {
+    public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder, ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository,
+            WebClient.Builder webClientBuilder) {
         this.userDetailsManager = userDetailsManager;
         this.passwordEncoder = passwordEncoder;
         this.apiUsageRepository = apiUsageRepository;
         this.providerConfigRepository = providerConfigRepository;
+        this.webClientBuilder = webClientBuilder;
     }
 
-    // ==================== 登录页 ====================
+    // ==================== SPA 路由支持 ====================
 
+    /**
+     * 根路径重定向到登录页。
+     */
+    @GetMapping("/")
+    public String rootRedirect() {
+        return "redirect:/login";
+    }
+
+    /**
+     * Vue Router 的 createWebHistory() 模式下，
+     * 所有 SPA 路由需要返回 index.html 让 Vue 接管。
+     * 静态资源（/assets/*, /img/*）由 Spring Boot 默认处理。
+     */
     @GetMapping("/login")
-    public String login(Authentication authentication) {
-        if (authentication != null && authentication.isAuthenticated() && !(authentication instanceof AnonymousAuthenticationToken)) {
-            return "redirect:/config";
-        }
-        return "admin/pages/login";
+    public String spaLogin() {
+        return "forward:/index.html";
     }
 
-    // ==================== 概览页 ====================
+    @GetMapping("/overview")
+    public String spaOverview() {
+        return "forward:/index.html";
+    }
 
-    @GetMapping("/config")
-    public String overview(Authentication authentication, Model model) {
-        model.addAttribute("username", authentication.getName());
-        model.addAttribute("pageTitle", "概览");
-        model.addAttribute("pageTitleFull", "概览 · Ollama-Switch");
-        model.addAttribute("nav", "overview");
-        // API 调用统计
-        model.addAttribute("totalApiCalls", apiUsageRepository.countTotal());
-        model.addAttribute("todayApiCalls", apiUsageRepository.countToday());
-        int[] tokens = apiUsageRepository.sumTokensToday();
-        model.addAttribute("todayInputTokens", tokens[0]);
-        model.addAttribute("todayOutputTokens", tokens[1]);
-        return "admin/pages/overview";
+    @GetMapping("/settings")
+    public String spaSettings() {
+        return "forward:/index.html";
+    }
+
+    @GetMapping("/account")
+    public String spaAccount() {
+        return "forward:/index.html";
     }
 
     // ==================== API 统计接口（JSON） ====================
@@ -82,6 +91,18 @@ public class AdminPageController {
         return ResponseEntity.ok(stats);
     }
 
+    // ==================== 服务商配置 JSON 接口 ====================
+
+    @GetMapping("/config/api/providers") @ResponseBody
+    public ResponseEntity<Map<String, Object>> listProviders() {
+        List<Map<String, Object>> all = providerConfigRepository.findAllWithModels();
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (Map<String, Object> p : all) {
+            result.put((String) p.get("providerKey"), p);
+        }
+        return ResponseEntity.ok(result);
+    }
+
     /**
      * 热力图数据 — 返回最近 N 天每天的 API 调用次数。
      */
@@ -89,7 +110,6 @@ public class AdminPageController {
     public ResponseEntity<List<Map<String, Object>>> heatmapData(@RequestParam(defaultValue = "360") int days) {
         days = Math.max(7, Math.min(365, days));
         List<Map<String, Object>> data = apiUsageRepository.listRecentDays(days);
-        // 补全缺失日期（数据库中没有记录的日期补 0）
         Map<String, Map<String, Object>> byDate = new LinkedHashMap<>();
         for (Map<String, Object> row : data) {
             byDate.put((String) row.get("usageDate"), row);
@@ -116,10 +136,6 @@ public class AdminPageController {
 
     // ==================== 服务商快速启用/禁用 ====================
 
-    /**
-     * 快速切换服务商的启用状态（不修改其他配置）。
-     * 请求体：{"enabled": true/false}
-     */
     @PostMapping("/config/api/providers/{providerKey}/toggle") @ResponseBody
     public ResponseEntity<Map<String, Object>> toggleProvider(@PathVariable String providerKey, @RequestBody Map<String, Object> body) {
         boolean enabled = Boolean.TRUE.equals(body.get("enabled"));
@@ -136,43 +152,27 @@ public class AdminPageController {
         return ResponseEntity.ok(result);
     }
 
-    // ==================== 配置页 ====================
+    // ==================== 运行配置 ====================
 
-    @GetMapping("/config/settings")
-    public String settings(Authentication authentication, Model model) {
-        model.addAttribute("username", authentication.getName());
-        model.addAttribute("pageTitle", "配置");
-        model.addAttribute("pageTitleFull", "配置 · Ollama-Switch");
-        model.addAttribute("nav", "settings");
-        // 从数据库读取服务商配置
-        model.addAttribute("longcat", loadProvider("longcat"));
-        model.addAttribute("mimo", loadProvider("mimo"));
-        model.addAttribute("sensenova", loadProvider("sensenova"));
-        model.addAttribute("deepseek", loadProvider("deepseek"));
-        // 读取运行配置
-        model.addAttribute("fakeVersion", providerConfigRepository.findConfigValue("fake_version"));
-        return "admin/pages/settings";
+    @GetMapping("/config/api/fake-version") @ResponseBody
+    public ResponseEntity<Map<String, Object>> getFakeVersion() {
+        String version = providerConfigRepository.findConfigValue("fake_version");
+        return ResponseEntity.ok(Map.of("fakeVersion", version != null ? version : ""));
     }
 
-    /**
-     * 仅保存伪造版本号（AJAX），不碰其他配置。
-     */
     @PostMapping("/config/api/fake-version") @ResponseBody
     public ResponseEntity<Map<String, Object>> saveFakeVersion(@RequestParam String fakeVersion) {
         providerConfigRepository.saveConfig("fake_version", fakeVersion.trim());
         return ResponseEntity.ok(Map.of("ok", true));
     }
 
-    /**
-     * 保存单个服务商的编辑面板数据（AJAX）。
-     * 只更新 baseUrl / apiKey / models，不修改 enabled 状态。
-     */
+    // ==================== 服务商编辑保存 ====================
+
     @PostMapping("/config/api/providers/{providerKey}/config") @ResponseBody
     public ResponseEntity<Map<String, Object>> saveProviderConfig(@PathVariable String providerKey, @RequestParam Map<String, String> params) {
         String baseUrl = params.getOrDefault("baseUrl", "").trim();
         String apiKey = params.getOrDefault("apiKey", "").trim();
         int providerId = providerConfigRepository.updateProviderConfig(providerKey, baseUrl, apiKey, "openai");
-        // 解析模型列表
         List<Map<String, Object>> models = new ArrayList<>();
         String prefix = "models[";
         java.util.Set<Integer> indices = new java.util.TreeSet<>();
@@ -200,80 +200,114 @@ public class AdminPageController {
     }
 
     /**
-     * 从数据库加载单个服务商配置，如果不存在则返回默认空对象。
+     * 使用当前表单中的 Base URL 与 API Key 从上游拉取模型列表。
      */
-    private Map<String, Object> loadProvider(String providerKey) {
-        Map<String, Object> provider = providerConfigRepository.findByKey(providerKey);
-        if (provider == null) {
-            provider = new LinkedHashMap<>();
-            provider.put("providerKey", providerKey);
-            provider.put("enabled", false);
-            provider.put("baseUrl", null);
-            provider.put("apiKey", "");
-            provider.put("apiFormat", "openai");
-            provider.put("models", new ArrayList<>());
-        } else {
-            // 空字符串转为 null，以便 Thymeleaf Elvis 运算符 ?: 能正确回退到默认值
-            String baseUrl = (String) provider.get("baseUrl");
-            if (baseUrl != null && baseUrl.isEmpty()) {
-                provider.put("baseUrl", null);
-            }
+    @PostMapping("/config/api/providers/{providerKey}/pull-models") @ResponseBody
+    public ResponseEntity<?> pullProviderModels(@PathVariable String providerKey, @RequestBody Map<String, String> body) {
+        if (!supportsProviderKey(providerKey)) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "不支持的服务商。"));
         }
-        return provider;
+
+        String baseUrl = body.getOrDefault("baseUrl", "").trim();
+        String apiKey = body.getOrDefault("apiKey", "").trim();
+        String modelPullPath = body.getOrDefault("modelPullPath", "").trim();
+        if (baseUrl.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "请先填写 API 地址。"));
+        }
+        if (apiKey.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "请先填写 API Key。"));
+        }
+
+        return forwardModelsRequest(providerKey, baseUrl, apiKey, modelPullPath);
     }
 
-    // ==================== 账号修改页 ====================
+    // ==================== 账号修改（JSON API） ====================
 
-    @GetMapping("/config/account")
-    public String account(Authentication authentication, Model model) {
-        model.addAttribute("username", authentication.getName());
-        model.addAttribute("pageTitle", "账号设置");
-        model.addAttribute("pageTitleFull", "账号设置 · Ollama-Switch");
-        model.addAttribute("nav", "account");
-        return "admin/pages/account";
+    /**
+     * 获取当前登录用户信息。
+     */
+    @GetMapping("/config/api/me") @ResponseBody
+    public ResponseEntity<Map<String, Object>> currentUser(Authentication authentication) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("username", authentication.getName());
+        result.put("role", authentication.getAuthorities().stream().findFirst().map(Object::toString).orElse(""));
+        return ResponseEntity.ok(result);
     }
 
-    @PostMapping("/config/account")
-    public String saveAccount(Authentication authentication, @RequestParam(value = "newUsername", required = false) String newUsername,
+    private boolean supportsProviderKey(String providerKey) {
+        return switch (providerKey) {
+        case "longcat", "mimo", "sensenova", "deepseek" -> true;
+        default -> false;
+        };
+    }
+
+    private ResponseEntity<String> forwardModelsRequest(String providerKey, String rawBaseUrl, String apiKey, String rawModelPullPath) {
+        String requestUrl = rawBaseUrl.replaceAll("/+$", "") + normalizeModelPullPath(rawModelPullPath);
+        try {
+            return webClientBuilder.clone().defaultHeaders(headers -> {
+                headers.set(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE);
+                applyModelDiscoveryAuthHeaders(providerKey, headers, apiKey);
+            }).build().get().uri(requestUrl).exchangeToMono(response -> response.bodyToMono(String.class).defaultIfEmpty("").map(body -> {
+                ResponseEntity.BodyBuilder builder = ResponseEntity.status(response.statusCode().value());
+                response.headers().contentType().ifPresent(builder::contentType);
+                return builder.body(body);
+            })).onErrorResume(ex -> Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON).body("{\"error\":\"连接上游服务失败，请检查 API 地址是否正确。\"}"))).blockOptional()
+                    .orElseGet(() -> ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON).body("{\"error\":\"连接上游服务失败，请检查 API 地址是否正确。\"}"));
+        } catch (Exception ex) {
+            return ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON).body("{\"error\":\"连接上游服务失败，请检查 API 地址是否正确。\"}");
+        }
+    }
+
+    private String normalizeModelPullPath(String rawModelPullPath) {
+        String path = rawModelPullPath == null ? "" : rawModelPullPath.trim();
+        if (path.isBlank()) {
+            return "/v1/models";
+        }
+        return path.startsWith("/") ? path : "/" + path;
+    }
+
+    private void applyModelDiscoveryAuthHeaders(String providerKey, HttpHeaders headers, String apiKey) {
+        switch (providerKey) {
+        case "mimo" -> {
+            headers.set("api-key", apiKey);
+            headers.set("x-api-key", apiKey);
+        }
+        case "longcat", "sensenova", "deepseek" -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
+        default -> {
+        }
+        }
+    }
+
+    @PostMapping("/config/api/account") @ResponseBody
+    public ResponseEntity<Map<String, Object>> saveAccountApi(Authentication authentication, @RequestParam(value = "newUsername", required = false) String newUsername,
             @RequestParam(value = "currentPassword", required = false) String currentPassword, @RequestParam(value = "newPassword", required = false) String newPassword,
-            @RequestParam(value = "confirmPassword", required = false) String confirmPassword, Model model) {
+            @RequestParam(value = "confirmPassword", required = false) String confirmPassword) {
 
         String currentUsername = authentication.getName();
+        Map<String, Object> result = new LinkedHashMap<>();
 
         // 验证当前密码
         UserDetails currentUser = userDetailsManager.loadUserByUsername(currentUsername);
         if (currentPassword == null || !passwordEncoder.matches(currentPassword, currentUser.getPassword())) {
-            model.addAttribute("username", currentUsername);
-            model.addAttribute("pageTitle", "账号设置");
-            model.addAttribute("pageTitleFull", "账号设置 · Ollama-Switch");
-            model.addAttribute("nav", "account");
-            model.addAttribute("saveError", "当前密码不正确。");
-            return "admin/pages/account";
+            result.put("ok", false);
+            result.put("error", "当前密码不正确。");
+            return ResponseEntity.ok(result);
         }
 
-        // 确定最终用户名和密码
         final String finalUsername = (newUsername != null && !newUsername.isBlank() && !newUsername.equals(currentUsername)) ? newUsername.trim() : currentUsername;
         final String finalPassword;
         boolean passwordChanged = false;
 
         if (newPassword != null && !newPassword.isBlank()) {
             if (newPassword.length() < 4) {
-                model.addAttribute("username", currentUsername);
-                model.addAttribute("pageTitle", "账号设置");
-                model.addAttribute("pageTitleFull", "账号设置 · Ollama-Switch");
-                model.addAttribute("nav", "account");
-                model.addAttribute("newUsername", newUsername);
-                model.addAttribute("saveError", "新密码长度至少 4 位。");
-                return "admin/pages/account";
+                result.put("ok", false);
+                result.put("error", "新密码长度至少 4 位。");
+                return ResponseEntity.ok(result);
             }
             if (!newPassword.equals(confirmPassword)) {
-                model.addAttribute("username", currentUsername);
-                model.addAttribute("pageTitle", "账号设置");
-                model.addAttribute("pageTitleFull", "账号设置 · Ollama-Switch");
-                model.addAttribute("nav", "account");
-                model.addAttribute("newUsername", newUsername);
-                model.addAttribute("saveError", "两次输入的新密码不一致。");
-                return "admin/pages/account";
+                result.put("ok", false);
+                result.put("error", "两次输入的新密码不一致。");
+                return ResponseEntity.ok(result);
             }
             finalPassword = passwordEncoder.encode(newPassword);
             passwordChanged = true;
@@ -281,23 +315,20 @@ public class AdminPageController {
             finalPassword = null;
         }
 
-        // 如果用户名或密码有变化，删除旧用户后重新创建
         if (!finalUsername.equals(currentUsername) || passwordChanged) {
             userDetailsManager.deleteUser(currentUsername);
             String passwordToUse = passwordChanged ? finalPassword : currentUser.getPassword();
             UserDetails newUser = User.withUsername(finalUsername).password(passwordToUse).roles("ADMIN").build();
             userDetailsManager.createUser(newUser);
-            model.addAttribute("saveSuccess", "账号信息已修改，请使用新账号重新登录。");
+            result.put("ok", true);
+            result.put("message", "账号信息已修改，请使用新账号重新登录。");
+            result.put("usernameChanged", !finalUsername.equals(currentUsername));
         } else {
-            model.addAttribute("saveSuccess", "未做任何修改。");
+            result.put("ok", true);
+            result.put("message", "未做任何修改。");
         }
 
-        model.addAttribute("username", finalUsername);
-        model.addAttribute("pageTitle", "账号设置");
-        model.addAttribute("pageTitleFull", "账号设置 · Ollama-Switch");
-        model.addAttribute("nav", "account");
-        model.addAttribute("newUsername", finalUsername);
-        return "admin/pages/account";
+        return ResponseEntity.ok(result);
     }
 
 }

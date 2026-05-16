@@ -23,7 +23,7 @@ class MimoOpenAiChatServiceTests {
         Map<String, Object> prepared = service.exposePrepareRequestBody(request, true, "mimo-v2.5-pro");
 
         @SuppressWarnings("unchecked")
-        Map<String, Object> message = (Map<String, Object>) ((List<?>) prepared.get("messages")).get(0);
+        Map<String, Object> message = (Map<String, Object>) ((List<?>) prepared.get("messages")).get(1);
         @SuppressWarnings("unchecked")
         Map<String, Object> contentItem = (Map<String, Object>) ((List<?>) message.get("content")).get(0);
         @SuppressWarnings("unchecked")

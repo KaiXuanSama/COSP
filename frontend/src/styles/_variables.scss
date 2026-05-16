@@ -1,0 +1,55 @@
+// ── 基底 ──
+$bg: #f5f3ee;
+$surface: #ffffff;
+
+// ── 深色区域 ──
+$sidebar-bg: #1a1917;
+$sidebar-hover: #2a2825;
+
+// ── 强调色 ──
+$accent: #c27a3e;
+$accent-light: rgba(194, 122, 62, 0.08);
+$accent-mid: rgba(194, 122, 62, 0.15);
+$accent-glow: rgba(194, 122, 62, 0.25);
+
+// ── 文字 ──
+$text-primary: #1a1917;
+$text-body: #4a4740;
+$text-muted: #9a9590;
+$text-light: #f5f3ee;
+
+// ── 边框 ──
+$border: #e8e5de;
+$border-light: #f0ede6;
+
+// ── 功能色 ──
+$success: #3a8a5c;
+$danger: #b84a4a;
+$warning: #b89a3a;
+$blue: #5a7ab8;
+
+// ── 间距 ──
+$space-xs: 4px;
+$space-sm: 8px;
+$space-md: 16px;
+$space-lg: 24px;
+$space-xl: 32px;
+$space-2xl: 48px;
+
+// ── 圆角 ──
+$radius: 10px;
+$radius-lg: 14px;
+
+// ── 阴影 ──
+$shadow-sm: 0 1px 3px rgba(26, 25, 23, 0.04);
+$shadow-md: 0 4px 16px rgba(26, 25, 23, 0.06);
+$shadow-lg: 0 12px 40px rgba(26, 25, 23, 0.12);
+
+// ── 字体 ──
+$font-display: 'Cormorant Garamond', serif;
+$font-body: 'Crimson Pro', serif;
+$font-mono: 'DM Mono', monospace;
+
+// ── 侧边栏 ──
+$sidebar-width: 240px;
+$header-height: 56px;

@@ -23,7 +23,7 @@ import java.util.Set;
 @Component @Order(Ordered.HIGHEST_PRECEDENCE)
 public class AdminPortFilter extends OncePerRequestFilter {
 
-    private static final Set<String> ADMIN_PATHS = Set.of("/login", "/config", "/logout");
+    private static final Set<String> ADMIN_PATHS = Set.of("/", "/login", "/config", "/logout", "/overview", "/settings", "/account");
 
     @Value("${admin.server.port:80}")
     private int adminPort;
@@ -37,7 +37,7 @@ public class AdminPortFilter extends OncePerRequestFilter {
         // 如果请求来自管理端口，但路径不是管理路径，直接返回 404
         if (localPort == adminPort) {
             String path = request.getRequestURI();
-            if (!ADMIN_PATHS.contains(path) && !path.startsWith("/admin/") && !path.startsWith("/config/")) {
+            if (!ADMIN_PATHS.contains(path) && !path.startsWith("/config/") && !path.startsWith("/assets/") && !path.startsWith("/img/")) {
                 response.sendError(HttpServletResponse.SC_NOT_FOUND);
                 return;
             }
