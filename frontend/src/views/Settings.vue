@@ -157,8 +157,9 @@ function removeModel(index: number) {
     </n-card>
 
     <!-- 侧滑面板 -->
-    <n-drawer :show="!!editingKey" :width="drawerWidth" placement="right" @mask-click="closeEditPanel"
-      @esc="closeEditPanel" class="edit-drawer">
+    <n-drawer :show="!!editingKey" :width="drawerWidth" placement="right"
+      @update:show="(val: boolean) => { if (!val) closeEditPanel() }" @mask-click="closeEditPanel" @esc="closeEditPanel"
+      class="edit-drawer">
       <n-drawer-content :title="editingKey ? providerMeta[editingKey]?.displayName : ''" closable
         @close="closeEditPanel">
         <div class="field-group">
