@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { NCard, NNumberAnimation } from 'naive-ui'
-import ActivityHeatmap from '@/components/ActivityHeatmap.vue'
+import ActivityHeatmap from '@/components/heatmap/ActivityHeatmap.vue'
 import http from '@/api'
 import type { HeatmapModeConfig } from '@/components/heatmap'
 import { useStatsStore } from '@/stores/stats'
