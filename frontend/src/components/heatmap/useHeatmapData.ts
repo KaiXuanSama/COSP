@@ -24,6 +24,7 @@ export function useHeatmapData(
   props: Readonly<ActivityHeatmapProps>,
   containerWidth: Ref<number>,
   dayLabelsWidth: Ref<number>,
+  effectiveGap: Readonly<Ref<number>>,
 ) {
   const sourceDataByMode = computed<Record<string, HeatmapRecord[]>>(() => {
     return props.modes.reduce<Record<string, HeatmapRecord[]>>((accumulator, mode) => {
@@ -115,7 +116,8 @@ export function useHeatmapData(
     if (!containerWidth.value) return allWeeks.value.length
 
     // 左侧星期标签区占掉的宽度需要扣除，否则可见列数会被高估。
-    const gap = props.gap ?? DEFAULT_GAP
+    // gap 从 effectiveGap 取，保持与组件壳的间隙值一致。
+    const gap = effectiveGap.value
     const cellSize = props.cellSize ?? DEFAULT_CELL_SIZE
     const labelsWidth = dayLabelsWidth.value || DEFAULT_DAY_LABELS_WIDTH
     const availableWidth = Math.max(0, containerWidth.value - labelsWidth)
@@ -153,7 +155,7 @@ export function useHeatmapData(
 
   const monthSegments = computed<MonthSegment[]>(() => {
     const segments: MonthSegment[] = []
-    const gap = props.gap ?? DEFAULT_GAP
+    const gap = effectiveGap.value
     const cellSize = props.cellSize ?? DEFAULT_CELL_SIZE
     let lastMonth = -1
     let startCol = 0

@@ -58,10 +58,14 @@ const tooltip = ref({ visible: false, left: 0, top: 0, text: '' })
 let resizeObserver: ResizeObserver | null = null
 let observedDayLabelsEl: HTMLElement | null = null
 
-// 样式变量只保留给模板真正需要的尺寸与动画节奏。
+// gap 与圆角跟随 cellSize 成比例缩放，不再写死 4px。
+const effectiveGap = computed(() => Math.max(2, Math.round(props.cellSize * 0.25)))
+const effectiveRadius = computed(() => Math.max(2, Math.round(props.cellSize * 0.25)))
+
 const rootStyle = computed(() => ({
   '--heatmap-cell-size': `${props.cellSize}px`,
-  '--heatmap-gap': `${props.gap}px`,
+  '--heatmap-gap': `${effectiveGap.value}px`,
+  '--heatmap-cell-radius': `${effectiveRadius.value}px`,
   '--heatmap-ripple-duration': `${props.rippleDuration}ms`,
 }))
 
@@ -78,7 +82,7 @@ const {
   getModeValue,
   getLevel,
   getWeekAnchor,
-} = useHeatmapData(props, containerWidth, dayLabelsWidth)
+} = useHeatmapData(props, containerWidth, dayLabelsWidth, effectiveGap)
 
 // 时间线 composable 只关心 reveal 与 flip，不关心具体业务值长什么样。
 const { revealState, setColumnRef, getColumnMode } = useHeatmapTimeline({
@@ -353,7 +357,7 @@ function hideTooltip() {
   width: var(--heatmap-cell-size);
   height: var(--heatmap-cell-size);
   flex-shrink: 0;
-  border-radius: 4px;
+  border-radius: var(--heatmap-cell-radius);
   opacity: 0;
   transform: scale(0.3);
   pointer-events: none;
@@ -386,7 +390,7 @@ function hideTooltip() {
   position: absolute;
   z-index: 10;
   padding: 4px 10px;
-  border-radius: 4px;
+  border-radius: var(--heatmap-cell-radius);
   background: var(--heatmap-tooltip-bg, #1a1917);
   color: var(--heatmap-tooltip-text, #f5f3ee);
   font-size: 10px;
