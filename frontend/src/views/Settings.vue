@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NIcon, NCheckbox, NForm, NFormItem, useMessage } from 'naive-ui'
+import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NIcon, NCheckbox, NForm, NFormItem, NPopselect, useMessage } from 'naive-ui'
 import { useProviderStore } from '@/stores/providers'
 
 const providerStore = useProviderStore()
@@ -24,6 +24,14 @@ const providerMeta: Record<string, { displayName: string; colorClass: string; ap
   sensenova: { displayName: 'SenseNova', colorClass: 'success', apiUrlPlaceholder: 'https://token.sensenova.cn' },
   deepseek: { displayName: 'DeepSeek', colorClass: 'warning', apiUrlPlaceholder: 'https://api.deepseek.com' },
 }
+
+const contextPresets = [
+  { label: '1M', value: '1000000' },
+  { label: '512K', value: '512000' },
+  { label: '256K', value: '256000' },
+  { label: '128K', value: '128000' },
+  { label: '64K', value: '64000' },
+]
 
 const editingKey = ref<string | null>(null)
 const editForm = ref({
@@ -244,7 +252,19 @@ function removeModel(index: number) {
                   </div>
                   <div class="model-form-row model-form-row--details">
                     <n-form-item label="上下文" class="model-detail-item model-detail-item--grow">
-                      <n-input v-model:value="m.contextSize" placeholder="4096" />
+                      <n-input v-model:value="m.contextSize" placeholder="4096">
+                        <template #suffix>
+                          <n-popselect :options="contextPresets" size="small" trigger="click"
+                            @update:value="(val: string) => m.contextSize = val">
+                            <span class="context-preset-trigger">
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="6 9 12 15 18 9" />
+                              </svg>
+                            </span>
+                          </n-popselect>
+                        </template>
+                      </n-input>
                     </n-form-item>
                     <n-form-item label="工具" class="model-detail-item model-detail-item--switch">
                       <n-switch v-model:value="m.capsTools" size="small" />
@@ -511,6 +531,24 @@ function removeModel(index: number) {
 
   &:hover {
     color: $accent !important;
+  }
+}
+
+/* ── 上下文预设下拉指示器 ── */
+.context-preset-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  color: $text-muted;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+
+  &:hover {
+    color: $accent;
+    background: $accent-light;
   }
 }
 
