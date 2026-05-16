@@ -40,6 +40,9 @@ export const useProviderStore = defineStore('providers', () => {
     await http.post(`/providers/${providerKey}/toggle`, { enabled })
     if (providers.value[providerKey]) {
       providers.value[providerKey].enabled = enabled
+    } else {
+      // 本地尚无此 provider 记录，重新拉取全量
+      await fetchAll()
     }
   }
 

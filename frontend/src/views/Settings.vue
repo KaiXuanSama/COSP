@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NIcon, NCheckbox, NForm, NFormItem, useMessage } from 'naive-ui'
+import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NIcon, NCheckbox, NForm, NFormItem, useMessage } from 'naive-ui'
 import { useProviderStore } from '@/stores/providers'
 
 const providerStore = useProviderStore()
@@ -31,6 +31,22 @@ const editForm = ref({
   apiKey: '',
   models: [] as any[],
 })
+
+const showAddModal = ref(false)
+
+const enabledProviderKeys = computed(() =>
+  Object.keys(providerMeta).filter(k => providerStore.providers[k]?.enabled)
+)
+
+const disabledProviderKeys = computed(() =>
+  Object.keys(providerMeta).filter(k => !providerStore.providers[k]?.enabled)
+)
+
+async function enableProvider(key: string) {
+  await providerStore.toggleProvider(key, true)
+  message.success(`${providerMeta[key]?.displayName || key} 已启用`)
+  showAddModal.value = false
+}
 
 onMounted(async () => {
   await providerStore.fetchAll()
@@ -133,11 +149,23 @@ function removeModel(index: number) {
 
     <!-- 服务商配置 -->
     <n-card title="服务商配置" :bordered="true" style="margin-top: 16px;">
+      <template #header-extra>
+        <n-button text size="tiny" @click="showAddModal = true" class="add-provider-btn">
+          <template #icon>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+          </template>
+          添加
+        </n-button>
+      </template>
       <div class="provider-grid">
-        <div v-for="(meta, key) in providerMeta" :key="key" class="provider-card" @click="openEditPanel(key)">
-          <div class="provider-card-top" :class="meta.colorClass"></div>
+        <div v-for="key in enabledProviderKeys" :key="key" class="provider-card" @click="openEditPanel(key)">
+          <div class="provider-card-top" :class="providerMeta[key].colorClass"></div>
           <div class="provider-card-header">
-            <span class="provider-card-name">{{ meta.displayName }}</span>
+            <span class="provider-card-name">{{ providerMeta[key].displayName }}</span>
             <n-switch :value="providerStore.providers[key]?.enabled" @click.stop
               @update:value="(val) => toggleProvider(key, val)" />
           </div>
@@ -155,6 +183,21 @@ function removeModel(index: number) {
         </div>
       </div>
     </n-card>
+
+    <!-- 添加服务商模态框 -->
+    <n-modal v-model:show="showAddModal" preset="card" title="添加服务商" :style="{ maxWidth: '480px' }" closable
+      :mask-closable="true">
+      <div v-if="disabledProviderKeys.length === 0" class="add-modal-empty">
+        所有服务商已启用
+      </div>
+      <div v-else class="add-modal-grid">
+        <div v-for="key in disabledProviderKeys" :key="key" class="add-modal-card" @click="enableProvider(key)">
+          <div class="add-modal-card-top" :class="providerMeta[key].colorClass"></div>
+          <div class="add-modal-card-name">{{ providerMeta[key].displayName }}</div>
+          <div class="add-modal-card-desc">{{ providerMeta[key].apiUrlPlaceholder }}</div>
+        </div>
+      </div>
+    </n-modal>
 
     <!-- 侧滑面板 -->
     <n-drawer :show="!!editingKey" :width="drawerWidth" placement="right"
@@ -471,6 +514,87 @@ function removeModel(index: number) {
   }
 }
 
+.add-provider-btn {
+  flex-shrink: 0;
+  color: $text-muted !important;
+
+  &:hover {
+    color: $accent !important;
+  }
+}
+
+/* ── 添加服务商模态框 ── */
+.add-modal-empty {
+  text-align: center;
+  padding: $space-xl 0;
+  font-family: $font-body;
+  font-size: 14px;
+  color: $text-muted;
+}
+
+.add-modal-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: $space-md;
+}
+
+.add-modal-card {
+  background: $surface;
+  border: 1px solid $border;
+  border-radius: $radius-lg;
+  padding: $space-md;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  position: relative;
+  overflow: hidden;
+
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: $shadow-md;
+  }
+}
+
+.add-modal-card-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+
+  &.accent {
+    background: $accent;
+  }
+
+  &.blue {
+    background: $blue;
+  }
+
+  &.success {
+    background: $success;
+  }
+
+  &.warning {
+    background: $warning;
+  }
+}
+
+.add-modal-card-name {
+  font-family: $font-display;
+  font-size: 16px;
+  font-weight: 600;
+  color: $text-primary;
+  margin-bottom: 4px;
+}
+
+.add-modal-card-desc {
+  font-family: $font-mono;
+  font-size: 11px;
+  color: $text-muted;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── 移动端抽屉适配 ── */
 @media (max-width: 768px) {
   .edit-drawer {
@@ -487,6 +611,11 @@ function removeModel(index: number) {
       flex: 1 1 100%;
       min-width: 0;
     }
+  }
+
+  /* 添加服务商模态框网格单列 */
+  .add-modal-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>
