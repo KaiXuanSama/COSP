@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NIcon, NCheckbox, NForm, NFormItem, NPopselect, useMessage } from 'naive-ui'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NCheckbox, NForm, NFormItem, NPopselect, useMessage } from 'naive-ui'
 import { useProviderStore } from '@/stores/providers'
 
 const providerStore = useProviderStore()
@@ -11,18 +11,160 @@ const versionPlaceholder = ref('0.6.4')
 const windowWidth = ref(window.innerWidth)
 const drawerWidth = computed(() => Math.min(480, windowWidth.value - 16))
 
+const docsWindow = ref({
+  visible: false,
+  providerKey: null as string | null,
+  x: 24,
+  y: 72,
+  width: 560,
+  height: 680,
+})
+
+function clamp(value: number, min: number, max: number) {
+  if (max < min) return min
+  return Math.min(Math.max(value, min), max)
+}
+
+function clampDocsWindow() {
+  const minWidth = 360
+  const minHeight = 320
+  docsWindow.value.width = clamp(docsWindow.value.width, minWidth, Math.max(minWidth, window.innerWidth - 32))
+  docsWindow.value.height = clamp(docsWindow.value.height, minHeight, Math.max(minHeight, window.innerHeight - 32))
+  docsWindow.value.x = clamp(docsWindow.value.x, 16, Math.max(16, window.innerWidth - docsWindow.value.width - 16))
+  docsWindow.value.y = clamp(docsWindow.value.y, 16, Math.max(16, window.innerHeight - docsWindow.value.height - 16))
+}
+
+function getInitialDocsWindowRect() {
+  const minWidth = 360
+  const preferredWidth = 620
+  const availableLeftWidth = window.innerWidth - drawerWidth.value - 48
+  const width = clamp(
+    availableLeftWidth > minWidth ? Math.min(preferredWidth, availableLeftWidth) : Math.min(preferredWidth, window.innerWidth - 32),
+    minWidth,
+    Math.max(minWidth, window.innerWidth - 32),
+  )
+  const height = clamp(window.innerHeight - 96, 360, 760)
+  const x = clamp(window.innerWidth - drawerWidth.value - width - 24, 16, Math.max(16, window.innerWidth - width - 16))
+  const y = clamp(48, 16, Math.max(16, window.innerHeight - height - 16))
+  return { x, y, width, height }
+}
+
 function onResize() {
   windowWidth.value = window.innerWidth
+  if (docsWindow.value.visible) {
+    clampDocsWindow()
+  }
 }
+
+function startDocsWindowDrag(event: PointerEvent) {
+  event.preventDefault()
+  const startX = event.clientX
+  const startY = event.clientY
+  const originX = docsWindow.value.x
+  const originY = docsWindow.value.y
+
+  const onMove = (moveEvent: PointerEvent) => {
+    docsWindow.value.x = clamp(
+      originX + moveEvent.clientX - startX,
+      16,
+      Math.max(16, window.innerWidth - docsWindow.value.width - 16),
+    )
+    docsWindow.value.y = clamp(
+      originY + moveEvent.clientY - startY,
+      16,
+      Math.max(16, window.innerHeight - docsWindow.value.height - 16),
+    )
+  }
+
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+  }
+
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+}
+
+function startDocsWindowResize(event: PointerEvent) {
+  event.preventDefault()
+  const startX = event.clientX
+  const startY = event.clientY
+  const originWidth = docsWindow.value.width
+  const originHeight = docsWindow.value.height
+
+  const onMove = (moveEvent: PointerEvent) => {
+    docsWindow.value.width = clamp(
+      originWidth + moveEvent.clientX - startX,
+      360,
+      Math.max(360, window.innerWidth - docsWindow.value.x - 16),
+    )
+    docsWindow.value.height = clamp(
+      originHeight + moveEvent.clientY - startY,
+      320,
+      Math.max(320, window.innerHeight - docsWindow.value.y - 16),
+    )
+  }
+
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+  }
+
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+}
+
+function closeOfficialDocs() {
+  docsWindow.value.visible = false
+}
+
+function openOfficialDocs() {
+  if (!editingKey.value) return
+  docsWindow.value = {
+    visible: true,
+    providerKey: editingKey.value,
+    ...getInitialDocsWindowRect(),
+  }
+}
+
+const activeDocsUrl = computed(() => {
+  const key = docsWindow.value.providerKey
+  return key ? providerMeta[key]?.docsUrl ?? '' : ''
+})
+
+const activeDocsTitle = computed(() => {
+  const key = docsWindow.value.providerKey
+  return key ? `${providerMeta[key]?.displayName ?? key} 官方文档` : '官方文档'
+})
 
 onMounted(() => window.addEventListener('resize', onResize))
 onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 
-const providerMeta: Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string }> = {
-  longcat: { displayName: 'LongCat', colorClass: 'accent', apiUrlPlaceholder: 'https://api.longcat.chat' },
-  mimo: { displayName: 'MiMo', colorClass: 'blue', apiUrlPlaceholder: 'https://token-plan-cn.xiaomimimo.com/' },
-  sensenova: { displayName: 'SenseNova', colorClass: 'success', apiUrlPlaceholder: 'https://token.sensenova.cn' },
-  deepseek: { displayName: 'DeepSeek', colorClass: 'warning', apiUrlPlaceholder: 'https://api.deepseek.com' },
+const providerMeta: Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string; docsUrl: string }> = {
+  longcat: {
+    displayName: 'LongCat',
+    colorClass: 'accent',
+    apiUrlPlaceholder: 'https://api.longcat.chat',
+    docsUrl: 'https://longcat.chat/platform/docs/zh/#%E5%8D%95%E6%AC%A1%E8%AF%B7%E6%B1%82%E9%99%90%E5%88%B6',
+  },
+  mimo: {
+    displayName: 'MiMo',
+    colorClass: 'blue',
+    apiUrlPlaceholder: 'https://token-plan-cn.xiaomimimo.com/',
+    docsUrl: 'https://platform.xiaomimimo.com/docs/zh-CN/pricing',
+  },
+  sensenova: {
+    displayName: 'SenseNova',
+    colorClass: 'success',
+    apiUrlPlaceholder: 'https://token.sensenova.cn',
+    docsUrl: 'https://platform.sensenova.cn/docs',
+  },
+  deepseek: {
+    displayName: 'DeepSeek',
+    colorClass: 'warning',
+    apiUrlPlaceholder: 'https://api.deepseek.com',
+    docsUrl: 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing',
+  },
 }
 
 const contextPresets = [
@@ -50,6 +192,12 @@ const disabledProviderKeys = computed(() =>
   Object.keys(providerMeta).filter(k => !providerStore.providers[k]?.enabled)
 )
 
+watch(editingKey, (key) => {
+  if (docsWindow.value.visible && key) {
+    docsWindow.value.providerKey = key
+  }
+})
+
 async function enableProvider(key: string) {
   await providerStore.toggleProvider(key, true)
   message.success(`${providerMeta[key]?.displayName || key} 已启用`)
@@ -72,7 +220,10 @@ function openEditPanel(key: string) {
     editForm.value = {
       baseUrl: p.baseUrl || '',
       apiKey: p.apiKey || '',
-      models: p.models.map(m => ({ ...m })),
+      models: p.models.map(m => ({
+        ...m,
+        contextSize: String(m.contextSize ?? '0'),
+      })),
     }
   }
 }
@@ -101,7 +252,10 @@ async function saveEditPanel() {
     if (providerStore.providers[key]) {
       providerStore.providers[key].baseUrl = editForm.value.baseUrl
       providerStore.providers[key].apiKey = editForm.value.apiKey
-      providerStore.providers[key].models = editForm.value.models.map(m => ({ ...m }))
+      providerStore.providers[key].models = editForm.value.models.map(m => ({
+        ...m,
+        contextSize: String(m.contextSize ?? '0'),
+      }))
     }
     message.success('保存成功')
     // 延迟关闭，让通知可见
@@ -226,16 +380,28 @@ function removeModel(index: number) {
         <div class="field-group">
           <div class="field-label-row">
             <label class="field-label">模型列表</label>
-            <n-button text size="tiny" @click="addModel" class="add-model-btn">
-              <template #icon>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                  stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-              </template>
-              添加模型
-            </n-button>
+            <div class="field-label-actions">
+              <n-button text size="tiny" @click="openOfficialDocs" class="docs-window-btn">
+                <template #icon>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6 3h9l3 3v15H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2" />
+                    <path d="M15 3v4h4" />
+                  </svg>
+                </template>
+                官方文档
+              </n-button>
+              <n-button text size="tiny" @click="addModel" class="add-model-btn">
+                <template #icon>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                </template>
+                添加模型
+              </n-button>
+            </div>
           </div>
           <div v-for="(m, i) in editForm.models" :key="i" class="model-card">
             <div class="model-card-inner">
@@ -296,6 +462,43 @@ function removeModel(index: number) {
         </template>
       </n-drawer-content>
     </n-drawer>
+
+    <teleport to="body">
+      <div v-if="docsWindow.visible && activeDocsUrl" class="docs-window-layer">
+        <section class="docs-window" :style="{
+          left: `${docsWindow.x}px`,
+          top: `${docsWindow.y}px`,
+          width: `${docsWindow.width}px`,
+          height: `${docsWindow.height}px`,
+        }">
+          <div class="docs-window__header">
+            <div class="docs-window__drag-handle" @pointerdown="startDocsWindowDrag">
+              <div class="docs-window__eyebrow">官方文档</div>
+              <div class="docs-window__title">{{ activeDocsTitle }}</div>
+            </div>
+            <div class="docs-window__actions">
+              <a class="docs-window__link" :href="activeDocsUrl" target="_blank" rel="noreferrer" @click.stop>
+                新标签
+              </a>
+              <button type="button" class="docs-window__close" @click.stop="closeOfficialDocs">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="docs-window__hint">窗口外可直接点击原页面控件；若官网禁止内嵌，可点“新标签”。</div>
+          <div class="docs-window__body">
+            <iframe class="docs-window__iframe" :src="activeDocsUrl" :title="activeDocsTitle"
+              referrerpolicy="no-referrer" />
+          </div>
+          <button type="button" class="docs-window__resize-handle" aria-label="调整文档窗口大小"
+            @pointerdown.stop="startDocsWindowResize"></button>
+        </section>
+      </div>
+    </teleport>
   </div>
 </template>
 
@@ -311,6 +514,12 @@ function removeModel(index: number) {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 6px;
+}
+
+.field-label-actions {
+  display: flex;
+  align-items: center;
+  gap: $space-xs;
 }
 
 .field-label {
@@ -561,6 +770,166 @@ function removeModel(index: number) {
   }
 }
 
+.docs-window-btn {
+  flex-shrink: 0;
+  color: $text-muted !important;
+
+  &:hover {
+    color: $accent !important;
+  }
+}
+
+.docs-window-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2200;
+}
+
+.docs-window {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  min-width: 360px;
+  min-height: 320px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(232, 229, 222, 0.94);
+  border-radius: $radius-lg;
+  box-shadow: $shadow-lg;
+  overflow: hidden;
+  pointer-events: auto;
+  backdrop-filter: blur(10px);
+}
+
+.docs-window__header {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: $space-md;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid $border;
+  background: linear-gradient(135deg, rgba(194, 122, 62, 0.12), rgba(255, 255, 255, 0.92));
+}
+
+.docs-window__drag-handle {
+  flex: 1;
+  min-width: 0;
+  cursor: move;
+  user-select: none;
+}
+
+.docs-window__eyebrow {
+  font-family: $font-mono;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: $text-muted;
+}
+
+.docs-window__title {
+  margin-top: 4px;
+  font-family: $font-display;
+  font-size: 20px;
+  font-weight: 600;
+  color: $text-primary;
+  line-height: 1.1;
+}
+
+.docs-window__actions {
+  display: flex;
+  align-items: center;
+  gap: $space-sm;
+  flex-shrink: 0;
+}
+
+.docs-window__link {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid $border;
+  font-family: $font-mono;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: $text-body;
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.72);
+  transition: all 0.2s ease;
+
+  &:hover {
+    color: $accent;
+    border-color: rgba(194, 122, 62, 0.35);
+    background: rgba(194, 122, 62, 0.08);
+  }
+}
+
+.docs-window__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: $text-muted;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover {
+    color: $danger;
+    background: rgba(184, 74, 74, 0.08);
+  }
+}
+
+.docs-window__hint {
+  padding: 8px 16px;
+  border-bottom: 1px solid $border-light;
+  font-family: $font-body;
+  font-size: 13px;
+  color: $text-muted;
+  background: rgba(245, 243, 238, 0.82);
+}
+
+.docs-window__body {
+  flex: 1;
+  min-height: 0;
+  background: $surface;
+}
+
+.docs-window__iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: $surface;
+}
+
+.docs-window__resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  background: transparent;
+  cursor: nwse-resize;
+}
+
+.docs-window__resize-handle::before {
+  content: '';
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid rgba(194, 122, 62, 0.5);
+  border-bottom: 2px solid rgba(194, 122, 62, 0.5);
+}
+
 /* ── 添加服务商模态框 ── */
 .add-modal-empty {
   text-align: center;
@@ -654,6 +1023,18 @@ function removeModel(index: number) {
   /* 添加服务商模态框网格单列 */
   .add-modal-grid {
     grid-template-columns: 1fr;
+  }
+
+  .docs-window {
+    min-width: 300px;
+  }
+
+  .docs-window__title {
+    font-size: 18px;
+  }
+
+  .docs-window__hint {
+    font-size: 12px;
   }
 }
 </style>
