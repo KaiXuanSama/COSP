@@ -18,6 +18,14 @@ const DEFAULT_RIPPLE_DURATION = 400
 const DEFAULT_FLIP_DELAY = 50
 const DEFAULT_FLIP_DURATION = 300
 
+/**
+ * 负责热力图的时间线调度。
+ *
+ * 核心目标不是“立即切到目标模式”，而是维护一条可叠加的列级动画队列：
+ * - reveal 先走完每列自己的入场节奏；
+ * - 后续模式切换按列排队，不抢断前一轮已排好的翻转；
+ * - 浏览器不支持 Web Animations API 时，退回 CSS 动画保证视觉仍然成立。
+ */
 export function useHeatmapTimeline(options: UseHeatmapTimelineOptions) {
   const columnModes = ref<string[]>([])
   const columnReadyAt = ref<number[]>([])
@@ -43,6 +51,7 @@ export function useHeatmapTimeline(options: UseHeatmapTimelineOptions) {
     }
 
     if (nextSignature !== previousSignature) {
+      // 数据轴换了但组件还在时，直接清掉旧时间线，避免旧列状态污染新数据。
       resetHeatmapState('done')
     }
   })
@@ -68,6 +77,7 @@ export function useHeatmapTimeline(options: UseHeatmapTimelineOptions) {
       || columnModes.value.length !== visibleLength
       || columnReadyAt.value.length !== visibleLength
     ) {
+      // 可见窗口一变，列级队列就失效了，必须按新的可见列重新建状态。
       resetColumnState(true)
       initializeColumns(visibleLength, nextMode)
       return
@@ -79,6 +89,7 @@ export function useHeatmapTimeline(options: UseHeatmapTimelineOptions) {
       startInitialReveal()
     }
 
+    // activeMode 变化只是在已有时间线上追加一轮 flip，而不是抢占当前动画。
     queueModeSwitch(nextMode)
   }, { immediate: true })
 
@@ -102,6 +113,7 @@ export function useHeatmapTimeline(options: UseHeatmapTimelineOptions) {
     const totalDuration = initialRevealDelay + maxDistance * rippleDelay + rippleDuration + 60
 
     revealTimer = setTimeout(() => {
+      // reveal 结束后，后续 tooltip 和 cell hover 才会恢复到稳定状态。
       revealState.value = 'done'
       revealTimer = null
     }, totalDuration)
@@ -164,6 +176,7 @@ export function useHeatmapTimeline(options: UseHeatmapTimelineOptions) {
   }
 
   function initializeColumns(visibleLength: number, modeKey: string) {
+    // 初始化时所有列先对齐到同一个模式，后续再由队列逐列改写。
     columnModes.value = Array.from({ length: visibleLength }, () => modeKey)
     columnReadyAt.value = Array.from({ length: visibleLength }, () => 0)
     columnElements.value = Array.from({ length: visibleLength }, (_, index) => columnElements.value[index] ?? null)
@@ -199,6 +212,7 @@ export function useHeatmapTimeline(options: UseHeatmapTimelineOptions) {
       const startDelay = startAt - now
       const swapDelay = startDelay + flipDuration
 
+      // 每列记录自己的下一次可执行时间，形成真正的列级排队，而不是全局抢占。
       columnReadyAt.value[index] = startAt + flipAnimationDuration
 
       scheduleTransition(startDelay, () => {
@@ -206,6 +220,7 @@ export function useHeatmapTimeline(options: UseHeatmapTimelineOptions) {
       })
 
       scheduleTransition(swapDelay, () => {
+        // 数据在翻转半程切换，用户看到的是“翻过去变色”，而不是平面直接跳色。
         columnModes.value[index] = nextMode
       })
     }
@@ -226,6 +241,7 @@ export function useHeatmapTimeline(options: UseHeatmapTimelineOptions) {
     if (!element) return
 
     if (typeof element.animate !== 'function') {
+      // Web Animations API 不可用时回退到 CSS keyframes，至少保住翻转视觉。
       playColumnFlipFallback(element, columnIndex, duration)
       return
     }
@@ -245,6 +261,7 @@ export function useHeatmapTimeline(options: UseHeatmapTimelineOptions) {
         fill: 'none',
       })
     } catch {
+      // 某些环境下 animate 存在但调用失败，这里继续走 fallback，而不是静默丢动画。
       playColumnFlipFallback(element, columnIndex, duration)
       return
     }

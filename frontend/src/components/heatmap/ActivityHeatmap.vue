@@ -1,4 +1,29 @@
 <script setup lang="ts">
+/**
+ * 热力图组件使用说明
+ *
+ * 1. 组件职责：
+ *    - 负责热力图的最终渲染、tooltip 展示和容器宽度测量。
+ *    - 不负责请求数据，也不负责业务模式切换按钮；这些由页面层处理。
+ *
+ * 2. 最小接入方式：
+ *    - 传入 data 和 modes。
+ *    - 通过 activeMode 指定当前模式。
+ *    - 页面层在模式切换时只更新 activeMode，组件内部会负责开场动画与列翻转队列。
+ *
+ * 3. 多数据组模式：
+ *    - 若各模式共用同一份原始数据，只传 data 即可。
+ *    - 若某些模式需要独立数据集，可通过 datasets[mode.key] 单独覆盖。
+ *
+ * 4. 模块结构：
+ *    - ActivityHeatmap.vue: 组件壳，负责模板、tooltip 和尺寸测量。
+ *    - useHeatmapData.ts: 日期归一化、周列切片、月份标签、数值映射。
+ *    - useHeatmapTimeline.ts: 开场 reveal、列翻转排队、动画 fallback。
+ *
+ * 5. 维护约定：
+ *    - 不要把页面业务请求逻辑重新放回组件内部。
+ *    - 如果要调整动画行为，优先修改时间线 composable，而不是在模板层叠加状态。
+ */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { ActivityHeatmapProps, HeatmapRecord, HeatmapTooltipPayload, NormalizedHeatmapDay } from './heatmap'
 import { useHeatmapData } from './useHeatmapData'
@@ -30,12 +55,14 @@ const tooltip = ref({ visible: false, left: 0, top: 0, text: '' })
 
 let resizeObserver: ResizeObserver | null = null
 
+// 样式变量只保留给模板真正需要的尺寸与动画节奏。
 const rootStyle = computed(() => ({
   '--heatmap-cell-size': `${props.cellSize}px`,
   '--heatmap-gap': `${props.gap}px`,
   '--heatmap-ripple-duration': `${props.rippleDuration}ms`,
 }))
 
+// 数据 composable 负责把任意输入数据整理成统一时间轴与可见列。
 const {
   normalizedDays,
   structuralSignature,
@@ -50,6 +77,7 @@ const {
   getWeekAnchor,
 } = useHeatmapData(props, containerWidth, dayLabelsWidth)
 
+// 时间线 composable 只关心 reveal 与 flip，不关心具体业务值长什么样。
 const { revealState, setColumnRef, getColumnMode } = useHeatmapTimeline({
   props,
   structuralSignature,
@@ -86,6 +114,7 @@ onUnmounted(() => {
 })
 
 function updateContainerWidth() {
+  // 左侧星期标签区会直接影响可见列数，所以和容器宽度一起测量。
   containerWidth.value = heatmapRef.value?.clientWidth ?? 0
   dayLabelsWidth.value = dayLabelsRef.value?.clientWidth ?? 72
 }
@@ -106,6 +135,7 @@ function getCellClasses(day: NormalizedHeatmapDay | null) {
 
 function getCellStyle(day: NormalizedHeatmapDay | null, columnIndex: number, rowIndex: number) {
   if (!day) {
+    // 空单元格只参与 reveal 节奏，不参与数值着色。
     return revealState.value === 'animating'
       ? { animationDelay: `${(columnIndex + (6 - rowIndex)) * props.rippleDelay}ms` }
       : undefined
@@ -119,6 +149,7 @@ function getCellStyle(day: NormalizedHeatmapDay | null, columnIndex: number, row
   }
 
   if (revealState.value === 'animating') {
+    // reveal 阶段按“列 + 行”形成斜向波纹，这样首屏入场更接近旧版实现。
     style.animationDelay = `${(columnIndex + (6 - rowIndex)) * props.rippleDelay}ms`
   }
 
@@ -130,6 +161,7 @@ function getColumnKey(week: Array<NormalizedHeatmapDay | null>, columnIndex: num
 }
 
 function formatTooltip(day: NormalizedHeatmapDay, columnIndex: number) {
+  // tooltip 总是以“当前列正在显示的模式”为准，而不是外部最新 activeMode。
   const modeKey = getColumnMode(columnIndex)
   const mode = getModeConfig(modeKey)
   const item = day.recordsByMode[modeKey] ?? null
@@ -152,6 +184,7 @@ function showTooltip(event: MouseEvent, day: NormalizedHeatmapDay, columnIndex: 
   const root = heatmapRef.value
   if (!target || !root) return
 
+  // tooltip 使用热力图容器内坐标，避免页面滚动或卡片偏移时定位漂移。
   const rect = target.getBoundingClientRect()
   const rootRect = root.getBoundingClientRect()
 

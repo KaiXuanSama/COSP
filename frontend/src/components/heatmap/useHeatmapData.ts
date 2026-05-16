@@ -12,6 +12,14 @@ const DEFAULT_DAY_LABELS_WIDTH = 72
 const DEFAULT_CELL_SIZE = 16
 const DEFAULT_GAP = 4
 
+/**
+ * 负责把外部传入的 data / datasets 归一化成热力图渲染所需的统一结构。
+ *
+ * 这里不处理任何动画状态，只解决三件事：
+ * 1. 对齐所有模式的数据日期轴。
+ * 2. 把日期切成按周显示的列。
+ * 3. 计算当前容器宽度下真正可见的列和月份标签。
+ */
 export function useHeatmapData(
   props: Readonly<ActivityHeatmapProps>,
   containerWidth: Ref<number>,
@@ -65,6 +73,7 @@ export function useHeatmapData(
     }))
   })
 
+  // structuralSignature 用于判断“数据本体是否换了一套”，哪怕长度相同也能识别。
   const structuralSignature = computed(() => {
     if (!normalizedDays.value.length || !props.modes.length) return ''
     const modeKeys = props.modes.map((mode) => mode.key).join('|')
@@ -77,6 +86,7 @@ export function useHeatmapData(
     return props.modes[0]?.key ?? ''
   })
 
+  // 所有数据会先对齐到完整日期轴，再按周切成列，模板层只消费 visibleWeeks。
   const allWeeks = computed<VisibleWeek[]>(() => {
     if (!normalizedDays.value.length) return []
 
@@ -104,6 +114,7 @@ export function useHeatmapData(
     if (!allWeeks.value.length) return 0
     if (!containerWidth.value) return allWeeks.value.length
 
+    // 左侧星期标签区占掉的宽度需要扣除，否则可见列数会被高估。
     const gap = props.gap ?? DEFAULT_GAP
     const cellSize = props.cellSize ?? DEFAULT_CELL_SIZE
     const labelsWidth = dayLabelsWidth.value || DEFAULT_DAY_LABELS_WIDTH
@@ -117,6 +128,7 @@ export function useHeatmapData(
     return allWeeks.value.slice(Math.max(0, allWeeks.value.length - visibleColumnCount.value))
   })
 
+  // visibleStateSignature 只关注当前屏幕内真正参与动画的列集合。
   const visibleStateSignature = computed(() => {
     if (!visibleWeeks.value.length || !props.modes.length) return ''
     const modeKeys = props.modes.map((mode) => mode.key).join('|')
@@ -173,6 +185,10 @@ export function useHeatmapData(
     return segments
   })
 
+  /**
+   * 根据 mode 配置统一读取数值。
+   * 优先走 getValue，自定义映射不受原始字段名限制；否则退回 valueKey。
+   */
   function getModeConfig(modeKey: string) {
     return modeLookup.value[modeKey] ?? props.modes[0]
   }
@@ -219,6 +235,7 @@ export function useHeatmapData(
 }
 
 function resolveDate(item: HeatmapRecord, props: Readonly<ActivityHeatmapProps>) {
+  // 允许页面层通过 getDate 完全接管日期提取逻辑，默认再回退到 dateKey。
   if (props.getDate) return props.getDate(item)
   const value = (item as Record<string, unknown>)[props.dateKey ?? 'usageDate']
   return typeof value === 'string' ? value : ''
