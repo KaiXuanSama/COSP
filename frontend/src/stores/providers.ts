@@ -56,6 +56,11 @@ export const useProviderStore = defineStore('providers', () => {
     })
   }
 
+  async function pullProviderModels(providerKey: string, payload: { baseUrl: string; apiKey: string; modelPullPath?: string }) {
+    const res = await http.post(`/providers/${providerKey}/pull-models`, payload)
+    return res.data
+  }
+
   async function saveFakeVersion(version: string) {
     await http.post('/fake-version', null, { params: { fakeVersion: version } })
     fakeVersion.value = version
@@ -70,5 +75,5 @@ export const useProviderStore = defineStore('providers', () => {
     }
   }
 
-  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, saveFakeVersion, fetchFakeVersion }
+  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchFakeVersion }
 })

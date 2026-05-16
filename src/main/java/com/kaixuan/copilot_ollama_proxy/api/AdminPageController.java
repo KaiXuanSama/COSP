@@ -2,6 +2,8 @@ package com.kaixuan.copilot_ollama_proxy.api;
 
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.userdetails.User;
@@ -10,6 +12,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.provisioning.JdbcUserDetailsManager;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -28,12 +32,15 @@ public class AdminPageController {
     private final PasswordEncoder passwordEncoder;
     private final ApiUsageRepository apiUsageRepository;
     private final ProviderConfigRepository providerConfigRepository;
+    private final WebClient.Builder webClientBuilder;
 
-    public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder, ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository) {
+    public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder, ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository,
+            WebClient.Builder webClientBuilder) {
         this.userDetailsManager = userDetailsManager;
         this.passwordEncoder = passwordEncoder;
         this.apiUsageRepository = apiUsageRepository;
         this.providerConfigRepository = providerConfigRepository;
+        this.webClientBuilder = webClientBuilder;
     }
 
     // ==================== SPA 路由支持 ====================
@@ -192,6 +199,28 @@ public class AdminPageController {
         return ResponseEntity.ok(Map.of("ok", true));
     }
 
+    /**
+     * 使用当前表单中的 Base URL 与 API Key 从上游拉取模型列表。
+     */
+    @PostMapping("/config/api/providers/{providerKey}/pull-models") @ResponseBody
+    public ResponseEntity<?> pullProviderModels(@PathVariable String providerKey, @RequestBody Map<String, String> body) {
+        if (!supportsProviderKey(providerKey)) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "不支持的服务商。"));
+        }
+
+        String baseUrl = body.getOrDefault("baseUrl", "").trim();
+        String apiKey = body.getOrDefault("apiKey", "").trim();
+        String modelPullPath = body.getOrDefault("modelPullPath", "").trim();
+        if (baseUrl.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "请先填写 API 地址。"));
+        }
+        if (apiKey.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "请先填写 API Key。"));
+        }
+
+        return forwardModelsRequest(providerKey, baseUrl, apiKey, modelPullPath);
+    }
+
     // ==================== 账号修改（JSON API） ====================
 
     /**
@@ -203,6 +232,50 @@ public class AdminPageController {
         result.put("username", authentication.getName());
         result.put("role", authentication.getAuthorities().stream().findFirst().map(Object::toString).orElse(""));
         return ResponseEntity.ok(result);
+    }
+
+    private boolean supportsProviderKey(String providerKey) {
+        return switch (providerKey) {
+        case "longcat", "mimo", "sensenova", "deepseek" -> true;
+        default -> false;
+        };
+    }
+
+    private ResponseEntity<String> forwardModelsRequest(String providerKey, String rawBaseUrl, String apiKey, String rawModelPullPath) {
+        String requestUrl = rawBaseUrl.replaceAll("/+$", "") + normalizeModelPullPath(rawModelPullPath);
+        try {
+            return webClientBuilder.clone().defaultHeaders(headers -> {
+                headers.set(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE);
+                applyModelDiscoveryAuthHeaders(providerKey, headers, apiKey);
+            }).build().get().uri(requestUrl).exchangeToMono(response -> response.bodyToMono(String.class).defaultIfEmpty("").map(body -> {
+                ResponseEntity.BodyBuilder builder = ResponseEntity.status(response.statusCode().value());
+                response.headers().contentType().ifPresent(builder::contentType);
+                return builder.body(body);
+            })).onErrorResume(ex -> Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON).body("{\"error\":\"连接上游服务失败，请检查 API 地址是否正确。\"}"))).blockOptional()
+                    .orElseGet(() -> ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON).body("{\"error\":\"连接上游服务失败，请检查 API 地址是否正确。\"}"));
+        } catch (Exception ex) {
+            return ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON).body("{\"error\":\"连接上游服务失败，请检查 API 地址是否正确。\"}");
+        }
+    }
+
+    private String normalizeModelPullPath(String rawModelPullPath) {
+        String path = rawModelPullPath == null ? "" : rawModelPullPath.trim();
+        if (path.isBlank()) {
+            return "/v1/models";
+        }
+        return path.startsWith("/") ? path : "/" + path;
+    }
+
+    private void applyModelDiscoveryAuthHeaders(String providerKey, HttpHeaders headers, String apiKey) {
+        switch (providerKey) {
+        case "mimo" -> {
+            headers.set("api-key", apiKey);
+            headers.set("x-api-key", apiKey);
+        }
+        case "longcat", "sensenova", "deepseek" -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
+        default -> {
+        }
+        }
     }
 
     @PostMapping("/config/api/account") @ResponseBody

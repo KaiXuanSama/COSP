@@ -140,12 +140,13 @@ const activeDocsTitle = computed(() => {
 onMounted(() => window.addEventListener('resize', onResize))
 onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 
-const providerMeta: Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string; docsUrl: string }> = {
+const providerMeta: Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string; docsUrl: string; modelPullPath?: string }> = {
   longcat: {
     displayName: 'LongCat',
     colorClass: 'accent',
     apiUrlPlaceholder: 'https://api.longcat.chat',
     docsUrl: 'https://longcat.chat/platform/docs/zh/#%E5%8D%95%E6%AC%A1%E8%AF%B7%E6%B1%82%E9%99%90%E5%88%B6',
+    modelPullPath: '/openai/v1/models',
   },
   mimo: {
     displayName: 'MiMo',
@@ -181,6 +182,7 @@ const editForm = ref({
   apiKey: '',
   models: [] as any[],
 })
+const pullingModels = ref(false)
 
 const showAddModal = ref(false)
 
@@ -228,6 +230,78 @@ function openEditPanel(key: string) {
   }
 }
 
+function buildEditableModel(modelName = '', source: Record<string, any> = {}) {
+  return {
+    ...source,
+    modelName,
+    enabled: source.enabled ?? true,
+    contextSize: String(source.contextSize ?? '0'),
+    capsTools: Boolean(source.capsTools),
+    capsVision: Boolean(source.capsVision),
+  }
+}
+
+function extractModelNames(payload: unknown) {
+  let parsedPayload = payload
+  if (typeof parsedPayload === 'string') {
+    try {
+      parsedPayload = JSON.parse(parsedPayload)
+    } catch {
+      return [] as string[]
+    }
+  }
+
+  const modelNames = new Set<string>()
+
+  const collect = (items: unknown) => {
+    if (!Array.isArray(items)) return
+    for (const item of items) {
+      if (typeof item === 'string') {
+        const value = item.trim()
+        if (value) modelNames.add(value)
+        continue
+      }
+      if (!item || typeof item !== 'object') continue
+      for (const key of ['id', 'model', 'name']) {
+        const value = (item as Record<string, unknown>)[key]
+        if (typeof value === 'string' && value.trim()) {
+          modelNames.add(value.trim())
+          break
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(parsedPayload)) {
+    collect(parsedPayload)
+  } else if (parsedPayload && typeof parsedPayload === 'object') {
+    const source = parsedPayload as Record<string, unknown>
+    collect(source.data)
+    collect(source.models)
+  }
+
+  return Array.from(modelNames)
+}
+
+function resolvePullModelsErrorMessage(error: any) {
+  const status = error?.response?.status
+  const data = error?.response?.data
+
+  if (data && typeof data === 'object' && typeof data.error === 'string' && data.error.trim()) {
+    return data.error
+  }
+  if (typeof data === 'string' && data.trim()) {
+    return data
+  }
+  if (status === 401 || status === 403) {
+    return '模型拉取失败：API Key 无效或无权限'
+  }
+  if (status === 404) {
+    return '模型拉取失败：模型列表端点不存在'
+  }
+  return '拉取模型失败'
+}
+
 function closeEditPanel() {
   editingKey.value = null
 }
@@ -252,10 +326,7 @@ async function saveEditPanel() {
     if (providerStore.providers[key]) {
       providerStore.providers[key].baseUrl = editForm.value.baseUrl
       providerStore.providers[key].apiKey = editForm.value.apiKey
-      providerStore.providers[key].models = editForm.value.models.map(m => ({
-        ...m,
-        contextSize: String(m.contextSize ?? '0'),
-      }))
+      providerStore.providers[key].models = editForm.value.models.map((model: any) => buildEditableModel(model.modelName, model))
     }
     message.success('保存成功')
     // 延迟关闭，让通知可见
@@ -280,14 +351,41 @@ async function saveFakeVersion() {
   message.success('版本号已保存')
 }
 
+async function pullModels() {
+  if (!editingKey.value) return
+  const providerKey = editingKey.value
+  const apiKey = editForm.value.apiKey.trim()
+  if (!apiKey) {
+    message.warning('请先填写 API Key')
+    return
+  }
+
+  pullingModels.value = true
+  try {
+    const resolvedBaseUrl = editForm.value.baseUrl.trim() || providerMeta[providerKey]?.apiUrlPlaceholder || ''
+    const responsePayload = await providerStore.pullProviderModels(providerKey, {
+      baseUrl: resolvedBaseUrl,
+      apiKey,
+      modelPullPath: providerMeta[providerKey]?.modelPullPath,
+    })
+    const modelNames = extractModelNames(responsePayload)
+    if (modelNames.length === 0) {
+      message.warning('未拉取到模型')
+      return
+    }
+
+    const existingModels = new Map(editForm.value.models.map((model: any) => [model.modelName, model]))
+    editForm.value.models = modelNames.map(modelName => buildEditableModel(modelName, existingModels.get(modelName) ?? {}))
+    message.success(`已拉取 ${modelNames.length} 个模型`)
+  } catch (error: any) {
+    message.error(resolvePullModelsErrorMessage(error))
+  } finally {
+    pullingModels.value = false
+  }
+}
+
 function addModel() {
-  editForm.value.models.push({
-    modelName: '',
-    enabled: true,
-    contextSize: '0',
-    capsTools: false,
-    capsVision: false,
-  })
+  editForm.value.models.push(buildEditableModel())
 }
 
 function removeModel(index: number) {
@@ -381,6 +479,17 @@ function removeModel(index: number) {
           <div class="field-label-row">
             <label class="field-label">模型列表</label>
             <div class="field-label-actions">
+              <n-button text size="tiny" :loading="pullingModels" @click="pullModels" class="pull-models-btn">
+                <template #icon>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 3v12" />
+                    <path d="m7 10 5 5 5-5" />
+                    <path d="M5 21h14" />
+                  </svg>
+                </template>
+                拉取模型
+              </n-button>
               <n-button text size="tiny" @click="openOfficialDocs" class="docs-window-btn">
                 <template #icon>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -762,6 +871,15 @@ function removeModel(index: number) {
 }
 
 .add-provider-btn {
+  flex-shrink: 0;
+  color: $text-muted !important;
+
+  &:hover {
+    color: $accent !important;
+  }
+}
+
+.pull-models-btn {
   flex-shrink: 0;
   color: $text-muted !important;
 
