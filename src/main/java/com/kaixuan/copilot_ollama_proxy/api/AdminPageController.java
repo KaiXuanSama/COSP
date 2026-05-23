@@ -140,11 +140,13 @@ public class AdminPageController {
     public ResponseEntity<Map<String, Object>> toggleProvider(@PathVariable String providerKey, @RequestBody Map<String, Object> body) {
         boolean enabled = Boolean.TRUE.equals(body.get("enabled"));
         Map<String, Object> provider = providerConfigRepository.findByKey(providerKey);
-        if (provider == null) {
-            return ResponseEntity.notFound().build();
+        String baseUrl = "";
+        String apiKey = "";
+        if (provider != null) {
+            baseUrl = (String) provider.getOrDefault("baseUrl", "");
+            apiKey = (String) provider.getOrDefault("apiKey", "");
         }
-        String baseUrl = (String) provider.getOrDefault("baseUrl", "");
-        String apiKey = (String) provider.getOrDefault("apiKey", "");
+        // saveProvider 在记录不存在时会自动插入（首次启用场景）
         providerConfigRepository.saveProvider(providerKey, enabled, baseUrl, apiKey, "openai");
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("providerKey", providerKey);
