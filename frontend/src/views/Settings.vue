@@ -167,6 +167,12 @@ const providerMeta: Record<string, { displayName: string; colorClass: string; ap
     apiUrlPlaceholder: 'https://api.deepseek.com',
     docsUrl: 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing',
   },
+  uumit: {
+    displayName: 'Uumit',
+    colorClass: 'accent',
+    apiUrlPlaceholder: 'https://agent.uumit.com',
+    docsUrl: 'https://agent.uumit.com/docs',
+  },
 }
 
 const editingKey = ref<string | null>(null)
