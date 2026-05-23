@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -93,11 +94,31 @@ public class DeepSeekOllamaService extends AbstractRuntimeCatalogOllamaService {
     public OllamaShowResponse showModel(String modelName) {
         String resolvedModel = resolveModelOrDefault(modelName);
 
-        // DeepSeek 模型都支持 completion 和 tools
-        List<String> capabilities = List.of("completion", "tools");
+        // 能力列表从数据库读取（caps_tools / caps_vision）
+        List<String> capabilities = buildCapabilitiesFromDb(resolvedModel);
 
         int contextLength = requireContextLength(resolvedModel);
         return buildShowResponse(resolvedModel, contextLength, capabilities);
+    }
+
+    /**
+     * 从数据库读取模型的能力标志（caps_tools / caps_vision），构建 capabilities 列表。
+     */
+    private List<String> buildCapabilitiesFromDb(String resolvedModel) {
+        List<String> caps = new ArrayList<>();
+        caps.add("completion");
+        try {
+            var model = requireModelConfiguration(resolvedModel);
+            if (model.capsTools()) {
+                caps.add("tools");
+            }
+            if (model.capsVision()) {
+                caps.add("vision");
+            }
+        } catch (Exception e) {
+            log.warn("DeepSeek 模型 [{}] 能力读取失败，仅使用默认 completion 能力: {}", resolvedModel, e.getMessage());
+        }
+        return caps;
     }
 
     // ========== 非流式对话 ==========

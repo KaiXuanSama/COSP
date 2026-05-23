@@ -17,6 +17,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.*;
 
@@ -87,18 +88,33 @@ public class LongCatOllamaService extends AbstractRuntimeCatalogOllamaService {
     public OllamaShowResponse showModel(String modelName) {
         String resolvedModel = resolveModelOrDefault(modelName);
 
-        // 先确定能力列表（硬编码，因为能力通常由模型类型决定）
-        List<String> capabilities;
-        if (resolvedModel.contains("Omni")) {
-            capabilities = List.of("completion", "tools", "vision");
-        } else {
-            capabilities = List.of("completion", "tools");
-        }
+        // 能力列表从数据库读取（caps_tools / caps_vision）
+        List<String> capabilities = buildCapabilitiesFromDb(resolvedModel);
 
         // 上下文长度必须从数据库读取，未配置则直接报错
         int contextLength = requireContextLength(resolvedModel);
 
         return buildShowResponse(resolvedModel, contextLength, capabilities);
+    }
+
+    /**
+     * 从数据库读取模型的能力标志（caps_tools / caps_vision），构建 capabilities 列表。
+     */
+    private List<String> buildCapabilitiesFromDb(String resolvedModel) {
+        List<String> caps = new ArrayList<>();
+        caps.add("completion");
+        try {
+            var model = requireModelConfiguration(resolvedModel);
+            if (model.capsTools()) {
+                caps.add("tools");
+            }
+            if (model.capsVision()) {
+                caps.add("vision");
+            }
+        } catch (Exception e) {
+            log.warn("LongCat 模型 [{}] 能力读取失败，仅使用默认 completion 能力: {}", resolvedModel, e.getMessage());
+        }
+        return caps;
     }
 
     // ========== 非流式对话 ==========
