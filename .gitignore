@@ -45,3 +45,11 @@ application.yml
 src/main/resources/static/assets/
 src/main/resources/static/img/
 src/main/resources/static/index.html
+
+# Markdown files, except for README.md
+/*.md
+!README.md
+
+
+# PowerShell scripts
+*.ps1
