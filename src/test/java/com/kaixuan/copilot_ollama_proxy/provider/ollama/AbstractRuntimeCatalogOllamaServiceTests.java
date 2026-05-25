@@ -29,7 +29,7 @@ class AbstractRuntimeCatalogOllamaServiceTests {
         assertThat(service.supportsModel("model-b")).isFalse();
         assertThat(response).isNotNull();
         assertThat(response.getModels()).hasSize(1);
-        assertThat(response.getModels().get(0).getName()).isEqualTo("model-a");
+        assertThat(response.getModels().get(0).getName()).isEqualTo("[stub] model-a");
         assertThat(response.getModels().get(0).getDetails().getFormat()).isEqualTo("stub");
     }
 

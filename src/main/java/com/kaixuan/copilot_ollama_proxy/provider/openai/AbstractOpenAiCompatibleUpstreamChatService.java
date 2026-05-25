@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
+import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.ParameterizedTypeReference;
@@ -197,18 +198,24 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
 
     /**
      * 解析请求中的模型名称，如果请求中没有指定模型或指定的模型名称无效，则使用提供的 fallbackModel 进行回退，如果 fallbackModel 也无效则使用全局默认模型。
+     * <p>
+     * 如果模型名称包含供应商前缀（如 {@code [DeepSeek]deepseek-v4-flash}），会自动去除前缀后再返回。
      * @param requestModel 请求中指定的模型名称，可能为 null 或空字符串
      * @param fallbackModel 提供的回退模型名称，可能为 null 或空字符串
-     * @return 最终解析出的模型名称，保证不为 null 或空字符串
+     * @return 最终解析出的模型名称，保证不为 null 或空字符串，且不含供应商前缀
      */
     protected String resolveModel(Object requestModel, String fallbackModel) {
+        String model;
         if (requestModel instanceof String value && !value.isBlank()) {
-            return value;
+            model = value;
+        } else if (fallbackModel != null && !fallbackModel.isBlank()) {
+            model = fallbackModel;
+        } else {
+            return fallbackDefaultModel;
         }
-        if (fallbackModel != null && !fallbackModel.isBlank()) {
-            return fallbackModel;
-        }
-        return fallbackDefaultModel;
+        // 去除供应商前缀（如 [DeepSeek]deepseek-v4-flash → deepseek-v4-flash）
+        var parsed = ModelNameUtil.parse(model);
+        return parsed.modelName();
     }
 
     /**

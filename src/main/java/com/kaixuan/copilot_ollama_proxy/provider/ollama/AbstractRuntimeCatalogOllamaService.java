@@ -4,6 +4,7 @@ import com.kaixuan.copilot_ollama_proxy.application.ollama.OllamaService;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
+import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
@@ -46,7 +47,24 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
     @Override
     public boolean supportsModel(String modelName) {
         ProviderRuntimeConfiguration config = getProviderConfiguration();
-        return config != null && config.supportsModel(modelName);
+        if (config == null) {
+            return false;
+        }
+
+        // 解析模型名称，提取可能的供应商前缀
+        ModelNameUtil.ParseResult parsed = ModelNameUtil.parse(modelName);
+
+        // 如果带供应商前缀，必须精确匹配当前供应商
+        if (parsed.hasProviderPrefix()) {
+            if (!parsed.providerKey().equalsIgnoreCase(getProviderKey())) {
+                return false;
+            }
+            // 前缀匹配后，检查实际模型名是否在配置中
+            return config.supportsModel(parsed.modelName());
+        }
+
+        // 无前缀时，使用原有匹配逻辑
+        return config.supportsModel(modelName);
     }
 
     @Override
@@ -73,12 +91,16 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
 
     /**
      * 解析模型名称，如果未指定则使用默认模型。
-     * @param modelName 模型名称
-     * @return 解析后的模型名称，如果未指定则返回默认模型名称
+     * 支持带供应商前缀的模型名称，会自动去除前缀获取实际模型名。
+     * @param modelName 模型名称，可能带前缀如 "[DeepSeek]deepseek-v4-flash"
+     * @return 解析后的实际模型名称
      */
     protected String resolveModelOrDefault(String modelName) {
-        if (modelName != null && !modelName.isBlank()) {
-            return modelName;
+        // 先去除可能存在的供应商前缀
+        String actualModelName = ModelNameUtil.stripPrefix(modelName);
+
+        if (actualModelName != null && !actualModelName.isBlank()) {
+            return actualModelName;
         }
 
         ProviderRuntimeConfiguration config = getProviderConfiguration();
@@ -240,12 +262,16 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
 
     /**
      * 构建模型的详细信息响应对象。
-     * @param resolvedModel 模型名称
+     * 返回的模型名称会添加供应商前缀，格式为 [ProviderKey]modelName。
+     * @param resolvedModel 实际模型名称（不带前缀）
      * @param contextLength 上下文长度
      * @param capabilities 模型能力列表
      * @return 模型的详细信息响应对象
      */
     protected OllamaShowResponse buildShowResponse(String resolvedModel, int contextLength, List<String> capabilities) {
+        // 添加供应商前缀，保持与 listModels 返回的格式一致
+        String prefixedModel = ModelNameUtil.buildPrefixedName(getProviderKey(), resolvedModel);
+
         OllamaShowResponse response = new OllamaShowResponse();
         response.setParameters("temperature 0.7\nnum_ctx " + contextLength);
         response.setLicense(providerLicense());
@@ -264,19 +290,22 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
 
         String architecture = providerArchitecture();
         response.setModelInfo(
-                Map.of("general.architecture", architecture, "general.basename", resolvedModel, architecture + ".context_length", contextLength, architecture + ".embedding_length", 8192));
+                Map.of("general.architecture", architecture, "general.basename", prefixedModel, architecture + ".context_length", contextLength, architecture + ".embedding_length", 8192));
         return response;
     }
 
     /**
      * 创建模型信息对象。
+     * 模型名称会添加供应商前缀，格式为 [ProviderKey]modelName。
      * @param model 模型对象
      * @return 模型信息对象
      */
     private OllamaTagsResponse.ModelInfo createModelInfo(ProviderRuntimeModel model) {
         OllamaTagsResponse.ModelInfo info = new OllamaTagsResponse.ModelInfo();
-        info.setName(model.modelName());
-        info.setModel(model.modelName());
+        // 添加供应商前缀，确保所有模型名称格式统一
+        String prefixedName = ModelNameUtil.buildPrefixedName(getProviderKey(), model.modelName());
+        info.setName(prefixedName);
+        info.setModel(prefixedName);
         info.setModifiedAt(currentTimestamp());
         info.setSize(0);
         info.setDigest("sha256:" + UUID.randomUUID().toString().replace("-", ""));
