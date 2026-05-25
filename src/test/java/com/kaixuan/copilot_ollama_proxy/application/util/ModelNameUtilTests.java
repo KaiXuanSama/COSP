@@ -19,27 +19,19 @@ class ModelNameUtilTests {
     class ParseTests {
 
         @Test
-        @DisplayName("标准前缀: [ProviderKey]modelName")
-        void parseStandardPrefix() {
+        @DisplayName("兼容旧格式无空格: [DeepSeek]deepseek-v4-flash")
+        void parseLegacyFormatNoSpace() {
             var result = ModelNameUtil.parse("[DeepSeek]deepseek-v4-flash");
             assertThat(result.providerKey()).isEqualTo("DeepSeek");
             assertThat(result.modelName()).isEqualTo("deepseek-v4-flash");
         }
 
         @Test
-        @DisplayName("后缀带中括号: [mimo]mimo-v2.5-pro[1m] → 后缀保留")
-        void parseSuffixBracketPreserved() {
-            var result = ModelNameUtil.parse("[mimo]mimo-v2.5-pro[1m]");
-            assertThat(result.providerKey()).isEqualTo("mimo");
-            assertThat(result.modelName()).isEqualTo("mimo-v2.5-pro[1m]");
-        }
-
-        @Test
-        @DisplayName("后缀带多个中括号: [mimo]model-a[latest][v2] → 后缀全部保留")
-        void parseMultipleSuffixBracketsPreserved() {
-            var result = ModelNameUtil.parse("[mimo]model-a[latest][v2]");
-            assertThat(result.providerKey()).isEqualTo("mimo");
-            assertThat(result.modelName()).isEqualTo("model-a[latest][v2]");
+        @DisplayName("标准前缀: [ProviderKey] modelName")
+        void parseStandardPrefix() {
+            var result = ModelNameUtil.parse("[DeepSeek] deepseek-v4-flash");
+            assertThat(result.providerKey()).isEqualTo("DeepSeek");
+            assertThat(result.modelName()).isEqualTo("deepseek-v4-flash");
         }
 
         @Test
@@ -93,16 +85,16 @@ class ModelNameUtilTests {
     class StripPrefixTests {
 
         @Test
-        @DisplayName("有前缀时去除")
+        @DisplayName("有前缀时去除（带空格格式）")
         void stripPrefixWithPrefix() {
-            assertThat(ModelNameUtil.stripPrefix("[DeepSeek]deepseek-v4-flash"))
+            assertThat(ModelNameUtil.stripPrefix("[DeepSeek] deepseek-v4-flash"))
                     .isEqualTo("deepseek-v4-flash");
         }
 
         @Test
-        @DisplayName("后缀带中括号时仅去除前缀")
+        @DisplayName("后缀带中括号时仅去除前缀（带空格格式）")
         void stripPrefixPreservesSuffix() {
-            assertThat(ModelNameUtil.stripPrefix("[mimo]mimo-v2.5-pro[1m]"))
+            assertThat(ModelNameUtil.stripPrefix("[mimo] mimo-v2.5-pro[1m]"))
                     .isEqualTo("mimo-v2.5-pro[1m]");
         }
 
@@ -128,13 +120,13 @@ class ModelNameUtilTests {
     class HasPrefixTests {
 
         @Test
-        @DisplayName("有前缀返回 true")
+        @DisplayName("有前缀返回 true（带空格格式）")
         void hasPrefixTrue() {
-            assertThat(ModelNameUtil.hasPrefix("[DeepSeek]deepseek-v4-flash")).isTrue();
+            assertThat(ModelNameUtil.hasPrefix("[DeepSeek] deepseek-v4-flash")).isTrue();
         }
 
         @Test
-        @DisplayName("后缀带中括号但无前缀返回 false")
+        @DisplayName("无前缀 + 后缀带中括号返回 false")
         void hasPrefixFalseWithSuffix() {
             assertThat(ModelNameUtil.hasPrefix("model-v1[8k]")).isFalse();
         }
@@ -155,17 +147,17 @@ class ModelNameUtilTests {
     class BuildPrefixedNameTests {
 
         @Test
-        @DisplayName("标准构建")
+        @DisplayName("标准构建（带空格）")
         void buildStandard() {
             assertThat(ModelNameUtil.buildPrefixedName("mimo", "mimo-v2.5-pro"))
-                    .isEqualTo("[mimo]mimo-v2.5-pro");
+                    .isEqualTo("[mimo] mimo-v2.5-pro");
         }
 
         @Test
         @DisplayName("模型名后缀带中括号时原样拼接")
         void buildWithSuffixBrackets() {
             assertThat(ModelNameUtil.buildPrefixedName("mimo", "mimo-v2.5-pro[1m]"))
-                    .isEqualTo("[mimo]mimo-v2.5-pro[1m]");
+                    .isEqualTo("[mimo] mimo-v2.5-pro[1m]");
         }
 
         @Test
@@ -190,9 +182,9 @@ class ModelNameUtilTests {
     class ExtractProviderKeyTests {
 
         @Test
-        @DisplayName("有前缀时提取 providerKey")
+        @DisplayName("有前缀时提取 providerKey（带空格格式）")
         void extractWithPrefix() {
-            assertThat(ModelNameUtil.extractProviderKey("[DeepSeek]deepseek-v4-flash"))
+            assertThat(ModelNameUtil.extractProviderKey("[DeepSeek] deepseek-v4-flash"))
                     .isEqualTo("DeepSeek");
         }
 
@@ -206,7 +198,7 @@ class ModelNameUtilTests {
         @Test
         @DisplayName("后缀带中括号时不影响前缀提取")
         void extractWithSuffixBrackets() {
-            assertThat(ModelNameUtil.extractProviderKey("[mimo]model-a[latest]"))
+            assertThat(ModelNameUtil.extractProviderKey("[mimo] model-a[latest]"))
                     .isEqualTo("mimo");
         }
     }
@@ -218,9 +210,9 @@ class ModelNameUtilTests {
     class HasProviderPrefixTests {
 
         @Test
-        @DisplayName("有前缀时返回 true")
+        @DisplayName("有前缀时返回 true（带空格格式）")
         void withPrefix() {
-            assertThat(ModelNameUtil.parse("[mimo]model-a").hasProviderPrefix()).isTrue();
+            assertThat(ModelNameUtil.parse("[mimo] model-a").hasProviderPrefix()).isTrue();
         }
 
         @Test
