@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.api.ollama;
 
 import com.kaixuan.copilot_ollama_proxy.application.ollama.CompositeOllamaService;
+import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
@@ -94,7 +95,7 @@ public class OllamaApiController {
 
     /**
      * 构造单个模型的 ModelInfo 对象。
-     * 模型名称会添加供应商前缀，格式为 [ProviderKey]modelName。
+     * 模型名称会添加供应商前缀，格式为 [ProviderKey] modelName。
      * 根据提供的模型名称、服务商标识和能力列表生成符合 Ollama 规范的模型信息。
      * @param modelName 模型显示名称（如 "mimo-v2.5-pro"）
      * @param providerKey 服务商标识（如 "mimo"），用于构造模型详细信息
@@ -105,7 +106,7 @@ public class OllamaApiController {
     private OllamaTagsResponse.ModelInfo createModelInfo(String modelName, String providerKey, boolean capsTools, boolean capsVision) {
         var info = new OllamaTagsResponse.ModelInfo();
         // 添加供应商前缀，确保所有模型名称格式统一
-        String prefixedName = "[" + providerKey + "]" + modelName;
+        String prefixedName = ModelNameUtil.buildPrefixedName(providerKey, modelName);
         info.setName(prefixedName);
         info.setModel(prefixedName);
         info.setModifiedAt(java.time.Instant.now().toString());
