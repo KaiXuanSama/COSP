@@ -4,83 +4,19 @@
 
 ---
 
-## Xiaomi MiMo V2.5 Pro — 缺陷问题报告
+## Xiaomi MiMo V2.5 Pro — ✅ 已解决
 
-### 概述
+> **状态：** MiMo 官方已修复 XML 工具调用格式问题，模型现已能正常输出标准 JSON `tool_calls`。
+> 
+> 代理层此前针对此问题实现的 XML 拦截/转换代码已移除。当前仅保留 system prompt 中的 JSON 工具调用格式提示注入，作为额外保障。
 
-Xiaomi MiMo V2.5 Pro 在 Copilot 工具调用场景下表现出严重的结构化输出缺陷，经过多轮修复尝试后仍无法可靠工作。结论：**该模型不适合在 Copilot 中作为工具调用模型使用**。
+### 历史问题摘要
 
-### 问题清单
+MiMo 曾在此场景下存在以下问题（均已由官方修复）：
 
-#### 1. XML 工具调用格式错误（核心问题）
-
-MiMo 在需要调用工具时，倾向于输出残缺的 XML 格式而非标准的 JSON `tool_calls`。
-
-**错误示例（实际输出）：**
-```xml
-...existing code...</parameter>
-<parameter=filePath>D:\...\vite.config.ts</parameter>
-<parameter=oldString> additionalData: ...</parameter>
-</function>
-</tool_call>
-```
-
-<img src="images/model-issues/mimo-field-1.png" alt="MiMo 输出的残缺 XML 工具调用" width="60%">
-
-**问题细节：**
-- 使用 `<parameter=name>` 而非标准 XML 的 `<parameter name="name">`
-- 缺少 `<tool_calls>` 外层包裹
-- 缺少 `<function name="...">` 函数名声明
-- 泄漏系统提示词中的占位符 `...existing code...`
-- 标签前后出现多余空格
-
-#### 2. 输出字段不稳定
-
-XML 标签可能出现在不同字段中，无固定规律：
-
-| 场景 | 字段 | 示例 |
-|------|------|------|
-| 场景 A | `reasoning_content` | `<parameter=oldString>...</parameter>` |
-| 场景 B | `content` | `</parameter>\n</function>\n</tool_call>` |
-| 正常 JSON | `tool_calls` | 标准 `{"function": {"name": "...", "arguments": "..."}}` |
-
-三种输出模式随机出现，无法通过单一检测策略覆盖。
-
-<img src="images/model-issues/mimo-field-2.png" alt="MiMo 在 content 字段中泄漏 XML 标签" width="60%">
-
-#### 3. 系统提示词干预无效
-
-向请求中注入明确的格式约束（禁止 XML、要求 JSON、给出正例）后，MiMo 仍然输出错误的 XML 格式。说明该模型**不具备遵循细粒度格式指令的能力**。
-
-#### 4. 字符串替换场景高频触发
-
-XML 格式错误在 `replace_string_in_file` 场景下出现频率最高，参数中频繁出现 `oldString`/`newString`。其他工具调用（`read_file`、`run_in_terminal`）偶尔也会受影响，但概率较低。
-
-### 修复尝试记录
-
-| 方案 | 描述 | 结果 |
-|------|------|------|
-| XML → JSON 转换 | 检测 `<tool_call>` 开标签，拦截 reasoning 流，解析参数后构造 JSON tool_calls | 部分有效，但 MiMo 输出字段不稳定导致漏检 |
-| System prompt 约束 | 注入英文格式指令，禁止 XML、要求 JSON | 无效，模型不遵循指令 |
-| `newString>`/`oldString>` 精确拦截 | 仅针对字符串替换场景做关键字检测 + 参数提取 | 因输出字段不稳定（content vs reasoning_content）导致漏检 |
-| 同时检测 `content` + `reasoning_content` | 扩展检测范围覆盖所有字段 | 父类钩子调用条件限制导致拦截时机错过 |
-
-### 根因分析
-
-MiMo V2.5 Pro 的核心问题在于：
-
-1. **结构化输出能力不足** — 无法稳定生成符合 OpenAI 规范的 `tool_calls` JSON
-2. **指令遵循能力弱** — 即使 system prompt 中明确禁止 XML，仍输出 XML
-3. **行为不可预测** — 同一场景下输出格式随机变化，无法建立稳定的检测/转换规则
-4. **系统提示词泄漏** — 将 Agent 指令中的占位符 `...existing code...` 混入输出
-
-这些问题属于**模型本身的质量缺陷**，无法通过代理层的补丁修复。
-
-### 建议
-
-- **不推荐** 将 MiMo V2.5 Pro 用于需要工具调用的 Copilot 场景
-- **可考虑** 仅用于纯对话场景（无需工具调用），此时文本生成质量尚可
-- **替代方案**：DeepSeek、LongCat 等模型在工具调用方面表现更稳定
+- XML 格式工具调用输出（如 `<parameter=oldString>`）而非标准 JSON `tool_calls`
+- 输出字段不稳定（XML 可能出现在 `reasoning_content` 或 `content` 中）
+- 系统提示词干预无效
 
 ---
 
