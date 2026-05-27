@@ -3,8 +3,11 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.openai.CompositeUpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiChatRequest;
+import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiModelsResponse;
+import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiModelsResponse.ModelData;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
@@ -13,7 +16,9 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.Disposable;
+import reactor.core.publisher.Mono;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,17 +40,69 @@ public class OpenAiController {
     private final CompositeUpstreamChatService upstreamChatService;
     private final ObjectMapper objectMapper;
     private final ApiUsageCollector apiUsageCollector;
+    private final ProviderConfigRepository providerConfigRepository;
 
     /**
-     * 构造函数注入 CompositeUpstreamChatService、ObjectMapper 和 ApiUsageCollector。
+     * 构造函数注入 CompositeUpstreamChatService、ObjectMapper、ApiUsageCollector 和 ProviderConfigRepository。
      * @param upstreamChatService 上游聊天服务组合
      * @param objectMapper JSON 对象映射器
      * @param apiUsageCollector API 使用量收集器
+     * @param providerConfigRepository 服务商配置仓库，用于获取可用模型列表
      */
-    public OpenAiController(CompositeUpstreamChatService upstreamChatService, ObjectMapper objectMapper, ApiUsageCollector apiUsageCollector) {
+    public OpenAiController(CompositeUpstreamChatService upstreamChatService, ObjectMapper objectMapper, ApiUsageCollector apiUsageCollector, ProviderConfigRepository providerConfigRepository) {
         this.upstreamChatService = upstreamChatService;
         this.objectMapper = objectMapper;
         this.apiUsageCollector = apiUsageCollector;
+        this.providerConfigRepository = providerConfigRepository;
+    }
+
+    /**
+     * 获取可用模型列表。
+     * <p>
+     * 从数据库读取所有已启用服务商及其已启用模型，
+     * 返回符合 OpenAI API 规范的模型列表。
+     * <p>
+     * 端点：GET /v1/models
+     * <p>
+     * 响应格式：
+     * <pre>
+     * {
+     *   "object": "list",
+     *   "data": [
+     *     {
+     *       "id": "model-id",
+     *       "object": "model",
+     *       "created": 1686935002,
+     *       "owned_by": "provider-key"
+     *     }
+     *   ]
+     * }
+     * </pre>
+     * @return OpenAiModelsResponse 包含所有可用模型的列表
+     */
+    @GetMapping(value = "/v1/models")
+    public Mono<OpenAiModelsResponse> listModels() {
+        return Mono.fromCallable(() -> {
+            List<ModelData> models = new ArrayList<>();
+            long defaultCreated = System.currentTimeMillis() / 1000;
+
+            // 从数据库读取所有已启用服务商及其已启用模型
+            List<Map<String, Object>> activeProviders = providerConfigRepository.findAllActiveProvidersWithEnabledModels();
+            for (Map<String, Object> provider : activeProviders) {
+                String providerKey = (String) provider.getOrDefault("providerKey", "unknown");
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> providerModels = (List<Map<String, Object>>) provider.get("models");
+                if (providerModels == null) continue;
+
+                for (Map<String, Object> m : providerModels) {
+                    String modelName = (String) m.getOrDefault("modelName", "");
+                    if (modelName.isEmpty()) continue;
+                    models.add(new ModelData(modelName, defaultCreated, providerKey));
+                }
+            }
+
+            return new OpenAiModelsResponse(models);
+        });
     }
 
     /**
