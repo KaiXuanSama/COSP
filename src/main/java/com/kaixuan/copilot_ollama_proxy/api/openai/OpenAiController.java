@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.openai.CompositeUpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiChatRequest;
@@ -97,7 +98,9 @@ public class OpenAiController {
                 for (Map<String, Object> m : providerModels) {
                     String modelName = (String) m.getOrDefault("modelName", "");
                     if (modelName.isEmpty()) continue;
-                    models.add(new ModelData(modelName, defaultCreated, providerKey));
+                    // 构建带供应商前缀的模型名称，与 /api/tags 格式一致
+                    String prefixedModelName = ModelNameUtil.buildPrefixedName(providerKey, modelName);
+                    models.add(new ModelData(prefixedModelName, defaultCreated, providerKey));
                 }
             }
 
