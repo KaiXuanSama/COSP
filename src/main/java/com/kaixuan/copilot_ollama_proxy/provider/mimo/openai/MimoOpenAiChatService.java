@@ -216,12 +216,7 @@ public class MimoOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatS
         }
         // 注入 XML 工具调用格式指导，纠正 MiMo 的 XML 格式问题
         injectXmlToolCallGuidance(body);
-        // 打印最终请求体，确认提示词注入生效
-        try {
-            log.debug("MiMo 最终请求体:\n{}", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(body));
-        } catch (Exception e) {
-            log.debug("MiMo 请求体序列化失败: {}", e.getMessage());
-        }
+        log.debug("MiMo 请求体预处理完成，已注入 XML 工具调用约束");
     }
 
     // 在请求头中添加 MiMo 特定的认证信息，例如 API Key。
