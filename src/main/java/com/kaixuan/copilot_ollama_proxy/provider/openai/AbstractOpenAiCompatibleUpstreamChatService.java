@@ -172,6 +172,10 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         String resolvedModel = resolveModel(body.get("model"), model);
         body.put("model", resolvedModel);
         body.put("stream", stream);
+        // 如果请求中没有指定 reasoning_effort，默认使用 medium
+        if (!body.containsKey("reasoning_effort")) {
+            body.put("reasoning_effort", "medium");
+        }
         body.values().removeIf(Objects::isNull);
         customizeRequestBody(body, resolvedModel);
         return body;

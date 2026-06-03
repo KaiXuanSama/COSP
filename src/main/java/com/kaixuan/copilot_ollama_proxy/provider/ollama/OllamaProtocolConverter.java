@@ -98,6 +98,9 @@ public class OllamaProtocolConverter {
 
         body.put("messages", messages);
 
+        // 默认使用 medium 思考深度（provider 特化钩子可覆盖）
+        body.put("reasoning_effort", "medium");
+
         if (ollamaReq.getTools() != null && !ollamaReq.getTools().isEmpty()) {
             List<Map<String, Object>> tools = new ArrayList<>();
             for (var ollamaTool : ollamaReq.getTools()) {
