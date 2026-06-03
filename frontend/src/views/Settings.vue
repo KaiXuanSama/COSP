@@ -224,9 +224,9 @@ function openEditPanel(key: string) {
       models: p.models.map(m => ({
         ...m,
         contextSize: String(m.contextSize ?? '0'),
-        reasoningEffort: Array.isArray(m.reasoningEffort) && m.reasoningEffort.length > 0
-          ? [...m.reasoningEffort]
-          : ['Medium'],
+        reasoningEffort: typeof m.reasoningEffort === 'string' && m.reasoningEffort.trim()
+          ? m.reasoningEffort.split(',')[0].trim()
+          : 'Medium',
       })),
     }
   }
@@ -240,9 +240,9 @@ function buildEditableModel(modelName = '', source: Record<string, any> = {}) {
     contextSize: String(source.contextSize ?? '0'),
     capsTools: Boolean(source.capsTools),
     capsVision: Boolean(source.capsVision),
-    reasoningEffort: Array.isArray(source.reasoningEffort) && source.reasoningEffort.length > 0
-      ? [...source.reasoningEffort]
-      : ['Medium'],
+    reasoningEffort: typeof source.reasoningEffort === 'string' && source.reasoningEffort.trim()
+      ? source.reasoningEffort.split(',')[0].trim()
+      : 'Medium',
   }
 }
 
@@ -324,8 +324,8 @@ async function saveEditPanel() {
     params[`models[${i}].contextSize`] = m.contextSize || '0'
     params[`models[${i}].capsTools`] = m.capsTools ? 'on' : ''
     params[`models[${i}].capsVision`] = m.capsVision ? 'on' : ''
-    if (Array.isArray(m.reasoningEffort)) {
-      params[`models[${i}].reasoningEffort`] = m.reasoningEffort.join(',')
+    if (m.reasoningEffort) {
+      params[`models[${i}].reasoningEffort`] = m.reasoningEffort
     }
   })
   try {

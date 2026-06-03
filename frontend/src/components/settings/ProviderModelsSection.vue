@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { NButton, NCheckbox, NForm, NFormItem, NInput, NPopover, NPopselect, NSwitch } from 'naive-ui'
+import { NButton, NCheckbox, NForm, NFormItem, NInput, NPopselect, NSwitch } from 'naive-ui'
 
 type EditableModel = Record<string, any>
 
@@ -25,28 +24,12 @@ const contextPresets = [
     { label: '64K', value: '64000' },
 ]
 
-const effortOptions = ['Low', 'Medium', 'High', 'Xhigh'] as const
-
-function getEffortLabel(model: EditableModel): string {
-    const arr: string[] = model.reasoningEffort ?? []
-    const sorted = [...arr].sort((a, b) => effortOptions.indexOf(a as any) - effortOptions.indexOf(b as any))
-    return sorted.length > 0 ? sorted.join('/') : '未选择'
-}
-
-function isEffortChecked(model: EditableModel, option: string): boolean {
-    return (model.reasoningEffort ?? []).includes(option)
-}
-
-function toggleEffort(model: EditableModel, option: string) {
-    const arr: string[] = model.reasoningEffort ?? []
-    const idx = arr.indexOf(option)
-    if (idx >= 0) {
-        arr.splice(idx, 1)
-    } else {
-        arr.push(option)
-    }
-    model.reasoningEffort = [...arr].sort((a, b) => effortOptions.indexOf(a as any) - effortOptions.indexOf(b as any))
-}
+const effortOptions = [
+    { label: 'Low', value: 'Low' },
+    { label: 'Medium', value: 'Medium' },
+    { label: 'High', value: 'High' },
+    { label: 'Xhigh', value: 'Xhigh' },
+]
 </script>
 
 <template>
@@ -104,26 +87,18 @@ function toggleEffort(model: EditableModel, option: string) {
                         </div>
                         <div class="model-form-row model-form-row--effort">
                             <n-form-item label="思考深度" class="model-effort-item">
-                                <n-popover trigger="click" placement="bottom-start" :show-arrow="true">
-                                    <template #trigger>
-                                        <div class="effort-trigger">
-                                            <span class="effort-trigger-text">{{ getEffortLabel(model) }}</span>
-                                            <svg class="effort-trigger-arrow" width="14" height="14" viewBox="0 0 24 24"
-                                                fill="none" stroke="currentColor" stroke-width="2"
-                                                stroke-linecap="round" stroke-linejoin="round">
-                                                <polyline points="6 9 12 15 18 9" />
-                                            </svg>
-                                        </div>
-                                    </template>
-                                    <div class="effort-options">
-                                        <div v-for="opt in effortOptions" :key="opt" class="effort-option"
-                                            @click.stop="toggleEffort(model, opt)">
-                                            <n-checkbox :checked="isEffortChecked(model, opt)"
-                                                @update:checked="toggleEffort(model, opt)" />
-                                            <span class="effort-option-label">{{ opt }}</span>
-                                        </div>
+                                <n-popselect :options="effortOptions" size="small" trigger="click"
+                                    :value="model.reasoningEffort"
+                                    @update:value="(val: string) => model.reasoningEffort = val">
+                                    <div class="effort-trigger">
+                                        <span class="effort-trigger-text">{{ model.reasoningEffort || '未选择' }}</span>
+                                        <svg class="effort-trigger-arrow" width="14" height="14" viewBox="0 0 24 24"
+                                            fill="none" stroke="currentColor" stroke-width="2"
+                                            stroke-linecap="round" stroke-linejoin="round">
+                                            <polyline points="6 9 12 15 18 9" />
+                                        </svg>
                                     </div>
-                                </n-popover>
+                                </n-popselect>
                             </n-form-item>
                         </div>
                         <div class="model-form-row model-form-row--details">
@@ -371,31 +346,6 @@ function toggleEffort(model: EditableModel, option: string) {
     flex-shrink: 0;
     color: $text-muted;
     margin-left: 6px;
-}
-
-.effort-options {
-    padding: 2px 0;
-    min-width: 132px;
-}
-
-.effort-option {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 10px;
-    cursor: pointer;
-    border-radius: 6px;
-    transition: background 0.15s ease;
-
-    &:hover {
-        background: $accent-light;
-    }
-}
-
-.effort-option-label {
-    font-size: 13px;
-    color: $text-body;
-    user-select: none;
 }
 
 .model-remove-btn {
