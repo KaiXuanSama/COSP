@@ -31,7 +31,8 @@ public class DatabaseRuntimeProviderCatalog implements RuntimeProviderCatalog {
     }
 
     private ProviderRuntimeModel toModel(Map<String, Object> source) {
-        return new ProviderRuntimeModel(asString(source.get("modelName")), asInt(source.get("contextSize")), asBoolean(source.get("capsTools")), asBoolean(source.get("capsVision")));
+        return new ProviderRuntimeModel(asString(source.get("modelName")), asInt(source.get("contextSize")), asBoolean(source.get("capsTools")), asBoolean(source.get("capsVision")),
+                asString(source.getOrDefault("reasoningEffort", "Medium")));
     }
 
     private String asString(Object value) {

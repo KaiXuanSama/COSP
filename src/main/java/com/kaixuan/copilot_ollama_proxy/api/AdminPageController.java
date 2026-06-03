@@ -195,6 +195,7 @@ public class AdminPageController {
             m.put("contextSize", params.getOrDefault(prefix + i + "].contextSize", "0").trim());
             m.put("capsTools", "on".equals(params.get(prefix + i + "].capsTools")));
             m.put("capsVision", "on".equals(params.get(prefix + i + "].capsVision")));
+            m.put("reasoningEffort", params.getOrDefault(prefix + i + "].reasoningEffort", "Medium").trim());
             models.add(m);
         }
         providerConfigRepository.saveModels(providerId, models);
