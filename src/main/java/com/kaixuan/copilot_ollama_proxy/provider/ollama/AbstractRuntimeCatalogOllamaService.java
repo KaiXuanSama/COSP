@@ -165,22 +165,29 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
     }
 
     /**
-     * 创建 reasoning_effort 解析函数，供 OllamaProtocolConverter 使用。
-     * @return 解析函数，输入模型名返回 reasoning_effort 字符串
+     * 根据数据库中的模型配置，覆盖请求体中的 reasoning_effort。
+     * 仅当当前值仍为 converter 默认的 "medium" 时才覆盖，
+     * 避免覆盖 DeepSeek 等 provider 的特化钩子已设置的用户值。
+     * @param body   converter 生成的 OpenAI 请求体
+     * @param resolvedModel 已解析的模型名称
      */
-    protected java.util.function.Function<String, String> createReasoningEffortResolver() {
-        return resolvedModel -> {
-            ProviderRuntimeConfiguration config = getProviderConfiguration();
-            if (config != null) {
-                for (ProviderRuntimeModel m : config.models()) {
-                    if (resolvedModel.equals(m.modelName())) {
-                        String effort = m.reasoningEffort();
-                        return (effort != null && !effort.isBlank()) ? effort : "Medium";
+    protected void applyReasoningEffort(Map<String, Object> body, String resolvedModel) {
+        Object current = body.get("reasoning_effort");
+        if (current != null && !"medium".equals(current.toString().toLowerCase())) {
+            return; // 已被 provider 特化钩子覆盖，不覆盖
+        }
+        ProviderRuntimeConfiguration config = getProviderConfiguration();
+        if (config != null) {
+            for (ProviderRuntimeModel m : config.models()) {
+                if (resolvedModel.equals(m.modelName())) {
+                    String effort = m.reasoningEffort();
+                    if (effort != null && !effort.isBlank()) {
+                        body.put("reasoning_effort", effort.toLowerCase());
                     }
+                    return;
                 }
             }
-            return "Medium";
-        };
+        }
     }
 
     /**

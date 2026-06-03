@@ -126,7 +126,9 @@ public class UumitOllamaService extends AbstractRuntimeCatalogOllamaService {
     }
 
     private Map<String, Object> convertOllamaToOpenAi(OllamaChatRequest ollamaReq) {
-        return protocolConverter.toOpenAiRequest(ollamaReq, protocolSupport);
+        Map<String, Object> body = protocolConverter.toOpenAiRequest(ollamaReq, protocolSupport);
+        applyReasoningEffort(body, resolveModelOrDefault(ollamaReq.getModel()));
+        return body;
     }
 
     private OllamaChatResponse convertOpenAiToOllama(String openAiJson, String requestModel) {

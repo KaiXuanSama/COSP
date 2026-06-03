@@ -149,7 +149,9 @@ public class DeepSeekOllamaService extends AbstractRuntimeCatalogOllamaService {
     // ========== Ollama → OpenAI 请求转换 ==========
 
     private Map<String, Object> convertOllamaToOpenAi(OllamaChatRequest ollamaReq) {
-        return protocolConverter.toOpenAiRequest(ollamaReq, protocolSupport);
+        Map<String, Object> body = protocolConverter.toOpenAiRequest(ollamaReq, protocolSupport);
+        applyReasoningEffort(body, resolveModelOrDefault(ollamaReq.getModel()));
+        return body;
     }
 
     // ========== OpenAI → Ollama 响应转换（非流式） ==========
