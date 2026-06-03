@@ -66,7 +66,7 @@ public class ProviderConfigRepository {
      */
     public List<Map<String, Object>> findModelsByProviderId(int providerId) {
         return jdbcTemplate.query(
-                "SELECT id, provider_id, model_name, enabled, context_size, caps_tools, caps_vision, sort_order " + "FROM provider_model WHERE provider_id = ? ORDER BY sort_order, id",
+                "SELECT id, provider_id, model_name, enabled, context_size, caps_tools, caps_vision, reasoning_effort, sort_order " + "FROM provider_model WHERE provider_id = ? ORDER BY sort_order, id",
                 (rs, rowNum) -> {
                     Map<String, Object> row = new java.util.LinkedHashMap<>();
                     row.put("id", rs.getInt("id"));
@@ -76,6 +76,7 @@ public class ProviderConfigRepository {
                     row.put("contextSize", rs.getInt("context_size"));
                     row.put("capsTools", rs.getInt("caps_tools") == 1);
                     row.put("capsVision", rs.getInt("caps_vision") == 1);
+                    row.put("reasoningEffort", rs.getString("reasoning_effort"));
                     row.put("sortOrder", rs.getInt("sort_order"));
                     return row;
                 }, providerId);
@@ -135,8 +136,9 @@ public class ProviderConfigRepository {
             int contextSize = parseInt(m.get("contextSize"), 0);
             boolean capsTools = Boolean.TRUE.equals(m.get("capsTools"));
             boolean capsVision = Boolean.TRUE.equals(m.get("capsVision"));
-            jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, enabled, context_size, caps_tools, caps_vision, sort_order) " + "VALUES (?, ?, ?, ?, ?, ?, ?)", providerId,
-                    modelName, modelEnabled ? 1 : 0, contextSize, capsTools ? 1 : 0, capsVision ? 1 : 0, i);
+            String reasoningEffort = (String) m.getOrDefault("reasoningEffort", "Medium");
+            jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, enabled, context_size, caps_tools, caps_vision, reasoning_effort, sort_order) " + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    providerId, modelName, modelEnabled ? 1 : 0, contextSize, capsTools ? 1 : 0, capsVision ? 1 : 0, reasoningEffort, i);
         }
     }
 
@@ -159,12 +161,13 @@ public class ProviderConfigRepository {
                     row.put("apiFormat", rs.getString("api_format"));
                     // 只查已启用的模型
                     List<Map<String, Object>> models = jdbcTemplate
-                            .query("SELECT model_name, context_size, caps_tools, caps_vision " + "FROM provider_model WHERE provider_id = ? AND enabled = 1 ORDER BY sort_order, id", (rs2, rn2) -> {
+                            .query("SELECT model_name, context_size, caps_tools, caps_vision, reasoning_effort " + "FROM provider_model WHERE provider_id = ? AND enabled = 1 ORDER BY sort_order, id", (rs2, rn2) -> {
                                 Map<String, Object> m = new java.util.LinkedHashMap<>();
                                 m.put("modelName", rs2.getString("model_name"));
                                 m.put("contextSize", rs2.getInt("context_size"));
                                 m.put("capsTools", rs2.getInt("caps_tools") == 1);
                                 m.put("capsVision", rs2.getInt("caps_vision") == 1);
+                                m.put("reasoningEffort", rs2.getString("reasoning_effort"));
                                 return m;
                             }, rs.getInt("id"));
                     row.put("models", models);

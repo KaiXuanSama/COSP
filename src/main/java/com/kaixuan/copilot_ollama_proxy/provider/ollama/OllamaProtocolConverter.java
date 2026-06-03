@@ -98,6 +98,9 @@ public class OllamaProtocolConverter {
 
         body.put("messages", messages);
 
+        // 默认 medium，由调用方在后续步骤中根据模型配置覆盖
+        body.put("reasoning_effort", "medium");
+
         if (ollamaReq.getTools() != null && !ollamaReq.getTools().isEmpty()) {
             List<Map<String, Object>> tools = new ArrayList<>();
             for (var ollamaTool : ollamaReq.getTools()) {

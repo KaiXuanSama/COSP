@@ -8,6 +8,7 @@ export interface ProviderModel {
   contextSize: string
   capsTools: boolean
   capsVision: boolean
+  reasoningEffort: string
 }
 
 export interface Provider {

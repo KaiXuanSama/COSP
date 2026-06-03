@@ -27,14 +27,15 @@ CREATE TABLE IF NOT EXISTS provider_config (
 -- ==================== 服务商模型表 ====================
 
 CREATE TABLE IF NOT EXISTS provider_model (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    provider_id   INTEGER      NOT NULL,            -- 关联 provider_config.id
-    model_name    VARCHAR(100) NOT NULL,            -- 模型名称
-    enabled       INTEGER      NOT NULL DEFAULT 1,  -- 是否启用（0=禁用，1=启用，默认启用）
-    context_size  INTEGER      NOT NULL DEFAULT 0,  -- 上下文大小（token 数）
-    caps_tools    INTEGER      NOT NULL DEFAULT 0,  -- 是否支持工具调用（0=否，1=是）
-    caps_vision   INTEGER      NOT NULL DEFAULT 0,  -- 是否支持视觉（0=否，1=是）
-    sort_order    INTEGER      NOT NULL DEFAULT 0,  -- 排序权重
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id     INTEGER      NOT NULL,            -- 关联 provider_config.id
+    model_name      VARCHAR(100) NOT NULL,            -- 模型名称
+    enabled         INTEGER      NOT NULL DEFAULT 1,  -- 是否启用（0=禁用，1=启用，默认启用）
+    context_size    INTEGER      NOT NULL DEFAULT 0,  -- 上下文大小（token 数）
+    caps_tools      INTEGER      NOT NULL DEFAULT 0,  -- 是否支持工具调用（0=否，1=是）
+    caps_vision     INTEGER      NOT NULL DEFAULT 0,  -- 是否支持视觉（0=否，1=是）
+    reasoning_effort TEXT        NOT NULL DEFAULT 'Medium', -- 思考深度（逗号分隔，如 Low,Medium）
+    sort_order      INTEGER      NOT NULL DEFAULT 0,  -- 排序权重
     FOREIGN KEY (provider_id) REFERENCES provider_config(id) ON DELETE CASCADE
 );
 

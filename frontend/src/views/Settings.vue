@@ -10,7 +10,7 @@ const fakeVersion = ref('')
 const versionPlaceholder = ref('0.6.4')
 
 const windowWidth = ref(window.innerWidth)
-const drawerWidth = computed(() => Math.min(480, windowWidth.value - 16))
+const drawerWidth = computed(() => Math.floor(windowWidth.value / 2))
 
 const docsWindow = ref({
   visible: false,
@@ -224,6 +224,9 @@ function openEditPanel(key: string) {
       models: p.models.map(m => ({
         ...m,
         contextSize: String(m.contextSize ?? '0'),
+        reasoningEffort: typeof m.reasoningEffort === 'string' && m.reasoningEffort.trim()
+          ? m.reasoningEffort.split(',')[0].trim()
+          : 'Medium',
       })),
     }
   }
@@ -237,6 +240,9 @@ function buildEditableModel(modelName = '', source: Record<string, any> = {}) {
     contextSize: String(source.contextSize ?? '0'),
     capsTools: Boolean(source.capsTools),
     capsVision: Boolean(source.capsVision),
+    reasoningEffort: typeof source.reasoningEffort === 'string' && source.reasoningEffort.trim()
+      ? source.reasoningEffort.split(',')[0].trim()
+      : 'Medium',
   }
 }
 
@@ -318,6 +324,9 @@ async function saveEditPanel() {
     params[`models[${i}].contextSize`] = m.contextSize || '0'
     params[`models[${i}].capsTools`] = m.capsTools ? 'on' : ''
     params[`models[${i}].capsVision`] = m.capsVision ? 'on' : ''
+    if (m.reasoningEffort) {
+      params[`models[${i}].reasoningEffort`] = m.reasoningEffort
+    }
   })
   try {
     await providerStore.saveProviderConfig(key, params)

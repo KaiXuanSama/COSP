@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NButton, NCheckbox, NForm, NFormItem, NInput, NPopselect, NSwitch } from 'naive-ui'
+import { NButton, NCheckbox, NForm, NFormItem, NInput, NPopselect, NSelect, NSwitch } from 'naive-ui'
 
 type EditableModel = Record<string, any>
 
@@ -22,6 +22,13 @@ const contextPresets = [
     { label: '256K', value: '256000' },
     { label: '128K', value: '128000' },
     { label: '64K', value: '64000' },
+]
+
+const effortOptions = [
+    { label: 'Low', value: 'Low' },
+    { label: 'Medium', value: 'Medium' },
+    { label: 'High', value: 'High' },
+    { label: 'Xhigh', value: 'Xhigh' },
 ]
 </script>
 
@@ -94,6 +101,11 @@ const contextPresets = [
                                         </n-popselect>
                                     </template>
                                 </n-input>
+                            </n-form-item>
+                            <n-form-item class="model-effort-item">
+                                <n-select :options="effortOptions" size="small" :value="model.reasoningEffort"
+                                    @update:value="(val: string) => model.reasoningEffort = val"
+                                    :consistent-menu-width="false" />
                             </n-form-item>
                             <n-form-item label="工具" class="model-detail-item model-detail-item--switch">
                                 <n-switch v-model:value="model.capsTools" size="small" />
@@ -216,7 +228,7 @@ const contextPresets = [
         letter-spacing: 0.1em;
         text-transform: uppercase;
         color: $text-muted;
-        width: 45px;
+        width: 52px;
         flex-shrink: 0;
         padding-right: 8px;
         text-align: left;
@@ -237,7 +249,7 @@ const contextPresets = [
         letter-spacing: 0.1em;
         text-transform: uppercase;
         color: $text-muted;
-        width: 45px;
+        width: 52px;
         flex-shrink: 0;
         padding-right: 6px;
         text-align: left;
@@ -263,6 +275,16 @@ const contextPresets = [
         :deep(.n-form-item-blank) {
             flex: 0;
         }
+    }
+}
+
+.model-effort-item {
+    flex: 0 0 auto;
+    margin-bottom: 0 !important;
+
+    :deep(.n-form-item-blank) {
+        flex: 0;
+        min-width: 0;
     }
 }
 

@@ -165,6 +165,32 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
     }
 
     /**
+     * 根据数据库中的模型配置，覆盖请求体中的 reasoning_effort。
+     * 仅当当前值仍为 converter 默认的 "medium" 时才覆盖，
+     * 避免覆盖 DeepSeek 等 provider 的特化钩子已设置的用户值。
+     * @param body   converter 生成的 OpenAI 请求体
+     * @param resolvedModel 已解析的模型名称
+     */
+    protected void applyReasoningEffort(Map<String, Object> body, String resolvedModel) {
+        Object current = body.get("reasoning_effort");
+        if (current != null && !"medium".equals(current.toString().toLowerCase())) {
+            return; // 已被 provider 特化钩子覆盖，不覆盖
+        }
+        ProviderRuntimeConfiguration config = getProviderConfiguration();
+        if (config != null) {
+            for (ProviderRuntimeModel m : config.models()) {
+                if (resolvedModel.equals(m.modelName())) {
+                    String effort = m.reasoningEffort();
+                    if (effort != null && !effort.isBlank()) {
+                        body.put("reasoning_effort", effort.toLowerCase());
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    /**
      * 从请求内容中提取字符串内容，支持字符串或列表格式。
      *
      * @param content 请求内容，可能是字符串或列表
