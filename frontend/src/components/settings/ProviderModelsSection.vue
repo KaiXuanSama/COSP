@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NButton, NCheckbox, NForm, NFormItem, NInput, NPopselect, NSwitch } from 'naive-ui'
+import { NButton, NCheckbox, NForm, NFormItem, NInput, NPopselect, NSelect, NSwitch } from 'naive-ui'
 
 type EditableModel = Record<string, any>
 
@@ -85,22 +85,6 @@ const effortOptions = [
                                 <n-input v-model:value="model.modelName" placeholder="模型名称" />
                             </n-form-item>
                         </div>
-                        <div class="model-form-row model-form-row--effort">
-                            <n-form-item label="思考深度" class="model-effort-item">
-                                <n-popselect :options="effortOptions" size="small" trigger="click"
-                                    :value="model.reasoningEffort"
-                                    @update:value="(val: string) => model.reasoningEffort = val">
-                                    <div class="effort-trigger">
-                                        <span class="effort-trigger-text">{{ model.reasoningEffort || '未选择' }}</span>
-                                        <svg class="effort-trigger-arrow" width="14" height="14" viewBox="0 0 24 24"
-                                            fill="none" stroke="currentColor" stroke-width="2"
-                                            stroke-linecap="round" stroke-linejoin="round">
-                                            <polyline points="6 9 12 15 18 9" />
-                                        </svg>
-                                    </div>
-                                </n-popselect>
-                            </n-form-item>
-                        </div>
                         <div class="model-form-row model-form-row--details">
                             <n-form-item label="上下文" class="model-detail-item model-detail-item--grow">
                                 <n-input v-model:value="model.contextSize" placeholder="4096">
@@ -117,6 +101,11 @@ const effortOptions = [
                                         </n-popselect>
                                     </template>
                                 </n-input>
+                            </n-form-item>
+                            <n-form-item class="model-effort-item">
+                                <n-select :options="effortOptions" size="small" :value="model.reasoningEffort"
+                                    @update:value="(val: string) => model.reasoningEffort = val"
+                                    :consistent-menu-width="false" />
                             </n-form-item>
                             <n-form-item label="工具" class="model-detail-item model-detail-item--switch">
                                 <n-switch v-model:value="model.capsTools" size="small" />
@@ -289,63 +278,14 @@ const effortOptions = [
     }
 }
 
-.model-form-row--effort {
-    margin-top: 2px;
-}
-
 .model-effort-item {
-    flex: 1;
+    flex: 0 0 auto;
     margin-bottom: 0 !important;
 
-    :deep(.n-form-item-label) {
-        font-family: $font-mono;
-        font-size: 10px;
-        font-weight: 500;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        color: $text-muted;
-        width: 52px;
-        flex-shrink: 0;
-        padding-right: 8px;
-        text-align: left;
-    }
-
     :deep(.n-form-item-blank) {
-        flex: 1;
+        flex: 0;
         min-width: 0;
     }
-}
-
-.effort-trigger {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-    height: 28px;
-    padding: 0 10px;
-    background: $surface;
-    border: 1px solid $border;
-    border-radius: 10px;
-    cursor: pointer;
-    transition: border-color 0.2s ease;
-
-    &:hover {
-        border-color: $accent;
-    }
-}
-
-.effort-trigger-text {
-    font-size: 13px;
-    color: $text-body;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.effort-trigger-arrow {
-    flex-shrink: 0;
-    color: $text-muted;
-    margin-left: 6px;
 }
 
 .model-remove-btn {

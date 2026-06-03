@@ -10,7 +10,7 @@ const fakeVersion = ref('')
 const versionPlaceholder = ref('0.6.4')
 
 const windowWidth = ref(window.innerWidth)
-const drawerWidth = computed(() => Math.min(480, windowWidth.value - 16))
+const drawerWidth = computed(() => Math.floor(windowWidth.value / 2))
 
 const docsWindow = ref({
   visible: false,
