@@ -20,7 +20,7 @@ class AbstractRuntimeCatalogOllamaServiceTests {
 
     @Test
     void supportsModelAndListsModelsFromRuntimeCatalog() {
-        RuntimeProviderCatalog catalog = () -> List.of(new ProviderRuntimeConfiguration("stub", "", "", "openai", List.of(new ProviderRuntimeModel("model-a", 4096, true, false))));
+        RuntimeProviderCatalog catalog = () -> List.of(new ProviderRuntimeConfiguration("stub", "", "", "openai", List.of(new ProviderRuntimeModel("model-a", 4096, true, false, "Medium"))));
         TestOllamaService service = new TestOllamaService(catalog);
 
         OllamaTagsResponse response = service.listModels().block();
@@ -36,7 +36,7 @@ class AbstractRuntimeCatalogOllamaServiceTests {
     @Test
     void resolvesDefaultModelAndRequiresContextLength() {
         RuntimeProviderCatalog catalog = () -> List
-                .of(new ProviderRuntimeConfiguration("stub", "", "", "openai", List.of(new ProviderRuntimeModel("model-a", 4096, true, false), new ProviderRuntimeModel("model-b", 0, false, false))));
+                .of(new ProviderRuntimeConfiguration("stub", "", "", "openai", List.of(new ProviderRuntimeModel("model-a", 4096, true, false, "Medium"), new ProviderRuntimeModel("model-b", 0, false, false, "Medium"))));
         TestOllamaService service = new TestOllamaService(catalog);
 
         assertThat(service.exposeResolveModelOrDefault(null)).isEqualTo("model-a");

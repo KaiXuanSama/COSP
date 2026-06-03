@@ -17,7 +17,7 @@ class AbstractOpenAiCompatibleUpstreamChatServiceTests {
 
     @Test
     void supportsModelUsesRuntimeCatalogSnapshot() {
-        RuntimeProviderCatalog catalog = () -> List.of(new ProviderRuntimeConfiguration("stub", "", "", "openai", List.of(new ProviderRuntimeModel("model-a", 0, false, false))));
+        RuntimeProviderCatalog catalog = () -> List.of(new ProviderRuntimeConfiguration("stub", "", "", "openai", List.of(new ProviderRuntimeModel("model-a", 0, false, false, "Medium"))));
 
         TestOpenAiService service = new TestOpenAiService(catalog);
 

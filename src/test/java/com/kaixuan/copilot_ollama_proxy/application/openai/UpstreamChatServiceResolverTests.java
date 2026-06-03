@@ -43,7 +43,7 @@ class UpstreamChatServiceResolverTests {
     }
 
     private ProviderRuntimeConfiguration provider(String providerKey, String apiFormat, String... modelNames) {
-        List<ProviderRuntimeModel> models = java.util.Arrays.stream(modelNames).map(modelName -> new ProviderRuntimeModel(modelName, 0, false, false)).toList();
+        List<ProviderRuntimeModel> models = java.util.Arrays.stream(modelNames).map(modelName -> new ProviderRuntimeModel(modelName, 0, false, false, "Medium")).toList();
         return new ProviderRuntimeConfiguration(providerKey, "", "", apiFormat, models);
     }
 
