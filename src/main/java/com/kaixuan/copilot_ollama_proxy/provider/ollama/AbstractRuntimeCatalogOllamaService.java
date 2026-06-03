@@ -165,6 +165,25 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
     }
 
     /**
+     * 创建 reasoning_effort 解析函数，供 OllamaProtocolConverter 使用。
+     * @return 解析函数，输入模型名返回 reasoning_effort 字符串
+     */
+    protected java.util.function.Function<String, String> createReasoningEffortResolver() {
+        return resolvedModel -> {
+            ProviderRuntimeConfiguration config = getProviderConfiguration();
+            if (config != null) {
+                for (ProviderRuntimeModel m : config.models()) {
+                    if (resolvedModel.equals(m.modelName())) {
+                        String effort = m.reasoningEffort();
+                        return (effort != null && !effort.isBlank()) ? effort : "Medium";
+                    }
+                }
+            }
+            return "Medium";
+        };
+    }
+
+    /**
      * 从请求内容中提取字符串内容，支持字符串或列表格式。
      *
      * @param content 请求内容，可能是字符串或列表
