@@ -173,6 +173,12 @@ const providerMeta: Record<string, { displayName: string; colorClass: string; ap
     apiUrlPlaceholder: 'https://agent.uumit.com',
     docsUrl: 'https://agent.uumit.com/docs',
   },
+  agnes: {
+    displayName: 'Agnes',
+    colorClass: 'accent',
+    apiUrlPlaceholder: 'https://apihub.agnes-ai.com',
+    docsUrl: 'https://agnes-ai.com/doc/overview',
+  },
 }
 
 const editingKey = ref<string | null>(null)

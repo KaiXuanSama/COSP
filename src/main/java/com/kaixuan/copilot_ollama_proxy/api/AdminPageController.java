@@ -239,7 +239,7 @@ public class AdminPageController {
 
     private boolean supportsProviderKey(String providerKey) {
         return switch (providerKey) {
-        case "longcat", "mimo", "sensenova", "deepseek", "uumit" -> true;
+        case "longcat", "mimo", "sensenova", "deepseek", "uumit", "agnes" -> true;
         default -> false;
         };
     }
@@ -275,7 +275,7 @@ public class AdminPageController {
             headers.set("api-key", apiKey);
             headers.set("x-api-key", apiKey);
         }
-        case "longcat", "sensenova", "deepseek", "uumit" -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
+        case "longcat", "sensenova", "deepseek", "uumit", "agnes" -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
         default -> {
         }
         }
