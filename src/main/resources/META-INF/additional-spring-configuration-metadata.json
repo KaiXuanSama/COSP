@@ -126,5 +126,10 @@
     "name": "agnes.default-model",
     "type": "java.lang.String",
     "description": "A description for 'agnes.default-model'"
+  },
+  {
+    "name": "zhipu.default-model",
+    "type": "java.lang.String",
+    "description": "智谱AI 默认模型名称，当请求中未指定模型时使用。推荐 glm-4.5-air（高性价比）或 glm-5.1（旗舰）。"
   }
 ]}
