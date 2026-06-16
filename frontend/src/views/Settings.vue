@@ -232,7 +232,7 @@ function openEditPanel(key: string) {
   const p = providerStore.providers[key]
   if (p) {
     editForm.value = {
-      baseUrl: p.baseUrl || '',
+      baseUrl: p.baseUrl || providerMeta[key]?.apiUrlPlaceholder || '',
       apiKey: p.apiKey || '',
       models: p.models.map(m => ({
         ...m,
