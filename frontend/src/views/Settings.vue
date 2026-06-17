@@ -196,6 +196,19 @@ const editForm = ref({
 })
 const pullingModels = ref(false)
 
+interface PullDiffEntry {
+  modelName: string
+  status: 'added' | 'removed' | 'unchanged'
+  existingModel?: any
+}
+
+const pullDiffModal = ref({
+  visible: false,
+  entries: [] as PullDiffEntry[],
+  addedCount: 0,
+  removedCount: 0,
+})
+
 const showAddModal = ref(false)
 
 const enabledProviderKeys = computed(() =>
@@ -250,9 +263,9 @@ function buildEditableModel(modelName = '', source: Record<string, any> = {}) {
     ...source,
     modelName,
     enabled: source.enabled ?? true,
-    contextSize: String(source.contextSize ?? '0'),
-    capsTools: Boolean(source.capsTools),
-    capsVision: Boolean(source.capsVision),
+    contextSize: String(source.contextSize ?? '128000'),
+    capsTools: source.capsTools ?? true,
+    capsVision: source.capsVision ?? false,
     reasoningEffort: typeof source.reasoningEffort === 'string' && source.reasoningEffort.trim()
       ? source.reasoningEffort.split(',')[0].trim()
       : 'Medium',
@@ -395,14 +408,67 @@ async function pullModels() {
       return
     }
 
-    const existingModels = new Map(editForm.value.models.map((model: any) => [model.modelName, model]))
-    editForm.value.models = modelNames.map(modelName => buildEditableModel(modelName, existingModels.get(modelName) ?? {}))
-    message.success(`已拉取 ${modelNames.length} 个模型`)
+    // 计算差异
+    const currentModelNames = new Set(editForm.value.models.map((m: any) => m.modelName))
+    const pulledModelNames = new Set(modelNames)
+
+    const entries: PullDiffEntry[] = []
+    // 保留的 + 新增的
+    for (const name of modelNames) {
+      entries.push({
+        modelName: name,
+        status: currentModelNames.has(name) ? 'unchanged' : 'added',
+        existingModel: currentModelNames.has(name)
+          ? editForm.value.models.find((m: any) => m.modelName === name)
+          : undefined,
+      })
+    }
+    // 被删除的
+    for (const m of editForm.value.models as any[]) {
+      if (!pulledModelNames.has(m.modelName)) {
+        entries.push({ modelName: m.modelName, status: 'removed', existingModel: m })
+      }
+    }
+
+    pullDiffModal.value = {
+      visible: true,
+      entries,
+      addedCount: entries.filter(e => e.status === 'added').length,
+      removedCount: entries.filter(e => e.status === 'removed').length,
+    }
   } catch (error: any) {
     message.error(resolvePullModelsErrorMessage(error))
   } finally {
     pullingModels.value = false
   }
+}
+
+function applyPulledModels() {
+  const existingModels = new Map(editForm.value.models.map((model: any) => [model.modelName, model]))
+  // 只保留 added 和 unchanged 的模型
+  editForm.value.models = pullDiffModal.value.entries
+    .filter(e => e.status !== 'removed')
+    .map(e => buildEditableModel(e.modelName, e.existingModel ?? {}))
+  pullDiffModal.value.visible = false
+  message.success(`已应用：新增 ${pullDiffModal.value.addedCount} 个，移除 ${pullDiffModal.value.removedCount} 个`)
+}
+
+function cancelPulledModels() {
+  pullDiffModal.value.visible = false
+}
+
+function revertPullDiff(index: number) {
+  const entry = pullDiffModal.value.entries[index]
+  if (!entry || entry.status === 'unchanged') return
+  if (entry.status === 'added') {
+    // 新增的撤销 → 从列表中移除
+    pullDiffModal.value.entries.splice(index, 1)
+  } else {
+    // 移除的撤销 → 恢复为未变更
+    entry.status = 'unchanged'
+  }
+  pullDiffModal.value.addedCount = pullDiffModal.value.entries.filter(e => e.status === 'added').length
+  pullDiffModal.value.removedCount = pullDiffModal.value.entries.filter(e => e.status === 'removed').length
 }
 
 function addModel() {
@@ -478,6 +544,51 @@ function removeModel(index: number) {
           <div class="add-modal-card-desc">{{ providerMeta[key].apiUrlPlaceholder }}</div>
         </div>
       </div>
+    </n-modal>
+
+    <!-- 拉取模型差异对比模态框 -->
+    <n-modal :show="pullDiffModal.visible" preset="card" title="模型变更预览"
+      :style="{ maxWidth: '560px' }" closable :mask-closable="false"
+      @update:show="(val: boolean) => { if (!val) cancelPulledModels() }">
+      <div class="pull-diff-summary">
+        <span v-if="pullDiffModal.addedCount" class="pull-diff-badge pull-diff-badge--added">
+          +{{ pullDiffModal.addedCount }} 新增
+        </span>
+        <span v-if="pullDiffModal.removedCount" class="pull-diff-badge pull-diff-badge--removed">
+          -{{ pullDiffModal.removedCount }} 移除
+        </span>
+        <span v-if="!pullDiffModal.addedCount && !pullDiffModal.removedCount" class="pull-diff-badge">
+          无变更
+        </span>
+      </div>
+      <div class="pull-diff-list">
+        <div v-for="(entry, idx) in pullDiffModal.entries" :key="entry.modelName"
+          class="pull-diff-item" :class="`pull-diff-item--${entry.status}`">
+          <span class="pull-diff-icon">
+            <template v-if="entry.status === 'added'">＋</template>
+            <template v-else-if="entry.status === 'removed'">－</template>
+            <template v-else>＝</template>
+          </span>
+          <span class="pull-diff-name">{{ entry.modelName }}</span>
+          <button v-if="entry.status !== 'unchanged'" class="pull-diff-revert" title="撤销此变更"
+            @click.stop="revertPullDiff(idx)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="1 4 1 10 7 10" />
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <template #footer>
+        <div class="pull-diff-footer">
+          <n-button @click="cancelPulledModels">取消</n-button>
+          <n-button type="primary" @click="applyPulledModels"
+            :disabled="!pullDiffModal.addedCount && !pullDiffModal.removedCount">
+            应用
+          </n-button>
+        </div>
+      </template>
     </n-modal>
 
     <!-- 侧滑面板 -->
@@ -871,6 +982,125 @@ function removeModel(index: number) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ── 拉取模型差异对比模态框 ── */
+.pull-diff-summary {
+  display: flex;
+  gap: $space-sm;
+  margin-bottom: $space-md;
+}
+
+.pull-diff-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-family: $font-mono;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  background: rgba($text-muted, 0.08);
+  color: $text-muted;
+
+  &--added {
+    background: rgba($success, 0.12);
+    color: #2d7049;
+  }
+
+  &--removed {
+    background: rgba($danger, 0.12);
+    color: #a03e3e;
+  }
+}
+
+.pull-diff-list {
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid $border;
+  border-radius: $radius;
+}
+
+.pull-diff-item {
+  display: flex;
+  align-items: center;
+  gap: $space-sm;
+  padding: 8px 12px;
+  font-family: $font-mono;
+  font-size: 13px;
+  color: $text-body;
+  border-bottom: 1px solid $border-light;
+
+  &:last-child {
+    border-bottom: 0;
+  }
+
+  &--added {
+    background: rgba($success, 0.08);
+  }
+
+  &--removed {
+    background: rgba($danger, 0.08);
+    color: $text-muted;
+  }
+
+  &--unchanged {
+    background: transparent;
+  }
+}
+
+.pull-diff-icon {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+
+  .pull-diff-item--added & {
+    color: $success;
+  }
+
+  .pull-diff-item--removed & {
+    color: $danger;
+  }
+
+  .pull-diff-item--unchanged & {
+    color: $text-muted;
+  }
+}
+
+.pull-diff-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pull-diff-revert {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: $text-muted;
+  cursor: pointer;
+  margin-left: auto;
+  transition: all 0.2s ease;
+
+  &:hover {
+    color: $accent;
+    background: $accent-light;
+  }
+}
+
+.pull-diff-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: $space-sm;
 }
 
 /* ── 移动端抽屉适配 ── */
