@@ -457,6 +457,20 @@ function cancelPulledModels() {
   pullDiffModal.value.visible = false
 }
 
+function revertPullDiff(index: number) {
+  const entry = pullDiffModal.value.entries[index]
+  if (!entry || entry.status === 'unchanged') return
+  if (entry.status === 'added') {
+    // 新增的撤销 → 从列表中移除
+    pullDiffModal.value.entries.splice(index, 1)
+  } else {
+    // 移除的撤销 → 恢复为未变更
+    entry.status = 'unchanged'
+  }
+  pullDiffModal.value.addedCount = pullDiffModal.value.entries.filter(e => e.status === 'added').length
+  pullDiffModal.value.removedCount = pullDiffModal.value.entries.filter(e => e.status === 'removed').length
+}
+
 function addModel() {
   editForm.value.models.push(buildEditableModel())
 }
@@ -548,7 +562,7 @@ function removeModel(index: number) {
         </span>
       </div>
       <div class="pull-diff-list">
-        <div v-for="entry in pullDiffModal.entries" :key="entry.modelName"
+        <div v-for="(entry, idx) in pullDiffModal.entries" :key="entry.modelName"
           class="pull-diff-item" :class="`pull-diff-item--${entry.status}`">
           <span class="pull-diff-icon">
             <template v-if="entry.status === 'added'">＋</template>
@@ -556,6 +570,14 @@ function removeModel(index: number) {
             <template v-else>＝</template>
           </span>
           <span class="pull-diff-name">{{ entry.modelName }}</span>
+          <button v-if="entry.status !== 'unchanged'" class="pull-diff-revert" title="撤销此变更"
+            @click.stop="revertPullDiff(idx)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="1 4 1 10 7 10" />
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+            </svg>
+          </button>
         </div>
       </div>
       <template #footer>
@@ -1052,6 +1074,27 @@ function removeModel(index: number) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.pull-diff-revert {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: $text-muted;
+  cursor: pointer;
+  margin-left: auto;
+  transition: all 0.2s ease;
+
+  &:hover {
+    color: $accent;
+    background: $accent-light;
+  }
 }
 
 .pull-diff-footer {
