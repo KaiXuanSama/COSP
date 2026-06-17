@@ -26,6 +26,7 @@
 
 | 模型 ID | 适配度 |
 |---------|--------|
+| `glm-5.2` | 完美 |
 | `glm-5.1` | 完美 |
 | `glm-5-turbo` | 完美 |
 | `glm-5` | 完美 |
@@ -79,14 +80,13 @@
 | `glm-5.1` | 完美（同智谱官方） |
 | `glm-4.7` | 完美（同智谱官方） |
 | `GLM-5.0` | 完美（同智谱 glm-5 别名） |
-| `Doubao-Seed-2.0-Pro` | 未验证 ❓ |
-| `Doubao-Seed-2.0-pro` | 未验证 ❓ |
-| `Doubao-Seed-2.0-Lite` | 概率可用 |
+| `Doubao-Seed-2.0-Pro` | 可用 |
+| `Doubao-Seed-2.0-Lite` | 可用 |
 | `Doubao-Seed-2.0-Code` | 可用 |
-| `qwen3.5-flash` | 未验证 ❓ |
-| `qwen3.5-plus` | 未验证 ❓ |
-| `qwen3.6-flash` | 未验证 ❓ |
-| `Kimi-K2.5` | 未验证 ❓ |
-| `kimi-k2.6` | 未验证 ❓ |
-| `minimax-m2.7` | 未验证 ❓ |
-| `Minimax-M2.5` | 未验证 ❓ |
+| `qwen3.5-flash` | 可用 |
+| `qwen3.5-plus` | 可用 |
+| `qwen3.6-flash` | 可用 |
+| `Kimi-K2.5` | 可用 |
+| `kimi-k2.6` | 可用 |
+| `Minimax-M2.5` | 可用 |
+| `minimax-m2.7` | 可用 |
