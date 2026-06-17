@@ -14,7 +14,7 @@ COSP (Copilot Ollama SpringBoot Proxy) 是一个协议适配层服务，将 Copi
 
 ## 代码审查要点
 
-修改代码时请参考 [CODE-REVIEW-FINDINGS.md](../CODE-REVIEW-FINDINGS.md) 中的已知问题。
+修改代码时请参考 [模型兼容性问题](../docs/MODEL_COMPATIBILITY.md) 中的已知问题。
 
 ### 关键陷阱
 
@@ -22,12 +22,13 @@ COSP (Copilot Ollama SpringBoot Proxy) 是一个协议适配层服务，将 Copi
 - **400 错误重试**：当前对所有 400 错误重试（含认证失败），需要改进
 - **SSE 流式响应**：`ResponseLoggingFilter` 可能导致 OOM
 - **SQLite 连接池**：建议使用 `maximum-pool-size: 1`
+- **DeepSeek reasoning_content**：多轮工具调用需要缓存 `reasoning_content` 字段
 
 ## 开发规则
 
 ### 新增 Provider
 
-使用 [新增供应商指南](../docs/cosp-add-provider-skill/SKILL.md) 或 [中文版](../docs/cosp-add-provider-skill/SKILL_ZH.md)。
+使用 [新增供应商指南](./skills/cosp-add-provider-skill/SKILL.md) 或 [中文版](./skills/cosp-add-provider-skill/SKILL_ZH.md)。
 
 ### 测试规范
 
@@ -48,4 +49,5 @@ COSP (Copilot Ollama SpringBoot Proxy) 是一个协议适配层服务，将 Copi
 - [README.md](../README.md) — 项目介绍和快速开始
 - [编码规范](../copilot-ollama-proxy-springboot.wiki/Guides/Coding-Standards.md)
 - [架构文档](../copilot-ollama-proxy-springboot.wiki/Architecture.md)
+- [模型兼容性](../docs/MODEL_COMPATIBILITY.md) — 已知问题和解决方案
 - [UI 设计系统](../copilot-ollama-proxy-springboot.wiki/Guides/UI-Design-System.md)

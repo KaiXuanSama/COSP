@@ -179,6 +179,13 @@ const providerMeta: Record<string, { displayName: string; colorClass: string; ap
     apiUrlPlaceholder: 'https://apihub.agnes-ai.com',
     docsUrl: 'https://agnes-ai.com/doc/overview',
   },
+  zhipu: {
+    displayName: 'Zhipu',
+    colorClass: 'warning',
+    apiUrlPlaceholder: 'https://open.bigmodel.cn',
+    docsUrl: 'https://docs.bigmodel.cn/cn/guide/start/introduction',
+    modelPullPath: '/api/paas/v4/models',
+  },
 }
 
 const editingKey = ref<string | null>(null)
@@ -225,7 +232,7 @@ function openEditPanel(key: string) {
   const p = providerStore.providers[key]
   if (p) {
     editForm.value = {
-      baseUrl: p.baseUrl || '',
+      baseUrl: p.baseUrl || providerMeta[key]?.apiUrlPlaceholder || '',
       apiKey: p.apiKey || '',
       models: p.models.map(m => ({
         ...m,
