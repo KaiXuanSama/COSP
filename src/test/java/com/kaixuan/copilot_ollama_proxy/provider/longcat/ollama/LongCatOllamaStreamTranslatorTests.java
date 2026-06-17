@@ -19,13 +19,14 @@ class LongCatOllamaStreamTranslatorTests {
     @Test
     void streamsContentAndFinalDoneChunk() throws Exception {
         OllamaStreamTranslator translator = newTranslator();
+        var session = translator.newSession();
         Map<String, Object> choice = new LinkedHashMap<>();
         choice.put("delta", Map.of("content", "hello"));
         choice.put("finish_reason", null);
         String contentChunk = new ObjectMapper().writeValueAsString(Map.of("choices", List.of(choice)));
 
-        List<OllamaChatResponse> firstResults = translator.translate(contentChunk, "LongCat-Flash-Chat");
-        List<OllamaChatResponse> doneResults = translator.translate("[DONE]", "LongCat-Flash-Chat");
+        List<OllamaChatResponse> firstResults = translator.translate(session, contentChunk, "LongCat-Flash-Chat");
+        List<OllamaChatResponse> doneResults = translator.translate(session, "[DONE]", "LongCat-Flash-Chat");
 
         assertThat(firstResults).hasSize(1);
         assertThat(firstResults.get(0).isDone()).isFalse();
@@ -41,11 +42,12 @@ class LongCatOllamaStreamTranslatorTests {
     @Test
     void accumulatesToolCallUntilDoneChunk() throws Exception {
         OllamaStreamTranslator translator = newTranslator();
+        var session = translator.newSession();
         String toolCallChunk = new ObjectMapper().writeValueAsString(Map.of("choices",
                 List.of(Map.of("delta", Map.of("tool_calls", List.of(Map.of("function", Map.of("name", "read_file", "arguments", "{\"path\":\"README.md\"}")))), "finish_reason", "tool_calls"))));
 
-        List<OllamaChatResponse> toolResults = translator.translate(toolCallChunk, "LongCat-Flash-Chat");
-        List<OllamaChatResponse> doneResults = translator.translate("[DONE]", "LongCat-Flash-Chat");
+        List<OllamaChatResponse> toolResults = translator.translate(session, toolCallChunk, "LongCat-Flash-Chat");
+        List<OllamaChatResponse> doneResults = translator.translate(session, "[DONE]", "LongCat-Flash-Chat");
 
         assertThat(toolResults).isEmpty();
         assertThat(doneResults).hasSize(1);
@@ -59,9 +61,10 @@ class LongCatOllamaStreamTranslatorTests {
     @Test
     void fallsBackToReasoningWhenNoContentWasEmitted() throws Exception {
         OllamaStreamTranslator translator = newTranslator();
+        var session = translator.newSession();
         String reasoningChunk = new ObjectMapper().writeValueAsString(Map.of("choices", List.of(Map.of("delta", Map.of("reasoning_content", "thinking"), "finish_reason", "stop"))));
 
-        List<OllamaChatResponse> results = translator.translate(reasoningChunk, "LongCat-Flash-Chat");
+        List<OllamaChatResponse> results = translator.translate(session, reasoningChunk, "LongCat-Flash-Chat");
 
         assertThat(results).hasSize(2);
         assertThat(results.get(0).isDone()).isFalse();
@@ -69,6 +72,33 @@ class LongCatOllamaStreamTranslatorTests {
         assertThat(results.get(1).isDone()).isTrue();
         assertThat(results.get(1).getDoneReason()).isEqualTo("stop");
         assertThat(results.get(1).getMessage().getContent()).isEqualTo("thinking");
+    }
+
+    @Test
+    void concurrentSessionsDoNotInterfere() throws Exception {
+        OllamaStreamTranslator translator = newTranslator();
+        var sessionA = translator.newSession();
+        var sessionB = translator.newSession();
+
+        Map<String, Object> choiceA = new LinkedHashMap<>();
+        choiceA.put("delta", Map.of("content", "AAA"));
+        choiceA.put("finish_reason", null);
+        String chunkA = new ObjectMapper().writeValueAsString(Map.of("choices", List.of(choiceA)));
+
+        Map<String, Object> choiceB = new LinkedHashMap<>();
+        choiceB.put("delta", Map.of("content", "BBB"));
+        choiceB.put("finish_reason", null);
+        String chunkB = new ObjectMapper().writeValueAsString(Map.of("choices", List.of(choiceB)));
+
+        // 交错执行模拟并发
+        translator.translate(sessionA, chunkA, "model");
+        translator.translate(sessionB, chunkB, "model");
+        List<OllamaChatResponse> doneA = translator.translate(sessionA, "[DONE]", "model");
+        List<OllamaChatResponse> doneB = translator.translate(sessionB, "[DONE]", "model");
+
+        // 两个 session 的结果不应串扰
+        assertThat(doneA.get(0).getMessage().getContent()).isEqualTo("AAA");
+        assertThat(doneB.get(0).getMessage().getContent()).isEqualTo("BBB");
     }
 
     private OllamaStreamTranslator newTranslator() {
