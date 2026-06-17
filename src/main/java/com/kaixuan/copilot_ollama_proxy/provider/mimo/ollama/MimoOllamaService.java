@@ -121,7 +121,8 @@ public class MimoOllamaService extends AbstractRuntimeCatalogOllamaService {
         openAiRequest.put("stream", true);
         log.info("MiMo Ollama→OpenAI，模型: {}, 流式: true", openAiRequest.get("model"));
 
-        return transportClient.streamChatCompletion(openAiRequest).concatMap(chunk -> Flux.fromIterable(streamTranslator.translate(chunk, request.getModel())));
+        var session = streamTranslator.newSession();
+        return transportClient.streamChatCompletion(openAiRequest).concatMap(chunk -> Flux.fromIterable(streamTranslator.translate(session, chunk, request.getModel())));
     }
 
     private Map<String, Object> convertOllamaToOpenAi(OllamaChatRequest ollamaReq) {

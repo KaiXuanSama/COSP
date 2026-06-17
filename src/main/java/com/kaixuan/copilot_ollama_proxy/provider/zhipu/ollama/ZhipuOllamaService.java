@@ -161,9 +161,10 @@ public class ZhipuOllamaService extends AbstractRuntimeCatalogOllamaService {
         openAiRequest.put("stream", true);
         log.info("智谱 Ollama→OpenAI，模型: {}, 流式: true", openAiRequest.get("model"));
 
+        var session = streamTranslator.newSession();
         return transportClient.streamChatCompletion(openAiRequest)
                 .concatMap(chunk -> Flux.fromIterable(
-                        streamTranslator.translate(chunk, request.getModel())));
+                        streamTranslator.translate(session, chunk, request.getModel())));
     }
 
     private Map<String, Object> convertOllamaToOpenAi(OllamaChatRequest ollamaReq) {
