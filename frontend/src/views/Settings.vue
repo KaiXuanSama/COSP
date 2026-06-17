@@ -263,9 +263,9 @@ function buildEditableModel(modelName = '', source: Record<string, any> = {}) {
     ...source,
     modelName,
     enabled: source.enabled ?? true,
-    contextSize: String(source.contextSize ?? '0'),
-    capsTools: Boolean(source.capsTools),
-    capsVision: Boolean(source.capsVision),
+    contextSize: String(source.contextSize ?? '128000'),
+    capsTools: source.capsTools ?? true,
+    capsVision: source.capsVision ?? false,
     reasoningEffort: typeof source.reasoningEffort === 'string' && source.reasoningEffort.trim()
       ? source.reasoningEffort.split(',')[0].trim()
       : 'Medium',
