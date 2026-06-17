@@ -149,9 +149,10 @@ public Mono<OllamaChatResponse> chat(OllamaChatRequest request) {
 public Flux<OllamaChatResponse> chatStream(OllamaChatRequest request) {
     Map<String, Object> openAiRequest = convertOllamaToOpenAi(request);
     openAiRequest.put("stream", true);
+    var session = streamTranslator.newSession();
     return transportClient.streamChatCompletion(openAiRequest)
         .concatMap(chunk -> Flux.fromIterable(
-            streamTranslator.translate(chunk, request.getModel())));
+            streamTranslator.translate(session, chunk, request.getModel())));
 }
 ```
 
