@@ -24,7 +24,7 @@ import com.kaixuan.copilot_ollama_proxy.application.openai.CompositeUpstreamChat
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-@SpringBootTest(classes = CopilotOllamaProxyApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "admin.server.port:0")
+@SpringBootTest(classes = CopilotOllamaProxyApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class OpenAiControllerStreamingTests {
 
   @LocalServerPort

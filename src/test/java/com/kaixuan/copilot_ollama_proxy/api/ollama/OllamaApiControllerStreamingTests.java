@@ -29,7 +29,7 @@ import static org.mockito.BDDMockito.given;
  * 1. tool_calls 结束包能否按 NDJSON 原样向前透传。
  * 2. reasoning fallback 场景下，前置 chunk 能否在最终 done 包之前及时输出。
  */
-@SpringBootTest(classes = CopilotOllamaProxyApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "admin.server.port:0")
+@SpringBootTest(classes = CopilotOllamaProxyApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class OllamaApiControllerStreamingTests {
 
     @LocalServerPort

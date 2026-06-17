@@ -24,7 +24,7 @@ import com.kaixuan.copilot_ollama_proxy.application.openai.CompositeUpstreamChat
 import reactor.core.publisher.Mono;
 
 @ExtendWith(OutputCaptureExtension.class) @SpringBootTest(classes = CopilotOllamaProxyApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
-    "logging.level.com.kaixuan.copilot_ollama_proxy.infrastructure.web.logging=DEBUG", "admin.server.port:0" })
+    "logging.level.com.kaixuan.copilot_ollama_proxy.infrastructure.web.logging=DEBUG" })
 class ResponseLoggingFilterTests {
 
   @LocalServerPort

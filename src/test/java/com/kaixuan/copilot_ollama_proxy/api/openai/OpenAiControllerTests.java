@@ -24,7 +24,7 @@ import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfi
 
 import reactor.core.publisher.Mono;
 
-@SpringBootTest(classes = CopilotOllamaProxyApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "admin.server.port:0")
+@SpringBootTest(classes = CopilotOllamaProxyApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class OpenAiControllerTests {
 
   @LocalServerPort
