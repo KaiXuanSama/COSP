@@ -185,14 +185,15 @@ public class OllamaApiController {
     }
 
     /**
-     * 核心对话接口 —— 接收用户的聊天请求，转发给 Mimo 后端，返回模型的回复。
+     * 核心对话接口 —— 接收用户的聊天请求，转发给上游后端，返回模型的回复。
      * 支持两种模式：
-     * - 流式（stream=true）：返回 NDJSON 格式，每个 JSON 对象是一个增量 chunk，Copilot 可以实时显示
-     * - 非流式（stream=false）：等待模型生成完毕后一次性返回完整回复
-     * produces = APPLICATION_NDJSON_VALUE 表示响应格式为换行分隔的 JSON（Newline Delimited JSON），
-     * 这是 Ollama 流式响应的标准格式。
+     * - 流式（stream=true）：返回 NDJSON 格式，每个 JSON 对象是一个增量 chunk
+     * - 非流式（stream=false）：返回单条 JSON 对象
+     * <p>
+     * produces 同时声明 NDJSON 和 JSON，由 Spring 根据客户端的 Accept 头进行内容协商。
+     * 若客户端 Accept 不匹配 NDJSON/JSON 时，不会抛出 406。
      */
-    @PostMapping(value = "/chat", produces = MediaType.APPLICATION_NDJSON_VALUE)
+    @PostMapping(value = "/chat", produces = { MediaType.APPLICATION_NDJSON_VALUE, MediaType.APPLICATION_JSON_VALUE })
     public Flux<OllamaChatResponse> chat(@RequestBody OllamaChatRequest request) {
         if (request.isStream()) {
             return ollamaService.chatStream(request);
