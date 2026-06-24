@@ -184,6 +184,12 @@ const providerMeta: Record<string, { displayName: string; colorClass: string; ap
     apiUrlPlaceholder: 'https://open.bigmodel.cn/api/paas/v4',
     docsUrl: 'https://docs.bigmodel.cn/cn/guide/start/introduction',
   },
+  xunfei: {
+    displayName: 'Xunfei',
+    colorClass: 'success',
+    apiUrlPlaceholder: 'https://maas-api.cn-huabei-1.xf-yun.com/v2',
+    docsUrl: 'https://www.xfyun.cn/doc/spark/%E6%8E%A8%E7%90%86%E6%9C%8D%E5%8A%A1-http.html',
+  },
 }
 
 const editingKey = ref<string | null>(null)
