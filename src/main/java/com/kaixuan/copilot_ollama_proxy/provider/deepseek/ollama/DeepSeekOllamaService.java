@@ -38,7 +38,7 @@ public class DeepSeekOllamaService extends AbstractRuntimeCatalogOllamaService {
     public DeepSeekOllamaService(RuntimeProviderCatalog runtimeProviderCatalog, @Value("${deepseek.default-model:deepseek-v4-flash}") String fallbackDefaultModel, ObjectMapper objectMapper,
             org.springframework.web.reactive.function.client.WebClient.Builder webClientBuilder) {
         super(runtimeProviderCatalog, fallbackDefaultModel);
-        this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder, new OpenAiTransportClient.Config("deepseek", "https://api.deepseek.com", "/chat/completions",
+        this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder, new OpenAiTransportClient.Config("deepseek", "https://api.deepseek.com/v1", "/chat/completions",
                 (headers, apiKey) -> headers.set(org.springframework.http.HttpHeaders.AUTHORIZATION, "Bearer " + apiKey), raw -> raw.replaceAll("/+$", "")));
         this.protocolConverter = new OllamaProtocolConverter(objectMapper, (body, ollamaReq) -> {
             // DeepSeek 特有字段：thinking 和 reasoning_effort

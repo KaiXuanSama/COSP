@@ -38,15 +38,12 @@ public class MimoOllamaService extends AbstractRuntimeCatalogOllamaService {
             org.springframework.web.reactive.function.client.WebClient.Builder webClientBuilder) {
         super(runtimeProviderCatalog, fallbackDefaultModel);
         this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder,
-                new OpenAiTransportClient.Config("mimo", "https://api.xiaomimimo.com", "/v1/chat/completions", (headers, apiKey) -> {
+                new OpenAiTransportClient.Config("mimo", "https://api.xiaomimimo.com/v1", "/chat/completions", (headers, apiKey) -> {
                     if (apiKey != null && !apiKey.isBlank()) {
                         headers.set("api-key", apiKey);
                         headers.set("x-api-key", apiKey);
                     }
-                }, raw -> {
-                    String normalized = raw.trim().replaceAll("/+$", "");
-                    return normalized.endsWith("/v1") ? normalized : normalized + "/v1";
-                }));
+                }, raw -> raw.trim().replaceAll("/+$", "")));
         this.protocolConverter = new OllamaProtocolConverter(objectMapper);
         this.protocolSupport = new OllamaProtocolConverter.Support(this::resolveRequestModel, this::resolveMaxTokens, this::extractStringContent, this::currentTimestamp);
         this.streamTranslator = new OllamaStreamTranslator(objectMapper, new OllamaStreamTranslator.Support(this::createStreamingChunk, this::createStreamingCompletion));

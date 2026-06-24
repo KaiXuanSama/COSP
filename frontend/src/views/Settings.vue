@@ -141,50 +141,48 @@ const activeDocsTitle = computed(() => {
 onMounted(() => window.addEventListener('resize', onResize))
 onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 
-const providerMeta: Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string; docsUrl: string; modelPullPath?: string }> = {
+const providerMeta: Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string; docsUrl: string }> = {
   longcat: {
     displayName: 'LongCat',
     colorClass: 'accent',
-    apiUrlPlaceholder: 'https://api.longcat.chat',
+    apiUrlPlaceholder: 'https://api.longcat.chat/openai/v1',
     docsUrl: 'https://longcat.chat/platform/docs/zh/#%E5%8D%95%E6%AC%A1%E8%AF%B7%E6%B1%82%E9%99%90%E5%88%B6',
-    modelPullPath: '/openai/v1/models',
   },
   mimo: {
     displayName: 'MiMo',
     colorClass: 'blue',
-    apiUrlPlaceholder: 'https://token-plan-cn.xiaomimimo.com/',
+    apiUrlPlaceholder: 'https://api.xiaomimimo.com/v1',
     docsUrl: 'https://platform.xiaomimimo.com/docs/zh-CN/pricing',
   },
   sensenova: {
     displayName: 'SenseNova',
     colorClass: 'success',
-    apiUrlPlaceholder: 'https://token.sensenova.cn',
+    apiUrlPlaceholder: 'https://token.sensenova.cn/v1',
     docsUrl: 'https://platform.sensenova.cn/docs',
   },
   deepseek: {
     displayName: 'DeepSeek',
     colorClass: 'warning',
-    apiUrlPlaceholder: 'https://api.deepseek.com',
+    apiUrlPlaceholder: 'https://api.deepseek.com/v1',
     docsUrl: 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing',
   },
   uumit: {
     displayName: 'Uumit',
     colorClass: 'accent',
-    apiUrlPlaceholder: 'https://agent.uumit.com',
+    apiUrlPlaceholder: 'https://agent.uumit.com/v1',
     docsUrl: 'https://agent.uumit.com/docs',
   },
   agnes: {
     displayName: 'Agnes',
     colorClass: 'accent',
-    apiUrlPlaceholder: 'https://apihub.agnes-ai.com',
+    apiUrlPlaceholder: 'https://apihub.agnes-ai.com/v1',
     docsUrl: 'https://agnes-ai.com/doc/overview',
   },
   zhipu: {
     displayName: 'Zhipu',
     colorClass: 'warning',
-    apiUrlPlaceholder: 'https://open.bigmodel.cn',
+    apiUrlPlaceholder: 'https://open.bigmodel.cn/api/paas/v4',
     docsUrl: 'https://docs.bigmodel.cn/cn/guide/start/introduction',
-    modelPullPath: '/api/paas/v4/models',
   },
 }
 
@@ -400,7 +398,6 @@ async function pullModels() {
     const responsePayload = await providerStore.pullProviderModels(providerKey, {
       baseUrl: resolvedBaseUrl,
       apiKey,
-      modelPullPath: providerMeta[providerKey]?.modelPullPath,
     })
     const modelNames = extractModelNames(responsePayload)
     if (modelNames.length === 0) {

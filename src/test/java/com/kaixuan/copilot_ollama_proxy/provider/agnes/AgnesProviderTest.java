@@ -27,7 +27,7 @@ class AgnesProviderTest {
         RuntimeProviderCatalog catalog = () -> List.of(new ProviderRuntimeConfiguration("agnes", "https://apihub.agnes-ai.com", "test-key", "openai", List.of(new ProviderRuntimeModel("agnes-2.0-flash", 0, false, false, "Medium"))));
         TestAgnesOpenAiService service = new TestAgnesOpenAiService(catalog);
 
-        assertThat(service.exposeDefaultBaseUrl()).isEqualTo("https://apihub.agnes-ai.com");
+        assertThat(service.exposeDefaultBaseUrl()).isEqualTo("https://apihub.agnes-ai.com/v1");
     }
 
     @Test
@@ -36,11 +36,9 @@ class AgnesProviderTest {
         TestAgnesOpenAiService service = new TestAgnesOpenAiService(catalog);
 
         // 测试去除尾部斜杠
-        assertThat(service.exposeNormalizeBaseUrl("https://apihub.agnes-ai.com/")).isEqualTo("https://apihub.agnes-ai.com");
-        // 测试去除 /v1 后缀
-        assertThat(service.exposeNormalizeBaseUrl("https://apihub.agnes-ai.com/v1")).isEqualTo("https://apihub.agnes-ai.com");
-        // 测试去除尾部斜杠和 /v1 后缀
-        assertThat(service.exposeNormalizeBaseUrl("https://apihub.agnes-ai.com/v1/")).isEqualTo("https://apihub.agnes-ai.com");
+        assertThat(service.exposeNormalizeBaseUrl("https://apihub.agnes-ai.com/v1/")).isEqualTo("https://apihub.agnes-ai.com/v1");
+        // 测试保留 /v1 后缀
+        assertThat(service.exposeNormalizeBaseUrl("https://apihub.agnes-ai.com/v1")).isEqualTo("https://apihub.agnes-ai.com/v1");
     }
 
     @Test
@@ -59,7 +57,7 @@ class AgnesProviderTest {
         RuntimeProviderCatalog catalog = () -> List.of(new ProviderRuntimeConfiguration("agnes", "https://apihub.agnes-ai.com", "test-key", "openai", List.of(new ProviderRuntimeModel("agnes-2.0-flash", 0, false, false, "Medium"))));
         TestAgnesOpenAiService service = new TestAgnesOpenAiService(catalog);
 
-        assertThat(service.exposeChatCompletionsUri()).isEqualTo("/v1/chat/completions");
+        assertThat(service.exposeChatCompletionsUri()).isEqualTo("/chat/completions");
     }
 
     private static final class TestAgnesOpenAiService extends AgnesOpenAiChatService {

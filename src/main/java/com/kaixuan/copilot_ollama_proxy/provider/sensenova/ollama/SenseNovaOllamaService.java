@@ -37,11 +37,8 @@ public class SenseNovaOllamaService extends AbstractRuntimeCatalogOllamaService 
     public SenseNovaOllamaService(RuntimeProviderCatalog runtimeProviderCatalog, @Value("${sensenova.default-model:sensenova-6.7-flash-lite}") String fallbackDefaultModel, ObjectMapper objectMapper,
             org.springframework.web.reactive.function.client.WebClient.Builder webClientBuilder) {
         super(runtimeProviderCatalog, fallbackDefaultModel);
-        this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder, new OpenAiTransportClient.Config("sensenova", "https://token.sensenova.cn", "/v1/chat/completions",
-                (headers, apiKey) -> headers.set(org.springframework.http.HttpHeaders.AUTHORIZATION, "Bearer " + apiKey), raw -> {
-                    String url = raw.replaceAll("/+$", "");
-                    return url.endsWith("/v1") ? url.substring(0, url.length() - 3) : url;
-                }));
+        this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder, new OpenAiTransportClient.Config("sensenova", "https://token.sensenova.cn/v1", "/chat/completions",
+                (headers, apiKey) -> headers.set(org.springframework.http.HttpHeaders.AUTHORIZATION, "Bearer " + apiKey), raw -> raw.replaceAll("/+$", "")));
         this.protocolConverter = new OllamaProtocolConverter(objectMapper);
         this.protocolSupport = new OllamaProtocolConverter.Support(this::resolveRequestModel, this::resolveMaxTokens, this::extractStringContent, this::currentTimestamp);
         this.streamTranslator = new OllamaStreamTranslator(objectMapper, new OllamaStreamTranslator.Support(this::createStreamingChunk, this::createStreamingCompletion));
