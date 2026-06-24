@@ -33,9 +33,9 @@ class LongCatOpenAiTransportClientTests {
 
                 RuntimeProviderCatalog catalog = () -> List.of(new ProviderRuntimeConfiguration("longcat", "", "secret-key", "openai", List.of()));
                 OpenAiTransportClient client = new OpenAiTransportClient(catalog, WebClient.builder().exchangeFunction(exchangeFunction),
-                        new OpenAiTransportClient.Config("longcat", "https://api.longcat.chat", "/v1/chat/completions",
+                        new OpenAiTransportClient.Config("longcat", "https://api.longcat.chat/openai/v1", "/chat/completions",
                                 (headers, apiKey) -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey),
-                                raw -> raw.replaceAll("/+$", "") + "/openai"));
+                                raw -> raw.replaceAll("/+$", "")));
 
                 String response = client.sendChatCompletion(Map.of("model", "LongCat-Flash-Chat")).block();
 
@@ -57,11 +57,11 @@ class LongCatOpenAiTransportClientTests {
                                         .body("data: {\"chunk\":1}\n\ndata: [DONE]\n\n").build());
                 };
 
-                RuntimeProviderCatalog catalog = () -> List.of(new ProviderRuntimeConfiguration("longcat", "https://custom.longcat.example/", "secret-key", "openai", List.of()));
+                RuntimeProviderCatalog catalog = () -> List.of(new ProviderRuntimeConfiguration("longcat", "https://custom.longcat.example/openai/v1/", "secret-key", "openai", List.of()));
                 OpenAiTransportClient client = new OpenAiTransportClient(catalog, WebClient.builder().exchangeFunction(exchangeFunction),
-                        new OpenAiTransportClient.Config("longcat", "https://api.longcat.chat", "/v1/chat/completions",
+                        new OpenAiTransportClient.Config("longcat", "https://api.longcat.chat/openai/v1", "/chat/completions",
                                 (headers, apiKey) -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey),
-                                raw -> raw.replaceAll("/+$", "") + "/openai"));
+                                raw -> raw.replaceAll("/+$", "")));
 
                 List<String> chunks = client.streamChatCompletion(Map.of("model", "LongCat-Flash-Chat")).collectList().block();
 

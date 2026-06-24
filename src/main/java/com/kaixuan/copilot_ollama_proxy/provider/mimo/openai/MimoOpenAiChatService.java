@@ -62,7 +62,7 @@ public class MimoOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatS
 
     @Override
     protected String defaultBaseUrl() {
-        return "https://api.xiaomimimo.com";
+        return "https://api.xiaomimimo.com/v1";
     }
 
     @Override
@@ -71,7 +71,7 @@ public class MimoOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatS
         if (normalized.isEmpty()) {
             return "https://api.xiaomimimo.com/v1";
         }
-        return normalized.endsWith("/v1") ? normalized : normalized + "/v1";
+        return normalized;
     }
 
     // ==================== 请求定制 ====================

@@ -39,11 +39,8 @@ public class AgnesOllamaService extends AbstractRuntimeCatalogOllamaService {
     public AgnesOllamaService(RuntimeProviderCatalog runtimeProviderCatalog, @Value("${agnes.default-model:agnes-2.0-flash}") String fallbackDefaultModel, ObjectMapper objectMapper,
             WebClient.Builder webClientBuilder) {
         super(runtimeProviderCatalog, fallbackDefaultModel);
-        this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder, new OpenAiTransportClient.Config("agnes", "https://apihub.agnes-ai.com", "/v1/chat/completions",
-                (headers, apiKey) -> headers.set(org.springframework.http.HttpHeaders.AUTHORIZATION, "Bearer " + apiKey), raw -> {
-                    String url = raw.replaceAll("/+$", "");
-                    return url.endsWith("/v1") ? url.substring(0, url.length() - 3) : url;
-                }));
+        this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder, new OpenAiTransportClient.Config("agnes", "https://apihub.agnes-ai.com/v1", "/chat/completions",
+                (headers, apiKey) -> headers.set(org.springframework.http.HttpHeaders.AUTHORIZATION, "Bearer " + apiKey), raw -> raw.replaceAll("/+$", "")));
         this.protocolConverter = new OllamaProtocolConverter(objectMapper);
         this.protocolSupport = new OllamaProtocolConverter.Support(this::resolveRequestModel, this::resolveMaxTokens, this::extractStringContent, this::currentTimestamp);
         this.streamTranslator = new OllamaStreamTranslator(objectMapper, new OllamaStreamTranslator.Support(this::createStreamingChunk, this::createStreamingCompletion));

@@ -31,17 +31,12 @@ public class SenseNovaOpenAiChatService extends AbstractOpenAiCompatibleUpstream
 
     @Override
     protected String defaultBaseUrl() {
-        return "https://token.sensenova.cn";
+        return "https://token.sensenova.cn/v1";
     }
 
     @Override
     protected String normalizeBaseUrl(String rawBaseUrl) {
-        String normalized = rawBaseUrl.replaceAll("/+$", "");
-        // SenseNova 的 API 路径已包含 /v1，确保不以 /v1 结尾避免重复
-        if (normalized.endsWith("/v1")) {
-            normalized = normalized.substring(0, normalized.length() - 3);
-        }
-        return normalized;
+        return rawBaseUrl.replaceAll("/+$", "");
     }
 
     @Override
@@ -51,6 +46,6 @@ public class SenseNovaOpenAiChatService extends AbstractOpenAiCompatibleUpstream
 
     @Override
     protected String chatCompletionsUri() {
-        return "/v1/chat/completions";
+        return "/chat/completions";
     }
 }

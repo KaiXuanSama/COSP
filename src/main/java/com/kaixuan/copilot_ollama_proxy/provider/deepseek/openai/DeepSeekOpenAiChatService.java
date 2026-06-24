@@ -61,7 +61,7 @@ public class DeepSeekOpenAiChatService extends AbstractOpenAiCompatibleUpstreamC
 
     @Override
     protected String defaultBaseUrl() {
-        return "https://api.deepseek.com";
+        return "https://api.deepseek.com/v1";
     }
 
     @Override

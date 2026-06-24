@@ -45,8 +45,8 @@ public class LongCatOllamaService extends AbstractRuntimeCatalogOllamaService {
     public LongCatOllamaService(RuntimeProviderCatalog runtimeProviderCatalog, @Value("${longcat.default-model:LongCat-Flash-Chat}") String fallbackDefaultModel, ObjectMapper objectMapper,
             WebClient.Builder webClientBuilder) {
         super(runtimeProviderCatalog, fallbackDefaultModel);
-        this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder, new OpenAiTransportClient.Config("longcat", "https://api.longcat.chat", "/v1/chat/completions",
-                (headers, apiKey) -> headers.set(org.springframework.http.HttpHeaders.AUTHORIZATION, "Bearer " + apiKey), raw -> raw.replaceAll("/+$", "") + "/openai"));
+        this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder, new OpenAiTransportClient.Config("longcat", "https://api.longcat.chat/openai/v1", "/chat/completions",
+                (headers, apiKey) -> headers.set(org.springframework.http.HttpHeaders.AUTHORIZATION, "Bearer " + apiKey), raw -> raw.replaceAll("/+$", "")));
         this.protocolConverter = new OllamaProtocolConverter(objectMapper);
         this.protocolSupport = new OllamaProtocolConverter.Support(this::resolveRequestModel, this::resolveMaxTokens, this::extractStringContent, this::currentTimestamp);
         this.streamTranslator = new OllamaStreamTranslator(objectMapper, new OllamaStreamTranslator.Support(this::createStreamingChunk, this::createStreamingCompletion));

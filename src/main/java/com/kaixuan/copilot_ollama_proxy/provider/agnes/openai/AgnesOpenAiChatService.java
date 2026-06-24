@@ -30,16 +30,12 @@ public class AgnesOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChat
 
     @Override
     protected String defaultBaseUrl() {
-        return "https://apihub.agnes-ai.com";
+        return "https://apihub.agnes-ai.com/v1";
     }
 
     @Override
     protected String normalizeBaseUrl(String rawBaseUrl) {
-        String normalized = rawBaseUrl.replaceAll("/+$", "");
-        if (normalized.endsWith("/v1")) {
-            normalized = normalized.substring(0, normalized.length() - 3);
-        }
-        return normalized;
+        return rawBaseUrl.replaceAll("/+$", "");
     }
 
     @Override
@@ -49,6 +45,6 @@ public class AgnesOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChat
 
     @Override
     protected String chatCompletionsUri() {
-        return "/v1/chat/completions";
+        return "/chat/completions";
     }
 }

@@ -264,7 +264,7 @@ public class AdminPageController {
     private String normalizeModelPullPath(String rawModelPullPath) {
         String path = rawModelPullPath == null ? "" : rawModelPullPath.trim();
         if (path.isBlank()) {
-            return "/v1/models";
+            return "/models";
         }
         return path.startsWith("/") ? path : "/" + path;
     }

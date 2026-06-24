@@ -53,18 +53,12 @@ public class ZhipuOllamaService extends AbstractRuntimeCatalogOllamaService {
                 runtimeProviderCatalog, webClientBuilder,
                 new OpenAiTransportClient.Config(
                         "zhipu",
-                        "https://open.bigmodel.cn",
+                        "https://open.bigmodel.cn/api/paas/v4",
                         "/chat/completions",
                         (headers, apiKey) -> headers.set(
                                 org.springframework.http.HttpHeaders.AUTHORIZATION,
                                 "Bearer " + apiKey),
-                        raw -> {
-                            String url = raw.replaceAll("/+$", "");
-                            if (!url.endsWith("/api/paas/v4")) {
-                                url = url + "/api/paas/v4";
-                            }
-                            return url;
-                        }));
+                        raw -> raw.replaceAll("/+$", "")));
 
         // 2. Create Protocol Converter
         this.protocolConverter = new OllamaProtocolConverter(objectMapper);

@@ -38,17 +38,12 @@ public class ZhipuOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChat
 
     @Override
     protected String defaultBaseUrl() {
-        return "https://open.bigmodel.cn";
+        return "https://open.bigmodel.cn/api/paas/v4";
     }
 
     @Override
     protected String normalizeBaseUrl(String rawBaseUrl) {
-        String normalized = rawBaseUrl.replaceAll("/+$", "");
-        // 自动拼接智谱 API 路径后缀
-        if (!normalized.endsWith("/api/paas/v4")) {
-            normalized = normalized + "/api/paas/v4";
-        }
-        return normalized;
+        return rawBaseUrl.replaceAll("/+$", "");
     }
 
     @Override

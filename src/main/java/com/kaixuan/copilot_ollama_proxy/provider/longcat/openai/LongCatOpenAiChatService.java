@@ -128,13 +128,13 @@ public class LongCatOpenAiChatService extends AbstractOpenAiCompatibleUpstreamCh
     // LongCat 上游服务的默认 Base URL，如果运行时配置中没有指定则使用该值。
     @Override
     protected String defaultBaseUrl() {
-        return "https://api.longcat.chat";
+        return "https://api.longcat.chat/openai/v1";
     }
 
-    // LongCat 上游服务的 Base URL 规范化方法，确保最终的 Base URL 以 "/openai" 结尾，并去除多余的斜杠。
+    // LongCat 上游服务的 Base URL 规范化方法，去除多余的斜杠。
     @Override
     protected String normalizeBaseUrl(String rawBaseUrl) {
-        return rawBaseUrl.replaceAll("/+$", "") + "/openai";
+        return rawBaseUrl.replaceAll("/+$", "");
     }
 
     // 在请求体中添加 LongCat 特定的字段或格式转换，例如将模型名称转换为 LongCat 识别的格式。
@@ -143,10 +143,10 @@ public class LongCatOpenAiChatService extends AbstractOpenAiCompatibleUpstreamCh
         headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
     }
 
-    // LongCat 上游服务的 Chat Completions 端点 URI，通常为 "/v1/chat/completions"。
+    // LongCat 上游服务的 Chat Completions 端点 URI。
     @Override
     protected String chatCompletionsUri() {
-        return "/v1/chat/completions";
+        return "/chat/completions";
     }
 
     // ==================== XML 工具调用检测：流结束处理 ====================
