@@ -9,10 +9,9 @@ description: "为 COSP（Copilot Ollama SpringBoot Proxy）项目新增第三方
 
 ## 项目概述
 
-COSP 是一个 Spring Boot 代理，它将上游 LLM API 供应商（例如 DeepSeek、MiMo、LongCat、SenseNova、Uumit）对 GitHub Copilot 伪装成本地 Ollama 服务器。采用双端口架构：
+COSP 是一个 Spring Boot 代理，它将上游 LLM API 供应商（例如 DeepSeek、MiMo、LongCat、SenseNova、Uumit、Agnes、Zhipu）对 GitHub Copilot 伪装成本地 Ollama 服务器。采用统一端口架构：
 
-- **端口 11434** — Ollama 兼容 API（`/api/chat`、`/api/tags`、`/api/show`、`/api/version`）
-- **端口 80** — 管理后台（Vue 3 SPA）
+- **端口 11434** — 统一端口，同时承载 Ollama 兼容 API（`/api/chat`、`/api/tags`、`/api/show`、`/api/version`）、OpenAI 兼容 API（`/v1/chat/completions`、`/v1/models`）和管理后台（Vue 3 SPA）
 
 ### 两条核心调用链
 
@@ -66,10 +65,10 @@ public {ProviderName}OllamaService(
     this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder,
         new OpenAiTransportClient.Config(
             "{provider_key}",           // 供应商 key
-            "{default_base_url}",       // 默认 Base URL
-            "{chat_completions_uri}",   // 例如 "/v1/chat/completions"
+            "{default_base_url_with_path}", // 默认 Base URL（含 OpenAI 路径），例如 "https://api.example.com/v1"
+            "/chat/completions",        // Chat Completions URI（固定为 /chat/completions）
             this::applyAuthHeaders,     // 认证头注入器
-            this::normalizeBaseUrl      // Base URL 规范化器
+            this::normalizeBaseUrl      // Base URL 规范化器（仅去除尾部斜杠）
         ));
     // 2. 创建协议转换器
     this.protocolConverter = new OllamaProtocolConverter(objectMapper);
@@ -114,9 +113,9 @@ protected String providerLicense() { return "Proprietary"; } // 按需调整
 |------|------|
 | Bearer Token | `(headers, apiKey) -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)` |
 | 自定义 Header | `(headers, apiKey) -> headers.set("api-key", apiKey)` |
-| 去除 `/v1` 后缀 | `raw -> { String url = raw.replaceAll("/+$", ""); return url.endsWith("/v1") ? url.substring(0, url.length() - 3) : url; }` |
-| 追加 `/openai` | `raw -> raw.replaceAll("/+$", "") + "/openai"` |
-| 确保 `/v1` 结尾 | `raw -> { String n = raw.trim().replaceAll("/+$", ""); return n.endsWith("/v1") ? n : n + "/v1"; }` |
+| Base URL 规范化（推荐） | `raw -> raw.replaceAll("/+$", "")` — 仅去除尾部斜杠 |
+
+**注意：** 用户在前端填写完整的 OpenAI 兼容基础路径（如 `https://api.example.com/v1`），后端不再自动拼接路径后缀。`normalizeBaseUrl()` 仅去除尾部斜杠，`chatCompletionsUri()` 固定为 `/chat/completions`。
 
 **能力声明**必须从数据库读取。使用以下标准模式：
 ```java
@@ -181,11 +180,11 @@ public String getProviderKey() { return "{provider_key}"; }
 protected String providerDisplayName() { return "{ProviderDisplayName}"; }
 
 @Override
-protected String defaultBaseUrl() { return "{default_base_url}"; }
+protected String defaultBaseUrl() { return "{default_base_url_with_path}"; } // 例如 "https://api.example.com/v1"
 
 @Override
 protected String normalizeBaseUrl(String rawBaseUrl) {
-    // 实现 URL 规范化逻辑
+    return rawBaseUrl.replaceAll("/+$", ""); // 仅去除尾部斜杠
 }
 
 @Override
@@ -194,7 +193,7 @@ protected void applyAuthenticationHeaders(HttpHeaders headers, String apiKey) {
 }
 
 @Override
-protected String chatCompletionsUri() { return "{chat_completions_uri}"; }
+protected String chatCompletionsUri() { return "/chat/completions"; } // 固定为 /chat/completions
 ```
 
 **可选重写的方法（供应商特有逻辑）：**

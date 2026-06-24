@@ -9,10 +9,9 @@ This skill guides an AI coding agent through the complete process of adding a ne
 
 ## Overview
 
-COSP is a Spring Boot proxy that makes upstream LLM API providers (e.g., DeepSeek, MiMo, LongCat, SenseNova, Uumit) appear as a local Ollama server to GitHub Copilot. It operates on a dual-port architecture:
+COSP is a Spring Boot proxy that makes upstream LLM API providers (e.g., DeepSeek, MiMo, LongCat, SenseNova, Uumit, Agnes, Zhipu) appear as a local Ollama server to GitHub Copilot. It uses a unified port architecture:
 
-- **Port 11434** — Ollama-compatible API (`/api/chat`, `/api/tags`, `/api/show`, `/api/version`)
-- **Port 80** — Admin dashboard (Vue 3 SPA)
+- **Port 11434** — Unified port for Ollama-compatible API (`/api/chat`, `/api/tags`, `/api/show`, `/api/version`), OpenAI-compatible API (`/v1/chat/completions`, `/v1/models`), and admin dashboard (Vue 3 SPA)
 
 ### Two Core Call Chains
 
@@ -66,10 +65,10 @@ public {ProviderName}OllamaService(
     this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder,
         new OpenAiTransportClient.Config(
             "{provider_key}",           // provider key
-            "{default_base_url}",       // default base URL
-            "{chat_completions_uri}",   // e.g., "/v1/chat/completions"
+            "{default_base_url_with_path}", // default base URL including OpenAI path, e.g., "https://api.example.com/v1"
+            "/chat/completions",        // chat completions URI (always /chat/completions)
             this::applyAuthHeaders,     // auth header injector
-            this::normalizeBaseUrl      // base URL normalizer
+            this::normalizeBaseUrl      // base URL normalizer (strip trailing slashes only)
         ));
     // 2. Create Protocol Converter
     this.protocolConverter = new OllamaProtocolConverter(objectMapper);
@@ -181,11 +180,11 @@ public String getProviderKey() { return "{provider_key}"; }
 protected String providerDisplayName() { return "{ProviderDisplayName}"; }
 
 @Override
-protected String defaultBaseUrl() { return "{default_base_url}"; }
+protected String defaultBaseUrl() { return "{default_base_url_with_path}"; } // e.g., "https://api.example.com/v1"
 
 @Override
 protected String normalizeBaseUrl(String rawBaseUrl) {
-    // Implement URL normalization logic
+    return rawBaseUrl.replaceAll("/+$", ""); // Just strip trailing slashes
 }
 
 @Override
@@ -194,7 +193,7 @@ protected void applyAuthenticationHeaders(HttpHeaders headers, String apiKey) {
 }
 
 @Override
-protected String chatCompletionsUri() { return "{chat_completions_uri}"; }
+protected String chatCompletionsUri() { return "/chat/completions"; } // Always /chat/completions
 ```
 
 **Optional overrides for provider-specific logic:**
