@@ -82,17 +82,15 @@ public class GenericOllamaService extends AbstractRuntimeCatalogOllamaService {
     @Override
     public OllamaShowResponse showModel(String modelName) {
         String resolvedModel = resolveModelOrDefault(modelName);
-        // 从模型名反推 providerKey
         String providerKey = findProviderKeyForModel(resolvedModel);
         if (providerKey == null) {
             log.warn("通用服务无法找到模型 [{}] 对应的供应商", resolvedModel);
-            return buildShowResponse(resolvedModel, 4096, List.of("completion"));
+            return buildGenericShowResponse(resolvedModel, 4096, List.of("completion"), "generic");
         }
         ProviderRuntimeConfiguration config = runtimeProviderCatalog.getActiveProvider(providerKey);
         List<String> caps = new ArrayList<>();
         caps.add("completion");
-        int contextLength = config != null ? 4096 : 4096;
-        // 尝试从模型配置中读取能力
+        int contextLength = 4096;
         if (config != null) {
             for (var m : config.models()) {
                 if (resolvedModel.equals(m.modelName())) {
@@ -103,7 +101,43 @@ public class GenericOllamaService extends AbstractRuntimeCatalogOllamaService {
                 }
             }
         }
-        return buildShowResponse(resolvedModel, contextLength, caps);
+        // 去掉 custom- 前缀用于显示
+        String displayKey = providerKey.startsWith("custom-") ? providerKey.substring(7) : providerKey;
+        return buildGenericShowResponse(resolvedModel, contextLength, caps, displayKey);
+    }
+
+    /**
+     * 构建通用的 show 响应，使用指定的 displayKey 作为架构名。
+     */
+    private OllamaShowResponse buildGenericShowResponse(String model, int contextLength, List<String> capabilities, String displayKey) {
+        String prefixedModel = "[" + displayKey + "] " + model;
+        OllamaShowResponse response = new OllamaShowResponse();
+        response.setParameters("temperature 0.7\nnum_ctx " + contextLength);
+        response.setLicense("Proprietary");
+        response.setModifiedAt(currentTimestamp());
+        response.setTemplate("{{ .System }}\n{{ .Prompt }}");
+        response.setCapabilities(capabilities);
+
+        OllamaShowResponse.ShowDetails details = new OllamaShowResponse.ShowDetails();
+        details.setParentModel("");
+        details.setFormat(displayKey);
+        details.setFamily(capitalize(displayKey));
+        details.setFamilies(List.of(capitalize(displayKey)));
+        details.setParameterSize("Unknown");
+        details.setQuantizationLevel("none");
+        response.setDetails(details);
+
+        response.setModelInfo(Map.of(
+                "general.architecture", displayKey,
+                "general.basename", prefixedModel,
+                displayKey + ".context_length", contextLength,
+                displayKey + ".embedding_length", 8192));
+        return response;
+    }
+
+    private static String capitalize(String s) {
+        if (s == null || s.isEmpty()) return s;
+        return s.substring(0, 1).toUpperCase() + s.substring(1);
     }
 
     @Override
