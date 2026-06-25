@@ -224,6 +224,13 @@ public class ProviderConfigRepository {
 
     // ==================== 工具 ====================
 
+    /**
+     * 根据 provider_key 删除服务商配置（级联删除关联的模型）。
+     */
+    public void deleteByKey(String providerKey) {
+        jdbcTemplate.update("DELETE FROM provider_config WHERE provider_key = ?", providerKey);
+    }
+
     private static int parseInt(Object value, int defaultValue) {
         if (value == null)
             return defaultValue;

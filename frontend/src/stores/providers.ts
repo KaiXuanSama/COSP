@@ -76,5 +76,24 @@ export const useProviderStore = defineStore('providers', () => {
     }
   }
 
-  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchFakeVersion }
+  // ==================== 自定义供应商 ====================
+
+  async function addCustomProvider(displayName: string) {
+    const formData = new URLSearchParams()
+    formData.append('displayName', displayName)
+    const res = await http.post('/custom-providers', formData.toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    })
+    // 重新拉取列表
+    await fetchAll()
+    return res.data
+  }
+
+  async function deleteCustomProvider(providerKey: string) {
+    await http.delete(`/custom-providers/${providerKey}`)
+    // 重新拉取列表
+    await fetchAll()
+  }
+
+  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchFakeVersion, addCustomProvider, deleteCustomProvider }
 })

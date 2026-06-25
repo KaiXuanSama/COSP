@@ -223,80 +223,66 @@ const showAddModal = ref(false)
 
 // ==================== 自定义供应商 ====================
 
-const CUSTOM_PROVIDERS_KEY = 'cosp-custom-providers'
 const showCustomAddModal = ref(false)
 const customProviderName = ref('')
 
-/** 自定义供应商数据：key → { displayName } */
-const customProviders = ref<Record<string, { displayName: string }>>({})
-
-/** 加载自定义供应商 */
-function loadCustomProviders() {
-  try {
-    const raw = localStorage.getItem(CUSTOM_PROVIDERS_KEY)
-    if (raw) customProviders.value = JSON.parse(raw)
-  } catch { /* ignore */ }
-}
-
-/** 持久化自定义供应商 */
-function saveCustomProviders() {
-  localStorage.setItem(CUSTOM_PROVIDERS_KEY, JSON.stringify(customProviders.value))
-}
-
 /** 添加自定义供应商 */
-function addCustomProvider() {
+async function addCustomProvider() {
   const name = customProviderName.value.trim()
   if (!name) {
     message.warning('请输入供应商名称')
     return
   }
-  // 生成 key：小写 + 连字符
-  const key = 'custom-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
-  if (providerMeta.value[key] || customProviders.value[key]) {
-    message.warning('该供应商名称已存在')
-    return
+  try {
+    const res = await providerStore.addCustomProvider(name)
+    // 注入 providerMeta
+    providerMeta.value[res.providerKey] = {
+      displayName: name,
+      colorClass: 'custom',
+      apiUrlPlaceholder: 'https://api.example.com/v1',
+      docsUrl: '',
+    }
+    showCustomAddModal.value = false
+    customProviderName.value = ''
+    message.success(`已添加自定义供应商「${name}」`)
+  } catch (e: any) {
+    message.error(e?.response?.data?.error || '添加失败')
   }
-  // 注入 providerMeta
-  providerMeta.value[key] = {
-    displayName: name,
-    colorClass: 'custom',
-    apiUrlPlaceholder: 'https://api.example.com/v1',
-    docsUrl: '',
-  }
-  customProviders.value[key] = { displayName: name }
-  saveCustomProviders()
-  showCustomAddModal.value = false
-  customProviderName.value = ''
-  message.success(`已添加自定义供应商「${name}」`)
 }
 
 /** 删除自定义供应商 */
-function removeCustomProvider(key: string) {
-  const name = customProviders.value[key]?.displayName || key
-  delete customProviders.value[key]
-  delete providerMeta.value[key]
-  saveCustomProviders()
-  // 如果正在编辑该供应商，关闭编辑面板
-  if (editingKey.value === key) {
-    closeEditPanel()
+async function removeCustomProvider(key: string) {
+  const displayName = providerMeta.value[key]?.displayName || key
+  try {
+    await providerStore.deleteCustomProvider(key)
+    delete providerMeta.value[key]
+    if (editingKey.value === key) {
+      closeEditPanel()
+    }
+    message.success(`已删除自定义供应商「${displayName}」`)
+  } catch {
+    message.error('删除失败')
   }
-  message.success(`已删除自定义供应商「${name}」`)
 }
 
 /** 判断是否为自定义供应商 */
 function isCustomProvider(key: string) {
-  return key in customProviders.value
+  return key.startsWith('custom-')
 }
 
-loadCustomProviders()
-
 const enabledProviderKeys = computed(() => {
-  const allKeys = [...Object.keys(providerMeta.value)]
+  // 内置 + 自定义供应商的 key
+  const metaKeys = Object.keys(providerMeta.value)
+  // provider_config 中可能存在但 meta 中没有的（如数据库残留）
+  const storeKeys = Object.keys(providerStore.providers)
+  const allKeys = [...new Set([...metaKeys, ...storeKeys])]
   return allKeys.filter(k => providerStore.providers[k]?.enabled)
 })
 
 const disabledProviderKeys = computed(() => {
-  const allKeys = [...Object.keys(providerMeta.value)]
+  const metaKeys = Object.keys(providerMeta.value)
+  const storeKeys = Object.keys(providerStore.providers)
+  const allKeys = [...new Set([...metaKeys, ...storeKeys])]
   return allKeys.filter(k => !providerStore.providers[k]?.enabled)
 })
 
@@ -315,6 +301,19 @@ async function enableProvider(key: string) {
 onMounted(async () => {
   await providerStore.fetchAll()
   await providerStore.fetchFakeVersion()
+  // 将 custom- 前缀的供应商注入 providerMeta
+  for (const key of Object.keys(providerStore.providers)) {
+    if (key.startsWith('custom-') && !providerMeta.value[key]) {
+      // 从 key 生成可读的 displayName
+      const displayName = key.replace('custom-', '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+      providerMeta.value[key] = {
+        displayName,
+        colorClass: 'custom',
+        apiUrlPlaceholder: 'https://api.example.com/v1',
+        docsUrl: '',
+      }
+    }
+  }
   if (providerStore.fakeVersion) {
     fakeVersion.value = providerStore.fakeVersion
     versionPlaceholder.value = providerStore.fakeVersion
@@ -614,7 +613,7 @@ function removeModel(index: number) {
     <!-- 添加服务商模态框 -->
     <n-modal v-model:show="showAddModal" preset="card" title="添加服务商" :style="{ maxWidth: '480px' }" closable
       :mask-closable="true">
-      <div v-if="disabledProviderKeys.length === 0 && Object.keys(customProviders).length === 0" class="add-modal-empty">
+      <div v-if="disabledProviderKeys.length === 0" class="add-modal-empty">
         所有服务商已启用
       </div>
       <div v-else class="add-modal-grid">
