@@ -37,3 +37,6 @@ sensenova:
 
 deepseek:
   default-model: deepseek-v4-flash
+
+kimi:
+  default-model: kimi-k2.5

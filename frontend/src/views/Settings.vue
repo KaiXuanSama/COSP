@@ -190,6 +190,12 @@ const providerMeta: Record<string, { displayName: string; colorClass: string; ap
     apiUrlPlaceholder: 'https://maas-api.cn-huabei-1.xf-yun.com/v2',
     docsUrl: 'https://www.xfyun.cn/doc/spark/%E6%8E%A8%E7%90%86%E6%9C%8D%E5%8A%A1-http.html',
   },
+  kimi: {
+    displayName: 'Kimi',
+    colorClass: 'accent',
+    apiUrlPlaceholder: 'https://api.moonshot.cn/v1',
+    docsUrl: 'https://platform.kimi.com/docs/overview',
+  },
 }
 
 const editingKey = ref<string | null>(null)
