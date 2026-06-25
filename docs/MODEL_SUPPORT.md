@@ -47,6 +47,14 @@
 |---------|--------|
 | `LongCat-2.0-Preview` | 完美 |
 
+### Kimi（月之暗面）
+
+> 支持 Kimi API 和 Kimi Code Plan API。
+
+| 模型 ID | 适配度 |
+|---------|--------|
+| `kimi-for-coding` | 可用 |
+
 ### Agnes
 
 | 模型 ID | 适配度 |
