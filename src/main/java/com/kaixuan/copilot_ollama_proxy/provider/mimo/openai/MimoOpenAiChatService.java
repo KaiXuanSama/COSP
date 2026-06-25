@@ -67,11 +67,7 @@ public class MimoOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatS
 
     @Override
     protected String normalizeBaseUrl(String rawBaseUrl) {
-        String normalized = rawBaseUrl == null ? "" : rawBaseUrl.trim().replaceAll("/+$", "");
-        if (normalized.isEmpty()) {
-            return "https://api.xiaomimimo.com/v1";
-        }
-        return normalized;
+        return rawBaseUrl.replaceAll("/+$", "");
     }
 
     // ==================== 请求定制 ====================
