@@ -7,19 +7,23 @@ import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.provider.openai.AbstractOpenAiCompatibleUpstreamChatService;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.util.Map;
 
 /**
  * 通用 OpenAI 上游服务 —— 处理所有 custom-* 前缀的自定义供应商。
- * 从数据库动态读取配置，按标准 OpenAI 兼容协议转发请求。
+ * 从数据库动态读取配置，复用父类的请求准备、SSE 解析、日志和流式翻译基础设施。
  */
 @Service
 public class GenericOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatService {
 
     private static final String PROVIDER_KEY = "__generic__";
     private final RuntimeProviderCatalog runtimeProviderCatalog;
+
+    /** 当前请求动态解析的 providerKey，由 chatCompletion/chatCompletionStream 设置 */
+    private final ThreadLocal<String> currentProviderKey = new ThreadLocal<>();
 
     public GenericOpenAiChatService(RuntimeProviderCatalog runtimeProviderCatalog, ObjectMapper objectMapper) {
         super(runtimeProviderCatalog, objectMapper, "");
@@ -57,92 +61,51 @@ public class GenericOpenAiChatService extends AbstractOpenAiCompatibleUpstreamCh
     }
 
     /**
+     * 重写配置获取，使用动态解析的 providerKey。
+     * 父类的 buildWebClient() 会调用此方法获取配置。
+     */
+    @Override
+    protected ProviderRuntimeConfiguration getActiveProviderConfiguration() {
+        String key = currentProviderKey.get();
+        if (key != null) {
+            return runtimeProviderCatalog.getActiveProvider(key);
+        }
+        return null;
+    }
+
+    /**
+     * 重写非流式聊天，动态解析 provider 配置后委托给父类逻辑。
+     */
+    @Override
+    public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model) {
+        String providerKey = resolveProviderKey(model);
+        if (providerKey == null) {
+            return Mono.error(new IllegalStateException("无法解析自定义供应商: " + model));
+        }
+        currentProviderKey.set(providerKey);
+        return super.chatCompletion(openAiRequest, model)
+                .doFinally(signal -> currentProviderKey.remove());
+    }
+
+    /**
+     * 重写流式聊天，动态解析 provider 配置后委托给父类逻辑。
+     */
+    @Override
+    public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
+        String providerKey = resolveProviderKey(model);
+        if (providerKey == null) {
+            return Flux.error(new IllegalStateException("无法解析自定义供应商: " + model));
+        }
+        currentProviderKey.set(providerKey);
+        return super.chatCompletionStream(openAiRequest, model)
+                .doFinally(signal -> currentProviderKey.remove());
+    }
+
+    /**
      * 判断此服务是否能处理给定的 providerKey。
      */
     public boolean supports(String providerKey) {
         return providerKey != null && providerKey.startsWith("custom-");
-    }
-
-    /**
-     * 重写请求准备，动态解析实际的 providerKey 和 Base URL。
-     */
-    @Override
-    protected WebClient buildWebClient() {
-        // 这个方法在父类中被调用，但我们需要动态解析 providerKey
-        // 实际的 WebClient 构建会在 chatCompletion 和 chatCompletionStream 中通过重写处理
-        return WebClient.builder().build();
-    }
-
-    /**
-     * 重写非流式聊天，动态解析 provider 配置。
-     */
-    @Override
-    public reactor.core.publisher.Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model) {
-        String providerKey = resolveProviderKey(model);
-        ProviderRuntimeConfiguration config = runtimeProviderCatalog.getActiveProvider(providerKey);
-        if (config == null) {
-            return reactor.core.publisher.Mono.error(
-                    new IllegalStateException("找不到自定义供应商配置: " + providerKey));
-        }
-        String baseUrl = normalizeBaseUrl(config.baseUrl());
-        String apiKey = config.apiKey();
-
-        WebClient client = WebClient.builder()
-                .baseUrl(baseUrl + chatCompletionsUri())
-                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
-                .defaultHeader(HttpHeaders.CONTENT_TYPE, "application/json")
-                .build();
-
-        return client.post()
-                .bodyValue(openAiRequest)
-                .retrieve()
-                .bodyToMono(String.class);
-    }
-
-    /**
-     * 重写流式聊天，动态解析 provider 配置。
-     */
-    @Override
-    public reactor.core.publisher.Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
-        String providerKey = resolveProviderKey(model);
-        ProviderRuntimeConfiguration config = runtimeProviderCatalog.getActiveProvider(providerKey);
-        if (config == null) {
-            return reactor.core.publisher.Flux.error(
-                    new IllegalStateException("找不到自定义供应商配置: " + providerKey));
-        }
-        String baseUrl = normalizeBaseUrl(config.baseUrl());
-        String apiKey = config.apiKey();
-
-        WebClient client = WebClient.builder()
-                .baseUrl(baseUrl + chatCompletionsUri())
-                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
-                .defaultHeader(HttpHeaders.CONTENT_TYPE, "application/json")
-                .build();
-
-        return client.post()
-                .bodyValue(openAiRequest)
-                .retrieve()
-                .bodyToFlux(org.springframework.core.io.buffer.DataBuffer.class)
-                .map(dataBuffer -> {
-                    byte[] bytes = new byte[dataBuffer.readableByteCount()];
-                    dataBuffer.read(bytes);
-                    org.springframework.core.io.buffer.DataBufferUtils.release(dataBuffer);
-                    return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-                })
-                .flatMap(chunk -> {
-                    // 解析 SSE 格式
-                    String[] lines = chunk.split("\n");
-                    reactor.core.publisher.Flux<String> result = reactor.core.publisher.Flux.empty();
-                    for (String line : lines) {
-                        if (line.startsWith("data: ")) {
-                            String data = line.substring(6).trim();
-                            if (!data.isEmpty()) {
-                                result = result.concatWith(reactor.core.publisher.Mono.just(data));
-                            }
-                        }
-                    }
-                    return result;
-                });
     }
 
     private String resolveProviderKey(String model) {
@@ -157,7 +120,6 @@ public class GenericOpenAiChatService extends AbstractOpenAiCompatibleUpstreamCh
                 return customKey;
             }
         }
-        // 无前缀时搜索
         for (var provider : runtimeProviderCatalog.getActiveProviders()) {
             if (provider.providerKey().startsWith("custom-") && provider.supportsModel(parsed.modelName())) {
                 return provider.providerKey();
