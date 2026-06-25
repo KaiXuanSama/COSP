@@ -240,7 +240,7 @@ public class AdminPageController {
     private boolean supportsProviderKey(String providerKey) {
         return switch (providerKey) {
         case "longcat", "mimo", "sensenova", "deepseek", "uumit", "agnes", "zhipu", "xunfei", "kimi" -> true;
-        default -> false;
+        default -> providerKey.startsWith("custom-");
         };
     }
 
