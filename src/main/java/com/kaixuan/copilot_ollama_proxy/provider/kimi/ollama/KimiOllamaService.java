@@ -154,10 +154,30 @@ public class KimiOllamaService extends AbstractRuntimeCatalogOllamaService {
 
     // ========== Ollama → OpenAI 请求转换 ==========
 
+    /** Kimi Coding 端点标识，用于判断是否需要强制覆盖请求参数。 */
+    private static final String CODING_ENDPOINT_MARKER = "api.kimi.com/coding";
+
     private Map<String, Object> convertOllamaToOpenAi(OllamaChatRequest ollamaReq) {
         Map<String, Object> body = protocolConverter.toOpenAiRequest(ollamaReq, protocolSupport);
         applyReasoningEffort(body, resolveModelOrDefault(ollamaReq.getModel()));
+        // Kimi Coding 端点特殊处理：移除 temperature 和 top_p，避免触发上游限制
+        if (isCodingEndpoint()) {
+            body.remove("temperature");
+            body.remove("top_p");
+            log.debug("Kimi Coding 端点：已移除 temperature 和 top_p 字段");
+        }
         return body;
+    }
+
+    /**
+     * 判断当前配置的 Base URL 是否为 Kimi Coding 端点。
+     */
+    private boolean isCodingEndpoint() {
+        var config = getProviderConfiguration();
+        if (config != null && config.baseUrl() != null) {
+            return config.baseUrl().contains(CODING_ENDPOINT_MARKER);
+        }
+        return false;
     }
 
     // ========== OpenAI → Ollama 响应转换（非流式） ==========
