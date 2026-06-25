@@ -98,9 +98,10 @@ public class OpenAiController {
                 for (Map<String, Object> m : providerModels) {
                     String modelName = (String) m.getOrDefault("modelName", "");
                     if (modelName.isEmpty()) continue;
-                    // 构建带供应商前缀的模型名称，与 /api/tags 格式一致
-                    String prefixedModelName = ModelNameUtil.buildPrefixedName(providerKey, modelName);
-                    models.add(new ModelData(prefixedModelName, defaultCreated, providerKey));
+                    // 构建带供应商前缀的模型名称，自定义供应商去掉 custom- 前缀
+                    String displayKey = providerKey.startsWith("custom-") ? providerKey.substring(7) : providerKey;
+                    String prefixedModelName = ModelNameUtil.buildPrefixedName(displayKey, modelName);
+                    models.add(new ModelData(prefixedModelName, defaultCreated, displayKey));
                 }
             }
 

@@ -105,8 +105,9 @@ public class OllamaApiController {
      */
     private OllamaTagsResponse.ModelInfo createModelInfo(String modelName, String providerKey, boolean capsTools, boolean capsVision) {
         var info = new OllamaTagsResponse.ModelInfo();
-        // 添加供应商前缀，确保所有模型名称格式统一
-        String prefixedName = ModelNameUtil.buildPrefixedName(providerKey, modelName);
+        // 添加供应商前缀，自定义供应商去掉 custom- 前缀
+        String displayKey = providerKey.startsWith("custom-") ? providerKey.substring(7) : providerKey;
+        String prefixedName = ModelNameUtil.buildPrefixedName(displayKey, modelName);
         info.setName(prefixedName);
         info.setModel(prefixedName);
         info.setModifiedAt(java.time.Instant.now().toString());

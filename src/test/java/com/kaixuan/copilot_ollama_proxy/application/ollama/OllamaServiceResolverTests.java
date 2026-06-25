@@ -7,6 +7,7 @@ import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.ollama.GenericOllamaService;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -27,8 +28,9 @@ class OllamaServiceResolverTests {
 
         OllamaService mimo = new StubOllamaService("mimo");
         OllamaService longcat = new StubOllamaService("longcat");
+        GenericOllamaService generic = mock(GenericOllamaService.class);
 
-        OllamaServiceResolver resolver = new OllamaServiceResolver(catalog, List.of(longcat, mimo));
+        OllamaServiceResolver resolver = new OllamaServiceResolver(catalog, List.of(longcat, mimo), generic);
 
         assertThat(resolver.resolve("mimo-v2.5-pro")).isSameAs(mimo);
     }
@@ -40,8 +42,9 @@ class OllamaServiceResolverTests {
 
         OllamaService fallback = new StubOllamaService("longcat");
         OllamaService second = new StubOllamaService("mimo");
+        GenericOllamaService generic = mock(GenericOllamaService.class);
 
-        OllamaServiceResolver resolver = new OllamaServiceResolver(catalog, List.of(fallback, second));
+        OllamaServiceResolver resolver = new OllamaServiceResolver(catalog, List.of(fallback, second), generic);
 
         assertThat(resolver.resolve("unknown-model")).isSameAs(fallback);
     }
