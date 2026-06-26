@@ -5,8 +5,10 @@ import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -58,6 +60,14 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     /** 运行时 provider 配置目录，统一暴露数据库中的 provider 配置。 */
     private final RuntimeProviderCatalog runtimeProviderCatalog;
 
+    /** API 调用日志仓库，由子类 Spring Bean 通过 setter 注入。 */
+    private ApiCallLogRepository apiCallLogRepository;
+
+    @Autowired(required = false)
+    public void setApiCallLogRepository(ApiCallLogRepository apiCallLogRepository) {
+        this.apiCallLogRepository = apiCallLogRepository;
+    }
+
     /**
      * @param runtimeProviderCatalog 运行时 provider 配置目录
      * @param objectMapper Jackson 对象映射器
@@ -87,12 +97,17 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
      */
     @Override
     public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model) {
-        // 准备请求体，解析模型名称，设置流式标志，并调用 customizeRequestBody 进行特定服务的字段定制。
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, false, model);
         log.info("{} OpenAI 上游，模型: {}, 流式: false", providerDisplayName(), requestBody.get("model"));
 
+        long startTime = System.currentTimeMillis();
+        String providerKey = getProviderKey();
+        String modelName = (String) requestBody.get("model");
+
         return buildWebClient().post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).bodyValue(requestBody).retrieve().bodyToMono(String.class)
-                .retryWhen(buildRetrySpec("chatCompletion")).doOnNext(response -> log.debug("{} 响应: {}", providerDisplayName(), response));
+                .retryWhen(buildRetrySpec("chatCompletion")).doOnNext(response -> log.debug("{} 响应: {}", providerDisplayName(), response))
+                .doOnSuccess(response -> saveNonStreamLog(providerKey, modelName, requestBody, response, startTime))
+                .doOnError(e -> saveNonStreamLog(providerKey, modelName, requestBody, null, startTime));
     }
 
     /**
@@ -110,6 +125,11 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model);
         log.info("{} OpenAI 上游，模型: {}, 流式: true", providerDisplayName(), requestBody.get("model"));
+
+        long startTime = System.currentTimeMillis();
+        String providerKey = getProviderKey();
+        String modelName = (String) requestBody.get("model");
+        List<String> logChunks = new java.util.concurrent.CopyOnWriteArrayList<>();
 
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
         StringBuilder reasoningBuffer = new StringBuilder();
@@ -133,7 +153,10 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                         }
                     }
                     return Flux.just(translateChunk(chunk, contentEmitted, reasoningBuffer, chunkId));
-                }).doOnNext(chunk -> log.debug("{} 翻译: {}", providerDisplayName(), chunk));
+                }).doOnNext(chunk -> {
+                    log.debug("{} 翻译: {}", providerDisplayName(), chunk);
+                    logChunks.add(chunk);
+                }).doFinally(signal -> saveStreamLog(providerKey, modelName, requestBody, logChunks, startTime));
     }
 
     /**
@@ -184,6 +207,40 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         body.values().removeIf(Objects::isNull);
         customizeRequestBody(body, resolvedModel);
         return body;
+    }
+
+    /**
+     * 保存非流式调用日志。
+     */
+    private void saveNonStreamLog(String providerKey, String modelName, Map<String, Object> requestBody, String responseBody, long startTime) {
+        if (apiCallLogRepository == null) return;
+        long duration = System.currentTimeMillis() - startTime;
+        apiCallLogRepository.saveNonStream(providerKey, modelName, buildRequestHeaders(), requestBody, responseBody, duration);
+    }
+
+    /**
+     * 保存流式调用日志。
+     */
+    private void saveStreamLog(String providerKey, String modelName, Map<String, Object> requestBody, List<String> chunks, long startTime) {
+        if (apiCallLogRepository == null) return;
+        long duration = System.currentTimeMillis() - startTime;
+        apiCallLogRepository.saveStream(providerKey, modelName, buildRequestHeaders(), requestBody, chunks, duration);
+    }
+
+    /**
+     * 构建当前请求的请求头快照（从运行时配置还原）。
+     */
+    private Map<String, String> buildRequestHeaders() {
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Content-Type", "application/json");
+        ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
+        if (config != null && config.apiKey() != null && !config.apiKey().isBlank()) {
+            String masked = config.apiKey().length() > 8
+                    ? config.apiKey().substring(0, 4) + "****" + config.apiKey().substring(config.apiKey().length() - 4)
+                    : "****";
+            headers.put("Authorization", "Bearer " + masked);
+        }
+        return headers;
     }
 
     /**
