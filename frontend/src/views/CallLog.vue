@@ -42,7 +42,7 @@ const selectedLogId = ref<number | null>(null)
 const logDetail = ref<DetailItem | null>(null)
 const detailLoading = ref(false)
 
-const jsonModal = ref({ show: false, title: '', content: null as unknown })
+const jsonModal = ref({ show: false, title: '', content: null as unknown, defaultCollapsedKeys: [] as string[] })
 const chunksModal = ref({ show: false, chunks: [] as string[] })
 
 /**
@@ -160,8 +160,8 @@ async function selectLog(id: number) {
 /**
  * 打开 JSON 查看器
  */
-function openJsonModal(title: string, content: unknown) {
-  jsonModal.value = { show: true, title, content }
+function openJsonModal(title: string, content: unknown, defaultCollapsedKeys: string[] = []) {
+  jsonModal.value = { show: true, title, content, defaultCollapsedKeys }
 }
 
 /**
@@ -278,7 +278,7 @@ onMounted(() => {
           <div class="detail-row">
             <span class="detail-row-label">请求体</span>
             <span class="detail-row-value">{{ truncate(logDetail.request_body) }}</span>
-            <span class="detail-row-action" @click="openJsonModal('请求体', logDetail.request_body)">展示</span>
+            <span class="detail-row-action" @click="openJsonModal('请求体', logDetail.request_body, ['messages', 'tools'])">展示</span>
           </div>
 
           <!-- 响应头 -->
@@ -310,6 +310,7 @@ onMounted(() => {
       v-model:show="jsonModal.show"
       :title="jsonModal.title"
       :content="jsonModal.content"
+      :default-collapsed-keys="jsonModal.defaultCollapsedKeys"
     />
 
     <!-- Chunks 查看器 -->

@@ -8,6 +8,7 @@
  */
 import { ref, computed } from 'vue'
 import { NModal, NRadioGroup, NRadio, NEmpty, NScrollbar } from 'naive-ui'
+import JsonNode from './JsonNode.vue'
 
 const props = defineProps<{
   show: boolean
@@ -21,13 +22,17 @@ const emit = defineEmits<{
 const displayMode = ref<'block' | 'clean'>('block')
 
 /**
- * 尝试将 chunk 字符串格式化为 JSON
+ * 尝试将 chunk 字符串解析为 JSON 对象
  */
-function formatChunk(chunk: string): string {
+function parseChunk(chunk: string): { parsed: unknown; isJson: boolean } {
   try {
-    return JSON.stringify(JSON.parse(chunk), null, 2)
+    const obj = JSON.parse(chunk)
+    if (obj !== null && typeof obj === 'object') {
+      return { parsed: obj, isJson: true }
+    }
+    return { parsed: chunk, isJson: false }
   } catch {
-    return chunk
+    return { parsed: chunk, isJson: false }
   }
 }
 </script>
@@ -56,7 +61,10 @@ function formatChunk(chunk: string): string {
           <div class="chunk-header">
             <span class="chunk-index">#{{ index + 1 }}</span>
           </div>
-          <pre class="chunk-content">{{ formatChunk(chunk) }}</pre>
+          <div class="chunk-content">
+            <JsonNode v-if="parseChunk(chunk).isJson" :value="parseChunk(chunk).parsed" :depth="0" />
+            <pre v-else class="chunk-raw">{{ chunk }}</pre>
+          </div>
         </div>
       </n-scrollbar>
     </div>
@@ -99,8 +107,11 @@ function formatChunk(chunk: string): string {
 }
 
 .chunk-content {
-  margin: 0;
   padding: $space-sm $space-md;
+}
+
+.chunk-raw {
+  margin: 0;
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   font-size: 12px;
   line-height: 1.5;
