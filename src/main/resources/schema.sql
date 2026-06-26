@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS api_call_log (
     provider_key    VARCHAR(30),                   -- 服务商标识，如 deepseek / mimo
     model_name      VARCHAR(100),                  -- 模型名称
     is_stream       INTEGER      NOT NULL DEFAULT 0, -- 是否流式（0=否，1=是）
+    status_code     INTEGER,                        -- HTTP 响应状态码
     request_headers TEXT,                           -- JSON 格式的请求头
     request_body    TEXT,                           -- JSON 格式的请求体
     response_headers TEXT,                          -- JSON 格式的响应头

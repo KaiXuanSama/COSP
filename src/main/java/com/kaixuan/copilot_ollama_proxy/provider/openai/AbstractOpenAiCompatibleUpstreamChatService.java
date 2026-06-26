@@ -111,10 +111,11 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                 .map(entity -> {
                     Map<String, String> respHeaders = new LinkedHashMap<>();
                     entity.getHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
-                    saveNonStreamLog(providerKey, modelName, requestBody, respHeaders, entity.getBody(), startTime);
+                    int statusCode = entity.getStatusCode().value();
+                    saveNonStreamLog(providerKey, modelName, requestBody, respHeaders, statusCode, entity.getBody(), startTime);
                     return entity.getBody();
                 })
-                .doOnError(e -> saveNonStreamLog(providerKey, modelName, requestBody, Map.of(), null, startTime));
+                .doOnError(e -> saveNonStreamLog(providerKey, modelName, requestBody, Map.of(), 0, null, startTime));
     }
 
     /**
@@ -138,6 +139,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         String modelName = (String) requestBody.get("model");
         List<String> logChunks = new java.util.concurrent.CopyOnWriteArrayList<>();
         AtomicReference<Map<String, String>> capturedRespHeaders = new AtomicReference<>(Map.of());
+        AtomicReference<Integer> capturedStatusCode = new AtomicReference<>(0);
 
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
         StringBuilder reasoningBuffer = new StringBuilder();
@@ -148,6 +150,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                     Map<String, String> respHeaders = new LinkedHashMap<>();
                     response.headers().asHttpHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
                     capturedRespHeaders.set(respHeaders);
+                    capturedStatusCode.set(response.statusCode().value());
                     return response.bodyToFlux(STRING_SSE_TYPE);
                 })
                 .retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank())
@@ -170,7 +173,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                 }).doOnNext(chunk -> {
                     log.debug("{} 翻译: {}", providerDisplayName(), chunk);
                     logChunks.add(chunk);
-                }).doFinally(signal -> saveStreamLog(providerKey, modelName, requestBody, capturedRespHeaders.get(), logChunks, startTime));
+                }).doFinally(signal -> saveStreamLog(providerKey, modelName, requestBody, capturedRespHeaders.get(), capturedStatusCode.get(), logChunks, startTime));
     }
 
     /**
@@ -226,19 +229,19 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     /**
      * 保存非流式调用日志。
      */
-    private void saveNonStreamLog(String providerKey, String modelName, Map<String, Object> requestBody, Map<String, String> respHeaders, String responseBody, long startTime) {
+    private void saveNonStreamLog(String providerKey, String modelName, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, String responseBody, long startTime) {
         if (apiCallLogRepository == null) return;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLogRepository.saveNonStream(providerKey, modelName, buildRequestHeaders(), requestBody, respHeaders, responseBody, duration);
+        apiCallLogRepository.saveNonStream(providerKey, modelName, buildRequestHeaders(), requestBody, respHeaders, statusCode, responseBody, duration);
     }
 
     /**
      * 保存流式调用日志。
      */
-    private void saveStreamLog(String providerKey, String modelName, Map<String, Object> requestBody, Map<String, String> respHeaders, List<String> chunks, long startTime) {
+    private void saveStreamLog(String providerKey, String modelName, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, List<String> chunks, long startTime) {
         if (apiCallLogRepository == null) return;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLogRepository.saveStream(providerKey, modelName, buildRequestHeaders(), requestBody, respHeaders, chunks, duration);
+        apiCallLogRepository.saveStream(providerKey, modelName, buildRequestHeaders(), requestBody, respHeaders, statusCode, chunks, duration);
     }
 
     /**

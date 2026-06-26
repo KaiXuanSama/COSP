@@ -33,12 +33,13 @@ public class ApiCallLogRepository {
      */
     public void saveNonStream(String providerKey, String modelName,
                               Map<String, String> requestHeaders, Map<String, Object> requestBody,
-                              Map<String, String> responseHeaders, String responseBody, long durationMs) {
+                              Map<String, String> responseHeaders, int statusCode, String responseBody, long durationMs) {
         try {
             jdbcTemplate.update(
-                    "INSERT INTO api_call_log (provider_key, model_name, is_stream, request_headers, request_body, response_headers, response_body, duration_ms) "
-                            + "VALUES (?, ?, 0, ?, ?, ?, ?, ?)",
+                    "INSERT INTO api_call_log (provider_key, model_name, is_stream, status_code, request_headers, request_body, response_headers, response_body, duration_ms) "
+                            + "VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)",
                     providerKey, modelName,
+                    statusCode,
                     toJson(requestHeaders), toJson(requestBody),
                     toJson(responseHeaders), responseBody, durationMs);
         } catch (Exception e) {
@@ -51,12 +52,13 @@ public class ApiCallLogRepository {
      */
     public void saveStream(String providerKey, String modelName,
                            Map<String, String> requestHeaders, Map<String, Object> requestBody,
-                           Map<String, String> responseHeaders, List<String> chunks, long durationMs) {
+                           Map<String, String> responseHeaders, int statusCode, List<String> chunks, long durationMs) {
         try {
             jdbcTemplate.update(
-                    "INSERT INTO api_call_log (provider_key, model_name, is_stream, request_headers, request_body, response_headers, chunks, duration_ms) "
-                            + "VALUES (?, ?, 1, ?, ?, ?, ?, ?)",
+                    "INSERT INTO api_call_log (provider_key, model_name, is_stream, status_code, request_headers, request_body, response_headers, chunks, duration_ms) "
+                            + "VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)",
                     providerKey, modelName,
+                    statusCode,
                     toJson(requestHeaders), toJson(requestBody),
                     toJson(responseHeaders), toJson(chunks), durationMs);
         } catch (Exception e) {
