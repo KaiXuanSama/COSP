@@ -20,7 +20,7 @@ const emit = defineEmits<{
   (e: 'update:show', value: boolean): void
 }>()
 
-const displayMode = ref<'block' | 'clean'>('block')
+const displayMode = ref<'block' | 'clean'>('clean')
 
 interface Segment {
   type: 'thinking' | 'content' | 'tool_calls'
