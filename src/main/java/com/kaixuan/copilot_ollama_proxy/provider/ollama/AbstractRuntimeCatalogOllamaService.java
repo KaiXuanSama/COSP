@@ -181,7 +181,9 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
             for (ProviderRuntimeModel m : config.models()) {
                 if (resolvedModel.equals(m.modelName())) {
                     String effort = m.reasoningEffort();
-                    if (effort != null && !effort.isBlank()) {
+                    if (effort == null || effort.isBlank() || "none".equalsIgnoreCase(effort.trim())) {
+                        body.remove("reasoning_effort");
+                    } else {
                         body.put("reasoning_effort", effort.toLowerCase());
                     }
                     return;
