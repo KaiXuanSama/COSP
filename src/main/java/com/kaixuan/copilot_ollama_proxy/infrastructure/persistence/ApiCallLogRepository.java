@@ -66,6 +66,27 @@ public class ApiCallLogRepository {
         }
     }
 
+    /**
+     * 保存一条流式调用日志（含错误信息）。
+     * 当流式响应过程中发生错误且重试耗尽时，将错误响应体保存到非流式响应列。
+     */
+    public void saveStreamWithError(String providerKey, String modelName,
+                                    Map<String, String> requestHeaders, Map<String, Object> requestBody,
+                                    Map<String, String> responseHeaders, int statusCode, List<String> chunks,
+                                    Map<String, String> errorHeaders, int errorCode, String errorBody, long durationMs) {
+        try {
+            jdbcTemplate.update(
+                    "INSERT INTO api_call_log (provider_key, model_name, is_stream, status_code, request_headers, request_body, response_headers, response_body, chunks, duration_ms) "
+                            + "VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)",
+                    providerKey, modelName,
+                    statusCode,
+                    toJson(requestHeaders), toJson(requestBody),
+                    toJson(responseHeaders), errorBody, toJson(chunks), durationMs);
+        } catch (Exception e) {
+            log.warn("保存 API 调用日志失败: {}", e.getMessage());
+        }
+    }
+
     private String toJson(Object obj) {
         if (obj == null) {
             return null;

@@ -123,7 +123,17 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                     saveNonStreamLog(providerKey, modelName, requestBody, respHeaders, statusCode, entity.getBody(), startTime);
                     return entity.getBody();
                 })
-                .doOnError(e -> saveNonStreamLog(providerKey, modelName, requestBody, Map.of(), 0, null, startTime));
+                .doOnError(e -> {
+                    // 捕获上游错误响应体、状态码和响应头
+                    if (e instanceof WebClientResponseException responseException) {
+                        Map<String, String> errHeaders = new LinkedHashMap<>();
+                        responseException.getHeaders().forEach((k, v) -> errHeaders.put(k, String.join(", ", v)));
+                        saveNonStreamLog(providerKey, modelName, requestBody, errHeaders,
+                                responseException.getStatusCode().value(), responseException.getResponseBodyAsString(), startTime);
+                    } else {
+                        saveNonStreamLog(providerKey, modelName, requestBody, Map.of(), 0, null, startTime);
+                    }
+                });
     }
 
     /**
@@ -148,6 +158,10 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         List<String> logChunks = new java.util.concurrent.CopyOnWriteArrayList<>();
         AtomicReference<Map<String, String>> capturedRespHeaders = new AtomicReference<>(Map.of());
         AtomicReference<Integer> capturedStatusCode = new AtomicReference<>(0);
+        // 追踪重试过程中的最后一次错误响应
+        AtomicReference<Map<String, String>> lastErrorHeaders = new AtomicReference<>(Map.of());
+        AtomicReference<Integer> lastErrorCode = new AtomicReference<>(0);
+        AtomicReference<String> lastErrorBody = new AtomicReference<>(null);
 
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
         StringBuilder reasoningBuffer = new StringBuilder();
@@ -159,6 +173,17 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                     response.headers().asHttpHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
                     capturedRespHeaders.set(respHeaders);
                     capturedStatusCode.set(response.statusCode().value());
+                    // 检查是否为错误响应（4xx/5xx）
+                    if (response.statusCode().isError()) {
+                        return response.bodyToMono(String.class).flatMapMany(errorBody -> {
+                            lastErrorHeaders.set(respHeaders);
+                            lastErrorCode.set(response.statusCode().value());
+                            lastErrorBody.set(errorBody);
+                            log.warn("{} 上游返回错误响应 {}: {}", providerDisplayName(), response.statusCode().value(), errorBody);
+                            return Flux.error(new WebClientResponseException(
+                                    response.statusCode().value(), "上游错误响应", null, errorBody.getBytes(), null));
+                        });
+                    }
                     return response.bodyToFlux(STRING_SSE_TYPE);
                 })
                 .retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank())
@@ -181,7 +206,18 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                 }).doOnNext(chunk -> {
                     log.debug("{} 翻译: {}", providerDisplayName(), chunk);
                     logChunks.add(chunk);
-                }).doFinally(signal -> saveStreamLog(providerKey, modelName, requestBody, capturedRespHeaders.get(), capturedStatusCode.get(), logChunks, startTime));
+                }).doFinally(signal -> {
+                    // 如果有错误信息（重试耗尽），同时记录错误响应体到非流式响应列
+                    String errorBody = lastErrorBody.get();
+                    if (errorBody != null && !errorBody.isEmpty()) {
+                        saveStreamLogWithError(providerKey, modelName, requestBody,
+                                capturedRespHeaders.get(), capturedStatusCode.get(), logChunks,
+                                lastErrorHeaders.get(), lastErrorCode.get(), errorBody, startTime);
+                    } else {
+                        saveStreamLog(providerKey, modelName, requestBody,
+                                capturedRespHeaders.get(), capturedStatusCode.get(), logChunks, startTime);
+                    }
+                });
     }
 
     /**
@@ -250,6 +286,19 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         if (apiCallLogRepository == null) return;
         long duration = System.currentTimeMillis() - startTime;
         apiCallLogRepository.saveStream(providerKey, modelName, buildRequestHeaders(), requestBody, respHeaders, statusCode, chunks, duration);
+    }
+
+    /**
+     * 保存流式调用日志（含错误信息）。
+     * 当流式响应过程中发生错误且重试耗尽时，将错误响应体保存到非流式响应列。
+     */
+    private void saveStreamLogWithError(String providerKey, String modelName, Map<String, Object> requestBody,
+                                        Map<String, String> respHeaders, int statusCode, List<String> chunks,
+                                        Map<String, String> errorHeaders, int errorCode, String errorBody, long startTime) {
+        if (apiCallLogRepository == null) return;
+        long duration = System.currentTimeMillis() - startTime;
+        apiCallLogRepository.saveStreamWithError(providerKey, modelName, buildRequestHeaders(), requestBody,
+                respHeaders, statusCode, chunks, errorHeaders, errorCode, errorBody, duration);
     }
 
     /**
