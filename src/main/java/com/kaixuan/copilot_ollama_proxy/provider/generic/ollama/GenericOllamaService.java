@@ -81,8 +81,9 @@ public class GenericOllamaService extends AbstractRuntimeCatalogOllamaService {
 
     @Override
     public OllamaShowResponse showModel(String modelName) {
+        // 优先通过前缀精确匹配供应商，避免多供应商同名模型时错误匹配
+        String providerKey = resolveProviderKey(modelName);
         String resolvedModel = resolveModelOrDefault(modelName);
-        String providerKey = findProviderKeyForModel(resolvedModel);
         if (providerKey == null) {
             log.warn("通用服务无法找到模型 [{}] 对应的供应商", resolvedModel);
             return buildGenericShowResponse(resolvedModel, 4096, List.of("completion"), "generic");
