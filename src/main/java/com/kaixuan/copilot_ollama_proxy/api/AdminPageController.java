@@ -240,7 +240,7 @@ public class AdminPageController {
     private boolean supportsProviderKey(String providerKey) {
         return switch (providerKey) {
         case "longcat", "mimo", "sensenova", "deepseek", "uumit", "agnes", "zhipu", "xunfei", "kimi" -> true;
-        default -> false;
+        default -> providerKey.startsWith("custom-");
         };
     }
 
@@ -276,9 +276,42 @@ public class AdminPageController {
             headers.set("x-api-key", apiKey);
         }
         case "longcat", "sensenova", "deepseek", "uumit", "agnes", "zhipu", "xunfei", "kimi" -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
-        default -> {
+        default -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
         }
+    }
+
+    // ==================== 自定义供应商 API ====================
+
+    @GetMapping("/config/api/custom-providers") @ResponseBody
+    public ResponseEntity<List<Map<String, Object>>> listCustomProviders() {
+        // 从 provider_config 中筛选 custom- 前缀的供应商
+        List<Map<String, Object>> all = providerConfigRepository.findAllWithModels();
+        List<Map<String, Object>> custom = all.stream()
+                .filter(p -> ((String) p.get("providerKey")).startsWith("custom-"))
+                .toList();
+        return ResponseEntity.ok(custom);
+    }
+
+    @PostMapping("/config/api/custom-providers") @ResponseBody
+    public ResponseEntity<Map<String, Object>> addCustomProvider(@RequestParam String displayName) {
+        String name = displayName == null ? "" : displayName.trim();
+        if (name.isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "供应商名称不能为空"));
         }
+        String providerKey = "custom-" + name.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
+        // 检查是否已存在
+        if (providerConfigRepository.findByKey(providerKey) != null) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "该供应商名称已存在"));
+        }
+        // 在 provider_config 中创建记录（默认启用）
+        providerConfigRepository.saveProvider(providerKey, true, "", "", "openai");
+        return ResponseEntity.ok(Map.of("ok", true, "providerKey", providerKey, "displayName", name));
+    }
+
+    @DeleteMapping("/config/api/custom-providers/{providerKey}") @ResponseBody
+    public ResponseEntity<Map<String, Object>> deleteCustomProvider(@PathVariable String providerKey) {
+        providerConfigRepository.deleteByKey(providerKey);
+        return ResponseEntity.ok(Map.of("ok", true));
     }
 
     @PostMapping("/config/api/account") @ResponseBody

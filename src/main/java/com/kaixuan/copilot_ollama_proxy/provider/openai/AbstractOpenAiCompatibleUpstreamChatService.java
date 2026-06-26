@@ -174,7 +174,12 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         body.put("stream", stream);
         // 如果请求中没有指定 reasoning_effort，从模型配置中读取
         if (!body.containsKey("reasoning_effort")) {
-            body.put("reasoning_effort", resolveReasoningEffort(resolvedModel));
+            String effort = resolveReasoningEffort(resolvedModel);
+            if (effort != null) {
+                body.put("reasoning_effort", effort);
+            } else {
+                body.remove("reasoning_effort");
+            }
         }
         body.values().removeIf(Objects::isNull);
         customizeRequestBody(body, resolvedModel);
@@ -183,16 +188,19 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
 
     /**
      * 从运行时模型配置中读取思考深度。如果未找到，返回 medium。
+     * 使用 getActiveProviderConfiguration() 而非直接查询 catalog，
+     * 以便 GenericOpenAiChatService 的动态供应商覆写能生效。
      */
     private String resolveReasoningEffort(String resolvedModel) {
-        ProviderRuntimeConfiguration config = runtimeProviderCatalog.getActiveProvider(getProviderKey());
+        ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
         if (config != null) {
             for (var m : config.models()) {
                 if (resolvedModel.equals(m.modelName())) {
                     String effort = m.reasoningEffort();
-                    if (effort != null && !effort.isBlank()) {
-                        return effort.toLowerCase();
+                    if (effort == null || effort.isBlank() || "none".equalsIgnoreCase(effort.trim())) {
+                        return null;
                     }
+                    return effort.toLowerCase();
                 }
             }
         }

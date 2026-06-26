@@ -130,18 +130,18 @@ function openOfficialDocs() {
 
 const activeDocsUrl = computed(() => {
   const key = docsWindow.value.providerKey
-  return key ? providerMeta[key]?.docsUrl ?? '' : ''
+  return key ? providerMeta.value[key]?.docsUrl ?? '' : ''
 })
 
 const activeDocsTitle = computed(() => {
   const key = docsWindow.value.providerKey
-  return key ? `${providerMeta[key]?.displayName ?? key} 官方文档` : '官方文档'
+  return key ? `${providerMeta.value[key]?.displayName ?? key} 官方文档` : '官方文档'
 })
 
 onMounted(() => window.addEventListener('resize', onResize))
 onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 
-const providerMeta: Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string; docsUrl: string }> = {
+const providerMeta = ref<Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string; docsUrl: string }>>({
   longcat: {
     displayName: 'LongCat',
     colorClass: 'accent',
@@ -196,7 +196,7 @@ const providerMeta: Record<string, { displayName: string; colorClass: string; ap
     apiUrlPlaceholder: 'https://api.moonshot.cn/v1',
     docsUrl: 'https://platform.kimi.com/docs/overview',
   },
-}
+})
 
 const editingKey = ref<string | null>(null)
 const editForm = ref({
@@ -221,13 +221,70 @@ const pullDiffModal = ref({
 
 const showAddModal = ref(false)
 
-const enabledProviderKeys = computed(() =>
-  Object.keys(providerMeta).filter(k => providerStore.providers[k]?.enabled)
-)
+// ==================== 自定义供应商 ====================
 
-const disabledProviderKeys = computed(() =>
-  Object.keys(providerMeta).filter(k => !providerStore.providers[k]?.enabled)
-)
+const showCustomAddModal = ref(false)
+const customProviderName = ref('')
+
+/** 添加自定义供应商 */
+async function addCustomProvider() {
+  const name = customProviderName.value.trim()
+  if (!name) {
+    message.warning('请输入供应商名称')
+    return
+  }
+  try {
+    const res = await providerStore.addCustomProvider(name)
+    // 注入 providerMeta
+    providerMeta.value[res.providerKey] = {
+      displayName: name,
+      colorClass: 'custom',
+      apiUrlPlaceholder: 'https://api.example.com/v1',
+      docsUrl: '',
+    }
+    showCustomAddModal.value = false
+    customProviderName.value = ''
+    message.success(`已添加自定义供应商「${name}」`)
+  } catch (e: any) {
+    message.error(e?.response?.data?.error || '添加失败')
+  }
+}
+
+/** 删除自定义供应商 */
+async function removeCustomProvider(key: string) {
+  const displayName = providerMeta.value[key]?.displayName || key
+  try {
+    await providerStore.deleteCustomProvider(key)
+    delete providerMeta.value[key]
+    if (editingKey.value === key) {
+      closeEditPanel()
+    }
+    message.success(`已删除自定义供应商「${displayName}」`)
+  } catch {
+    message.error('删除失败')
+  }
+}
+
+/** 判断是否为自定义供应商 */
+function isCustomProvider(key: string) {
+  return key.startsWith('custom-')
+}
+
+const enabledProviderKeys = computed(() => {
+  // 内置 + 自定义供应商的 key
+  const metaKeys = Object.keys(providerMeta.value)
+  // provider_config 中可能存在但 meta 中没有的（如数据库残留）
+  const storeKeys = Object.keys(providerStore.providers)
+  const allKeys = [...new Set([...metaKeys, ...storeKeys])]
+  return allKeys.filter(k => providerStore.providers[k]?.enabled)
+})
+
+const disabledProviderKeys = computed(() => {
+  const metaKeys = Object.keys(providerMeta.value)
+  const storeKeys = Object.keys(providerStore.providers)
+  const allKeys = [...new Set([...metaKeys, ...storeKeys])]
+  return allKeys.filter(k => !providerStore.providers[k]?.enabled)
+})
 
 watch(editingKey, (key) => {
   if (docsWindow.value.visible && key) {
@@ -237,13 +294,26 @@ watch(editingKey, (key) => {
 
 async function enableProvider(key: string) {
   await providerStore.toggleProvider(key, true)
-  message.success(`${providerMeta[key]?.displayName || key} 已启用`)
+  message.success(`${providerMeta.value[key]?.displayName || key} 已启用`)
   showAddModal.value = false
 }
 
 onMounted(async () => {
   await providerStore.fetchAll()
   await providerStore.fetchFakeVersion()
+  // 将 custom- 前缀的供应商注入 providerMeta
+  for (const key of Object.keys(providerStore.providers)) {
+    if (key.startsWith('custom-') && !providerMeta.value[key]) {
+      // 从 key 生成可读的 displayName
+      const displayName = key.replace('custom-', '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+      providerMeta.value[key] = {
+        displayName,
+        colorClass: 'custom',
+        apiUrlPlaceholder: 'https://api.example.com/v1',
+        docsUrl: '',
+      }
+    }
+  }
   if (providerStore.fakeVersion) {
     fakeVersion.value = providerStore.fakeVersion
     versionPlaceholder.value = providerStore.fakeVersion
@@ -255,7 +325,7 @@ function openEditPanel(key: string) {
   const p = providerStore.providers[key]
   if (p) {
     editForm.value = {
-      baseUrl: p.baseUrl || providerMeta[key]?.apiUrlPlaceholder || '',
+      baseUrl: p.baseUrl || providerMeta.value[key]?.apiUrlPlaceholder || '',
       apiKey: p.apiKey || '',
       models: p.models.map(m => ({
         ...m,
@@ -383,9 +453,9 @@ async function saveEditPanel() {
 async function toggleProvider(key: string, val: boolean) {
   await providerStore.toggleProvider(key, val)
   if (val) {
-    message.success(`${providerMeta[key]?.displayName || key} 已启用`)
+    message.success(`${providerMeta.value[key]?.displayName || key} 已启用`)
   } else {
-    message.info(`${providerMeta[key]?.displayName || key} 已禁用`)
+    message.info(`${providerMeta.value[key]?.displayName || key} 已禁用`)
   }
 }
 
@@ -406,7 +476,7 @@ async function pullModels() {
 
   pullingModels.value = true
   try {
-    const resolvedBaseUrl = editForm.value.baseUrl.trim() || providerMeta[providerKey]?.apiUrlPlaceholder || ''
+    const resolvedBaseUrl = editForm.value.baseUrl.trim() || providerMeta.value[providerKey]?.apiUrlPlaceholder || ''
     const responsePayload = await providerStore.pullProviderModels(providerKey, {
       baseUrl: resolvedBaseUrl,
       apiKey,
@@ -519,9 +589,9 @@ function removeModel(index: number) {
       </template>
       <div class="provider-grid">
         <div v-for="key in enabledProviderKeys" :key="key" class="provider-card" @click="openEditPanel(key)">
-          <div class="provider-card-top" :class="providerMeta[key].colorClass"></div>
+          <div class="provider-card-top" :class="providerMeta[key]?.colorClass || 'accent'"></div>
           <div class="provider-card-header">
-            <span class="provider-card-name">{{ providerMeta[key].displayName }}</span>
+            <span class="provider-card-name">{{ providerMeta[key]?.displayName || key }}</span>
             <n-switch :value="providerStore.providers[key]?.enabled" @click.stop
               @update:value="(val) => toggleProvider(key, val)" />
           </div>
@@ -547,12 +617,44 @@ function removeModel(index: number) {
         所有服务商已启用
       </div>
       <div v-else class="add-modal-grid">
-        <div v-for="key in disabledProviderKeys" :key="key" class="add-modal-card" @click="enableProvider(key)">
-          <div class="add-modal-card-top" :class="providerMeta[key].colorClass"></div>
-          <div class="add-modal-card-name">{{ providerMeta[key].displayName }}</div>
-          <div class="add-modal-card-desc">{{ providerMeta[key].apiUrlPlaceholder }}</div>
+        <div v-for="key in disabledProviderKeys" :key="key" class="add-modal-card"
+          :class="{ 'add-modal-card--custom': isCustomProvider(key) }"
+          @click="enableProvider(key)">
+          <div class="add-modal-card-top" :class="providerMeta[key]?.colorClass || 'accent'"></div>
+          <button v-if="isCustomProvider(key)" class="add-modal-card-delete" title="删除自定义供应商"
+            @click.stop="removeCustomProvider(key)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+          <div class="add-modal-card-name">{{ providerMeta[key]?.displayName || key }}</div>
+          <div class="add-modal-card-desc">{{ providerMeta[key]?.apiUrlPlaceholder || '' }}</div>
+        </div>
+        <!-- 自定义供应商入口 -->
+        <div class="add-modal-card add-modal-card--new" @click="showAddModal = false; showCustomAddModal = true">
+          <div class="add-modal-card-top accent"></div>
+          <div class="add-modal-card-name">自定义供应商</div>
+          <div class="add-modal-card-desc">标准 OpenAI 兼容接口</div>
         </div>
       </div>
+    </n-modal>
+
+    <!-- 自定义供应商名称输入模态框 -->
+    <n-modal v-model:show="showCustomAddModal" preset="card" title="添加自定义供应商"
+      :style="{ maxWidth: '400px' }" closable :mask-closable="true">
+      <div class="field-group">
+        <label class="field-label">自定义供应商名称</label>
+        <n-input v-model:value="customProviderName" placeholder="例如：MyAPI"
+          @keyup.enter="addCustomProvider" />
+      </div>
+      <template #footer>
+        <div class="custom-add-footer">
+          <n-button @click="showCustomAddModal = false; customProviderName = ''">取消</n-button>
+          <n-button type="primary" @click="addCustomProvider">添加</n-button>
+        </div>
+      </template>
     </n-modal>
 
     <!-- 拉取模型差异对比模态框 -->
@@ -730,6 +832,33 @@ function removeModel(index: number) {
 
   &.warning {
     background: $warning;
+  }
+
+  &.custom {
+    background: linear-gradient(90deg, $accent, $blue);
+  }
+}
+
+.provider-card-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(184, 74, 74, 0.08);
+  color: $text-muted;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  z-index: 2;
+
+  &:hover {
+    color: $danger;
+    background: rgba(184, 74, 74, 0.15);
   }
 }
 
@@ -974,6 +1103,10 @@ function removeModel(index: number) {
   &.warning {
     background: $warning;
   }
+
+  &.custom {
+    background: linear-gradient(90deg, $accent, $blue);
+  }
 }
 
 .add-modal-card-name {
@@ -991,6 +1124,49 @@ function removeModel(index: number) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.add-modal-card--custom {
+  position: relative;
+}
+
+.add-modal-card-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(184, 74, 74, 0.08);
+  color: $text-muted;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  z-index: 2;
+
+  &:hover {
+    color: $danger;
+    background: rgba(184, 74, 74, 0.15);
+  }
+}
+
+.add-modal-card--new {
+  border: 1px dashed $border;
+  background: rgba($accent, 0.03);
+
+  &:hover {
+    border-color: $accent;
+    background: rgba($accent, 0.08);
+  }
+}
+
+.custom-add-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: $space-sm;
 }
 
 /* ── 拉取模型差异对比模态框 ── */

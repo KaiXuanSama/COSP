@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.application.openai;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -26,12 +27,14 @@ public class UpstreamChatServiceResolver {
         private final RuntimeProviderCatalog runtimeProviderCatalog;
         private final List<UpstreamChatService> upstreamServices;
         private final Map<String, UpstreamChatService> servicesByProviderKey;
+        private final GenericOpenAiChatService genericService;
 
-        public UpstreamChatServiceResolver(RuntimeProviderCatalog runtimeProviderCatalog, List<UpstreamChatService> upstreamServices) {
+        public UpstreamChatServiceResolver(RuntimeProviderCatalog runtimeProviderCatalog, List<UpstreamChatService> upstreamServices, GenericOpenAiChatService genericService) {
                 this.runtimeProviderCatalog = runtimeProviderCatalog;
                 this.upstreamServices = List.copyOf(upstreamServices);
                 this.servicesByProviderKey = upstreamServices.stream()
                                 .collect(Collectors.toMap(UpstreamChatService::getProviderKey, Function.identity(), (existing, replacement) -> replacement, LinkedHashMap::new));
+                this.genericService = genericService;
 
                 log.info("UpstreamChatServiceResolver 初始化，已注册 {} 个上游实现: {}", upstreamServices.size(),
                                 upstreamServices.stream().map(UpstreamChatService::getProviderKey).collect(Collectors.joining(", ")));
@@ -43,19 +46,26 @@ public class UpstreamChatServiceResolver {
 
                 // 如果带供应商前缀，直接路由到指定供应商
                 if (parsed.hasProviderPrefix()) {
-                        String providerKey = parsed.providerKey();
+                        String providerKey = parsed.providerKey().toLowerCase();
                         String actualModelName = parsed.modelName();
 
-                        UpstreamChatService service = servicesByProviderKey.get(providerKey.toLowerCase());
+                        UpstreamChatService service = servicesByProviderKey.get(providerKey);
                         if (service != null) {
                                 // 验证该供应商是否支持此模型
-                                ProviderRuntimeConfiguration config = runtimeProviderCatalog.getActiveProvider(providerKey.toLowerCase());
+                                ProviderRuntimeConfiguration config = runtimeProviderCatalog.getActiveProvider(providerKey);
                                 if (config != null && config.supportsModel(actualModelName)) {
                                         log.debug("上游模型 [{}] 通过前缀精确路由到 [{}]", modelName, providerKey);
                                         return service;
                                 }
                                 log.warn("上游模型 [{}] 前缀指定服务商 [{}]，但该服务商不支持模型 [{}]", modelName, providerKey, actualModelName);
                         } else {
+                                // 尝试 custom- 前缀回退
+                                String customKey = "custom-" + providerKey;
+                                ProviderRuntimeConfiguration customConfig = runtimeProviderCatalog.getActiveProvider(customKey);
+                                if (customConfig != null && customConfig.supportsModel(actualModelName)) {
+                                        log.debug("上游模型 [{}] 前缀 [{}] 回退到自定义供应商 [{}]", modelName, providerKey, customKey);
+                                        return genericService;
+                                }
                                 log.warn("上游模型 [{}] 前缀指定的服务商 [{}] 未注册", modelName, providerKey);
                         }
                 }
@@ -75,6 +85,11 @@ public class UpstreamChatServiceResolver {
                         }
 
                         ProviderRuntimeConfiguration matchedProvider = matchedProviders.get(0);
+                        // 如果是自定义供应商，使用通用服务
+                        if (matchedProvider.providerKey().startsWith("custom-")) {
+                                log.debug("上游模型 [{}] 路由到通用服务（自定义供应商 [{}]）", modelName, matchedProvider.providerKey());
+                                return genericService;
+                        }
                         UpstreamChatService service = servicesByProviderKey.get(matchedProvider.providerKey());
                         if (service != null) {
                                 log.debug("上游模型 [{}] 路由到 [{}]", modelName, matchedProvider.providerKey());

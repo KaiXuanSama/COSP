@@ -25,6 +25,7 @@ const contextPresets = [
 ]
 
 const effortOptions = [
+    { label: 'None', value: 'None' },
     { label: 'Low', value: 'Low' },
     { label: 'Medium', value: 'Medium' },
     { label: 'High', value: 'High' },
