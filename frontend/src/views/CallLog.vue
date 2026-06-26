@@ -123,6 +123,15 @@ function truncate(str: string | null, maxLen = 50): string {
 }
 
 /**
+ * 判断字段是否有内容
+ */
+function hasContent(value: unknown): boolean {
+  if (value == null) return false
+  if (typeof value === 'string') return value.length > 0 && value !== '[]'
+  return true
+}
+
+/**
  * 格式化耗时
  */
 function formatDuration(ms: number | null): string {
@@ -279,15 +288,15 @@ onMounted(() => {
             <span class="detail-row-action" @click="openJsonModal('响应头', logDetail.response_headers)">展示</span>
           </div>
 
-          <!-- 响应体（非流式） -->
-          <div v-if="!logDetail.is_stream" class="detail-row">
+          <!-- 响应体 -->
+          <div v-if="hasContent(logDetail.response_body)" class="detail-row">
             <span class="detail-row-label">响应体</span>
             <span class="detail-row-value">{{ truncate(logDetail.response_body) }}</span>
             <span class="detail-row-action" @click="openJsonModal('响应体', logDetail.response_body)">展示</span>
           </div>
 
-          <!-- 流式响应（流式） -->
-          <div v-if="logDetail.is_stream" class="detail-row">
+          <!-- 流式响应 -->
+          <div v-if="hasContent(logDetail.chunks)" class="detail-row">
             <span class="detail-row-label">流式响应</span>
             <span class="detail-row-value">{{ truncate(logDetail.chunks) }}</span>
             <span class="detail-row-action" @click="openChunksModal(logDetail.chunks)">展示</span>
