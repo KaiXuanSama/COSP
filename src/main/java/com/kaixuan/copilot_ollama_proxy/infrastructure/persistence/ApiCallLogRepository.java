@@ -33,14 +33,14 @@ public class ApiCallLogRepository {
      */
     public void saveNonStream(String providerKey, String modelName,
                               Map<String, String> requestHeaders, Map<String, Object> requestBody,
-                              String responseBody, long durationMs) {
+                              Map<String, String> responseHeaders, String responseBody, long durationMs) {
         try {
             jdbcTemplate.update(
-                    "INSERT INTO api_call_log (provider_key, model_name, is_stream, request_headers, request_body, response_body, duration_ms) "
-                            + "VALUES (?, ?, 0, ?, ?, ?, ?)",
+                    "INSERT INTO api_call_log (provider_key, model_name, is_stream, request_headers, request_body, response_headers, response_body, duration_ms) "
+                            + "VALUES (?, ?, 0, ?, ?, ?, ?, ?)",
                     providerKey, modelName,
                     toJson(requestHeaders), toJson(requestBody),
-                    responseBody, durationMs);
+                    toJson(responseHeaders), responseBody, durationMs);
         } catch (Exception e) {
             log.warn("保存 API 调用日志失败: {}", e.getMessage());
         }
@@ -51,14 +51,14 @@ public class ApiCallLogRepository {
      */
     public void saveStream(String providerKey, String modelName,
                            Map<String, String> requestHeaders, Map<String, Object> requestBody,
-                           List<String> chunks, long durationMs) {
+                           Map<String, String> responseHeaders, List<String> chunks, long durationMs) {
         try {
             jdbcTemplate.update(
-                    "INSERT INTO api_call_log (provider_key, model_name, is_stream, request_headers, request_body, chunks, duration_ms) "
-                            + "VALUES (?, ?, 1, ?, ?, ?, ?)",
+                    "INSERT INTO api_call_log (provider_key, model_name, is_stream, request_headers, request_body, response_headers, chunks, duration_ms) "
+                            + "VALUES (?, ?, 1, ?, ?, ?, ?, ?)",
                     providerKey, modelName,
                     toJson(requestHeaders), toJson(requestBody),
-                    toJson(chunks), durationMs);
+                    toJson(responseHeaders), toJson(chunks), durationMs);
         } catch (Exception e) {
             log.warn("保存 API 调用日志失败: {}", e.getMessage());
         }

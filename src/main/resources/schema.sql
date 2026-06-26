@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS api_call_log (
     is_stream       INTEGER      NOT NULL DEFAULT 0, -- 是否流式（0=否，1=是）
     request_headers TEXT,                           -- JSON 格式的请求头
     request_body    TEXT,                           -- JSON 格式的请求体
+    response_headers TEXT,                          -- JSON 格式的响应头
     response_body   TEXT,                           -- 非流式时的响应体
     chunks          TEXT,                           -- 流式时的响应 chunks JSON 数组
     duration_ms     INTEGER,                        -- 耗时（毫秒）

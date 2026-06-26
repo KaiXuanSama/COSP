@@ -104,10 +104,17 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         String providerKey = getProviderKey();
         String modelName = (String) requestBody.get("model");
 
-        return buildWebClient().post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).bodyValue(requestBody).retrieve().bodyToMono(String.class)
-                .retryWhen(buildRetrySpec("chatCompletion")).doOnNext(response -> log.debug("{} 响应: {}", providerDisplayName(), response))
-                .doOnSuccess(response -> saveNonStreamLog(providerKey, modelName, requestBody, response, startTime))
-                .doOnError(e -> saveNonStreamLog(providerKey, modelName, requestBody, null, startTime));
+        return buildWebClient().post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).bodyValue(requestBody).retrieve()
+                .toEntity(String.class)
+                .retryWhen(buildRetrySpec("chatCompletion"))
+                .doOnNext(entity -> log.debug("{} 响应: {}", providerDisplayName(), entity.getBody()))
+                .map(entity -> {
+                    Map<String, String> respHeaders = new LinkedHashMap<>();
+                    entity.getHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
+                    saveNonStreamLog(providerKey, modelName, requestBody, respHeaders, entity.getBody(), startTime);
+                    return entity.getBody();
+                })
+                .doOnError(e -> saveNonStreamLog(providerKey, modelName, requestBody, Map.of(), null, startTime));
     }
 
     /**
@@ -130,13 +137,20 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         String providerKey = getProviderKey();
         String modelName = (String) requestBody.get("model");
         List<String> logChunks = new java.util.concurrent.CopyOnWriteArrayList<>();
+        AtomicReference<Map<String, String>> capturedRespHeaders = new AtomicReference<>(Map.of());
 
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
         StringBuilder reasoningBuffer = new StringBuilder();
         AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
 
-        return buildWebClient().post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody).retrieve()
-                .bodyToFlux(STRING_SSE_TYPE).retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank())
+        return buildWebClient().post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody)
+                .exchangeToFlux(response -> {
+                    Map<String, String> respHeaders = new LinkedHashMap<>();
+                    response.headers().asHttpHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
+                    capturedRespHeaders.set(respHeaders);
+                    return response.bodyToFlux(STRING_SSE_TYPE);
+                })
+                .retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank())
                 .doOnNext(raw -> log.debug("{} 原始: {}", providerDisplayName(), raw)).doOnNext(raw -> onRawStreamChunk(raw)).concatMap(chunk -> {
                     // 对所有 finish chunk（stop/tool_calls）都调用 onStreamFinish 钩子
                     if (!"[DONE]".equals(chunk) && (chunk.contains("\"finish_reason\":\"stop\"") || chunk.contains("\"finish_reason\":\"tool_calls\""))) {
@@ -156,7 +170,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                 }).doOnNext(chunk -> {
                     log.debug("{} 翻译: {}", providerDisplayName(), chunk);
                     logChunks.add(chunk);
-                }).doFinally(signal -> saveStreamLog(providerKey, modelName, requestBody, logChunks, startTime));
+                }).doFinally(signal -> saveStreamLog(providerKey, modelName, requestBody, capturedRespHeaders.get(), logChunks, startTime));
     }
 
     /**
@@ -212,19 +226,19 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     /**
      * 保存非流式调用日志。
      */
-    private void saveNonStreamLog(String providerKey, String modelName, Map<String, Object> requestBody, String responseBody, long startTime) {
+    private void saveNonStreamLog(String providerKey, String modelName, Map<String, Object> requestBody, Map<String, String> respHeaders, String responseBody, long startTime) {
         if (apiCallLogRepository == null) return;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLogRepository.saveNonStream(providerKey, modelName, buildRequestHeaders(), requestBody, responseBody, duration);
+        apiCallLogRepository.saveNonStream(providerKey, modelName, buildRequestHeaders(), requestBody, respHeaders, responseBody, duration);
     }
 
     /**
      * 保存流式调用日志。
      */
-    private void saveStreamLog(String providerKey, String modelName, Map<String, Object> requestBody, List<String> chunks, long startTime) {
+    private void saveStreamLog(String providerKey, String modelName, Map<String, Object> requestBody, Map<String, String> respHeaders, List<String> chunks, long startTime) {
         if (apiCallLogRepository == null) return;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLogRepository.saveStream(providerKey, modelName, buildRequestHeaders(), requestBody, chunks, duration);
+        apiCallLogRepository.saveStream(providerKey, modelName, buildRequestHeaders(), requestBody, respHeaders, chunks, duration);
     }
 
     /**
