@@ -86,6 +86,14 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     }
 
     /**
+     * 获取用于日志记录的供应商标识。
+     * 默认返回 getProviderKey()，子类可重写以返回动态解析的供应商名称。
+     */
+    protected String getLoggingProviderKey() {
+        return getProviderKey();
+    }
+
+    /**
      * 发送一次非流式 Chat Completions 请求。
      *
      * 请求体会经过 {@link #prepareRequestBody} 处理，包括模型名称解析、
@@ -101,7 +109,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         log.info("{} OpenAI 上游，模型: {}, 流式: false", providerDisplayName(), requestBody.get("model"));
 
         long startTime = System.currentTimeMillis();
-        String providerKey = getProviderKey();
+        String providerKey = getLoggingProviderKey();
         String modelName = (String) requestBody.get("model");
 
         return buildWebClient().post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).bodyValue(requestBody).retrieve()
@@ -135,7 +143,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         log.info("{} OpenAI 上游，模型: {}, 流式: true", providerDisplayName(), requestBody.get("model"));
 
         long startTime = System.currentTimeMillis();
-        String providerKey = getProviderKey();
+        String providerKey = getLoggingProviderKey();
         String modelName = (String) requestBody.get("model");
         List<String> logChunks = new java.util.concurrent.CopyOnWriteArrayList<>();
         AtomicReference<Map<String, String>> capturedRespHeaders = new AtomicReference<>(Map.of());
