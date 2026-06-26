@@ -42,6 +42,16 @@ async function loadFirstPage() {
 }
 
 /**
+ * 刷新日志列表（清空后重新加载第一页）
+ */
+async function refreshLogs() {
+  logs.value = []
+  currentPage.value = 1
+  totalPages.value = 0
+  await loadFirstPage()
+}
+
+/**
  * 加载更多日志（追加到列表末尾）
  */
 async function loadMore() {
@@ -90,6 +100,16 @@ onMounted(() => {
   <div class="call-log-page">
     <!-- 左侧：调用列表（窄列） -->
     <n-card title="调用记录" :bordered="true" class="call-log-list" content-scrollable>
+      <template #header-extra>
+        <div class="refresh-btn" :class="{ disabled: loading }" @click="refreshLogs">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 2v6h-6" />
+            <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+            <path d="M3 22v-6h6" />
+            <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+          </svg>
+        </div>
+      </template>
       <!-- 加载中状态 -->
       <div v-if="initialLoading" class="call-log-loading">
         <n-spin size="medium" />
@@ -293,5 +313,32 @@ onMounted(() => {
   color: $text-muted;
   font-family: $font-body;
   font-size: 13px;
+}
+
+.refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: $radius;
+  color: $text-muted;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover {
+    color: $accent;
+    background: $accent-light;
+  }
+
+  &.disabled {
+    pointer-events: none;
+    opacity: 0.5;
+  }
+
+  svg {
+    width: 16px;
+    height: 16px;
+  }
 }
 </style>
