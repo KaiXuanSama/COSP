@@ -6,20 +6,51 @@
  */
 import { ref, computed } from 'vue'
 
+/**
+ * 折叠规则：
+ * - 'none': 不默认折叠任何节点（仅深度 > 3 时折叠）
+ * - 'depth-only': 仅基于深度阈值折叠
+ * - 函数: (key, depth, parentKey, indexInParent, totalChildren) => boolean
+ */
+export type CollapseRule =
+  | 'none'
+  | 'depth-only'
+  | ((key: string, depth: number, parentKey: string, indexInParent: number, totalChildren: number) => boolean)
+
 const props = withDefaults(
   defineProps<{
     nodeKey?: string
     value: unknown
     depth?: number
     isLast?: boolean
-    defaultCollapsedKeys?: string[]
+    collapseRule?: CollapseRule
+    parentKey?: string
+    indexInParent?: number
+    totalChildren?: number
   }>(),
-  { nodeKey: '', depth: 0, isLast: true, defaultCollapsedKeys: () => [] },
+  {
+    nodeKey: '',
+    depth: 0,
+    isLast: true,
+    collapseRule: 'none',
+    parentKey: '',
+    indexInParent: 0,
+    totalChildren: 1,
+  },
 )
 
-const collapsed = ref(
-  props.depth > 3 || (props.nodeKey !== '' && props.defaultCollapsedKeys.includes(props.nodeKey)),
-)
+const collapsed = ref(resolveCollapsed())
+
+function resolveCollapsed(): boolean {
+  if (props.depth > 3) return true
+  const rule = props.collapseRule
+  if (rule === 'none') return false
+  if (rule === 'depth-only') return false
+  if (typeof rule === 'function') {
+    return rule(props.nodeKey, props.depth, props.parentKey, props.indexInParent, props.totalChildren)
+  }
+  return false
+}
 
 const valueType = computed(() => {
   if (props.value === null) return 'null'
@@ -82,7 +113,10 @@ function formatPrimitive(val: unknown): string {
           :value="childVal"
           :depth="depth + 1"
           :is-last="index === entries.length - 1"
-          :default-collapsed-keys="defaultCollapsedKeys"
+          :collapse-rule="collapseRule"
+          :parent-key="nodeKey"
+          :index-in-parent="index"
+          :total-children="entries.length"
         />
         <span class="json-bracket" :style="{ paddingLeft: depth > 0 ? '20px' : '0' }">
           {{ valueType === 'array' ? ']' : '}' }}

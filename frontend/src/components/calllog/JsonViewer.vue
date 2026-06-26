@@ -7,15 +7,16 @@
 import { computed } from 'vue'
 import { NModal, NScrollbar } from 'naive-ui'
 import JsonNode from './JsonNode.vue'
+import type { CollapseRule } from './JsonNode.vue'
 
 const props = withDefaults(
   defineProps<{
     show: boolean
     title: string
     content: unknown
-    defaultCollapsedKeys?: string[]
+    collapseRule?: CollapseRule
   }>(),
-  { defaultCollapsedKeys: () => [] },
+  { collapseRule: 'none' },
 )
 
 const emit = defineEmits<{
@@ -52,7 +53,7 @@ const isJson = computed(() => {
     <n-scrollbar style="max-height: 65vh">
       <!-- JSON 树形结构（可折叠） -->
       <div v-if="isJson" class="json-tree-container">
-        <JsonNode :value="parsed" :depth="0" :default-collapsed-keys="defaultCollapsedKeys" />
+        <JsonNode :value="parsed" :depth="0" :collapse-rule="collapseRule" />
       </div>
       <!-- 非 JSON 原样展示 -->
       <pre v-else class="json-viewer-pre">{{ parsed }}</pre>

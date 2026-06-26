@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { NCard, NEmpty, NSpin } from 'naive-ui'
 import { fetchLogs, fetchLogDetail } from '@/api'
 import { JsonViewer, ChunksViewer } from '@/components/calllog'
+import type { CollapseRule } from '@/components/calllog/JsonNode.vue'
 
 interface LogItem {
   id: number
@@ -42,7 +43,7 @@ const selectedLogId = ref<number | null>(null)
 const logDetail = ref<DetailItem | null>(null)
 const detailLoading = ref(false)
 
-const jsonModal = ref({ show: false, title: '', content: null as unknown, defaultCollapsedKeys: [] as string[] })
+const jsonModal = ref({ show: false, title: '', content: null as unknown, collapseRule: 'none' as CollapseRule })
 const chunksModal = ref({ show: false, chunks: [] as string[] })
 
 /**
@@ -158,10 +159,21 @@ async function selectLog(id: number) {
 }
 
 /**
+ * 请求体折叠规则：折叠 messages、tools 及其内部数组元素（最后一个除外）
+ */
+const requestBodyCollapseRule: CollapseRule = (key, depth, parentKey, index, total) => {
+  // 折叠顶层的 messages 和 tools
+  if (depth === 1 && (key === 'messages' || key === 'tools')) return true
+  // 折叠 messages/tools 数组内的元素（最后一个除外）
+  if (depth === 2 && (parentKey === 'messages' || parentKey === 'tools')) return index < total - 1
+  return false
+}
+
+/**
  * 打开 JSON 查看器
  */
-function openJsonModal(title: string, content: unknown, defaultCollapsedKeys: string[] = []) {
-  jsonModal.value = { show: true, title, content, defaultCollapsedKeys }
+function openJsonModal(title: string, content: unknown, collapseRule: CollapseRule = 'none') {
+  jsonModal.value = { show: true, title, content, collapseRule }
 }
 
 /**
@@ -278,7 +290,7 @@ onMounted(() => {
           <div class="detail-row">
             <span class="detail-row-label">请求体</span>
             <span class="detail-row-value">{{ truncate(logDetail.request_body) }}</span>
-            <span class="detail-row-action" @click="openJsonModal('请求体', logDetail.request_body, ['messages', 'tools'])">展示</span>
+            <span class="detail-row-action" @click="openJsonModal('请求体', logDetail.request_body, requestBodyCollapseRule)">展示</span>
           </div>
 
           <!-- 响应头 -->
@@ -310,7 +322,7 @@ onMounted(() => {
       v-model:show="jsonModal.show"
       :title="jsonModal.title"
       :content="jsonModal.content"
-      :default-collapsed-keys="jsonModal.defaultCollapsedKeys"
+      :collapse-rule="jsonModal.collapseRule"
     />
 
     <!-- Chunks 查看器 -->
