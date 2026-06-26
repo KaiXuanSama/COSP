@@ -4,6 +4,7 @@ import AdminLayout from '@/layouts/AdminLayout.vue'
 import Overview from '@/views/Overview.vue'
 import Settings from '@/views/Settings.vue'
 import Account from '@/views/Account.vue'
+import CallLog from '@/views/CallLog.vue'
 
 const routes = [
   {
@@ -47,6 +48,18 @@ const routes = [
         path: '',
         name: 'account',
         component: Account,
+        meta: { requiresAuth: true },
+      },
+    ],
+  },
+  {
+    path: '/call-log',
+    component: AdminLayout,
+    children: [
+      {
+        path: '',
+        name: 'call-log',
+        component: CallLog,
         meta: { requiresAuth: true },
       },
     ],
