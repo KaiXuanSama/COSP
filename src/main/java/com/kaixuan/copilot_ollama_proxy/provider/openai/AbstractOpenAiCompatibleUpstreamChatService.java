@@ -183,9 +183,11 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
 
     /**
      * 从运行时模型配置中读取思考深度。如果未找到，返回 medium。
+     * 使用 getActiveProviderConfiguration() 而非直接查询 catalog，
+     * 以便 GenericOpenAiChatService 的动态供应商覆写能生效。
      */
     private String resolveReasoningEffort(String resolvedModel) {
-        ProviderRuntimeConfiguration config = runtimeProviderCatalog.getActiveProvider(getProviderKey());
+        ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
         if (config != null) {
             for (var m : config.models()) {
                 if (resolvedModel.equals(m.modelName())) {

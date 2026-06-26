@@ -34,6 +34,9 @@ public class GenericOllamaService extends AbstractRuntimeCatalogOllamaService {
     private final RuntimeProviderCatalog runtimeProviderCatalog;
     private final ObjectMapper objectMapper;
 
+    /** 当前请求动态解析的 providerKey，由 chat/chatStream 设置 */
+    private final ThreadLocal<String> currentProviderKey = new ThreadLocal<>();
+
     public GenericOllamaService(RuntimeProviderCatalog runtimeProviderCatalog, ObjectMapper objectMapper,
             WebClient.Builder webClientBuilder) {
         super(runtimeProviderCatalog, "");
@@ -69,6 +72,19 @@ public class GenericOllamaService extends AbstractRuntimeCatalogOllamaService {
     @Override
     protected String providerLicense() {
         return "Proprietary";
+    }
+
+    /**
+     * 重写配置获取，使用动态解析的 providerKey。
+     * 父类的 applyReasoningEffort() 等方法会调用此方法获取配置。
+     */
+    @Override
+    protected ProviderRuntimeConfiguration getProviderConfiguration() {
+        String key = currentProviderKey.get();
+        if (key != null) {
+            return runtimeProviderCatalog.getActiveProvider(key);
+        }
+        return null;
     }
 
     /**
@@ -150,12 +166,14 @@ public class GenericOllamaService extends AbstractRuntimeCatalogOllamaService {
         if (providerKey == null) {
             return Mono.error(new IllegalStateException("无法解析自定义供应商: " + request.getModel()));
         }
+        currentProviderKey.set(providerKey);
         var transportClient = buildTransportClient(providerKey);
         var protocolConverter = new OllamaProtocolConverter(objectMapper);
         var protocolSupport = new OllamaProtocolConverter.Support(
                 this::resolveRequestModel, this::resolveMaxTokens, this::extractStringContent, this::currentTimestamp);
 
         Map<String, Object> openAiRequest = protocolConverter.toOpenAiRequest(request, protocolSupport);
+        applyReasoningEffort(openAiRequest, resolveModelOrDefault(request.getModel()));
         log.info("通用服务 Ollama→OpenAI，供应商: {}, 模型: {}, 流式: false", providerKey, openAiRequest.get("model"));
         return transportClient.sendChatCompletion(openAiRequest)
                 .map(respJson -> {
@@ -166,7 +184,8 @@ public class GenericOllamaService extends AbstractRuntimeCatalogOllamaService {
                         return createResponse(request.getModel(), true, "stop",
                                 createMessage("assistant", "转换失败: " + e.getMessage()));
                     }
-                });
+                })
+                .doFinally(signal -> currentProviderKey.remove());
     }
 
     @Override
@@ -175,6 +194,7 @@ public class GenericOllamaService extends AbstractRuntimeCatalogOllamaService {
         if (providerKey == null) {
             return Flux.error(new IllegalStateException("无法解析自定义供应商: " + request.getModel()));
         }
+        currentProviderKey.set(providerKey);
         var transportClient = buildTransportClient(providerKey);
         var protocolConverter = new OllamaProtocolConverter(objectMapper);
         var protocolSupport = new OllamaProtocolConverter.Support(
@@ -183,13 +203,15 @@ public class GenericOllamaService extends AbstractRuntimeCatalogOllamaService {
                 new OllamaStreamTranslator.Support(this::createStreamingChunk, this::createStreamingCompletion));
 
         Map<String, Object> openAiRequest = protocolConverter.toOpenAiRequest(request, protocolSupport);
+        applyReasoningEffort(openAiRequest, resolveModelOrDefault(request.getModel()));
         openAiRequest.put("stream", true);
         log.info("通用服务 Ollama→OpenAI，供应商: {}, 模型: {}, 流式: true", providerKey, openAiRequest.get("model"));
 
         var session = streamTranslator.newSession();
         return transportClient.streamChatCompletion(openAiRequest)
                 .concatMap(chunk -> Flux.fromIterable(
-                        streamTranslator.translate(session, chunk, request.getModel())));
+                        streamTranslator.translate(session, chunk, request.getModel())))
+                .doFinally(signal -> currentProviderKey.remove());
     }
 
     private OpenAiTransportClient buildTransportClient(String providerKey) {
