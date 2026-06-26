@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { NCard, NEmpty, NSpin } from 'naive-ui'
-import { fetchLogs } from '@/api'
+import { fetchLogs, fetchLogDetail } from '@/api'
+import { JsonViewer, ChunksViewer } from '@/components/calllog'
 
 interface LogItem {
   id: number
@@ -20,7 +21,29 @@ const loading = ref(false)
 const loadingMore = ref(false)
 const initialLoading = ref(true)
 
+interface DetailItem {
+  id: number
+  provider_key: string
+  model_name: string
+  is_stream: number
+  status_code: number
+  request_headers: string | null
+  request_body: string | null
+  response_headers: string | null
+  response_body: string | null
+  chunks: string | null
+  duration_ms: number | null
+  created_at: string
+}
+
 const hasMore = computed(() => currentPage.value < totalPages.value)
+
+const selectedLogId = ref<number | null>(null)
+const logDetail = ref<DetailItem | null>(null)
+const detailLoading = ref(false)
+
+const jsonModal = ref({ show: false, title: '', content: null as unknown })
+const chunksModal = ref({ show: false, chunks: [] as string[] })
 
 /**
  * 加载第一页日志
@@ -91,6 +114,61 @@ function getStatusClass(code: number): string {
   return 'default'
 }
 
+/**
+ * 截断文本
+ */
+function truncate(str: string | null, maxLen = 50): string {
+  if (!str) return ''
+  return str.length > maxLen ? str.substring(0, maxLen) + '...' : str
+}
+
+/**
+ * 格式化耗时
+ */
+function formatDuration(ms: number | null): string {
+  if (ms == null) return ''
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
+/**
+ * 点击日志项，加载详情
+ */
+async function selectLog(id: number) {
+  selectedLogId.value = id
+  detailLoading.value = true
+  logDetail.value = null
+  try {
+    const res = await fetchLogDetail(id)
+    logDetail.value = res.data
+  } catch (e) {
+    console.error('加载日志详情失败:', e)
+  } finally {
+    detailLoading.value = false
+  }
+}
+
+/**
+ * 打开 JSON 查看器
+ */
+function openJsonModal(title: string, content: unknown) {
+  jsonModal.value = { show: true, title, content }
+}
+
+/**
+ * 打开 chunks 查看器
+ */
+function openChunksModal(rawChunks: string | null) {
+  if (!rawChunks) return
+  let parsed: string[] = []
+  try {
+    parsed = JSON.parse(rawChunks)
+  } catch {
+    parsed = [rawChunks]
+  }
+  chunksModal.value = { show: true, chunks: parsed }
+}
+
 onMounted(() => {
   loadFirstPage()
 })
@@ -122,7 +200,7 @@ onMounted(() => {
 
       <!-- 日志列表 -->
       <div v-else class="log-list">
-        <div v-for="log in logs" :key="log.id" class="log-item">
+        <div v-for="log in logs" :key="log.id" class="log-item" :class="{ active: selectedLogId === log.id }" @click="selectLog(log.id)">
           <div class="log-item-top" :class="getStatusClass(log.status_code)"></div>
           <div class="log-item-content">
             <div class="log-item-header">
@@ -153,11 +231,83 @@ onMounted(() => {
     </n-card>
 
     <!-- 右侧：详细信息（宽列） -->
-    <n-card title="详细信息" :bordered="true" class="call-log-detail">
-      <div class="call-log-empty">
+    <n-card title="详细信息" :bordered="true" class="call-log-detail" content-scrollable>
+      <!-- 无选中状态 -->
+      <div v-if="!selectedLogId" class="call-log-empty">
         <n-empty description="点击左侧以查看详细信息" />
       </div>
+
+      <!-- 加载中 -->
+      <div v-else-if="detailLoading" class="call-log-loading">
+        <n-spin size="medium" />
+      </div>
+
+      <!-- 详情内容 -->
+      <div v-else-if="logDetail" class="detail-content">
+        <!-- 顶部元信息 -->
+        <div class="detail-meta">
+          <div class="detail-meta-main">
+            <span class="detail-provider">{{ logDetail.provider_key }}</span>
+            <span class="detail-model">{{ logDetail.model_name }}</span>
+          </div>
+          <div class="detail-meta-sub">
+            <span class="detail-duration">{{ formatDuration(logDetail.duration_ms) }}</span>
+            <span class="detail-time">{{ formatTime(logDetail.created_at) }}</span>
+          </div>
+        </div>
+
+        <!-- 数据行 -->
+        <div class="detail-rows">
+          <!-- 请求头 -->
+          <div class="detail-row">
+            <span class="detail-row-label">请求头</span>
+            <span class="detail-row-value">{{ truncate(logDetail.request_headers) }}</span>
+            <span class="detail-row-action" @click="openJsonModal('请求头', logDetail.request_headers)">展示</span>
+          </div>
+
+          <!-- 请求体 -->
+          <div class="detail-row">
+            <span class="detail-row-label">请求体</span>
+            <span class="detail-row-value">{{ truncate(logDetail.request_body) }}</span>
+            <span class="detail-row-action" @click="openJsonModal('请求体', logDetail.request_body)">展示</span>
+          </div>
+
+          <!-- 响应头 -->
+          <div class="detail-row">
+            <span class="detail-row-label">响应头</span>
+            <span class="detail-row-value">{{ truncate(logDetail.response_headers) }}</span>
+            <span class="detail-row-action" @click="openJsonModal('响应头', logDetail.response_headers)">展示</span>
+          </div>
+
+          <!-- 响应体（非流式） -->
+          <div v-if="!logDetail.is_stream" class="detail-row">
+            <span class="detail-row-label">响应体</span>
+            <span class="detail-row-value">{{ truncate(logDetail.response_body) }}</span>
+            <span class="detail-row-action" @click="openJsonModal('响应体', logDetail.response_body)">展示</span>
+          </div>
+
+          <!-- 流式响应（流式） -->
+          <div v-if="logDetail.is_stream" class="detail-row">
+            <span class="detail-row-label">流式响应</span>
+            <span class="detail-row-value">{{ truncate(logDetail.chunks) }}</span>
+            <span class="detail-row-action" @click="openChunksModal(logDetail.chunks)">展示</span>
+          </div>
+        </div>
+      </div>
     </n-card>
+
+    <!-- JSON 查看器 -->
+    <JsonViewer
+      v-model:show="jsonModal.show"
+      :title="jsonModal.title"
+      :content="jsonModal.content"
+    />
+
+    <!-- Chunks 查看器 -->
+    <ChunksViewer
+      v-model:show="chunksModal.show"
+      :chunks="chunksModal.chunks"
+    />
   </div>
 </template>
 
@@ -168,15 +318,19 @@ onMounted(() => {
   display: flex;
   gap: $space-lg;
   height: calc(100vh - #{$header-height} - #{$space-2xl});
+  overflow: hidden;
 }
 
 .call-log-list {
-  flex: 2;
+  flex: 1;
+  min-width: 0;
   height: 100%;
 }
 
 .call-log-detail {
-  flex: 3;
+  flex: 2;
+  min-width: 0;
+  height: 100%;
 }
 
 .call-log-loading,
@@ -201,11 +355,16 @@ onMounted(() => {
   position: relative;
   overflow: hidden;
   transition: all 0.25s ease;
-  cursor: default;
+  cursor: pointer;
 
   &:hover {
     transform: translateY(-1px);
     box-shadow: $shadow-sm;
+  }
+
+  &.active {
+    border-color: $accent;
+    box-shadow: 0 0 0 1px $accent-mid;
   }
 }
 
@@ -299,6 +458,116 @@ onMounted(() => {
   font-size: 13px;
   cursor: pointer;
   padding: $space-xs $space-md;
+  border: 1px solid $accent-mid;
+  border-radius: $radius;
+  transition: all 0.2s ease;
+
+  &:hover {
+    background: $accent-light;
+    border-color: $accent;
+  }
+}
+
+// ── 详情面板样式 ──
+
+.detail-content {
+  padding: $space-sm 0;
+}
+
+.detail-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: $space-sm $space-md $space-md;
+  border-bottom: 1px solid $border-light;
+  margin-bottom: $space-md;
+}
+
+.detail-meta-main {
+  display: flex;
+  align-items: baseline;
+  gap: $space-sm;
+}
+
+.detail-provider {
+  font-family: $font-display;
+  font-size: 17px;
+  font-weight: 600;
+  color: $text-primary;
+}
+
+.detail-model {
+  font-family: $font-body;
+  font-size: 14px;
+  color: $text-body;
+}
+
+.detail-meta-sub {
+  display: flex;
+  align-items: center;
+  gap: $space-md;
+}
+
+.detail-duration {
+  font-family: $font-body;
+  font-size: 13px;
+  color: $text-muted;
+}
+
+.detail-time {
+  font-family: $font-body;
+  font-size: 13px;
+  color: $text-muted;
+  font-variant-numeric: tabular-nums;
+}
+
+.detail-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.detail-row {
+  display: flex;
+  align-items: center;
+  gap: $space-sm;
+  padding: $space-sm $space-md;
+  border-bottom: 1px solid $border-light;
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  &:hover {
+    background: $accent-light;
+  }
+}
+
+.detail-row-label {
+  flex-shrink: 0;
+  width: 60px;
+  font-family: $font-body;
+  font-size: 13px;
+  font-weight: 600;
+  color: $text-primary;
+}
+
+.detail-row-value {
+  flex: 1;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  color: $text-body;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-row-action {
+  flex-shrink: 0;
+  font-family: $font-body;
+  font-size: 12px;
+  color: $accent;
+  cursor: pointer;
+  padding: $space-xs $space-sm;
   border: 1px solid $accent-mid;
   border-radius: $radius;
   transition: all 0.2s ease;
