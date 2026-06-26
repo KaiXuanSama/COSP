@@ -111,28 +111,55 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
         }
 
         /**
-         * 重写 getParameterMap，从缓存的 body 中解析表单参数。
-         * 原始请求的输入流已被日志读取耗尽，直接委托给原始请求会导致参数为空。
+         * 重写 getParameterMap，合并 query string 参数和 body 中的表单参数。
+         * 原始请求的输入流已被日志读取耗尽，直接委托给原始请求会导致 body 参数为空，
+         * 因此需要从缓存的 body 中解析表单参数，并与 query string 参数合并。
          */
         @Override
         public Map<String, String[]> getParameterMap() {
-            return Collections.unmodifiableMap(parseParameters());
+            // 先从原始请求获取 query string 参数
+            Map<String, String[]> queryParameters = super.getParameterMap();
+            Map<String, String[]> bodyParameters = parseParameters();
+
+            // 如果 body 为空，直接返回 query string 参数
+            if (bodyParameters.isEmpty()) {
+                return Collections.unmodifiableMap(queryParameters);
+            }
+
+            // 合并：query string 参数优先，body 参数补充
+            Map<String, String[]> merged = new LinkedHashMap<>(queryParameters);
+            for (Map.Entry<String, String[]> entry : bodyParameters.entrySet()) {
+                merged.putIfAbsent(entry.getKey(), entry.getValue());
+            }
+            return Collections.unmodifiableMap(merged);
         }
 
         /**
-         * 重写 getParameter，从解析后的参数 Map 中取值。
+         * 重写 getParameter，先从 query string 获取，再从 body 参数获取。
          */
         @Override
         public String getParameter(String name) {
+            // 先尝试从原始请求获取（query string）
+            String value = super.getParameter(name);
+            if (value != null) {
+                return value;
+            }
+            // 再从 body 参数获取
             String[] values = parseParameters().get(name);
             return values != null && values.length > 0 ? values[0] : null;
         }
 
         /**
-         * 重写 getParameterValues，从解析后的参数 Map 中取值。
+         * 重写 getParameterValues，先从 query string 获取，再从 body 参数获取。
          */
         @Override
         public String[] getParameterValues(String name) {
+            // 先尝试从原始请求获取（query string）
+            String[] values = super.getParameterValues(name);
+            if (values != null && values.length > 0) {
+                return values;
+            }
+            // 再从 body 参数获取
             return parseParameters().get(name);
         }
 
