@@ -81,6 +81,11 @@ public class AdminPageController {
         return "forward:/index.html";
     }
 
+    @GetMapping("/call-log")
+    public String spaCallLog() {
+        return "forward:/index.html";
+    }
+
     // ==================== API 统计接口（JSON） ====================
 
     @GetMapping("/config/api/stats") @ResponseBody
