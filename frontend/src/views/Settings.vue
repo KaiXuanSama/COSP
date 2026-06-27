@@ -357,11 +357,12 @@ async function addCustomProvider() {
       // 更新前端元数据
       const oldKey = editingCustomKey.value
       const newKey = 'custom-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+      const metaUpdate = { displayName: name, apiUrlPlaceholder: baseUrl || 'https://api.example.com/v1' }
       if (newKey !== oldKey && providerMeta.value[oldKey]) {
-        providerMeta.value[newKey] = { ...providerMeta.value[oldKey], displayName: name }
+        providerMeta.value[newKey] = { ...providerMeta.value[oldKey], ...metaUpdate }
         delete providerMeta.value[oldKey]
       } else {
-        providerMeta.value[oldKey] = { ...providerMeta.value[oldKey], displayName: name }
+        providerMeta.value[oldKey] = { ...providerMeta.value[oldKey], ...metaUpdate }
       }
       showCustomAddModal.value = false
       resetCustomAdvanced()
@@ -372,7 +373,7 @@ async function addCustomProvider() {
       providerMeta.value[res.providerKey] = {
         displayName: name,
         colorClass: 'custom',
-        apiUrlPlaceholder: 'https://api.example.com/v1',
+        apiUrlPlaceholder: baseUrl || 'https://api.example.com/v1',
         docsUrl: '',
       }
       showCustomAddModal.value = false
@@ -441,10 +442,11 @@ onMounted(async () => {
     if (key.startsWith('custom-') && !providerMeta.value[key]) {
       // 从 key 生成可读的 displayName
       const displayName = key.replace('custom-', '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+      const actualBaseUrl = providerStore.providers[key]?.baseUrl || ''
       providerMeta.value[key] = {
         displayName,
         colorClass: 'custom',
-        apiUrlPlaceholder: 'https://api.example.com/v1',
+        apiUrlPlaceholder: actualBaseUrl || 'https://api.example.com/v1',
         docsUrl: '',
       }
     }
