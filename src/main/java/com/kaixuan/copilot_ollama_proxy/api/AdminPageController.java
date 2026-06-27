@@ -320,7 +320,8 @@ public class AdminPageController {
 
     @PostMapping("/config/api/custom-providers") @ResponseBody
     public ResponseEntity<Map<String, Object>> addCustomProvider(@RequestParam String displayName,
-                                                                 @RequestParam(required = false, defaultValue = "{}") String customTransforms) {
+                                                                 @RequestParam(required = false, defaultValue = "{}") String customTransforms,
+                                                                 @RequestParam(required = false, defaultValue = "") String baseUrl) {
         String name = displayName == null ? "" : displayName.trim();
         if (name.isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "供应商名称不能为空"));
@@ -332,8 +333,9 @@ public class AdminPageController {
         }
         // 验证 customTransforms 格式
         String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
+        String url = baseUrl == null ? "" : baseUrl.trim();
         // 在 provider_config 中创建记录（默认启用）
-        providerConfigRepository.saveProvider(providerKey, true, "", "", "openai", transforms);
+        providerConfigRepository.saveProvider(providerKey, true, url, "", "openai", transforms);
         return ResponseEntity.ok(Map.of("ok", true, "providerKey", providerKey, "displayName", name));
     }
 
@@ -346,7 +348,8 @@ public class AdminPageController {
     @PutMapping("/config/api/custom-providers/{providerKey}") @ResponseBody
     public ResponseEntity<Map<String, Object>> updateCustomProvider(@PathVariable String providerKey,
                                                                     @RequestParam String displayName,
-                                                                    @RequestParam(required = false, defaultValue = "{}") String customTransforms) {
+                                                                    @RequestParam(required = false, defaultValue = "{}") String customTransforms,
+                                                                    @RequestParam(required = false, defaultValue = "") String baseUrl) {
         String name = displayName == null ? "" : displayName.trim();
         if (name.isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "供应商名称不能为空"));
@@ -365,8 +368,9 @@ public class AdminPageController {
             }
         }
         String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
-        // 直接更新 provider_key 和 custom_transforms，保留关联的模型配置
-        providerConfigRepository.updateProviderKeyAndTransforms(providerKey, newProviderKey, transforms);
+        String url = baseUrl == null ? "" : baseUrl.trim();
+        // 直接更新 provider_key、custom_transforms 和 base_url，保留关联的模型配置
+        providerConfigRepository.updateProviderKeyAndTransforms(providerKey, newProviderKey, transforms, url);
         return ResponseEntity.ok(Map.of("ok", true, "providerKey", newProviderKey, "displayName", name));
     }
 

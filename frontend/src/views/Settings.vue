@@ -227,6 +227,7 @@ const showCustomAddModal = ref(false)
 const customProviderName = ref('')
 const customAdvancedExpanded = ref(false)
 const editingCustomKey = ref<string | null>(null)
+const customBaseUrl = ref('')
 
 /** 高级设置 - 请求头覆盖列表 */
 interface KeyValueEntry {
@@ -258,6 +259,7 @@ function resetCustomAdvanced() {
   customAdvancedExpanded.value = false
   customHeaders.value = []
   customBodyTransforms.value = []
+  customBaseUrl.value = ''
   editingCustomKey.value = null
 }
 
@@ -270,6 +272,7 @@ function openEditCustomModal(key: string) {
   // 解析已有 customTransforms
   customHeaders.value = []
   customBodyTransforms.value = []
+  customBaseUrl.value = (provider as any)?.baseUrl || ''
   if (provider) {
     try {
       const raw = (provider as any).customTransforms
@@ -312,9 +315,10 @@ async function addCustomProvider() {
   }
   try {
     const customTransforms = buildCustomTransformsJson()
+    const baseUrl = customBaseUrl.value.trim()
     if (editingCustomKey.value) {
       // 编辑模式
-      await providerStore.updateCustomProvider(editingCustomKey.value, name, customTransforms)
+      await providerStore.updateCustomProvider(editingCustomKey.value, name, customTransforms, baseUrl)
       // 更新前端元数据
       const oldKey = editingCustomKey.value
       const newKey = 'custom-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
@@ -329,7 +333,7 @@ async function addCustomProvider() {
       message.success(`已修改自定义供应商「${name}」`)
     } else {
       // 新增模式
-      const res = await providerStore.addCustomProvider(name, customTransforms)
+      const res = await providerStore.addCustomProvider(name, customTransforms, baseUrl)
       providerMeta.value[res.providerKey] = {
         displayName: name,
         colorClass: 'custom',
@@ -766,6 +770,14 @@ function removeModel(index: number) {
       </div>
 
       <div v-if="customAdvancedExpanded" class="advanced-panel">
+        <!-- API 地址 -->
+        <div class="advanced-section">
+          <div class="advanced-section-header">
+            <span class="advanced-section-title">API 地址</span>
+          </div>
+          <n-input v-model:value="customBaseUrl" placeholder="https://api.example.com/v1" />
+        </div>
+
         <!-- 请求头覆盖 -->
         <div class="advanced-section">
           <div class="advanced-section-header">

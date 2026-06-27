@@ -238,13 +238,13 @@ public class ProviderConfigRepository {
     }
 
     /**
-     * 更新供应商的 provider_key 和 custom_transforms（用于重命名自定义供应商）。
+     * 更新供应商的 provider_key、custom_transforms 和 base_url（用于编辑自定义供应商）。
      * 直接修改 provider_key，保留关联的模型配置不变。
      */
-    public void updateProviderKeyAndTransforms(String oldProviderKey, String newProviderKey, String customTransforms) {
+    public void updateProviderKeyAndTransforms(String oldProviderKey, String newProviderKey, String customTransforms, String baseUrl) {
         jdbcTemplate.update(
-                "UPDATE provider_config SET provider_key = ?, custom_transforms = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?",
-                newProviderKey, customTransforms, oldProviderKey);
+                "UPDATE provider_config SET provider_key = ?, custom_transforms = ?, base_url = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?",
+                newProviderKey, customTransforms, baseUrl, oldProviderKey);
     }
 
     /**
