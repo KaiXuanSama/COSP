@@ -327,6 +327,33 @@ public class AdminPageController {
         return ResponseEntity.ok(Map.of("ok", true));
     }
 
+    @PutMapping("/config/api/custom-providers/{providerKey}") @ResponseBody
+    public ResponseEntity<Map<String, Object>> updateCustomProvider(@PathVariable String providerKey,
+                                                                    @RequestParam String displayName,
+                                                                    @RequestParam(required = false, defaultValue = "{}") String customTransforms) {
+        String name = displayName == null ? "" : displayName.trim();
+        if (name.isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "供应商名称不能为空"));
+        }
+        // 检查原供应商是否存在
+        Map<String, Object> existing = providerConfigRepository.findByKey(providerKey);
+        if (existing == null) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "供应商不存在"));
+        }
+        // 生成新的 providerKey
+        String newProviderKey = "custom-" + name.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
+        // 如果名称改变了，检查新 key 是否冲突
+        if (!newProviderKey.equals(providerKey)) {
+            if (providerConfigRepository.findByKey(newProviderKey) != null) {
+                return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "该供应商名称已存在"));
+            }
+        }
+        String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
+        // 直接更新 provider_key 和 custom_transforms，保留关联的模型配置
+        providerConfigRepository.updateProviderKeyAndTransforms(providerKey, newProviderKey, transforms);
+        return ResponseEntity.ok(Map.of("ok", true, "providerKey", newProviderKey, "displayName", name));
+    }
+
     @PostMapping("/config/api/account") @ResponseBody
     public ResponseEntity<Map<String, Object>> saveAccountApi(Authentication authentication, @RequestParam(value = "newUsername", required = false) String newUsername,
             @RequestParam(value = "currentPassword", required = false) String currentPassword, @RequestParam(value = "newPassword", required = false) String newPassword,

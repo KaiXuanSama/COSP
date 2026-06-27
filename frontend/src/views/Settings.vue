@@ -226,6 +226,7 @@ const showAddModal = ref(false)
 const showCustomAddModal = ref(false)
 const customProviderName = ref('')
 const customAdvancedExpanded = ref(false)
+const editingCustomKey = ref<string | null>(null)
 
 /** 高级设置 - 请求头覆盖列表 */
 interface KeyValueEntry {
@@ -257,6 +258,32 @@ function resetCustomAdvanced() {
   customAdvancedExpanded.value = false
   customHeaders.value = []
   customBodyTransforms.value = []
+  editingCustomKey.value = null
+}
+
+/** 打开编辑自定义供应商模态框 */
+function openEditCustomModal(key: string) {
+  editingCustomKey.value = key
+  const provider = providerStore.providers[key]
+  const displayName = providerMeta.value[key]?.displayName || key.replace('custom-', '').replace(/-/g, ' ')
+  customProviderName.value = displayName
+  // 解析已有 customTransforms
+  customHeaders.value = []
+  customBodyTransforms.value = []
+  if (provider) {
+    try {
+      const raw = (provider as any).customTransforms
+      const transforms = typeof raw === 'string' ? JSON.parse(raw) : (raw || {})
+      if (Array.isArray(transforms.custom_headers)) {
+        customHeaders.value = transforms.custom_headers.map((h: any) => ({ key: h.key || '', value: h.value || '' }))
+      }
+      if (Array.isArray(transforms.body_transforms)) {
+        customBodyTransforms.value = transforms.body_transforms.map((t: any) => ({ key: t.key || '', value: t.value || '' }))
+      }
+    } catch { /* ignore */ }
+  }
+  showAddModal.value = false
+  showCustomAddModal.value = true
 }
 
 /** 构建高级设置 JSON */
@@ -285,20 +312,37 @@ async function addCustomProvider() {
   }
   try {
     const customTransforms = buildCustomTransformsJson()
-    const res = await providerStore.addCustomProvider(name, customTransforms)
-    // 注入 providerMeta
-    providerMeta.value[res.providerKey] = {
-      displayName: name,
-      colorClass: 'custom',
-      apiUrlPlaceholder: 'https://api.example.com/v1',
-      docsUrl: '',
+    if (editingCustomKey.value) {
+      // 编辑模式
+      await providerStore.updateCustomProvider(editingCustomKey.value, name, customTransforms)
+      // 更新前端元数据
+      const oldKey = editingCustomKey.value
+      const newKey = 'custom-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+      if (newKey !== oldKey && providerMeta.value[oldKey]) {
+        providerMeta.value[newKey] = { ...providerMeta.value[oldKey], displayName: name }
+        delete providerMeta.value[oldKey]
+      } else {
+        providerMeta.value[oldKey] = { ...providerMeta.value[oldKey], displayName: name }
+      }
+      showCustomAddModal.value = false
+      resetCustomAdvanced()
+      message.success(`已修改自定义供应商「${name}」`)
+    } else {
+      // 新增模式
+      const res = await providerStore.addCustomProvider(name, customTransforms)
+      providerMeta.value[res.providerKey] = {
+        displayName: name,
+        colorClass: 'custom',
+        apiUrlPlaceholder: 'https://api.example.com/v1',
+        docsUrl: '',
+      }
+      showCustomAddModal.value = false
+      customProviderName.value = ''
+      resetCustomAdvanced()
+      message.success(`已添加自定义供应商「${name}」`)
     }
-    showCustomAddModal.value = false
-    customProviderName.value = ''
-    resetCustomAdvanced()
-    message.success(`已添加自定义供应商「${name}」`)
   } catch (e: any) {
-    message.error(e?.response?.data?.error || '添加失败')
+    message.error(e?.response?.data?.error || '操作失败')
   }
 }
 
@@ -673,6 +717,14 @@ function removeModel(index: number) {
           :class="{ 'add-modal-card--custom': isCustomProvider(key) }"
           @click="enableProvider(key)">
           <div class="add-modal-card-top" :class="providerMeta[key]?.colorClass || 'accent'"></div>
+          <button v-if="isCustomProvider(key)" class="add-modal-card-edit" title="修改自定义供应商"
+            @click.stop="openEditCustomModal(key)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+            </svg>
+          </button>
           <button v-if="isCustomProvider(key)" class="add-modal-card-delete" title="删除自定义供应商"
             @click.stop="removeCustomProvider(key)">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -694,7 +746,7 @@ function removeModel(index: number) {
     </n-modal>
 
     <!-- 自定义供应商名称输入模态框 -->
-    <n-modal v-model:show="showCustomAddModal" preset="card" title="添加自定义供应商"
+    <n-modal v-model:show="showCustomAddModal" preset="card" :title="editingCustomKey ? '修改自定义供应商' : '添加自定义供应商'"
       :style="{ maxWidth: '480px' }" closable :mask-closable="true"
       @update:show="(val: boolean) => { if (!val) resetCustomAdvanced() }">
       <div class="field-group">
@@ -776,7 +828,7 @@ function removeModel(index: number) {
       <template #footer>
         <div class="custom-add-footer">
           <n-button @click="showCustomAddModal = false; resetCustomAdvanced()">取消</n-button>
-          <n-button type="primary" @click="addCustomProvider">添加</n-button>
+          <n-button type="primary" @click="addCustomProvider">{{ editingCustomKey ? '应用' : '添加' }}</n-button>
         </div>
       </template>
     </n-modal>
@@ -1252,6 +1304,29 @@ function removeModel(index: number) {
 
 .add-modal-card--custom {
   position: relative;
+}
+
+.add-modal-card-edit {
+  position: absolute;
+  top: 8px;
+  right: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(194, 122, 62, 0.08);
+  color: $text-muted;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  z-index: 2;
+
+  &:hover {
+    color: $accent;
+    background: rgba(194, 122, 62, 0.15);
+  }
 }
 
 .add-modal-card-delete {

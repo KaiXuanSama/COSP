@@ -229,6 +229,25 @@ public class ProviderConfigRepository {
     // ==================== 工具 ====================
 
     /**
+     * 更新自定义供应商的 custom_transforms 字段。
+     */
+    public void updateCustomTransforms(String providerKey, String customTransforms) {
+        jdbcTemplate.update(
+                "UPDATE provider_config SET custom_transforms = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?",
+                customTransforms, providerKey);
+    }
+
+    /**
+     * 更新供应商的 provider_key 和 custom_transforms（用于重命名自定义供应商）。
+     * 直接修改 provider_key，保留关联的模型配置不变。
+     */
+    public void updateProviderKeyAndTransforms(String oldProviderKey, String newProviderKey, String customTransforms) {
+        jdbcTemplate.update(
+                "UPDATE provider_config SET provider_key = ?, custom_transforms = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?",
+                newProviderKey, customTransforms, oldProviderKey);
+    }
+
+    /**
      * 根据 provider_key 删除服务商配置及其关联的模型。
      * 先删除 provider_model 中的关联记录，再删除 provider_config。
      * （SQLite 默认不启用外键约束，手动删除确保数据一致性）

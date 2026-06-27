@@ -98,5 +98,18 @@ export const useProviderStore = defineStore('providers', () => {
     await fetchAll()
   }
 
-  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchFakeVersion, addCustomProvider, deleteCustomProvider }
+  async function updateCustomProvider(providerKey: string, displayName: string, customTransforms?: string) {
+    const formData = new URLSearchParams()
+    formData.append('displayName', displayName)
+    if (customTransforms) {
+      formData.append('customTransforms', customTransforms)
+    }
+    await http.put(`/custom-providers/${providerKey}`, formData.toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    })
+    // 重新拉取列表
+    await fetchAll()
+  }
+
+  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchFakeVersion, addCustomProvider, deleteCustomProvider, updateCustomProvider }
 })
