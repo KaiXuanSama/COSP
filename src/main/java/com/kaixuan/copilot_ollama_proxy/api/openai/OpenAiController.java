@@ -132,12 +132,12 @@ public class OpenAiController {
                         }
                         // 透传上游错误响应
                         if (ex instanceof org.springframework.web.reactive.function.client.WebClientResponseException responseException) {
-                            log.error("上游 API 返回错误 {}: {}", responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
+                            log.warn("上游 API 返回错误 [{}] {}: {}", request.getModel(), responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
                             return Mono.just(ResponseEntity.status(responseException.getStatusCode().value())
                                     .contentType(MediaType.APPLICATION_JSON)
                                     .body(responseException.getResponseBodyAsString()));
                         }
-                        log.error("上游 API 调用异常", ex);
+                        log.warn("上游 API 调用失败 [{}]: {} ({})", request.getModel(), extractRootCause(ex), extractRequestUrl(ex));
                         return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
                                 .body("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}"));
                     });
@@ -177,21 +177,21 @@ public class OpenAiController {
             }
             // 透传上游错误响应
             if (error instanceof org.springframework.web.reactive.function.client.WebClientResponseException responseException) {
-                log.error("上游 API 返回错误 {}: {}", responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
+                log.warn("上游 API 返回错误 [{}] {}: {}", model, responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
                 try {
                     emitter.send(SseEmitter.event().name("error").data(responseException.getResponseBodyAsString()));
                 } catch (Exception sendEx) {
                     if (!isClientDisconnect(sendEx)) {
-                        log.warn("发送错误事件失败", sendEx);
+                        log.warn("发送错误事件失败: {}", sendEx.getMessage());
                     }
                 }
             } else {
-                log.error("上游 API 调用异常", error);
+                log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(error), extractRequestUrl(error));
                 try {
                     emitter.send(SseEmitter.event().name("error").data("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}"));
                 } catch (Exception sendEx) {
                     if (!isClientDisconnect(sendEx)) {
-                        log.warn("发送错误事件失败", sendEx);
+                        log.warn("发送错误事件失败: {}", sendEx.getMessage());
                     }
                 }
             }
@@ -314,5 +314,49 @@ public class OpenAiController {
             current = current.getCause();
         }
         return false;
+    }
+
+    /**
+     * 从异常链中提取最底层的有意义错误信息，过滤掉 Reactor/Netty 内部异常。
+     * 例如 DNS 解析失败会提取 "Failed to resolve 'api.kimi.com'"。
+     */
+    private String extractRootCause(Throwable throwable) {
+        Throwable deepest = throwable;
+        Throwable current = throwable;
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+            String msg = current.getMessage();
+            // 跳过无意义的包装异常（Reactor、Netty 内部）
+            if (msg != null && !msg.isBlank() && !msg.startsWith("Retries exhausted")) {
+                deepest = current;
+            }
+        }
+        String msg = deepest.getMessage();
+        return (msg != null && !msg.isBlank()) ? msg : deepest.getClass().getSimpleName();
+    }
+
+    /**
+     * 从异常中提取请求 URL（如有）。
+     * WebClientRequestException 的 message 中通常包含目标 URL。
+     */
+    private String extractRequestUrl(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof org.springframework.web.reactive.function.client.WebClientRequestException requestEx) {
+                java.net.URI uri = requestEx.getUri();
+                if (uri != null) return uri.toString();
+            }
+            // 从 Reactor checkpoint 中提取 URL
+            String msg = current.getMessage();
+            if (msg != null && msg.contains("Request to POST ")) {
+                int start = msg.indexOf("Request to POST ") + 16;
+                int end = msg.indexOf(" ", start);
+                if (end < 0) end = msg.indexOf("]", start);
+                if (end < 0) end = msg.length();
+                return msg.substring(start, end).trim();
+            }
+            current = current.getCause();
+        }
+        return "unknown";
     }
 }
