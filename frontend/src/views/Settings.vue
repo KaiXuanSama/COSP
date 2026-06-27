@@ -225,6 +225,39 @@ const showAddModal = ref(false)
 
 const showCustomAddModal = ref(false)
 const customProviderName = ref('')
+const customAdvancedExpanded = ref(false)
+
+/** 高级设置 - 请求头覆盖列表 */
+interface KeyValueEntry {
+  key: string
+  value: string
+}
+const customHeaders = ref<KeyValueEntry[]>([])
+
+/** 高级设置 - 请求体修剪列表 */
+const customBodyTransforms = ref<KeyValueEntry[]>([])
+
+function addCustomHeader() {
+  customHeaders.value.push({ key: '', value: '' })
+}
+
+function removeCustomHeader(index: number) {
+  customHeaders.value.splice(index, 1)
+}
+
+function addCustomBodyTransform() {
+  customBodyTransforms.value.push({ key: '', value: '' })
+}
+
+function removeCustomBodyTransform(index: number) {
+  customBodyTransforms.value.splice(index, 1)
+}
+
+function resetCustomAdvanced() {
+  customAdvancedExpanded.value = false
+  customHeaders.value = []
+  customBodyTransforms.value = []
+}
 
 /** 添加自定义供应商 */
 async function addCustomProvider() {
@@ -244,6 +277,7 @@ async function addCustomProvider() {
     }
     showCustomAddModal.value = false
     customProviderName.value = ''
+    resetCustomAdvanced()
     message.success(`已添加自定义供应商「${name}」`)
   } catch (e: any) {
     message.error(e?.response?.data?.error || '添加失败')
@@ -643,15 +677,87 @@ function removeModel(index: number) {
 
     <!-- 自定义供应商名称输入模态框 -->
     <n-modal v-model:show="showCustomAddModal" preset="card" title="添加自定义供应商"
-      :style="{ maxWidth: '400px' }" closable :mask-closable="true">
+      :style="{ maxWidth: '480px' }" closable :mask-closable="true"
+      @update:show="(val: boolean) => { if (!val) resetCustomAdvanced() }">
       <div class="field-group">
         <label class="field-label">自定义供应商名称</label>
         <n-input v-model:value="customProviderName" placeholder="例如：MyAPI"
           @keyup.enter="addCustomProvider" />
       </div>
+
+      <!-- 高级设置折叠区域 -->
+      <div class="advanced-toggle" @click="customAdvancedExpanded = !customAdvancedExpanded">
+        <span class="advanced-toggle-label">高级设置</span>
+        <svg class="advanced-toggle-arrow" :class="{ 'advanced-toggle-arrow--expanded': customAdvancedExpanded }"
+          width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </div>
+
+      <div v-if="customAdvancedExpanded" class="advanced-panel">
+        <!-- 请求头覆盖 -->
+        <div class="advanced-section">
+          <div class="advanced-section-header">
+            <span class="advanced-section-title">额外覆写或修剪请求头</span>
+            <n-button text size="tiny" class="advanced-add-btn" @click="addCustomHeader">
+              <template #icon>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </template>
+              新增
+            </n-button>
+          </div>
+          <div v-if="customHeaders.length === 0" class="advanced-empty">暂无自定义请求头</div>
+          <div v-for="(header, idx) in customHeaders" :key="idx" class="advanced-row">
+            <n-input v-model:value="header.key" placeholder="Header 名称" class="advanced-input-key" />
+            <n-input v-model:value="header.value" placeholder="值（/del/ 表示删除）" class="advanced-input-value" />
+            <button class="advanced-delete-btn" title="删除" @click="removeCustomHeader(idx)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- 请求体修剪 -->
+        <div class="advanced-section">
+          <div class="advanced-section-header">
+            <span class="advanced-section-title">额外覆写或修剪请求体</span>
+            <n-button text size="tiny" class="advanced-add-btn" @click="addCustomBodyTransform">
+              <template #icon>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </template>
+              新增
+            </n-button>
+          </div>
+          <div v-if="customBodyTransforms.length === 0" class="advanced-empty">暂无自定义请求体修剪</div>
+          <div v-for="(entry, idx) in customBodyTransforms" :key="idx" class="advanced-row">
+            <n-input v-model:value="entry.key" placeholder="字段路径" class="advanced-input-key" />
+            <n-input v-model:value="entry.value" placeholder="值（/del/ 表示删除）" class="advanced-input-value" />
+            <button class="advanced-delete-btn" title="删除" @click="removeCustomBodyTransform(idx)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <template #footer>
         <div class="custom-add-footer">
-          <n-button @click="showCustomAddModal = false; customProviderName = ''">取消</n-button>
+          <n-button @click="showCustomAddModal = false; resetCustomAdvanced()">取消</n-button>
           <n-button type="primary" @click="addCustomProvider">添加</n-button>
         </div>
       </template>
@@ -1167,6 +1273,118 @@ function removeModel(index: number) {
   display: flex;
   justify-content: flex-end;
   gap: $space-sm;
+}
+
+/* ── 高级设置 ── */
+.advanced-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: $space-sm 0;
+  margin-top: $space-xs;
+  cursor: pointer;
+  user-select: none;
+  border-top: 1px solid $border-light;
+}
+
+.advanced-toggle-label {
+  font-family: $font-mono;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: $text-muted;
+  transition: color 0.2s ease;
+
+  .advanced-toggle:hover & {
+    color: $accent;
+  }
+}
+
+.advanced-toggle-arrow {
+  color: $text-muted;
+  transition: transform 0.25s ease, color 0.2s ease;
+
+  &--expanded {
+    transform: rotate(180deg);
+  }
+
+  .advanced-toggle:hover & {
+    color: $accent;
+  }
+}
+
+.advanced-panel {
+  padding-top: $space-sm;
+}
+
+.advanced-section {
+  margin-bottom: $space-md;
+}
+
+.advanced-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: $space-sm;
+}
+
+.advanced-section-title {
+  font-family: $font-body;
+  font-size: 13px;
+  font-weight: 600;
+  color: $text-body;
+}
+
+.advanced-add-btn {
+  color: $text-muted !important;
+
+  &:hover {
+    color: $accent !important;
+  }
+}
+
+.advanced-empty {
+  text-align: center;
+  padding: $space-sm 0;
+  font-family: $font-body;
+  font-size: 12px;
+  color: $text-muted;
+}
+
+.advanced-row {
+  display: flex;
+  align-items: center;
+  gap: $space-sm;
+  margin-bottom: $space-sm;
+}
+
+.advanced-input-key {
+  flex: 0 0 35%;
+}
+
+.advanced-input-value {
+  flex: 1;
+}
+
+.advanced-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: $radius;
+  background: transparent;
+  color: $text-muted;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+
+  &:hover {
+    color: $danger;
+    background: rgba($danger, 0.08);
+  }
 }
 
 /* ── 拉取模型差异对比模态框 ── */
