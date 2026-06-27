@@ -406,6 +406,14 @@ function isCustomProvider(key: string) {
   return key.startsWith('custom-')
 }
 
+/** 内置供应商 key 列表 */
+const builtInProviderKeys = new Set(Object.keys(providerMeta.value))
+
+/** 判断是否可编辑/删除（自定义供应商 或 非内置供应商） */
+function isEditableProvider(key: string) {
+  return isCustomProvider(key) || !builtInProviderKeys.has(key)
+}
+
 const enabledProviderKeys = computed(() => {
   // 内置 + 自定义供应商的 key
   const metaKeys = Object.keys(providerMeta.value)
@@ -758,7 +766,7 @@ function removeModel(index: number) {
           :class="{ 'add-modal-card--custom': isCustomProvider(key) }"
           @click="enableProvider(key)">
           <div class="add-modal-card-top" :class="providerMeta[key]?.colorClass || 'accent'"></div>
-          <button v-if="isCustomProvider(key)" class="add-modal-card-edit" title="修改自定义供应商"
+          <button v-if="isEditableProvider(key)" class="add-modal-card-edit" title="修改自定义供应商"
             @click.stop="openEditCustomModal(key)">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -766,7 +774,7 @@ function removeModel(index: number) {
               <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
             </svg>
           </button>
-          <button v-if="isCustomProvider(key)" class="add-modal-card-delete" title="删除自定义供应商"
+          <button v-if="isEditableProvider(key)" class="add-modal-card-delete" title="删除自定义供应商"
             @click.stop="removeCustomProvider(key)">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
