@@ -250,7 +250,7 @@ public class AdminPageController {
 
     private boolean supportsProviderKey(String providerKey) {
         return switch (providerKey) {
-        case "longcat", "mimo", "sensenova", "deepseek", "uumit", "agnes", "zhipu", "xunfei", "kimi" -> true;
+        case "mimo", "deepseek" -> true;
         default -> providerKey.startsWith("custom-");
         };
     }
@@ -296,13 +296,11 @@ public class AdminPageController {
     }
 
     private void applyModelDiscoveryAuthHeaders(String providerKey, HttpHeaders headers, String apiKey) {
-        switch (providerKey) {
-        case "mimo" -> {
+        if ("mimo".equals(providerKey)) {
             headers.set("api-key", apiKey);
             headers.set("x-api-key", apiKey);
-        }
-        case "longcat", "sensenova", "deepseek", "uumit", "agnes", "zhipu", "xunfei", "kimi" -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
-        default -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
+        } else {
+            headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
         }
     }
 
