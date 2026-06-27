@@ -75,3 +75,24 @@ CREATE TABLE IF NOT EXISTS api_usage_daily (
     output_tokens INTEGER NOT NULL DEFAULT 0,     -- 当天输出 token 总量
     updated_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
 );
+
+-- ==================== API 调用详细日志表 ====================
+-- 记录每次调用上游供应商 API 的完整请求/响应信息
+
+CREATE TABLE IF NOT EXISTS api_call_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_key    VARCHAR(30),                   -- 服务商标识，如 deepseek / mimo
+    model_name      VARCHAR(100),                  -- 模型名称
+    is_stream       INTEGER      NOT NULL DEFAULT 0, -- 是否流式（0=否，1=是）
+    status_code     INTEGER,                        -- HTTP 响应状态码
+    request_headers TEXT,                           -- JSON 格式的请求头
+    request_body    TEXT,                           -- JSON 格式的请求体
+    response_headers TEXT,                          -- JSON 格式的响应头
+    response_body   TEXT,                           -- 非流式时的响应体
+    chunks          TEXT,                           -- 流式时的响应 chunks JSON 数组
+    duration_ms     INTEGER,                        -- 耗时（毫秒）
+    created_at      TEXT      NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_call_log_created_at ON api_call_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_api_call_log_provider ON api_call_log(provider_key);

@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.api;
 
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import org.springframework.http.HttpHeaders;
@@ -32,14 +33,16 @@ public class AdminPageController {
     private final PasswordEncoder passwordEncoder;
     private final ApiUsageRepository apiUsageRepository;
     private final ProviderConfigRepository providerConfigRepository;
+    private final ApiCallLogRepository apiCallLogRepository;
     private final WebClient.Builder webClientBuilder;
 
     public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder, ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository,
-            WebClient.Builder webClientBuilder) {
+            ApiCallLogRepository apiCallLogRepository, WebClient.Builder webClientBuilder) {
         this.userDetailsManager = userDetailsManager;
         this.passwordEncoder = passwordEncoder;
         this.apiUsageRepository = apiUsageRepository;
         this.providerConfigRepository = providerConfigRepository;
+        this.apiCallLogRepository = apiCallLogRepository;
         this.webClientBuilder = webClientBuilder;
     }
 
@@ -75,6 +78,11 @@ public class AdminPageController {
 
     @GetMapping("/account")
     public String spaAccount() {
+        return "forward:/index.html";
+    }
+
+    @GetMapping("/call-log")
+    public String spaCallLog() {
         return "forward:/index.html";
     }
 
@@ -365,6 +373,38 @@ public class AdminPageController {
         }
 
         return ResponseEntity.ok(result);
+    }
+
+    // ==================== API 调用日志接口 ====================
+
+    /**
+     * 分页查询 API 调用日志。
+     *
+     * @param pageNum  页码（从 1 开始，默认 1）
+     * @param pageSize 每页条数（默认 20，最大 100）
+     * @return 分页结果：currentPage, totalPages, pageSize, totalItems, items
+     */
+    @GetMapping("/config/api/logs") @ResponseBody
+    public ResponseEntity<Map<String, Object>> listLogs(
+            @RequestParam(value = "pageNum", defaultValue = "1") int pageNum,
+            @RequestParam(value = "pageSize", defaultValue = "20") int pageSize) {
+        Map<String, Object> result = apiCallLogRepository.findLogs(pageNum, pageSize);
+        return ResponseEntity.ok(result);
+    }
+
+    /**
+     * 查询单条日志详情（含完整请求/响应）。
+     *
+     * @param id 日志 ID
+     * @return 日志详情，不存在时返回 404
+     */
+    @GetMapping("/config/api/logs/{id}") @ResponseBody
+    public ResponseEntity<Map<String, Object>> getLogDetail(@PathVariable long id) {
+        Map<String, Object> log = apiCallLogRepository.findLogById(id);
+        if (log == null) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(log);
     }
 
 }

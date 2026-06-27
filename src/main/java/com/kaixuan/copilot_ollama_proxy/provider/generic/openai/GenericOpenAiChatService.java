@@ -74,6 +74,18 @@ public class GenericOpenAiChatService extends AbstractOpenAiCompatibleUpstreamCh
     }
 
     /**
+     * 重写日志记录的供应商标识，返回实际的自定义供应商名称（去掉 custom- 前缀）。
+     */
+    @Override
+    protected String getLoggingProviderKey() {
+        String key = currentProviderKey.get();
+        if (key != null) {
+            return key.startsWith("custom-") ? key.substring(7) : key;
+        }
+        return getProviderKey();
+    }
+
+    /**
      * 重写非流式聊天，动态解析 provider 配置后委托给父类逻辑。
      */
     @Override
