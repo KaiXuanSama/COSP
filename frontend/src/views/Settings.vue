@@ -229,6 +229,41 @@ const customAdvancedExpanded = ref(false)
 const editingCustomKey = ref<string | null>(null)
 const customBaseUrl = ref('')
 
+/** 预设供应商模板 */
+interface ProviderPreset {
+  label: string
+  baseUrl: string
+  headers: KeyValueEntry[]
+  bodyTransforms: KeyValueEntry[]
+}
+const providerPresets: ProviderPreset[] = [
+  {
+    label: 'AgentRouter',
+    baseUrl: 'https://agentrouter.org/v1',
+    headers: [{ key: 'User-Agent', value: 'claude-cli/2.1.195 (external, cli)' }],
+    bodyTransforms: [{ key: 'top_p', value: '/del/' }, { key: 'temperature', value: '/del/' }],
+  },
+  {
+    label: 'KimiCodePlan',
+    baseUrl: 'https://api.kimi.com/coding/v1',
+    headers: [],
+    bodyTransforms: [{ key: 'top_p', value: '/del/' }, { key: 'temperature', value: '/del/' }],
+  },
+]
+const presetOptions = providerPresets.map(p => ({ label: p.label, value: p.label }))
+
+/** 选择预设时自动填充高级设置 */
+function onPresetSelect(label: string) {
+  customProviderName.value = label
+  const preset = providerPresets.find(p => p.label === label)
+  if (preset) {
+    customBaseUrl.value = preset.baseUrl
+    customHeaders.value = preset.headers.map(h => ({ ...h }))
+    customBodyTransforms.value = preset.bodyTransforms.map(t => ({ ...t }))
+    customAdvancedExpanded.value = true
+  }
+}
+
 /** 高级设置 - 请求头覆盖列表 */
 interface KeyValueEntry {
   key: string
@@ -755,8 +790,14 @@ function removeModel(index: number) {
       @update:show="(val: boolean) => { if (!val) resetCustomAdvanced() }">
       <div class="field-group">
         <label class="field-label">自定义供应商名称</label>
-        <n-input v-model:value="customProviderName" placeholder="例如：MyAPI"
-          @keyup.enter="addCustomProvider" />
+        <n-select
+          v-model:value="customProviderName"
+          :options="presetOptions"
+          filterable
+          tag
+          placeholder="选择预设或输入名称"
+          @update:value="onPresetSelect"
+        />
       </div>
 
       <!-- 高级设置折叠区域 -->
