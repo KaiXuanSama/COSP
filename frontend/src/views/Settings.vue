@@ -543,19 +543,27 @@ function resolvePullModelsErrorMessage(error: any) {
   const status = error?.response?.status
   const data = error?.response?.data
 
+  // 优先使用后端返回的友好错误信息
   if (data && typeof data === 'object' && typeof data.error === 'string' && data.error.trim()) {
-    return data.error
+    return '模型拉取失败：' + data.error
   }
   if (typeof data === 'string' && data.trim()) {
-    return data
+    try {
+      const parsed = JSON.parse(data)
+      if (typeof parsed.error === 'string' && parsed.error.trim()) {
+        return '模型拉取失败：' + parsed.error
+      }
+    } catch { /* 非 JSON，使用原文 */ }
+    return '模型拉取失败：' + data
   }
+  // 前端兜底
   if (status === 401 || status === 403) {
     return '模型拉取失败：API Key 无效或无权限'
   }
   if (status === 404) {
     return '模型拉取失败：模型列表端点不存在'
   }
-  return '拉取模型失败'
+  return '拉取模型失败，请检查网络连接和 API 地址'
 }
 
 function closeEditPanel() {

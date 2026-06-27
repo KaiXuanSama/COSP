@@ -125,7 +125,22 @@ public class OpenAiController {
         } else {
             // 非流式调用上游服务，获取完整响应后提取 usage 进行记录，并返回给客户端。
             return upstreamChatService.chatCompletion(requestBody, request.getModel()).doOnNext(this::recordUsage)
-                    .map(openAiJson -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(openAiJson));
+                    .map(openAiJson -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(openAiJson))
+                    .onErrorResume(ex -> {
+                        if (isClientDisconnect(ex)) {
+                            return Mono.empty();
+                        }
+                        // 透传上游错误响应
+                        if (ex instanceof org.springframework.web.reactive.function.client.WebClientResponseException responseException) {
+                            log.error("上游 API 返回错误 {}: {}", responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
+                            return Mono.just(ResponseEntity.status(responseException.getStatusCode().value())
+                                    .contentType(MediaType.APPLICATION_JSON)
+                                    .body(responseException.getResponseBodyAsString()));
+                        }
+                        log.error("上游 API 调用异常", ex);
+                        return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
+                                .body("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}"));
+                    });
         }
     }
 
@@ -160,8 +175,27 @@ public class OpenAiController {
             if (isClientDisconnect(error)) {
                 return;
             }
-            log.error("上游 API 调用异常", error);
-            emitter.completeWithError(error);
+            // 透传上游错误响应
+            if (error instanceof org.springframework.web.reactive.function.client.WebClientResponseException responseException) {
+                log.error("上游 API 返回错误 {}: {}", responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
+                try {
+                    emitter.send(SseEmitter.event().name("error").data(responseException.getResponseBodyAsString()));
+                } catch (Exception sendEx) {
+                    if (!isClientDisconnect(sendEx)) {
+                        log.warn("发送错误事件失败", sendEx);
+                    }
+                }
+            } else {
+                log.error("上游 API 调用异常", error);
+                try {
+                    emitter.send(SseEmitter.event().name("error").data("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}"));
+                } catch (Exception sendEx) {
+                    if (!isClientDisconnect(sendEx)) {
+                        log.warn("发送错误事件失败", sendEx);
+                    }
+                }
+            }
+            emitter.complete();
         }, () -> {
             apiUsageCollector.record(streamInputTokens.get(), streamOutputTokens.get());
             try {

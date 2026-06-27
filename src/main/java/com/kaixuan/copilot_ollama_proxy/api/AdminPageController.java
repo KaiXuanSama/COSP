@@ -274,17 +274,59 @@ public class AdminPageController {
                 response.headers().contentType().ifPresent(builder::contentType);
                 return builder.body(body);
             })).onErrorResume(ex -> {
-                String detail = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
+                String errorMsg = resolvePullModelsErrorMessage(ex);
                 return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                        .body("{\"error\":\"连接上游服务失败: " + detail.replace("\"", "'") + "\"}"));
+                        .body("{\"error\":\"" + errorMsg.replace("\"", "'") + "\"}"));
             }).blockOptional()
                     .orElseGet(() -> ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
                             .body("{\"error\":\"连接上游服务失败: 无响应\"}"));
         } catch (Exception ex) {
-            String detail = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
+            String errorMsg = resolvePullModelsErrorMessage(ex);
             return ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                    .body("{\"error\":\"连接上游服务失败: " + detail.replace("\"", "'") + "\"}");
+                    .body("{\"error\":\"" + errorMsg.replace("\"", "'") + "\"}");
         }
+    }
+
+    /**
+     * 将上游模型拉取的异常转换为用户友好的错误信息。
+     */
+    private String resolvePullModelsErrorMessage(Throwable ex) {
+        // 尝试从 WebClientResponseException 中提取上游返回的错误信息
+        if (ex instanceof org.springframework.web.reactive.function.client.WebClientResponseException responseException) {
+            int status = responseException.getStatusCode().value();
+            String body = responseException.getResponseBodyAsString();
+            // 尝试解析上游返回的 JSON 错误体
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> errorBody = new com.fasterxml.jackson.databind.ObjectMapper().readValue(body, Map.class);
+                Object errorObj = errorBody.get("error");
+                if (errorObj instanceof Map<?, ?> errorMap) {
+                    String msg = (String) errorMap.get("message");
+                    if (msg != null && !msg.isBlank()) return msg;
+                } else if (errorObj instanceof String msg && !msg.isBlank()) {
+                    return msg;
+                }
+            } catch (Exception ignored) {
+                // JSON 解析失败，使用 body 原文
+                if (body != null && !body.isBlank() && body.length() < 500) {
+                    return body;
+                }
+            }
+            // 按状态码给出友好提示
+            return switch (status) {
+                case 401, 403 -> "API Key 无效或无权限";
+                case 404 -> "模型列表端点不存在，请检查 API 地址";
+                case 429 -> "上游服务限流，请稍后重试";
+                default -> "上游返回错误 (" + status + ")";
+            };
+        }
+        // 网络层异常
+        if (ex instanceof org.springframework.web.reactive.function.client.WebClientRequestException) {
+            return "无法连接到上游服务，请检查 API 地址是否正确";
+        }
+        // 其他异常
+        String msg = ex.getMessage();
+        return (msg != null && !msg.isBlank()) ? "连接上游服务失败: " + msg : "连接上游服务失败";
     }
 
     private String normalizeModelPullPath(String rawModelPullPath) {
