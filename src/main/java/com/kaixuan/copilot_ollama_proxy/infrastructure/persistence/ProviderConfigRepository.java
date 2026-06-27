@@ -25,7 +25,7 @@ public class ProviderConfigRepository {
      * 返回 Map 列表，每项包含 provider 的所有字段 + models 子列表。
      */
     public List<Map<String, Object>> findAllWithModels() {
-        List<Map<String, Object>> providers = jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, api_format, updated_at " + "FROM provider_config ORDER BY id", (rs, rowNum) -> {
+        List<Map<String, Object>> providers = jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, api_format, custom_transforms, updated_at " + "FROM provider_config ORDER BY id", (rs, rowNum) -> {
             Map<String, Object> row = new java.util.LinkedHashMap<>();
             row.put("id", rs.getInt("id"));
             row.put("providerKey", rs.getString("provider_key"));
@@ -33,6 +33,7 @@ public class ProviderConfigRepository {
             row.put("baseUrl", rs.getString("base_url"));
             row.put("apiKey", rs.getString("api_key"));
             row.put("apiFormat", rs.getString("api_format"));
+            row.put("customTransforms", rs.getString("custom_transforms"));
             row.put("updatedAt", rs.getString("updated_at"));
             row.put("models", findModelsByProviderId(rs.getInt("id")));
             return row;
@@ -44,7 +45,7 @@ public class ProviderConfigRepository {
      * 根据 provider_key 查询单个服务商配置。
      */
     public Map<String, Object> findByKey(String providerKey) {
-        return jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, api_format, updated_at " + "FROM provider_config WHERE provider_key = ?", rs -> {
+        return jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, api_format, custom_transforms, updated_at " + "FROM provider_config WHERE provider_key = ?", rs -> {
             if (rs.next()) {
                 Map<String, Object> row = new java.util.LinkedHashMap<>();
                 row.put("id", rs.getInt("id"));
@@ -53,6 +54,7 @@ public class ProviderConfigRepository {
                 row.put("baseUrl", rs.getString("base_url"));
                 row.put("apiKey", rs.getString("api_key"));
                 row.put("apiFormat", rs.getString("api_format"));
+                row.put("customTransforms", rs.getString("custom_transforms"));
                 row.put("updatedAt", rs.getString("updated_at"));
                 row.put("models", findModelsByProviderId(rs.getInt("id")));
                 return row;
@@ -90,17 +92,17 @@ public class ProviderConfigRepository {
      *
      * @return 对应的 provider_config.id
      */
-    public int saveProvider(String providerKey, boolean enabled, String baseUrl, String apiKey, String apiFormat) {
+    public int saveProvider(String providerKey, boolean enabled, String baseUrl, String apiKey, String apiFormat, String customTransforms) {
         // 尝试更新已有记录
         int updated = jdbcTemplate.update(
-                "UPDATE provider_config SET enabled = ?, base_url = ?, api_key = ?, api_format = ?, " + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') " + "WHERE provider_key = ?",
-                enabled ? 1 : 0, baseUrl, apiKey, apiFormat, providerKey);
+                "UPDATE provider_config SET enabled = ?, base_url = ?, api_key = ?, api_format = ?, custom_transforms = ?, " + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') " + "WHERE provider_key = ?",
+                enabled ? 1 : 0, baseUrl, apiKey, apiFormat, customTransforms, providerKey);
         if (updated > 0) {
             // 返回已有记录的 id
             return jdbcTemplate.queryForObject("SELECT id FROM provider_config WHERE provider_key = ?", Integer.class, providerKey);
         }
         // 插入新记录
-        jdbcTemplate.update("INSERT INTO provider_config (provider_key, enabled, base_url, api_key, api_format) " + "VALUES (?, ?, ?, ?, ?)", providerKey, enabled ? 1 : 0, baseUrl, apiKey, apiFormat);
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, enabled, base_url, api_key, api_format, custom_transforms) " + "VALUES (?, ?, ?, ?, ?, ?)", providerKey, enabled ? 1 : 0, baseUrl, apiKey, apiFormat, customTransforms);
         return jdbcTemplate.queryForObject("SELECT id FROM provider_config WHERE provider_key = ?", Integer.class, providerKey);
     }
 
@@ -150,7 +152,7 @@ public class ProviderConfigRepository {
      * 如果没有已启用的模型，则不包含该服务商。
      */
     public List<Map<String, Object>> findAllActiveProvidersWithEnabledModels() {
-        List<Map<String, Object>> providers = jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, api_format " + "FROM provider_config WHERE enabled = 1 ORDER BY id",
+        List<Map<String, Object>> providers = jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, api_format, custom_transforms " + "FROM provider_config WHERE enabled = 1 ORDER BY id",
                 (rs, rowNum) -> {
                     Map<String, Object> row = new java.util.LinkedHashMap<>();
                     row.put("id", rs.getInt("id"));
@@ -159,6 +161,7 @@ public class ProviderConfigRepository {
                     row.put("baseUrl", rs.getString("base_url"));
                     row.put("apiKey", rs.getString("api_key"));
                     row.put("apiFormat", rs.getString("api_format"));
+                    row.put("customTransforms", rs.getString("custom_transforms"));
                     // 只查已启用的模型
                     List<Map<String, Object>> models = jdbcTemplate
                             .query("SELECT model_name, context_size, caps_tools, caps_vision, reasoning_effort " + "FROM provider_model WHERE provider_id = ? AND enabled = 1 ORDER BY sort_order, id", (rs2, rn2) -> {
@@ -183,7 +186,7 @@ public class ProviderConfigRepository {
      * 如果服务商不存在或未启用，返回 null。
      */
     public Map<String, Object> findActiveProviderByKey(String providerKey) {
-        return jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, api_format " + "FROM provider_config WHERE provider_key = ? AND enabled = 1", rs -> {
+        return jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, api_format, custom_transforms " + "FROM provider_config WHERE provider_key = ? AND enabled = 1", rs -> {
             if (rs.next()) {
                 Map<String, Object> row = new java.util.LinkedHashMap<>();
                 row.put("id", rs.getInt("id"));
@@ -192,6 +195,7 @@ public class ProviderConfigRepository {
                 row.put("baseUrl", rs.getString("base_url"));
                 row.put("apiKey", rs.getString("api_key"));
                 row.put("apiFormat", rs.getString("api_format"));
+                row.put("customTransforms", rs.getString("custom_transforms"));
                 return row;
             }
             return null;

@@ -29,6 +29,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         addColumnIfNotExists("provider_model", "reasoning_effort", "TEXT NOT NULL DEFAULT 'Medium'");
         addColumnIfNotExists("api_call_log", "response_headers", "TEXT");
         addColumnIfNotExists("api_call_log", "status_code", "INTEGER");
+        addColumnIfNotExists("provider_config", "custom_transforms", "TEXT NOT NULL DEFAULT '{}'");
     }
 
     private void addColumnIfNotExists(String table, String column, String definition) {

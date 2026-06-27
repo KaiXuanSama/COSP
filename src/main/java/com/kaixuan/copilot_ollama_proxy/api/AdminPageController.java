@@ -150,12 +150,14 @@ public class AdminPageController {
         Map<String, Object> provider = providerConfigRepository.findByKey(providerKey);
         String baseUrl = "";
         String apiKey = "";
+        String customTransforms = "{}";
         if (provider != null) {
             baseUrl = (String) provider.getOrDefault("baseUrl", "");
             apiKey = (String) provider.getOrDefault("apiKey", "");
+            customTransforms = (String) provider.getOrDefault("customTransforms", "{}");
         }
         // saveProvider 在记录不存在时会自动插入（首次启用场景）
-        providerConfigRepository.saveProvider(providerKey, enabled, baseUrl, apiKey, "openai");
+        providerConfigRepository.saveProvider(providerKey, enabled, baseUrl, apiKey, "openai", customTransforms);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("providerKey", providerKey);
         result.put("enabled", enabled);
@@ -301,7 +303,8 @@ public class AdminPageController {
     }
 
     @PostMapping("/config/api/custom-providers") @ResponseBody
-    public ResponseEntity<Map<String, Object>> addCustomProvider(@RequestParam String displayName) {
+    public ResponseEntity<Map<String, Object>> addCustomProvider(@RequestParam String displayName,
+                                                                 @RequestParam(required = false, defaultValue = "{}") String customTransforms) {
         String name = displayName == null ? "" : displayName.trim();
         if (name.isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "供应商名称不能为空"));
@@ -311,8 +314,10 @@ public class AdminPageController {
         if (providerConfigRepository.findByKey(providerKey) != null) {
             return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "该供应商名称已存在"));
         }
+        // 验证 customTransforms 格式
+        String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
         // 在 provider_config 中创建记录（默认启用）
-        providerConfigRepository.saveProvider(providerKey, true, "", "", "openai");
+        providerConfigRepository.saveProvider(providerKey, true, "", "", "openai", transforms);
         return ResponseEntity.ok(Map.of("ok", true, "providerKey", providerKey, "displayName", name));
     }
 

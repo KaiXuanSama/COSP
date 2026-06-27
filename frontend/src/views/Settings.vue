@@ -259,6 +259,23 @@ function resetCustomAdvanced() {
   customBodyTransforms.value = []
 }
 
+/** 构建高级设置 JSON */
+function buildCustomTransformsJson(): string {
+  const headers = customHeaders.value.filter(h => h.key.trim())
+  const transforms = customBodyTransforms.value.filter(t => t.key.trim())
+  if (headers.length === 0 && transforms.length === 0) {
+    return '{}'
+  }
+  const result: Record<string, any> = {}
+  if (headers.length > 0) {
+    result.custom_headers = headers.map(h => ({ key: h.key.trim(), value: h.value }))
+  }
+  if (transforms.length > 0) {
+    result.body_transforms = transforms.map(t => ({ key: t.key.trim(), value: t.value }))
+  }
+  return JSON.stringify(result)
+}
+
 /** 添加自定义供应商 */
 async function addCustomProvider() {
   const name = customProviderName.value.trim()
@@ -267,7 +284,8 @@ async function addCustomProvider() {
     return
   }
   try {
-    const res = await providerStore.addCustomProvider(name)
+    const customTransforms = buildCustomTransformsJson()
+    const res = await providerStore.addCustomProvider(name, customTransforms)
     // 注入 providerMeta
     providerMeta.value[res.providerKey] = {
       displayName: name,

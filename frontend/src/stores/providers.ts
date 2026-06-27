@@ -78,9 +78,12 @@ export const useProviderStore = defineStore('providers', () => {
 
   // ==================== 自定义供应商 ====================
 
-  async function addCustomProvider(displayName: string) {
+  async function addCustomProvider(displayName: string, customTransforms?: string) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
+    if (customTransforms) {
+      formData.append('customTransforms', customTransforms)
+    }
     const res = await http.post('/custom-providers', formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
