@@ -125,7 +125,9 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                     return entity.getBody();
                 })
                 .doOnError(e -> {
-                    if (e instanceof WebClientResponseException responseException) {
+                    // 解包重试耗尽包装，查找原始 WebClientResponseException
+                    WebClientResponseException responseException = findWebResponseException(e);
+                    if (responseException != null) {
                         Map<String, String> errHeaders = new LinkedHashMap<>();
                         responseException.getHeaders().forEach((k, v) -> errHeaders.put(k, String.join(", ", v)));
                         saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, errHeaders,
@@ -318,6 +320,21 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         long duration = System.currentTimeMillis() - startTime;
         apiCallLogRepository.saveStreamWithError(providerKey, modelName, reqHeaders, requestBody,
                 respHeaders, statusCode, chunks, errorHeaders, errorCode, errorBody, duration);
+    }
+
+    /**
+     * 从异常链中查找 WebClientResponseException。
+     * 重试耗尽时原始异常被包装在 RetryExhaustedException 中，需要递归解包。
+     */
+    private WebClientResponseException findWebResponseException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof WebClientResponseException responseException) {
+                return responseException;
+            }
+            current = current.getCause();
+        }
+        return null;
     }
 
     /**

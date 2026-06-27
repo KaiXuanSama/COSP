@@ -130,8 +130,9 @@ public class OpenAiController {
                         if (isClientDisconnect(ex)) {
                             return Mono.empty();
                         }
-                        // 透传上游错误响应
-                        if (ex instanceof org.springframework.web.reactive.function.client.WebClientResponseException responseException) {
+                        // 透传上游错误响应（重试耗尽时 WebClientResponseException 被包装在 RetryExhaustedException 中，需要解包）
+                        org.springframework.web.reactive.function.client.WebClientResponseException responseException = findWebResponseException(ex);
+                        if (responseException != null) {
                             log.warn("上游 API 返回错误 [{}] {}: {}", request.getModel(), responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
                             return Mono.just(ResponseEntity.status(responseException.getStatusCode().value())
                                     .contentType(MediaType.APPLICATION_JSON)
@@ -175,8 +176,9 @@ public class OpenAiController {
             if (isClientDisconnect(error)) {
                 return;
             }
-            // 透传上游错误响应
-            if (error instanceof org.springframework.web.reactive.function.client.WebClientResponseException responseException) {
+            // 透传上游错误响应（解包重试耗尽包装）
+            org.springframework.web.reactive.function.client.WebClientResponseException responseException = findWebResponseException(error);
+            if (responseException != null) {
                 log.warn("上游 API 返回错误 [{}] {}: {}", model, responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
                 try {
                     emitter.send(SseEmitter.event().name("error").data(responseException.getResponseBodyAsString()));
@@ -314,6 +316,21 @@ public class OpenAiController {
             current = current.getCause();
         }
         return false;
+    }
+
+    /**
+     * 从异常链中查找 WebClientResponseException。
+     * 重试耗尽时，原始异常被包装在 RetryExhaustedException 中，需要递归解包。
+     */
+    private org.springframework.web.reactive.function.client.WebClientResponseException findWebResponseException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof org.springframework.web.reactive.function.client.WebClientResponseException responseException) {
+                return responseException;
+            }
+            current = current.getCause();
+        }
+        return null;
     }
 
     /**
