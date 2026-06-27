@@ -78,9 +78,15 @@ export const useProviderStore = defineStore('providers', () => {
 
   // ==================== 自定义供应商 ====================
 
-  async function addCustomProvider(displayName: string) {
+  async function addCustomProvider(displayName: string, customTransforms?: string, baseUrl?: string) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
+    if (customTransforms) {
+      formData.append('customTransforms', customTransforms)
+    }
+    if (baseUrl) {
+      formData.append('baseUrl', baseUrl)
+    }
     const res = await http.post('/custom-providers', formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
@@ -95,5 +101,21 @@ export const useProviderStore = defineStore('providers', () => {
     await fetchAll()
   }
 
-  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchFakeVersion, addCustomProvider, deleteCustomProvider }
+  async function updateCustomProvider(providerKey: string, displayName: string, customTransforms?: string, baseUrl?: string) {
+    const formData = new URLSearchParams()
+    formData.append('displayName', displayName)
+    if (customTransforms) {
+      formData.append('customTransforms', customTransforms)
+    }
+    if (baseUrl !== undefined) {
+      formData.append('baseUrl', baseUrl)
+    }
+    await http.put(`/custom-providers/${providerKey}`, formData.toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    })
+    // 重新拉取列表
+    await fetchAll()
+  }
+
+  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchFakeVersion, addCustomProvider, deleteCustomProvider, updateCustomProvider }
 })

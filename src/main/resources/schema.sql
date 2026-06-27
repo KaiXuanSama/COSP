@@ -15,13 +15,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_authorities_username_authority
 -- ==================== 服务商配置表 ====================
 
 CREATE TABLE IF NOT EXISTS provider_config (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    provider_key  VARCHAR(30)  NOT NULL UNIQUE,   -- 服务商标识，如 longcat / mimo
-    enabled       INTEGER      NOT NULL DEFAULT 0, -- 是否启用（0=禁用，1=启用）
-    base_url      TEXT         NOT NULL DEFAULT '', -- API 基础 URL
-    api_key       TEXT         NOT NULL DEFAULT '', -- API Key
-    api_format    VARCHAR(20)  NOT NULL DEFAULT 'openai', -- API 格式（仅支持 openai）
-    updated_at    TEXT         NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_key     VARCHAR(30)  NOT NULL UNIQUE,   -- 服务商标识，如 longcat / mimo
+    enabled          INTEGER      NOT NULL DEFAULT 0, -- 是否启用（0=禁用，1=启用）
+    base_url         TEXT         NOT NULL DEFAULT '', -- API 基础 URL
+    api_key          TEXT         NOT NULL DEFAULT '', -- API Key
+    api_format       VARCHAR(20)  NOT NULL DEFAULT 'openai', -- API 格式（仅支持 openai）
+    custom_transforms TEXT        NOT NULL DEFAULT '{}', -- 自定义供应商的请求转换配置（JSON）
+    updated_at       TEXT         NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
 );
 
 -- ==================== 服务商模型表 ====================

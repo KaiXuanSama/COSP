@@ -186,7 +186,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                     }
                     return response.bodyToFlux(STRING_SSE_TYPE);
                 })
-                .retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank())
+                .retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
                 .doOnNext(raw -> log.debug("{} 原始: {}", providerDisplayName(), raw)).doOnNext(raw -> onRawStreamChunk(raw)).concatMap(chunk -> {
                     // 对所有 finish chunk（stop/tool_calls）都调用 onStreamFinish 钩子
                     if (!"[DONE]".equals(chunk) && (chunk.contains("\"finish_reason\":\"stop\"") || chunk.contains("\"finish_reason\":\"tool_calls\""))) {

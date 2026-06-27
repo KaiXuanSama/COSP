@@ -27,7 +27,8 @@ public class DatabaseRuntimeProviderCatalog implements RuntimeProviderCatalog {
     private ProviderRuntimeConfiguration toConfiguration(Map<String, Object> source) {
         List<Map<String, Object>> models = (List<Map<String, Object>>) source.getOrDefault("models", List.of());
         return new ProviderRuntimeConfiguration(asString(source.get("providerKey")), asString(source.get("baseUrl")), asString(source.get("apiKey")),
-                asString(source.getOrDefault("apiFormat", "openai")), models.stream().map(this::toModel).toList());
+                asString(source.getOrDefault("apiFormat", "openai")), models.stream().map(this::toModel).toList(),
+                asString(source.getOrDefault("customTransforms", "{}")));
     }
 
     private ProviderRuntimeModel toModel(Map<String, Object> source) {

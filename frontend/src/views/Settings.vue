@@ -225,6 +225,121 @@ const showAddModal = ref(false)
 
 const showCustomAddModal = ref(false)
 const customProviderName = ref('')
+const customAdvancedExpanded = ref(false)
+const editingCustomKey = ref<string | null>(null)
+const customBaseUrl = ref('')
+
+/** 预设供应商模板 */
+interface ProviderPreset {
+  label: string
+  baseUrl: string
+  headers: KeyValueEntry[]
+  bodyTransforms: KeyValueEntry[]
+}
+const providerPresets: ProviderPreset[] = [
+  {
+    label: 'AgentRouter',
+    baseUrl: 'https://agentrouter.org/v1',
+    headers: [{ key: 'User-Agent', value: 'claude-cli/2.1.195 (external, cli)' }],
+    bodyTransforms: [{ key: 'top_p', value: '/del/' }, { key: 'temperature', value: '/del/' }],
+  },
+  {
+    label: 'KimiCodePlan',
+    baseUrl: 'https://api.kimi.com/coding/v1',
+    headers: [],
+    bodyTransforms: [{ key: 'top_p', value: '/del/' }, { key: 'temperature', value: '/del/' }],
+  },
+]
+const presetOptions = providerPresets.map(p => ({ label: p.label, value: p.label }))
+
+/** 选择预设时自动填充高级设置 */
+function onPresetSelect(label: string) {
+  customProviderName.value = label
+  const preset = providerPresets.find(p => p.label === label)
+  if (preset) {
+    customBaseUrl.value = preset.baseUrl
+    customHeaders.value = preset.headers.map(h => ({ ...h }))
+    customBodyTransforms.value = preset.bodyTransforms.map(t => ({ ...t }))
+    customAdvancedExpanded.value = true
+  }
+}
+
+/** 高级设置 - 请求头覆盖列表 */
+interface KeyValueEntry {
+  key: string
+  value: string
+}
+const customHeaders = ref<KeyValueEntry[]>([])
+
+/** 高级设置 - 请求体修剪列表 */
+const customBodyTransforms = ref<KeyValueEntry[]>([])
+
+function addCustomHeader() {
+  customHeaders.value.push({ key: '', value: '' })
+}
+
+function removeCustomHeader(index: number) {
+  customHeaders.value.splice(index, 1)
+}
+
+function addCustomBodyTransform() {
+  customBodyTransforms.value.push({ key: '', value: '' })
+}
+
+function removeCustomBodyTransform(index: number) {
+  customBodyTransforms.value.splice(index, 1)
+}
+
+function resetCustomAdvanced() {
+  customAdvancedExpanded.value = false
+  customHeaders.value = []
+  customBodyTransforms.value = []
+  customBaseUrl.value = ''
+  editingCustomKey.value = null
+}
+
+/** 打开编辑自定义供应商模态框 */
+function openEditCustomModal(key: string) {
+  editingCustomKey.value = key
+  const provider = providerStore.providers[key]
+  const displayName = providerMeta.value[key]?.displayName || key.replace('custom-', '').replace(/-/g, ' ')
+  customProviderName.value = displayName
+  // 解析已有 customTransforms
+  customHeaders.value = []
+  customBodyTransforms.value = []
+  customBaseUrl.value = (provider as any)?.baseUrl || ''
+  if (provider) {
+    try {
+      const raw = (provider as any).customTransforms
+      const transforms = typeof raw === 'string' ? JSON.parse(raw) : (raw || {})
+      if (Array.isArray(transforms.custom_headers)) {
+        customHeaders.value = transforms.custom_headers.map((h: any) => ({ key: h.key || '', value: h.value || '' }))
+      }
+      if (Array.isArray(transforms.body_transforms)) {
+        customBodyTransforms.value = transforms.body_transforms.map((t: any) => ({ key: t.key || '', value: t.value || '' }))
+      }
+    } catch { /* ignore */ }
+  }
+  showAddModal.value = false
+  showCustomAddModal.value = true
+}
+
+/** 构建高级设置 JSON */
+function buildCustomTransformsJson(): string {
+  const headers = customHeaders.value.filter(h => h.key.trim())
+  const transforms = customBodyTransforms.value.filter(t => t.key.trim())
+  if (headers.length === 0 && transforms.length === 0) {
+    return '{}'
+  }
+  const result: Record<string, any> = {}
+  if (headers.length > 0) {
+    result.custom_headers = headers.map(h => ({ key: h.key.trim(), value: h.value }))
+  }
+  if (transforms.length > 0) {
+    result.body_transforms = transforms.map(t => ({ key: t.key.trim(), value: t.value }))
+  }
+  return JSON.stringify(result)
+}
 
 /** 添加自定义供应商 */
 async function addCustomProvider() {
@@ -234,19 +349,40 @@ async function addCustomProvider() {
     return
   }
   try {
-    const res = await providerStore.addCustomProvider(name)
-    // 注入 providerMeta
-    providerMeta.value[res.providerKey] = {
-      displayName: name,
-      colorClass: 'custom',
-      apiUrlPlaceholder: 'https://api.example.com/v1',
-      docsUrl: '',
+    const customTransforms = buildCustomTransformsJson()
+    const baseUrl = customBaseUrl.value.trim()
+    if (editingCustomKey.value) {
+      // 编辑模式
+      await providerStore.updateCustomProvider(editingCustomKey.value, name, customTransforms, baseUrl)
+      // 更新前端元数据
+      const oldKey = editingCustomKey.value
+      const newKey = 'custom-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+      const metaUpdate = { displayName: name, apiUrlPlaceholder: baseUrl || 'https://api.example.com/v1' }
+      if (newKey !== oldKey && providerMeta.value[oldKey]) {
+        providerMeta.value[newKey] = { ...providerMeta.value[oldKey], ...metaUpdate }
+        delete providerMeta.value[oldKey]
+      } else {
+        providerMeta.value[oldKey] = { ...providerMeta.value[oldKey], ...metaUpdate }
+      }
+      showCustomAddModal.value = false
+      resetCustomAdvanced()
+      message.success(`已修改自定义供应商「${name}」`)
+    } else {
+      // 新增模式
+      const res = await providerStore.addCustomProvider(name, customTransforms, baseUrl)
+      providerMeta.value[res.providerKey] = {
+        displayName: name,
+        colorClass: 'custom',
+        apiUrlPlaceholder: baseUrl || 'https://api.example.com/v1',
+        docsUrl: '',
+      }
+      showCustomAddModal.value = false
+      customProviderName.value = ''
+      resetCustomAdvanced()
+      message.success(`已添加自定义供应商「${name}」`)
     }
-    showCustomAddModal.value = false
-    customProviderName.value = ''
-    message.success(`已添加自定义供应商「${name}」`)
   } catch (e: any) {
-    message.error(e?.response?.data?.error || '添加失败')
+    message.error(e?.response?.data?.error || '操作失败')
   }
 }
 
@@ -268,6 +404,14 @@ async function removeCustomProvider(key: string) {
 /** 判断是否为自定义供应商 */
 function isCustomProvider(key: string) {
   return key.startsWith('custom-')
+}
+
+/** 内置供应商 key 列表 */
+const builtInProviderKeys = new Set(Object.keys(providerMeta.value))
+
+/** 判断是否可编辑/删除（自定义供应商 或 非内置供应商） */
+function isEditableProvider(key: string) {
+  return isCustomProvider(key) || !builtInProviderKeys.has(key)
 }
 
 const enabledProviderKeys = computed(() => {
@@ -306,10 +450,11 @@ onMounted(async () => {
     if (key.startsWith('custom-') && !providerMeta.value[key]) {
       // 从 key 生成可读的 displayName
       const displayName = key.replace('custom-', '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+      const actualBaseUrl = providerStore.providers[key]?.baseUrl || ''
       providerMeta.value[key] = {
         displayName,
         colorClass: 'custom',
-        apiUrlPlaceholder: 'https://api.example.com/v1',
+        apiUrlPlaceholder: actualBaseUrl || 'https://api.example.com/v1',
         docsUrl: '',
       }
     }
@@ -621,7 +766,15 @@ function removeModel(index: number) {
           :class="{ 'add-modal-card--custom': isCustomProvider(key) }"
           @click="enableProvider(key)">
           <div class="add-modal-card-top" :class="providerMeta[key]?.colorClass || 'accent'"></div>
-          <button v-if="isCustomProvider(key)" class="add-modal-card-delete" title="删除自定义供应商"
+          <button v-if="isEditableProvider(key)" class="add-modal-card-edit" title="修改自定义供应商"
+            @click.stop="openEditCustomModal(key)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+            </svg>
+          </button>
+          <button v-if="isEditableProvider(key)" class="add-modal-card-delete" title="删除自定义供应商"
             @click.stop="removeCustomProvider(key)">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -642,17 +795,103 @@ function removeModel(index: number) {
     </n-modal>
 
     <!-- 自定义供应商名称输入模态框 -->
-    <n-modal v-model:show="showCustomAddModal" preset="card" title="添加自定义供应商"
-      :style="{ maxWidth: '400px' }" closable :mask-closable="true">
+    <n-modal v-model:show="showCustomAddModal" preset="card" :title="editingCustomKey ? '修改自定义供应商' : '添加自定义供应商'"
+      :style="{ maxWidth: '480px' }" closable :mask-closable="true"
+      @update:show="(val: boolean) => { if (!val) resetCustomAdvanced() }">
       <div class="field-group">
         <label class="field-label">自定义供应商名称</label>
-        <n-input v-model:value="customProviderName" placeholder="例如：MyAPI"
-          @keyup.enter="addCustomProvider" />
+        <n-select
+          v-model:value="customProviderName"
+          :options="presetOptions"
+          filterable
+          tag
+          placeholder="选择预设或输入名称"
+          @update:value="onPresetSelect"
+        />
       </div>
+
+      <!-- 高级设置折叠区域 -->
+      <div class="advanced-toggle" @click="customAdvancedExpanded = !customAdvancedExpanded">
+        <span class="advanced-toggle-label">高级设置</span>
+        <svg class="advanced-toggle-arrow" :class="{ 'advanced-toggle-arrow--expanded': customAdvancedExpanded }"
+          width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </div>
+
+      <div v-if="customAdvancedExpanded" class="advanced-panel">
+        <!-- API 地址 -->
+        <div class="advanced-section">
+          <div class="advanced-section-header">
+            <span class="advanced-section-title">API 地址</span>
+          </div>
+          <n-input v-model:value="customBaseUrl" placeholder="https://api.example.com/v1" />
+        </div>
+
+        <!-- 请求头覆盖 -->
+        <div class="advanced-section">
+          <div class="advanced-section-header">
+            <span class="advanced-section-title">额外覆写或修剪请求头</span>
+            <n-button text size="tiny" class="advanced-add-btn" @click="addCustomHeader">
+              <template #icon>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </template>
+              新增
+            </n-button>
+          </div>
+          <div v-if="customHeaders.length === 0" class="advanced-empty">暂无自定义请求头</div>
+          <div v-for="(header, idx) in customHeaders" :key="idx" class="advanced-row">
+            <n-input v-model:value="header.key" placeholder="Header 名称" class="advanced-input-key" />
+            <n-input v-model:value="header.value" placeholder="值（/del/ 表示删除）" class="advanced-input-value" />
+            <button class="advanced-delete-btn" title="删除" @click="removeCustomHeader(idx)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- 请求体修剪 -->
+        <div class="advanced-section">
+          <div class="advanced-section-header">
+            <span class="advanced-section-title">额外覆写或修剪请求体</span>
+            <n-button text size="tiny" class="advanced-add-btn" @click="addCustomBodyTransform">
+              <template #icon>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </template>
+              新增
+            </n-button>
+          </div>
+          <div v-if="customBodyTransforms.length === 0" class="advanced-empty">暂无自定义请求体修剪</div>
+          <div v-for="(entry, idx) in customBodyTransforms" :key="idx" class="advanced-row">
+            <n-input v-model:value="entry.key" placeholder="字段路径" class="advanced-input-key" />
+            <n-input v-model:value="entry.value" placeholder="值（/del/ 表示删除）" class="advanced-input-value" />
+            <button class="advanced-delete-btn" title="删除" @click="removeCustomBodyTransform(idx)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <template #footer>
         <div class="custom-add-footer">
-          <n-button @click="showCustomAddModal = false; customProviderName = ''">取消</n-button>
-          <n-button type="primary" @click="addCustomProvider">添加</n-button>
+          <n-button @click="showCustomAddModal = false; resetCustomAdvanced()">取消</n-button>
+          <n-button type="primary" @click="addCustomProvider">{{ editingCustomKey ? '应用' : '添加' }}</n-button>
         </div>
       </template>
     </n-modal>
@@ -1130,6 +1369,29 @@ function removeModel(index: number) {
   position: relative;
 }
 
+.add-modal-card-edit {
+  position: absolute;
+  top: 8px;
+  right: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(194, 122, 62, 0.08);
+  color: $text-muted;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  z-index: 2;
+
+  &:hover {
+    color: $accent;
+    background: rgba(194, 122, 62, 0.15);
+  }
+}
+
 .add-modal-card-delete {
   position: absolute;
   top: 8px;
@@ -1167,6 +1429,118 @@ function removeModel(index: number) {
   display: flex;
   justify-content: flex-end;
   gap: $space-sm;
+}
+
+/* ── 高级设置 ── */
+.advanced-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: $space-sm 0;
+  margin-top: $space-xs;
+  cursor: pointer;
+  user-select: none;
+  border-top: 1px solid $border-light;
+}
+
+.advanced-toggle-label {
+  font-family: $font-mono;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: $text-muted;
+  transition: color 0.2s ease;
+
+  .advanced-toggle:hover & {
+    color: $accent;
+  }
+}
+
+.advanced-toggle-arrow {
+  color: $text-muted;
+  transition: transform 0.25s ease, color 0.2s ease;
+
+  &--expanded {
+    transform: rotate(180deg);
+  }
+
+  .advanced-toggle:hover & {
+    color: $accent;
+  }
+}
+
+.advanced-panel {
+  padding-top: $space-sm;
+}
+
+.advanced-section {
+  margin-bottom: $space-md;
+}
+
+.advanced-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: $space-sm;
+}
+
+.advanced-section-title {
+  font-family: $font-body;
+  font-size: 13px;
+  font-weight: 600;
+  color: $text-body;
+}
+
+.advanced-add-btn {
+  color: $text-muted !important;
+
+  &:hover {
+    color: $accent !important;
+  }
+}
+
+.advanced-empty {
+  text-align: center;
+  padding: $space-sm 0;
+  font-family: $font-body;
+  font-size: 12px;
+  color: $text-muted;
+}
+
+.advanced-row {
+  display: flex;
+  align-items: center;
+  gap: $space-sm;
+  margin-bottom: $space-sm;
+}
+
+.advanced-input-key {
+  flex: 0 0 35%;
+}
+
+.advanced-input-value {
+  flex: 1;
+}
+
+.advanced-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: $radius;
+  background: transparent;
+  color: $text-muted;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+
+  &:hover {
+    color: $danger;
+    background: rgba($danger, 0.08);
+  }
 }
 
 /* ── 拉取模型差异对比模态框 ── */
