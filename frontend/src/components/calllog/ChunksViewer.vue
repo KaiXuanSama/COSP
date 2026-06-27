@@ -40,7 +40,9 @@ function aggregateChunks(chunks: string[]): Segment[] {
     if (raw === '[DONE]') continue
     let obj: Record<string, unknown>
     try {
-      obj = JSON.parse(raw)
+      const parsed = JSON.parse(raw)
+      if (!parsed || typeof parsed !== 'object') continue
+      obj = parsed
     } catch {
       continue
     }
