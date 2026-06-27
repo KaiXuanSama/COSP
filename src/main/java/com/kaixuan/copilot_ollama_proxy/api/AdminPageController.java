@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.api;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.RequestTransformEngine;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -260,14 +261,29 @@ public class AdminPageController {
             return webClientBuilder.clone().defaultHeaders(headers -> {
                 headers.set(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE);
                 applyModelDiscoveryAuthHeaders(providerKey, headers, apiKey);
+                // 自定义供应商：应用 custom_transforms 中的自定义请求头
+                if (providerKey.startsWith("custom-")) {
+                    Map<String, Object> provider = providerConfigRepository.findByKey(providerKey);
+                    if (provider != null) {
+                        String customTransforms = (String) provider.getOrDefault("customTransforms", "{}");
+                        RequestTransformEngine.applyCustomHeaders(headers, apiKey, customTransforms, new com.fasterxml.jackson.databind.ObjectMapper());
+                    }
+                }
             }).build().get().uri(requestUrl).exchangeToMono(response -> response.bodyToMono(String.class).defaultIfEmpty("").map(body -> {
                 ResponseEntity.BodyBuilder builder = ResponseEntity.status(response.statusCode().value());
                 response.headers().contentType().ifPresent(builder::contentType);
                 return builder.body(body);
-            })).onErrorResume(ex -> Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON).body("{\"error\":\"连接上游服务失败，请检查 API 地址是否正确。\"}"))).blockOptional()
-                    .orElseGet(() -> ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON).body("{\"error\":\"连接上游服务失败，请检查 API 地址是否正确。\"}"));
+            })).onErrorResume(ex -> {
+                String detail = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
+                return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"error\":\"连接上游服务失败: " + detail.replace("\"", "'") + "\"}"));
+            }).blockOptional()
+                    .orElseGet(() -> ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
+                            .body("{\"error\":\"连接上游服务失败: 无响应\"}"));
         } catch (Exception ex) {
-            return ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON).body("{\"error\":\"连接上游服务失败，请检查 API 地址是否正确。\"}");
+            String detail = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
+            return ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
+                    .body("{\"error\":\"连接上游服务失败: " + detail.replace("\"", "'") + "\"}");
         }
     }
 

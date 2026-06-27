@@ -5,7 +5,12 @@ import java.util.List;
 /**
  * 运行时 Provider 配置快照。
  */
-public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey, String apiFormat, List<ProviderRuntimeModel> models) {
+public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey, String apiFormat, List<ProviderRuntimeModel> models, String customTransforms) {
+
+    /** 便捷构造函数 — customTransforms 默认为 "{}"（无自定义转换）。 */
+    public ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey, String apiFormat, List<ProviderRuntimeModel> models) {
+        this(providerKey, baseUrl, apiKey, apiFormat, models, "{}");
+    }
 
     public ProviderRuntimeConfiguration {
         providerKey = providerKey == null ? "" : providerKey;
@@ -13,6 +18,7 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
         apiKey = apiKey == null ? "" : apiKey;
         apiFormat = (apiFormat == null || apiFormat.isBlank()) ? "openai" : apiFormat;
         models = models == null ? List.of() : List.copyOf(models);
+        customTransforms = (customTransforms == null || customTransforms.isBlank()) ? "{}" : customTransforms;
     }
 
     public boolean supportsModel(String modelName) {

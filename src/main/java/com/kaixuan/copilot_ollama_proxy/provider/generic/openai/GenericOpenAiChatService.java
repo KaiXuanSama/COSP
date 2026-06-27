@@ -15,12 +15,19 @@ import java.util.Map;
 /**
  * 通用 OpenAI 上游服务 —— 处理所有 custom-* 前缀的自定义供应商。
  * 从数据库动态读取配置，复用父类的请求准备、SSE 解析、日志和流式翻译基础设施。
+ * <p>
+ * 支持通过 custom_transforms 配置对请求头和请求体进行动态转换：
+ * <ul>
+ *   <li>custom_headers — 新增/覆写/删除请求头</li>
+ *   <li>body_transforms — 新增/覆写/删除请求体字段</li>
+ * </ul>
  */
 @Service
 public class GenericOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatService {
 
     private static final String PROVIDER_KEY = "__generic__";
     private final RuntimeProviderCatalog runtimeProviderCatalog;
+    private final ObjectMapper objectMapper;
 
     /** 当前请求动态解析的 providerKey，由 chatCompletion/chatCompletionStream 设置 */
     private final ThreadLocal<String> currentProviderKey = new ThreadLocal<>();
@@ -28,6 +35,7 @@ public class GenericOpenAiChatService extends AbstractOpenAiCompatibleUpstreamCh
     public GenericOpenAiChatService(RuntimeProviderCatalog runtimeProviderCatalog, ObjectMapper objectMapper) {
         super(runtimeProviderCatalog, objectMapper, "");
         this.runtimeProviderCatalog = runtimeProviderCatalog;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -52,12 +60,29 @@ public class GenericOpenAiChatService extends AbstractOpenAiCompatibleUpstreamCh
 
     @Override
     protected void applyAuthenticationHeaders(HttpHeaders headers, String apiKey) {
+        // 先设置默认的 Bearer Token 鉴权
         headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
+        // 再根据 custom_transforms 覆写/新增/删除请求头
+        ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
+        if (config != null) {
+            RequestTransformEngine.applyCustomHeaders(headers, apiKey, config.customTransforms(), objectMapper);
+        }
     }
 
     @Override
     protected String chatCompletionsUri() {
         return "/chat/completions";
+    }
+
+    /**
+     * 根据 custom_transforms 配置对请求体进行动态转换。
+     */
+    @Override
+    protected void customizeRequestBody(Map<String, Object> body, String resolvedModel) {
+        ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
+        if (config != null) {
+            RequestTransformEngine.applyBodyTransforms(body, config.customTransforms(), objectMapper);
+        }
     }
 
     /**
