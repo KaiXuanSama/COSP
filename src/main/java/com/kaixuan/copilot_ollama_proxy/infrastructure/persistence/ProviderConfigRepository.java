@@ -229,9 +229,17 @@ public class ProviderConfigRepository {
     // ==================== 工具 ====================
 
     /**
-     * 根据 provider_key 删除服务商配置（级联删除关联的模型）。
+     * 根据 provider_key 删除服务商配置及其关联的模型。
+     * 先删除 provider_model 中的关联记录，再删除 provider_config。
+     * （SQLite 默认不启用外键约束，手动删除确保数据一致性）
      */
     public void deleteByKey(String providerKey) {
+        Integer providerId = jdbcTemplate.query("SELECT id FROM provider_config WHERE provider_key = ?", rs -> {
+            return rs.next() ? rs.getInt("id") : null;
+        }, providerKey);
+        if (providerId != null) {
+            jdbcTemplate.update("DELETE FROM provider_model WHERE provider_id = ?", providerId);
+        }
         jdbcTemplate.update("DELETE FROM provider_config WHERE provider_key = ?", providerKey);
     }
 
