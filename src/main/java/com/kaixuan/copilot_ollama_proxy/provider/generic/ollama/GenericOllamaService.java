@@ -34,6 +34,12 @@ public class GenericOllamaService extends AbstractRuntimeCatalogOllamaService {
     private final RuntimeProviderCatalog runtimeProviderCatalog;
     private final ObjectMapper objectMapper;
 
+    /**
+     * 全局 WebClient.Builder（在 WebClientConfig 中配置了 JDK 系统 DNS 解析器），
+     * 用于构建底层传输客户端，避免 Netty 默认解析器的间歇性 DNS 失败。
+     */
+    private final WebClient.Builder webClientBuilder;
+
     /** 当前请求动态解析的 providerKey，由 chat/chatStream 设置 */
     private final ThreadLocal<String> currentProviderKey = new ThreadLocal<>();
 
@@ -42,6 +48,7 @@ public class GenericOllamaService extends AbstractRuntimeCatalogOllamaService {
         super(runtimeProviderCatalog, "");
         this.runtimeProviderCatalog = runtimeProviderCatalog;
         this.objectMapper = objectMapper;
+        this.webClientBuilder = webClientBuilder;
     }
 
     @Override
@@ -215,7 +222,7 @@ public class GenericOllamaService extends AbstractRuntimeCatalogOllamaService {
     }
 
     private OpenAiTransportClient buildTransportClient(String providerKey) {
-        return new OpenAiTransportClient(runtimeProviderCatalog, WebClient.builder(),
+        return new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder,
                 new OpenAiTransportClient.Config(providerKey, "", "/chat/completions",
                         (headers, apiKey) -> headers.set(org.springframework.http.HttpHeaders.AUTHORIZATION, "Bearer " + apiKey),
                         raw -> raw.replaceAll("/+$", "")));

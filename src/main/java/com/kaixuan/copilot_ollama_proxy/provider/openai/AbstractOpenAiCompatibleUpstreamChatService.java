@@ -63,9 +63,23 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     /** API 调用日志仓库，由子类 Spring Bean 通过 setter 注入。 */
     private ApiCallLogRepository apiCallLogRepository;
 
+    /**
+     * 全局 WebClient.Builder，由 Spring 通过 setter 注入。
+     * 该 Builder 在 WebClientConfig 中配置了 JDK 系统 DNS 解析器，
+     * 避免 Netty 默认异步解析器在 Windows 上的间歇性 DNS 解析失败。
+     */
+    private WebClient.Builder webClientBuilder = WebClient.builder();
+
     @Autowired(required = false)
     public void setApiCallLogRepository(ApiCallLogRepository apiCallLogRepository) {
         this.apiCallLogRepository = apiCallLogRepository;
+    }
+
+    @Autowired(required = false)
+    public void setWebClientBuilder(WebClient.Builder webClientBuilder) {
+        if (webClientBuilder != null) {
+            this.webClientBuilder = webClientBuilder;
+        }
     }
 
     /**
@@ -250,7 +264,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         String baseUrl = (config == null || config.baseUrl().isBlank()) ? defaultBaseUrl() : config.baseUrl();
         String normalizedUrl = normalizeBaseUrl(baseUrl);
 
-        return WebClient.builder().baseUrl(normalizedUrl).defaultHeaders(headers -> {
+        return webClientBuilder.clone().baseUrl(normalizedUrl).defaultHeaders(headers -> {
             applyAuthenticationHeaders(headers, apiKey);
             headers.setContentType(MediaType.APPLICATION_JSON);
             // 捕获实际发送的请求头（脱敏后）用于日志
