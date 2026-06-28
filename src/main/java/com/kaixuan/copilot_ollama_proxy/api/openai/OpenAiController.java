@@ -125,7 +125,23 @@ public class OpenAiController {
         } else {
             // 非流式调用上游服务，获取完整响应后提取 usage 进行记录，并返回给客户端。
             return upstreamChatService.chatCompletion(requestBody, request.getModel()).doOnNext(this::recordUsage)
-                    .map(openAiJson -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(openAiJson));
+                    .map(openAiJson -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(openAiJson))
+                    .onErrorResume(ex -> {
+                        if (isClientDisconnect(ex)) {
+                            return Mono.empty();
+                        }
+                        // 透传上游错误响应（重试耗尽时 WebClientResponseException 被包装在 RetryExhaustedException 中，需要解包）
+                        org.springframework.web.reactive.function.client.WebClientResponseException responseException = findWebResponseException(ex);
+                        if (responseException != null) {
+                            log.warn("上游 API 返回错误 [{}] {}: {}", request.getModel(), responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
+                            return Mono.just(ResponseEntity.status(responseException.getStatusCode().value())
+                                    .contentType(MediaType.APPLICATION_JSON)
+                                    .body(responseException.getResponseBodyAsString()));
+                        }
+                        log.warn("上游 API 调用失败 [{}]: {} ({})", request.getModel(), extractRootCause(ex), extractRequestUrl(ex));
+                        return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
+                                .body("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}"));
+                    });
         }
     }
 
@@ -160,8 +176,28 @@ public class OpenAiController {
             if (isClientDisconnect(error)) {
                 return;
             }
-            log.error("上游 API 调用异常", error);
-            emitter.completeWithError(error);
+            // 透传上游错误响应（解包重试耗尽包装）
+            org.springframework.web.reactive.function.client.WebClientResponseException responseException = findWebResponseException(error);
+            if (responseException != null) {
+                log.warn("上游 API 返回错误 [{}] {}: {}", model, responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
+                try {
+                    emitter.send(SseEmitter.event().name("error").data(responseException.getResponseBodyAsString()));
+                } catch (Exception sendEx) {
+                    if (!isClientDisconnect(sendEx)) {
+                        log.warn("发送错误事件失败: {}", sendEx.getMessage());
+                    }
+                }
+            } else {
+                log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(error), extractRequestUrl(error));
+                try {
+                    emitter.send(SseEmitter.event().name("error").data("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}"));
+                } catch (Exception sendEx) {
+                    if (!isClientDisconnect(sendEx)) {
+                        log.warn("发送错误事件失败: {}", sendEx.getMessage());
+                    }
+                }
+            }
+            emitter.complete();
         }, () -> {
             apiUsageCollector.record(streamInputTokens.get(), streamOutputTokens.get());
             try {
@@ -280,5 +316,64 @@ public class OpenAiController {
             current = current.getCause();
         }
         return false;
+    }
+
+    /**
+     * 从异常链中查找 WebClientResponseException。
+     * 重试耗尽时，原始异常被包装在 RetryExhaustedException 中，需要递归解包。
+     */
+    private org.springframework.web.reactive.function.client.WebClientResponseException findWebResponseException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof org.springframework.web.reactive.function.client.WebClientResponseException responseException) {
+                return responseException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    /**
+     * 从异常链中提取最底层的有意义错误信息，过滤掉 Reactor/Netty 内部异常。
+     * 例如 DNS 解析失败会提取 "Failed to resolve 'api.kimi.com'"。
+     */
+    private String extractRootCause(Throwable throwable) {
+        Throwable deepest = throwable;
+        Throwable current = throwable;
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+            String msg = current.getMessage();
+            // 跳过无意义的包装异常（Reactor、Netty 内部）
+            if (msg != null && !msg.isBlank() && !msg.startsWith("Retries exhausted")) {
+                deepest = current;
+            }
+        }
+        String msg = deepest.getMessage();
+        return (msg != null && !msg.isBlank()) ? msg : deepest.getClass().getSimpleName();
+    }
+
+    /**
+     * 从异常中提取请求 URL（如有）。
+     * WebClientRequestException 的 message 中通常包含目标 URL。
+     */
+    private String extractRequestUrl(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof org.springframework.web.reactive.function.client.WebClientRequestException requestEx) {
+                java.net.URI uri = requestEx.getUri();
+                if (uri != null) return uri.toString();
+            }
+            // 从 Reactor checkpoint 中提取 URL
+            String msg = current.getMessage();
+            if (msg != null && msg.contains("Request to POST ")) {
+                int start = msg.indexOf("Request to POST ") + 16;
+                int end = msg.indexOf(" ", start);
+                if (end < 0) end = msg.indexOf("]", start);
+                if (end < 0) end = msg.length();
+                return msg.substring(start, end).trim();
+            }
+            current = current.getCause();
+        }
+        return "unknown";
     }
 }

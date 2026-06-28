@@ -63,9 +63,23 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     /** API 调用日志仓库，由子类 Spring Bean 通过 setter 注入。 */
     private ApiCallLogRepository apiCallLogRepository;
 
+    /**
+     * 全局 WebClient.Builder，由 Spring 通过 setter 注入。
+     * 该 Builder 在 WebClientConfig 中配置了 JDK 系统 DNS 解析器，
+     * 避免 Netty 默认异步解析器在 Windows 上的间歇性 DNS 解析失败。
+     */
+    private WebClient.Builder webClientBuilder = WebClient.builder();
+
     @Autowired(required = false)
     public void setApiCallLogRepository(ApiCallLogRepository apiCallLogRepository) {
         this.apiCallLogRepository = apiCallLogRepository;
+    }
+
+    @Autowired(required = false)
+    public void setWebClientBuilder(WebClient.Builder webClientBuilder) {
+        if (webClientBuilder != null) {
+            this.webClientBuilder = webClientBuilder;
+        }
     }
 
     /**
@@ -111,8 +125,9 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         long startTime = System.currentTimeMillis();
         String providerKey = getLoggingProviderKey();
         String modelName = (String) requestBody.get("model");
+        Map<String, String> reqHeaders = new LinkedHashMap<>();
 
-        return buildWebClient().post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).bodyValue(requestBody).retrieve()
+        return buildWebClientWithHeaders(reqHeaders).post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).bodyValue(requestBody).retrieve()
                 .toEntity(String.class)
                 .retryWhen(buildRetrySpec("chatCompletion"))
                 .doOnNext(entity -> log.debug("{} 响应: {}", providerDisplayName(), entity.getBody()))
@@ -120,18 +135,19 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                     Map<String, String> respHeaders = new LinkedHashMap<>();
                     entity.getHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
                     int statusCode = entity.getStatusCode().value();
-                    saveNonStreamLog(providerKey, modelName, requestBody, respHeaders, statusCode, entity.getBody(), startTime);
+                    saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, entity.getBody(), startTime);
                     return entity.getBody();
                 })
                 .doOnError(e -> {
-                    // 捕获上游错误响应体、状态码和响应头
-                    if (e instanceof WebClientResponseException responseException) {
+                    // 解包重试耗尽包装，查找原始 WebClientResponseException
+                    WebClientResponseException responseException = findWebResponseException(e);
+                    if (responseException != null) {
                         Map<String, String> errHeaders = new LinkedHashMap<>();
                         responseException.getHeaders().forEach((k, v) -> errHeaders.put(k, String.join(", ", v)));
-                        saveNonStreamLog(providerKey, modelName, requestBody, errHeaders,
+                        saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, errHeaders,
                                 responseException.getStatusCode().value(), responseException.getResponseBodyAsString(), startTime);
                     } else {
-                        saveNonStreamLog(providerKey, modelName, requestBody, Map.of(), 0, null, startTime);
+                        saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, Map.of(), -1, null, startTime);
                     }
                 });
     }
@@ -155,6 +171,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         long startTime = System.currentTimeMillis();
         String providerKey = getLoggingProviderKey();
         String modelName = (String) requestBody.get("model");
+        Map<String, String> reqHeaders = new LinkedHashMap<>();
         List<String> logChunks = new java.util.concurrent.CopyOnWriteArrayList<>();
         AtomicReference<Map<String, String>> capturedRespHeaders = new AtomicReference<>(Map.of());
         AtomicReference<Integer> capturedStatusCode = new AtomicReference<>(0);
@@ -167,7 +184,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         StringBuilder reasoningBuffer = new StringBuilder();
         AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
 
-        return buildWebClient().post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody)
+        return buildWebClientWithHeaders(reqHeaders).post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody)
                 .exchangeToFlux(response -> {
                     Map<String, String> respHeaders = new LinkedHashMap<>();
                     response.headers().asHttpHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
@@ -210,12 +227,17 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                     // 如果有错误信息（重试耗尽），同时记录错误响应体到非流式响应列
                     String errorBody = lastErrorBody.get();
                     if (errorBody != null && !errorBody.isEmpty()) {
-                        saveStreamLogWithError(providerKey, modelName, requestBody,
+                        saveStreamLogWithError(providerKey, modelName, reqHeaders, requestBody,
                                 capturedRespHeaders.get(), capturedStatusCode.get(), logChunks,
                                 lastErrorHeaders.get(), lastErrorCode.get(), errorBody, startTime);
                     } else {
-                        saveStreamLog(providerKey, modelName, requestBody,
-                                capturedRespHeaders.get(), capturedStatusCode.get(), logChunks, startTime);
+                        // 网络错误时 status_code 保持 0，标记为 -1 表示连接失败
+                        int statusCode = capturedStatusCode.get();
+                        if (statusCode == 0 && logChunks.isEmpty()) {
+                            statusCode = -1;
+                        }
+                        saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
+                                capturedRespHeaders.get(), statusCode, logChunks, startTime);
                     }
                 });
     }
@@ -229,18 +251,31 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     }
 
     /**
-     * 构建 WebClient，设置 Base URL 和认证头，Base URL 和认证信息从运行时配置中动态读取。
-     * @return 配置好的 WebClient 实例，用于发送请求到上游服务
+     * 构建 WebClient，同时捕获实际发送的请求头快照用于日志记录。
+     * 返回的 Map 会在 WebClient.defaultHeaders 回调中被填充，
+     * 因此捕获的是经过 applyAuthenticationHeaders 和 customizeRequestBody 处理后的最终请求头。
+     *
+     * @param capturedHeaders 用于捕获请求头的 Map，构建完成后包含实际发送的 headers
+     * @return 配置好的 WebClient 实例
      */
-    protected WebClient buildWebClient() {
+    protected WebClient buildWebClientWithHeaders(Map<String, String> capturedHeaders) {
         ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
         String apiKey = config != null ? config.apiKey() : "";
         String baseUrl = (config == null || config.baseUrl().isBlank()) ? defaultBaseUrl() : config.baseUrl();
         String normalizedUrl = normalizeBaseUrl(baseUrl);
 
-        return WebClient.builder().baseUrl(normalizedUrl).defaultHeaders(headers -> {
+        return webClientBuilder.clone().baseUrl(normalizedUrl).defaultHeaders(headers -> {
             applyAuthenticationHeaders(headers, apiKey);
             headers.setContentType(MediaType.APPLICATION_JSON);
+            // 捕获实际发送的请求头（脱敏后）用于日志
+            headers.forEach((k, v) -> {
+                if (HttpHeaders.AUTHORIZATION.equalsIgnoreCase(k) || "api-key".equalsIgnoreCase(k)) {
+                    String val = v.stream().findFirst().orElse("");
+                    capturedHeaders.put(k, val.length() > 8 ? val.substring(0, 4) + "****" + val.substring(val.length() - 4) : "****");
+                } else {
+                    capturedHeaders.put(k, String.join(", ", v));
+                }
+            });
         }).build();
     }
 
@@ -273,48 +308,47 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     /**
      * 保存非流式调用日志。
      */
-    private void saveNonStreamLog(String providerKey, String modelName, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, String responseBody, long startTime) {
+    private void saveNonStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, String responseBody, long startTime) {
         if (apiCallLogRepository == null) return;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLogRepository.saveNonStream(providerKey, modelName, buildRequestHeaders(), requestBody, respHeaders, statusCode, responseBody, duration);
+        apiCallLogRepository.saveNonStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, responseBody, duration);
     }
 
     /**
      * 保存流式调用日志。
      */
-    private void saveStreamLog(String providerKey, String modelName, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, List<String> chunks, long startTime) {
+    private void saveStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, List<String> chunks, long startTime) {
         if (apiCallLogRepository == null) return;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLogRepository.saveStream(providerKey, modelName, buildRequestHeaders(), requestBody, respHeaders, statusCode, chunks, duration);
+        apiCallLogRepository.saveStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, chunks, duration);
     }
 
     /**
      * 保存流式调用日志（含错误信息）。
      * 当流式响应过程中发生错误且重试耗尽时，将错误响应体保存到非流式响应列。
      */
-    private void saveStreamLogWithError(String providerKey, String modelName, Map<String, Object> requestBody,
+    private void saveStreamLogWithError(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody,
                                         Map<String, String> respHeaders, int statusCode, List<String> chunks,
                                         Map<String, String> errorHeaders, int errorCode, String errorBody, long startTime) {
         if (apiCallLogRepository == null) return;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLogRepository.saveStreamWithError(providerKey, modelName, buildRequestHeaders(), requestBody,
+        apiCallLogRepository.saveStreamWithError(providerKey, modelName, reqHeaders, requestBody,
                 respHeaders, statusCode, chunks, errorHeaders, errorCode, errorBody, duration);
     }
 
     /**
-     * 构建当前请求的请求头快照（从运行时配置还原）。
+     * 从异常链中查找 WebClientResponseException。
+     * 重试耗尽时原始异常被包装在 RetryExhaustedException 中，需要递归解包。
      */
-    private Map<String, String> buildRequestHeaders() {
-        Map<String, String> headers = new LinkedHashMap<>();
-        headers.put("Content-Type", "application/json");
-        ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
-        if (config != null && config.apiKey() != null && !config.apiKey().isBlank()) {
-            String masked = config.apiKey().length() > 8
-                    ? config.apiKey().substring(0, 4) + "****" + config.apiKey().substring(config.apiKey().length() - 4)
-                    : "****";
-            headers.put("Authorization", "Bearer " + masked);
+    private WebClientResponseException findWebResponseException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof WebClientResponseException responseException) {
+                return responseException;
+            }
+            current = current.getCause();
         }
-        return headers;
+        return null;
     }
 
     /**

@@ -142,59 +142,17 @@ onMounted(() => window.addEventListener('resize', onResize))
 onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 
 const providerMeta = ref<Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string; docsUrl: string }>>({
-  longcat: {
-    displayName: 'LongCat',
-    colorClass: 'accent',
-    apiUrlPlaceholder: 'https://api.longcat.chat/openai/v1',
-    docsUrl: 'https://longcat.chat/platform/docs/zh/#%E5%8D%95%E6%AC%A1%E8%AF%B7%E6%B1%82%E9%99%90%E5%88%B6',
-  },
   mimo: {
     displayName: 'MiMo',
     colorClass: 'blue',
     apiUrlPlaceholder: 'https://api.xiaomimimo.com/v1',
     docsUrl: 'https://platform.xiaomimimo.com/docs/zh-CN/pricing',
   },
-  sensenova: {
-    displayName: 'SenseNova',
-    colorClass: 'success',
-    apiUrlPlaceholder: 'https://token.sensenova.cn/v1',
-    docsUrl: 'https://platform.sensenova.cn/docs',
-  },
   deepseek: {
     displayName: 'DeepSeek',
     colorClass: 'warning',
     apiUrlPlaceholder: 'https://api.deepseek.com/v1',
     docsUrl: 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing',
-  },
-  uumit: {
-    displayName: 'Uumit',
-    colorClass: 'accent',
-    apiUrlPlaceholder: 'https://agent.uumit.com/v1',
-    docsUrl: 'https://agent.uumit.com/docs',
-  },
-  agnes: {
-    displayName: 'Agnes',
-    colorClass: 'accent',
-    apiUrlPlaceholder: 'https://apihub.agnes-ai.com/v1',
-    docsUrl: 'https://agnes-ai.com/doc/overview',
-  },
-  zhipu: {
-    displayName: 'Zhipu',
-    colorClass: 'warning',
-    apiUrlPlaceholder: 'https://open.bigmodel.cn/api/paas/v4',
-    docsUrl: 'https://docs.bigmodel.cn/cn/guide/start/introduction',
-  },
-  xunfei: {
-    displayName: 'Xunfei',
-    colorClass: 'success',
-    apiUrlPlaceholder: 'https://maas-api.cn-huabei-1.xf-yun.com/v2',
-    docsUrl: 'https://www.xfyun.cn/doc/spark/%E6%8E%A8%E7%90%86%E6%9C%8D%E5%8A%A1-http.html',
-  },
-  kimi: {
-    displayName: 'Kimi',
-    colorClass: 'accent',
-    apiUrlPlaceholder: 'https://api.moonshot.cn/v1',
-    docsUrl: 'https://platform.kimi.com/docs/overview',
   },
 })
 
@@ -248,6 +206,48 @@ const providerPresets: ProviderPreset[] = [
     baseUrl: 'https://api.kimi.com/coding/v1',
     headers: [],
     bodyTransforms: [{ key: 'top_p', value: '/del/' }, { key: 'temperature', value: '/del/' }],
+  },
+  {
+    label: 'LongCat',
+    baseUrl: 'https://api.longcat.chat/openai/v1',
+    headers: [],
+    bodyTransforms: [],
+  },
+  {
+    label: 'SenseNova',
+    baseUrl: 'https://token.sensenova.cn/v1',
+    headers: [],
+    bodyTransforms: [],
+  },
+  {
+    label: 'Uumit',
+    baseUrl: 'https://agent.uumit.com/v1',
+    headers: [],
+    bodyTransforms: [],
+  },
+  {
+    label: 'Agnes',
+    baseUrl: 'https://apihub.agnes-ai.com/v1',
+    headers: [],
+    bodyTransforms: [],
+  },
+  {
+    label: 'Zhipu',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    headers: [],
+    bodyTransforms: [],
+  },
+  {
+    label: 'Xunfei',
+    baseUrl: 'https://maas-api.cn-huabei-1.xf-yun.com/v2',
+    headers: [],
+    bodyTransforms: [],
+  },
+  {
+    label: 'Kimi',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    headers: [],
+    bodyTransforms: [],
   },
 ]
 const presetOptions = providerPresets.map(p => ({ label: p.label, value: p.label }))
@@ -543,19 +543,27 @@ function resolvePullModelsErrorMessage(error: any) {
   const status = error?.response?.status
   const data = error?.response?.data
 
+  // 优先使用后端返回的友好错误信息
   if (data && typeof data === 'object' && typeof data.error === 'string' && data.error.trim()) {
-    return data.error
+    return '模型拉取失败：' + data.error
   }
   if (typeof data === 'string' && data.trim()) {
-    return data
+    try {
+      const parsed = JSON.parse(data)
+      if (typeof parsed.error === 'string' && parsed.error.trim()) {
+        return '模型拉取失败：' + parsed.error
+      }
+    } catch { /* 非 JSON，使用原文 */ }
+    return '模型拉取失败：' + data
   }
+  // 前端兜底
   if (status === 401 || status === 403) {
     return '模型拉取失败：API Key 无效或无权限'
   }
   if (status === 404) {
     return '模型拉取失败：模型列表端点不存在'
   }
-  return '拉取模型失败'
+  return '拉取模型失败，请检查网络连接和 API 地址'
 }
 
 function closeEditPanel() {
