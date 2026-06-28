@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -14,10 +15,13 @@ import java.util.Map;
 /**
  * API 调用日志数据访问层 — 基于 JdbcTemplate 操作 SQLite api_call_log 表。
  *
+ * 实现 application 层的 {@link ApiCallLogService} 写入接口，provider 层通过接口依赖本类；
+ * 查询方法（findLogs/findLogById）供管理后台使用，不属于领域接口。
+ *
  * 记录每次调用上游供应商 API 的完整请求/响应信息，用于排查和审计。
  */
 @Repository
-public class ApiCallLogRepository {
+public class ApiCallLogRepository implements ApiCallLogService {
 
     private static final Logger log = LoggerFactory.getLogger(ApiCallLogRepository.class);
 
@@ -32,6 +36,7 @@ public class ApiCallLogRepository {
     /**
      * 保存一条非流式调用日志。
      */
+    @Override
     public void saveNonStream(String providerKey, String modelName,
                               Map<String, String> requestHeaders, Map<String, Object> requestBody,
                               Map<String, String> responseHeaders, int statusCode, String responseBody, long durationMs) {
@@ -51,6 +56,7 @@ public class ApiCallLogRepository {
     /**
      * 保存一条流式调用日志。
      */
+    @Override
     public void saveStream(String providerKey, String modelName,
                            Map<String, String> requestHeaders, Map<String, Object> requestBody,
                            Map<String, String> responseHeaders, int statusCode, List<String> chunks, long durationMs) {
@@ -71,6 +77,7 @@ public class ApiCallLogRepository {
      * 保存一条流式调用日志（含错误信息）。
      * 当流式响应过程中发生错误且重试耗尽时，将错误响应体保存到非流式响应列。
      */
+    @Override
     public void saveStreamWithError(String providerKey, String modelName,
                                     Map<String, String> requestHeaders, Map<String, Object> requestBody,
                                     Map<String, String> responseHeaders, int statusCode, List<String> chunks,

@@ -3,8 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.openai.CompositeUpstreamChatService;
-import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
+import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiModelsResponse;
@@ -20,7 +19,6 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,26 +40,26 @@ public class OpenAiController {
     private final CompositeUpstreamChatService upstreamChatService;
     private final ObjectMapper objectMapper;
     private final ApiUsageCollector apiUsageCollector;
-    private final ProviderConfigRepository providerConfigRepository;
+    private final ModelCatalogService modelCatalogService;
 
     /**
-     * 构造函数注入 CompositeUpstreamChatService、ObjectMapper、ApiUsageCollector 和 ProviderConfigRepository。
+     * 构造函数注入 CompositeUpstreamChatService、ObjectMapper、ApiUsageCollector 和 ModelCatalogService。
      * @param upstreamChatService 上游聊天服务组合
      * @param objectMapper JSON 对象映射器
      * @param apiUsageCollector API 使用量收集器
-     * @param providerConfigRepository 服务商配置仓库，用于获取可用模型列表
+     * @param modelCatalogService 模型目录服务，用于获取可用模型列表
      */
-    public OpenAiController(CompositeUpstreamChatService upstreamChatService, ObjectMapper objectMapper, ApiUsageCollector apiUsageCollector, ProviderConfigRepository providerConfigRepository) {
+    public OpenAiController(CompositeUpstreamChatService upstreamChatService, ObjectMapper objectMapper, ApiUsageCollector apiUsageCollector, ModelCatalogService modelCatalogService) {
         this.upstreamChatService = upstreamChatService;
         this.objectMapper = objectMapper;
         this.apiUsageCollector = apiUsageCollector;
-        this.providerConfigRepository = providerConfigRepository;
+        this.modelCatalogService = modelCatalogService;
     }
 
     /**
      * 获取可用模型列表。
      * <p>
-     * 从数据库读取所有已启用服务商及其已启用模型，
+     * 通过 {@link ModelCatalogService} 读取所有已启用服务商及其已启用模型，
      * 返回符合 OpenAI API 规范的模型列表。
      * <p>
      * 端点：GET /v1/models
@@ -85,27 +83,10 @@ public class OpenAiController {
     @GetMapping(value = "/v1/models")
     public Mono<OpenAiModelsResponse> listModels() {
         return Mono.fromCallable(() -> {
-            List<ModelData> models = new ArrayList<>();
             long defaultCreated = System.currentTimeMillis() / 1000;
-
-            // 从数据库读取所有已启用服务商及其已启用模型
-            List<Map<String, Object>> activeProviders = providerConfigRepository.findAllActiveProvidersWithEnabledModels();
-            for (Map<String, Object> provider : activeProviders) {
-                String providerKey = (String) provider.getOrDefault("providerKey", "unknown");
-                @SuppressWarnings("unchecked")
-                List<Map<String, Object>> providerModels = (List<Map<String, Object>>) provider.get("models");
-                if (providerModels == null) continue;
-
-                for (Map<String, Object> m : providerModels) {
-                    String modelName = (String) m.getOrDefault("modelName", "");
-                    if (modelName.isEmpty()) continue;
-                    // 构建带供应商前缀的模型名称，自定义供应商去掉 custom- 前缀
-                    String displayKey = providerKey.startsWith("custom-") ? providerKey.substring(7) : providerKey;
-                    String prefixedModelName = ModelNameUtil.buildPrefixedName(displayKey, modelName);
-                    models.add(new ModelData(prefixedModelName, defaultCreated, displayKey));
-                }
-            }
-
+            List<ModelData> models = modelCatalogService.listAvailableModels().stream()
+                    .map(m -> new ModelData(m.prefixedName(), defaultCreated, m.displayKey()))
+                    .toList();
             return new OpenAiModelsResponse(models);
         }).subscribeOn(Schedulers.boundedElastic());
     }

@@ -1,8 +1,8 @@
 package com.kaixuan.copilot_ollama_proxy.api.ollama;
 
 import com.kaixuan.copilot_ollama_proxy.application.ollama.CompositeOllamaService;
-import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
+import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
+import com.kaixuan.copilot_ollama_proxy.application.config.AppConfigService;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowRequest;
@@ -33,12 +33,14 @@ import java.util.UUID;
 public class OllamaApiController {
 
     private final CompositeOllamaService ollamaService;
-    private final ProviderConfigRepository providerConfigRepository;
+    private final ModelCatalogService modelCatalogService;
+    private final AppConfigService appConfigService;
     private final String defaultVersion;
 
-    public OllamaApiController(CompositeOllamaService ollamaService, ProviderConfigRepository providerConfigRepository, @Value("${ollama.version}") String defaultVersion) {
+    public OllamaApiController(CompositeOllamaService ollamaService, ModelCatalogService modelCatalogService, AppConfigService appConfigService, @Value("${ollama.version}") String defaultVersion) {
         this.ollamaService = ollamaService;
-        this.providerConfigRepository = providerConfigRepository;
+        this.modelCatalogService = modelCatalogService;
+        this.appConfigService = appConfigService;
         this.defaultVersion = defaultVersion;
     }
 
@@ -50,7 +52,7 @@ public class OllamaApiController {
     @GetMapping("/version")
     public Mono<Map<String, String>> version() {
         return Mono.fromCallable(() -> {
-            String dbVersion = providerConfigRepository.findConfigValue("fake_version");
+            String dbVersion = appConfigService.findValue("fake_version");
             String ver = (dbVersion != null && !dbVersion.isBlank()) ? dbVersion : defaultVersion;
             return Map.of("version", ver);
         }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
@@ -58,7 +60,7 @@ public class OllamaApiController {
 
     /**
      * 返回可用模型列表。
-     * 从数据库聚合所有已启用服务商下用户勾选的模型。
+     * 通过 {@link ModelCatalogService} 聚合所有已启用服务商下用户勾选的模型。
      * 如果没有任何模型启用（或所有服务商均未启用），则回退返回 "nano_llm"。
      */
     @GetMapping("/tags")
@@ -67,22 +69,8 @@ public class OllamaApiController {
             var response = new OllamaTagsResponse();
             List<OllamaTagsResponse.ModelInfo> allModels = new ArrayList<>();
 
-            // 从数据库读取所有已启用服务商及其已启用模型
-            List<Map<String, Object>> activeProviders = providerConfigRepository.findAllActiveProvidersWithEnabledModels();
-            for (Map<String, Object> provider : activeProviders) {
-                String providerKey = (String) provider.getOrDefault("providerKey", "unknown");
-                @SuppressWarnings("unchecked")
-                List<Map<String, Object>> models = (List<Map<String, Object>>) provider.get("models");
-                if (models == null)
-                    continue;
-                for (Map<String, Object> m : models) {
-                    String modelName = (String) m.getOrDefault("modelName", "");
-                    if (modelName.isEmpty())
-                        continue;
-                    boolean capsTools = Boolean.TRUE.equals(m.get("capsTools"));
-                    boolean capsVision = Boolean.TRUE.equals(m.get("capsVision"));
-                    allModels.add(createModelInfo(modelName, providerKey, capsTools, capsVision));
-                }
+            for (var model : modelCatalogService.listAvailableModels()) {
+                allModels.add(createModelInfo(model));
             }
 
             if (allModels.isEmpty()) {
@@ -98,18 +86,14 @@ public class OllamaApiController {
     /**
      * 构造单个模型的 ModelInfo 对象。
      * 模型名称会添加供应商前缀，格式为 [ProviderKey] modelName。
-     * 根据提供的模型名称、服务商标识和能力列表生成符合 Ollama 规范的模型信息。
-     * @param modelName 模型显示名称（如 "mimo-v2.5-pro"）
-     * @param providerKey 服务商标识（如 "mimo"），用于构造模型详细信息
-     * @param capsTools 是否支持工具调用能力
-     * @param capsVision 是否支持视觉能力
+     * 根据可用模型描述符生成符合 Ollama 规范的模型信息。
+     * @param model 可用模型描述符（含原始供应商键、展示前缀名、能力标记）
      * @return 构造好的 ModelInfo 对象
      */
-    private OllamaTagsResponse.ModelInfo createModelInfo(String modelName, String providerKey, boolean capsTools, boolean capsVision) {
+    private OllamaTagsResponse.ModelInfo createModelInfo(com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel model) {
+        String providerKey = model.providerKey();
         var info = new OllamaTagsResponse.ModelInfo();
-        // 添加供应商前缀，自定义供应商去掉 custom- 前缀
-        String displayKey = providerKey.startsWith("custom-") ? providerKey.substring(7) : providerKey;
-        String prefixedName = ModelNameUtil.buildPrefixedName(displayKey, modelName);
+        String prefixedName = model.prefixedName();
         info.setName(prefixedName);
         info.setModel(prefixedName);
         info.setModifiedAt(java.time.Instant.now().toString());

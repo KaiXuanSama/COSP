@@ -5,7 +5,7 @@ import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
+import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -60,8 +60,8 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     /** 运行时 provider 配置目录，统一暴露数据库中的 provider 配置。 */
     private final RuntimeProviderCatalog runtimeProviderCatalog;
 
-    /** API 调用日志仓库，由子类 Spring Bean 通过 setter 注入。 */
-    private ApiCallLogRepository apiCallLogRepository;
+    /** API 调用日志写入服务，由子类 Spring Bean 通过 setter 注入。 */
+    private ApiCallLogService apiCallLogRepository;
 
     /**
      * 全局 WebClient.Builder，由 Spring 通过 setter 注入。
@@ -71,7 +71,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     private WebClient.Builder webClientBuilder = WebClient.builder();
 
     @Autowired(required = false)
-    public void setApiCallLogRepository(ApiCallLogRepository apiCallLogRepository) {
+    public void setApiCallLogRepository(ApiCallLogService apiCallLogRepository) {
         this.apiCallLogRepository = apiCallLogRepository;
     }
 
