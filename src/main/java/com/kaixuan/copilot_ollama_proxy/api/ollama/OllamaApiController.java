@@ -48,10 +48,12 @@ public class OllamaApiController {
      * Copilot 在连接时会调用此接口确认 Ollama 服务是否可用。
      */
     @GetMapping("/version")
-    public Map<String, String> version() {
-        String dbVersion = providerConfigRepository.findConfigValue("fake_version");
-        String ver = (dbVersion != null && !dbVersion.isBlank()) ? dbVersion : defaultVersion;
-        return Map.of("version", ver);
+    public Mono<Map<String, String>> version() {
+        return Mono.fromCallable(() -> {
+            String dbVersion = providerConfigRepository.findConfigValue("fake_version");
+            String ver = (dbVersion != null && !dbVersion.isBlank()) ? dbVersion : defaultVersion;
+            return Map.of("version", ver);
+        }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
     }
 
     /**
@@ -90,7 +92,7 @@ public class OllamaApiController {
 
             response.setModels(allModels);
             return response;
-        });
+        }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
     }
 
     /**
@@ -153,11 +155,12 @@ public class OllamaApiController {
      * 如果请求的是兜底模型 "nano_llm"，直接构造响应，不经过 provider 链。
      */
     @PostMapping("/show")
-    public OllamaShowResponse show(@RequestBody OllamaShowRequest request) {
+    public Mono<OllamaShowResponse> show(@RequestBody OllamaShowRequest request) {
         if ("nano_llm".equals(request.getModel())) {
-            return createNanoLlmShowResponse();
+            return Mono.just(createNanoLlmShowResponse());
         }
-        return ollamaService.showModel(request.getModel());
+        return Mono.fromCallable(() -> ollamaService.showModel(request.getModel()))
+                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
     }
 
     /**
