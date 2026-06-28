@@ -12,8 +12,10 @@ import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.provisioning.JdbcUserDetailsManager;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
@@ -143,35 +145,40 @@ public class AdminPageController {
     // ==================== 服务商编辑保存 ====================
 
     @PostMapping("/config/api/providers/{providerKey}/config") @ResponseBody
-    public ResponseEntity<Map<String, Object>> saveProviderConfig(@PathVariable String providerKey, @RequestParam Map<String, String> params) {
-        String baseUrl = params.getOrDefault("baseUrl", "").trim();
-        String apiKey = params.getOrDefault("apiKey", "").trim();
-        int providerId = providerConfigRepository.updateProviderConfig(providerKey, baseUrl, apiKey, "openai");
-        List<Map<String, Object>> models = new ArrayList<>();
-        String prefix = "models[";
-        java.util.Set<Integer> indices = new java.util.TreeSet<>();
-        for (String key : params.keySet()) {
-            if (key.startsWith(prefix) && key.contains("].")) {
-                try {
-                    int start = prefix.length();
-                    int end = key.indexOf(']', start);
-                    indices.add(Integer.parseInt(key.substring(start, end)));
-                } catch (NumberFormatException ignored) {
+    public Mono<ResponseEntity<Map<String, Object>>> saveProviderConfig(@PathVariable String providerKey, ServerWebExchange exchange) {
+        // WebFlux 读取 application/x-www-form-urlencoded 表单的标准方式：exchange.getFormData()
+        return exchange.getFormData().map(form -> {
+            java.util.function.BiFunction<String, String, String> getParam =
+                    (key, def) -> { String v = form.getFirst(key); return v != null ? v : def; };
+            String baseUrl = getParam.apply("baseUrl", "").trim();
+            String apiKey = getParam.apply("apiKey", "").trim();
+            int providerId = providerConfigRepository.updateProviderConfig(providerKey, baseUrl, apiKey, "openai");
+            List<Map<String, Object>> models = new ArrayList<>();
+            String prefix = "models[";
+            java.util.Set<Integer> indices = new java.util.TreeSet<>();
+            for (String key : form.keySet()) {
+                if (key.startsWith(prefix) && key.contains("].")) {
+                    try {
+                        int start = prefix.length();
+                        int end = key.indexOf(']', start);
+                        indices.add(Integer.parseInt(key.substring(start, end)));
+                    } catch (NumberFormatException ignored) {
+                    }
                 }
             }
-        }
-        for (int i : indices) {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("modelName", params.getOrDefault(prefix + i + "].name", "").trim());
-            m.put("enabled", "on".equals(params.get(prefix + i + "].enabled")));
-            m.put("contextSize", params.getOrDefault(prefix + i + "].contextSize", "0").trim());
-            m.put("capsTools", "on".equals(params.get(prefix + i + "].capsTools")));
-            m.put("capsVision", "on".equals(params.get(prefix + i + "].capsVision")));
-            m.put("reasoningEffort", params.getOrDefault(prefix + i + "].reasoningEffort", "Medium").trim());
-            models.add(m);
-        }
-        providerConfigRepository.saveModels(providerId, models);
-        return ResponseEntity.ok(Map.of("ok", true));
+            for (int i : indices) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("modelName", getParam.apply(prefix + i + "].name", "").trim());
+                m.put("enabled", "on".equals(form.getFirst(prefix + i + "].enabled")));
+                m.put("contextSize", getParam.apply(prefix + i + "].contextSize", "0").trim());
+                m.put("capsTools", "on".equals(form.getFirst(prefix + i + "].capsTools")));
+                m.put("capsVision", "on".equals(form.getFirst(prefix + i + "].capsVision")));
+                m.put("reasoningEffort", getParam.apply(prefix + i + "].reasoningEffort", "Medium").trim());
+                models.add(m);
+            }
+            providerConfigRepository.saveModels(providerId, models);
+            return ResponseEntity.ok(Map.<String, Object>of("ok", true));
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     /**
@@ -314,24 +321,27 @@ public class AdminPageController {
     }
 
     @PostMapping("/config/api/custom-providers") @ResponseBody
-    public ResponseEntity<Map<String, Object>> addCustomProvider(@RequestParam String displayName,
-                                                                 @RequestParam(required = false, defaultValue = "{}") String customTransforms,
-                                                                 @RequestParam(required = false, defaultValue = "") String baseUrl) {
-        String name = displayName == null ? "" : displayName.trim();
-        if (name.isEmpty()) {
-            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "供应商名称不能为空"));
-        }
-        String providerKey = "custom-" + name.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
-        // 检查是否已存在
-        if (providerConfigRepository.findByKey(providerKey) != null) {
-            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "该供应商名称已存在"));
-        }
-        // 验证 customTransforms 格式
-        String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
-        String url = baseUrl == null ? "" : baseUrl.trim();
-        // 在 provider_config 中创建记录（默认启用）
-        providerConfigRepository.saveProvider(providerKey, true, url, "", "openai", transforms);
-        return ResponseEntity.ok(Map.of("ok", true, "providerKey", providerKey, "displayName", name));
+    public Mono<ResponseEntity<Map<String, Object>>> addCustomProvider(ServerWebExchange exchange) {
+        return exchange.getFormData().map(form -> {
+            String displayName = form.getFirst("displayName");
+            String customTransforms = form.getFirst("customTransforms");
+            String baseUrl = form.getFirst("baseUrl");
+            String name = displayName == null ? "" : displayName.trim();
+            if (name.isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "供应商名称不能为空"));
+            }
+            String providerKey = "custom-" + name.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
+            // 检查是否已存在
+            if (providerConfigRepository.findByKey(providerKey) != null) {
+                return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "该供应商名称已存在"));
+            }
+            // 验证 customTransforms 格式
+            String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
+            String url = baseUrl == null ? "" : baseUrl.trim();
+            // 在 provider_config 中创建记录（默认启用）
+            providerConfigRepository.saveProvider(providerKey, true, url, "", "openai", transforms);
+            return ResponseEntity.ok(Map.<String, Object>of("ok", true, "providerKey", providerKey, "displayName", name));
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     @DeleteMapping("/config/api/custom-providers/{providerKey}") @ResponseBody
@@ -341,40 +351,47 @@ public class AdminPageController {
     }
 
     @PutMapping("/config/api/custom-providers/{providerKey}") @ResponseBody
-    public ResponseEntity<Map<String, Object>> updateCustomProvider(@PathVariable String providerKey,
-                                                                    @RequestParam String displayName,
-                                                                    @RequestParam(required = false, defaultValue = "{}") String customTransforms,
-                                                                    @RequestParam(required = false, defaultValue = "") String baseUrl) {
-        String name = displayName == null ? "" : displayName.trim();
-        if (name.isEmpty()) {
-            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "供应商名称不能为空"));
-        }
-        // 检查原供应商是否存在
-        Map<String, Object> existing = providerConfigRepository.findByKey(providerKey);
-        if (existing == null) {
-            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "供应商不存在"));
-        }
-        // 生成新的 providerKey
-        String newProviderKey = "custom-" + name.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
-        // 如果名称改变了，检查新 key 是否冲突
-        if (!newProviderKey.equals(providerKey)) {
-            if (providerConfigRepository.findByKey(newProviderKey) != null) {
-                return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "该供应商名称已存在"));
+    public Mono<ResponseEntity<Map<String, Object>>> updateCustomProvider(@PathVariable String providerKey,
+                                                                    ServerWebExchange exchange) {
+        return exchange.getFormData().map(form -> {
+            String displayName = form.getFirst("displayName");
+            String customTransforms = form.getFirst("customTransforms");
+            String baseUrl = form.getFirst("baseUrl");
+            String name = displayName == null ? "" : displayName.trim();
+            if (name.isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "供应商名称不能为空"));
             }
-        }
-        String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
-        String url = baseUrl == null ? "" : baseUrl.trim();
-        // 直接更新 provider_key、custom_transforms 和 base_url，保留关联的模型配置
-        providerConfigRepository.updateProviderKeyAndTransforms(providerKey, newProviderKey, transforms, url);
-        return ResponseEntity.ok(Map.of("ok", true, "providerKey", newProviderKey, "displayName", name));
+            // 检查原供应商是否存在
+            Map<String, Object> existing = providerConfigRepository.findByKey(providerKey);
+            if (existing == null) {
+                return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "供应商不存在"));
+            }
+            // 生成新的 providerKey
+            String newProviderKey = "custom-" + name.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
+            // 如果名称改变了，检查新 key 是否冲突
+            if (!newProviderKey.equals(providerKey)) {
+                if (providerConfigRepository.findByKey(newProviderKey) != null) {
+                    return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "该供应商名称已存在"));
+                }
+            }
+            String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
+            String url = baseUrl == null ? "" : baseUrl.trim();
+            // 直接更新 provider_key、custom_transforms 和 base_url，保留关联的模型配置
+            providerConfigRepository.updateProviderKeyAndTransforms(providerKey, newProviderKey, transforms, url);
+            return ResponseEntity.ok(Map.<String, Object>of("ok", true, "providerKey", newProviderKey, "displayName", name));
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     @PostMapping("/config/api/account") @ResponseBody
-    public Mono<ResponseEntity<Map<String, Object>>> saveAccountApi(Mono<Authentication> authenticationMono, @RequestParam(value = "newUsername", required = false) String newUsername,
-            @RequestParam(value = "currentPassword", required = false) String currentPassword, @RequestParam(value = "newPassword", required = false) String newPassword,
-            @RequestParam(value = "confirmPassword", required = false) String confirmPassword) {
+    public Mono<ResponseEntity<Map<String, Object>>> saveAccountApi(Mono<Authentication> authenticationMono, ServerWebExchange exchange) {
+        return Mono.zip(authenticationMono, exchange.getFormData()).map(tuple -> {
+            Authentication authentication = tuple.getT1();
+            MultiValueMap<String, String> form = tuple.getT2();
+            String newUsername = form.getFirst("newUsername");
+            String currentPassword = form.getFirst("currentPassword");
+            String newPassword = form.getFirst("newPassword");
+            String confirmPassword = form.getFirst("confirmPassword");
 
-        return authenticationMono.map(authentication -> {
             String currentUsername = authentication.getName();
             Map<String, Object> result = new LinkedHashMap<>();
 
