@@ -448,6 +448,11 @@ const disabledProviderKeys = computed(() => {
   return allKeys.filter(k => !providerStore.providers[k]?.enabled)
 })
 
+/**判断是否已有至少一个自定义供应商被创建（用于模态框空状态提示判断） */
+const hasCustomProviders = computed(() => {
+  return Object.keys(providerStore.providers).some(k => k.startsWith('custom-'))
+})
+
 watch(editingKey, (key) => {
   if (docsWindow.value.visible && key) {
     docsWindow.value.providerKey = key
@@ -784,10 +789,10 @@ function removeModel(index: number) {
     <!-- 添加服务商模态框 -->
     <n-modal v-model:show="showAddModal" preset="card" title="添加服务商" :style="{ maxWidth: '480px' }" closable
       :mask-closable="true">
-      <div v-if="disabledProviderKeys.length === 0" class="add-modal-empty">
-        所有服务商已启用
+      <div v-if="disabledProviderKeys.length === 0 && !hasCustomProviders" class="add-modal-empty">
+        所有内置服务商已启用
       </div>
-      <div v-else class="add-modal-grid">
+      <div class="add-modal-grid">
         <div v-for="key in disabledProviderKeys" :key="key" class="add-modal-card"
           :class="{ 'add-modal-card--custom': isCustomProvider(key) }"
           @click="enableProvider(key)">
@@ -811,7 +816,7 @@ function removeModel(index: number) {
           <div class="add-modal-card-name">{{ providerMeta[key]?.displayName || key }}</div>
           <div class="add-modal-card-desc">{{ providerMeta[key]?.apiUrlPlaceholder || '' }}</div>
         </div>
-        <!-- 自定义供应商入口 -->
+        <!-- 自定义供应商入口 — 始终显示，不依赖 disabledProviderKeys -->
         <div class="add-modal-card add-modal-card--new" @click="showAddModal = false; showCustomAddModal = true">
           <div class="add-modal-card-top accent"></div>
           <div class="add-modal-card-name">自定义供应商</div>
