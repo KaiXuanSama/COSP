@@ -186,6 +186,7 @@ const customProviderName = ref('')
 const customAdvancedExpanded = ref(false)
 const editingCustomKey = ref<string | null>(null)
 const customBaseUrl = ref('')
+const showPresetModal = ref(false)
 
 /** 预设供应商模板 */
 interface ProviderPreset {
@@ -194,19 +195,8 @@ interface ProviderPreset {
   headers: KeyValueEntry[]
   bodyTransforms: KeyValueEntry[]
 }
-const providerPresets: ProviderPreset[] = [
-  {
-    label: 'AgentRouter',
-    baseUrl: 'https://agentrouter.org/v1',
-    headers: [{ key: 'User-Agent', value: 'claude-cli/2.1.195 (external, cli)' }],
-    bodyTransforms: [{ key: 'top_p', value: '/del/' }, { key: 'temperature', value: '/del/' }],
-  },
-  {
-    label: 'KimiCodePlan',
-    baseUrl: 'https://api.kimi.com/coding/v1',
-    headers: [],
-    bodyTransforms: [{ key: 'top_p', value: '/del/' }, { key: 'temperature', value: '/del/' }],
-  },
+
+const officialPresets: ProviderPreset[] = [
   {
     label: 'LongCat',
     baseUrl: 'https://api.longcat.chat/openai/v1',
@@ -214,16 +204,16 @@ const providerPresets: ProviderPreset[] = [
     bodyTransforms: [],
   },
   {
-    label: 'SenseNova',
-    baseUrl: 'https://token.sensenova.cn/v1',
+    label: 'Kimi',
+    baseUrl: 'https://api.moonshot.cn/v1',
     headers: [],
     bodyTransforms: [],
   },
   {
-    label: 'Uumit',
-    baseUrl: 'https://agent.uumit.com/v1',
+    label: 'Kimi (CodePlan)',
+    baseUrl: 'https://api.kimi.com/coding/v1',
     headers: [],
-    bodyTransforms: [],
+    bodyTransforms: [{ key: 'top_p', value: '/del/' }, { key: 'temperature', value: '/del/' }],
   },
   {
     label: 'Agnes',
@@ -237,31 +227,59 @@ const providerPresets: ProviderPreset[] = [
     headers: [],
     bodyTransforms: [],
   },
+]
+
+const aggregatorPresets: ProviderPreset[] = [
+  {
+    label: 'SenseNova',
+    baseUrl: 'https://token.sensenova.cn/v1',
+    headers: [],
+    bodyTransforms: [],
+  },
+  {
+    label: 'Uumit',
+    baseUrl: 'https://agent.uumit.com/v1',
+    headers: [],
+    bodyTransforms: [],
+  },
   {
     label: 'Xunfei',
     baseUrl: 'https://maas-api.cn-huabei-1.xf-yun.com/v2',
     headers: [],
     bodyTransforms: [],
   },
+]
+
+const relayPresets: ProviderPreset[] = [
   {
-    label: 'Kimi',
-    baseUrl: 'https://api.moonshot.cn/v1',
-    headers: [],
-    bodyTransforms: [],
+    label: 'AgentRouter',
+    baseUrl: 'https://agentrouter.org/v1',
+    headers: [{ key: 'User-Agent', value: 'claude-cli/2.1.195 (external, cli)' }],
+    bodyTransforms: [{ key: 'top_p', value: '/del/' }, { key: 'temperature', value: '/del/' }],
   },
 ]
-const presetOptions = providerPresets.map(p => ({ label: p.label, value: p.label }))
 
+const allPresets = [...officialPresets, ...aggregatorPresets, ...relayPresets]
 /** 选择预设时自动填充高级设置 */
-function onPresetSelect(label: string) {
-  customProviderName.value = label
-  const preset = providerPresets.find(p => p.label === label)
+function applyPreset(label: string) {
+  const preset = allPresets.find(p => p.label === label)
   if (preset) {
+    customProviderName.value = preset.label
     customBaseUrl.value = preset.baseUrl
     customHeaders.value = preset.headers.map(h => ({ ...h }))
     customBodyTransforms.value = preset.bodyTransforms.map(t => ({ ...t }))
     customAdvancedExpanded.value = true
   }
+  showPresetModal.value = false
+}
+
+/** 清空自定义供应商表单所有内容 */
+function clearCustomForm() {
+  customProviderName.value = ''
+  customBaseUrl.value = ''
+  customHeaders.value = []
+  customBodyTransforms.value = []
+  customAdvancedExpanded.value = false
 }
 
 /** 高级设置 - 请求头覆盖列表 */
@@ -808,14 +826,11 @@ function removeModel(index: number) {
       @update:show="(val: boolean) => { if (!val) resetCustomAdvanced() }">
       <div class="field-group">
         <label class="field-label">自定义供应商名称</label>
-        <n-select
-          v-model:value="customProviderName"
-          :options="presetOptions"
-          filterable
-          tag
-          placeholder="选择预设或输入名称"
-          @update:value="onPresetSelect"
-        />
+        <div class="custom-name-row">
+          <n-input v-model:value="customProviderName" placeholder="输入供应商名称" />
+          <n-button size="small" @click="clearCustomForm">清空</n-button>
+          <n-button size="small" @click="showPresetModal = true">预设</n-button>
+        </div>
       </div>
 
       <!-- 高级设置折叠区域 -->
@@ -902,6 +917,25 @@ function removeModel(index: number) {
           <n-button type="primary" @click="addCustomProvider">{{ editingCustomKey ? '应用' : '添加' }}</n-button>
         </div>
       </template>
+    </n-modal>
+
+    <!-- 预设供应商选择模态框 -->
+    <n-modal v-model:show="showPresetModal" preset="card" title="选择预设供应商"
+      :style="{ maxWidth: '640px' }" closable :mask-closable="true">
+      <div class="preset-columns">
+        <n-card class="preset-card" title="官方供应商" :bordered="true" size="small" content-scrollable>
+          <div v-for="p in officialPresets" :key="p.label"
+            class="preset-item" @click="applyPreset(p.label)">{{ p.label }}</div>
+        </n-card>
+        <n-card class="preset-card" title="整合商" :bordered="true" size="small" content-scrollable>
+          <div v-for="p in aggregatorPresets" :key="p.label"
+            class="preset-item" @click="applyPreset(p.label)">{{ p.label }}</div>
+        </n-card>
+        <n-card class="preset-card" title="中转站" :bordered="true" size="small" content-scrollable>
+          <div v-for="p in relayPresets" :key="p.label"
+            class="preset-item" @click="applyPreset(p.label)">{{ p.label }}</div>
+        </n-card>
+      </div>
     </n-modal>
 
     <!-- 拉取模型差异对比模态框 -->
@@ -1437,6 +1471,40 @@ function removeModel(index: number) {
   display: flex;
   justify-content: flex-end;
   gap: $space-sm;
+}
+
+.custom-name-row {
+  display: flex;
+  gap: $space-sm;
+  align-items: center;
+}
+
+/* ── 预设供应商列表 ── */
+.preset-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: $space-md;
+}
+
+.preset-card {
+  min-height: 0;
+  max-height: 320px;
+}
+
+.preset-item {
+  padding: 8px $space-md;
+  border-radius: $radius;
+  font-family: $font-display;
+  font-size: 15px;
+  font-weight: 600;
+  color: $text-primary;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover {
+    background: $accent-light;
+    color: $accent;
+  }
 }
 
 /* ── 高级设置 ── */
