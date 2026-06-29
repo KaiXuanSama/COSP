@@ -5,6 +5,7 @@ type EditableModel = Record<string, any>
 
 defineProps<{
     pullingModels: boolean
+    hasDocs?: boolean
 }>()
 
 const models = defineModel<EditableModel[]>('models', { required: true })
@@ -50,7 +51,7 @@ const effortOptions = [
                     </template>
                     拉取模型
                 </n-button>
-                <n-button text size="tiny" @click="emit('open-docs')" class="docs-window-btn">
+                <n-button v-if="hasDocs" text size="tiny" @click="emit('open-docs')" class="docs-window-btn">
                     <template #icon>
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

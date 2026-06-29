@@ -1016,7 +1016,7 @@ function removeModel(index: number) {
           <n-input v-model:value="editForm.apiKey" type="password" placeholder="请输入 API Key" show-password-on="click" />
         </div>
 
-        <ProviderModelsSection v-model:models="editForm.models" :pulling-models="pullingModels"
+        <ProviderModelsSection v-model:models="editForm.models" :pulling-models="pullingModels" :has-docs="!!(editingKey && providerMeta[editingKey]?.docsUrl)"
           @pull-models="pullModels" @open-docs="openOfficialDocs" @add-model="addModel" @remove-model="removeModel" />
 
         <template #footer>
