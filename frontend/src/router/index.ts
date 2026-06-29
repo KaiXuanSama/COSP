@@ -5,6 +5,7 @@ import Overview from '@/views/Overview.vue'
 import Settings from '@/views/Settings.vue'
 import Account from '@/views/Account.vue'
 import CallLog from '@/views/CallLog.vue'
+import { auth } from '@/api'
 
 const routes = [
   {
@@ -71,18 +72,12 @@ const router = createRouter({
   routes,
 })
 
-// 路由守卫：检查认证状态
-// 使用 fetch + redirect: manual 避免 Axios 自动跟随 Spring Security 的 302 重定向
-router.beforeEach(async (to, from, next) => {
+// 路由守卫：检查本地 JWT token，无 token 时跳转登录页
+router.beforeEach((to, from, next) => {
   if (to.meta.requiresAuth) {
-    try {
-      const res = await fetch('/config/api/me', { redirect: 'manual' })
-      if (res.status === 200) {
-        next()
-      } else {
-        next('/login?unauthorized=true')
-      }
-    } catch {
+    if (auth.isAuthenticated()) {
+      next()
+    } else {
       next('/login?unauthorized=true')
     }
   } else {

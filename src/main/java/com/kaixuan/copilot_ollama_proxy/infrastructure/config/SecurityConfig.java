@@ -1,12 +1,19 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.config;
 
+import com.kaixuan.copilot_ollama_proxy.infrastructure.security.JwtService;
+import io.jsonwebtoken.Claims;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
+import org.springframework.security.config.web.server.SecurityWebFiltersOrder;
 import org.springframework.security.config.web.server.ServerHttpSecurity;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.ReactiveUserDetailsService;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -14,21 +21,20 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.provisioning.JdbcUserDetailsManager;
 import org.springframework.security.web.server.SecurityWebFilterChain;
-import org.springframework.security.web.server.authentication.RedirectServerAuthenticationFailureHandler;
-import org.springframework.security.web.server.authentication.RedirectServerAuthenticationSuccessHandler;
-import org.springframework.security.web.server.authentication.logout.RedirectServerLogoutSuccessHandler;
+import org.springframework.security.web.server.authentication.AuthenticationWebFilter;
+import org.springframework.security.web.server.context.NoOpServerSecurityContextRepository;
 import org.springframework.security.web.server.util.matcher.ServerWebExchangeMatchers;
-import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import javax.sql.DataSource;
-import java.net.URI;
+import java.util.List;
 
 /**
- * 响应式（WebFlux）安全配置。
+ * 响应式（WebFlux）安全配置 —— JWT Bearer Token 模式。
  *
- * 管理后台使用表单登录，CSRF 完全禁用，用户数据存储在 SQLite 中。
+ * 管理后台使用无状态 JWT 认证，CSRF 完全禁用，用户数据存储在 SQLite 中。
+ * 前端登录后持有 JWT，每次请求通过 Authorization: Bearer xxx 头传递。
  *
  * 用户存储仍复用阻塞式的 JdbcUserDetailsManager（供 AdminPageController 做用户 CRUD），
  * 但通过 ReactiveUserDetailsService 适配器桥接到响应式 Security，
@@ -39,47 +45,67 @@ import java.net.URI;
 public class SecurityConfig {
 
     /**
-     * 配置响应式安全过滤链：表单登录、登出、未认证重定向、禁用 CSRF。
+     * 配置响应式安全过滤链：JWT Bearer Token 认证、禁用 CSRF、无状态 session。
      *
      * @param http ServerHttpSecurity 构建器
+     * @param jwtService JWT 服务
      * @return 安全过滤链
      */
     @Bean
-    public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
-        RedirectServerAuthenticationSuccessHandler successHandler = new RedirectServerAuthenticationSuccessHandler("/overview");
-        RedirectServerAuthenticationFailureHandler failureHandler = new RedirectServerAuthenticationFailureHandler("/login?login=error");
-        RedirectServerLogoutSuccessHandler logoutSuccessHandler = new RedirectServerLogoutSuccessHandler();
-        logoutSuccessHandler.setLogoutSuccessUrl(URI.create("/login?login=logout"));
-
+    public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http, JwtService jwtService) {
         http
-                .securityMatcher(ServerWebExchangeMatchers.pathMatchers("/login", "/config/**", "/logout", "/overview", "/settings", "/account", "/call-log", "/"))
+                .securityMatcher(ServerWebExchangeMatchers.pathMatchers("/config/**", "/auth/me", "/overview", "/settings", "/account", "/call-log"))
                 .authorizeExchange(exchange -> exchange
-                        .pathMatchers("/login", "/config/api/stats", "/config/api/providers", "/config/api/heatmap").permitAll()
+                        .pathMatchers("/config/api/stats", "/config/api/providers", "/config/api/heatmap").permitAll()
                         .pathMatchers("/overview", "/settings", "/account", "/call-log").authenticated()
                         .pathMatchers("/config/**").authenticated()
-                        .pathMatchers("/logout", "/").permitAll()
+                        .pathMatchers("/auth/me").authenticated()
                         .anyExchange().permitAll())
-                .formLogin(form -> form
-                        .loginPage("/login")
-                        .authenticationSuccessHandler(successHandler)
-                        .authenticationFailureHandler(failureHandler))
-                .logout(logout -> logout
-                        .logoutUrl("/logout")
-                        .logoutSuccessHandler(logoutSuccessHandler))
+                .csrf(ServerHttpSecurity.CsrfSpec::disable)
+                .httpBasic(ServerHttpSecurity.HttpBasicSpec::disable)
+                .formLogin(ServerHttpSecurity.FormLoginSpec::disable)
+                .logout(ServerHttpSecurity.LogoutSpec::disable)
+                .securityContextRepository(NoOpServerSecurityContextRepository.getInstance())
                 .exceptionHandling(exception -> exception
-                        .authenticationEntryPoint((exchange, ex) -> redirect(exchange, "/login?unauthorized=true")))
-                .csrf(ServerHttpSecurity.CsrfSpec::disable);
+                        .authenticationEntryPoint((exchange, ex) -> {
+                            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+                            return exchange.getResponse().setComplete();
+                        }));
+
+        // 注册 JWT 认证过滤器
+        http.addFilterAt(jwtAuthenticationFilter(jwtService), SecurityWebFiltersOrder.AUTHENTICATION);
 
         return http.build();
     }
 
     /**
-     * 发送 302 重定向到指定位置。
+     * JWT 认证过滤器：从 Authorization 头提取 Bearer Token，验证后注入 Authentication。
+     *
+     * @param jwtService JWT 服务
+     * @return AuthenticationWebFilter
      */
-    private Mono<Void> redirect(ServerWebExchange exchange, String location) {
-        exchange.getResponse().setStatusCode(HttpStatus.FOUND);
-        exchange.getResponse().getHeaders().setLocation(URI.create(location));
-        return exchange.getResponse().setComplete();
+    private AuthenticationWebFilter jwtAuthenticationFilter(JwtService jwtService) {
+        AuthenticationWebFilter filter = new AuthenticationWebFilter((org.springframework.security.authentication.ReactiveAuthenticationManager) authentication -> Mono.just(authentication));
+
+        filter.setServerAuthenticationConverter(exchange -> {
+            String authHeader = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
+            String token = jwtService.extractBearerToken(authHeader);
+            if (token == null) {
+                return Mono.empty();
+            }
+            try {
+                Claims claims = jwtService.parseToken(token);
+                String username = claims.getSubject();
+                String role = claims.get("role", String.class);
+                Authentication authentication = new UsernamePasswordAuthenticationToken(
+                        username, null, List.of(new SimpleGrantedAuthority(role)));
+                return Mono.just(authentication);
+            } catch (Exception e) {
+                return Mono.empty();
+            }
+        });
+
+        return filter;
     }
 
     /**
@@ -139,3 +165,4 @@ public class SecurityConfig {
         return new BCryptPasswordEncoder();
     }
 }
+
