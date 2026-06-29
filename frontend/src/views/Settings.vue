@@ -248,6 +248,12 @@ const aggregatorPresets: ProviderPreset[] = [
     headers: [],
     bodyTransforms: [],
   },
+  {
+    label: 'WorkBuddy',
+    baseUrl: 'https://copilot.tencent.com/v2',
+    headers: [],
+    bodyTransforms: [],
+  },
 ]
 
 const relayPresets: ProviderPreset[] = [
@@ -256,6 +262,12 @@ const relayPresets: ProviderPreset[] = [
     baseUrl: 'https://agentrouter.org/v1',
     headers: [{ key: 'User-Agent', value: 'claude-cli/2.1.195 (external, cli)' }],
     bodyTransforms: [{ key: 'top_p', value: '/del/' }, { key: 'temperature', value: '/del/' }],
+  },
+  {
+    label: 'FreeModel',
+    baseUrl: 'https://api.freemodel.dev/v1',
+    headers: [],
+    bodyTransforms: [],
   },
 ]
 
