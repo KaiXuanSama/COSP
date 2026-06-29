@@ -2,11 +2,12 @@ package com.kaixuan.copilot_ollama_proxy.application.catalog;
 
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderModelRow;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 /**
  * {@link ModelCatalogService} 的默认实现 —— 基于 {@link ProviderConfigRepository} 聚合可用模型。
@@ -26,24 +27,23 @@ public class DatabaseModelCatalogService implements ModelCatalogService {
     @Override
     public List<AvailableModel> listAvailableModels() {
         List<AvailableModel> result = new ArrayList<>();
-        List<Map<String, Object>> activeProviders = providerConfigRepository.findAllActiveProvidersWithEnabledModels();
-        for (Map<String, Object> provider : activeProviders) {
-            String providerKey = (String) provider.getOrDefault("providerKey", "unknown");
-            @SuppressWarnings("unchecked")
-            List<Map<String, Object>> models = (List<Map<String, Object>>) provider.get("models");
+        List<ProviderConfigRow> activeProviders = providerConfigRepository.findAllActiveProvidersWithEnabledModels();
+        for (ProviderConfigRow provider : activeProviders) {
+            String providerKey = provider.providerKey();
+            List<ProviderModelRow> models = provider.models();
             if (models == null) {
                 continue;
             }
             // 自定义供应商展示时去除 custom- 前缀
             String displayKey = providerKey.startsWith("custom-") ? providerKey.substring(7) : providerKey;
-            for (Map<String, Object> m : models) {
-                String modelName = (String) m.getOrDefault("modelName", "");
+            for (ProviderModelRow m : models) {
+                String modelName = m.modelName();
                 if (modelName.isEmpty()) {
                     continue;
                 }
                 String prefixedName = ModelNameUtil.buildPrefixedName(displayKey, modelName);
-                boolean capsTools = Boolean.TRUE.equals(m.get("capsTools"));
-                boolean capsVision = Boolean.TRUE.equals(m.get("capsVision"));
+                boolean capsTools = m.capsTools();
+                boolean capsVision = m.capsVision();
                 result.add(new AvailableModel(providerKey, displayKey, modelName, prefixedName, capsTools, capsVision));
             }
         }

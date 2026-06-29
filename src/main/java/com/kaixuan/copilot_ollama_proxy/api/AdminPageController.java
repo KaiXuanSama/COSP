@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.api;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.RequestTransformEngine;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -67,10 +68,10 @@ public class AdminPageController {
 
     @GetMapping("/config/api/providers") @ResponseBody
     public ResponseEntity<Map<String, Object>> listProviders() {
-        List<Map<String, Object>> all = providerConfigRepository.findAllWithModels();
+        List<ProviderConfigRow> all = providerConfigRepository.findAllWithModels();
         Map<String, Object> result = new LinkedHashMap<>();
-        for (Map<String, Object> p : all) {
-            result.put((String) p.get("providerKey"), p);
+        for (ProviderConfigRow p : all) {
+            result.put(p.providerKey(), p);
         }
         return ResponseEntity.ok(result);
     }
@@ -111,14 +112,14 @@ public class AdminPageController {
     @PostMapping("/config/api/providers/{providerKey}/toggle") @ResponseBody
     public ResponseEntity<Map<String, Object>> toggleProvider(@PathVariable String providerKey, @RequestBody Map<String, Object> body) {
         boolean enabled = Boolean.TRUE.equals(body.get("enabled"));
-        Map<String, Object> provider = providerConfigRepository.findByKey(providerKey);
+        ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
         String baseUrl = "";
         String apiKey = "";
         String customTransforms = "{}";
         if (provider != null) {
-            baseUrl = (String) provider.getOrDefault("baseUrl", "");
-            apiKey = (String) provider.getOrDefault("apiKey", "");
-            customTransforms = (String) provider.getOrDefault("customTransforms", "{}");
+            baseUrl = provider.baseUrl() != null ? provider.baseUrl() : "";
+            apiKey = provider.apiKey() != null ? provider.apiKey() : "";
+            customTransforms = provider.customTransforms() != null ? provider.customTransforms() : "{}";
         }
         // saveProvider 在记录不存在时会自动插入（首次启用场景）
         providerConfigRepository.saveProvider(providerKey, enabled, baseUrl, apiKey, "openai", customTransforms);
@@ -232,9 +233,9 @@ public class AdminPageController {
             applyModelDiscoveryAuthHeaders(providerKey, headers, apiKey);
             // 自定义供应商：应用 custom_transforms 中的自定义请求头
             if (providerKey.startsWith("custom-")) {
-                Map<String, Object> provider = providerConfigRepository.findByKey(providerKey);
+                ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
                 if (provider != null) {
-                    String customTransforms = (String) provider.getOrDefault("customTransforms", "{}");
+                    String customTransforms = provider.customTransforms() != null ? provider.customTransforms() : "{}";
                     RequestTransformEngine.applyCustomHeaders(headers, apiKey, customTransforms, new com.fasterxml.jackson.databind.ObjectMapper());
                 }
             }
@@ -311,11 +312,11 @@ public class AdminPageController {
     // ==================== 自定义供应商 API ====================
 
     @GetMapping("/config/api/custom-providers") @ResponseBody
-    public ResponseEntity<List<Map<String, Object>>> listCustomProviders() {
+    public ResponseEntity<List<ProviderConfigRow>> listCustomProviders() {
         // 从 provider_config 中筛选 custom- 前缀的供应商
-        List<Map<String, Object>> all = providerConfigRepository.findAllWithModels();
-        List<Map<String, Object>> custom = all.stream()
-                .filter(p -> ((String) p.get("providerKey")).startsWith("custom-"))
+        List<ProviderConfigRow> all = providerConfigRepository.findAllWithModels();
+        List<ProviderConfigRow> custom = all.stream()
+                .filter(p -> p.providerKey().startsWith("custom-"))
                 .toList();
         return ResponseEntity.ok(custom);
     }
@@ -362,7 +363,7 @@ public class AdminPageController {
                 return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "供应商名称不能为空"));
             }
             // 检查原供应商是否存在
-            Map<String, Object> existing = providerConfigRepository.findByKey(providerKey);
+            ProviderConfigRow existing = providerConfigRepository.findByKey(providerKey);
             if (existing == null) {
                 return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "供应商不存在"));
             }

@@ -22,21 +22,21 @@ public class ProviderConfigRepository {
 
     /**
      * 查询所有服务商配置（含模型列表）。
-     * 返回 Map 列表，每项包含 provider 的所有字段 + models 子列表。
      */
-    public List<Map<String, Object>> findAllWithModels() {
-        List<Map<String, Object>> providers = jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, api_format, custom_transforms, updated_at " + "FROM provider_config ORDER BY id", (rs, rowNum) -> {
-            Map<String, Object> row = new java.util.LinkedHashMap<>();
-            row.put("id", rs.getInt("id"));
-            row.put("providerKey", rs.getString("provider_key"));
-            row.put("enabled", rs.getInt("enabled") == 1);
-            row.put("baseUrl", rs.getString("base_url"));
-            row.put("apiKey", rs.getString("api_key"));
-            row.put("apiFormat", rs.getString("api_format"));
-            row.put("customTransforms", rs.getString("custom_transforms"));
-            row.put("updatedAt", rs.getString("updated_at"));
-            row.put("models", findModelsByProviderId(rs.getInt("id")));
-            return row;
+    public List<ProviderConfigRow> findAllWithModels() {
+        List<ProviderConfigRow> providers = jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, api_format, custom_transforms, updated_at " + "FROM provider_config ORDER BY id", (rs, rowNum) -> {
+            int id = rs.getInt("id");
+            return new ProviderConfigRow(
+                    id,
+                    rs.getString("provider_key"),
+                    rs.getInt("enabled") == 1,
+                    rs.getString("base_url"),
+                    rs.getString("api_key"),
+                    rs.getString("api_format"),
+                    rs.getString("custom_transforms"),
+                    rs.getString("updated_at"),
+                    findModelsByProviderId(id)
+            );
         });
         return providers;
     }
@@ -44,20 +44,21 @@ public class ProviderConfigRepository {
     /**
      * 根据 provider_key 查询单个服务商配置。
      */
-    public Map<String, Object> findByKey(String providerKey) {
+    public ProviderConfigRow findByKey(String providerKey) {
         return jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, api_format, custom_transforms, updated_at " + "FROM provider_config WHERE provider_key = ?", rs -> {
             if (rs.next()) {
-                Map<String, Object> row = new java.util.LinkedHashMap<>();
-                row.put("id", rs.getInt("id"));
-                row.put("providerKey", rs.getString("provider_key"));
-                row.put("enabled", rs.getInt("enabled") == 1);
-                row.put("baseUrl", rs.getString("base_url"));
-                row.put("apiKey", rs.getString("api_key"));
-                row.put("apiFormat", rs.getString("api_format"));
-                row.put("customTransforms", rs.getString("custom_transforms"));
-                row.put("updatedAt", rs.getString("updated_at"));
-                row.put("models", findModelsByProviderId(rs.getInt("id")));
-                return row;
+                int id = rs.getInt("id");
+                return new ProviderConfigRow(
+                        id,
+                        rs.getString("provider_key"),
+                        rs.getInt("enabled") == 1,
+                        rs.getString("base_url"),
+                        rs.getString("api_key"),
+                        rs.getString("api_format"),
+                        rs.getString("custom_transforms"),
+                        rs.getString("updated_at"),
+                        findModelsByProviderId(id)
+                );
             }
             return null;
         }, providerKey);
@@ -66,22 +67,20 @@ public class ProviderConfigRepository {
     /**
      * 查询某个服务商的模型列表。
      */
-    public List<Map<String, Object>> findModelsByProviderId(int providerId) {
+    public List<ProviderModelRow> findModelsByProviderId(int providerId) {
         return jdbcTemplate.query(
                 "SELECT id, provider_id, model_name, enabled, context_size, caps_tools, caps_vision, reasoning_effort, sort_order " + "FROM provider_model WHERE provider_id = ? ORDER BY sort_order, id",
-                (rs, rowNum) -> {
-                    Map<String, Object> row = new java.util.LinkedHashMap<>();
-                    row.put("id", rs.getInt("id"));
-                    row.put("providerId", rs.getInt("provider_id"));
-                    row.put("modelName", rs.getString("model_name"));
-                    row.put("enabled", rs.getInt("enabled") == 1);
-                    row.put("contextSize", rs.getInt("context_size"));
-                    row.put("capsTools", rs.getInt("caps_tools") == 1);
-                    row.put("capsVision", rs.getInt("caps_vision") == 1);
-                    row.put("reasoningEffort", rs.getString("reasoning_effort"));
-                    row.put("sortOrder", rs.getInt("sort_order"));
-                    return row;
-                }, providerId);
+                (rs, rowNum) -> new ProviderModelRow(
+                        rs.getInt("id"),
+                        rs.getInt("provider_id"),
+                        rs.getString("model_name"),
+                        rs.getInt("enabled") == 1,
+                        rs.getInt("context_size"),
+                        rs.getInt("caps_tools") == 1,
+                        rs.getInt("caps_vision") == 1,
+                        rs.getString("reasoning_effort"),
+                        rs.getInt("sort_order")
+                ), providerId);
     }
 
     // ==================== 写入 ====================
@@ -151,33 +150,36 @@ public class ProviderConfigRepository {
      * 只返回 enabled=1 的服务商，且只返回每个服务商下 enabled=1 的模型。
      * 如果没有已启用的模型，则不包含该服务商。
      */
-    public List<Map<String, Object>> findAllActiveProvidersWithEnabledModels() {
-        List<Map<String, Object>> providers = jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, api_format, custom_transforms " + "FROM provider_config WHERE enabled = 1 ORDER BY id",
+    public List<ProviderConfigRow> findAllActiveProvidersWithEnabledModels() {
+        List<ProviderConfigRow> providers = jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, api_format, custom_transforms " + "FROM provider_config WHERE enabled = 1 ORDER BY id",
                 (rs, rowNum) -> {
-                    Map<String, Object> row = new java.util.LinkedHashMap<>();
-                    row.put("id", rs.getInt("id"));
-                    row.put("providerKey", rs.getString("provider_key"));
-                    row.put("enabled", rs.getInt("enabled") == 1);
-                    row.put("baseUrl", rs.getString("base_url"));
-                    row.put("apiKey", rs.getString("api_key"));
-                    row.put("apiFormat", rs.getString("api_format"));
-                    row.put("customTransforms", rs.getString("custom_transforms"));
-                    // 只查已启用的模型
-                    List<Map<String, Object>> models = jdbcTemplate
-                            .query("SELECT model_name, context_size, caps_tools, caps_vision, reasoning_effort " + "FROM provider_model WHERE provider_id = ? AND enabled = 1 ORDER BY sort_order, id", (rs2, rn2) -> {
-                                Map<String, Object> m = new java.util.LinkedHashMap<>();
-                                m.put("modelName", rs2.getString("model_name"));
-                                m.put("contextSize", rs2.getInt("context_size"));
-                                m.put("capsTools", rs2.getInt("caps_tools") == 1);
-                                m.put("capsVision", rs2.getInt("caps_vision") == 1);
-                                m.put("reasoningEffort", rs2.getString("reasoning_effort"));
-                                return m;
-                            }, rs.getInt("id"));
-                    row.put("models", models);
-                    return row;
+                    int id = rs.getInt("id");
+                    List<ProviderModelRow> models = jdbcTemplate
+                            .query("SELECT id, provider_id, model_name, enabled, context_size, caps_tools, caps_vision, reasoning_effort, sort_order " + "FROM provider_model WHERE provider_id = ? AND enabled = 1 ORDER BY sort_order, id", (rs2, rn2) -> new ProviderModelRow(
+                                    rs2.getInt("id"),
+                                    rs2.getInt("provider_id"),
+                                    rs2.getString("model_name"),
+                                    rs2.getInt("enabled") == 1,
+                                    rs2.getInt("context_size"),
+                                    rs2.getInt("caps_tools") == 1,
+                                    rs2.getInt("caps_vision") == 1,
+                                    rs2.getString("reasoning_effort"),
+                                    rs2.getInt("sort_order")
+                            ), rs.getInt("id"));
+                    return new ProviderConfigRow(
+                            id,
+                            rs.getString("provider_key"),
+                            rs.getInt("enabled") == 1,
+                            rs.getString("base_url"),
+                            rs.getString("api_key"),
+                            rs.getString("api_format"),
+                            rs.getString("custom_transforms"),
+                            null,
+                            models
+                    );
                 });
         // 过滤掉没有已启用模型的服务商
-        providers.removeIf(p -> ((List<?>) p.get("models")).isEmpty());
+        providers.removeIf(p -> p.models().isEmpty());
         return providers;
     }
 
@@ -185,18 +187,21 @@ public class ProviderConfigRepository {
      * 根据 provider_key 查询单个服务商配置（运行时使用）。
      * 如果服务商不存在或未启用，返回 null。
      */
-    public Map<String, Object> findActiveProviderByKey(String providerKey) {
+    public ProviderConfigRow findActiveProviderByKey(String providerKey) {
         return jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, api_format, custom_transforms " + "FROM provider_config WHERE provider_key = ? AND enabled = 1", rs -> {
             if (rs.next()) {
-                Map<String, Object> row = new java.util.LinkedHashMap<>();
-                row.put("id", rs.getInt("id"));
-                row.put("providerKey", rs.getString("provider_key"));
-                row.put("enabled", rs.getInt("enabled") == 1);
-                row.put("baseUrl", rs.getString("base_url"));
-                row.put("apiKey", rs.getString("api_key"));
-                row.put("apiFormat", rs.getString("api_format"));
-                row.put("customTransforms", rs.getString("custom_transforms"));
-                return row;
+                int id = rs.getInt("id");
+                return new ProviderConfigRow(
+                        id,
+                        rs.getString("provider_key"),
+                        rs.getInt("enabled") == 1,
+                        rs.getString("base_url"),
+                        rs.getString("api_key"),
+                        rs.getString("api_format"),
+                        rs.getString("custom_transforms"),
+                        null,
+                        findModelsByProviderId(id)
+                );
             }
             return null;
         }, providerKey);
