@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -24,6 +25,7 @@ import org.springframework.security.web.server.SecurityWebFilterChain;
 import org.springframework.security.web.server.authentication.AuthenticationWebFilter;
 import org.springframework.security.web.server.context.NoOpServerSecurityContextRepository;
 import org.springframework.security.web.server.util.matcher.ServerWebExchangeMatchers;
+import org.springframework.web.server.WebFilter;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
@@ -53,20 +55,25 @@ public class SecurityConfig {
      */
     @Bean
     public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http, JwtService jwtService) {
+        // securityMatcher 只覆盖 API 路径；SPA 路由由 spaRouteFallback WebFilter 重写到 /index.html
         http
-                .securityMatcher(ServerWebExchangeMatchers.pathMatchers("/config/**", "/auth/me", "/overview", "/settings", "/account", "/call-log"))
+                .securityMatcher(ServerWebExchangeMatchers.pathMatchers(
+                        "/config/**", "/auth/**", "/login", "/logout"))
                 .authorizeExchange(exchange -> exchange
+                        .pathMatchers("/login", "/logout").permitAll()
                         .pathMatchers("/config/api/stats", "/config/api/providers", "/config/api/heatmap").permitAll()
-                        .pathMatchers("/overview", "/settings", "/account", "/call-log").authenticated()
+                        .pathMatchers("/auth/login").permitAll()
                         .pathMatchers("/config/**").authenticated()
                         .pathMatchers("/auth/me").authenticated()
-                        .anyExchange().permitAll())
+                        // 默认：未匹配路径需要认证
+                        .anyExchange().authenticated())
                 .csrf(ServerHttpSecurity.CsrfSpec::disable)
                 .httpBasic(ServerHttpSecurity.HttpBasicSpec::disable)
                 .formLogin(ServerHttpSecurity.FormLoginSpec::disable)
                 .logout(ServerHttpSecurity.LogoutSpec::disable)
                 .securityContextRepository(NoOpServerSecurityContextRepository.getInstance())
                 .exceptionHandling(exception -> exception
+                        // 未认证或会话失效时统一返回 401，由前端拦截器跳登录
                         .authenticationEntryPoint((exchange, ex) -> {
                             exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
                             return exchange.getResponse().setComplete();
@@ -106,6 +113,27 @@ public class SecurityConfig {
         });
 
         return filter;
+    }
+
+    /**
+     * Fallback WebFilter：捕获 Security 过滤链未处理的请求（如刷新 SPA 路由触发 404）。
+     * 对于 SPA 内部路由（/overview, /settings, /account, /call-log），无论是否认证，
+     * 都直接返回 index.html，由前端路由守卫在客户端判断本地 token 决定是否跳登录。
+     *
+     * @return WebFilter
+     */
+    @Bean
+    @Order(-200) // 在 Security 之前执行
+    public WebFilter spaRouteFallback() {
+        return (exchange, chain) -> {
+            String path = exchange.getRequest().getPath().value();
+            // SPA 内部路由：直接转发到 index.html
+            if (path.equals("/overview") || path.equals("/settings") || path.equals("/account") || path.equals("/call-log")) {
+                return chain.filter(exchange.mutate().request(
+                        exchange.getRequest().mutate().path("/index.html").build()).build());
+            }
+            return chain.filter(exchange);
+        };
     }
 
     /**
