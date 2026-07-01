@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { NCard, NInput, NButton, useMessage } from 'naive-ui'
-import axios from 'axios'
+import http, { auth } from '@/api'
 
 const message = useMessage()
 const newUsername = ref('')
@@ -29,7 +29,7 @@ async function handleSubmit() {
     if (newPassword.value) formData.append('newPassword', newPassword.value)
     if (confirmPassword.value) formData.append('confirmPassword', confirmPassword.value)
 
-    const res = await axios.post('/config/api/account', formData.toString(), {
+    const res = await http.post('/account', formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
     const data = res.data
@@ -39,6 +39,7 @@ async function handleSubmit() {
       newPassword.value = ''
       confirmPassword.value = ''
       if (data.usernameChanged) {
+        auth.clearToken()
         setTimeout(() => { window.location.href = '/login' }, 2000)
       }
     } else {

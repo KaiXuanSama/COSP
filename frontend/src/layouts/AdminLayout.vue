@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import http from '@/api'
+import http, { auth } from '@/api'
 
 const router = useRouter()
 const route = useRoute()
@@ -30,11 +30,24 @@ function navigate(path: string) {
 
 async function fetchUsername() {
   try {
-    const res = await http.get('/me')
-    username.value = res.data.username
+    const res = await fetch('/auth/me', {
+      headers: { Authorization: `Bearer ${auth.getToken()}` },
+    })
+    if (res.ok) {
+      const data = await res.json()
+      username.value = data.username
+    } else if (res.status === 401) {
+      auth.clearToken()
+      router.push('/login?unauthorized=true')
+    }
   } catch {
-    // 默认使用 'root' 作为 fallback
+    // 网络错误时保持当前显示
   }
+}
+
+function handleLogout() {
+  auth.clearToken()
+  router.push('/login?login=logout')
 }
 
 function handleResize() {
@@ -110,6 +123,14 @@ onBeforeUnmount(() => {
             <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
           </svg>
         </router-link>
+        <button class="sidebar-user-logout" title="退出登录" @click="handleLogout">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+            stroke-linejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+            <polyline points="16 17 21 12 16 7" />
+            <line x1="21" y1="12" x2="9" y2="12" />
+          </svg>
+        </button>
       </div>
     </div>
   </aside>
@@ -301,6 +322,10 @@ onBeforeUnmount(() => {
 }
 
 .sidebar-user-edit {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: rgba(245, 243, 238, 0.3);
   transition: color 0.2s ease;
 
@@ -309,8 +334,29 @@ onBeforeUnmount(() => {
     height: 16px;
   }
 
-  &:hover {
+ &:hover {
     color: $accent;
+  }
+}
+
+.sidebar-user-logout {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: rgba(245, 243, 238, 0.3);
+  transition: color 0.2s ease;
+  padding: 0;
+  display: flex;
+  align-items: center;
+
+  svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  &:hover {
+    color: #e85c5c;
   }
 }
 

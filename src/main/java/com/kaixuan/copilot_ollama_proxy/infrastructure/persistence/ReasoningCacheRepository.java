@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
+import com.kaixuan.copilot_ollama_proxy.application.reasoning.ReasoningCache;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Repository;
@@ -7,13 +8,16 @@ import org.springframework.stereotype.Repository;
 /**
  * 工具调用思考链缓存数据访问层 — 基于 JdbcTemplate 操作 SQLite reasoning_cache 表。
  * <p>
+ * 实现 application 层的 {@link ReasoningCache} 领域接口，
+ * provider 层通过接口依赖本类，不直接耦合具体持久化实现。
+ * <p>
  * 用于存储 DeepSeek 等模型在工具调用时的 reasoning_content，
  * 以便在下一轮请求中回填，满足上游对工具调用历史的校验要求。
  * <p>
  * 缓存记录默认保留 180 天，由 {@link #cleanupExpired()} 定时清理。
  */
 @Repository
-public class ReasoningCacheRepository {
+public class ReasoningCacheRepository implements ReasoningCache {
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -27,6 +31,7 @@ public class ReasoningCacheRepository {
      * @param toolCallId       工具调用 ID
      * @param reasoningContent 思考链文本
      */
+    @Override
     public void save(String toolCallId, String reasoningContent) {
         jdbcTemplate.update("INSERT OR REPLACE INTO reasoning_cache (tool_call_id, reasoning_content, created_at) " + "VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))", toolCallId,
                 reasoningContent);
@@ -38,6 +43,7 @@ public class ReasoningCacheRepository {
      * @param toolCallId 工具调用 ID
      * @return 思考链文本，未找到时返回 null
      */
+    @Override
     public String findByToolCallId(String toolCallId) {
         return jdbcTemplate.query("SELECT reasoning_content FROM reasoning_cache WHERE tool_call_id = ?", rs -> {
             if (rs.next()) {

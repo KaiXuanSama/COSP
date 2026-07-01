@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.api;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.RequestTransformEngine;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -12,10 +13,12 @@ import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.provisioning.JdbcUserDetailsManager;
-import org.springframework.stereotype.Controller;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -23,11 +26,12 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 管理后台 API 控制器 — 提供 SPA 路由回退和 JSON API 接口。
+ * 管理后台 API 控制器 — 提供管理后台的 JSON API 接口。
  * <p>
- * 前端由 Vue 3 SPA 完全接管，后端仅提供数据接口。
+ * 前端由 Vue 3 SPA 完全接管，SPA 路由回退由 {@code SpaRoutingConfig} 处理，
+ * 本控制器仅提供数据接口。
  */
-@Controller
+@RestController
 public class AdminPageController {
 
     private final JdbcUserDetailsManager userDetailsManager;
@@ -47,46 +51,6 @@ public class AdminPageController {
         this.webClientBuilder = webClientBuilder;
     }
 
-    // ==================== SPA 路由支持 ====================
-
-    /**
-     * 根路径重定向到登录页。
-     */
-    @GetMapping("/")
-    public String rootRedirect() {
-        return "redirect:/login";
-    }
-
-    /**
-     * Vue Router 的 createWebHistory() 模式下，
-     * 所有 SPA 路由需要返回 index.html 让 Vue 接管。
-     * 静态资源（/assets/*, /img/*）由 Spring Boot 默认处理。
-     */
-    @GetMapping("/login")
-    public String spaLogin() {
-        return "forward:/index.html";
-    }
-
-    @GetMapping("/overview")
-    public String spaOverview() {
-        return "forward:/index.html";
-    }
-
-    @GetMapping("/settings")
-    public String spaSettings() {
-        return "forward:/index.html";
-    }
-
-    @GetMapping("/account")
-    public String spaAccount() {
-        return "forward:/index.html";
-    }
-
-    @GetMapping("/call-log")
-    public String spaCallLog() {
-        return "forward:/index.html";
-    }
-
     // ==================== API 统计接口（JSON） ====================
 
     @GetMapping("/config/api/stats") @ResponseBody
@@ -104,10 +68,10 @@ public class AdminPageController {
 
     @GetMapping("/config/api/providers") @ResponseBody
     public ResponseEntity<Map<String, Object>> listProviders() {
-        List<Map<String, Object>> all = providerConfigRepository.findAllWithModels();
+        List<ProviderConfigRow> all = providerConfigRepository.findAllWithModels();
         Map<String, Object> result = new LinkedHashMap<>();
-        for (Map<String, Object> p : all) {
-            result.put((String) p.get("providerKey"), p);
+        for (ProviderConfigRow p : all) {
+            result.put(p.providerKey(), p);
         }
         return ResponseEntity.ok(result);
     }
@@ -148,14 +112,14 @@ public class AdminPageController {
     @PostMapping("/config/api/providers/{providerKey}/toggle") @ResponseBody
     public ResponseEntity<Map<String, Object>> toggleProvider(@PathVariable String providerKey, @RequestBody Map<String, Object> body) {
         boolean enabled = Boolean.TRUE.equals(body.get("enabled"));
-        Map<String, Object> provider = providerConfigRepository.findByKey(providerKey);
+        ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
         String baseUrl = "";
         String apiKey = "";
         String customTransforms = "{}";
         if (provider != null) {
-            baseUrl = (String) provider.getOrDefault("baseUrl", "");
-            apiKey = (String) provider.getOrDefault("apiKey", "");
-            customTransforms = (String) provider.getOrDefault("customTransforms", "{}");
+            baseUrl = provider.baseUrl() != null ? provider.baseUrl() : "";
+            apiKey = provider.apiKey() != null ? provider.apiKey() : "";
+            customTransforms = provider.customTransforms() != null ? provider.customTransforms() : "{}";
         }
         // saveProvider 在记录不存在时会自动插入（首次启用场景）
         providerConfigRepository.saveProvider(providerKey, enabled, baseUrl, apiKey, "openai", customTransforms);
@@ -182,54 +146,59 @@ public class AdminPageController {
     // ==================== 服务商编辑保存 ====================
 
     @PostMapping("/config/api/providers/{providerKey}/config") @ResponseBody
-    public ResponseEntity<Map<String, Object>> saveProviderConfig(@PathVariable String providerKey, @RequestParam Map<String, String> params) {
-        String baseUrl = params.getOrDefault("baseUrl", "").trim();
-        String apiKey = params.getOrDefault("apiKey", "").trim();
-        int providerId = providerConfigRepository.updateProviderConfig(providerKey, baseUrl, apiKey, "openai");
-        List<Map<String, Object>> models = new ArrayList<>();
-        String prefix = "models[";
-        java.util.Set<Integer> indices = new java.util.TreeSet<>();
-        for (String key : params.keySet()) {
-            if (key.startsWith(prefix) && key.contains("].")) {
-                try {
-                    int start = prefix.length();
-                    int end = key.indexOf(']', start);
-                    indices.add(Integer.parseInt(key.substring(start, end)));
-                } catch (NumberFormatException ignored) {
+    public Mono<ResponseEntity<Map<String, Object>>> saveProviderConfig(@PathVariable String providerKey, ServerWebExchange exchange) {
+        // WebFlux 读取 application/x-www-form-urlencoded 表单的标准方式：exchange.getFormData()
+        return exchange.getFormData().map(form -> {
+            java.util.function.BiFunction<String, String, String> getParam =
+                    (key, def) -> { String v = form.getFirst(key); return v != null ? v : def; };
+            String baseUrl = getParam.apply("baseUrl", "").trim();
+            String apiKey = getParam.apply("apiKey", "").trim();
+            int providerId = providerConfigRepository.updateProviderConfig(providerKey, baseUrl, apiKey, "openai");
+            List<Map<String, Object>> models = new ArrayList<>();
+            String prefix = "models[";
+            java.util.Set<Integer> indices = new java.util.TreeSet<>();
+            for (String key : form.keySet()) {
+                if (key.startsWith(prefix) && key.contains("].")) {
+                    try {
+                        int start = prefix.length();
+                        int end = key.indexOf(']', start);
+                        indices.add(Integer.parseInt(key.substring(start, end)));
+                    } catch (NumberFormatException ignored) {
+                    }
                 }
             }
-        }
-        for (int i : indices) {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("modelName", params.getOrDefault(prefix + i + "].name", "").trim());
-            m.put("enabled", "on".equals(params.get(prefix + i + "].enabled")));
-            m.put("contextSize", params.getOrDefault(prefix + i + "].contextSize", "0").trim());
-            m.put("capsTools", "on".equals(params.get(prefix + i + "].capsTools")));
-            m.put("capsVision", "on".equals(params.get(prefix + i + "].capsVision")));
-            m.put("reasoningEffort", params.getOrDefault(prefix + i + "].reasoningEffort", "Medium").trim());
-            models.add(m);
-        }
-        providerConfigRepository.saveModels(providerId, models);
-        return ResponseEntity.ok(Map.of("ok", true));
+            for (int i : indices) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("modelName", getParam.apply(prefix + i + "].name", "").trim());
+                m.put("enabled", "on".equals(form.getFirst(prefix + i + "].enabled")));
+                m.put("contextSize", getParam.apply(prefix + i + "].contextSize", "0").trim());
+                m.put("capsTools", "on".equals(form.getFirst(prefix + i + "].capsTools")));
+                m.put("capsVision", "on".equals(form.getFirst(prefix + i + "].capsVision")));
+                m.put("reasoningEffort", getParam.apply(prefix + i + "].reasoningEffort", "Medium").trim());
+                models.add(m);
+            }
+            providerConfigRepository.saveModels(providerId, models);
+            return ResponseEntity.ok(Map.<String, Object>of("ok", true));
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     /**
      * 使用当前表单中的 Base URL 与 API Key 从上游拉取模型列表。
      */
     @PostMapping("/config/api/providers/{providerKey}/pull-models") @ResponseBody
-    public ResponseEntity<?> pullProviderModels(@PathVariable String providerKey, @RequestBody Map<String, String> body) {
+    public Mono<ResponseEntity<Object>> pullProviderModels(@PathVariable String providerKey, @RequestBody Map<String, String> body) {
         if (!supportsProviderKey(providerKey)) {
-            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "不支持的服务商。"));
+            return Mono.just(ResponseEntity.badRequest().body((Object) Map.of("ok", false, "error", "不支持的服务商。")));
         }
 
         String baseUrl = body.getOrDefault("baseUrl", "").trim();
         String apiKey = body.getOrDefault("apiKey", "").trim();
         String modelPullPath = body.getOrDefault("modelPullPath", "").trim();
         if (baseUrl.isBlank()) {
-            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "请先填写 API 地址。"));
+            return Mono.just(ResponseEntity.badRequest().body((Object) Map.of("ok", false, "error", "请先填写 API 地址。")));
         }
         if (apiKey.isBlank()) {
-            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "请先填写 API Key。"));
+            return Mono.just(ResponseEntity.badRequest().body((Object) Map.of("ok", false, "error", "请先填写 API Key。")));
         }
 
         return forwardModelsRequest(providerKey, baseUrl, apiKey, modelPullPath);
@@ -241,11 +210,13 @@ public class AdminPageController {
      * 获取当前登录用户信息。
      */
     @GetMapping("/config/api/me") @ResponseBody
-    public ResponseEntity<Map<String, Object>> currentUser(Authentication authentication) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("username", authentication.getName());
-        result.put("role", authentication.getAuthorities().stream().findFirst().map(Object::toString).orElse(""));
-        return ResponseEntity.ok(result);
+    public Mono<ResponseEntity<Map<String, Object>>> currentUser(Mono<Authentication> authentication) {
+        return authentication.map(auth -> {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("username", auth.getName());
+            result.put("role", auth.getAuthorities().stream().findFirst().map(Object::toString).orElse(""));
+            return ResponseEntity.ok(result);
+        });
     }
 
     private boolean supportsProviderKey(String providerKey) {
@@ -255,36 +226,28 @@ public class AdminPageController {
         };
     }
 
-    private ResponseEntity<String> forwardModelsRequest(String providerKey, String rawBaseUrl, String apiKey, String rawModelPullPath) {
+    private Mono<ResponseEntity<Object>> forwardModelsRequest(String providerKey, String rawBaseUrl, String apiKey, String rawModelPullPath) {
         String requestUrl = rawBaseUrl.replaceAll("/+$", "") + normalizeModelPullPath(rawModelPullPath);
-        try {
-            return webClientBuilder.clone().defaultHeaders(headers -> {
-                headers.set(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE);
-                applyModelDiscoveryAuthHeaders(providerKey, headers, apiKey);
-                // 自定义供应商：应用 custom_transforms 中的自定义请求头
-                if (providerKey.startsWith("custom-")) {
-                    Map<String, Object> provider = providerConfigRepository.findByKey(providerKey);
-                    if (provider != null) {
-                        String customTransforms = (String) provider.getOrDefault("customTransforms", "{}");
-                        RequestTransformEngine.applyCustomHeaders(headers, apiKey, customTransforms, new com.fasterxml.jackson.databind.ObjectMapper());
-                    }
+        return webClientBuilder.clone().defaultHeaders(headers -> {
+            headers.set(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE);
+            applyModelDiscoveryAuthHeaders(providerKey, headers, apiKey);
+            // 自定义供应商：应用 custom_transforms 中的自定义请求头
+            if (providerKey.startsWith("custom-")) {
+                ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
+                if (provider != null) {
+                    String customTransforms = provider.customTransforms() != null ? provider.customTransforms() : "{}";
+                    RequestTransformEngine.applyCustomHeaders(headers, apiKey, customTransforms, new com.fasterxml.jackson.databind.ObjectMapper());
                 }
-            }).build().get().uri(requestUrl).exchangeToMono(response -> response.bodyToMono(String.class).defaultIfEmpty("").map(body -> {
-                ResponseEntity.BodyBuilder builder = ResponseEntity.status(response.statusCode().value());
-                response.headers().contentType().ifPresent(builder::contentType);
-                return builder.body(body);
-            })).onErrorResume(ex -> {
-                String errorMsg = resolvePullModelsErrorMessage(ex);
-                return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                        .body("{\"error\":\"" + errorMsg.replace("\"", "'") + "\"}"));
-            }).blockOptional()
-                    .orElseGet(() -> ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                            .body("{\"error\":\"连接上游服务失败: 无响应\"}"));
-        } catch (Exception ex) {
+            }
+        }).build().get().uri(requestUrl).exchangeToMono(response -> response.bodyToMono(String.class).defaultIfEmpty("").map(respBody -> {
+            ResponseEntity.BodyBuilder builder = ResponseEntity.status(response.statusCode().value());
+            response.headers().contentType().ifPresent(builder::contentType);
+            return builder.body((Object) respBody);
+        })).onErrorResume(ex -> {
             String errorMsg = resolvePullModelsErrorMessage(ex);
-            return ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                    .body("{\"error\":\"" + errorMsg.replace("\"", "'") + "\"}");
-        }
+            return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
+                    .body((Object) ("{\"error\":\"" + errorMsg.replace("\"", "'") + "\"}")));
+        });
     }
 
     /**
@@ -349,34 +312,37 @@ public class AdminPageController {
     // ==================== 自定义供应商 API ====================
 
     @GetMapping("/config/api/custom-providers") @ResponseBody
-    public ResponseEntity<List<Map<String, Object>>> listCustomProviders() {
+    public ResponseEntity<List<ProviderConfigRow>> listCustomProviders() {
         // 从 provider_config 中筛选 custom- 前缀的供应商
-        List<Map<String, Object>> all = providerConfigRepository.findAllWithModels();
-        List<Map<String, Object>> custom = all.stream()
-                .filter(p -> ((String) p.get("providerKey")).startsWith("custom-"))
+        List<ProviderConfigRow> all = providerConfigRepository.findAllWithModels();
+        List<ProviderConfigRow> custom = all.stream()
+                .filter(p -> p.providerKey().startsWith("custom-"))
                 .toList();
         return ResponseEntity.ok(custom);
     }
 
     @PostMapping("/config/api/custom-providers") @ResponseBody
-    public ResponseEntity<Map<String, Object>> addCustomProvider(@RequestParam String displayName,
-                                                                 @RequestParam(required = false, defaultValue = "{}") String customTransforms,
-                                                                 @RequestParam(required = false, defaultValue = "") String baseUrl) {
-        String name = displayName == null ? "" : displayName.trim();
-        if (name.isEmpty()) {
-            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "供应商名称不能为空"));
-        }
-        String providerKey = "custom-" + name.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
-        // 检查是否已存在
-        if (providerConfigRepository.findByKey(providerKey) != null) {
-            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "该供应商名称已存在"));
-        }
-        // 验证 customTransforms 格式
-        String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
-        String url = baseUrl == null ? "" : baseUrl.trim();
-        // 在 provider_config 中创建记录（默认启用）
-        providerConfigRepository.saveProvider(providerKey, true, url, "", "openai", transforms);
-        return ResponseEntity.ok(Map.of("ok", true, "providerKey", providerKey, "displayName", name));
+    public Mono<ResponseEntity<Map<String, Object>>> addCustomProvider(ServerWebExchange exchange) {
+        return exchange.getFormData().map(form -> {
+            String displayName = form.getFirst("displayName");
+            String customTransforms = form.getFirst("customTransforms");
+            String baseUrl = form.getFirst("baseUrl");
+            String name = displayName == null ? "" : displayName.trim();
+            if (name.isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "供应商名称不能为空"));
+            }
+            String providerKey = "custom-" + name.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
+            // 检查是否已存在
+            if (providerConfigRepository.findByKey(providerKey) != null) {
+                return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "该供应商名称已存在"));
+            }
+            // 验证 customTransforms 格式
+            String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
+            String url = baseUrl == null ? "" : baseUrl.trim();
+            // 在 provider_config 中创建记录（默认启用）
+            providerConfigRepository.saveProvider(providerKey, true, url, "", "openai", transforms);
+            return ResponseEntity.ok(Map.<String, Object>of("ok", true, "providerKey", providerKey, "displayName", name));
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     @DeleteMapping("/config/api/custom-providers/{providerKey}") @ResponseBody
@@ -386,85 +352,94 @@ public class AdminPageController {
     }
 
     @PutMapping("/config/api/custom-providers/{providerKey}") @ResponseBody
-    public ResponseEntity<Map<String, Object>> updateCustomProvider(@PathVariable String providerKey,
-                                                                    @RequestParam String displayName,
-                                                                    @RequestParam(required = false, defaultValue = "{}") String customTransforms,
-                                                                    @RequestParam(required = false, defaultValue = "") String baseUrl) {
-        String name = displayName == null ? "" : displayName.trim();
-        if (name.isEmpty()) {
-            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "供应商名称不能为空"));
-        }
-        // 检查原供应商是否存在
-        Map<String, Object> existing = providerConfigRepository.findByKey(providerKey);
-        if (existing == null) {
-            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "供应商不存在"));
-        }
-        // 生成新的 providerKey
-        String newProviderKey = "custom-" + name.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
-        // 如果名称改变了，检查新 key 是否冲突
-        if (!newProviderKey.equals(providerKey)) {
-            if (providerConfigRepository.findByKey(newProviderKey) != null) {
-                return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "该供应商名称已存在"));
+    public Mono<ResponseEntity<Map<String, Object>>> updateCustomProvider(@PathVariable String providerKey,
+                                                                    ServerWebExchange exchange) {
+        return exchange.getFormData().map(form -> {
+            String displayName = form.getFirst("displayName");
+            String customTransforms = form.getFirst("customTransforms");
+            String baseUrl = form.getFirst("baseUrl");
+            String name = displayName == null ? "" : displayName.trim();
+            if (name.isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "供应商名称不能为空"));
             }
-        }
-        String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
-        String url = baseUrl == null ? "" : baseUrl.trim();
-        // 直接更新 provider_key、custom_transforms 和 base_url，保留关联的模型配置
-        providerConfigRepository.updateProviderKeyAndTransforms(providerKey, newProviderKey, transforms, url);
-        return ResponseEntity.ok(Map.of("ok", true, "providerKey", newProviderKey, "displayName", name));
+            // 检查原供应商是否存在
+            ProviderConfigRow existing = providerConfigRepository.findByKey(providerKey);
+            if (existing == null) {
+                return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "供应商不存在"));
+            }
+            // 生成新的 providerKey
+            String newProviderKey = "custom-" + name.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
+            // 如果名称改变了，检查新 key 是否冲突
+            if (!newProviderKey.equals(providerKey)) {
+                if (providerConfigRepository.findByKey(newProviderKey) != null) {
+                    return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "该供应商名称已存在"));
+                }
+            }
+            String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
+            String url = baseUrl == null ? "" : baseUrl.trim();
+            // 直接更新 provider_key、custom_transforms 和 base_url，保留关联的模型配置
+            providerConfigRepository.updateProviderKeyAndTransforms(providerKey, newProviderKey, transforms, url);
+            return ResponseEntity.ok(Map.<String, Object>of("ok", true, "providerKey", newProviderKey, "displayName", name));
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     @PostMapping("/config/api/account") @ResponseBody
-    public ResponseEntity<Map<String, Object>> saveAccountApi(Authentication authentication, @RequestParam(value = "newUsername", required = false) String newUsername,
-            @RequestParam(value = "currentPassword", required = false) String currentPassword, @RequestParam(value = "newPassword", required = false) String newPassword,
-            @RequestParam(value = "confirmPassword", required = false) String confirmPassword) {
+    public Mono<ResponseEntity<Map<String, Object>>> saveAccountApi(Mono<Authentication> authenticationMono, ServerWebExchange exchange) {
+        return Mono.zip(authenticationMono, exchange.getFormData()).map(tuple -> {
+            Authentication authentication = tuple.getT1();
+            MultiValueMap<String, String> form = tuple.getT2();
+            String newUsername = form.getFirst("newUsername");
+            String currentPassword = form.getFirst("currentPassword");
+            String newPassword = form.getFirst("newPassword");
+            String confirmPassword = form.getFirst("confirmPassword");
 
-        String currentUsername = authentication.getName();
-        Map<String, Object> result = new LinkedHashMap<>();
+            String currentUsername = authentication.getName();
+            Map<String, Object> result = new LinkedHashMap<>();
 
-        // 验证当前密码
-        UserDetails currentUser = userDetailsManager.loadUserByUsername(currentUsername);
-        if (currentPassword == null || !passwordEncoder.matches(currentPassword, currentUser.getPassword())) {
-            result.put("ok", false);
-            result.put("error", "当前密码不正确。");
+            // 验证当前密码
+            UserDetails currentUser = userDetailsManager.loadUserByUsername(currentUsername);
+            if (currentPassword == null || !passwordEncoder.matches(currentPassword, currentUser.getPassword())) {
+                result.put("ok", false);
+                result.put("error", "当前密码不正确。");
+                return ResponseEntity.ok(result);
+            }
+
+            final String finalUsername = (newUsername != null && !newUsername.isBlank() && !newUsername.equals(currentUsername)) ? newUsername.trim() : currentUsername;
+            final String finalPassword;
+            boolean passwordChanged = false;
+
+            if (newPassword != null && !newPassword.isBlank()) {
+                if (newPassword.length() < 4) {
+                    result.put("ok", false);
+                    result.put("error", "新密码长度至少 4 位。");
+                    return ResponseEntity.ok(result);
+                }
+                if (!newPassword.equals(confirmPassword)) {
+                    result.put("ok", false);
+                    result.put("error", "两次输入的新密码不一致。");
+                    return ResponseEntity.ok(result);
+                }
+                finalPassword = passwordEncoder.encode(newPassword);
+                passwordChanged = true;
+            } else {
+                finalPassword = null;
+            }
+
+            if (!finalUsername.equals(currentUsername) || passwordChanged) {
+                userDetailsManager.deleteUser(currentUsername);
+                String passwordToUse = passwordChanged ? finalPassword : currentUser.getPassword();
+                UserDetails newUser = User.withUsername(finalUsername).password(passwordToUse).roles("ADMIN").build();
+                userDetailsManager.createUser(newUser);
+                result.put("ok", true);
+                result.put("message", "账号信息已修改，请使用新账号重新登录。");
+                result.put("usernameChanged", !finalUsername.equals(currentUsername));
+            } else {
+                result.put("ok", true);
+                result.put("message", "未做任何修改。");
+            }
+
             return ResponseEntity.ok(result);
-        }
-
-        final String finalUsername = (newUsername != null && !newUsername.isBlank() && !newUsername.equals(currentUsername)) ? newUsername.trim() : currentUsername;
-        final String finalPassword;
-        boolean passwordChanged = false;
-
-        if (newPassword != null && !newPassword.isBlank()) {
-            if (newPassword.length() < 4) {
-                result.put("ok", false);
-                result.put("error", "新密码长度至少 4 位。");
-                return ResponseEntity.ok(result);
-            }
-            if (!newPassword.equals(confirmPassword)) {
-                result.put("ok", false);
-                result.put("error", "两次输入的新密码不一致。");
-                return ResponseEntity.ok(result);
-            }
-            finalPassword = passwordEncoder.encode(newPassword);
-            passwordChanged = true;
-        } else {
-            finalPassword = null;
-        }
-
-        if (!finalUsername.equals(currentUsername) || passwordChanged) {
-            userDetailsManager.deleteUser(currentUsername);
-            String passwordToUse = passwordChanged ? finalPassword : currentUser.getPassword();
-            UserDetails newUser = User.withUsername(finalUsername).password(passwordToUse).roles("ADMIN").build();
-            userDetailsManager.createUser(newUser);
-            result.put("ok", true);
-            result.put("message", "账号信息已修改，请使用新账号重新登录。");
-            result.put("usernameChanged", !finalUsername.equals(currentUsername));
-        } else {
-            result.put("ok", true);
-            result.put("message", "未做任何修改。");
-        }
-
-        return ResponseEntity.ok(result);
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     // ==================== API 调用日志接口 ====================

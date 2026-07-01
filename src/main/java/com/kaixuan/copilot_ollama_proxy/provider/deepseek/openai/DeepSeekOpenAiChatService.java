@@ -1,8 +1,8 @@
 package com.kaixuan.copilot_ollama_proxy.provider.deepseek.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.reasoning.ReasoningCache;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ReasoningCacheRepository;
 import com.kaixuan.copilot_ollama_proxy.provider.openai.AbstractOpenAiCompatibleUpstreamChatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,7 +29,7 @@ public class DeepSeekOpenAiChatService extends AbstractOpenAiCompatibleUpstreamC
 
     private static final Logger log = LoggerFactory.getLogger(DeepSeekOpenAiChatService.class);
 
-    private final ReasoningCacheRepository reasoningCacheRepository;
+    private final ReasoningCache reasoningCacheRepository;
 
     /**
      * 当前流式响应中累积的 reasoning_content（跨多个 SSE chunk）。
@@ -44,7 +44,7 @@ public class DeepSeekOpenAiChatService extends AbstractOpenAiCompatibleUpstreamC
     private final List<String> pendingToolCallIds = new ArrayList<>();
 
     public DeepSeekOpenAiChatService(RuntimeProviderCatalog runtimeProviderCatalog, @Value("${deepseek.default-model:deepseek-v4-flash}") String fallbackDefaultModel, ObjectMapper objectMapper,
-            ReasoningCacheRepository reasoningCacheRepository) {
+            ReasoningCache reasoningCacheRepository) {
         super(runtimeProviderCatalog, objectMapper, fallbackDefaultModel);
         this.reasoningCacheRepository = reasoningCacheRepository;
     }

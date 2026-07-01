@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { NInput, NButton, NCheckbox, NForm, NFormItem, useMessage } from 'naive-ui'
+import { auth } from '@/api'
 
 const route = useRoute()
+const router = useRouter()
 const message = useMessage()
 const formRef = ref<InstanceType<typeof NForm> | null>(null)
 const formValue = ref({ username: '', password: '' })
@@ -20,26 +22,25 @@ if (loginError) message.error('用户名或密码错误。')
 async function handleSubmit() {
   loading.value = true
   try {
-    const body = new URLSearchParams({
-      username: formValue.value.username,
-      password: formValue.value.password,
-    })
-    // 直接使用 fetch 发送登录请求，避免 Axios 自动跟随 Spring Security 的 302 重定向
-    const res = await fetch('/login', {
+    const res = await fetch('/auth/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body,
-      redirect: 'manual',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: formValue.value.username,
+        password: formValue.value.password,
+      }),
     })
-    if (res.type === 'opaqueredirect' || res.status === 302) {
-      // Spring Security 登录成功 → 302 到 /overview
-      window.location.href = '/overview'
+    if (res.ok) {
+      const data = await res.json()
+      auth.setToken(data.token)
+      router.push('/overview')
     } else {
-      // 登录失败 → 重定向到登录页带 error 参数
-      window.location.href = '/login?login=error'
+      message.error('用户名或密码错误。')
     }
   } catch {
-    window.location.href = '/login?login=error'
+    message.error('网络错误，请稍后重试。')
+  } finally {
+    loading.value = false
   }
 }
 </script>

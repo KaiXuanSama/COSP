@@ -1,10 +1,11 @@
 package com.kaixuan.copilot_ollama_proxy.application.runtime;
 
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderModelRow;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
-import java.util.Map;
 
 /**
  * 基于数据库的运行时 Provider 目录实现。
@@ -23,38 +24,24 @@ public class DatabaseRuntimeProviderCatalog implements RuntimeProviderCatalog {
         return providerConfigRepository.findAllActiveProvidersWithEnabledModels().stream().map(this::toConfiguration).toList();
     }
 
-    @SuppressWarnings("unchecked")
-    private ProviderRuntimeConfiguration toConfiguration(Map<String, Object> source) {
-        List<Map<String, Object>> models = (List<Map<String, Object>>) source.getOrDefault("models", List.of());
-        return new ProviderRuntimeConfiguration(asString(source.get("providerKey")), asString(source.get("baseUrl")), asString(source.get("apiKey")),
-                asString(source.getOrDefault("apiFormat", "openai")), models.stream().map(this::toModel).toList(),
-                asString(source.getOrDefault("customTransforms", "{}")));
+    private ProviderRuntimeConfiguration toConfiguration(ProviderConfigRow source) {
+        return new ProviderRuntimeConfiguration(
+                source.providerKey() != null ? source.providerKey() : "",
+                source.baseUrl() != null ? source.baseUrl() : "",
+                source.apiKey() != null ? source.apiKey() : "",
+                source.apiFormat() != null ? source.apiFormat() : "openai",
+                source.models().stream().map(this::toModel).toList(),
+                source.customTransforms() != null ? source.customTransforms() : "{}"
+        );
     }
 
-    private ProviderRuntimeModel toModel(Map<String, Object> source) {
-        return new ProviderRuntimeModel(asString(source.get("modelName")), asInt(source.get("contextSize")), asBoolean(source.get("capsTools")), asBoolean(source.get("capsVision")),
-                asString(source.getOrDefault("reasoningEffort", "Medium")));
-    }
-
-    private String asString(Object value) {
-        return value == null ? "" : value.toString();
-    }
-
-    private int asInt(Object value) {
-        if (value instanceof Number number) {
-            return number.intValue();
-        }
-        try {
-            return value == null ? 0 : Integer.parseInt(value.toString());
-        } catch (NumberFormatException exception) {
-            return 0;
-        }
-    }
-
-    private boolean asBoolean(Object value) {
-        if (value instanceof Boolean bool) {
-            return bool;
-        }
-        return value != null && Boolean.parseBoolean(value.toString());
+    private ProviderRuntimeModel toModel(ProviderModelRow source) {
+        return new ProviderRuntimeModel(
+                source.modelName() != null ? source.modelName() : "",
+                source.contextSize(),
+                source.capsTools(),
+                source.capsVision(),
+                source.reasoningEffort() != null ? source.reasoningEffort() : "Medium"
+        );
     }
 }

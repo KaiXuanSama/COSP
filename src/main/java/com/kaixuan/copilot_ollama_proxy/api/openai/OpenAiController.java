@@ -3,8 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.openai.CompositeUpstreamChatService;
-import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
+import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiModelsResponse;
@@ -13,13 +12,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-import reactor.core.Disposable;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,26 +40,26 @@ public class OpenAiController {
     private final CompositeUpstreamChatService upstreamChatService;
     private final ObjectMapper objectMapper;
     private final ApiUsageCollector apiUsageCollector;
-    private final ProviderConfigRepository providerConfigRepository;
+    private final ModelCatalogService modelCatalogService;
 
     /**
-     * 构造函数注入 CompositeUpstreamChatService、ObjectMapper、ApiUsageCollector 和 ProviderConfigRepository。
+     * 构造函数注入 CompositeUpstreamChatService、ObjectMapper、ApiUsageCollector 和 ModelCatalogService。
      * @param upstreamChatService 上游聊天服务组合
      * @param objectMapper JSON 对象映射器
      * @param apiUsageCollector API 使用量收集器
-     * @param providerConfigRepository 服务商配置仓库，用于获取可用模型列表
+     * @param modelCatalogService 模型目录服务，用于获取可用模型列表
      */
-    public OpenAiController(CompositeUpstreamChatService upstreamChatService, ObjectMapper objectMapper, ApiUsageCollector apiUsageCollector, ProviderConfigRepository providerConfigRepository) {
+    public OpenAiController(CompositeUpstreamChatService upstreamChatService, ObjectMapper objectMapper, ApiUsageCollector apiUsageCollector, ModelCatalogService modelCatalogService) {
         this.upstreamChatService = upstreamChatService;
         this.objectMapper = objectMapper;
         this.apiUsageCollector = apiUsageCollector;
-        this.providerConfigRepository = providerConfigRepository;
+        this.modelCatalogService = modelCatalogService;
     }
 
     /**
      * 获取可用模型列表。
      * <p>
-     * 从数据库读取所有已启用服务商及其已启用模型，
+     * 通过 {@link ModelCatalogService} 读取所有已启用服务商及其已启用模型，
      * 返回符合 OpenAI API 规范的模型列表。
      * <p>
      * 端点：GET /v1/models
@@ -84,146 +83,86 @@ public class OpenAiController {
     @GetMapping(value = "/v1/models")
     public Mono<OpenAiModelsResponse> listModels() {
         return Mono.fromCallable(() -> {
-            List<ModelData> models = new ArrayList<>();
             long defaultCreated = System.currentTimeMillis() / 1000;
-
-            // 从数据库读取所有已启用服务商及其已启用模型
-            List<Map<String, Object>> activeProviders = providerConfigRepository.findAllActiveProvidersWithEnabledModels();
-            for (Map<String, Object> provider : activeProviders) {
-                String providerKey = (String) provider.getOrDefault("providerKey", "unknown");
-                @SuppressWarnings("unchecked")
-                List<Map<String, Object>> providerModels = (List<Map<String, Object>>) provider.get("models");
-                if (providerModels == null) continue;
-
-                for (Map<String, Object> m : providerModels) {
-                    String modelName = (String) m.getOrDefault("modelName", "");
-                    if (modelName.isEmpty()) continue;
-                    // 构建带供应商前缀的模型名称，自定义供应商去掉 custom- 前缀
-                    String displayKey = providerKey.startsWith("custom-") ? providerKey.substring(7) : providerKey;
-                    String prefixedModelName = ModelNameUtil.buildPrefixedName(displayKey, modelName);
-                    models.add(new ModelData(prefixedModelName, defaultCreated, displayKey));
-                }
-            }
-
+            List<ModelData> models = modelCatalogService.listAvailableModels().stream()
+                    .map(m -> new ModelData(m.prefixedName(), defaultCreated, m.displayKey()))
+                    .toList();
             return new OpenAiModelsResponse(models);
-        });
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     /**
      * 处理聊天完成请求，支持流式和非流式两种模式。
      * @param request OpenAI 格式的聊天请求
-     * @return 非流式返回 ResponseEntity 包含完整 JSON，流式返回 SseEmitter 逐片段发送数据
+     * @return 统一返回 Mono ResponseEntity；非流式 body 为完整 JSON 字符串，
+     *         流式 body 为 ServerSentEvent 流（text/event-stream）。
      */
     @PostMapping(value = "/v1/chat/completions")
-    public Object chatCompletions(@RequestBody OpenAiChatRequest request) {
+    public Mono<ResponseEntity<?>> chatCompletions(@RequestBody OpenAiChatRequest request) {
         Map<String, Object> requestBody = buildRequestBody(request);
 
-        // 根据请求中的 stream 参数决定使用非流式还是流式响应处理。
+        // 流式：将 SSE 流作为 ResponseEntity 的 body 返回，由 WebFlux 框架托管背压、取消与超时。
         if (request.isStream()) {
-            // 流式调用上游服务，逐片段发送响应给客户端，并在完成时记录累计的 token 使用量。
-            return streamResponse(requestBody, request.getModel());
-        } else {
-            // 非流式调用上游服务，获取完整响应后提取 usage 进行记录，并返回给客户端。
-            return upstreamChatService.chatCompletion(requestBody, request.getModel()).doOnNext(this::recordUsage)
-                    .map(openAiJson -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(openAiJson))
-                    .onErrorResume(ex -> {
-                        if (isClientDisconnect(ex)) {
-                            return Mono.empty();
-                        }
-                        // 透传上游错误响应（重试耗尽时 WebClientResponseException 被包装在 RetryExhaustedException 中，需要解包）
-                        org.springframework.web.reactive.function.client.WebClientResponseException responseException = findWebResponseException(ex);
-                        if (responseException != null) {
-                            log.warn("上游 API 返回错误 [{}] {}: {}", request.getModel(), responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
-                            return Mono.just(ResponseEntity.status(responseException.getStatusCode().value())
-                                    .contentType(MediaType.APPLICATION_JSON)
-                                    .body(responseException.getResponseBodyAsString()));
-                        }
-                        log.warn("上游 API 调用失败 [{}]: {} ({})", request.getModel(), extractRootCause(ex), extractRequestUrl(ex));
-                        return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                                .body("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}"));
-                    });
+            Flux<ServerSentEvent<String>> stream = streamResponse(requestBody, request.getModel());
+            return Mono.just(ResponseEntity.ok()
+                    .contentType(MediaType.TEXT_EVENT_STREAM)
+                    .header("Cache-Control", "no-cache")
+                    .body(stream));
         }
+
+        // 非流式：获取完整响应后提取 usage 进行记录，并返回给客户端。
+        return upstreamChatService.chatCompletion(requestBody, request.getModel()).doOnNext(this::recordUsage)
+                .<ResponseEntity<?>>map(openAiJson -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(openAiJson))
+                .onErrorResume(ex -> {
+                    if (isClientDisconnect(ex)) {
+                        return Mono.empty();
+                    }
+                    // 透传上游错误响应（重试耗尽时 WebClientResponseException 被包装在 RetryExhaustedException 中，需要解包）
+                    WebClientResponseException responseException = findWebResponseException(ex);
+                    if (responseException != null) {
+                        log.warn("上游 API 返回错误 [{}] {}: {}", request.getModel(), responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
+                        return Mono.just(ResponseEntity.status(responseException.getStatusCode().value())
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .body(responseException.getResponseBodyAsString()));
+                    }
+                    log.warn("上游 API 调用失败 [{}]: {} ({})", request.getModel(), extractRootCause(ex), extractRequestUrl(ex));
+                    return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
+                            .body("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}"));
+                });
     }
 
     /**
-     * 处理流式响应的辅助方法，使用 SseEmitter 将上游服务的 SSE 片段逐个发送给客户端，并在完成时记录累计的 token 使用量。
+     * 处理流式响应，将上游服务的 SSE 片段映射为 ServerSentEvent 逐个下发给客户端，
+     * 并在完成时记录累计的 token 使用量。
+     *
+     * 相比旧的 SseEmitter 手动订阅模型，这里直接返回 Flux，由 WebFlux 框架托管
+     * 背压、取消和超时，无需手动管理 Disposable 与回调。
+     *
      * @param requestBody 请求体内容，已转换为 Map 格式
      * @param model 模型名称
-     * @return ResponseEntity 包含 SseEmitter，用于流式发送数据
+     * @return ServerSentEvent 流
      */
-    private ResponseEntity<SseEmitter> streamResponse(Map<String, Object> requestBody, String model) {
-        // SseEmitter 设置较长的超时时间（5 分钟），以适应可能较长的生成过程。
-        SseEmitter emitter = new SseEmitter(300_000L);
-
-        // 使用 AtomicInteger 来累积流式响应中的输入输出 token 数，确保线程安全。
+    private Flux<ServerSentEvent<String>> streamResponse(Map<String, Object> requestBody, String model) {
         AtomicInteger streamInputTokens = new AtomicInteger(0);
         AtomicInteger streamOutputTokens = new AtomicInteger(0);
 
-        // 调用上游服务的流式接口，订阅每个 SSE 片段，并将其发送给客户端，同时累积 token 使用量。
-        Disposable subscription = upstreamChatService.chatCompletionStream(requestBody, model).subscribe(chunk -> {
-            try {
-                // 将上游服务的 SSE 片段原样发送给客户端，保持流式响应的实时性。
-                emitter.send(SseEmitter.event().data(chunk));
-                // 从 SSE 片段中提取 usage 信息并累积 token 数，流式响应中 usage 可能出现在最后一个 content chunk 或单独的 usage chunk 中。
-                accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens);
-            } catch (Exception exception) {
-                if (isClientDisconnect(exception)) {
-                    return;
-                }
-                log.error("SSE 发送异常", exception);
-            }
-        }, error -> {
-            if (isClientDisconnect(error)) {
-                return;
-            }
-            // 透传上游错误响应（解包重试耗尽包装）
-            org.springframework.web.reactive.function.client.WebClientResponseException responseException = findWebResponseException(error);
-            if (responseException != null) {
-                log.warn("上游 API 返回错误 [{}] {}: {}", model, responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
-                try {
-                    emitter.send(SseEmitter.event().name("error").data(responseException.getResponseBodyAsString()));
-                } catch (Exception sendEx) {
-                    if (!isClientDisconnect(sendEx)) {
-                        log.warn("发送错误事件失败: {}", sendEx.getMessage());
+        return upstreamChatService.chatCompletionStream(requestBody, model)
+                .doOnNext(chunk -> accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens))
+                .map(chunk -> ServerSentEvent.builder(chunk).build())
+                .doOnComplete(() -> apiUsageCollector.record(streamInputTokens.get(), streamOutputTokens.get()))
+                .onErrorResume(error -> {
+                    if (isClientDisconnect(error)) {
+                        return Flux.empty();
                     }
-                }
-            } else {
-                log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(error), extractRequestUrl(error));
-                try {
-                    emitter.send(SseEmitter.event().name("error").data("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}"));
-                } catch (Exception sendEx) {
-                    if (!isClientDisconnect(sendEx)) {
-                        log.warn("发送错误事件失败: {}", sendEx.getMessage());
+                    // 透传上游错误响应（解包重试耗尽包装）
+                    WebClientResponseException responseException = findWebResponseException(error);
+                    if (responseException != null) {
+                        log.warn("上游 API 返回错误 [{}] {}: {}", model, responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
+                        return Flux.just(ServerSentEvent.<String>builder(responseException.getResponseBodyAsString()).event("error").build());
                     }
-                }
-            }
-            emitter.complete();
-        }, () -> {
-            apiUsageCollector.record(streamInputTokens.get(), streamOutputTokens.get());
-            try {
-                emitter.complete();
-            } catch (Exception exception) {
-                if (isClientDisconnect(exception)) {
-                    return;
-                }
-                log.error("SSE 结束发送失败", exception);
-                emitter.completeWithError(exception);
-            }
-        });
-
-        // 注册 SseEmitter 的完成、超时和错误回调，确保在客户端断开连接或发生异常时正确清理资源。
-        emitter.onCompletion(subscription::dispose);
-        // SseEmitter 没有 onTimeout 方法，使用 onCompletion 来处理超时情况，记录日志并清理资源。
-        emitter.onTimeout(() -> {
-            log.warn("SSE emitter 超时，模型: {}", model);
-            subscription.dispose();
-            emitter.complete();
-        });
-        // 注册错误回调，记录日志并清理资源，避免因异常导致的资源泄漏。
-        emitter.onError(error -> subscription.dispose());
-
-        // 返回包含 SseEmitter 的 ResponseEntity，设置 Content-Type 为 text/event-stream，并添加 no-cache 头以防止缓存。
-        return ResponseEntity.ok().contentType(new MediaType("text", "event-stream")).header("Cache-Control", "no-cache").body(emitter);
+                    log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(error), extractRequestUrl(error));
+                    return Flux.just(ServerSentEvent.<String>builder("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}").event("error").build());
+                });
     }
 
     /**
@@ -306,11 +245,10 @@ public class OpenAiController {
     private boolean isClientDisconnect(Throwable throwable) {
         Throwable current = throwable;
         while (current != null) {
-            if (current instanceof AsyncRequestNotUsableException) {
-                return true;
-            }
             String simpleName = current.getClass().getSimpleName();
-            if ("ClientAbortException".equals(simpleName) || "EOFException".equals(simpleName)) {
+            // AbortedException：Reactor Netty 客户端断开；其余为通用断连异常名
+            if ("AbortedException".equals(simpleName) || "ClientAbortException".equals(simpleName)
+                    || "EOFException".equals(simpleName) || "AsyncRequestNotUsableException".equals(simpleName)) {
                 return true;
             }
             current = current.getCause();

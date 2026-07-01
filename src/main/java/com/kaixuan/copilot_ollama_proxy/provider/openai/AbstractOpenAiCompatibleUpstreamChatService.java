@@ -5,7 +5,7 @@ import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
+import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,6 +21,7 @@ import reactor.core.publisher.Mono;
 import reactor.util.retry.Retry;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -60,8 +61,8 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     /** 运行时 provider 配置目录，统一暴露数据库中的 provider 配置。 */
     private final RuntimeProviderCatalog runtimeProviderCatalog;
 
-    /** API 调用日志仓库，由子类 Spring Bean 通过 setter 注入。 */
-    private ApiCallLogRepository apiCallLogRepository;
+    /** API 调用日志写入服务，由子类 Spring Bean 通过 setter 注入。 */
+    private ApiCallLogService apiCallLogRepository;
 
     /**
      * 全局 WebClient.Builder，由 Spring 通过 setter 注入。
@@ -71,7 +72,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     private WebClient.Builder webClientBuilder = WebClient.builder();
 
     @Autowired(required = false)
-    public void setApiCallLogRepository(ApiCallLogRepository apiCallLogRepository) {
+    public void setApiCallLogRepository(ApiCallLogService apiCallLogRepository) {
         this.apiCallLogRepository = apiCallLogRepository;
     }
 
@@ -205,21 +206,22 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                 })
                 .retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
                 .doOnNext(raw -> log.debug("{} 原始: {}", providerDisplayName(), raw)).doOnNext(raw -> onRawStreamChunk(raw)).concatMap(chunk -> {
+                    String normalizedChunk = translateChunk(chunk, contentEmitted, reasoningBuffer, chunkId);
                     // 对所有 finish chunk（stop/tool_calls）都调用 onStreamFinish 钩子
-                    if (!"[DONE]".equals(chunk) && (chunk.contains("\"finish_reason\":\"stop\"") || chunk.contains("\"finish_reason\":\"tool_calls\""))) {
+                    if (isTerminalChunk(normalizedChunk)) {
                         Flux<String> customFinish = onStreamFinish(chunkId.get(), model, reasoningBuffer, contentEmitted.get());
                         if (customFinish != null) {
                             return customFinish;
                         }
                         // 仅当 contentEmitted=false 且 reasoningBuffer 非空时触发 reasoning fallback
-                        if (chunk.contains("\"finish_reason\":\"stop\"") && !contentEmitted.get() && !reasoningBuffer.isEmpty()) {
+                        if (isStopFinishReason(normalizedChunk) && !contentEmitted.get() && !reasoningBuffer.isEmpty()) {
                             log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
                             String fallbackContent = buildFallbackContentChunk(chunkId.get(), model, reasoningBuffer.toString());
                             String fallbackFinish = buildFallbackFinishChunk(chunkId.get(), model);
                             return Flux.just(fallbackContent, fallbackFinish);
                         }
                     }
-                    return Flux.just(translateChunk(chunk, contentEmitted, reasoningBuffer, chunkId));
+                    return Flux.just(normalizedChunk);
                 }).doOnNext(chunk -> {
                     log.debug("{} 翻译: {}", providerDisplayName(), chunk);
                     logChunks.add(chunk);
@@ -503,9 +505,12 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
      * 翻译单个 SSE chunk 的 JSON 内容。
      *
      * 这里有两个关键职责：
-     * 1. 把 reasoning_content 从 delta 中提取出来，转成 reasoning_text 字段，
-     *    这样上层客户端可以识别并展示思考过程。
-     * 2. 如果模型只输出了 reasoning_content 而没有正文 content，
+    * 1. 对上游任意格式的 chunk 做统一规范化：
+    *    - thinking / reasoning / reasoning_text / cot_summary → reasoning_content
+    *    - tool_calls: [] / null → 删除
+    *    - finish_reason: "" → null
+    *    - 删除 null / "" / [] 等空字段
+    * 2. 如果模型只输出了 reasoning_content 而没有正文 content，
      *    则在流末尾由调用方触发回退，把思考内容作为最终回复。
      *
      * @param chunkJson 原始 SSE data 的 JSON 字符串
@@ -517,6 +522,9 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     @SuppressWarnings("unchecked")
     private String translateChunk(String chunkJson, AtomicBoolean contentEmitted, StringBuilder reasoningBuffer, AtomicReference<String> chunkId) {
         try {
+            if ("[DONE]".equals(chunkJson)) {
+                return chunkJson;
+            }
             Map<String, Object> chunk = objectMapper.readValue(chunkJson, Map.class);
 
             // 记录 chunk ID，供 reasoning fallback 构建伪 chunk 时保持一致性。
@@ -530,35 +538,185 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                 return chunkJson;
             }
 
-            // delta 为 null 说明是纯 finish_reason chunk，直接透传。
-            Map<String, Object> delta = (Map<String, Object>) choices.get(0).get("delta");
-            if (delta == null) {
-                return chunkJson;
+            Map<String, Object> choice = choices.get(0);
+            Map<String, Object> delta = (Map<String, Object>) choice.get("delta");
+            boolean preserveEmptyDelta = delta != null;
+            boolean preserveNullFinishReason = false;
+
+            // 统一 finish_reason：空字符串 → null
+            Object finishReasonObj = choice.get("finish_reason");
+            if (finishReasonObj instanceof String finishReason && finishReason.isBlank()) {
+                choice.put("finish_reason", null);
+                preserveNullFinishReason = true;
+            } else if (choice.containsKey("finish_reason") && finishReasonObj == null) {
+                preserveNullFinishReason = true;
             }
 
-            // 标记是否已经输出过正文 content，用于判断是否需要 reasoning fallback。
-            Object contentObj = delta.get("content");
-            if (contentObj instanceof String content && !content.isEmpty()) {
-                contentEmitted.set(true);
+            if (delta != null) {
+                normalizeDelta(delta, reasoningBuffer);
+
+                // 标记是否已经输出过正文 content，用于判断是否需要 reasoning fallback。
+                Object contentObj = delta.get("content");
+                if (contentObj instanceof String content && !content.isEmpty()) {
+                    contentEmitted.set(true);
+                }
+
+                // 如果 delta 规范化后为空，后续 prune 后再恢复为空对象，作为标准结束 chunk 形式
             }
 
-            // reasoning_content 需要转成 reasoning_text 字段，
-            // 这样上层客户端可以识别并展示思考过程。
-            // 注意：不设置 reasoning_opaque，因为上游返回的是明文思考内容而非加密内容。
-            // Copilot 客户端通过 reasoning_text 识别明文思考，通过 reasoning_opaque 识别加密思考。
-            Object reasoningObj = delta.get("reasoning_content");
-            if (reasoningObj instanceof String reasoning && !reasoning.isEmpty()) {
-                reasoningBuffer.append(reasoning);
-                delta.remove("reasoning_content");
-                delta.put("content", null);
-                delta.put("reasoning_text", reasoning);
-                return objectMapper.writeValueAsString(chunk);
+            pruneEmptyValues(chunk);
+
+            // 保留结构性字段：中间 chunk 的 finish_reason:null 不应被删除
+            if (preserveNullFinishReason && !choice.containsKey("finish_reason")) {
+                choice.put("finish_reason", null);
+            }
+            // 保留结构性字段：结束 chunk / 空 delta chunk 应保留 delta:{}
+            if (preserveEmptyDelta && !choice.containsKey("delta")) {
+                choice.put("delta", new LinkedHashMap<String, Object>());
             }
 
-            // 普通 content chunk 直接透传。
-            return chunkJson;
+            return objectMapper.writeValueAsString(chunk);
         } catch (Exception exception) {
             return chunkJson;
+        }
+    }
+
+    /**
+     * 统一规范化 delta 字段。
+     */
+    private void normalizeDelta(Map<String, Object> delta, StringBuilder reasoningBuffer) {
+        // 统一 reasoning 字段名到 reasoning_content
+        String reasoning = extractReasoning(delta);
+        if (reasoning != null && !reasoning.isBlank()) {
+            reasoningBuffer.append(reasoning);
+            delta.put("reasoning_content", reasoning);
+        }
+
+        // 没有真实工具调用时，绝不保留 tool_calls（尤其不能保留 []）
+        Object toolCallsObj = delta.get("tool_calls");
+        if (!(toolCallsObj instanceof List<?> toolCalls) || !isMeaningfulToolCalls(toolCalls)) {
+            delta.remove("tool_calls");
+        }
+
+        // 删除空字段（null / "" / []）
+        pruneEmptyValues(delta);
+    }
+
+    /**
+     * 从多个兼容字段中提取思考内容，并统一成 reasoning_content。
+     */
+    private String extractReasoning(Map<String, Object> delta) {
+        String[] keys = {"reasoning_content", "reasoning_text", "reasoning", "thinking", "cot_summary"};
+        for (String key : keys) {
+            Object value = delta.get(key);
+            if (value instanceof String str && !str.isBlank()) {
+                // 清理旧字段，只保留 reasoning_content
+                for (String k : keys) {
+                    if (!"reasoning_content".equals(k)) {
+                        delta.remove(k);
+                    }
+                }
+                return str;
+            }
+        }
+        // 如果都为空，也要清理旧字段名，避免带着空串出去
+        for (String k : keys) {
+            if (!"reasoning_content".equals(k)) {
+                delta.remove(k);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 判断 tool_calls 是否真的有意义（至少有一个非空元素）。
+     */
+    private boolean isMeaningfulToolCalls(List<?> toolCalls) {
+        if (toolCalls.isEmpty()) {
+            return false;
+        }
+        for (Object item : toolCalls) {
+            if (item instanceof Map<?, ?> map && !map.isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 递归删除 Map/List 中的空值：null、空字符串、空列表、空 Map。
+     */
+    @SuppressWarnings("unchecked")
+    private void pruneEmptyValues(Object node) {
+        if (node instanceof Map<?, ?> rawMap) {
+            Map<String, Object> map = (Map<String, Object>) rawMap;
+            List<String> keysToRemove = new ArrayList<>();
+            for (Map.Entry<String, Object> entry : map.entrySet()) {
+                Object value = entry.getValue();
+                pruneEmptyValues(value);
+                if (value == null
+                        || (value instanceof String str && str.isBlank())
+                        || (value instanceof List<?> list && list.isEmpty())
+                        || (value instanceof Map<?, ?> childMap && childMap.isEmpty())) {
+                    keysToRemove.add(entry.getKey());
+                }
+            }
+            for (String key : keysToRemove) {
+                map.remove(key);
+            }
+        } else if (node instanceof List<?> rawList) {
+            List<Object> list = (List<Object>) rawList;
+            list.removeIf(item -> {
+                pruneEmptyValues(item);
+                return item == null
+                        || (item instanceof String str && str.isBlank())
+                        || (item instanceof List<?> childList && childList.isEmpty())
+                        || (item instanceof Map<?, ?> childMap && childMap.isEmpty());
+            });
+        }
+    }
+
+    /**
+     * 判断是否为需要触发收尾逻辑的终止 chunk。
+     */
+    @SuppressWarnings("unchecked")
+    private boolean isTerminalChunk(String chunkJson) {
+        if ("[DONE]".equals(chunkJson)) {
+            return false;
+        }
+        try {
+            Map<String, Object> chunk = objectMapper.readValue(chunkJson, Map.class);
+            List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
+            if (choices == null || choices.isEmpty()) {
+                return false;
+            }
+            Object finishReason = choices.get(0).get("finish_reason");
+            return "stop".equals(finishReason) || "tool_calls".equals(finishReason);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean isStopFinishReason(String chunkJson) {
+        return hasFinishReason(chunkJson, "stop");
+    }
+
+    private boolean hasFinishReason(String chunkJson, String expected) {
+        try {
+            if ("[DONE]".equals(chunkJson)) {
+                return false;
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> chunk = objectMapper.readValue(chunkJson, Map.class);
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
+            if (choices == null || choices.isEmpty()) {
+                return false;
+            }
+            Object finishReason = choices.get(0).get("finish_reason");
+            return expected.equals(finishReason);
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -615,8 +773,6 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
             chunk.put("model", model);
 
             Map<String, Object> delta = new LinkedHashMap<>();
-            delta.put("role", null);
-            delta.put("content", null);
 
             Map<String, Object> choice = new LinkedHashMap<>();
             choice.put("index", 0);

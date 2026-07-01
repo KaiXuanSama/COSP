@@ -6,9 +6,7 @@ import static org.mockito.BDDMockito.given;
 
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -21,6 +19,8 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
 import com.kaixuan.copilot_ollama_proxy.application.openai.CompositeUpstreamChatService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderModelRow;
 
 import reactor.core.publisher.Mono;
 
@@ -93,26 +93,16 @@ class OpenAiControllerTests {
   @Test
   void returnsOpenAiModelsList() {
     // 模拟数据库返回的已启用服务商和模型列表
-    List<Map<String, Object>> activeProviders = new ArrayList<>();
+    List<ProviderConfigRow> activeProviders = new ArrayList<>();
 
-    Map<String, Object> provider1 = new HashMap<>();
-    provider1.put("providerKey", "mimo");
-    List<Map<String, Object>> models1 = new ArrayList<>();
-    Map<String, Object> model1 = new HashMap<>();
-    model1.put("modelName", "mimo-v2.5-pro");
-    models1.add(model1);
-    provider1.put("models", models1);
-
-    Map<String, Object> provider2 = new HashMap<>();
-    provider2.put("providerKey", "deepseek");
-    List<Map<String, Object>> models2 = new ArrayList<>();
-    Map<String, Object> model2 = new HashMap<>();
-    model2.put("modelName", "deepseek-v4-flash");
-    models2.add(model2);
-    provider2.put("models", models2);
-
-    activeProviders.add(provider1);
-    activeProviders.add(provider2);
+    activeProviders.add(new ProviderConfigRow(
+            1, "mimo", true, "", "", "openai", "{}", null,
+            List.of(new ProviderModelRow(1, 1, "mimo-v2.5-pro", true, 0, false, false, "Medium", 0))
+    ));
+    activeProviders.add(new ProviderConfigRow(
+            2, "deepseek", true, "", "", "openai", "{}", null,
+            List.of(new ProviderModelRow(2, 2, "deepseek-v4-flash", true, 0, false, false, "Medium", 0))
+    ));
 
     given(providerConfigRepository.findAllActiveProvidersWithEnabledModels()).willReturn(activeProviders);
 

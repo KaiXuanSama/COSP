@@ -7,9 +7,12 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatal
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 
+import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -43,6 +46,55 @@ class AbstractOpenAiCompatibleUpstreamChatServiceTests {
         assertThat(prepared).doesNotContainKey("tool_choice");
     }
 
+    @Test
+    void normalizeChunkRemovesEmptyToolCallsAndNormalizesFinishReason() throws Exception {
+        RuntimeProviderCatalog catalog = List::of;
+        TestOpenAiService service = new TestOpenAiService(catalog);
+
+        String raw = """
+                {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"","reasoning_content":"The","tool_calls":[]},"finish_reason":""}]}
+                """;
+
+        String normalized = service.exposeTranslateChunk(raw);
+
+        assertThat(normalized).contains("\"reasoning_content\":\"The\"");
+        assertThat(normalized).contains("\"finish_reason\":null");
+        assertThat(normalized).doesNotContain("\"tool_calls\"");
+        assertThat(normalized).doesNotContain("\"content\":\"\"");
+    }
+
+    @Test
+    void normalizeChunkUnifiesThinkingAliasesToReasoningContent() throws Exception {
+        RuntimeProviderCatalog catalog = List::of;
+        TestOpenAiService service = new TestOpenAiService(catalog);
+
+        String raw = """
+                {"id":"chatcmpl-2","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"thinking":"Hello thinking"},"finish_reason":null}]}
+                """;
+
+        String normalized = service.exposeTranslateChunk(raw);
+
+        assertThat(normalized).contains("\"reasoning_content\":\"Hello thinking\"");
+        assertThat(normalized).doesNotContain("\"thinking\"");
+    }
+
+    @Test
+    void normalizeFinishChunkKeepsEmptyDeltaObjectInsteadOfNullFields() throws Exception {
+        RuntimeProviderCatalog catalog = List::of;
+        TestOpenAiService service = new TestOpenAiService(catalog);
+
+        String raw = """
+                {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":null,"content":null},"finish_reason":"stop"}]}
+                """;
+
+        String normalized = service.exposeTranslateChunk(raw);
+
+        assertThat(normalized).contains("\"delta\":{}");
+        assertThat(normalized).contains("\"finish_reason\":\"stop\"");
+        assertThat(normalized).doesNotContain("\"role\":null");
+        assertThat(normalized).doesNotContain("\"content\":null");
+    }
+
     private static final class TestOpenAiService extends AbstractOpenAiCompatibleUpstreamChatService {
 
         private TestOpenAiService(RuntimeProviderCatalog runtimeProviderCatalog) {
@@ -51,6 +103,13 @@ class AbstractOpenAiCompatibleUpstreamChatServiceTests {
 
         private Map<String, Object> exposePrepareRequestBody(Map<String, Object> request, boolean stream, String model) {
             return prepareRequestBody(request, stream, model);
+        }
+
+        private String exposeTranslateChunk(String chunk) throws Exception {
+            Method method = AbstractOpenAiCompatibleUpstreamChatService.class.getDeclaredMethod(
+                    "translateChunk", String.class, AtomicBoolean.class, StringBuilder.class, AtomicReference.class);
+            method.setAccessible(true);
+            return (String) method.invoke(this, chunk, new AtomicBoolean(false), new StringBuilder(), new AtomicReference<String>("chatcmpl-unknown"));
         }
 
         @Override
