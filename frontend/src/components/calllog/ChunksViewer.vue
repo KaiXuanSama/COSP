@@ -7,9 +7,10 @@
  * - 规整显示: 将 chunks 聚合为对话片段（思考过程 / 工具调用 / 正文回复）
  */
 import { ref, computed } from 'vue'
-import { NModal, NRadioGroup, NRadio, NScrollbar } from 'naive-ui'
+import { NModal, NRadioGroup, NRadio, NScrollbar, NTooltip, useMessage } from 'naive-ui'
 import { marked } from 'marked'
 import JsonNode from './JsonNode.vue'
+import { copyToClipboard } from '@/utils/clipboard'
 
 const props = defineProps<{
   show: boolean
@@ -21,6 +22,43 @@ const emit = defineEmits<{
 }>()
 
 const displayMode = ref<'block' | 'clean'>('clean')
+
+const message = useMessage()
+
+/** 跟踪被点击的"已复制"按钮 key，2 秒后自动复位 */
+const copiedKeys = ref<Set<string>>(new Set())
+
+/**
+ * 复制任意文本到剪贴板，复制成功后按钮临时显示"已复制"反馈。
+ */
+async function handleCopy(text: string, key: string) {
+  const ok = await copyToClipboard(text)
+  if (ok) {
+    message.success('已复制到剪贴板')
+    copiedKeys.value.add(key)
+    setTimeout(() => copiedKeys.value.delete(key), 2000)
+  } else {
+    message.error('复制失败，请手动选择文本复制')
+  }
+}
+
+/**
+ * 块显示模式：复制当前 chunk 的原始字符串（[DONE] 也按原文复制）
+ */
+function copyBlockChunk(chunk: string, index: number) {
+  return () => handleCopy(chunk, `block-${index}`)
+}
+
+/**
+ * 规整显示模式：复制指定片段的内容。
+ *  - 思考 / 正文：复制纯文本
+ *  - 工具调用：复制 JSON 字符串
+ */
+function copySegment(seg: Segment, index: number) {
+  const text =
+    seg.type === 'tool_calls' ? JSON.stringify(seg.toolCalls ?? [], null, 2) : seg.text
+  return () => handleCopy(text, `segment-${index}`)
+}
 
 interface Segment {
   type: 'thinking' | 'content' | 'tool_calls'
@@ -159,6 +197,24 @@ function parseChunk(chunk: string): { parsed: unknown; isJson: boolean } {
         <div v-for="(chunk, index) in chunks" :key="index" class="chunk-item">
           <div class="chunk-header">
             <span class="chunk-index">#{{ index + 1 }}</span>
+            <n-tooltip :show="copiedKeys.has(`block-${index}`)" placement="bottom" :duration="0">
+              <template #trigger>
+                <button
+                  class="copy-btn"
+                  type="button"
+                  aria-label="复制此 chunk 内容"
+                  @click="copyBlockChunk(chunk, index)()"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                  <span class="copy-btn-label">{{ copiedKeys.has(`block-${index}`) ? '已复制' : '复制' }}</span>
+                </button>
+              </template>
+              {{ copiedKeys.has(`block-${index}`) ? '已复制到剪贴板' : '复制此 chunk 的原始 JSON' }}
+            </n-tooltip>
           </div>
           <div class="chunk-content">
             <JsonNode v-if="parseChunk(chunk).isJson" :value="parseChunk(chunk).parsed" :depth="0" />
@@ -177,6 +233,26 @@ function parseChunk(chunk: string): { parsed: unknown; isJson: boolean } {
               <span v-if="seg.type === 'thinking'">💭 思考过程</span>
               <span v-else-if="seg.type === 'tool_calls'">🔧 工具调用</span>
               <span v-else>💬 正文回复</span>
+              <n-tooltip :show="copiedKeys.has(`segment-${i}`)" placement="bottom" :duration="0">
+                <template #trigger>
+                  <button
+                    class="copy-btn"
+                    type="button"
+                    :aria-label="seg.type === 'tool_calls' ? '复制工具调用 JSON' : '复制文本内容'"
+                    @click="copySegment(seg, i)()"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                    <span class="copy-btn-label">{{ copiedKeys.has(`segment-${i}`) ? '已复制' : '复制' }}</span>
+                  </button>
+                </template>
+                {{ copiedKeys.has(`segment-${i}`)
+                  ? '已复制到剪贴板'
+                  : (seg.type === 'tool_calls' ? '复制工具调用的 JSON' : '复制此段文本') }}
+              </n-tooltip>
             </div>
             <!-- 思考过程 / 正文回复 -->
             <div v-if="seg.text" class="segment-body markdown-body" v-html="renderMd(seg.text)" />
@@ -222,6 +298,7 @@ function parseChunk(chunk: string): { parsed: unknown; isJson: boolean } {
 .chunk-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: $space-xs $space-md;
   border-bottom: 1px solid $border-light;
   background: $surface;
@@ -231,6 +308,39 @@ function parseChunk(chunk: string): { parsed: unknown; isJson: boolean } {
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   font-size: 12px;
   color: $text-muted;
+}
+
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-family: $font-body;
+  font-size: 11px;
+  color: $text-muted;
+  background: transparent;
+  border: 1px solid $border;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+
+  svg {
+    flex-shrink: 0;
+  }
+
+  .copy-btn-label {
+    line-height: 1;
+  }
+
+  &:hover {
+    color: $accent;
+    border-color: $accent;
+    background: rgba(194, 122, 62, 0.06);
+  }
+
+  &:active {
+    transform: translateY(0.5px);
+  }
 }
 
 .chunk-content {
@@ -274,6 +384,9 @@ function parseChunk(chunk: string): { parsed: unknown; isJson: boolean } {
 }
 
 .segment-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: $space-sm $space-md;
   font-family: $font-body;
   font-size: 13px;
