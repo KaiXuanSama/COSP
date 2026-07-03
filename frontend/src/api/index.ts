@@ -2,6 +2,10 @@ import axios from 'axios'
 
 const TOKEN_KEY = 'cosp_token'
 
+function shouldSkipAuthRedirect(error: any) {
+ return Boolean((error?.config as any)?.skipAuthRedirect)
+}
+
 const http = axios.create({
   baseURL: '/config/api',
   timeout: 10000,
@@ -20,7 +24,7 @@ http.interceptors.request.use((config) => {
 http.interceptors.response.use(
   (res) => res,
   (error) => {
-    if (error.response?.status === 401) {
+ if (error.response?.status ===401 && !shouldSkipAuthRedirect(error)) {
       localStorage.removeItem(TOKEN_KEY)
       // 避免在登录页重复跳转
       if (!window.location.pathname.startsWith('/login')) {

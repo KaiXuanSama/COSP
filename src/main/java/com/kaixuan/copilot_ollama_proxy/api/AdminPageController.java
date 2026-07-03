@@ -149,8 +149,10 @@ public class AdminPageController {
     public Mono<ResponseEntity<Map<String, Object>>> saveProviderConfig(@PathVariable String providerKey, ServerWebExchange exchange) {
         // WebFlux 读取 application/x-www-form-urlencoded 表单的标准方式：exchange.getFormData()
         return exchange.getFormData().map(form -> {
-            java.util.function.BiFunction<String, String, String> getParam =
-                    (key, def) -> { String v = form.getFirst(key); return v != null ? v : def; };
+            java.util.function.BiFunction<String, String, String> getParam = (key, def) -> {
+                String v = form.getFirst(key);
+                return v != null ? v : def;
+            };
             String baseUrl = getParam.apply("baseUrl", "").trim();
             String apiKey = getParam.apply("apiKey", "").trim();
             int providerId = providerConfigRepository.updateProviderConfig(providerKey, baseUrl, apiKey, "openai");
@@ -245,8 +247,7 @@ public class AdminPageController {
             return builder.body((Object) respBody);
         })).onErrorResume(ex -> {
             String errorMsg = resolvePullModelsErrorMessage(ex);
-            return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                    .body((Object) ("{\"error\":\"" + errorMsg.replace("\"", "'") + "\"}")));
+            return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON).body((Object) ("{\"error\":\"" + errorMsg.replace("\"", "'") + "\"}")));
         });
     }
 
@@ -265,7 +266,8 @@ public class AdminPageController {
                 Object errorObj = errorBody.get("error");
                 if (errorObj instanceof Map<?, ?> errorMap) {
                     String msg = (String) errorMap.get("message");
-                    if (msg != null && !msg.isBlank()) return msg;
+                    if (msg != null && !msg.isBlank())
+                        return msg;
                 } else if (errorObj instanceof String msg && !msg.isBlank()) {
                     return msg;
                 }
@@ -277,10 +279,10 @@ public class AdminPageController {
             }
             // 按状态码给出友好提示
             return switch (status) {
-                case 401, 403 -> "API Key 无效或无权限";
-                case 404 -> "模型列表端点不存在，请检查 API 地址";
-                case 429 -> "上游服务限流，请稍后重试";
-                default -> "上游返回错误 (" + status + ")";
+            case 401, 403 -> "API Key 无效或无权限";
+            case 404 -> "模型列表端点不存在，请检查 API 地址";
+            case 429 -> "上游服务限流，请稍后重试";
+            default -> "上游返回错误 (" + status + ")";
             };
         }
         // 网络层异常
@@ -315,9 +317,7 @@ public class AdminPageController {
     public ResponseEntity<List<ProviderConfigRow>> listCustomProviders() {
         // 从 provider_config 中筛选 custom- 前缀的供应商
         List<ProviderConfigRow> all = providerConfigRepository.findAllWithModels();
-        List<ProviderConfigRow> custom = all.stream()
-                .filter(p -> p.providerKey().startsWith("custom-"))
-                .toList();
+        List<ProviderConfigRow> custom = all.stream().filter(p -> p.providerKey().startsWith("custom-")).toList();
         return ResponseEntity.ok(custom);
     }
 
@@ -352,8 +352,7 @@ public class AdminPageController {
     }
 
     @PutMapping("/config/api/custom-providers/{providerKey}") @ResponseBody
-    public Mono<ResponseEntity<Map<String, Object>>> updateCustomProvider(@PathVariable String providerKey,
-                                                                    ServerWebExchange exchange) {
+    public Mono<ResponseEntity<Map<String, Object>>> updateCustomProvider(@PathVariable String providerKey, ServerWebExchange exchange) {
         return exchange.getFormData().map(form -> {
             String displayName = form.getFirst("displayName");
             String customTransforms = form.getFirst("customTransforms");
@@ -452,9 +451,7 @@ public class AdminPageController {
      * @return 分页结果：currentPage, totalPages, pageSize, totalItems, items
      */
     @GetMapping("/config/api/logs") @ResponseBody
-    public ResponseEntity<Map<String, Object>> listLogs(
-            @RequestParam(value = "pageNum", defaultValue = "1") int pageNum,
-            @RequestParam(value = "pageSize", defaultValue = "20") int pageSize) {
+    public ResponseEntity<Map<String, Object>> listLogs(@RequestParam(value = "pageNum", defaultValue = "1") int pageNum, @RequestParam(value = "pageSize", defaultValue = "20") int pageSize) {
         Map<String, Object> result = apiCallLogRepository.findLogs(pageNum, pageSize);
         return ResponseEntity.ok(result);
     }
