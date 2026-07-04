@@ -225,6 +225,8 @@ public class OllamaApiController {
     @PostMapping(value = "/chat")
     public Mono<Void> chat(@RequestBody OllamaChatRequest request, ServerHttpResponse response) {
         String modelName = request.getModel();
+        var parsed = ModelNameUtil.parse(modelName);
+        String providerLabel = parsed.providerKey() != null ? parsed.providerKey() : "unknown";
 
         // 构建 OllamaProtocolConverter.Support（简化版，不依赖 provider 子类）
         var converterSupport = new OllamaProtocolConverter.Support(
@@ -253,7 +255,10 @@ public class OllamaApiController {
             Flux<org.springframework.core.io.buffer.DataBuffer> ndjsonStream =
                     upstreamChatService.chatCompletionStream(openAiRequest, modelName)
                             .concatMap(chunk -> Flux.fromIterable(translator.translate(session, chunk, modelName)))
-                            .doOnNext(ollamaResp -> log.debug("[Ollama→OpenAI] Ollama翻译: {}", ollamaResp))
+                            .doOnNext(ollamaResp -> {
+                                try { log.debug("{} 下游翻译: {}", providerLabel, ndjsonMapper.writeValueAsString(ollamaResp)); }
+                                catch (Exception ignored) { log.debug("{} 下游翻译: {}", providerLabel, ollamaResp); }
+                            })
                             .map(ollamaResp -> {
                                 try {
                                     byte[] bytes = (ndjsonMapper.writeValueAsString(ollamaResp) + "\n").getBytes(StandardCharsets.UTF_8);

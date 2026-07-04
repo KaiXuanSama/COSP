@@ -45,7 +45,7 @@ public class GenericOpenAiChatService extends AbstractOpenAiCompatibleUpstreamCh
 
     @Override
     protected String providerDisplayName() {
-        return "Generic";
+        return getLoggingProviderKey();
     }
 
     @Override

@@ -30,11 +30,23 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * OpenAI 兼容上游服务的公共基类。
+ * OpenAI 兼容上游服务的公共基类 —— 三阶段流式管道的核心。
  *
- * 这个类封装了所有与 OpenAI Chat Completions 协议交互的公共逻辑：
- * WebClient 构建、鉴权头注入、默认 Base URL 回退、请求体准备、
- * SSE 流式解包、reasoning fallback 以及统一的重试策略。
+ * 本类负责管道的前两个阶段，第三阶段由 Controller 层完成：
+ *
+ * 阶段 1：上游清洗（{@link #normalizeUpstreamChunk}）
+ *   将各上游供应商返回的格式不一致的 SSE chunk 统一为内部标准 OpenAI 格式。
+ *   包括：统一 reasoning 字段名（5 种 → reasoning_content）、清理空值/空 tool_calls、
+ *   统一 finish_reason 等。
+ *
+ * 阶段 2：中枢处理（在 {@link #chatCompletionStream} 的 Reactor 管道中完成）
+ *   基于清洗后的统一格式进行：reasoning 累积与缓存、reasoning fallback
+ *   （无正文时回退用思考内容作为回复）、API 调用日志记录。
+ *
+ * 阶段 3：下游序列化（由 Controller 层完成，不在本类中）
+ *   根据下游调用来源分流：
+ *   - OpenAI 下游（/v1/chat/completions）：清洗后的 chunk 几乎 passthrough 包装为 SSE
+ *   - Ollama 下游（/api/chat）：经 OllamaStreamTranslator 结构转换后输出 NDJSON
  *
  * 子类只需实现四个模板方法即可接入一个新的 OpenAI 兼容 provider：
  * {@link #defaultBaseUrl()}、{@link #normalizeBaseUrl(String)}、
@@ -205,8 +217,8 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                     return response.bodyToFlux(STRING_SSE_TYPE);
                 })
                 .retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
-                .doOnNext(raw -> log.debug("{} 原始: {}", providerDisplayName(), raw)).doOnNext(raw -> onRawStreamChunk(raw)).concatMap(chunk -> {
-                    String normalizedChunk = translateChunk(chunk, contentEmitted, reasoningBuffer, chunkId);
+                .doOnNext(raw -> log.debug("{} 上游原始: {}", providerDisplayName(), raw)).doOnNext(raw -> onRawStreamChunk(raw)).concatMap(chunk -> {
+                    String normalizedChunk = normalizeUpstreamChunk(chunk, contentEmitted, reasoningBuffer, chunkId);
                     // 对所有 finish chunk（stop/tool_calls）都调用 onStreamFinish 钩子
                     if (isTerminalChunk(normalizedChunk)) {
                         Flux<String> customFinish = onStreamFinish(chunkId.get(), model, reasoningBuffer, contentEmitted.get());
@@ -223,7 +235,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                     }
                     return Flux.just(normalizedChunk);
                 }).doOnNext(chunk -> {
-                    log.debug("{} chunk规范化: {}", providerDisplayName(), chunk);
+                    log.debug("{} 上游清洗: {}", providerDisplayName(), chunk);
                     logChunks.add(chunk);
                 }).doFinally(signal -> {
                     // 如果有错误信息（重试耗尽），同时记录错误响应体到非流式响应列
@@ -383,7 +395,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     }
 
     /**
-     * 子类可以重写此方法来拦截并处理上游返回的原始 SSE chunk（在 translateChunk 之前调用）。
+     * 子类可以重写此方法来拦截并处理上游返回的原始 SSE chunk（在上游清洗之前调用）。
      * <p>
      * 典型用途：捕获 tool_calls 相关的 reasoning_content 并存入缓存，
      * 以便在下一轮请求中通过 {@link #customizeRequestBody} 回填。
@@ -502,25 +514,29 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     protected abstract String chatCompletionsUri();
 
     /**
-     * 翻译单个 SSE chunk 的 JSON 内容。
+     * 上游清洗 —— 对上游返回的原始 SSE chunk 做统一标准化。
      *
-     * 这里有两个关键职责：
-    * 1. 对上游任意格式的 chunk 做统一规范化：
-    *    - thinking / reasoning / reasoning_text / cot_summary → reasoning_content
-    *    - tool_calls: [] / null → 删除
-    *    - finish_reason: "" → null
-    *    - 删除 null / "" / [] 等空字段
-    * 2. 如果模型只输出了 reasoning_content 而没有正文 content，
-     *    则在流末尾由调用方触发回退，把思考内容作为最终回复。
+     * 本方法属于三阶段管道的第一阶段（上游清洗），目的是将各上游供应商返回的
+     * 格式不一致的 chunk 统一为本服务内部约定的 OpenAI 标准格式，以便后续阶段
+     * （中枢处理：reasoning 累积/缓存/fallback/日志）能基于统一格式工作。
+     *
+     * 清洗内容：
+     * 1. 统一 reasoning 字段名：thinking / reasoning / reasoning_text / cot_summary → reasoning_content
+     * 2. 统一 finish_reason：空字符串 → null
+     * 3. 清理空 tool_calls（[] / null → 删除）
+     * 4. 递归剪枝空值（null / "" / [] / 空 Map）
+     *
+     * 注意：此方法不做"下游格式化"，清洗后的 chunk 仍然是 OpenAI 格式。
+     * 下游序列化（OpenAI passthrough 或 Ollama 结构转换）由 Controller 层负责。
      *
      * @param chunkJson 原始 SSE data 的 JSON 字符串
      * @param contentEmitted 是否已经输出过正文 content
      * @param reasoningBuffer 累积 reasoning_content 的缓冲区
      * @param chunkId 当前流的 chunk ID 引用
-     * @return 翻译后的 chunk JSON 字符串
+     * @return 清洗后的 chunk JSON 字符串
      */
     @SuppressWarnings("unchecked")
-    private String translateChunk(String chunkJson, AtomicBoolean contentEmitted, StringBuilder reasoningBuffer, AtomicReference<String> chunkId) {
+    private String normalizeUpstreamChunk(String chunkJson, AtomicBoolean contentEmitted, StringBuilder reasoningBuffer, AtomicReference<String> chunkId) {
         try {
             if ("[DONE]".equals(chunkJson)) {
                 return chunkJson;
