@@ -3,13 +3,9 @@ package com.kaixuan.copilot_ollama_proxy.provider.ollama;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
 import org.junit.jupiter.api.Test;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 import java.util.List;
 
@@ -91,16 +87,6 @@ class AbstractRuntimeCatalogOllamaServiceTests {
         @Override
         public OllamaShowResponse showModel(String modelName) {
             return null;
-        }
-
-        @Override
-        public Mono<OllamaChatResponse> chat(OllamaChatRequest request) {
-            return Mono.empty();
-        }
-
-        @Override
-        public Flux<OllamaChatResponse> chatStream(OllamaChatRequest request) {
-            return Flux.empty();
         }
     }
 }
