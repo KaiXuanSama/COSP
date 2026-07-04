@@ -106,6 +106,21 @@ public class OllamaApiController {
         details.setParameterSize("unknown");
         details.setQuantizationLevel("none");
         info.setDetails(details);
+
+        // 从数据库读取能力列表，避免插件因 tags 缺少 capabilities 而无法展示工具/视觉功能
+        List<String> capabilities = new ArrayList<>();
+        capabilities.add("completion");
+        if (model.capsTools()) capabilities.add("tools");
+        if (model.capsVision()) capabilities.add("vision");
+        info.setCapabilities(capabilities);
+
+        // 在 tags 中直接返回上下文长度，避免插件额外调用 /api/show
+        if (model.contextSize() > 0) {
+            info.setContextLength(model.contextSize());
+            // 显式声明 max_output_tokens，防止插件把 context_length 同时当 maxOutputTokens 导致总量翻倍
+            info.setMaxOutputTokens(8192);
+        }
+
         return info;
     }
 

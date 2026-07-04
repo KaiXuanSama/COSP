@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.protocol.ollama;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 
@@ -47,6 +48,25 @@ public class OllamaTagsResponse {
          * - "vision"：支持图片理解
          */
         private List<String> capabilities;
+
+        /**
+         * 上下文窗口大小（token 数）。
+         * ollama-vscode 插件从 tags 响应中直接读取此字段确定 maxInputTokens，
+         * 避免额外调用 /api/show。0 或 null 时不序列化。
+         */
+        @JsonProperty("context_length")
+        @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+        private int contextLength;
+
+        /**
+         * 最大输出 token 数。
+         * ollama-vscode 插件用 maxInputTokens + maxOutputTokens 计算总上下文，
+         * 若不提供此字段，插件会把 maxOutputTokens 回退到 context_length，
+         * 导致显示的总上下文翻倍。
+         */
+        @JsonProperty("max_output_tokens")
+        @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+        private int maxOutputTokens;
 
         public String getName() {
             return name;
@@ -102,6 +122,22 @@ public class OllamaTagsResponse {
 
         public void setCapabilities(List<String> capabilities) {
             this.capabilities = capabilities;
+        }
+
+        public int getContextLength() {
+            return contextLength;
+        }
+
+        public void setContextLength(int contextLength) {
+            this.contextLength = contextLength;
+        }
+
+        public int getMaxOutputTokens() {
+            return maxOutputTokens;
+        }
+
+        public void setMaxOutputTokens(int maxOutputTokens) {
+            this.maxOutputTokens = maxOutputTokens;
         }
     }
 
