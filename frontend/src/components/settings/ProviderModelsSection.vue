@@ -25,6 +25,13 @@ const contextPresets = [
     { label: '64K', value: '64000' },
 ]
 
+const maxOutputPresets = [
+    { label: '512K', value: '512000' },
+    { label: '256K', value: '256000' },
+    { label: '128K', value: '128000' },
+    { label: '64K', value: '64000' },
+]
+
 const effortOptions = [
     { label: 'None', value: 'None' },
     { label: 'Low', value: 'Low' },
@@ -88,11 +95,27 @@ const effortOptions = [
                             </n-form-item>
                         </div>
                         <div class="model-form-row model-form-row--details">
-                            <n-form-item label="上下文" class="model-detail-item model-detail-item--grow">
+                            <n-form-item label="上下文" class="model-detail-item model-detail-item--half">
                                 <n-input v-model:value="model.contextSize" placeholder="4096">
                                     <template #suffix>
                                         <n-popselect :options="contextPresets" size="small" trigger="click"
                                             @update:value="(value: string) => model.contextSize = value">
+                                            <span class="context-preset-trigger">
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                                    stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                                    stroke-linejoin="round">
+                                                    <polyline points="6 9 12 15 18 9" />
+                                                </svg>
+                                            </span>
+                                        </n-popselect>
+                                    </template>
+                                </n-input>
+                            </n-form-item>
+                            <n-form-item label="最大输出" class="model-detail-item model-detail-item--half">
+                                <n-input v-model:value="model.maxOutputTokens" placeholder="128000">
+                                    <template #suffix>
+                                        <n-popselect :options="maxOutputPresets" size="small" trigger="click"
+                                            @update:value="(value: string) => model.maxOutputTokens = value">
                                             <span class="context-preset-trigger">
                                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
                                                     stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -262,6 +285,11 @@ const effortOptions = [
     }
 
     &--grow {
+        flex: 1;
+        min-width: 0;
+    }
+
+    &--half {
         flex: 1;
         min-width: 0;
     }

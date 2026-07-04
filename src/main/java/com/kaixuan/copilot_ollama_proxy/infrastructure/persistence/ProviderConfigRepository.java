@@ -69,13 +69,14 @@ public class ProviderConfigRepository {
      */
     public List<ProviderModelRow> findModelsByProviderId(int providerId) {
         return jdbcTemplate.query(
-                "SELECT id, provider_id, model_name, enabled, context_size, caps_tools, caps_vision, reasoning_effort, sort_order " + "FROM provider_model WHERE provider_id = ? ORDER BY sort_order, id",
+                "SELECT id, provider_id, model_name, enabled, context_size, max_output_tokens, caps_tools, caps_vision, reasoning_effort, sort_order " + "FROM provider_model WHERE provider_id = ? ORDER BY sort_order, id",
                 (rs, rowNum) -> new ProviderModelRow(
                         rs.getInt("id"),
                         rs.getInt("provider_id"),
                         rs.getString("model_name"),
                         rs.getInt("enabled") == 1,
                         rs.getInt("context_size"),
+                        rs.getInt("max_output_tokens"),
                         rs.getInt("caps_tools") == 1,
                         rs.getInt("caps_vision") == 1,
                         rs.getString("reasoning_effort"),
@@ -135,11 +136,12 @@ public class ProviderConfigRepository {
             String modelName = (String) m.getOrDefault("modelName", "");
             boolean modelEnabled = Boolean.TRUE.equals(m.get("enabled"));
             int contextSize = parseInt(m.get("contextSize"), 0);
+            int maxOutputTokens = parseInt(m.get("maxOutputTokens"), 128000);
             boolean capsTools = Boolean.TRUE.equals(m.get("capsTools"));
             boolean capsVision = Boolean.TRUE.equals(m.get("capsVision"));
             String reasoningEffort = (String) m.getOrDefault("reasoningEffort", "Medium");
-            jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, enabled, context_size, caps_tools, caps_vision, reasoning_effort, sort_order) " + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    providerId, modelName, modelEnabled ? 1 : 0, contextSize, capsTools ? 1 : 0, capsVision ? 1 : 0, reasoningEffort, i);
+            jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, enabled, context_size, max_output_tokens, caps_tools, caps_vision, reasoning_effort, sort_order) " + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    providerId, modelName, modelEnabled ? 1 : 0, contextSize, maxOutputTokens, capsTools ? 1 : 0, capsVision ? 1 : 0, reasoningEffort, i);
         }
     }
 
@@ -155,12 +157,13 @@ public class ProviderConfigRepository {
                 (rs, rowNum) -> {
                     int id = rs.getInt("id");
                     List<ProviderModelRow> models = jdbcTemplate
-                            .query("SELECT id, provider_id, model_name, enabled, context_size, caps_tools, caps_vision, reasoning_effort, sort_order " + "FROM provider_model WHERE provider_id = ? AND enabled = 1 ORDER BY sort_order, id", (rs2, rn2) -> new ProviderModelRow(
+                            .query("SELECT id, provider_id, model_name, enabled, context_size, max_output_tokens, caps_tools, caps_vision, reasoning_effort, sort_order " + "FROM provider_model WHERE provider_id = ? AND enabled = 1 ORDER BY sort_order, id", (rs2, rn2) -> new ProviderModelRow(
                                     rs2.getInt("id"),
                                     rs2.getInt("provider_id"),
                                     rs2.getString("model_name"),
                                     rs2.getInt("enabled") == 1,
                                     rs2.getInt("context_size"),
+                                    rs2.getInt("max_output_tokens"),
                                     rs2.getInt("caps_tools") == 1,
                                     rs2.getInt("caps_vision") == 1,
                                     rs2.getString("reasoning_effort"),

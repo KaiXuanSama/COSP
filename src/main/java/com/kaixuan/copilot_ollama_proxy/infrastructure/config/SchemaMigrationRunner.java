@@ -30,6 +30,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         addColumnIfNotExists("api_call_log", "response_headers", "TEXT");
         addColumnIfNotExists("api_call_log", "status_code", "INTEGER");
         addColumnIfNotExists("provider_config", "custom_transforms", "TEXT NOT NULL DEFAULT '{}'");
+        // 2026-07: 支持用户配置模型最大输出 token 数
+        addColumnIfNotExists("provider_model", "max_output_tokens", "INTEGER NOT NULL DEFAULT 128000");
     }
 
     private void addColumnIfNotExists(String table, String column, String definition) {

@@ -114,11 +114,13 @@ public class OllamaApiController {
         if (model.capsVision()) capabilities.add("vision");
         info.setCapabilities(capabilities);
 
-        // 在 tags 中直接返回上下文长度，避免插件额外调用 /api/show
+        // 在 tags 中直接返回上下文长度和最大输出，避免插件额外调用 /api/show
+        // 插件计算显示的总上下文 = context_length + max_output_tokens，
+        // 因此 context_length 需减去 max_output_tokens 才能让显示值等于用户配置的上下文大小
         if (model.contextSize() > 0) {
-            info.setContextLength(model.contextSize());
-            // 显式声明 max_output_tokens，防止插件把 context_length 同时当 maxOutputTokens 导致总量翻倍
-            info.setMaxOutputTokens(8192);
+            int maxOutput = model.maxOutputTokens() > 0 ? model.maxOutputTokens() : 8192;
+            info.setContextLength(Math.max(model.contextSize() - maxOutput, maxOutput));
+            info.setMaxOutputTokens(maxOutput);
         }
 
         return info;

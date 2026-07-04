@@ -510,6 +510,7 @@ function openEditPanel(key: string) {
       models: p.models.map(m => ({
         ...m,
         contextSize: String(m.contextSize ?? '0'),
+        maxOutputTokens: String(m.maxOutputTokens ?? '128000'),
         reasoningEffort: typeof m.reasoningEffort === 'string' && m.reasoningEffort.trim()
           ? m.reasoningEffort.split(',')[0].trim()
           : 'Medium',
@@ -524,6 +525,7 @@ function buildEditableModel(modelName = '', source: Record<string, any> = {}) {
     modelName,
     enabled: source.enabled ?? true,
     contextSize: String(source.contextSize ?? '128000'),
+    maxOutputTokens: String(source.maxOutputTokens ?? '128000'),
     capsTools: source.capsTools ?? true,
     capsVision: source.capsVision ?? false,
     reasoningEffort: typeof source.reasoningEffort === 'string' && source.reasoningEffort.trim()
@@ -616,6 +618,7 @@ async function saveEditPanel() {
     params[`models[${i}].name`] = m.modelName
     params[`models[${i}].enabled`] = m.enabled ? 'on' : ''
     params[`models[${i}].contextSize`] = m.contextSize || '0'
+    params[`models[${i}].maxOutputTokens`] = m.maxOutputTokens || '128000'
     params[`models[${i}].capsTools`] = m.capsTools ? 'on' : ''
     params[`models[${i}].capsVision`] = m.capsVision ? 'on' : ''
     if (m.reasoningEffort) {

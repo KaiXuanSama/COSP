@@ -174,6 +174,7 @@ public class AdminPageController {
                 m.put("modelName", getParam.apply(prefix + i + "].name", "").trim());
                 m.put("enabled", "on".equals(form.getFirst(prefix + i + "].enabled")));
                 m.put("contextSize", getParam.apply(prefix + i + "].contextSize", "0").trim());
+                m.put("maxOutputTokens", getParam.apply(prefix + i + "].maxOutputTokens", "128000").trim());
                 m.put("capsTools", "on".equals(form.getFirst(prefix + i + "].capsTools")));
                 m.put("capsVision", "on".equals(form.getFirst(prefix + i + "].capsVision")));
                 m.put("reasoningEffort", getParam.apply(prefix + i + "].reasoningEffort", "Medium").trim());

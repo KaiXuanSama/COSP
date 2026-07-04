@@ -45,7 +45,8 @@ public class DatabaseModelCatalogService implements ModelCatalogService {
                 boolean capsTools = m.capsTools();
                 boolean capsVision = m.capsVision();
                 int contextSize = m.contextSize();
-                result.add(new AvailableModel(providerKey, displayKey, modelName, prefixedName, capsTools, capsVision, contextSize));
+                int maxOutputTokens = m.maxOutputTokens();
+                result.add(new AvailableModel(providerKey, displayKey, modelName, prefixedName, capsTools, capsVision, contextSize, maxOutputTokens));
             }
         }
         return result;

@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS provider_model (
     model_name      VARCHAR(100) NOT NULL,            -- 模型名称
     enabled         INTEGER      NOT NULL DEFAULT 1,  -- 是否启用（0=禁用，1=启用，默认启用）
     context_size    INTEGER      NOT NULL DEFAULT 0,  -- 上下文大小（token 数）
+    max_output_tokens INTEGER    NOT NULL DEFAULT 128000, -- 最大输出 token 数
     caps_tools      INTEGER      NOT NULL DEFAULT 0,  -- 是否支持工具调用（0=否，1=是）
     caps_vision     INTEGER      NOT NULL DEFAULT 0,  -- 是否支持视觉（0=否，1=是）
     reasoning_effort TEXT        NOT NULL DEFAULT 'Medium', -- 思考深度（逗号分隔，如 Low,Medium）
