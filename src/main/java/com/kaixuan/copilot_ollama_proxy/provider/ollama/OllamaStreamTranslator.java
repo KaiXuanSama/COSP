@@ -33,13 +33,19 @@ public class OllamaStreamTranslator {
     }
 
     @FunctionalInterface
+    public interface ThinkingChunkFactory {
+        OllamaChatResponse create(String modelName, String thinking);
+    }
+
+    @FunctionalInterface
     public interface AssistantCompletionFactory {
         OllamaChatResponse create(String modelName, String content, List<OllamaChatResponse.ToolCallResult> toolCalls);
     }
 
-    public record Support(AssistantChunkFactory assistantChunkFactory, AssistantCompletionFactory assistantCompletionFactory) {
+    public record Support(AssistantChunkFactory assistantChunkFactory, ThinkingChunkFactory thinkingChunkFactory, AssistantCompletionFactory assistantCompletionFactory) {
         public Support {
             Objects.requireNonNull(assistantChunkFactory, "assistantChunkFactory");
+            Objects.requireNonNull(thinkingChunkFactory, "thinkingChunkFactory");
             Objects.requireNonNull(assistantCompletionFactory, "assistantCompletionFactory");
         }
     }
@@ -89,7 +95,8 @@ public class OllamaStreamTranslator {
         List<OllamaChatResponse> results = new ArrayList<>();
 
         if ("[DONE]".equals(chunk)) {
-            results.add(support.assistantCompletionFactory().create(modelName, session.textBuffer.toString(), List.copyOf(session.toolCalls)));
+            // 终止 chunk：content 为空串（内容已逐字发送过），只标记 done=true
+            results.add(support.assistantCompletionFactory().create(modelName, "", List.copyOf(session.toolCalls)));
             return results;
         }
 
@@ -113,10 +120,11 @@ public class OllamaStreamTranslator {
                     results.add(support.assistantChunkFactory().create(modelName, content));
                 }
 
-                // 处理 reasoning_content 增量
+                // 处理 reasoning_content 增量 → 产出 thinking chunk
                 Object reasoningObj = delta.get("reasoning_content");
                 if (reasoningObj instanceof String reasoning && !reasoning.isEmpty()) {
                     session.reasoningBuffer.append(reasoning);
+                    results.add(support.thinkingChunkFactory().create(modelName, reasoning));
                 }
 
                 // 处理工具调用增量
@@ -160,7 +168,7 @@ public class OllamaStreamTranslator {
             if ("stop".equals(finishReason) && !session.contentEmitted && !session.reasoningBuffer.isEmpty()) {
                 String fallbackContent = session.reasoningBuffer.toString();
                 results.add(support.assistantChunkFactory().create(modelName, fallbackContent));
-                results.add(support.assistantCompletionFactory().create(modelName, fallbackContent, List.of()));
+                results.add(support.assistantCompletionFactory().create(modelName, "", List.of()));
             }
 
         } catch (Exception e) {

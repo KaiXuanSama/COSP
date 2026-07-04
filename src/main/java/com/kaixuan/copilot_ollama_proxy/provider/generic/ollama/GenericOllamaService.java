@@ -207,7 +207,7 @@ public class GenericOllamaService extends AbstractRuntimeCatalogOllamaService {
         var protocolSupport = new OllamaProtocolConverter.Support(
                 this::resolveRequestModel, this::resolveMaxTokens, this::extractStringContent, this::currentTimestamp);
         var streamTranslator = new OllamaStreamTranslator(objectMapper,
-                new OllamaStreamTranslator.Support(this::createStreamingChunk, this::createStreamingCompletion));
+                new OllamaStreamTranslator.Support(this::createStreamingChunk, this::createThinkingChunk, this::createStreamingCompletion));
 
         Map<String, Object> openAiRequest = protocolConverter.toOpenAiRequest(request, protocolSupport);
         applyReasoningEffort(openAiRequest, resolveModelOrDefault(request.getModel()));

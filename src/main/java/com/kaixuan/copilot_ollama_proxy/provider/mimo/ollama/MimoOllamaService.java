@@ -46,7 +46,7 @@ public class MimoOllamaService extends AbstractRuntimeCatalogOllamaService {
                 }, raw -> raw.trim().replaceAll("/+$", "")));
         this.protocolConverter = new OllamaProtocolConverter(objectMapper);
         this.protocolSupport = new OllamaProtocolConverter.Support(this::resolveRequestModel, this::resolveMaxTokens, this::extractStringContent, this::currentTimestamp);
-        this.streamTranslator = new OllamaStreamTranslator(objectMapper, new OllamaStreamTranslator.Support(this::createStreamingChunk, this::createStreamingCompletion));
+        this.streamTranslator = new OllamaStreamTranslator(objectMapper, new OllamaStreamTranslator.Support(this::createStreamingChunk, this::createThinkingChunk, this::createStreamingCompletion));
     }
 
     @Override

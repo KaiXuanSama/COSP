@@ -232,6 +232,24 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
     }
 
     /**
+     * 创建一个思考链增量 chunk。
+     * @param modelName 模型名称
+     * @param thinking 思考链内容
+     * @return 聊天响应对象（done=false，message.thinking 填充）
+     */
+    protected OllamaChatResponse createThinkingChunk(String modelName, String thinking) {
+        var message = new OllamaChatResponse.ResponseMessage();
+        message.setRole("assistant");
+        message.setThinking(thinking);
+        var resp = new OllamaChatResponse();
+        resp.setModel(modelName);
+        resp.setCreatedAt(currentTimestamp());
+        resp.setDone(false);
+        resp.setMessage(message);
+        return resp;
+    }
+
+    /**
      * 创建一个助手消息的聊天响应，通常用于完成时的最终响应。
      * @param modelName 模型名称
      * @param doneReason 完成原因，如 "stop"、"tool_calls" 等

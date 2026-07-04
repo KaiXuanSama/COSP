@@ -55,7 +55,7 @@ public class DeepSeekOllamaService extends AbstractRuntimeCatalogOllamaService {
             }
         });
         this.protocolSupport = new OllamaProtocolConverter.Support(this::resolveRequestModel, this::resolveMaxTokens, this::extractStringContent, this::currentTimestamp);
-        this.streamTranslator = new OllamaStreamTranslator(objectMapper, new OllamaStreamTranslator.Support(this::createStreamingChunk, this::createStreamingCompletion));
+        this.streamTranslator = new OllamaStreamTranslator(objectMapper, new OllamaStreamTranslator.Support(this::createStreamingChunk, this::createThinkingChunk, this::createStreamingCompletion));
     }
 
     // ========== 路由支持 ==========
