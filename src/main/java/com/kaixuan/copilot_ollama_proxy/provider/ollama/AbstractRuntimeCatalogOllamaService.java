@@ -5,7 +5,6 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfi
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
 import reactor.core.publisher.Mono;
@@ -20,12 +19,10 @@ import java.util.UUID;
  * Ollama provider 的运行时基类。
  *
  * 这个类把所有与具体 provider 无关的 Ollama 协议原语集中在一起：
- * 模型解析、max_tokens 解析、文本内容提取、assistant chunk/完成包组装、
- * tags 列表构造、showModel 的公共模板，以及 supportsModel 的默认实现。
+ * 模型解析、tags 列表构造、showModel 的公共模板，以及 supportsModel 的默认实现。
  *
  * 子类只需要提供 provider 特化点（providerKey、family、format、license 等），
- * 以及各自的非流式/流式编排逻辑。协议转换和流式状态机则进一步下沉到
- * 各 provider 的 converter 和 translator 中。
+ * 以及 showModel 的具体实现。
  */
 public abstract class AbstractRuntimeCatalogOllamaService implements OllamaService {
 
@@ -137,165 +134,6 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
             return model.contextSize();
         }
         throw new IllegalStateException("模型 " + resolvedModel + " 的 context_size 未在运行时配置中配置或为 0，请先完成配置");
-    }
-
-    /**
-     * 解析请求中的模型名称，如果未指定则使用默认模型。
-     * @param modelName 模型名称
-     * @return 解析后的模型名称，如果未指定则返回默认模型名称
-     */
-    protected String resolveRequestModel(String modelName) {
-        return resolveModelOrDefault(modelName);
-    }
-
-    /**
-     * 解析请求中的最大 token 数量，如果未指定则使用默认值。
-     * @param options 请求选项
-     * @return 解析后的最大 token 数量，如果未指定则返回默认值
-     */
-    protected int resolveMaxTokens(Map<String, Object> options) {
-        if (options != null && options.containsKey("num_predict")) {
-            Object value = options.get("num_predict");
-            if (value instanceof Number number) {
-                int resolved = number.intValue();
-                return resolved > 0 ? resolved : 8192;
-            }
-        }
-        return 8192;
-    }
-
-    /**
-     * 根据数据库中的模型配置，覆盖请求体中的 reasoning_effort。
-     * 仅当当前值仍为 converter 默认的 "medium" 时才覆盖，
-     * 避免覆盖 DeepSeek 等 provider 的特化钩子已设置的用户值。
-     * @param body   converter 生成的 OpenAI 请求体
-     * @param resolvedModel 已解析的模型名称
-     */
-    protected void applyReasoningEffort(Map<String, Object> body, String resolvedModel) {
-        Object current = body.get("reasoning_effort");
-        if (current != null && !"medium".equals(current.toString().toLowerCase())) {
-            return; // 已被 provider 特化钩子覆盖，不覆盖
-        }
-        ProviderRuntimeConfiguration config = getProviderConfiguration();
-        if (config != null) {
-            for (ProviderRuntimeModel m : config.models()) {
-                if (resolvedModel.equals(m.modelName())) {
-                    String effort = m.reasoningEffort();
-                    if (effort == null || effort.isBlank() || "none".equalsIgnoreCase(effort.trim())) {
-                        body.remove("reasoning_effort");
-                    } else {
-                        body.put("reasoning_effort", effort.toLowerCase());
-                    }
-                    return;
-                }
-            }
-        }
-    }
-
-    /**
-     * 从请求内容中提取字符串内容，支持字符串或列表格式。
-     *
-     * @param content 请求内容，可能是字符串或列表
-     * @return 提取后的字符串内容，如果无法提取则返回空字符串
-     */
-    protected String extractStringContent(Object content) {
-        if (content == null) {
-            return "";
-        }
-        if (content instanceof String stringContent) {
-            return stringContent;
-        }
-        if (content instanceof List<?> listContent) {
-            StringBuilder builder = new StringBuilder();
-            for (Object item : listContent) {
-                if (item instanceof Map<?, ?> mapContent) {
-                    Object text = mapContent.get("text");
-                    if (text != null) {
-                        builder.append(text);
-                    }
-                }
-            }
-            return builder.toString();
-        }
-        return content.toString();
-    }
-
-    /**
-     * 创建一个助手消息的聊天响应，通常用于流式响应中的增量更新。
-     * @param modelName 模型名称
-     * @param text 消息内容
-     * @param done 是否完成
-     * @return 聊天响应对象
-     */
-    protected OllamaChatResponse createAssistantChunk(String modelName, String text, boolean done) {
-        return createResponse(modelName, done, null, createMessage("assistant", text));
-    }
-
-    /**
-     * 创建一个思考链增量 chunk。
-     * @param modelName 模型名称
-     * @param thinking 思考链内容
-     * @return 聊天响应对象（done=false，message.thinking 填充）
-     */
-    protected OllamaChatResponse createThinkingChunk(String modelName, String thinking) {
-        var message = new OllamaChatResponse.ResponseMessage();
-        message.setRole("assistant");
-        message.setThinking(thinking);
-        var resp = new OllamaChatResponse();
-        resp.setModel(modelName);
-        resp.setCreatedAt(currentTimestamp());
-        resp.setDone(false);
-        resp.setMessage(message);
-        return resp;
-    }
-
-    /**
-     * 创建一个助手消息的聊天响应，通常用于完成时的最终响应。
-     * @param modelName 模型名称
-     * @param doneReason 完成原因，如 "stop"、"tool_calls" 等
-     * @param content 消息内容
-     * @param toolCalls 工具调用结果列表，如果有工具调用则传入，否则传 null 或空列表
-     * @return 聊天响应对象
-     */
-    protected OllamaChatResponse createAssistantCompletion(String modelName, String doneReason, String content, List<OllamaChatResponse.ToolCallResult> toolCalls) {
-        var message = createMessage("assistant", toolCalls != null && !toolCalls.isEmpty() ? "" : content);
-        if (toolCalls != null && !toolCalls.isEmpty()) {
-            message.setToolCalls(toolCalls);
-        }
-        return createResponse(modelName, true, doneReason, message);
-    }
-
-    /**
-     * 创建一个通用的聊天响应对象。
-     * @param modelName 模型名称
-     * @param done 是否完成
-     * @param doneReason 完成原因
-     * @param message 消息对象
-     * @return 聊天响应对象
-     */
-    protected OllamaChatResponse createResponse(String modelName, boolean done, String doneReason, OllamaChatResponse.ResponseMessage message) {
-        var response = new OllamaChatResponse();
-        response.setModel(modelName);
-        response.setCreatedAt(currentTimestamp());
-        response.setDone(done);
-        if (doneReason != null && !doneReason.isBlank()) {
-            response.setDoneReason(doneReason);
-        }
-        response.setMessage(message);
-        return response;
-    }
-
-    /**
-     * 创建一个聊天消息对象。
-     * @param role 消息角色，如 "assistant"、"user"
-     * @param content 消息内容
-     * @return 聊天消息对象
-     */
-    protected OllamaChatResponse.ResponseMessage createMessage(String role, String content) {
-        var message = new OllamaChatResponse.ResponseMessage();
-        message.setRole(role);
-        message.setContent(content);
-        return message;
     }
 
     /**
