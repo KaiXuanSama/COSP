@@ -223,7 +223,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                     }
                     return Flux.just(normalizedChunk);
                 }).doOnNext(chunk -> {
-                    log.debug("{} 翻译: {}", providerDisplayName(), chunk);
+                    log.debug("{} chunk规范化: {}", providerDisplayName(), chunk);
                     logChunks.add(chunk);
                 }).doFinally(signal -> {
                     // 如果有错误信息（重试耗尽），同时记录错误响应体到非流式响应列

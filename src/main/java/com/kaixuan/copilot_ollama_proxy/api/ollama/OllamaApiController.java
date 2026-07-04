@@ -1,19 +1,30 @@
 package com.kaixuan.copilot_ollama_proxy.api.ollama;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.ollama.CompositeOllamaService;
+import com.kaixuan.copilot_ollama_proxy.application.openai.CompositeUpstreamChatService;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
 import com.kaixuan.copilot_ollama_proxy.application.config.AppConfigService;
+import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
+import com.kaixuan.copilot_ollama_proxy.provider.ollama.OllamaProtocolConverter;
+import com.kaixuan.copilot_ollama_proxy.provider.ollama.OllamaStreamTranslator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
+import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -32,16 +43,29 @@ import java.util.UUID;
 @RestController @RequestMapping("/api")
 public class OllamaApiController {
 
+    private static final Logger log = LoggerFactory.getLogger(OllamaApiController.class);
+
     private final CompositeOllamaService ollamaService;
+    private final CompositeUpstreamChatService upstreamChatService;
     private final ModelCatalogService modelCatalogService;
     private final AppConfigService appConfigService;
     private final String defaultVersion;
+    private final ObjectMapper ndjsonMapper;
+    private final OllamaProtocolConverter protocolConverter;
 
-    public OllamaApiController(CompositeOllamaService ollamaService, ModelCatalogService modelCatalogService, AppConfigService appConfigService, @Value("${ollama.version}") String defaultVersion) {
+    public OllamaApiController(CompositeOllamaService ollamaService,
+                               CompositeUpstreamChatService upstreamChatService,
+                               ModelCatalogService modelCatalogService,
+                               AppConfigService appConfigService,
+                               @Value("${ollama.version}") String defaultVersion) {
         this.ollamaService = ollamaService;
+        this.upstreamChatService = upstreamChatService;
         this.modelCatalogService = modelCatalogService;
         this.appConfigService = appConfigService;
         this.defaultVersion = defaultVersion;
+        this.ndjsonMapper = new ObjectMapper();
+        this.ndjsonMapper.setDefaultPropertyInclusion(JsonInclude.Include.NON_NULL);
+        this.protocolConverter = new OllamaProtocolConverter(this.ndjsonMapper);
     }
 
     /**
@@ -190,19 +214,116 @@ public class OllamaApiController {
     }
 
     /**
-     * 核心对话接口 —— 接收用户的聊天请求，转发给上游后端，返回模型的回复。
-     * 支持两种模式：
-     * - 流式（stream=true）：返回 NDJSON 格式，每个 JSON 对象是一个增量 chunk
-     * - 非流式（stream=false）：返回单条 JSON 对象
-     * <p>
-     * produces 同时声明 NDJSON 和 JSON，由 Spring 根据客户端的 Accept 头进行内容协商。
-     * 若客户端 Accept 不匹配 NDJSON/JSON 时，不会抛出 406。
+     * 核心对话接口 —— 接收 Ollama 格式请求，复用 OpenAI 路径调用上游，再翻译为 Ollama 格式响应。
+     *
+     * 流程：OllamaChatRequest → OllamaProtocolConverter → OpenAI Map
+     *       → CompositeUpstreamChatService（复用 OpenAI 路径：chunk 规范化、reasoning 缓存、日志、usage）
+     *       → OllamaStreamTranslator → NDJSON 输出
+     *
+     * 直接操作 ServerHttpResponse 写入原始字节，绕开 Spring 内容协商。
      */
-    @PostMapping(value = "/chat", produces = { MediaType.APPLICATION_NDJSON_VALUE, MediaType.APPLICATION_JSON_VALUE })
-    public Flux<OllamaChatResponse> chat(@RequestBody OllamaChatRequest request) {
+    @PostMapping(value = "/chat")
+    public Mono<Void> chat(@RequestBody OllamaChatRequest request, ServerHttpResponse response) {
+        String modelName = request.getModel();
+
+        // 构建 OllamaProtocolConverter.Support（简化版，不依赖 provider 子类）
+        var converterSupport = new OllamaProtocolConverter.Support(
+                name -> ModelNameUtil.stripPrefix(name),                        // modelResolver: 去前缀
+                options -> resolveMaxTokens(options),                            // maxTokensResolver
+                content -> content instanceof String s ? s : String.valueOf(content), // contentExtractor
+                () -> Instant.now().toString()                                   // timestampSupplier
+        );
+
+        // Ollama 请求 → OpenAI 请求体
+        Map<String, Object> openAiRequest = protocolConverter.toOpenAiRequest(request, converterSupport);
+        openAiRequest.put("stream", request.isStream());
+
         if (request.isStream()) {
-            return ollamaService.chatStream(request);
+            // 构建 OllamaStreamTranslator（每次请求新建，线程安全）
+            var translator = new OllamaStreamTranslator(ndjsonMapper, new OllamaStreamTranslator.Support(
+                    (model, content) -> createAssistantChunk(model, content),
+                    (model, content, toolCalls) -> createAssistantCompletion(model, content, toolCalls)
+            ));
+            var session = translator.newSession();
+
+            response.getHeaders().setContentType(MediaType.APPLICATION_NDJSON);
+            var bufferFactory = response.bufferFactory();
+
+            // 复用 OpenAI 路径调用上游，拿到 Flux<String>（OpenAI SSE chunk JSON）
+            Flux<org.springframework.core.io.buffer.DataBuffer> ndjsonStream =
+                    upstreamChatService.chatCompletionStream(openAiRequest, modelName)
+                            .concatMap(chunk -> Flux.fromIterable(translator.translate(session, chunk, modelName)))
+                            .doOnNext(ollamaResp -> log.debug("[Ollama→OpenAI] Ollama翻译: {}", ollamaResp))
+                            .map(ollamaResp -> {
+                                try {
+                                    byte[] bytes = (ndjsonMapper.writeValueAsString(ollamaResp) + "\n").getBytes(StandardCharsets.UTF_8);
+                                    return bufferFactory.wrap(bytes);
+                                } catch (Exception e) {
+                                    return bufferFactory.wrap(new byte[0]);
+                                }
+                            });
+
+            return response.writeWith(ndjsonStream);
         }
-        return ollamaService.chat(request).flux();
+
+        // 非流式：复用 OpenAI 路径，翻译响应
+        response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+        return upstreamChatService.chatCompletion(openAiRequest, modelName)
+                .flatMap(openAiJson -> {
+                    try {
+                        var ollamaResp = protocolConverter.toOllamaResponse(openAiJson, modelName, converterSupport);
+                        byte[] bytes = ndjsonMapper.writeValueAsBytes(ollamaResp);
+                        return response.writeWith(Mono.just(response.bufferFactory().wrap(bytes)));
+                    } catch (Exception e) {
+                        log.warn("Ollama 非流式响应转换失败: {}", e.getMessage());
+                        return Mono.error(e);
+                    }
+                });
+    }
+
+    // ==================== Ollama 响应构建辅助方法 ====================
+
+    /**
+     * 从 Ollama options 中解析 max_tokens，默认 8192。
+     */
+    private int resolveMaxTokens(Map<String, Object> options) {
+        if (options == null) return 8192;
+        Object numPredict = options.get("num_predict");
+        if (numPredict instanceof Number n) return n.intValue();
+        return 8192;
+    }
+
+    /**
+     * 创建流式中间 chunk（done=false）。
+     */
+    private OllamaChatResponse createAssistantChunk(String modelName, String content) {
+        var message = new OllamaChatResponse.ResponseMessage();
+        message.setRole("assistant");
+        message.setContent(content);
+        var resp = new OllamaChatResponse();
+        resp.setModel(modelName);
+        resp.setCreatedAt(Instant.now().toString());
+        resp.setDone(false);
+        resp.setMessage(message);
+        return resp;
+    }
+
+    /**
+     * 创建流式结束 chunk（done=true）。
+     */
+    private OllamaChatResponse createAssistantCompletion(String modelName, String content, List<OllamaChatResponse.ToolCallResult> toolCalls) {
+        var message = new OllamaChatResponse.ResponseMessage();
+        message.setRole("assistant");
+        message.setContent(toolCalls != null && !toolCalls.isEmpty() ? "" : content);
+        if (toolCalls != null && !toolCalls.isEmpty()) {
+            message.setToolCalls(toolCalls);
+        }
+        var resp = new OllamaChatResponse();
+        resp.setModel(modelName);
+        resp.setCreatedAt(Instant.now().toString());
+        resp.setDone(true);
+        resp.setDoneReason(toolCalls != null && !toolCalls.isEmpty() ? "tool_calls" : "stop");
+        resp.setMessage(message);
+        return resp;
     }
 }
