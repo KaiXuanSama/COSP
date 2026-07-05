@@ -50,7 +50,7 @@ public class OllamaApiController {
      * Copilot 在连接时会调用此接口确认 Ollama 服务是否可用。
      */
     @GetMapping("/version")
-    public Mono<Map<String, String>> version() {
+    public Mono<Map<String, String>> getVersion() {
         return Mono.fromCallable(() -> {
             String dbVersion = appConfigService.findValue("fake_version");
             String ver = (dbVersion != null && !dbVersion.isBlank()) ? dbVersion : defaultVersion;
@@ -64,7 +64,7 @@ public class OllamaApiController {
      * 如果没有任何模型启用（或所有服务商均未启用），则回退返回 "nano_llm"。
      */
     @GetMapping("/tags")
-    public Mono<OllamaTagsResponse> tags() {
+    public Mono<OllamaTagsResponse> listTags() {
         return Mono.fromCallable(() -> {
             var response = new OllamaTagsResponse();
             List<OllamaTagsResponse.ModelInfo> allModels = new ArrayList<>();
@@ -156,7 +156,7 @@ public class OllamaApiController {
      * 如果请求的是兜底模型 "nano_llm"，直接构造响应，不经过 provider 链。
      */
     @PostMapping("/show")
-    public Mono<OllamaShowResponse> show(@RequestBody OllamaShowRequest request) {
+    public Mono<OllamaShowResponse> showModel(@RequestBody OllamaShowRequest request) {
         if ("nano_llm".equals(request.getModel())) {
             return Mono.just(createNanoLlmShowResponse());
         }

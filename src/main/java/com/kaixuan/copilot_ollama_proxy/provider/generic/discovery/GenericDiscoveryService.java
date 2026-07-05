@@ -1,9 +1,9 @@
-package com.kaixuan.copilot_ollama_proxy.provider.generic.ollama;
+package com.kaixuan.copilot_ollama_proxy.provider.generic.discovery;
 
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
-import com.kaixuan.copilot_ollama_proxy.provider.ollama.AbstractRuntimeCatalogOllamaService;
+import com.kaixuan.copilot_ollama_proxy.provider.AbstractDiscoveryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -13,18 +13,18 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 通用 Ollama 协议服务 —— 处理所有 custom-* 前缀的自定义供应商。
+ * 通用模型发现服务 —— 处理所有 custom-* 前缀的自定义供应商。
  * 从数据库动态读取配置，提供模型发现和详情查询能力。
  */
 @Service
-public class GenericOllamaService extends AbstractRuntimeCatalogOllamaService {
+public class GenericDiscoveryService extends AbstractDiscoveryService {
 
-    private static final Logger log = LoggerFactory.getLogger(GenericOllamaService.class);
-    private static final String PROVIDER_KEY = "__generic__";
+    private static final Logger log = LoggerFactory.getLogger(GenericDiscoveryService.class);
+    private static final String PROVIDER_KEY = "generic";
 
     private final RuntimeProviderCatalog runtimeProviderCatalog;
 
-    public GenericOllamaService(RuntimeProviderCatalog runtimeProviderCatalog) {
+    public GenericDiscoveryService(RuntimeProviderCatalog runtimeProviderCatalog) {
         super(runtimeProviderCatalog, "");
         this.runtimeProviderCatalog = runtimeProviderCatalog;
     }

@@ -3,7 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.application.ollama;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
-import com.kaixuan.copilot_ollama_proxy.provider.generic.ollama.GenericOllamaService;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.discovery.GenericDiscoveryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -27,9 +27,9 @@ public class OllamaServiceResolver {
     private final RuntimeProviderCatalog runtimeProviderCatalog;
     private final List<OllamaService> ollamaServices;
     private final Map<String, OllamaService> servicesByProviderKey;
-    private final GenericOllamaService genericService;
+    private final GenericDiscoveryService genericService;
 
-    public OllamaServiceResolver(RuntimeProviderCatalog runtimeProviderCatalog, List<OllamaService> ollamaServices, GenericOllamaService genericService) {
+    public OllamaServiceResolver(RuntimeProviderCatalog runtimeProviderCatalog, List<OllamaService> ollamaServices, GenericDiscoveryService genericService) {
         this.runtimeProviderCatalog = runtimeProviderCatalog;
         this.ollamaServices = List.copyOf(ollamaServices);
         this.servicesByProviderKey = ollamaServices.stream().collect(Collectors.toMap(OllamaService::getProviderKey, Function.identity(), (existing, replacement) -> replacement, LinkedHashMap::new));

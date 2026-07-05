@@ -1,9 +1,8 @@
-package com.kaixuan.copilot_ollama_proxy.provider.ollama;
+package com.kaixuan.copilot_ollama_proxy.provider;
 
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
 import org.junit.jupiter.api.Test;
 
@@ -12,12 +11,12 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class AbstractRuntimeCatalogOllamaServiceTests {
+class AbstractDiscoveryServiceTests {
 
     @Test
     void supportsModelAndListsModelsFromRuntimeCatalog() {
         RuntimeProviderCatalog catalog = () -> List.of(new ProviderRuntimeConfiguration("stub", "", "", "openai", List.of(new ProviderRuntimeModel("model-a", 4096, true, false, "Medium"))));
-        TestOllamaService service = new TestOllamaService(catalog);
+        TestDiscoveryService service = new TestDiscoveryService(catalog);
 
         OllamaTagsResponse response = service.listModels().block();
 
@@ -33,16 +32,16 @@ class AbstractRuntimeCatalogOllamaServiceTests {
     void resolvesDefaultModelAndRequiresContextLength() {
         RuntimeProviderCatalog catalog = () -> List
                 .of(new ProviderRuntimeConfiguration("stub", "", "", "openai", List.of(new ProviderRuntimeModel("model-a", 4096, true, false, "Medium"), new ProviderRuntimeModel("model-b", 0, false, false, "Medium"))));
-        TestOllamaService service = new TestOllamaService(catalog);
+        TestDiscoveryService service = new TestDiscoveryService(catalog);
 
         assertThat(service.exposeResolveModelOrDefault(null)).isEqualTo("model-a");
         assertThat(service.exposeRequireContextLength("model-a")).isEqualTo(4096);
         assertThatThrownBy(() -> service.exposeRequireContextLength("model-b")).isInstanceOf(IllegalStateException.class).hasMessageContaining("context_size");
     }
 
-    private static final class TestOllamaService extends AbstractRuntimeCatalogOllamaService {
+    private static final class TestDiscoveryService extends AbstractDiscoveryService {
 
-        private TestOllamaService(RuntimeProviderCatalog runtimeProviderCatalog) {
+        private TestDiscoveryService(RuntimeProviderCatalog runtimeProviderCatalog) {
             super(runtimeProviderCatalog, "fallback-model");
         }
 
@@ -82,11 +81,6 @@ class AbstractRuntimeCatalogOllamaServiceTests {
         @Override
         protected String providerLicense() {
             return "MIT";
-        }
-
-        @Override
-        public OllamaShowResponse showModel(String modelName) {
-            return null;
         }
     }
 }

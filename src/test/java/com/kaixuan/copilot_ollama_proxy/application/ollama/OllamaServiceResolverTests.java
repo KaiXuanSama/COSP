@@ -5,7 +5,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
-import com.kaixuan.copilot_ollama_proxy.provider.generic.ollama.GenericOllamaService;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.discovery.GenericDiscoveryService;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -25,7 +25,7 @@ class OllamaServiceResolverTests {
 
         OllamaService mimo = new StubOllamaService("mimo");
         OllamaService longcat = new StubOllamaService("longcat");
-        GenericOllamaService generic = mock(GenericOllamaService.class);
+        GenericDiscoveryService generic = mock(GenericDiscoveryService.class);
 
         OllamaServiceResolver resolver = new OllamaServiceResolver(catalog, List.of(longcat, mimo), generic);
 
@@ -39,7 +39,7 @@ class OllamaServiceResolverTests {
 
         OllamaService fallback = new StubOllamaService("longcat");
         OllamaService second = new StubOllamaService("mimo");
-        GenericOllamaService generic = mock(GenericOllamaService.class);
+        GenericDiscoveryService generic = mock(GenericDiscoveryService.class);
 
         OllamaServiceResolver resolver = new OllamaServiceResolver(catalog, List.of(fallback, second), generic);
 

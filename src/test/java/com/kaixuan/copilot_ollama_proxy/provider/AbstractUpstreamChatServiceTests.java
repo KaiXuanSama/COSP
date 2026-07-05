@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.provider.openai;
+package com.kaixuan.copilot_ollama_proxy.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class AbstractOpenAiCompatibleUpstreamChatServiceTests {
+class AbstractUpstreamChatServiceTests {
 
     @Test
     void supportsModelUsesRuntimeCatalogSnapshot() {
@@ -95,7 +95,7 @@ class AbstractOpenAiCompatibleUpstreamChatServiceTests {
         assertThat(normalized).doesNotContain("\"content\":null");
     }
 
-    private static final class TestOpenAiService extends AbstractOpenAiCompatibleUpstreamChatService {
+    private static final class TestOpenAiService extends AbstractUpstreamChatService {
 
         private TestOpenAiService(RuntimeProviderCatalog runtimeProviderCatalog) {
             super(runtimeProviderCatalog, new ObjectMapper(), "default-model");
@@ -106,8 +106,8 @@ class AbstractOpenAiCompatibleUpstreamChatServiceTests {
         }
 
         private String exposeTranslateChunk(String chunk) throws Exception {
-            Method method = AbstractOpenAiCompatibleUpstreamChatService.class.getDeclaredMethod(
-                    "translateChunk", String.class, AtomicBoolean.class, StringBuilder.class, AtomicReference.class);
+            Method method = AbstractUpstreamChatService.class.getDeclaredMethod(
+                    "normalizeUpstreamChunk", String.class, AtomicBoolean.class, StringBuilder.class, AtomicReference.class);
             method.setAccessible(true);
             return (String) method.invoke(this, chunk, new AtomicBoolean(false), new StringBuilder(), new AtomicReference<String>("chatcmpl-unknown"));
         }

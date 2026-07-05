@@ -1,8 +1,8 @@
 package com.kaixuan.copilot_ollama_proxy.provider.mimo.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.reasoning.ReasoningCache;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ReasoningCacheRepository;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
@@ -38,14 +38,16 @@ class MimoOpenAiChatServiceTests {
 
     @Test
     void injectsReasoningContentFromCacheForAssistantToolCalls() {
-        // 创建一个 ReasoningCacheRepository 模拟，当查询 "call_xyz" 时返回缓存的思考链
-        ReasoningCacheRepository mockRepo = new ReasoningCacheRepository(null) {
+        // 创建一个 ReasoningCache 模拟，当查询 "call_xyz" 时返回缓存的思考链
+        ReasoningCache mockCache = new ReasoningCache() {
+            @Override
+            public void save(String toolCallId, String reasoningContent) {}
             @Override
             public String findByToolCallId(String toolCallId) {
                 return "call_xyz".equals(toolCallId) ? "cached reasoning content" : null;
             }
         };
-        TestableMimoOpenAiChatService service = new TestableMimoOpenAiChatService(List::of, mockRepo);
+        TestableMimoOpenAiChatService service = new TestableMimoOpenAiChatService(List::of, mockCache);
 
         Map<String, Object> request = new LinkedHashMap<>();
         request.put("messages", List.of(
@@ -73,13 +75,15 @@ class MimoOpenAiChatServiceTests {
 
     @Test
     void injectsEmptyReasoningContentWhenCacheMisses() {
-        ReasoningCacheRepository mockRepo = new ReasoningCacheRepository(null) {
+        ReasoningCache mockCache = new ReasoningCache() {
+            @Override
+            public void save(String toolCallId, String reasoningContent) {}
             @Override
             public String findByToolCallId(String toolCallId) {
                 return null; // 缓存未命中
             }
         };
-        TestableMimoOpenAiChatService service = new TestableMimoOpenAiChatService(List::of, mockRepo);
+        TestableMimoOpenAiChatService service = new TestableMimoOpenAiChatService(List::of, mockCache);
 
         Map<String, Object> request = new LinkedHashMap<>();
         request.put("messages", List.of(
@@ -107,8 +111,11 @@ class MimoOpenAiChatServiceTests {
     private static final class TestableMimoOpenAiChatService extends MimoOpenAiChatService {
 
         private TestableMimoOpenAiChatService(RuntimeProviderCatalog runtimeProviderCatalog,
-                                              ReasoningCacheRepository reasoningCacheRepository) {
-            super(runtimeProviderCatalog, "mimo-v2.5-pro", new ObjectMapper(), reasoningCacheRepository);
+                                              ReasoningCache reasoningCache) {
+            super(runtimeProviderCatalog, "mimo-v2.5-pro", new ObjectMapper());
+            if (reasoningCache != null) {
+                setReasoningCache(reasoningCache);
+            }
         }
 
         private Map<String, Object> exposePrepareRequestBody(Map<String, Object> request, boolean stream, String model) {

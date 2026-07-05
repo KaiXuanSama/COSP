@@ -1,7 +1,8 @@
-package com.kaixuan.copilot_ollama_proxy.provider.openai;
+package com.kaixuan.copilot_ollama_proxy.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.application.reasoning.ReasoningCache;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
@@ -55,7 +56,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * 运行时配置（API Key、Base URL、模型列表）通过 {@link RuntimeProviderCatalog} 从数据库动态加载。
  */
-public abstract class AbstractOpenAiCompatibleUpstreamChatService implements UpstreamChatService {
+public abstract class AbstractUpstreamChatService implements UpstreamChatService {
 
     /** SSE 场景下，每个 data 字段的原始字符串类型引用。 */
     private static final ParameterizedTypeReference<ServerSentEvent<String>> STRING_SSE_TYPE = new ParameterizedTypeReference<>() {
@@ -74,7 +75,15 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     private final RuntimeProviderCatalog runtimeProviderCatalog;
 
     /** API 调用日志写入服务，由子类 Spring Bean 通过 setter 注入。 */
-    private ApiCallLogService apiCallLogRepository;
+    private ApiCallLogService apiCallLog;
+
+    /**
+     * 思考链缓存服务（可选）。
+     * 当子类注入此依赖时，基类自动启用思考链缓存功能：
+     * - 流式响应中自动追踪 tool_call IDs 并在 finish_reason=tool_calls 时持久化 reasoning
+     * - 请求体准备时自动为带 tool_calls 的 assistant 消息注入缓存的 reasoning_content
+     */
+    private ReasoningCache reasoningCache;
 
     /**
      * 全局 WebClient.Builder，由 Spring 通过 setter 注入。
@@ -84,8 +93,21 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     private WebClient.Builder webClientBuilder = WebClient.builder();
 
     @Autowired(required = false)
-    public void setApiCallLogRepository(ApiCallLogService apiCallLogRepository) {
-        this.apiCallLogRepository = apiCallLogRepository;
+    public void setApiCallLog(ApiCallLogService apiCallLog) {
+        this.apiCallLog = apiCallLog;
+    }
+
+    @Autowired(required = false)
+    public void setReasoningCache(ReasoningCache reasoningCache) {
+        this.reasoningCache = reasoningCache;
+    }
+
+    /**
+     * 子类可调用此方法获取 ReasoningCache 实例（如需额外操作）。
+     * 如果未注入则返回 null。
+     */
+    protected ReasoningCache getReasoningCache() {
+        return reasoningCache;
     }
 
     @Autowired(required = false)
@@ -100,7 +122,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
      * @param objectMapper Jackson 对象映射器
      * @param fallbackDefaultModel 当请求中未指定模型时使用的默认模型名称
      */
-    protected AbstractOpenAiCompatibleUpstreamChatService(RuntimeProviderCatalog runtimeProviderCatalog, ObjectMapper objectMapper, String fallbackDefaultModel) {
+    protected AbstractUpstreamChatService(RuntimeProviderCatalog runtimeProviderCatalog, ObjectMapper objectMapper, String fallbackDefaultModel) {
         this.runtimeProviderCatalog = runtimeProviderCatalog;
         this.objectMapper = objectMapper;
         this.fallbackDefaultModel = fallbackDefaultModel;
@@ -196,6 +218,8 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
         StringBuilder reasoningBuffer = new StringBuilder();
         AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
+        // 思考链缓存：per-request 追踪 tool_call IDs（仅当 reasoningCache != null 时生效）
+        List<String> pendingToolCallIds = new ArrayList<>();
 
         return buildWebClientWithHeaders(reqHeaders).post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody)
                 .exchangeToFlux(response -> {
@@ -217,10 +241,15 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
                     return response.bodyToFlux(STRING_SSE_TYPE);
                 })
                 .retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
-                .doOnNext(raw -> log.debug("{} 上游原始: {}", providerDisplayName(), raw)).doOnNext(raw -> onRawStreamChunk(raw)).concatMap(chunk -> {
+                .doOnNext(raw -> log.debug("{} 上游原始: {}", providerDisplayName(), raw)).doOnNext(raw -> {
+                    onRawStreamChunk(raw);
+                    trackToolCallIds(raw, pendingToolCallIds);
+                }).concatMap(chunk -> {
                     String normalizedChunk = normalizeUpstreamChunk(chunk, contentEmitted, reasoningBuffer, chunkId);
                     // 对所有 finish chunk（stop/tool_calls）都调用 onStreamFinish 钩子
                     if (isTerminalChunk(normalizedChunk)) {
+                        // 思考链缓存：finish_reason=tool_calls 时自动持久化
+                        persistReasoningIfToolCalls(normalizedChunk, reasoningBuffer, pendingToolCallIds);
                         Flux<String> customFinish = onStreamFinish(chunkId.get(), model, reasoningBuffer, contentEmitted.get());
                         if (customFinish != null) {
                             return customFinish;
@@ -315,6 +344,7 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
             }
         }
         body.values().removeIf(Objects::isNull);
+        injectCachedReasoning(body);
         customizeRequestBody(body, resolvedModel);
         return body;
     }
@@ -323,18 +353,18 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
      * 保存非流式调用日志。
      */
     private void saveNonStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, String responseBody, long startTime) {
-        if (apiCallLogRepository == null) return;
+        if (apiCallLog == null) return;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLogRepository.saveNonStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, responseBody, duration);
+        apiCallLog.saveNonStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, responseBody, duration);
     }
 
     /**
      * 保存流式调用日志。
      */
     private void saveStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, List<String> chunks, long startTime) {
-        if (apiCallLogRepository == null) return;
+        if (apiCallLog == null) return;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLogRepository.saveStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, chunks, duration);
+        apiCallLog.saveStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, chunks, duration);
     }
 
     /**
@@ -344,9 +374,9 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
     private void saveStreamLogWithError(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody,
                                         Map<String, String> respHeaders, int statusCode, List<String> chunks,
                                         Map<String, String> errorHeaders, int errorCode, String errorBody, long startTime) {
-        if (apiCallLogRepository == null) return;
+        if (apiCallLog == null) return;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLogRepository.saveStreamWithError(providerKey, modelName, reqHeaders, requestBody,
+        apiCallLog.saveStreamWithError(providerKey, modelName, reqHeaders, requestBody,
                 respHeaders, statusCode, chunks, errorHeaders, errorCode, errorBody, duration);
     }
 
@@ -388,10 +418,114 @@ public abstract class AbstractOpenAiCompatibleUpstreamChatService implements Ups
 
     /**
      * 子类可以重写此方法在请求体中添加特定的字段或格式转换，例如将模型名称转换为特定服务识别的格式。
+     * <p>
+     * 注意：如果 reasoningCache 已注入，基类会在调用本方法之前自动注入缓存的 reasoning_content，
+     * 子类无需重复此逻辑。
+     *
      * @param body 请求体的 Map 结构，子类可以直接修改该 Map 来添加或修改字段
      * @param resolvedModel 已经解析出的模型名称，子类可以根据该名称来决定是否进行特定的字段添加或格式转换
      */
     protected void customizeRequestBody(Map<String, Object> body, String resolvedModel) {
+    }
+
+    // ==================== 思考链缓存：基类自动追踪与注入 ====================
+
+    /**
+     * 从原始 SSE chunk 中提取 tool_call ID，累积到 per-request 列表中。
+     * 仅当 reasoningCache 不为 null 时才实际工作。
+     */
+    @SuppressWarnings("unchecked")
+    private void trackToolCallIds(String rawChunkJson, List<String> pendingToolCallIds) {
+        if (reasoningCache == null || "[DONE]".equals(rawChunkJson)) {
+            return;
+        }
+        try {
+            Map<String, Object> chunk = objectMapper.readValue(rawChunkJson, Map.class);
+            List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
+            if (choices == null || choices.isEmpty()) {
+                return;
+            }
+            Map<String, Object> delta = (Map<String, Object>) choices.get(0).get("delta");
+            if (delta == null) {
+                return;
+            }
+            Object toolCallsObj = delta.get("tool_calls");
+            if (toolCallsObj instanceof List<?> toolCalls) {
+                for (Object tcObj : toolCalls) {
+                    if (tcObj instanceof Map<?, ?> tc) {
+                        Object idObj = tc.get("id");
+                        if (idObj instanceof String id && !id.isEmpty() && !pendingToolCallIds.contains(id)) {
+                            pendingToolCallIds.add(id);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // 解析异常不影响主流程
+        }
+    }
+
+    /**
+     * 当检测到 finish_reason=tool_calls 时，自动将累积的 reasoning 持久化到缓存。
+     * 仅当 reasoningCache 不为 null 且有待处理的 tool_call IDs 时才执行。
+     */
+    private void persistReasoningIfToolCalls(String normalizedChunk, StringBuilder reasoningBuffer, List<String> pendingToolCallIds) {
+        if (reasoningCache == null || pendingToolCallIds.isEmpty() || reasoningBuffer.isEmpty()) {
+            return;
+        }
+        if (!hasFinishReason(normalizedChunk, "tool_calls")) {
+            return;
+        }
+        String reasoning = reasoningBuffer.toString();
+        for (String toolCallId : pendingToolCallIds) {
+            reasoningCache.save(toolCallId, reasoning);
+        }
+        log.debug("已缓存 {} 条工具调用思考链 (reasoning 长度: {})", pendingToolCallIds.size(), reasoning.length());
+    }
+
+    /**
+     * 在请求体准备阶段，自动为带 tool_calls 的 assistant 消息注入缓存的 reasoning_content。
+     * 仅当 reasoningCache 不为 null 时才执行。
+     */
+    @SuppressWarnings("unchecked")
+    private void injectCachedReasoning(Map<String, Object> body) {
+        if (reasoningCache == null) {
+            return;
+        }
+        Object messagesObj = body.get("messages");
+        if (!(messagesObj instanceof List<?> messages)) {
+            return;
+        }
+        boolean modified = false;
+        for (Object msgObj : messages) {
+            if (!(msgObj instanceof Map<?, ?>)) {
+                continue;
+            }
+            Map<String, Object> msg = (Map<String, Object>) msgObj;
+            if (!"assistant".equals(msg.get("role")) || !msg.containsKey("tool_calls") || msg.containsKey("reasoning_content")) {
+                continue;
+            }
+            String cachedReasoning = null;
+            Object toolCallsObj = msg.get("tool_calls");
+            if (toolCallsObj instanceof List<?> toolCalls) {
+                for (Object tcObj : toolCalls) {
+                    if (tcObj instanceof Map<?, ?> tc) {
+                        Object idObj = tc.get("id");
+                        if (idObj instanceof String id) {
+                            cachedReasoning = reasoningCache.findByToolCallId(id);
+                            if (cachedReasoning != null) {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            msg.put("reasoning_content", cachedReasoning != null ? cachedReasoning : "");
+            modified = true;
+        }
+        if (modified) {
+            log.debug("已向带 tool_calls 的 assistant 消息注入 reasoning_content");
+        }
     }
 
     /**
