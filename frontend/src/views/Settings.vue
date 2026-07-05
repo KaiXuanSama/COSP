@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, useMessage } from 'naive-ui'
+import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NSelect, useMessage } from 'naive-ui'
 import ProviderModelsSection from '@/components/settings/ProviderModelsSection.vue'
-import { useProviderStore } from '@/stores/providers'
+import { useProviderStore, type ApiKeyEntry } from '@/stores/providers'
 
 const providerStore = useProviderStore()
 const message = useMessage()
@@ -10,7 +10,10 @@ const fakeVersion = ref('')
 const versionPlaceholder = ref('0.6.4')
 
 const windowWidth = ref(window.innerWidth)
-const drawerWidth = computed(() => Math.floor(windowWidth.value / 2))
+const DRAWER_MIN_WIDTH = 700
+const drawerWidth = computed(() =>
+  windowWidth.value <= DRAWER_MIN_WIDTH ? windowWidth.value : DRAWER_MIN_WIDTH
+)
 
 const docsWindow = ref({
   visible: false,
@@ -159,7 +162,8 @@ const providerMeta = ref<Record<string, { displayName: string; colorClass: strin
 const editingKey = ref<string | null>(null)
 const editForm = ref({
   baseUrl: '',
-  apiKey: '',
+  apiKeys: [] as ApiKeyEntry[],
+  activeApiKeyIndex: 0,
   models: [] as any[],
 })
 const pullingModels = ref(false)
@@ -178,6 +182,53 @@ const pullDiffModal = ref({
 })
 
 const showAddModal = ref(false)
+
+// ==================== API Key 管理 ====================
+
+const showApiKeyModal = ref(false)
+const editingApiKeys = ref<ApiKeyEntry[]>([])
+
+/** 脱敏显示 API Key：前4位 + **** + 后4位 */
+function maskApiKey(key: string): string {
+  if (!key || key.length <= 8) return key ? '****' : ''
+  return key.substring(0, 4) + '****' + key.substring(key.length - 4)
+}
+
+/** 构建下拉选项 */
+const apiKeyOptions = computed(() =>
+  editForm.value.apiKeys.map((entry, index) => ({
+    label: `${entry.name || '未命名'}: ${maskApiKey(entry.api_key)}`,
+    value: index,
+  }))
+)
+
+function openApiKeyModal() {
+  editingApiKeys.value = editForm.value.apiKeys.map(k => ({ ...k }))
+  showApiKeyModal.value = true
+}
+
+function addApiKeyEntry() {
+  editingApiKeys.value.push({ name: '', api_key: '' })
+}
+
+function removeApiKeyEntry(index: number) {
+  editingApiKeys.value.splice(index, 1)
+}
+
+function saveApiKeyModal() {
+  // 过滤掉 api_key 为空的项
+  const valid = editingApiKeys.value.filter(k => k.api_key.trim())
+  editForm.value.apiKeys = valid
+  // 如果激活索引超出范围，重置为 0
+  if (editForm.value.activeApiKeyIndex >= valid.length) {
+    editForm.value.activeApiKeyIndex = Math.max(0, valid.length - 1)
+  }
+  showApiKeyModal.value = false
+}
+
+function cancelApiKeyModal() {
+  showApiKeyModal.value = false
+}
 
 // ==================== 自定义供应商 ====================
 
@@ -504,9 +555,19 @@ function openEditPanel(key: string) {
   editingKey.value = key
   const p = providerStore.providers[key]
   if (p) {
+    // 解析 apiKey JSON 数组
+    let apiKeys: ApiKeyEntry[] = []
+    try {
+      const parsed = typeof p.apiKey === 'string' ? JSON.parse(p.apiKey || '[]') : []
+      apiKeys = Array.isArray(parsed) ? parsed : []
+    } catch {
+      // 旧格式纯字符串兜底
+      if (p.apiKey) apiKeys = [{ name: 'Default', api_key: p.apiKey }]
+    }
     editForm.value = {
       baseUrl: p.baseUrl || providerMeta.value[key]?.apiUrlPlaceholder || '',
-      apiKey: p.apiKey || '',
+      apiKeys,
+      activeApiKeyIndex: p.activeApiKeyIndex ?? 0,
       models: p.models.map(m => ({
         ...m,
         contextSize: String(m.contextSize ?? '0'),
@@ -612,7 +673,8 @@ async function saveEditPanel() {
   const key = editingKey.value
   const params: Record<string, string> = {
     baseUrl: editForm.value.baseUrl,
-    apiKey: editForm.value.apiKey,
+    apiKeys: JSON.stringify(editForm.value.apiKeys),
+    activeApiKeyIndex: String(editForm.value.activeApiKeyIndex),
   }
   editForm.value.models.forEach((m, i) => {
     params[`models[${i}].name`] = m.modelName
@@ -630,11 +692,11 @@ async function saveEditPanel() {
     // 更新本地缓存
     if (providerStore.providers[key]) {
       providerStore.providers[key].baseUrl = editForm.value.baseUrl
-      providerStore.providers[key].apiKey = editForm.value.apiKey
+      providerStore.providers[key].apiKey = JSON.stringify(editForm.value.apiKeys)
+      providerStore.providers[key].activeApiKeyIndex = editForm.value.activeApiKeyIndex
       providerStore.providers[key].models = editForm.value.models.map((model: any) => buildEditableModel(model.modelName, model))
     }
     message.success('保存成功')
-    // 延迟关闭，让通知可见
     setTimeout(() => closeEditPanel(), 600)
   } catch {
     message.error('保存失败')
@@ -659,9 +721,10 @@ async function saveFakeVersion() {
 async function pullModels() {
   if (!editingKey.value) return
   const providerKey = editingKey.value
-  const apiKey = editForm.value.apiKey.trim()
+  const activeKey = editForm.value.apiKeys[editForm.value.activeApiKeyIndex]
+  const apiKey = activeKey?.api_key?.trim() || ''
   if (!apiKey) {
-    message.warning('请先填写 API Key')
+    message.warning('请先添加并选择一个 API Key')
     return
   }
 
@@ -1016,10 +1079,20 @@ function removeModel(index: number) {
         </div>
         <div class="field-group">
           <label class="field-label">API Key</label>
-          <n-input v-model:value="editForm.apiKey" type="password" placeholder="请输入 API Key" show-password-on="click" />
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <n-select
+              v-model:value="editForm.activeApiKeyIndex"
+              :options="apiKeyOptions"
+              :placeholder="editForm.apiKeys.length ? '选择 API Key' : '暂无 API Key，请点击管理添加'"
+              style="flex: 1;"
+              :disabled="editForm.apiKeys.length === 0"
+            />
+            <n-button @click="openApiKeyModal" size="small">管理</n-button>
+          </div>
         </div>
 
         <ProviderModelsSection v-model:models="editForm.models" :pulling-models="pullingModels" :has-docs="!!(editingKey && providerMeta[editingKey]?.docsUrl)"
+          :compact="windowWidth <= DRAWER_MIN_WIDTH"
           @pull-models="pullModels" @open-docs="openOfficialDocs" @add-model="addModel" @remove-model="removeModel" />
 
         <template #footer>
@@ -1064,6 +1137,32 @@ function removeModel(index: number) {
         </section>
       </div>
     </teleport>
+
+    <!-- API Key 管理模态框 -->
+    <n-modal v-model:show="showApiKeyModal" preset="card" title="管理 API Key" style="width: 600px; max-width: 90vw;">
+      <div style="display: flex; flex-direction: column; gap: 12px;">
+        <div v-for="(entry, index) in editingApiKeys" :key="index"
+          style="display: flex; gap: 8px; align-items: center;">
+          <n-input v-model:value="entry.name" placeholder="名称" style="flex: 0 0 120px;" />
+          <n-input v-model:value="entry.api_key" type="password" show-password-on="click" placeholder="API Key"
+            style="flex: 1;" />
+          <n-button size="small" quaternary type="error" @click="removeApiKeyEntry(index)"
+            style="flex-shrink: 0;">删除</n-button>
+        </div>
+        <div v-if="editingApiKeys.length === 0" style="color: #999; text-align: center; padding: 16px 0;">
+          暂无 API Key，点击下方"新增"按钮添加
+        </div>
+      </div>
+      <template #action>
+        <div style="display: flex; justify-content: space-between; width: 100%;">
+          <n-button @click="addApiKeyEntry">新增</n-button>
+          <div style="display: flex; gap: 8px;">
+            <n-button @click="cancelApiKeyModal">取消</n-button>
+            <n-button type="primary" @click="saveApiKeyModal">保存</n-button>
+          </div>
+        </div>
+      </template>
+    </n-modal>
   </div>
 </template>
 

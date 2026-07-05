@@ -242,10 +242,10 @@ onMounted(() => {
             <span>加载中...</span>
           </div>
           <div v-else-if="hasMore" class="load-more-btn" @click="loadMore">
-            显示更多条目
+            更多
           </div>
           <div v-else class="load-more-end">
-            已经到底了
+            到底了
           </div>
         </div>
       </div>
@@ -630,6 +630,69 @@ onMounted(() => {
   svg {
     width: 16px;
     height: 16px;
+  }
+}
+
+/* ── 移动端：上下布局 + 横向滚动列表 ── */
+@media (max-width: 650px) {
+  .call-log-page {
+    flex-direction: column;
+    height: auto;
+    min-height: calc(100vh - #{$header-height} - #{$space-2xl});
+  }
+
+  .call-log-list {
+    flex: 0 0 auto;
+    height: auto;
+    max-height: none;
+
+    /* 让 NCard 的 content-scrollable 的内部滚动容器变为横向 */
+    :deep(.n-scrollbar-container) {
+      overflow-x: auto !important;
+      overflow-y: hidden !important;
+    }
+
+    :deep(.n-scrollbar-content) {
+      display: inline-flex;
+      min-width: 100%;
+    }
+  }
+
+  .log-list {
+    flex-direction: row;
+    gap: $space-sm;
+    padding-bottom: $space-xs;
+  }
+
+  .log-item {
+    flex: 0 0 200px;
+    min-width: 200px;
+  }
+
+  .log-model {
+    max-width: 100px;
+  }
+
+  .log-load-more {
+    display: flex;
+    align-items: center;
+    padding: 0 $space-sm;
+    flex-shrink: 0;
+  }
+
+  .load-more-btn,
+  .load-more-end,
+  .load-more-loading {
+    white-space: nowrap;
+  }
+
+  .call-log-detail {
+    flex: 1;
+    min-height: 300px;
+  }
+
+  .call-log-empty {
+    min-height: 120px;
   }
 }
 </style>

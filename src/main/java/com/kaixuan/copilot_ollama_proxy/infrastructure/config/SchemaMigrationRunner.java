@@ -32,6 +32,9 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         addColumnIfNotExists("provider_config", "custom_transforms", "TEXT NOT NULL DEFAULT '{}'");
         // 2026-07: 支持用户配置模型最大输出 token 数
         addColumnIfNotExists("provider_model", "max_output_tokens", "INTEGER NOT NULL DEFAULT 128000");
+        // 2026-07: 多 API Key 管理 — 添加激活索引列 + 迁移旧格式数据
+        addColumnIfNotExists("provider_config", "active_api_key_index", "INTEGER NOT NULL DEFAULT 0");
+        migrateApiKeyToJsonArray();
     }
 
     private void addColumnIfNotExists(String table, String column, String definition) {
@@ -40,6 +43,31 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         if (!exists) {
             jdbcTemplate.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
             log.info("[SchemaMigration] 已添加列 {}.{}", table, column);
+        }
+    }
+
+    /**
+     * 将旧格式的 api_key（纯字符串）迁移为 JSON 数组格式。
+     * 检测所有 api_key 不以 '[' 开头的记录，将其包装为 [{"name":"Default","api_key":"原值"}]。
+     * 空字符串保持为 '[]'。
+     */
+    private void migrateApiKeyToJsonArray() {
+        // 查找所有非 JSON 数组格式的记录
+        var rows = jdbcTemplate.queryForList(
+                "SELECT id, api_key FROM provider_config WHERE api_key NOT LIKE '[%'");
+        for (var row : rows) {
+            int id = ((Number) row.get("id")).intValue();
+            String oldKey = (String) row.get("api_key");
+            String newValue;
+            if (oldKey == null || oldKey.isBlank()) {
+                newValue = "[]";
+            } else {
+                // 转义 JSON 特殊字符
+                String escaped = oldKey.replace("\\", "\\\\").replace("\"", "\\\"");
+                newValue = "[{\"name\":\"Default\",\"api_key\":\"" + escaped + "\"}]";
+            }
+            jdbcTemplate.update("UPDATE provider_config SET api_key = ? WHERE id = ?", newValue, id);
+            log.info("[SchemaMigration] 已迁移 provider_config.id={} 的 api_key 为 JSON 数组格式", id);
         }
     }
 }

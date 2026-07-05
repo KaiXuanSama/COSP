@@ -6,6 +6,7 @@ type EditableModel = Record<string, any>
 defineProps<{
     pullingModels: boolean
     hasDocs?: boolean
+    compact?: boolean
 }>()
 
 const models = defineModel<EditableModel[]>('models', { required: true })
@@ -94,7 +95,7 @@ const effortOptions = [
                                 <n-input v-model:value="model.modelName" placeholder="模型名称" />
                             </n-form-item>
                         </div>
-                        <div class="model-form-row model-form-row--details">
+                        <div class="model-form-row model-form-row--details" :class="{ 'model-form-row--compact': compact }">
                             <n-form-item label="上下文" class="model-detail-item model-detail-item--half">
                                 <n-input v-model:value="model.contextSize" placeholder="4096">
                                     <template #suffix>
@@ -363,6 +364,20 @@ const effortOptions = [
             flex: 1 1 100%;
             min-width: 0;
         }
+    }
+}
+
+/* 紧凑模式：上下文+最大输出为第二行，思考深度+工具+视觉为第三行 */
+.model-form-row--compact {
+    flex-wrap: wrap;
+
+    .model-detail-item--half {
+        flex: 1 1 45%;
+    }
+
+    .model-effort-item,
+    .model-detail-item--switch {
+        flex: 0 0 auto;
     }
 }
 </style>

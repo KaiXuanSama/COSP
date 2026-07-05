@@ -12,11 +12,17 @@ export interface ProviderModel {
   reasoningEffort: string
 }
 
+export interface ApiKeyEntry {
+  name: string
+  api_key: string
+}
+
 export interface Provider {
   providerKey: string
   enabled: boolean
   baseUrl: string | null
   apiKey: string
+  activeApiKeyIndex: number
   apiFormat: string
   models: ProviderModel[]
 }

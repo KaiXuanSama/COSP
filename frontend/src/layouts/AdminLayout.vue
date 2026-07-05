@@ -386,15 +386,24 @@ onBeforeUnmount(() => {
 
 .hamburger-btn {
   display: none;
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 5px;
   margin-right: $space-sm;
+  background: none;
+  border: none;
+  border-radius: $radius;
+  cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
+  transition: background 0.2s ease;
+
+  &:hover {
+    background: $bg;
+  }
 
   @media (max-width: 1024px) {
     display: flex;
