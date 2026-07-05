@@ -157,8 +157,12 @@ public class AdminPageController {
                 return v != null ? v : def;
             };
             String baseUrl = getParam.apply("baseUrl", "").trim();
-            String apiKey = getParam.apply("apiKey", "").trim();
-            int providerId = providerConfigRepository.updateProviderConfig(providerKey, baseUrl, apiKey, "openai");
+            String apiKeys = getParam.apply("apiKeys", "[]").trim();
+            int activeApiKeyIndex = 0;
+            try {
+                activeApiKeyIndex = Integer.parseInt(getParam.apply("activeApiKeyIndex", "0").trim());
+            } catch (NumberFormatException ignored) {}
+            int providerId = providerConfigRepository.updateProviderConfig(providerKey, baseUrl, apiKeys, activeApiKeyIndex, "openai");
             List<Map<String, Object>> models = new ArrayList<>();
             String prefix = "models[";
             java.util.Set<Integer> indices = new java.util.TreeSet<>();

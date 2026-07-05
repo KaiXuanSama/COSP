@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS provider_config (
     provider_key     VARCHAR(30)  NOT NULL UNIQUE,   -- 服务商标识，如 longcat / mimo
     enabled          INTEGER      NOT NULL DEFAULT 0, -- 是否启用（0=禁用，1=启用）
     base_url         TEXT         NOT NULL DEFAULT '', -- API 基础 URL
-    api_key          TEXT         NOT NULL DEFAULT '', -- API Key
+    api_key          TEXT         NOT NULL DEFAULT '', -- API Key（JSON 数组，如 [{"name":"Default","api_key":"sk-xxx"}]）
+    active_api_key_index INTEGER  NOT NULL DEFAULT 0, -- 当前激活的 API Key 索引
     api_format       VARCHAR(20)  NOT NULL DEFAULT 'openai', -- API 格式（仅支持 openai）
     custom_transforms TEXT        NOT NULL DEFAULT '{}', -- 自定义供应商的请求转换配置（JSON）
     updated_at       TEXT         NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
