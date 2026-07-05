@@ -9,7 +9,7 @@ COSP (Copilot Ollama SpringBoot Proxy) 是一个协议适配层服务，将 Copi
 ## 核心原则
 
 1. **双协议架构**：Copilot 通过 Ollama 协议发现模型，通过 OpenAI 协议进行聊天
-2. **Provider 必须包含四个组件**：Transport Client、Protocol Converter、Stream Translator、Service
+2. **Provider 必须包含两个组件**：DiscoveryService（模型发现）、OpenAiChatService（聊天执行），各自继承对应基类
 3. **能力声明从数据库读取**：禁止硬编码能力列表
 
 ## 代码审查要点
@@ -47,6 +47,7 @@ COSP (Copilot Ollama SpringBoot Proxy) 是一个协议适配层服务，将 Copi
 
 - [AGENTS.md](../AGENTS.md) — 完整项目指南
 - [README.md](../README.md) — 项目介绍和快速开始
+- [Ollama 接口开发指南](./instructions/ollama-api.instructions.md) — Ollama 协议层端点、翻译器、转换器开发规范
 - [编码规范](../copilot-ollama-proxy-springboot.wiki/Guides/Coding-Standards.md)
 - [架构文档](../copilot-ollama-proxy-springboot.wiki/Architecture.md)
 - [模型兼容性](../docs/MODEL_COMPATIBILITY.md) — 已知问题和解决方案

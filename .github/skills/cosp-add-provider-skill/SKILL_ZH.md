@@ -16,7 +16,7 @@ COSP 是一个 Spring Boot 代理，它将上游 LLM API 供应商（例如 Deep
 ### 两条核心调用链
 
 ```
-1. Ollama 协议链（模型发现）：Controller → CompositeOllamaService → OllamaServiceResolver → {Provider}OllamaService
+1. Ollama 协议链（模型发现）：Controller → CompositeOllamaService → OllamaServiceResolver → {Provider}DiscoveryService
 2. OpenAI 协议链（实际聊天）：Controller → CompositeUpstreamChatService → UpstreamChatServiceResolver → {Provider}OpenAiChatService
 ```
 
@@ -29,7 +29,7 @@ COSP 是一个 Spring Boot 代理，它将上游 LLM API 供应商（例如 Deep
 - Java 21、Spring Boot 3.5、WebFlux（Reactor）
 - Maven 构建系统
 - 项目的五层架构：`api → application → provider → infrastructure` + `protocol`（纯 DTO）
-- Provider 内部组件模式：Transport Client + Protocol Converter + Stream Translator + Service（均在 `provider/` 下）
+- Provider 内部组件模式：DiscoveryService（模型发现，继承 `AbstractDiscoveryService`）+ OpenAiChatService（聊天执行，继承 `AbstractUpstreamChatService`）
 
 ## 逐步集成指南
 
@@ -39,50 +39,26 @@ COSP 是一个 Spring Boot 代理，它将上游 LLM API 供应商（例如 Deep
 
 ```
 {provider_name}/
-├── ollama/
-│   └── {ProviderName}OllamaService.java
+├── discovery/
+│   └── {ProviderName}DiscoveryService.java
 └── openai/
     └── {ProviderName}OpenAiChatService.java
 ```
 
 将 `{provider_name}` 替换为小写的供应商 key，`{ProviderName}` 替换为帕斯卡命名的名称。
 
-### 第 2 步：实现 `{ProviderName}OllamaService`
+### 第 2 步：实现 `{ProviderName}DiscoveryService`
 
-位置：`src/main/java/.../provider/{provider_name}/ollama/{ProviderName}OllamaService.java`
+位置：`src/main/java/.../provider/{provider_name}/discovery/{ProviderName}DiscoveryService.java`
 
-此类继承 `AbstractRuntimeCatalogOllamaService`，负责模型发现阶段的 Ollama→OpenAI 协议转换。
+此类继承 `AbstractDiscoveryService`，提供模型发现阶段的 Provider 元数据。
 
 **强制构造函数模式：**
 ```java
-public {ProviderName}OllamaService(
+public {ProviderName}DiscoveryService(
         RuntimeProviderCatalog runtimeProviderCatalog,
-        @Value("${{{provider_name}}.default-model:{default-model}}") String fallbackDefaultModel,
-        ObjectMapper objectMapper,
-        WebClient.Builder webClientBuilder) {
+        @Value("${{{provider_name}}.default-model:{default-model}}") String fallbackDefaultModel) {
     super(runtimeProviderCatalog, fallbackDefaultModel);
-    // 1. 创建传输客户端
-    this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder,
-        new OpenAiTransportClient.Config(
-            "{provider_key}",           // 供应商 key
-            "{default_base_url_with_path}", // 默认 Base URL（含 OpenAI 路径），例如 "https://api.example.com/v1"
-            "/chat/completions",        // Chat Completions URI（固定为 /chat/completions）
-            this::applyAuthHeaders,     // 认证头注入器
-            this::normalizeBaseUrl      // Base URL 规范化器（仅去除尾部斜杠）
-        ));
-    // 2. 创建协议转换器
-    this.protocolConverter = new OllamaProtocolConverter(objectMapper);
-    // 3. 创建 Support 记录（方法引用）
-    this.protocolSupport = new OllamaProtocolConverter.Support(
-        this::resolveRequestModel,
-        this::resolveMaxTokens,
-        this::extractStringContent,
-        this::currentTimestamp);
-    // 4. 创建流式翻译器
-    this.streamTranslator = new OllamaStreamTranslator(objectMapper,
-        new OllamaStreamTranslator.Support(
-            this::createStreamingChunk,
-            this::createStreamingCompletion));
 }
 ```
 
@@ -107,17 +83,7 @@ protected String providerParameterSize() { return "Flash"; } // 或适当的大�
 protected String providerLicense() { return "Proprietary"; } // 按需调整
 ```
 
-**认证与 Base URL 模式：**
-
-| 模式 | 实现 |
-|------|------|
-| Bearer Token | `(headers, apiKey) -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)` |
-| 自定义 Header | `(headers, apiKey) -> headers.set("api-key", apiKey)` |
-| Base URL 规范化（推荐） | `raw -> raw.replaceAll("/+$", "")` — 仅去除尾部斜杠 |
-
-**注意：** 用户在前端填写完整的 OpenAI 兼容基础路径（如 `https://api.example.com/v1`），后端不再自动拼接路径后缀。`normalizeBaseUrl()` 仅去除尾部斜杠，`chatCompletionsUri()` 固定为 `/chat/completions`。
-
-**能力声明**必须从数据库读取。使用以下标准模式：
+基类 `AbstractDiscoveryService` 已统一处理 `listModels()`、`showModel()`、`supportsModel()`、`buildCapabilitiesFromDb()` —— 子类只需提供元数据。
 ```java
 private List<String> buildCapabilitiesFromDb(String resolvedModel) {
     List<String> caps = new ArrayList<>();
@@ -133,33 +99,15 @@ private List<String> buildCapabilitiesFromDb(String resolvedModel) {
 }
 ```
 
-**chat 和 chatStream 方法**在所有供应商中遵循相同模式：
-```java
-@Override
-public Mono<OllamaChatResponse> chat(OllamaChatRequest request) {
-    if (request.isStream())
-        return Mono.error(new UnsupportedOperationException("Use chatStream() for streaming"));
-    Map<String, Object> openAiRequest = convertOllamaToOpenAi(request);
-    return transportClient.sendChatCompletion(openAiRequest)
-        .map(respJson -> convertOpenAiToOllama(respJson, request.getModel()));
-}
+**注意：** 基类 `AbstractDiscoveryService` 已提供 `buildCapabilitiesFromDb()` —— 子类无需实现。
 
-@Override
-public Flux<OllamaChatResponse> chatStream(OllamaChatRequest request) {
-    Map<String, Object> openAiRequest = convertOllamaToOpenAi(request);
-    openAiRequest.put("stream", true);
-    var session = streamTranslator.newSession();
-    return transportClient.streamChatCompletion(openAiRequest)
-        .concatMap(chunk -> Flux.fromIterable(
-            streamTranslator.translate(session, chunk, request.getModel())));
-}
-```
+**基类已处理 `listModels()`、`showModel()`—— 子类不需要覆写这些方法。**
 
 ### 第 3 步：实现 `{ProviderName}OpenAiChatService`
 
 位置：`src/main/java/.../provider/{provider_name}/openai/{ProviderName}OpenAiChatService.java`
 
-此类继承 `AbstractOpenAiCompatibleUpstreamChatService`，处理直接的 OpenAI 兼容聊天补全。
+此类继承 `AbstractUpstreamChatService`，处理直接的 OpenAI 兼容聊天补全。
 
 **强制构造函数：**
 ```java
@@ -263,26 +211,23 @@ case "{provider_key}" -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiK
 
 ## Provider 组件模式（架构约束）
 
-每个 Provider 必须拆分为四个职责清晰的组件——**不允许混职责**：
+每个 Provider 必须包含两个服务组件，各自继承对应基类：
 
-| 组件 | 职责 |
-|------|------|
-| **传输客户端**（`OpenAiTransportClient`） | HTTP 交互：WebClient 构建、认证头、重试策略、SSE 解包 |
-| **协议转换器**（`OllamaProtocolConverter`） | 非流式协议映射：请求体转换、响应体重构 |
-| **流式翻译器**（`OllamaStreamTranslator`） | 流式状态机：增量 chunk 翻译、工具调用累积 |
-| **服务**（`{Provider}OllamaService` / `{Provider}OpenAiChatService`） | 编排：组装转换器、翻译器和传输客户端。不包含协议细节 |
+| 组件 | 基类 | 职责 |
+|------|------|------|
+| **发现服务**（`{Provider}DiscoveryService`） | `AbstractDiscoveryService` | 模型发现：`/api/tags`、`/api/show` 端点，提供 Provider 元数据（family、license 等） |
+| **聊天服务**（`{Provider}OpenAiChatService`） | `AbstractUpstreamChatService` | 聊天执行：`/v1/chat/completions` 端点，SSE 流式管道、重试、思考链缓存 |
 
-规则：
-- **Service** 只做编排，不直接操作 JSON 字段
-- **Converter** 只做映射，不维护状态
-- **Translator** 只做流式状态累积，不发 HTTP 请求
-- **Transport Client** 只做 HTTP 交互，不知道协议转换逻辑
+基类职责：
+- `AbstractDiscoveryService` 统一处理模型列表构建、`showModel` 模板、能力声明读取
+- `AbstractUpstreamChatService` 统一处理 WebClient 构建、鉴权、重试策略、SSE 解包、思考链缓存（追踪/持久化/注入）
+- 子类仅需覆写 Provider 特化点（鉴权方式、请求体定制等）
 
 ## 常见陷阱
 
 1. **工具调用参数累积**：在 `OllamaStreamTranslator` 中，增量 `arguments` 片段不是合法 JSON——`objectMapper.readValue()` 始终会失败。应将 arguments 作为字符串累积，在 `finish_reason=tool_calls` 时一次性反序列化。
 
-2. **400 错误重试**：`AbstractOpenAiCompatibleUpstreamChatService` 和 `OpenAiTransportClient` 对所有 400 错误重试（包括认证失败）。考虑仅对特定可重试的 400 场景重试。
+2. **400 错误重试**：`AbstractUpstreamChatService` 和 `OpenAiTransportClient` 对所有 400 错误重试（包括认证失败）。考虑仅对特定可重试的 400 场景重试。
 
 3. **上下文窗口陷阱（4096）**：当 Copilot 中 `context_length=4096` 时，`maxInputTokens=0`，导致模型被认为无可用输入窗口。
 
@@ -290,10 +235,10 @@ case "{provider_key}" -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiK
 
 5. **Base URL 规范化**：统一处理尾部斜杠、`/v1` 重复以及供应商特有的路径追加。
 
-## 最小可工作示例：Uumit 供应商
+## 最小可工作示例：DeepSeek 供应商
 
-Uumit 供应商实现是推荐的最小参考实现。代码位置：
-- `provider/uumit/ollama/UumitOllamaService.java`
-- `provider/uumit/openai/UumitOpenAiChatService.java`
+DeepSeek 供应商实现是推荐的最小参考实现。代码位置：
+- `provider/deepseek/discovery/DeepSeekDiscoveryService.java` —— 纯元数据，无自定义逻辑
+- `provider/deepseek/openai/DeepSeekOpenAiChatService.java` —— 所有行为均继承自基类
 
-Uumit 使用 Bearer Token 认证，从 Base URL 中去除了 `/v1` 后缀，使用 `/v1/chat/completions` 端点，并从数据库读取能力声明。
+DeepSeek 使用 Bearer Token 认证，从数据库读取能力声明，思考链缓存处理全部委托给基类。
