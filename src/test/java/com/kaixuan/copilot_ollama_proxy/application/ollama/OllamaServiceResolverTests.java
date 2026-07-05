@@ -3,11 +3,9 @@ package com.kaixuan.copilot_ollama_proxy.application.ollama;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
-import com.kaixuan.copilot_ollama_proxy.provider.generic.ollama.GenericOllamaService;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.discovery.GenericDiscoveryService;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -16,7 +14,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 class OllamaServiceResolverTests {
@@ -28,7 +25,7 @@ class OllamaServiceResolverTests {
 
         OllamaService mimo = new StubOllamaService("mimo");
         OllamaService longcat = new StubOllamaService("longcat");
-        GenericOllamaService generic = mock(GenericOllamaService.class);
+        GenericDiscoveryService generic = mock(GenericDiscoveryService.class);
 
         OllamaServiceResolver resolver = new OllamaServiceResolver(catalog, List.of(longcat, mimo), generic);
 
@@ -42,7 +39,7 @@ class OllamaServiceResolverTests {
 
         OllamaService fallback = new StubOllamaService("longcat");
         OllamaService second = new StubOllamaService("mimo");
-        GenericOllamaService generic = mock(GenericOllamaService.class);
+        GenericDiscoveryService generic = mock(GenericDiscoveryService.class);
 
         OllamaServiceResolver resolver = new OllamaServiceResolver(catalog, List.of(fallback, second), generic);
 
@@ -80,16 +77,6 @@ class OllamaServiceResolverTests {
         @Override
         public OllamaShowResponse showModel(String modelName) {
             return null;
-        }
-
-        @Override
-        public Mono<OllamaChatResponse> chat(OllamaChatRequest request) {
-            return Mono.empty();
-        }
-
-        @Override
-        public Flux<OllamaChatResponse> chatStream(OllamaChatRequest request) {
-            return Flux.empty();
         }
     }
 }

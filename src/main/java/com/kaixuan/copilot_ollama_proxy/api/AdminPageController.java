@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.api;
 
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.RequestTransformEngine;
@@ -38,15 +39,17 @@ public class AdminPageController {
     private final PasswordEncoder passwordEncoder;
     private final ApiUsageRepository apiUsageRepository;
     private final ProviderConfigRepository providerConfigRepository;
+    private final AppConfigRepository appConfigRepository;
     private final ApiCallLogRepository apiCallLogRepository;
     private final WebClient.Builder webClientBuilder;
 
     public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder, ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository,
-            ApiCallLogRepository apiCallLogRepository, WebClient.Builder webClientBuilder) {
+            AppConfigRepository appConfigRepository, ApiCallLogRepository apiCallLogRepository, WebClient.Builder webClientBuilder) {
         this.userDetailsManager = userDetailsManager;
         this.passwordEncoder = passwordEncoder;
         this.apiUsageRepository = apiUsageRepository;
         this.providerConfigRepository = providerConfigRepository;
+        this.appConfigRepository = appConfigRepository;
         this.apiCallLogRepository = apiCallLogRepository;
         this.webClientBuilder = webClientBuilder;
     }
@@ -133,13 +136,13 @@ public class AdminPageController {
 
     @GetMapping("/config/api/fake-version") @ResponseBody
     public ResponseEntity<Map<String, Object>> getFakeVersion() {
-        String version = providerConfigRepository.findConfigValue("fake_version");
+        String version = appConfigRepository.findConfigValue("fake_version");
         return ResponseEntity.ok(Map.of("fakeVersion", version != null ? version : ""));
     }
 
     @PostMapping("/config/api/fake-version") @ResponseBody
     public ResponseEntity<Map<String, Object>> saveFakeVersion(@RequestParam String fakeVersion) {
-        providerConfigRepository.saveConfig("fake_version", fakeVersion.trim());
+        appConfigRepository.saveConfig("fake_version", fakeVersion.trim());
         return ResponseEntity.ok(Map.of("ok", true));
     }
 
@@ -174,6 +177,7 @@ public class AdminPageController {
                 m.put("modelName", getParam.apply(prefix + i + "].name", "").trim());
                 m.put("enabled", "on".equals(form.getFirst(prefix + i + "].enabled")));
                 m.put("contextSize", getParam.apply(prefix + i + "].contextSize", "0").trim());
+                m.put("maxOutputTokens", getParam.apply(prefix + i + "].maxOutputTokens", "128000").trim());
                 m.put("capsTools", "on".equals(form.getFirst(prefix + i + "].capsTools")));
                 m.put("capsVision", "on".equals(form.getFirst(prefix + i + "].capsVision")));
                 m.put("reasoningEffort", getParam.apply(prefix + i + "].reasoningEffort", "Medium").trim());

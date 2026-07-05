@@ -1,33 +1,32 @@
-package com.kaixuan.copilot_ollama_proxy.provider.ollama;
+package com.kaixuan.copilot_ollama_proxy.provider;
 
 import com.kaixuan.copilot_ollama_proxy.application.ollama.OllamaService;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
 import reactor.core.publisher.Mono;
 
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 /**
- * Ollama provider 的运行时基类。
+ * 模型发现服务的运行时基类。
  *
- * 这个类把所有与具体 provider 无关的 Ollama 协议原语集中在一起：
- * 模型解析、max_tokens 解析、文本内容提取、assistant chunk/完成包组装、
- * tags 列表构造、showModel 的公共模板，以及 supportsModel 的默认实现。
+ * 这个类把所有与具体 provider 无关的模型发现协议原语集中在一起：
+ * 模型解析、tags 列表构造、showModel 的公共模板，以及 supportsModel 的默认实现。
  *
- * 子类只需要提供 provider 特化点（providerKey、family、format、license 等），
- * 以及各自的非流式/流式编排逻辑。协议转换和流式状态机则进一步下沉到
- * 各 provider 的 converter 和 translator 中。
+ * 子类只需要提供 provider 特化点（providerKey、family、format、license 等）。
+ * showModel 已有默认实现（解析模型 → 读能力 → 读上下文长度 → 构建响应），
+ * 只有 Generic 等需要特殊路由逻辑的子类才需要覆写。
  */
-public abstract class AbstractRuntimeCatalogOllamaService implements OllamaService {
+public abstract class AbstractDiscoveryService implements OllamaService {
 
     /** 运行时 provider 配置目录，统一暴露数据库中的 provider 配置与模型列表。 */
     private final RuntimeProviderCatalog runtimeProviderCatalog;
@@ -39,7 +38,7 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
      * @param runtimeProviderCatalog 运行时 provider 配置目录
      * @param fallbackDefaultModel 当请求中未指定模型时使用的默认模型名称
      */
-    protected AbstractRuntimeCatalogOllamaService(RuntimeProviderCatalog runtimeProviderCatalog, String fallbackDefaultModel) {
+    protected AbstractDiscoveryService(RuntimeProviderCatalog runtimeProviderCatalog, String fallbackDefaultModel) {
         this.runtimeProviderCatalog = runtimeProviderCatalog;
         this.fallbackDefaultModel = fallbackDefaultModel;
     }
@@ -140,147 +139,6 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
     }
 
     /**
-     * 解析请求中的模型名称，如果未指定则使用默认模型。
-     * @param modelName 模型名称
-     * @return 解析后的模型名称，如果未指定则返回默认模型名称
-     */
-    protected String resolveRequestModel(String modelName) {
-        return resolveModelOrDefault(modelName);
-    }
-
-    /**
-     * 解析请求中的最大 token 数量，如果未指定则使用默认值。
-     * @param options 请求选项
-     * @return 解析后的最大 token 数量，如果未指定则返回默认值
-     */
-    protected int resolveMaxTokens(Map<String, Object> options) {
-        if (options != null && options.containsKey("num_predict")) {
-            Object value = options.get("num_predict");
-            if (value instanceof Number number) {
-                int resolved = number.intValue();
-                return resolved > 0 ? resolved : 8192;
-            }
-        }
-        return 8192;
-    }
-
-    /**
-     * 根据数据库中的模型配置，覆盖请求体中的 reasoning_effort。
-     * 仅当当前值仍为 converter 默认的 "medium" 时才覆盖，
-     * 避免覆盖 DeepSeek 等 provider 的特化钩子已设置的用户值。
-     * @param body   converter 生成的 OpenAI 请求体
-     * @param resolvedModel 已解析的模型名称
-     */
-    protected void applyReasoningEffort(Map<String, Object> body, String resolvedModel) {
-        Object current = body.get("reasoning_effort");
-        if (current != null && !"medium".equals(current.toString().toLowerCase())) {
-            return; // 已被 provider 特化钩子覆盖，不覆盖
-        }
-        ProviderRuntimeConfiguration config = getProviderConfiguration();
-        if (config != null) {
-            for (ProviderRuntimeModel m : config.models()) {
-                if (resolvedModel.equals(m.modelName())) {
-                    String effort = m.reasoningEffort();
-                    if (effort == null || effort.isBlank() || "none".equalsIgnoreCase(effort.trim())) {
-                        body.remove("reasoning_effort");
-                    } else {
-                        body.put("reasoning_effort", effort.toLowerCase());
-                    }
-                    return;
-                }
-            }
-        }
-    }
-
-    /**
-     * 从请求内容中提取字符串内容，支持字符串或列表格式。
-     *
-     * @param content 请求内容，可能是字符串或列表
-     * @return 提取后的字符串内容，如果无法提取则返回空字符串
-     */
-    protected String extractStringContent(Object content) {
-        if (content == null) {
-            return "";
-        }
-        if (content instanceof String stringContent) {
-            return stringContent;
-        }
-        if (content instanceof List<?> listContent) {
-            StringBuilder builder = new StringBuilder();
-            for (Object item : listContent) {
-                if (item instanceof Map<?, ?> mapContent) {
-                    Object text = mapContent.get("text");
-                    if (text != null) {
-                        builder.append(text);
-                    }
-                }
-            }
-            return builder.toString();
-        }
-        return content.toString();
-    }
-
-    /**
-     * 创建一个助手消息的聊天响应，通常用于流式响应中的增量更新。
-     * @param modelName 模型名称
-     * @param text 消息内容
-     * @param done 是否完成
-     * @return 聊天响应对象
-     */
-    protected OllamaChatResponse createAssistantChunk(String modelName, String text, boolean done) {
-        return createResponse(modelName, done, null, createMessage("assistant", text));
-    }
-
-    /**
-     * 创建一个助手消息的聊天响应，通常用于完成时的最终响应。
-     * @param modelName 模型名称
-     * @param doneReason 完成原因，如 "stop"、"tool_calls" 等
-     * @param content 消息内容
-     * @param toolCalls 工具调用结果列表，如果有工具调用则传入，否则传 null 或空列表
-     * @return 聊天响应对象
-     */
-    protected OllamaChatResponse createAssistantCompletion(String modelName, String doneReason, String content, List<OllamaChatResponse.ToolCallResult> toolCalls) {
-        var message = createMessage("assistant", toolCalls != null && !toolCalls.isEmpty() ? "" : content);
-        if (toolCalls != null && !toolCalls.isEmpty()) {
-            message.setToolCalls(toolCalls);
-        }
-        return createResponse(modelName, true, doneReason, message);
-    }
-
-    /**
-     * 创建一个通用的聊天响应对象。
-     * @param modelName 模型名称
-     * @param done 是否完成
-     * @param doneReason 完成原因
-     * @param message 消息对象
-     * @return 聊天响应对象
-     */
-    protected OllamaChatResponse createResponse(String modelName, boolean done, String doneReason, OllamaChatResponse.ResponseMessage message) {
-        var response = new OllamaChatResponse();
-        response.setModel(modelName);
-        response.setCreatedAt(currentTimestamp());
-        response.setDone(done);
-        if (doneReason != null && !doneReason.isBlank()) {
-            response.setDoneReason(doneReason);
-        }
-        response.setMessage(message);
-        return response;
-    }
-
-    /**
-     * 创建一个聊天消息对象。
-     * @param role 消息角色，如 "assistant"、"user"
-     * @param content 消息内容
-     * @return 聊天消息对象
-     */
-    protected OllamaChatResponse.ResponseMessage createMessage(String role, String content) {
-        var message = new OllamaChatResponse.ResponseMessage();
-        message.setRole(role);
-        message.setContent(content);
-        return message;
-    }
-
-    /**
      * 获取当前时间的 ISO 8601 格式字符串，通常用于响应中的时间戳字段。
      * @return 当前时间的 ISO 8601 格式字符串
      */
@@ -323,6 +181,20 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
     }
 
     /**
+     * 默认的 showModel 实现 —— 解析模型名、读能力、读上下文长度、构建响应。
+     *
+     * 对于标准供应商（DeepSeek、MiMo 等）这个默认实现已经足够；
+     * 只有需要特殊路由逻辑的供应商（如 Generic）才需要覆写。
+     */
+    @Override
+    public OllamaShowResponse showModel(String modelName) {
+        String resolvedModel = resolveModelOrDefault(modelName);
+        List<String> capabilities = buildCapabilitiesFromDb(resolvedModel);
+        int contextLength = requireContextLength(resolvedModel);
+        return buildShowResponse(resolvedModel, contextLength, capabilities);
+    }
+
+    /**
      * 创建模型信息对象。
      * 模型名称会添加供应商前缀，格式为 [ProviderKey]modelName。
      * @param model 模型对象
@@ -356,53 +228,53 @@ public abstract class AbstractRuntimeCatalogOllamaService implements OllamaServi
         return details;
     }
 
-    /**
-     * 获取 provider 的协议格式标识，如 "openai"、"mimo" 等。
-     *
-     * 该值会出现在 Ollama tags/show 响应的 details.format 字段中，
-     * 供客户端识别模型背后的协议类型。
-     *
-     * @return 协议格式标识字符串
-     */
+    /** 获取 provider 的协议格式标识。 */
     protected abstract String providerFormat();
 
-    /**
-     * 获取服务商所属的模型家族名称，如 "LongCat"、"MiMo" 等。
-     * @return 模型家族名称字符串
-     */
+    /** 获取服务商所属的模型家族名称。 */
     protected abstract String providerFamily();
 
-    /**
-     * 获取服务商所属的模型家族列表，通常包含一个元素，但也可能包含多个相关家族。
-     * @return 模型家族名称列表
-     */
+    /** 获取服务商所属的模型家族列表。 */
     protected abstract List<String> providerFamilies();
 
-    /**
-     * 获取模型的参数规模描述，如 "7B"、"13B"、"Flash" 等。
-     * @return 模型参数规模描述字符串
-     */
+    /** 获取模型的参数规模描述。 */
     protected abstract String providerParameterSize();
 
-    /**
-     * 获取模型的许可证类型，如 "Proprietary"、"MIT"、"Apache-2.0" 等。
-     * @return 模型许可证类型字符串
-     */
+    /** 获取模型的许可证类型。 */
     protected abstract String providerLicense();
 
-    /**
-     * 获取模型的量化级别描述，如 "none"、"int8"、"int4" 等。
-     * @return 模型量化级别描述字符串
-     */
+    /** 获取模型的量化级别描述，默认 "none"。 */
     protected String providerQuantizationLevel() {
         return "none";
     }
 
-    /**
-     * 获取模型的架构信息，如 "Transformer"、"LSTM" 等。
-     * @return 模型架构信息字符串
-     */
+    /** 获取模型的架构信息，默认返回 providerKey。 */
     protected String providerArchitecture() {
         return getProviderKey();
+    }
+
+    /**
+     * 从数据库读取模型的能力标志（caps_tools / caps_vision），构建 capabilities 列表。
+     * 始终包含 "completion"，根据 provider_model 表中的标志追加 "tools" 和 "vision"。
+     * 如果读取失败，仅返回默认的 "completion" 能力。
+     *
+     * @param resolvedModel 解析后的模型名称
+     * @return 模型能力列表
+     */
+    protected List<String> buildCapabilitiesFromDb(String resolvedModel) {
+        List<String> caps = new ArrayList<>();
+        caps.add("completion");
+        try {
+            var model = requireModelConfiguration(resolvedModel);
+            if (model.capsTools()) {
+                caps.add("tools");
+            }
+            if (model.capsVision()) {
+                caps.add("vision");
+            }
+        } catch (Exception e) {
+            // 能力读取失败时，仅使用默认 completion 能力
+        }
+        return caps;
     }
 }

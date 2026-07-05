@@ -1,7 +1,5 @@
 package com.kaixuan.copilot_ollama_proxy.application.ollama;
 
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
 import org.junit.jupiter.api.Test;
@@ -12,7 +10,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 class CompositeOllamaServiceTests {
@@ -73,16 +70,6 @@ class CompositeOllamaServiceTests {
         @Override
         public OllamaShowResponse showModel(String modelName) {
             return null;
-        }
-
-        @Override
-        public Mono<OllamaChatResponse> chat(OllamaChatRequest request) {
-            return Mono.empty();
-        }
-
-        @Override
-        public Flux<OllamaChatResponse> chatStream(OllamaChatRequest request) {
-            return Flux.empty();
         }
     }
 }

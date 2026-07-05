@@ -6,6 +6,7 @@ export interface ProviderModel {
   modelName: string
   enabled: boolean
   contextSize: string
+  maxOutputTokens: string
   capsTools: boolean
   capsVision: boolean
   reasoningEffort: string

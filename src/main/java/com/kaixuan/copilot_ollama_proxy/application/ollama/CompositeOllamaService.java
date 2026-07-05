@@ -1,7 +1,5 @@
 package com.kaixuan.copilot_ollama_proxy.application.ollama;
 
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
 import org.slf4j.Logger;
@@ -16,8 +14,8 @@ import java.util.List;
  * Ollama 服务组合器 —— 代理所有已注册的 OllamaService 实现，
  * 根据模型名称路由到对应的服务商。
  *
- * 注意：此类不实现 OllamaService 接口，避免 Spring 自动注入时产生循环依赖。
- * 控制器直接注入此类。
+ * 仅提供模型发现（listModels）和详情查询（showModel），
+ * 实际聊天走 OpenAI 协议路径（CompositeUpstreamChatService）。
  */
 @Service
 public class CompositeOllamaService {
@@ -33,9 +31,6 @@ public class CompositeOllamaService {
         log.info("CompositeOllamaService 初始化完成，注册服务商数: {}", ollamaServices.size());
     }
 
-    /**
-     * 根据模型名称找到对应的服务商。
-     */
     private OllamaService resolveService(String modelName) {
         return ollamaServiceResolver.resolve(modelName);
     }
@@ -57,21 +52,5 @@ public class CompositeOllamaService {
             return null;
         }
         return service.showModel(modelName);
-    }
-
-    public Mono<OllamaChatResponse> chat(OllamaChatRequest request) {
-        OllamaService service = resolveService(request.getModel());
-        if (service == null) {
-            return Mono.error(new RuntimeException("没有可用的服务商来处理模型: " + request.getModel()));
-        }
-        return service.chat(request);
-    }
-
-    public Flux<OllamaChatResponse> chatStream(OllamaChatRequest request) {
-        OllamaService service = resolveService(request.getModel());
-        if (service == null) {
-            return Flux.error(new RuntimeException("没有可用的服务商来处理模型: " + request.getModel()));
-        }
-        return service.chatStream(request);
     }
 }

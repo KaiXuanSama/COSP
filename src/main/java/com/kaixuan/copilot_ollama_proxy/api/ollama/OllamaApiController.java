@@ -3,15 +3,11 @@ package com.kaixuan.copilot_ollama_proxy.api.ollama;
 import com.kaixuan.copilot_ollama_proxy.application.ollama.CompositeOllamaService;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
 import com.kaixuan.copilot_ollama_proxy.application.config.AppConfigService;
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatRequest;
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaChatResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
@@ -20,14 +16,15 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Ollama API 兼容控制器 —— 模拟 Ollama 服务器对外暴露的 REST 接口。
- * Copilot 等客户端连接到 localhost:11434 后，会按 Ollama 的协议依次调用这些端点。
- * 本控制器只负责路由和参数接收，真正的业务逻辑（协议转换、上游调用）委托给 {@link OllamaService}。
+ * Ollama API 兼容控制器 —— 模拟 Ollama 服务器对外暴露的模型发现接口。
+ *
+ * Copilot 等客户端连接到 localhost:11434 后，会按 Ollama 的协议依次调用这些端点
+ * 进行模型发现和能力查询。实际聊天走 OpenAI 协议（/v1/chat/completions）。
+ *
  * 端点清单：
  * - GET  /api/version  → 返回伪装的 Ollama 版本号
  * - GET  /api/tags     → 返回可用模型列表
  * - POST /api/show     → 返回指定模型的详细信息（上下文长度、能力等）
- * - POST /api/chat     → 核心对话接口，支持流式和非流式两种模式
  */
 @RestController @RequestMapping("/api")
 public class OllamaApiController {
@@ -37,7 +34,10 @@ public class OllamaApiController {
     private final AppConfigService appConfigService;
     private final String defaultVersion;
 
-    public OllamaApiController(CompositeOllamaService ollamaService, ModelCatalogService modelCatalogService, AppConfigService appConfigService, @Value("${ollama.version}") String defaultVersion) {
+    public OllamaApiController(CompositeOllamaService ollamaService,
+                               ModelCatalogService modelCatalogService,
+                               AppConfigService appConfigService,
+                               @Value("${ollama.version}") String defaultVersion) {
         this.ollamaService = ollamaService;
         this.modelCatalogService = modelCatalogService;
         this.appConfigService = appConfigService;
@@ -50,7 +50,7 @@ public class OllamaApiController {
      * Copilot 在连接时会调用此接口确认 Ollama 服务是否可用。
      */
     @GetMapping("/version")
-    public Mono<Map<String, String>> version() {
+    public Mono<Map<String, String>> getVersion() {
         return Mono.fromCallable(() -> {
             String dbVersion = appConfigService.findValue("fake_version");
             String ver = (dbVersion != null && !dbVersion.isBlank()) ? dbVersion : defaultVersion;
@@ -64,7 +64,7 @@ public class OllamaApiController {
      * 如果没有任何模型启用（或所有服务商均未启用），则回退返回 "nano_llm"。
      */
     @GetMapping("/tags")
-    public Mono<OllamaTagsResponse> tags() {
+    public Mono<OllamaTagsResponse> listTags() {
         return Mono.fromCallable(() -> {
             var response = new OllamaTagsResponse();
             List<OllamaTagsResponse.ModelInfo> allModels = new ArrayList<>();
@@ -106,6 +106,23 @@ public class OllamaApiController {
         details.setParameterSize("unknown");
         details.setQuantizationLevel("none");
         info.setDetails(details);
+
+        // 从数据库读取能力列表，避免插件因 tags 缺少 capabilities 而无法展示工具/视觉功能
+        List<String> capabilities = new ArrayList<>();
+        capabilities.add("completion");
+        if (model.capsTools()) capabilities.add("tools");
+        if (model.capsVision()) capabilities.add("vision");
+        info.setCapabilities(capabilities);
+
+        // 在 tags 中直接返回上下文长度和最大输出，避免插件额外调用 /api/show
+        // 插件计算显示的总上下文 = context_length + max_output_tokens，
+        // 因此 context_length 需减去 max_output_tokens 才能让显示值等于用户配置的上下文大小
+        if (model.contextSize() > 0) {
+            int maxOutput = model.maxOutputTokens() > 0 ? model.maxOutputTokens() : 8192;
+            info.setContextLength(Math.max(model.contextSize() - maxOutput, maxOutput));
+            info.setMaxOutputTokens(maxOutput);
+        }
+
         return info;
     }
 
@@ -139,7 +156,7 @@ public class OllamaApiController {
      * 如果请求的是兜底模型 "nano_llm"，直接构造响应，不经过 provider 链。
      */
     @PostMapping("/show")
-    public Mono<OllamaShowResponse> show(@RequestBody OllamaShowRequest request) {
+    public Mono<OllamaShowResponse> showModel(@RequestBody OllamaShowRequest request) {
         if ("nano_llm".equals(request.getModel())) {
             return Mono.just(createNanoLlmShowResponse());
         }
@@ -170,22 +187,5 @@ public class OllamaApiController {
 
         response.setModelInfo(Map.of("general.architecture", "nano", "general.basename", "nano_llm", "nano.context_length", 4096, "nano.embedding_length", 8192));
         return response;
-    }
-
-    /**
-     * 核心对话接口 —— 接收用户的聊天请求，转发给上游后端，返回模型的回复。
-     * 支持两种模式：
-     * - 流式（stream=true）：返回 NDJSON 格式，每个 JSON 对象是一个增量 chunk
-     * - 非流式（stream=false）：返回单条 JSON 对象
-     * <p>
-     * produces 同时声明 NDJSON 和 JSON，由 Spring 根据客户端的 Accept 头进行内容协商。
-     * 若客户端 Accept 不匹配 NDJSON/JSON 时，不会抛出 406。
-     */
-    @PostMapping(value = "/chat", produces = { MediaType.APPLICATION_NDJSON_VALUE, MediaType.APPLICATION_JSON_VALUE })
-    public Flux<OllamaChatResponse> chat(@RequestBody OllamaChatRequest request) {
-        if (request.isStream()) {
-            return ollamaService.chatStream(request);
-        }
-        return ollamaService.chat(request).flux();
     }
 }

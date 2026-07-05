@@ -8,11 +8,13 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
  * @param modelName      模型名称
  * @param enabled        是否启用
  * @param contextSize    上下文窗口大小
+ * @param maxOutputTokens 最大输出 token 数
  * @param capsTools      是否支持工具调用
  * @param capsVision     是否支持视觉
  * @param reasoningEffort 思考深度
  * @param sortOrder      排序权重
  */
 public record ProviderModelRow(int id, int providerId, String modelName, boolean enabled, int contextSize,
-                               boolean capsTools, boolean capsVision, String reasoningEffort, int sortOrder) {
+                               int maxOutputTokens, boolean capsTools, boolean capsVision,
+                               String reasoningEffort, int sortOrder) {
 }

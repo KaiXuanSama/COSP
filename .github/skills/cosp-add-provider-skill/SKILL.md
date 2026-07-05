@@ -16,7 +16,7 @@ COSP is a Spring Boot proxy that makes upstream LLM API providers (e.g., DeepSee
 ### Two Core Call Chains
 
 ```
-1. Ollama protocol chain (model discovery): Controller → CompositeOllamaService → OllamaServiceResolver → {Provider}OllamaService
+1. Ollama protocol chain (model discovery): Controller → CompositeOllamaService → OllamaServiceResolver → {Provider}DiscoveryService
 2. OpenAI protocol chain (actual chat):       Controller → CompositeUpstreamChatService → UpstreamChatServiceResolver → {Provider}OpenAiChatService
 ```
 
@@ -29,7 +29,7 @@ Before starting, ensure you understand:
 - Java 21, Spring Boot 3.5, WebFlux (Reactor)
 - Maven build system
 - The project's five-layer architecture: `api → application → provider → infrastructure` + `protocol` (DTOs only)
-- Provider internal component pattern: Transport Client + Protocol Converter + Stream Translator + Service (all four in `provider/`)
+- Provider internal component pattern: DiscoveryService (model discovery, extends `AbstractDiscoveryService`) + OpenAiChatService (chat execution, extends `AbstractUpstreamChatService`)
 
 ## Step-by-Step Integration Guide
 
@@ -39,50 +39,26 @@ Create the following directory structure under `src/main/java/com/kaixuan/copilo
 
 ```
 {provider_name}/
-├── ollama/
-│   └── {ProviderName}OllamaService.java
+├── discovery/
+│   └── {ProviderName}DiscoveryService.java
 └── openai/
     └── {ProviderName}OpenAiChatService.java
 ```
 
 Replace `{provider_name}` with the lowercase provider key and `{ProviderName}` with the PascalCase name.
 
-### Step 2: Implement `{ProviderName}OllamaService`
+### Step 2: Implement `{ProviderName}DiscoveryService`
 
-Location: `src/main/java/.../provider/{provider_name}/ollama/{ProviderName}OllamaService.java`
+Location: `src/main/java/.../provider/{provider_name}/discovery/{ProviderName}DiscoveryService.java`
 
-This class extends `AbstractRuntimeCatalogOllamaService` and handles the Ollama→OpenAI protocol translation for model discovery.
+This class extends `AbstractDiscoveryService` and provides provider metadata for model discovery.
 
 **Mandatory constructor pattern:**
 ```java
-public {ProviderName}OllamaService(
+public {ProviderName}DiscoveryService(
         RuntimeProviderCatalog runtimeProviderCatalog,
-        @Value("${{{provider_name}}.default-model:{default-model}}") String fallbackDefaultModel,
-        ObjectMapper objectMapper,
-        WebClient.Builder webClientBuilder) {
+        @Value("${{{provider_name}}.default-model:{default-model}}") String fallbackDefaultModel) {
     super(runtimeProviderCatalog, fallbackDefaultModel);
-    // 1. Create Transport Client
-    this.transportClient = new OpenAiTransportClient(runtimeProviderCatalog, webClientBuilder,
-        new OpenAiTransportClient.Config(
-            "{provider_key}",           // provider key
-            "{default_base_url_with_path}", // default base URL including OpenAI path, e.g., "https://api.example.com/v1"
-            "/chat/completions",        // chat completions URI (always /chat/completions)
-            this::applyAuthHeaders,     // auth header injector
-            this::normalizeBaseUrl      // base URL normalizer (strip trailing slashes only)
-        ));
-    // 2. Create Protocol Converter
-    this.protocolConverter = new OllamaProtocolConverter(objectMapper);
-    // 3. Create Support record with method references
-    this.protocolSupport = new OllamaProtocolConverter.Support(
-        this::resolveRequestModel,
-        this::resolveMaxTokens,
-        this::extractStringContent,
-        this::currentTimestamp);
-    // 4. Create Stream Translator
-    this.streamTranslator = new OllamaStreamTranslator(objectMapper,
-        new OllamaStreamTranslator.Support(
-            this::createStreamingChunk,
-            this::createStreamingCompletion));
 }
 ```
 
@@ -107,17 +83,7 @@ protected String providerParameterSize() { return "Flash"; } // or appropriate s
 protected String providerLicense() { return "Proprietary"; } // adjust as needed
 ```
 
-**Authentication & Base URL patterns:**
-
-| Pattern | Implementation |
-|---------|---------------|
-| Bearer Token | `(headers, apiKey) -> headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)` |
-| Custom Header | `(headers, apiKey) -> headers.set("api-key", apiKey)` |
-| Strip `/v1` suffix | `raw -> { String url = raw.replaceAll("/+$", ""); return url.endsWith("/v1") ? url.substring(0, url.length() - 3) : url; }` |
-| Append `/openai` | `raw -> raw.replaceAll("/+$", "") + "/openai"` |
-| Ensure `/v1` suffix | `raw -> { String n = raw.trim().replaceAll("/+$", ""); return n.endsWith("/v1") ? n : n + "/v1"; }` |
-
-**Capability declarations** MUST be read from the database. Use this standard pattern:
+The base class `AbstractDiscoveryService` already handles `listModels()`, `showModel()`, `supportsModel()`, and `buildCapabilitiesFromDb()` — subclasses only provide metadata.
 ```java
 private List<String> buildCapabilitiesFromDb(String resolvedModel) {
     List<String> caps = new ArrayList<>();
@@ -133,33 +99,15 @@ private List<String> buildCapabilitiesFromDb(String resolvedModel) {
 }
 ```
 
-**Chat and chatStream methods** follow an identical pattern across all providers:
-```java
-@Override
-public Mono<OllamaChatResponse> chat(OllamaChatRequest request) {
-    if (request.isStream())
-        return Mono.error(new UnsupportedOperationException("Use chatStream() for streaming"));
-    Map<String, Object> openAiRequest = convertOllamaToOpenAi(request);
-    return transportClient.sendChatCompletion(openAiRequest)
-        .map(respJson -> convertOpenAiToOllama(respJson, request.getModel()));
-}
+**Note:** The `AbstractDiscoveryService` base class already provides `buildCapabilitiesFromDb()` — subclasses do not need to implement it.
 
-@Override
-public Flux<OllamaChatResponse> chatStream(OllamaChatRequest request) {
-    Map<String, Object> openAiRequest = convertOllamaToOpenAi(request);
-    openAiRequest.put("stream", true);
-    var session = streamTranslator.newSession();
-    return transportClient.streamChatCompletion(openAiRequest)
-        .concatMap(chunk -> Flux.fromIterable(
-            streamTranslator.translate(session, chunk, request.getModel())));
-}
-```
+**The base class handles `listModels()`, `showModel()`, `chat()`, and `chatStream()` — subclasses do NOT override these.**
 
 ### Step 3: Implement `{ProviderName}OpenAiChatService`
 
 Location: `src/main/java/.../provider/{provider_name}/openai/{ProviderName}OpenAiChatService.java`
 
-This class extends `AbstractOpenAiCompatibleUpstreamChatService` and handles direct OpenAI-compatible chat completions.
+This class extends `AbstractUpstreamChatService` and handles direct OpenAI-compatible chat completions.
 
 **Mandatory constructor:**
 ```java
@@ -263,26 +211,23 @@ Follow the project's test conventions:
 
 ## Provider Component Pattern (Architecture Constraint)
 
-Each provider MUST split into four components with clear responsibilities — **no mixing of concerns**:
+Each provider MUST have two service components, each extending its respective base class:
 
-| Component | Responsibility |
-|-----------|---------------|
-| **Transport Client** (`OpenAiTransportClient`) | HTTP interaction: WebClient building, auth headers, retry policies, SSE unpacking |
-| **Protocol Converter** (`OllamaProtocolConverter`) | Non-streaming protocol mapping: request body conversion, response body reconstruction |
-| **Stream Translator** (`OllamaStreamTranslator`) | Streaming state machine: incremental chunk translation, tool call accumulation |
-| **Service** (`{Provider}OllamaService` / `{Provider}OpenAiChatService`) | Orchestration: assembles converter, translator, and transport client. Contains no protocol details |
+| Component | Base Class | Responsibility |
+|-----------|-----------|---------------|
+| **Discovery Service** (`{Provider}DiscoveryService`) | `AbstractDiscoveryService` | Model discovery: `/api/tags`, `/api/show` endpoints. Provides provider metadata (family, license, etc.) |
+| **Chat Service** (`{Provider}OpenAiChatService`) | `AbstractUpstreamChatService` | Chat execution: `/v1/chat/completions` endpoint. SSE streaming pipeline, retry, reasoning cache |
 
-Rules:
-- **Service** does orchestration only, no direct JSON field manipulation
-- **Converter** does mapping only, no state management
-- **Translator** does streaming state accumulation only, no HTTP requests
-- **Transport Client** does HTTP interaction only, knows nothing about protocol conversion
+Base class responsibilities:
+- `AbstractDiscoveryService` handles model list building, `showModel` template, capability declarations from DB
+- `AbstractUpstreamChatService` handles WebClient building, auth, retry policies, SSE unpacking, reasoning chain cache (tracking/persistence/injection)
+- Subclasses only override provider-specific customization points (auth method, request body customization, etc.)
 
 ## Common Pitfalls
 
 1. **Tool call argument accumulation**: In `OllamaStreamTranslator`, incremental `arguments` fragments are not valid JSON — `objectMapper.readValue()` will always fail. Accumulate arguments as a string and deserialize once when `finish_reason=tool_calls`.
 
-2. **400 error retry**: `AbstractOpenAiCompatibleUpstreamChatService` and `OpenAiTransportClient` retry ALL 400 errors (including auth failures). Consider filtering to retry only specific 400 scenarios.
+2. **400 error retry**: `AbstractUpstreamChatService` and `OpenAiTransportClient` retry ALL 400 errors (including auth failures). Consider filtering to retry only specific 400 scenarios.
 
 3. **Context window trap (4096)**: When `context_length=4096` in Copilot, `maxInputTokens=0`, making the model appear to have no usable input window.
 
@@ -290,10 +235,10 @@ Rules:
 
 5. **Base URL normalization**: Handle trailing slashes, `/v1` duplication, and provider-specific path appendage consistently.
 
-## Minimal Working Example: Uumit Provider
+## Minimal Working Example: DeepSeek Provider
 
-The Uumit provider implementation is the recommended minimal reference. Find the code at:
-- `provider/uumit/ollama/UumitOllamaService.java`
-- `provider/uumit/openai/UumitOpenAiChatService.java`
+The DeepSeek provider implementation is the recommended minimal reference. Find the code at:
+- `provider/deepseek/discovery/DeepSeekDiscoveryService.java` — pure metadata, zero custom logic
+- `provider/deepseek/openai/DeepSeekOpenAiChatService.java` — all behavior inherited from base class
 
-Uumit uses Bearer Token auth, strips `/v1` from Base URL, uses `/v1/chat/completions` endpoint, and reads capabilities from the database.
+DeepSeek uses Bearer Token auth, reads capabilities from the database, and delegates all reasoning cache handling to the base class.

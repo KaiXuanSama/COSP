@@ -9,7 +9,9 @@ package com.kaixuan.copilot_ollama_proxy.application.catalog;
  * @param prefixedName  带供应商前缀的展示名称（如 "[deepseek]deepseek-v4-flash"）
  * @param capsTools     是否支持工具调用
  * @param capsVision    是否支持视觉
+ * @param contextSize   上下文窗口大小（token 数），0 表示未配置
+ * @param maxOutputTokens 最大输出 token 数，0 表示未配置
  */
 public record AvailableModel(String providerKey, String displayKey, String modelName, String prefixedName,
-                             boolean capsTools, boolean capsVision) {
+                             boolean capsTools, boolean capsVision, int contextSize, int maxOutputTokens) {
 }

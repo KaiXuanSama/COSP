@@ -44,7 +44,9 @@ public class DatabaseModelCatalogService implements ModelCatalogService {
                 String prefixedName = ModelNameUtil.buildPrefixedName(displayKey, modelName);
                 boolean capsTools = m.capsTools();
                 boolean capsVision = m.capsVision();
-                result.add(new AvailableModel(providerKey, displayKey, modelName, prefixedName, capsTools, capsVision));
+                int contextSize = m.contextSize();
+                int maxOutputTokens = m.maxOutputTokens();
+                result.add(new AvailableModel(providerKey, displayKey, modelName, prefixedName, capsTools, capsVision, contextSize, maxOutputTokens));
             }
         }
         return result;

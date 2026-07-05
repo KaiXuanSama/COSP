@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
-import com.kaixuan.copilot_ollama_proxy.provider.openai.AbstractOpenAiCompatibleUpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.provider.AbstractUpstreamChatService;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -23,7 +23,7 @@ import java.util.Map;
  * </ul>
  */
 @Service
-public class GenericOpenAiChatService extends AbstractOpenAiCompatibleUpstreamChatService {
+public class GenericOpenAiChatService extends AbstractUpstreamChatService {
 
     private static final String PROVIDER_KEY = "__generic__";
     private final RuntimeProviderCatalog runtimeProviderCatalog;
@@ -45,7 +45,7 @@ public class GenericOpenAiChatService extends AbstractOpenAiCompatibleUpstreamCh
 
     @Override
     protected String providerDisplayName() {
-        return "Generic";
+        return getLoggingProviderKey();
     }
 
     @Override
