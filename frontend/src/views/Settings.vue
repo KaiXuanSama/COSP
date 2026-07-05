@@ -1092,6 +1092,7 @@ function removeModel(index: number) {
         </div>
 
         <ProviderModelsSection v-model:models="editForm.models" :pulling-models="pullingModels" :has-docs="!!(editingKey && providerMeta[editingKey]?.docsUrl)"
+          :compact="windowWidth <= DRAWER_MIN_WIDTH"
           @pull-models="pullModels" @open-docs="openOfficialDocs" @add-model="addModel" @remove-model="removeModel" />
 
         <template #footer>
