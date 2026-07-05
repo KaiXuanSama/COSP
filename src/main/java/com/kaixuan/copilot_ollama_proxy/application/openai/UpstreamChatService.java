@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.application.openai;
 
+import org.springframework.http.HttpHeaders;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -28,6 +29,18 @@ public interface UpstreamChatService {
      * @return 如果该服务支持处理指定模型的请求，则返回 true；否则返回 false
      */
     boolean supportsModel(String modelName);
+
+    /**
+     * 向请求头中注入该供应商所需的认证信息。
+     * 默认使用 Bearer Token 方式，子类可覆写实现非标准鉴权（如 api-key 头）。
+     * 管理后台的模型拉取等场景会调用此方法，避免鉴权逻辑硬编码在 Controller 中。
+     *
+     * @param headers 请求头对象
+     * @param apiKey API Key
+     */
+    default void applyAuthHeaders(HttpHeaders headers, String apiKey) {
+        headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
+    }
 
     /**
      * 非流式聊天补全。

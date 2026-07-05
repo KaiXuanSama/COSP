@@ -58,7 +58,7 @@ public class MimoOpenAiChatService extends AbstractUpstreamChatService {
     // ==================== 请求定制 ====================
 
     @Override
-    protected void applyAuthenticationHeaders(HttpHeaders headers, String apiKey) {
+    public void applyAuthHeaders(HttpHeaders headers, String apiKey) {
         headers.set("api-key", apiKey);
         headers.set("x-api-key", apiKey);
     }

@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.api;
 
+import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
@@ -42,9 +43,10 @@ public class AdminPageController {
     private final AppConfigRepository appConfigRepository;
     private final ApiCallLogRepository apiCallLogRepository;
     private final WebClient.Builder webClientBuilder;
+    private final List<UpstreamChatService> upstreamChatServices;
 
     public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder, ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository,
-            AppConfigRepository appConfigRepository, ApiCallLogRepository apiCallLogRepository, WebClient.Builder webClientBuilder) {
+            AppConfigRepository appConfigRepository, ApiCallLogRepository apiCallLogRepository, WebClient.Builder webClientBuilder, List<UpstreamChatService> upstreamChatServices) {
         this.userDetailsManager = userDetailsManager;
         this.passwordEncoder = passwordEncoder;
         this.apiUsageRepository = apiUsageRepository;
@@ -52,6 +54,7 @@ public class AdminPageController {
         this.appConfigRepository = appConfigRepository;
         this.apiCallLogRepository = apiCallLogRepository;
         this.webClientBuilder = webClientBuilder;
+        this.upstreamChatServices = upstreamChatServices;
     }
 
     // ==================== API 统计接口（JSON） ====================
@@ -310,13 +313,19 @@ public class AdminPageController {
         return path.startsWith("/") ? path : "/" + path;
     }
 
+    /**
+     * 委托给对应 provider 的自描述鉴权方法注入认证头。
+     * 如果没有找到匹配的 provider 实现，使用默认的 Bearer Token 方式。
+     */
     private void applyModelDiscoveryAuthHeaders(String providerKey, HttpHeaders headers, String apiKey) {
-        if ("mimo".equals(providerKey)) {
-            headers.set("api-key", apiKey);
-            headers.set("x-api-key", apiKey);
-        } else {
-            headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
+        for (UpstreamChatService service : upstreamChatServices) {
+            if (service.getProviderKey().equals(providerKey)) {
+                service.applyAuthHeaders(headers, apiKey);
+                return;
+            }
         }
+        // 无匹配 provider（如新建的自定义供应商尚未注册），使用默认 Bearer Token
+        headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
     }
 
     // ==================== 自定义供应商 API ====================

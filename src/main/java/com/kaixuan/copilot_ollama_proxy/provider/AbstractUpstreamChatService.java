@@ -634,11 +634,14 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
 
     /**
      * 在请求头中添加 provider 特有的认证信息。
+     * 默认委托给接口方法 {@link #applyAuthHeaders}，子类覆写接口方法即可。
      *
      * @param headers 请求头对象，子类直接修改即可
      * @param apiKey 从运行时配置读取的 API Key，可能为空串
      */
-    protected abstract void applyAuthenticationHeaders(HttpHeaders headers, String apiKey);
+    protected void applyAuthenticationHeaders(HttpHeaders headers, String apiKey) {
+        applyAuthHeaders(headers, apiKey);
+    }
 
     /**
      * 提供 Chat Completions 端点的 URI 路径。

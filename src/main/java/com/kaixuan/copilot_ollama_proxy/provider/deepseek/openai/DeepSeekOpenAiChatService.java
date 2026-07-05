@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.provider.AbstractUpstreamChatService;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 
 /**
@@ -44,11 +43,6 @@ public class DeepSeekOpenAiChatService extends AbstractUpstreamChatService {
     @Override
     protected String normalizeBaseUrl(String rawBaseUrl) {
         return rawBaseUrl.replaceAll("/+$", "");
-    }
-
-    @Override
-    protected void applyAuthenticationHeaders(HttpHeaders headers, String apiKey) {
-        headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
     }
 
     @Override

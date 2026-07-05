@@ -60,8 +60,8 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
 
     @Override
     protected void applyAuthenticationHeaders(HttpHeaders headers, String apiKey) {
-        // 先设置默认的 Bearer Token 鉴权
-        headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
+        // 先设置默认的 Bearer Token 鉴权（走接口默认实现）
+        super.applyAuthenticationHeaders(headers, apiKey);
         // 再根据 custom_transforms 覆写/新增/删除请求头
         ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
         if (config != null) {
