@@ -99,6 +99,11 @@ public class OpenAiController {
      */
     @PostMapping(value = "/v1/chat/completions")
     public Mono<ResponseEntity<?>> chatCompletions(@RequestBody OpenAiChatRequest request) {
+        // 拦截兜底模型 nano_llm：无任何供应商启用时返回引导信息，避免调用上游 API
+        if ("nano_llm".equals(request.getModel())) {
+            return Mono.just(buildNanoLlmResponse(request.isStream()));
+        }
+
         Map<String, Object> requestBody = buildRequestBody(request);
 
         // 流式：将 SSE 流作为 ResponseEntity 的 body 返回，由 WebFlux 框架托管背压、取消与超时。
@@ -197,6 +202,44 @@ public class OpenAiController {
             body.put("stream_options", objectMapper.convertValue(request.getStreamOptions(), Object.class));
         }
         return body;
+    }
+
+    /**
+     * 为兜底模型 nano_llm 构建引导响应。
+     * 当系统没有任何供应商启用时，tags 接口会返回 nano_llm，
+     * 下游选中该模型聊天时，直接返回配置引导信息，不调用上游 API。
+     */
+    private ResponseEntity<?> buildNanoLlmResponse(boolean stream) {
+        String guideMessage = "当前没有配置任何 AI 供应商。请打开 [COSP管理后台](http://localhost:11434) ，默认账号密码均为 root ，"
+                + "添加并启用至少一个供应商及其 API Key，然后重新连接 Copilot。";
+        String chunkId = "chatcmpl-nano-" + System.currentTimeMillis();
+        long created = System.currentTimeMillis() / 1000;
+
+        if (stream) {
+            // 构建标准 OpenAI SSE 流式响应：content chunk + finish chunk + [DONE]
+            String contentChunk = "{\"id\":\"" + chunkId + "\",\"object\":\"chat.completion.chunk\",\"created\":" + created
+                    + ",\"model\":\"nano_llm\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\""
+                    + guideMessage.replace("\"", "\\\"") + "\"},\"finish_reason\":null}]}";
+            String finishChunk = "{\"id\":\"" + chunkId + "\",\"object\":\"chat.completion.chunk\",\"created\":" + created
+                    + ",\"model\":\"nano_llm\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}";
+
+            Flux<ServerSentEvent<String>> sseStream = Flux.just(
+                    ServerSentEvent.builder(contentChunk).build(),
+                    ServerSentEvent.builder(finishChunk).build(),
+                    ServerSentEvent.builder("[DONE]").build()
+            );
+            return ResponseEntity.ok()
+                    .contentType(MediaType.TEXT_EVENT_STREAM)
+                    .header("Cache-Control", "no-cache")
+                    .body(sseStream);
+        }
+
+        // 非流式：完整 OpenAI JSON 响应
+        String json = "{\"id\":\"" + chunkId + "\",\"object\":\"chat.completion\",\"created\":" + created
+                + ",\"model\":\"nano_llm\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\""
+                + guideMessage.replace("\"", "\\\"") + "\"},\"finish_reason\":\"stop\"}],"
+                + "\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}}";
+        return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(json);
     }
 
     /**
