@@ -2,7 +2,9 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import com.kaixuan.copilot_ollama_proxy.application.openai.CompositeUpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiChatRequest;
@@ -10,6 +12,7 @@ import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiModelsResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiModelsResponse.ModelData;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
@@ -19,9 +22,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -41,18 +42,29 @@ public class OpenAiController {
     private final ObjectMapper objectMapper;
     private final ApiUsageCollector apiUsageCollector;
     private final ModelCatalogService modelCatalogService;
+    private final String readmeHost;
+    private final int serverPort;
 
     /**
-     * 构造函数注入 CompositeUpstreamChatService、ObjectMapper、ApiUsageCollector 和 ModelCatalogService。
+     * 构造函数注入 CompositeUpstreamChatService、ObjectMapper、ApiUsageCollector、ModelCatalogService
+     * 以及 README 模型所需的主机地址和服务端口。
+     *
      * @param upstreamChatService 上游聊天服务组合
      * @param objectMapper JSON 对象映射器
      * @param apiUsageCollector API 使用量收集器
      * @param modelCatalogService 模型目录服务，用于获取可用模型列表
+     * @param readmeHost README 模型输出配置中的主机地址（环境变量 README_HOST，默认 localhost）
+     * @param serverPort 服务器监听端口（环境变量 SERVER_PORT，默认 11434）
      */
-    public OpenAiController(CompositeUpstreamChatService upstreamChatService, ObjectMapper objectMapper, ApiUsageCollector apiUsageCollector, ModelCatalogService modelCatalogService) {
+    public OpenAiController(CompositeUpstreamChatService upstreamChatService, ObjectMapper objectMapper,
+                            ApiUsageCollector apiUsageCollector, ModelCatalogService modelCatalogService,
+                            @Value("${readme.host:localhost}") String readmeHost,
+                            @Value("${server.port:11434}") int serverPort) {
         this.upstreamChatService = upstreamChatService;
         this.objectMapper = objectMapper;
         this.apiUsageCollector = apiUsageCollector;
+        this.readmeHost = readmeHost;
+        this.serverPort = serverPort;
         this.modelCatalogService = modelCatalogService;
     }
 
@@ -102,6 +114,11 @@ public class OpenAiController {
         // 拦截兜底模型 nano_llm：无任何供应商启用时返回引导信息，避免调用上游 API
         if ("nano_llm".equals(request.getModel())) {
             return Mono.just(buildNanoLlmResponse(request.isStream()));
+        }
+
+        // 拦截虚拟模型 readme：输出当前所有已启用模型的 chatLanguageModels.json 配置
+        if ("readme".equalsIgnoreCase(request.getModel())) {
+            return Mono.just(buildReadmeResponse(request.isStream()));
         }
 
         Map<String, Object> requestBody = buildRequestBody(request);
@@ -238,6 +255,105 @@ public class OpenAiController {
         String json = "{\"id\":\"" + chunkId + "\",\"object\":\"chat.completion\",\"created\":" + created
                 + ",\"model\":\"nano_llm\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\""
                 + guideMessage.replace("\"", "\\\"") + "\"},\"finish_reason\":\"stop\"}],"
+                + "\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}}";
+        return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(json);
+    }
+
+    /**
+     * 为虚拟模型 readme 构建配置输出响应。
+     *
+     * 读取当前所有已启用模型，生成符合 chatLanguageModels.json 格式的 JSON 配置，
+     * 以 Markdown 代码块形式作为聊天回复返回给用户，方便直接复制粘贴到 VS Code 配置中。
+     */
+    private ResponseEntity<?> buildReadmeResponse(boolean stream) {
+        List<AvailableModel> models = modelCatalogService.listAvailableModels();
+        String baseUrl = "http://" + readmeHost + ":" + serverPort + "/v1";
+
+        // 构建 models 数组
+        List<Map<String, Object>> modelEntries = new ArrayList<>();
+        for (AvailableModel m : models) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("id", m.prefixedName());
+            entry.put("name", m.prefixedName());
+            entry.put("url", baseUrl);
+            entry.put("toolCalling", m.capsTools());
+            entry.put("vision", m.capsVision());
+            if (m.contextSize() > 0) {
+                entry.put("maxInputTokens", m.contextSize());
+            }
+            if (m.maxOutputTokens() > 0) {
+                entry.put("maxOutputTokens", m.maxOutputTokens());
+            }
+            modelEntries.add(entry);
+        }
+
+        // 构建外层 chatLanguageModels 条目
+        Map<String, Object> providerEntry = new LinkedHashMap<>();
+        providerEntry.put("name", "COSP");
+        providerEntry.put("vendor", "customendpoint");
+        providerEntry.put("apiType", "chat-completions");
+        providerEntry.put("models", modelEntries);
+
+        List<Map<String, Object>> config = List.of(providerEntry);
+
+        // 序列化为格式化 JSON
+        String jsonContent;
+        try {
+            jsonContent = objectMapper.copy()
+                    .enable(SerializationFeature.INDENT_OUTPUT)
+                    .writeValueAsString(config);
+        } catch (Exception e) {
+            log.warn("README 模型 JSON 序列化失败: {}", e.getMessage());
+            jsonContent = "[]";
+        }
+
+        String markdownContent = "以下是当前 COSP 的 `chatLanguageModels.json` 配置，"
+                + "复制到 VS Code 的 `chatLanguageModels.json` 中即可使用：\n\n"
+                + "```json\n" + jsonContent + "\n```";
+
+        String chunkId = "chatcmpl-readme-" + System.currentTimeMillis();
+        long created = System.currentTimeMillis() / 1000;
+
+        if (stream) {
+            // 使用 ObjectMapper 安全转义 content 中的特殊字符
+            String escapedContent;
+            try {
+                escapedContent = objectMapper.writeValueAsString(markdownContent);
+                // writeValueAsString 返回带双引号的字符串，去掉首尾引号以嵌入 JSON
+                escapedContent = escapedContent.substring(1, escapedContent.length() - 1);
+            } catch (Exception e) {
+                escapedContent = markdownContent.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
+            }
+
+            String contentChunk = "{\"id\":\"" + chunkId + "\",\"object\":\"chat.completion.chunk\",\"created\":" + created
+                    + ",\"model\":\"readme\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\""
+                    + escapedContent + "\"},\"finish_reason\":null}]}";
+            String finishChunk = "{\"id\":\"" + chunkId + "\",\"object\":\"chat.completion.chunk\",\"created\":" + created
+                    + ",\"model\":\"readme\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}";
+
+            Flux<ServerSentEvent<String>> sseStream = Flux.just(
+                    ServerSentEvent.builder(contentChunk).build(),
+                    ServerSentEvent.builder(finishChunk).build(),
+                    ServerSentEvent.builder("[DONE]").build()
+            );
+            return ResponseEntity.ok()
+                    .contentType(MediaType.TEXT_EVENT_STREAM)
+                    .header("Cache-Control", "no-cache")
+                    .body(sseStream);
+        }
+
+        // 非流式
+        String escapedContent;
+        try {
+            escapedContent = objectMapper.writeValueAsString(markdownContent);
+            escapedContent = escapedContent.substring(1, escapedContent.length() - 1);
+        } catch (Exception e) {
+            escapedContent = markdownContent.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
+        }
+
+        String json = "{\"id\":\"" + chunkId + "\",\"object\":\"chat.completion\",\"created\":" + created
+                + ",\"model\":\"readme\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\""
+                + escapedContent + "\"},\"finish_reason\":\"stop\"}],"
                 + "\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}}";
         return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(json);
     }

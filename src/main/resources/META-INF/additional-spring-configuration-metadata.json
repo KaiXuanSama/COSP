@@ -42,6 +42,12 @@
     "defaultValue": "always"
   },
   {
+    "name": "readme.host",
+    "type": "java.lang.String",
+    "description": "README 模型输出配置中的主机地址。环境变量：README_HOST，未指定时回退为 localhost。",
+    "defaultValue": "localhost"
+  },
+  {
     "name": "ollama.version",
     "type": "java.lang.String",
     "description": "伪装的 Ollama 版本号，Copilot 调用 GET /api/version 时返回此值。",
