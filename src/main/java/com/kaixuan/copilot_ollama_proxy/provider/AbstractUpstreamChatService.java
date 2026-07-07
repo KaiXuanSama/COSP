@@ -578,7 +578,8 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
     protected Retry buildRetrySpec(String method) {
         return Retry.backoff(5, Duration.ofSeconds(2)).maxBackoff(Duration.ofSeconds(30))
                 .filter(ex -> ((ex instanceof WebClientResponseException responseException) && (responseException.getStatusCode().value() == 429 || responseException.getStatusCode().is5xxServerError()
-                        || responseException.getStatusCode().value() == 400 || hasNetworkCause(responseException))) || ex instanceof WebClientRequestException)
+                        || responseException.getStatusCode().value() == 400 || hasNetworkCause(responseException))) || ex instanceof WebClientRequestException
+                        || hasSslHandshakeFailure(ex))
                 .doBeforeRetry(signal -> {
                     if (signal.failure() instanceof WebClientResponseException responseException && responseException.getStatusCode().value() == 429) {
                         String retryAfter = responseException.getHeaders().getFirst("Retry-After");
@@ -601,6 +602,24 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
                 return true;
             }
             cause = cause.getCause();
+        }
+        return false;
+    }
+
+    /**
+     * 判断异常的 cause chain 中是否包含 SSL/TLS 握手失败。
+     *
+     * SSL 握手异常通常由 Netty 的 DecoderException 包裹 SSLHandshakeException，
+     * 不属于 WebClientRequestException 也不属于 WebClientResponseException，
+     * 需要单独判断以支持重试。
+     */
+    private static boolean hasSslHandshakeFailure(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof javax.net.ssl.SSLException) {
+                return true;
+            }
+            current = current.getCause();
         }
         return false;
     }
