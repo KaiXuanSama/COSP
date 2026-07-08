@@ -176,20 +176,14 @@ public class OpenAiController {
                     if (isClientDisconnect(error)) {
                         return Flux.empty();
                     }
-                    // 构建 Copilot 可识别的标准 OpenAI 格式错误 chunk —— 直接作为 content 输出，
-                    // 而非 SSE event:error（Copilot 不识别自定义 event 类型，会导致错误被静默丢弃）。
-                    String errorMessage;
+                    // 透传上游错误响应（解包重试耗尽包装）
                     WebClientResponseException responseException = findWebResponseException(error);
                     if (responseException != null) {
-                        int statusCode = responseException.getStatusCode().value();
-                        log.warn("上游 API 返回错误 [{}] {}: {}", model, statusCode, responseException.getResponseBodyAsString());
-                        errorMessage = "⚠️ 上游 API 返回错误 (" + statusCode + ")";
-                    } else {
-                        String rootCause = extractRootCause(error);
-                        log.warn("上游 API 调用失败 [{}]: {} ({})", model, rootCause, extractRequestUrl(error));
-                        errorMessage = "⚠️ 无法连接到上游服务: " + rootCause;
+                        log.warn("上游 API 返回错误 [{}] {}: {}", model, responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
+                        return Flux.just(ServerSentEvent.<String>builder(responseException.getResponseBodyAsString()).event("error").build());
                     }
-                    return buildErrorChunkStream(model, errorMessage);
+                    log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(error), extractRequestUrl(error));
+                    return Flux.just(ServerSentEvent.<String>builder("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}").event("error").build());
                 });
     }
 
@@ -478,38 +472,5 @@ public class OpenAiController {
             current = current.getCause();
         }
         return "unknown";
-    }
-
-    /**
-     * 构建 Copilot 可识别的标准 OpenAI 格式错误 chunk 流。
-     *
-     * Copilot 的 SSE 解析器只处理默认 event 类型（即无 event 字段或 event:message）中的
-     * data 行，自定义的 event:error 会被静默丢弃。因此将错误信息包装为标准的
-     * chat.completion.chunk，作为 assistant 的 content 输出，确保用户能看到错误提示。
-     *
-     * 输出三个 chunk：content chunk（含错误信息）→ finish chunk → [DONE]
-     *
-     * @param model 模型名称
-     * @param errorMessage 要展示给用户的错误信息
-     * @return 包含错误信息的标准 SSE 流
-     */
-    private Flux<ServerSentEvent<String>> buildErrorChunkStream(String model, String errorMessage) {
-        String chunkId = "chatcmpl-error-" + System.currentTimeMillis();
-        long created = System.currentTimeMillis() / 1000;
-        // 转义 JSON 特殊字符
-        String escapedMessage = errorMessage.replace("\\", "\\\\").replace("\"", "\\\"")
-                .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
-
-        String contentChunk = "{\"id\":\"" + chunkId + "\",\"object\":\"chat.completion.chunk\",\"created\":" + created
-                + ",\"model\":\"" + model + "\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\""
-                + escapedMessage + "\"},\"finish_reason\":null}]}";
-        String finishChunk = "{\"id\":\"" + chunkId + "\",\"object\":\"chat.completion.chunk\",\"created\":" + created
-                + ",\"model\":\"" + model + "\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}";
-
-        return Flux.just(
-                ServerSentEvent.builder(contentChunk).build(),
-                ServerSentEvent.builder(finishChunk).build(),
-                ServerSentEvent.builder("[DONE]").build()
-        );
     }
 }
