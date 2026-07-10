@@ -122,7 +122,7 @@ public class ApiCallLogRepository implements ApiCallLogService {
         // 查询当前页数据（不含大字段 request_body, response_body, chunks）
         List<Map<String, Object>> items = jdbcTemplate.queryForList(
                 "SELECT id, provider_key, model_name, is_stream, status_code, duration_ms, created_at "
-                        + "FROM api_call_log ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                + "FROM api_call_log ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                 pageSize, offset);
 
         // 构建响应

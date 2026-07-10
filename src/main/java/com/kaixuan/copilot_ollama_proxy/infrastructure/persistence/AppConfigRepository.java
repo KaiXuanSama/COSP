@@ -40,11 +40,10 @@ public class AppConfigRepository {
      * @param value 配置值
      */
     public void saveConfig(String key, String value) {
-        int updated = jdbcTemplate.update(
-                "UPDATE app_config SET config_value = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE config_key = ?",
-                value, key);
-        if (updated == 0) {
-            jdbcTemplate.update("INSERT INTO app_config (config_key, config_value) VALUES (?, ?)", key, value);
-        }
+        jdbcTemplate.update(
+            "INSERT INTO app_config (config_key, config_value) VALUES (?, ?) "
+                + "ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value, "
+                + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
+            key, value);
     }
 }

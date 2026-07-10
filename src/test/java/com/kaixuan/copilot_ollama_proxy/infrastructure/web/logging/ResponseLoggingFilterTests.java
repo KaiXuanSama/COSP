@@ -74,7 +74,9 @@ class ResponseLoggingFilterTests {
                 }
               ]
             }
-            """).exchange().expectStatus().isOk();
+            """).exchange().expectStatus().isOk()
+          .expectBody()
+          .jsonPath("$.choices[0].message.content").isEqualTo("hello from mimo");
 
     assertThat(output).contains("API 响应").contains("Status : 200").contains("Type   : application/json")
         .contains("hello from mimo").contains("chat.completion");

@@ -96,15 +96,13 @@ public class ProviderConfigRepository {
      * @return 对应的 provider_config.id
      */
     public int saveProvider(String providerKey, boolean enabled, String baseUrl, String apiKey, String apiFormat, String customTransforms) {
-        // 尝试更新已有记录
-        int updated = jdbcTemplate.update(
-                "UPDATE provider_config SET enabled = ?, base_url = ?, api_key = ?, api_format = ?, custom_transforms = ?, " + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') " + "WHERE provider_key = ?",
-                enabled ? 1 : 0, baseUrl, apiKey, apiFormat, customTransforms, providerKey);
-        if (updated > 0) {
-            return jdbcTemplate.queryForObject("SELECT id FROM provider_config WHERE provider_key = ?", Integer.class, providerKey);
-        }
-        // 插入新记录
-        jdbcTemplate.update("INSERT INTO provider_config (provider_key, enabled, base_url, api_key, api_format, custom_transforms) " + "VALUES (?, ?, ?, ?, ?, ?)", providerKey, enabled ? 1 : 0, baseUrl, apiKey, apiFormat, customTransforms);
+        jdbcTemplate.update(
+            "INSERT INTO provider_config (provider_key, enabled, base_url, api_key, api_format, custom_transforms) "
+                + "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(provider_key) DO UPDATE SET "
+                + "enabled = excluded.enabled, base_url = excluded.base_url, api_key = excluded.api_key, "
+                + "api_format = excluded.api_format, custom_transforms = excluded.custom_transforms, "
+                + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
+            providerKey, enabled ? 1 : 0, baseUrl, apiKey, apiFormat, customTransforms);
         return jdbcTemplate.queryForObject("SELECT id FROM provider_config WHERE provider_key = ?", Integer.class, providerKey);
     }
 
@@ -114,13 +112,13 @@ public class ProviderConfigRepository {
      * @return 对应的 provider_config.id
      */
     public int updateProviderConfig(String providerKey, String baseUrl, String apiKey, int activeApiKeyIndex, String apiFormat) {
-        int affected = jdbcTemplate.update(
-                "UPDATE provider_config SET base_url = ?, api_key = ?, active_api_key_index = ?, api_format = ?, " + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?",
-                baseUrl, apiKey, activeApiKeyIndex, apiFormat, providerKey);
-        if (affected == 0) {
-            jdbcTemplate.update("INSERT INTO provider_config (provider_key, enabled, base_url, api_key, active_api_key_index, api_format) " + "VALUES (?, 0, ?, ?, ?, ?)",
-                    providerKey, baseUrl, apiKey, activeApiKeyIndex, apiFormat);
-        }
+        jdbcTemplate.update(
+            "INSERT INTO provider_config (provider_key, enabled, base_url, api_key, active_api_key_index, api_format) "
+                + "VALUES (?, 0, ?, ?, ?, ?) ON CONFLICT(provider_key) DO UPDATE SET "
+                + "base_url = excluded.base_url, api_key = excluded.api_key, "
+                + "active_api_key_index = excluded.active_api_key_index, api_format = excluded.api_format, "
+                + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
+            providerKey, baseUrl, apiKey, activeApiKeyIndex, apiFormat);
         return jdbcTemplate.queryForObject("SELECT id FROM provider_config WHERE provider_key = ?", Integer.class, providerKey);
     }
 
