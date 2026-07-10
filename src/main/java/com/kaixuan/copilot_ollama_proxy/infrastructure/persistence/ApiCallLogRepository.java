@@ -87,9 +87,9 @@ public class ApiCallLogRepository implements ApiCallLogService {
                     "INSERT INTO api_call_log (provider_key, model_name, is_stream, status_code, request_headers, request_body, response_headers, response_body, chunks, duration_ms) "
                             + "VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)",
                     providerKey, modelName,
-                    statusCode,
+                    errorCode,
                     toJson(requestHeaders), toJson(requestBody),
-                    toJson(responseHeaders), errorBody, toJson(chunks), durationMs);
+                    toJson(errorHeaders), errorBody, toJson(chunks), durationMs);
         } catch (Exception e) {
             log.warn("保存 API 调用日志失败: {}", e.getMessage());
         }
@@ -145,6 +145,25 @@ public class ApiCallLogRepository implements ApiCallLogService {
         List<Map<String, Object>> logs = jdbcTemplate.queryForList(
                 "SELECT * FROM api_call_log WHERE id = ?", id);
         return logs.isEmpty() ? null : logs.get(0);
+    }
+
+    /**
+     * 删除超出数量上限的旧日志，仅保留 ID 最大的最新记录。
+     *
+     * 完整请求、响应和 SSE chunks 不做任何截断；该方法只删除整条旧记录。
+     *
+     * @param maxRecords 最多保留的记录数，必须大于 0
+     * @return 删除的旧日志数量
+     */
+    public int trimToLatest(int maxRecords) {
+        if (maxRecords <= 0) {
+            throw new IllegalArgumentException("maxRecords 必须大于 0");
+        }
+        return jdbcTemplate.update(
+                "DELETE FROM api_call_log WHERE id < COALESCE(("
+                        + "SELECT MIN(id) FROM (SELECT id FROM api_call_log ORDER BY id DESC LIMIT ?)"
+                        + "), 0)",
+                maxRecords);
     }
 
     private String toJson(Object obj) {

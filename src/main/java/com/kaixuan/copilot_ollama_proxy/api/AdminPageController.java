@@ -165,7 +165,6 @@ public class AdminPageController {
             try {
                 activeApiKeyIndex = Integer.parseInt(getParam.apply("activeApiKeyIndex", "0").trim());
             } catch (NumberFormatException ignored) {}
-            int providerId = providerConfigRepository.updateProviderConfig(providerKey, baseUrl, apiKeys, activeApiKeyIndex, "openai");
             List<Map<String, Object>> models = new ArrayList<>();
             String prefix = "models[";
             java.util.Set<Integer> indices = new java.util.TreeSet<>();
@@ -190,7 +189,8 @@ public class AdminPageController {
                 m.put("reasoningEffort", getParam.apply(prefix + i + "].reasoningEffort", "Medium").trim());
                 models.add(m);
             }
-            providerConfigRepository.saveModels(providerId, models);
+            providerConfigRepository.saveProviderConfigWithModels(
+                    providerKey, baseUrl, apiKeys, activeApiKeyIndex, "openai", models);
             return ResponseEntity.ok(Map.<String, Object>of("ok", true));
         }).subscribeOn(Schedulers.boundedElastic());
     }

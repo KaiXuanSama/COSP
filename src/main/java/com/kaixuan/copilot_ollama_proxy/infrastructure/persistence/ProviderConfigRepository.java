@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Map;
@@ -124,8 +125,32 @@ public class ProviderConfigRepository {
     }
 
     /**
+     * 在同一事务内保存供应商配置和完整模型列表。
+     *
+     * 任意一步失败时，配置更新、旧模型删除和新模型插入会整体回滚，
+     * 避免供应商配置成功但模型列表只保存一部分。
+     *
+     * @param providerKey 服务商标识
+     * @param baseUrl API 基础地址
+     * @param apiKey API Key JSON 数组
+     * @param activeApiKeyIndex 当前激活的 API Key 索引
+     * @param apiFormat API 协议格式
+     * @param models 完整模型列表
+     * @return 对应的 provider_config.id
+     */
+    @Transactional
+    public int saveProviderConfigWithModels(String providerKey, String baseUrl, String apiKey,
+                                            int activeApiKeyIndex, String apiFormat,
+                                            List<Map<String, Object>> models) {
+        int providerId = updateProviderConfig(providerKey, baseUrl, apiKey, activeApiKeyIndex, apiFormat);
+        saveModels(providerId, models);
+        return providerId;
+    }
+
+    /**
      * 保存模型列表（先删除旧列表，再批量插入）。
      */
+    @Transactional
     public void saveModels(int providerId, List<Map<String, Object>> models) {
         // 删除该服务商下所有旧模型
         jdbcTemplate.update("DELETE FROM provider_model WHERE provider_id = ?", providerId);
@@ -236,9 +261,10 @@ public class ProviderConfigRepository {
 
     /**
      * 根据 provider_key 删除服务商配置及其关联的模型。
-     * 先删除 provider_model 中的关联记录，再删除 provider_config。
-     * （SQLite 默认不启用外键约束，手动删除确保数据一致性）
+        * 当前连接已启用 SQLite 外键约束和级联删除；仍先手动删除模型，
+        * 以兼容从旧版本升级且外键状态未知的数据库连接。
      */
+    @Transactional
     public void deleteByKey(String providerKey) {
         Integer providerId = jdbcTemplate.query("SELECT id FROM provider_config WHERE provider_key = ?", rs -> {
             return rs.next() ? rs.getInt("id") : null;
