@@ -95,6 +95,33 @@ class AbstractUpstreamChatServiceTests {
         assertThat(normalized).doesNotContain("\"content\":null");
     }
 
+    @Test
+    void normalizeChunkPreservesWhitespaceContentLikeNewlinesAndSpaces() throws Exception {
+        RuntimeProviderCatalog catalog = List::of;
+        TestOpenAiService service = new TestOpenAiService(catalog);
+
+        // 换行符 content 不应被清理
+        String newlineChunk = """
+                {"id":"chatcmpl-4","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"\\n"},"finish_reason":null}]}
+                """;
+        String normalizedNewline = service.exposeTranslateChunk(newlineChunk);
+        assertThat(normalizedNewline).contains("\"content\":\"\\n\"");
+
+        // 空格 content 不应被清理
+        String spaceChunk = """
+                {"id":"chatcmpl-5","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":" "},"finish_reason":null}]}
+                """;
+        String normalizedSpace = service.exposeTranslateChunk(spaceChunk);
+        assertThat(normalizedSpace).contains("\"content\":\" \"");
+
+        // 缩进+换行 content 不应被清理
+        String indentChunk = """
+                {"id":"chatcmpl-6","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"  \\n"},"finish_reason":null}]}
+                """;
+        String normalizedIndent = service.exposeTranslateChunk(indentChunk);
+        assertThat(normalizedIndent).contains("\"content\":\"  \\n\"");
+    }
+
     private static final class TestOpenAiService extends AbstractUpstreamChatService {
 
         private TestOpenAiService(RuntimeProviderCatalog runtimeProviderCatalog) {

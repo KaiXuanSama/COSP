@@ -816,7 +816,11 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
     }
 
     /**
-     * 递归删除 Map/List 中的空值：null、空字符串、空列表、空 Map。
+     * 递归删除 Map/List 中的空值：null、空字符串（""）、空列表、空 Map。
+     *
+     * 注意：只删除真正的空字符串（isEmpty），不删除仅包含空白字符的字符串（isBlank），
+     * 因为空格（" "）、换行（"\n"）、制表符（"\t"）等在 content 中是有意义的内容，
+     * 对 Markdown 格式（列表缩进、段落分隔、代码块）至关重要。
      */
     @SuppressWarnings("unchecked")
     private void pruneEmptyValues(Object node) {
@@ -827,7 +831,7 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
                 Object value = entry.getValue();
                 pruneEmptyValues(value);
                 if (value == null
-                        || (value instanceof String str && str.isBlank())
+                        || (value instanceof String str && str.isEmpty())
                         || (value instanceof List<?> list && list.isEmpty())
                         || (value instanceof Map<?, ?> childMap && childMap.isEmpty())) {
                     keysToRemove.add(entry.getKey());
@@ -841,7 +845,7 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
             list.removeIf(item -> {
                 pruneEmptyValues(item);
                 return item == null
-                        || (item instanceof String str && str.isBlank())
+                        || (item instanceof String str && str.isEmpty())
                         || (item instanceof List<?> childList && childList.isEmpty())
                         || (item instanceof Map<?, ?> childMap && childMap.isEmpty());
             });
