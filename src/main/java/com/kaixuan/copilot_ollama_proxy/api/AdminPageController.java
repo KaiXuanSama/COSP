@@ -551,15 +551,16 @@ public class AdminPageController {
     // ==================== API 调用日志接口 ====================
 
     /**
-     * 分页查询 API 调用日志。
+     * 基于游标分页查询 API 调用日志。
      *
-     * @param pageNum  页码（从 1 开始，默认 1）
+     * @param cursor 上一页最后一条记录的 ID，首屏传 null
      * @param pageSize 每页条数（默认 20，最大 100）
-     * @return 分页结果：currentPage, totalPages, pageSize, totalItems, items
+     * @return 游标分页结果：items、nextCursor、hasMore、pageSize
      */
     @GetMapping("/config/api/logs") @ResponseBody
-    public ResponseEntity<Map<String, Object>> listLogs(@RequestParam(value = "pageNum", defaultValue = "1") int pageNum, @RequestParam(value = "pageSize", defaultValue = "20") int pageSize) {
-        Map<String, Object> result = apiCallLogRepository.findLogs(pageNum, pageSize);
+    public ResponseEntity<Map<String, Object>> listLogs(@RequestParam(value = "cursor", required = false) Long cursor,
+                                                        @RequestParam(value = "pageSize", defaultValue = "20") int pageSize) {
+        Map<String, Object> result = apiCallLogRepository.findLogs(cursor, pageSize);
         return ResponseEntity.ok(result);
     }
 

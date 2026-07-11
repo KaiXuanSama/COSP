@@ -15,8 +15,8 @@ interface LogItem {
 }
 
 const logs = ref<LogItem[]>([])
-const currentPage = ref(1)
-const totalPages = ref(0)
+const nextCursor = ref<number | null>(null)
+const hasMore = ref(false)
 const pageSize = 50
 const loading = ref(false)
 const loadingMore = ref(false)
@@ -37,8 +37,6 @@ interface DetailItem {
   created_at: string
 }
 
-const hasMore = computed(() => currentPage.value < totalPages.value)
-
 const selectedLogId = ref<number | null>(null)
 const logDetail = ref<DetailItem | null>(null)
 const detailLoading = ref(false)
@@ -53,10 +51,10 @@ async function loadFirstPage() {
   loading.value = true
   initialLoading.value = true
   try {
-    const res = await fetchLogs(1, pageSize)
+    const res = await fetchLogs(null, pageSize)
     logs.value = res.data.items || []
-    currentPage.value = res.data.currentPage
-    totalPages.value = res.data.totalPages
+    nextCursor.value = res.data.nextCursor ?? null
+    hasMore.value = Boolean(res.data.hasMore)
   } catch (e) {
     console.error('加载日志失败:', e)
   } finally {
@@ -70,8 +68,8 @@ async function loadFirstPage() {
  */
 async function refreshLogs() {
   logs.value = []
-  currentPage.value = 1
-  totalPages.value = 0
+  nextCursor.value = null
+  hasMore.value = false
   await loadFirstPage()
 }
 
@@ -83,12 +81,11 @@ async function loadMore() {
 
   loadingMore.value = true
   try {
-    const nextPage = currentPage.value + 1
-    const res = await fetchLogs(nextPage, pageSize)
+    const res = await fetchLogs(nextCursor.value, pageSize)
     const newItems = res.data.items || []
     logs.value = [...logs.value, ...newItems]
-    currentPage.value = res.data.currentPage
-    totalPages.value = res.data.totalPages
+    nextCursor.value = res.data.nextCursor ?? null
+    hasMore.value = Boolean(res.data.hasMore)
   } catch (e) {
     console.error('加载更多日志失败:', e)
   } finally {

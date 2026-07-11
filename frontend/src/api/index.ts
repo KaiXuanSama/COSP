@@ -44,10 +44,10 @@ export const auth = {
 }
 
 /**
- * 获取日志列表（分页）
+ * 获取日志列表（游标分页）
  */
-export function fetchLogs(pageNum: number, pageSize: number) {
-  return http.get('/logs', { params: { pageNum, pageSize } })
+export function fetchLogs(cursor: number | null, pageSize: number) {
+  return http.get('/logs', { params: { cursor, pageSize } })
 }
 
 /**

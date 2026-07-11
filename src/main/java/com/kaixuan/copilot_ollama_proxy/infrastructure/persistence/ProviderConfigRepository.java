@@ -4,6 +4,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -27,42 +29,15 @@ public class ProviderConfigRepository {
      * 查询所有服务商配置（含模型列表）。
      */
     public List<ProviderConfigRow> findAllWithModels() {
-        List<ProviderConfigRow> providers = jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_format, custom_transforms, updated_at " + "FROM provider_config ORDER BY id", (rs, rowNum) -> {
-            int id = rs.getInt("id");
-            return new ProviderConfigRow(
-                    id,
-                    rs.getString("provider_key"),
-                    rs.getInt("enabled") == 1,
-                    rs.getString("base_url"),
-                    rs.getString("api_format"),
-                    rs.getString("custom_transforms"),
-                    rs.getString("updated_at"),
-                    findModelsByProviderId(id)
-            );
-        });
-        return providers;
+        return loadProvidersWithModels(null, false, false);
     }
 
     /**
      * 根据 provider_key 查询单个服务商配置。
      */
     public ProviderConfigRow findByKey(String providerKey) {
-        return jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_format, custom_transforms, updated_at " + "FROM provider_config WHERE provider_key = ?", rs -> {
-            if (rs.next()) {
-                int id = rs.getInt("id");
-                return new ProviderConfigRow(
-                        id,
-                        rs.getString("provider_key"),
-                        rs.getInt("enabled") == 1,
-                        rs.getString("base_url"),
-                        rs.getString("api_format"),
-                        rs.getString("custom_transforms"),
-                        rs.getString("updated_at"),
-                        findModelsByProviderId(id)
-                );
-            }
-            return null;
-        }, providerKey);
+        List<ProviderConfigRow> providers = loadProvidersWithModels(providerKey, false, false);
+        return providers.isEmpty() ? null : providers.get(0);
     }
 
     /**
@@ -174,36 +149,7 @@ public class ProviderConfigRepository {
      * 如果没有已启用的模型，则不包含该服务商。
      */
     public List<ProviderConfigRow> findAllActiveProvidersWithEnabledModels() {
-        List<ProviderConfigRow> providers = jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_format, custom_transforms " + "FROM provider_config WHERE enabled = 1 ORDER BY id",
-                (rs, rowNum) -> {
-                    int id = rs.getInt("id");
-                    List<ProviderModelRow> models = jdbcTemplate
-                            .query("SELECT id, provider_id, model_name, enabled, context_size, max_output_tokens, caps_tools, caps_vision, reasoning_effort, sort_order " + "FROM provider_model WHERE provider_id = ? AND enabled = 1 ORDER BY sort_order, id", (rs2, rn2) -> new ProviderModelRow(
-                                    rs2.getInt("id"),
-                                    rs2.getInt("provider_id"),
-                                    rs2.getString("model_name"),
-                                    rs2.getInt("enabled") == 1,
-                                    rs2.getInt("context_size"),
-                                    rs2.getInt("max_output_tokens"),
-                                    rs2.getInt("caps_tools") == 1,
-                                    rs2.getInt("caps_vision") == 1,
-                                    rs2.getString("reasoning_effort"),
-                                    rs2.getInt("sort_order")
-                            ), rs.getInt("id"));
-                    return new ProviderConfigRow(
-                            id,
-                            rs.getString("provider_key"),
-                            rs.getInt("enabled") == 1,
-                            rs.getString("base_url"),
-                            rs.getString("api_format"),
-                            rs.getString("custom_transforms"),
-                            null,
-                            models
-                    );
-                });
-        // 过滤掉没有已启用模型的服务商
-        providers.removeIf(p -> p.models().isEmpty());
-        return providers;
+        return loadProvidersWithModels(null, true, true);
     }
 
     /**
@@ -211,22 +157,8 @@ public class ProviderConfigRepository {
      * 如果服务商不存在或未启用，返回 null。
      */
     public ProviderConfigRow findActiveProviderByKey(String providerKey) {
-        return jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_format, custom_transforms " + "FROM provider_config WHERE provider_key = ? AND enabled = 1", rs -> {
-            if (rs.next()) {
-                int id = rs.getInt("id");
-                return new ProviderConfigRow(
-                        id,
-                        rs.getString("provider_key"),
-                        rs.getInt("enabled") == 1,
-                        rs.getString("base_url"),
-                        rs.getString("api_format"),
-                        rs.getString("custom_transforms"),
-                        null,
-                        findModelsByProviderId(id)
-                );
-            }
-            return null;
-        }, providerKey);
+        List<ProviderConfigRow> providers = loadProvidersWithModels(providerKey, true, true);
+        return providers.isEmpty() ? null : providers.get(0);
     }
 
     // ==================== 工具 ====================
@@ -266,6 +198,83 @@ public class ProviderConfigRepository {
         jdbcTemplate.update("DELETE FROM provider_config WHERE provider_key = ?", providerKey);
     }
 
+    private List<ProviderConfigRow> loadProvidersWithModels(String providerKey, boolean activeOnly, boolean enabledModelsOnly) {
+        StringBuilder sql = new StringBuilder("SELECT pc.id, pc.provider_key, pc.enabled, pc.base_url, pc.api_format, pc.custom_transforms, pc.updated_at,")
+                .append(" pm.id AS model_id, pm.provider_id AS model_provider_id, pm.model_name, pm.enabled AS model_enabled,")
+                .append(" pm.context_size, pm.max_output_tokens, pm.caps_tools, pm.caps_vision, pm.reasoning_effort, pm.sort_order")
+                .append(" FROM provider_config pc")
+                .append(" LEFT JOIN provider_model pm ON pm.provider_id = pc.id")
+                .append(activeOnly ? " WHERE pc.enabled = 1" : "");
+        if (providerKey != null) {
+            if (activeOnly) {
+                sql.append(" AND pc.provider_key = ?");
+            } else {
+                sql.append(" WHERE pc.provider_key = ?");
+            }
+        }
+        sql.append(" ORDER BY pc.id, pm.sort_order, pm.id");
+
+        List<Map<String, Object>> rows;
+        if (providerKey != null) {
+            rows = jdbcTemplate.queryForList(sql.toString(), providerKey);
+        } else {
+            rows = jdbcTemplate.queryForList(sql.toString());
+        }
+
+        Map<Integer, MutableProviderConfig> providers = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows) {
+            int providerId = ((Number) row.get("id")).intValue();
+            MutableProviderConfig provider = providers.computeIfAbsent(providerId, id -> new MutableProviderConfig(
+                    id,
+                    (String) row.get("provider_key"),
+                    ((Number) row.get("enabled")).intValue() == 1,
+                    (String) row.get("base_url"),
+                    (String) row.get("api_format"),
+                    (String) row.get("custom_transforms"),
+                    (String) row.get("updated_at")
+            ));
+
+            Object modelId = row.get("model_id");
+            if (modelId == null) {
+                continue;
+            }
+            boolean modelEnabled = ((Number) row.get("model_enabled")).intValue() == 1;
+            if (enabledModelsOnly && !modelEnabled) {
+                continue;
+            }
+            provider.models.add(new ProviderModelRow(
+                    ((Number) row.get("model_id")).intValue(),
+                    ((Number) row.get("model_provider_id")).intValue(),
+                    (String) row.get("model_name"),
+                    modelEnabled,
+                    ((Number) row.get("context_size")).intValue(),
+                    ((Number) row.get("max_output_tokens")).intValue(),
+                    ((Number) row.get("caps_tools")).intValue() == 1,
+                    ((Number) row.get("caps_vision")).intValue() == 1,
+                    (String) row.get("reasoning_effort"),
+                    ((Number) row.get("sort_order")).intValue()
+            ));
+        }
+
+        List<ProviderConfigRow> result = new ArrayList<>();
+        for (MutableProviderConfig provider : providers.values()) {
+            if (enabledModelsOnly && provider.models.isEmpty()) {
+                continue;
+            }
+            result.add(new ProviderConfigRow(
+                    provider.id,
+                    provider.providerKey,
+                    provider.enabled,
+                    provider.baseUrl,
+                    provider.apiFormat,
+                    provider.customTransforms,
+                    provider.updatedAt,
+                    provider.models
+            ));
+        }
+        return result;
+    }
+
     private static int parseInt(Object value, int defaultValue) {
         if (value == null)
             return defaultValue;
@@ -275,6 +284,28 @@ public class ProviderConfigRepository {
             return Integer.parseInt(value.toString().trim());
         } catch (NumberFormatException e) {
             return defaultValue;
+        }
+    }
+
+    private static class MutableProviderConfig {
+        private final int id;
+        private final String providerKey;
+        private final boolean enabled;
+        private final String baseUrl;
+        private final String apiFormat;
+        private final String customTransforms;
+        private final String updatedAt;
+        private final List<ProviderModelRow> models = new ArrayList<>();
+
+        private MutableProviderConfig(int id, String providerKey, boolean enabled, String baseUrl,
+                                      String apiFormat, String customTransforms, String updatedAt) {
+            this.id = id;
+            this.providerKey = providerKey;
+            this.enabled = enabled;
+            this.baseUrl = baseUrl;
+            this.apiFormat = apiFormat;
+            this.customTransforms = customTransforms;
+            this.updatedAt = updatedAt;
         }
     }
 }
