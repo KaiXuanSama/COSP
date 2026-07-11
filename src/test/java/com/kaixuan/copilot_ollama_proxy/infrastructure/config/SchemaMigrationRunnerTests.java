@@ -1,11 +1,14 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.sqlite.SQLiteDataSource;
 
@@ -26,24 +29,40 @@ class SchemaMigrationRunnerTests {
         createLegacySchema(jdbcTemplate);
         seedLegacyData(jdbcTemplate);
 
+        ApiKeyCryptoService cryptoService = new ApiKeyCryptoService("test-master-key");
+        ReflectionTestUtils.invokeMethod(cryptoService, "initialize");
         SchemaMigrationRunner runner = new SchemaMigrationRunner(
                 jdbcTemplate,
                 new TransactionTemplate(new DataSourceTransactionManager(jdbcTemplate.getDataSource())),
-                new ObjectMapper());
+                new ObjectMapper(),
+                cryptoService,
+                new AppConfigRepository(jdbcTemplate));
 
         runner.run(null);
         runner.run(null);
 
         Integer versionCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_version", Integer.class);
-        assertThat(versionCount).isEqualTo(3);
+        assertThat(versionCount).isEqualTo(4);
         assertThat(columnNames(jdbcTemplate, "provider_model"))
                 .contains("reasoning_effort", "max_output_tokens");
         assertThat(columnNames(jdbcTemplate, "provider_config"))
                 .contains("custom_transforms", "active_api_key_index");
 
-        String apiKeys = jdbcTemplate.queryForObject(
+        // V4：API Key 已拆到 provider_api_key 并加密，旧明文列被清空
+        String clearedApiKeys = jdbcTemplate.queryForObject(
                 "SELECT api_key FROM provider_config WHERE provider_key = 'legacy'", String.class);
-        assertThat(apiKeys).isEqualTo("[{\"name\":\"Default\",\"api_key\":\"sk-legacy\"}]");
+        assertThat(clearedApiKeys).isEqualTo("[]");
+
+        String encrypted = jdbcTemplate.queryForObject(
+                "SELECT encrypted_api_key FROM provider_api_key WHERE provider_id = 1 AND is_active = 1", String.class);
+        String nonce = jdbcTemplate.queryForObject(
+                "SELECT nonce FROM provider_api_key WHERE provider_id = 1 AND is_active = 1", String.class);
+        assertThat(encrypted).isNotBlank();
+        assertThat(cryptoService.decrypt(nonce, encrypted)).isEqualTo("sk-legacy");
+
+        String fingerprint = jdbcTemplate.queryForObject(
+                "SELECT config_value FROM app_config WHERE config_key = 'encryption_key_fingerprint'", String.class);
+        assertThat(fingerprint).isEqualTo(cryptoService.fingerprint());
 
         Integer modelCount = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM provider_model WHERE provider_id = 1 AND model_name = 'duplicate'",
@@ -69,6 +88,31 @@ class SchemaMigrationRunnerTests {
                 .isInstanceOf(DataAccessException.class);
     }
 
+    @Test
+    void rejectsStartupWhenMasterKeyDoesNotMatchStoredFingerprint() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createLegacySchema(jdbcTemplate);
+        seedLegacyData(jdbcTemplate);
+
+        ApiKeyCryptoService original = new ApiKeyCryptoService("original-key");
+        ReflectionTestUtils.invokeMethod(original, "initialize");
+        SchemaMigrationRunner firstRun = new SchemaMigrationRunner(jdbcTemplate,
+                new TransactionTemplate(new DataSourceTransactionManager(jdbcTemplate.getDataSource())),
+                new ObjectMapper(), original, new AppConfigRepository(jdbcTemplate));
+        firstRun.run(null);
+
+        // 用不同主密钥重跑 V4：删除 V4 版本记录以触发重新执行
+        jdbcTemplate.update("DELETE FROM schema_version WHERE version = 4");
+        ApiKeyCryptoService wrong = new ApiKeyCryptoService("different-key");
+        ReflectionTestUtils.invokeMethod(wrong, "initialize");
+        SchemaMigrationRunner secondRun = new SchemaMigrationRunner(jdbcTemplate,
+                new TransactionTemplate(new DataSourceTransactionManager(jdbcTemplate.getDataSource())),
+                new ObjectMapper(), wrong, new AppConfigRepository(jdbcTemplate));
+
+        assertThatThrownBy(() -> secondRun.run(null))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
     private JdbcTemplate createJdbcTemplate() {
         SQLiteDataSource dataSource = new SQLiteDataSource();
         dataSource.setUrl("jdbc:sqlite:" + tempDir.resolve("migration.db"));
@@ -79,6 +123,7 @@ class SchemaMigrationRunnerTests {
         jdbcTemplate.execute("CREATE TABLE users (username TEXT PRIMARY KEY, password TEXT NOT NULL, enabled INTEGER NOT NULL)");
         jdbcTemplate.execute("CREATE TABLE provider_config (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL DEFAULT 0, base_url TEXT NOT NULL DEFAULT '', api_key TEXT NOT NULL DEFAULT '', api_format TEXT NOT NULL DEFAULT 'openai', updated_at TEXT)");
         jdbcTemplate.execute("CREATE TABLE provider_model (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, context_size INTEGER NOT NULL DEFAULT 0, caps_tools INTEGER NOT NULL DEFAULT 0, caps_vision INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0)");
+        jdbcTemplate.execute("CREATE TABLE app_config (config_key TEXT PRIMARY KEY, config_value TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')))");
         jdbcTemplate.execute("CREATE TABLE api_usage_daily (usage_date TEXT PRIMARY KEY, call_count INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, updated_at TEXT)");
         jdbcTemplate.execute("CREATE TABLE api_call_log (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT, model_name TEXT, is_stream INTEGER NOT NULL DEFAULT 0, request_headers TEXT, request_body TEXT, response_body TEXT, chunks TEXT, duration_ms INTEGER, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')))");
     }

@@ -1,0 +1,16 @@
+spring:
+  datasource:
+    url: jdbc:sqlite:target/test-admin.db
+    driver-class-name: org.sqlite.JDBC
+    hikari:
+      maximum-pool-size: 2
+      minimum-idle: 1
+      connection-init-sql: PRAGMA foreign_keys = ON
+  sql:
+    init:
+      mode: always
+
+ollama:
+  version: 0.6.4
+
+COSP_MASTER_KEY: test

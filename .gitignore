@@ -33,7 +33,7 @@ build/
 .vscode/
 
 ### Runtime configuration ###
-application.yml
+src/main/resources/application.yml
 
 ## Log
 *.log

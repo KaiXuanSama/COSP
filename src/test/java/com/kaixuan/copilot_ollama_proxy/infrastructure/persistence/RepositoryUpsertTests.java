@@ -1,9 +1,11 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
+import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.sqlite.SQLiteDataSource;
 
 import java.nio.file.Path;
@@ -36,20 +38,30 @@ class RepositoryUpsertTests {
                 + "max_output_tokens INTEGER NOT NULL DEFAULT 128000, caps_tools INTEGER NOT NULL DEFAULT 0, "
                 + "caps_vision INTEGER NOT NULL DEFAULT 0, reasoning_effort TEXT NOT NULL DEFAULT 'Medium', "
                 + "sort_order INTEGER NOT NULL DEFAULT 0)");
+        jdbcTemplate.execute("CREATE TABLE provider_api_key ("
+                + "id INTEGER PRIMARY KEY AUTOINCREMENT, key_uuid TEXT NOT NULL UNIQUE, provider_id INTEGER NOT NULL, "
+                + "key_name TEXT NOT NULL DEFAULT '', encrypted_api_key TEXT NOT NULL, nonce TEXT NOT NULL, "
+                + "encryption_version INTEGER NOT NULL DEFAULT 1, is_active INTEGER NOT NULL DEFAULT 0, "
+                + "sort_order INTEGER NOT NULL DEFAULT 0, "
+                + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), "
+                + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), "
+                + "UNIQUE (provider_id, key_name))");
         jdbcTemplate.execute("CREATE TABLE app_config ("
                 + "config_key TEXT PRIMARY KEY, config_value TEXT NOT NULL DEFAULT '', "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
-        providerConfigRepository = new ProviderConfigRepository(jdbcTemplate);
+        ApiKeyCryptoService cryptoService = new ApiKeyCryptoService("test-master-key");
+        ReflectionTestUtils.invokeMethod(cryptoService, "initialize");
+        ProviderApiKeyRepository providerApiKeyRepository = new ProviderApiKeyRepository(jdbcTemplate, cryptoService);
+        providerConfigRepository = new ProviderConfigRepository(jdbcTemplate, providerApiKeyRepository);
         appConfigRepository = new AppConfigRepository(jdbcTemplate);
     }
 
     @Test
     void providerUpsertUpdatesExistingRowWithoutChangingItsId() {
         int firstId = providerConfigRepository.saveProvider(
-                "mimo", false, "https://old.example", "[]", "openai", "{}");
+                "mimo", false, "https://old.example", "openai", "{}");
         int secondId = providerConfigRepository.saveProvider(
-                "mimo", true, "https://new.example", "[{\"name\":\"New\",\"api_key\":\"sk-new\"}]",
-                "openai", "{\"requestBody\":{}}");
+                "mimo", true, "https://new.example", "openai", "{\"requestBody\":{}}");
 
         assertThat(secondId).isEqualTo(firstId);
         assertThat(providerConfigRepository.findAllWithModels()).hasSize(1);
@@ -62,10 +74,10 @@ class RepositoryUpsertTests {
     @Test
     void partialProviderConfigUpsertPreservesEnabledStateAndCustomTransforms() {
         providerConfigRepository.saveProvider(
-                "mimo", true, "https://old.example", "[]", "openai", "{\"keep\":true}");
+                "mimo", true, "https://old.example", "openai", "{\"keep\":true}");
 
         int providerId = providerConfigRepository.updateProviderConfig(
-                "mimo", "https://new.example", "[{\"name\":\"A\",\"api_key\":\"sk-a\"}]", 0, "openai");
+                "mimo", "https://new.example", "openai");
 
         ProviderConfigRow row = providerConfigRepository.findByKey("mimo");
         assertThat(row.id()).isEqualTo(providerId);

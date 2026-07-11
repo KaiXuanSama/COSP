@@ -2,6 +2,8 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.config;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -13,6 +15,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * 数据库 Schema 版本迁移器。
@@ -29,6 +32,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private final JdbcTemplate jdbcTemplate;
     private final TransactionTemplate transactionTemplate;
     private final ObjectMapper objectMapper;
+    private final ApiKeyCryptoService cryptoService;
+    private final AppConfigRepository appConfigRepository;
 
     /**
      * 创建 Schema 迁移器。
@@ -36,12 +41,17 @@ public class SchemaMigrationRunner implements ApplicationRunner {
      * @param jdbcTemplate JDBC 操作模板
      * @param transactionTemplate 迁移事务模板
      * @param objectMapper JSON 序列化器
+     * @param cryptoService API Key 加密服务（V4 迁移依赖）
+     * @param appConfigRepository 应用配置仓储（写入密钥指纹）
      */
     public SchemaMigrationRunner(JdbcTemplate jdbcTemplate, TransactionTemplate transactionTemplate,
-                                 ObjectMapper objectMapper) {
+                                 ObjectMapper objectMapper, ApiKeyCryptoService cryptoService,
+                                 AppConfigRepository appConfigRepository) {
         this.jdbcTemplate = jdbcTemplate;
         this.transactionTemplate = transactionTemplate;
         this.objectMapper = objectMapper;
+        this.cryptoService = cryptoService;
+        this.appConfigRepository = appConfigRepository;
     }
 
     /**
@@ -58,6 +68,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         migrate(1, "补齐历史增量字段", this::migrateLegacyColumns);
         migrate(2, "API Key 转换为 JSON 数组", this::migrateApiKeyToJsonArray);
         migrate(3, "增加业务约束与查询索引", this::migrateConstraintsAndIndexes);
+        migrate(4, "API Key 拆表与加密", this::migrateApiKeysToEncryptedTable);
     }
 
     private void migrate(int version, String description, Runnable action) {
@@ -128,6 +139,123 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         } catch (Exception ignored) {
             return false;
         }
+    }
+
+    /**
+     * V4：将 provider_config.api_key 中的明文 JSON 数组拆分到 provider_api_key，
+     * 并对每条 Key 用 AES-256-GCM 加密。迁移全程在事务内，任意失败都会回滚，保留旧明文。
+     *
+     * 步骤：建表 → 校验/写入主密钥指纹 → 逐条加密插入 → 立即解密校验 → 清空旧明文列。
+     */
+    private void migrateApiKeysToEncryptedTable() {
+        createProviderApiKeyTable();
+        verifyOrRecordKeyFingerprint();
+
+        var providers = jdbcTemplate.queryForList(
+                "SELECT id, api_key, active_api_key_index FROM provider_config");
+        for (var provider : providers) {
+            int providerId = ((Number) provider.get("id")).intValue();
+            String apiKeyJson = (String) provider.get("api_key");
+            int activeIndex = provider.get("active_api_key_index") == null
+                    ? 0 : ((Number) provider.get("active_api_key_index")).intValue();
+
+            List<Map<String, String>> keys = parseApiKeyArray(apiKeyJson);
+            java.util.Set<String> usedNames = new java.util.HashSet<>();
+            for (int i = 0; i < keys.size(); i++) {
+                Map<String, String> entry = keys.get(i);
+                String plaintext = entry.get("api_key");
+                if (plaintext == null) {
+                    plaintext = "";
+                }
+                String keyName = deduplicateName(entry.getOrDefault("name", ""), i, usedNames);
+                boolean active = (i == activeIndex);
+                insertEncryptedKey(providerId, keyName, plaintext, active, i);
+            }
+        }
+
+        // 清空旧明文列（废弃保留策略）
+        jdbcTemplate.update("UPDATE provider_config SET api_key = '[]', active_api_key_index = 0");
+    }
+
+    private void createProviderApiKeyTable() {
+        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS provider_api_key ("
+                + "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                + "key_uuid TEXT NOT NULL UNIQUE, "
+                + "provider_id INTEGER NOT NULL, "
+                + "key_name TEXT NOT NULL DEFAULT '', "
+                + "encrypted_api_key TEXT NOT NULL, "
+                + "nonce TEXT NOT NULL, "
+                + "encryption_version INTEGER NOT NULL DEFAULT 1 CHECK (encryption_version >= 1), "
+                + "is_active INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0, 1)), "
+                + "sort_order INTEGER NOT NULL DEFAULT 0 CHECK (sort_order >= 0), "
+                + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), "
+                + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), "
+                + "UNIQUE (provider_id, key_name), "
+                + "FOREIGN KEY (provider_id) REFERENCES provider_config(id) ON DELETE CASCADE)");
+        jdbcTemplate.execute("CREATE INDEX IF NOT EXISTS idx_provider_api_key_provider_id "
+                + "ON provider_api_key(provider_id)");
+        jdbcTemplate.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_api_key_active "
+                + "ON provider_api_key(provider_id) WHERE is_active = 1");
+    }
+
+    /**
+     * 校验或首次写入主密钥指纹。
+     *
+     * 数据库已有指纹且与当前主密钥不一致时抛异常，阻止用错误密钥启动并破坏已有密文。
+     */
+    private void verifyOrRecordKeyFingerprint() {
+        String stored = appConfigRepository.findConfigValue("encryption_key_fingerprint");
+        String current = cryptoService.fingerprint();
+        if (stored == null || stored.isBlank()) {
+            appConfigRepository.saveConfig("encryption_key_fingerprint", current);
+        } else if (!stored.equals(current)) {
+            throw new IllegalStateException(
+                    "COSP_MASTER_KEY 与当前数据库不匹配，无法解密已加密的供应商 API Key。"
+                            + "请恢复原主密钥，切勿用新密钥覆盖，否则已有 API Key 将永久无法恢复。");
+        }
+    }
+
+    private List<Map<String, String>> parseApiKeyArray(String apiKeyJson) {
+        if (apiKeyJson == null || apiKeyJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(apiKeyJson, API_KEY_LIST_TYPE);
+        } catch (Exception e) {
+            throw new IllegalStateException("解析 provider_config.api_key 失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 为迁移生成唯一 key_name，避免同一供应商下重名违反 UNIQUE(provider_id, key_name)。
+     * 空名或重名时用 "Key N" 兜底。
+     */
+    private String deduplicateName(String rawName, int index, java.util.Set<String> usedNames) {
+        String name = (rawName == null || rawName.isBlank()) ? ("Key " + (index + 1)) : rawName;
+        String candidate = name;
+        int suffix = 2;
+        while (usedNames.contains(candidate)) {
+            candidate = name + " (" + suffix + ")";
+            suffix++;
+        }
+        usedNames.add(candidate);
+        return candidate;
+    }
+
+    private void insertEncryptedKey(int providerId, String keyName, String plaintext,
+                                    boolean active, int sortOrder) {
+        ApiKeyCryptoService.EncryptedValue encrypted = cryptoService.encrypt(plaintext);
+        // 立即解密校验，确保加密可逆且与原文一致
+        String roundTrip = cryptoService.decrypt(encrypted.nonceBase64(), encrypted.ciphertextBase64());
+        if (!plaintext.equals(roundTrip)) {
+            throw new IllegalStateException("provider_id=" + providerId + " 的 API Key 加密自校验失败");
+        }
+        jdbcTemplate.update(
+                "INSERT INTO provider_api_key "
+                        + "(key_uuid, provider_id, key_name, encrypted_api_key, nonce, encryption_version, is_active, sort_order) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                UUID.randomUUID().toString(), providerId, keyName, encrypted.ciphertextBase64(),
+                encrypted.nonceBase64(), ApiKeyCryptoService.ENCRYPTION_VERSION, active ? 1 : 0, sortOrder);
     }
 
     private void migrateConstraintsAndIndexes() {

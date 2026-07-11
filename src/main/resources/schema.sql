@@ -19,8 +19,8 @@ CREATE TABLE IF NOT EXISTS provider_config (
     provider_key     VARCHAR(30)  NOT NULL UNIQUE,   -- 服务商标识，如 longcat / mimo
     enabled          INTEGER      NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)), -- 是否启用（0=禁用，1=启用）
     base_url         TEXT         NOT NULL DEFAULT '', -- API 基础 URL
-    api_key          TEXT         NOT NULL DEFAULT '', -- API Key（JSON 数组，如 [{"name":"Default","api_key":"sk-xxx"}]）
-    active_api_key_index INTEGER  NOT NULL DEFAULT 0 CHECK (active_api_key_index >= 0), -- 当前激活的 API Key 索引
+    api_key          TEXT         NOT NULL DEFAULT '', -- 【V4 后废弃】API Key 已迁移到 provider_api_key 表，此列保留但恒为 '[]'
+    active_api_key_index INTEGER  NOT NULL DEFAULT 0 CHECK (active_api_key_index >= 0), -- 【V4 后废弃】激活状态改由 provider_api_key.is_active 表示，此列恒为 0
     api_format       VARCHAR(20)  NOT NULL DEFAULT 'openai', -- API 格式（仅支持 openai）
     custom_transforms TEXT        NOT NULL DEFAULT '{}', -- 自定义供应商的请求转换配置（JSON）
     updated_at       TEXT         NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
@@ -44,6 +44,31 @@ CREATE TABLE IF NOT EXISTS provider_model (
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_model_provider_name
     ON provider_model(provider_id, model_name);
+
+-- ==================== 服务商 API Key 表（V4 加密存储） ====================
+-- 每个供应商可配置多个 API Key，使用 AES-256-GCM 加密存储。
+-- 主密钥来自环境变量 COSP_MASTER_KEY，未配置时服务拒绝启动。
+
+CREATE TABLE IF NOT EXISTS provider_api_key (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_uuid           TEXT    NOT NULL UNIQUE,          -- 不可变 UUID，供前端回写与未来密钥轮换使用
+    provider_id        INTEGER NOT NULL,                 -- 关联 provider_config.id
+    key_name           TEXT    NOT NULL DEFAULT '',      -- Key 名称（明文，便于识别）
+    encrypted_api_key  TEXT    NOT NULL,                 -- AES-256-GCM 密文（Base64）
+    nonce              TEXT    NOT NULL,                 -- 每条记录独立的随机 nonce（Base64）
+    encryption_version INTEGER NOT NULL DEFAULT 1 CHECK (encryption_version >= 1), -- 加密格式版本
+    is_active          INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0, 1)), -- 是否为当前激活 Key
+    sort_order         INTEGER NOT NULL DEFAULT 0 CHECK (sort_order >= 0), -- 展示顺序
+    created_at         TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')),
+    updated_at         TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')),
+    UNIQUE (provider_id, key_name),
+    FOREIGN KEY (provider_id) REFERENCES provider_config(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_api_key_provider_id ON provider_api_key(provider_id);
+-- 部分唯一索引：每个供应商最多一个激活 Key
+CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_api_key_active
+    ON provider_api_key(provider_id) WHERE is_active = 1;
 
 -- ==================== 应用运行配置表（键值对） ====================
 

@@ -14,9 +14,11 @@ import java.util.Map;
 public class ProviderConfigRepository {
 
     private final JdbcTemplate jdbcTemplate;
+    private final ProviderApiKeyRepository providerApiKeyRepository;
 
-    public ProviderConfigRepository(JdbcTemplate jdbcTemplate) {
+    public ProviderConfigRepository(JdbcTemplate jdbcTemplate, ProviderApiKeyRepository providerApiKeyRepository) {
         this.jdbcTemplate = jdbcTemplate;
+        this.providerApiKeyRepository = providerApiKeyRepository;
     }
 
     // ==================== 查询 ====================
@@ -25,15 +27,13 @@ public class ProviderConfigRepository {
      * 查询所有服务商配置（含模型列表）。
      */
     public List<ProviderConfigRow> findAllWithModels() {
-        List<ProviderConfigRow> providers = jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, active_api_key_index, api_format, custom_transforms, updated_at " + "FROM provider_config ORDER BY id", (rs, rowNum) -> {
+        List<ProviderConfigRow> providers = jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_format, custom_transforms, updated_at " + "FROM provider_config ORDER BY id", (rs, rowNum) -> {
             int id = rs.getInt("id");
             return new ProviderConfigRow(
                     id,
                     rs.getString("provider_key"),
                     rs.getInt("enabled") == 1,
                     rs.getString("base_url"),
-                    rs.getString("api_key"),
-                    rs.getInt("active_api_key_index"),
                     rs.getString("api_format"),
                     rs.getString("custom_transforms"),
                     rs.getString("updated_at"),
@@ -47,7 +47,7 @@ public class ProviderConfigRepository {
      * 根据 provider_key 查询单个服务商配置。
      */
     public ProviderConfigRow findByKey(String providerKey) {
-        return jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, active_api_key_index, api_format, custom_transforms, updated_at " + "FROM provider_config WHERE provider_key = ?", rs -> {
+        return jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_format, custom_transforms, updated_at " + "FROM provider_config WHERE provider_key = ?", rs -> {
             if (rs.next()) {
                 int id = rs.getInt("id");
                 return new ProviderConfigRow(
@@ -55,8 +55,6 @@ public class ProviderConfigRepository {
                         rs.getString("provider_key"),
                         rs.getInt("enabled") == 1,
                         rs.getString("base_url"),
-                        rs.getString("api_key"),
-                        rs.getInt("active_api_key_index"),
                         rs.getString("api_format"),
                         rs.getString("custom_transforms"),
                         rs.getString("updated_at"),
@@ -90,57 +88,56 @@ public class ProviderConfigRepository {
     // ==================== 写入 ====================
 
     /**
-     * 保存服务商配置（UPSERT）。
+     * 保存服务商配置（UPSERT），不涉及 API Key（已迁移到 provider_api_key 表）。
      * 如果 provider_key 已存在则更新，否则插入。
      *
      * @return 对应的 provider_config.id
      */
-    public int saveProvider(String providerKey, boolean enabled, String baseUrl, String apiKey, String apiFormat, String customTransforms) {
+    public int saveProvider(String providerKey, boolean enabled, String baseUrl, String apiFormat, String customTransforms) {
         jdbcTemplate.update(
-            "INSERT INTO provider_config (provider_key, enabled, base_url, api_key, api_format, custom_transforms) "
-                + "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(provider_key) DO UPDATE SET "
-                + "enabled = excluded.enabled, base_url = excluded.base_url, api_key = excluded.api_key, "
+            "INSERT INTO provider_config (provider_key, enabled, base_url, api_format, custom_transforms) "
+                + "VALUES (?, ?, ?, ?, ?) ON CONFLICT(provider_key) DO UPDATE SET "
+                + "enabled = excluded.enabled, base_url = excluded.base_url, "
                 + "api_format = excluded.api_format, custom_transforms = excluded.custom_transforms, "
                 + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
-            providerKey, enabled ? 1 : 0, baseUrl, apiKey, apiFormat, customTransforms);
+            providerKey, enabled ? 1 : 0, baseUrl, apiFormat, customTransforms);
         return jdbcTemplate.queryForObject("SELECT id FROM provider_config WHERE provider_key = ?", Integer.class, providerKey);
     }
 
     /**
-     * 仅更新服务商的配置字段（base_url, api_key, active_api_key_index, api_format），不修改 enabled 状态。
+     * 仅更新服务商的 base_url 与 api_format，不修改 enabled 状态，也不涉及 API Key。
      * 如果指定的 providerKey 不存在，则自动插入一条新记录（enabled = 0）。
      * @return 对应的 provider_config.id
      */
-    public int updateProviderConfig(String providerKey, String baseUrl, String apiKey, int activeApiKeyIndex, String apiFormat) {
+    public int updateProviderConfig(String providerKey, String baseUrl, String apiFormat) {
         jdbcTemplate.update(
-            "INSERT INTO provider_config (provider_key, enabled, base_url, api_key, active_api_key_index, api_format) "
-                + "VALUES (?, 0, ?, ?, ?, ?) ON CONFLICT(provider_key) DO UPDATE SET "
-                + "base_url = excluded.base_url, api_key = excluded.api_key, "
-                + "active_api_key_index = excluded.active_api_key_index, api_format = excluded.api_format, "
+            "INSERT INTO provider_config (provider_key, enabled, base_url, api_format) "
+                + "VALUES (?, 0, ?, ?) ON CONFLICT(provider_key) DO UPDATE SET "
+                + "base_url = excluded.base_url, api_format = excluded.api_format, "
                 + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
-            providerKey, baseUrl, apiKey, activeApiKeyIndex, apiFormat);
+            providerKey, baseUrl, apiFormat);
         return jdbcTemplate.queryForObject("SELECT id FROM provider_config WHERE provider_key = ?", Integer.class, providerKey);
     }
 
     /**
-     * 在同一事务内保存供应商配置和完整模型列表。
+     * 在同一事务内保存供应商配置、API Key 列表和完整模型列表。
      *
-     * 任意一步失败时，配置更新、旧模型删除和新模型插入会整体回滚，
-     * 避免供应商配置成功但模型列表只保存一部分。
+     * 任意一步失败时，配置更新、API Key 变更、旧模型删除和新模型插入会整体回滚，
+     * 避免只保存了一部分。API Key 通过 {@link ProviderApiKeyRepository} 加密后按 UUID 合并。
      *
      * @param providerKey 服务商标识
      * @param baseUrl API 基础地址
-     * @param apiKey API Key JSON 数组
-     * @param activeApiKeyIndex 当前激活的 API Key 索引
+     * @param apiKeys API Key 输入列表（明文按需加密，未修改项沿用原密文）
      * @param apiFormat API 协议格式
      * @param models 完整模型列表
      * @return 对应的 provider_config.id
      */
     @Transactional
-    public int saveProviderConfigWithModels(String providerKey, String baseUrl, String apiKey,
-                                            int activeApiKeyIndex, String apiFormat,
+    public int saveProviderConfigWithModels(String providerKey, String baseUrl,
+                                            List<ProviderApiKeyRepository.ApiKeyInput> apiKeys, String apiFormat,
                                             List<Map<String, Object>> models) {
-        int providerId = updateProviderConfig(providerKey, baseUrl, apiKey, activeApiKeyIndex, apiFormat);
+        int providerId = updateProviderConfig(providerKey, baseUrl, apiFormat);
+        providerApiKeyRepository.saveKeys(providerId, apiKeys);
         saveModels(providerId, models);
         return providerId;
     }
@@ -177,7 +174,7 @@ public class ProviderConfigRepository {
      * 如果没有已启用的模型，则不包含该服务商。
      */
     public List<ProviderConfigRow> findAllActiveProvidersWithEnabledModels() {
-        List<ProviderConfigRow> providers = jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, active_api_key_index, api_format, custom_transforms " + "FROM provider_config WHERE enabled = 1 ORDER BY id",
+        List<ProviderConfigRow> providers = jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_format, custom_transforms " + "FROM provider_config WHERE enabled = 1 ORDER BY id",
                 (rs, rowNum) -> {
                     int id = rs.getInt("id");
                     List<ProviderModelRow> models = jdbcTemplate
@@ -198,8 +195,6 @@ public class ProviderConfigRepository {
                             rs.getString("provider_key"),
                             rs.getInt("enabled") == 1,
                             rs.getString("base_url"),
-                            rs.getString("api_key"),
-                            rs.getInt("active_api_key_index"),
                             rs.getString("api_format"),
                             rs.getString("custom_transforms"),
                             null,
@@ -216,7 +211,7 @@ public class ProviderConfigRepository {
      * 如果服务商不存在或未启用，返回 null。
      */
     public ProviderConfigRow findActiveProviderByKey(String providerKey) {
-        return jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_key, active_api_key_index, api_format, custom_transforms " + "FROM provider_config WHERE provider_key = ? AND enabled = 1", rs -> {
+        return jdbcTemplate.query("SELECT id, provider_key, enabled, base_url, api_format, custom_transforms " + "FROM provider_config WHERE provider_key = ? AND enabled = 1", rs -> {
             if (rs.next()) {
                 int id = rs.getInt("id");
                 return new ProviderConfigRow(
@@ -224,8 +219,6 @@ public class ProviderConfigRepository {
                         rs.getString("provider_key"),
                         rs.getInt("enabled") == 1,
                         rs.getString("base_url"),
-                        rs.getString("api_key"),
-                        rs.getInt("active_api_key_index"),
                         rs.getString("api_format"),
                         rs.getString("custom_transforms"),
                         null,

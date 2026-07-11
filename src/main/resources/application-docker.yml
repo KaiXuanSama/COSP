@@ -23,6 +23,9 @@ admin:
   username: ${ADMIN_USERNAME:root}
   password: ${ADMIN_PASSWORD:root}
 
+# ===== API Key 加密主密钥（必填） =====
+# 环境变量：COSP_MASTER_KEY，任意 1-64 个字符，未配置时服务拒绝启动。
+
 # ===== API 调用日志 =====
 call-log:
   max-records: ${CALL_LOG_MAX_RECORDS:100}
