@@ -1,0 +1,44 @@
+{
+  "properties": [
+    {
+      "name": "spring.datasource.url",
+      "type": "java.lang.String",
+      "description": "测试环境 SQLite 数据库 JDBC URL。默认指向 target/test-admin.db。"
+    },
+    {
+      "name": "spring.datasource.driver-class-name",
+      "type": "java.lang.String",
+      "description": "测试环境 SQLite JDBC 驱动类名。"
+    },
+    {
+      "name": "spring.datasource.hikari.maximum-pool-size",
+      "type": "java.lang.Integer",
+      "description": "测试环境 SQLite 连接池最大连接数。"
+    },
+    {
+      "name": "spring.datasource.hikari.minimum-idle",
+      "type": "java.lang.Integer",
+      "description": "测试环境 SQLite 连接池最小空闲连接数。"
+    },
+    {
+      "name": "spring.datasource.hikari.connection-init-sql",
+      "type": "java.lang.String",
+      "description": "测试环境连接初始化 SQL，默认开启 foreign_keys。"
+    },
+    {
+      "name": "spring.sql.init.mode",
+      "type": "java.lang.String",
+      "description": "测试环境 SQL 初始化模式。"
+    },
+    {
+      "name": "ollama.version",
+      "type": "java.lang.String",
+      "description": "测试环境伪装的 Ollama 版本号。"
+    },
+    {
+      "name": "COSP_MASTER_KEY",
+      "type": "java.lang.String",
+      "description": "测试环境 API Key 加解密主密钥。"
+    }
+  ]
+}

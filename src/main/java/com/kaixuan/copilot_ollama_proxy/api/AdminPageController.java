@@ -4,6 +4,8 @@ import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRepository;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRow;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.RequestTransformEngine;
@@ -40,17 +42,20 @@ public class AdminPageController {
     private final PasswordEncoder passwordEncoder;
     private final ApiUsageRepository apiUsageRepository;
     private final ProviderConfigRepository providerConfigRepository;
+    private final ProviderApiKeyRepository providerApiKeyRepository;
     private final AppConfigRepository appConfigRepository;
     private final ApiCallLogRepository apiCallLogRepository;
     private final WebClient.Builder webClientBuilder;
     private final List<UpstreamChatService> upstreamChatServices;
 
     public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder, ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository,
+            ProviderApiKeyRepository providerApiKeyRepository,
             AppConfigRepository appConfigRepository, ApiCallLogRepository apiCallLogRepository, WebClient.Builder webClientBuilder, List<UpstreamChatService> upstreamChatServices) {
         this.userDetailsManager = userDetailsManager;
         this.passwordEncoder = passwordEncoder;
         this.apiUsageRepository = apiUsageRepository;
         this.providerConfigRepository = providerConfigRepository;
+        this.providerApiKeyRepository = providerApiKeyRepository;
         this.appConfigRepository = appConfigRepository;
         this.apiCallLogRepository = apiCallLogRepository;
         this.webClientBuilder = webClientBuilder;
@@ -77,9 +82,58 @@ public class AdminPageController {
         List<ProviderConfigRow> all = providerConfigRepository.findAllWithModels();
         Map<String, Object> result = new LinkedHashMap<>();
         for (ProviderConfigRow p : all) {
-            result.put(p.providerKey(), p);
+            result.put(p.providerKey(), buildProviderView(p));
         }
         return ResponseEntity.ok(result);
+    }
+
+    /**
+     * 构建供应商视图，附带脱敏后的 API Key 列表。
+     * 明文永不返回前端，仅返回 keyUuid、名称、脱敏值和激活标记。
+     */
+    private Map<String, Object> buildProviderView(ProviderConfigRow p) {
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("id", p.id());
+        view.put("providerKey", p.providerKey());
+        view.put("enabled", p.enabled());
+        view.put("baseUrl", p.baseUrl());
+        view.put("apiFormat", p.apiFormat());
+        view.put("customTransforms", p.customTransforms());
+        view.put("updatedAt", p.updatedAt());
+        view.put("models", p.models());
+        view.put("apiKeys", buildMaskedApiKeys(p.id()));
+        return view;
+    }
+
+    /**
+     * 读取某个供应商的 API Key 列表，解密后脱敏返回。
+     */
+    private List<Map<String, Object>> buildMaskedApiKeys(int providerId) {
+        List<Map<String, Object>> masked = new ArrayList<>();
+        for (ProviderApiKeyRow row : providerApiKeyRepository.findByProviderId(providerId)) {
+            String plaintext = providerApiKeyRepository.decrypt(row);
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("keyUuid", row.keyUuid());
+            entry.put("name", row.keyName());
+            entry.put("masked", maskApiKey(plaintext));
+            entry.put("active", row.active());
+            masked.add(entry);
+        }
+        return masked;
+    }
+
+    /**
+     * 脱敏 API Key，仅保留首尾少量字符。
+     */
+    private String maskApiKey(String key) {
+        if (key == null || key.isBlank()) {
+            return "";
+        }
+        String trimmed = key.trim();
+        if (trimmed.length() <= 10) {
+            return "****";
+        }
+        return trimmed.substring(0, 6) + "****" + trimmed.substring(trimmed.length() - 4);
     }
 
     /**
@@ -120,15 +174,13 @@ public class AdminPageController {
         boolean enabled = Boolean.TRUE.equals(body.get("enabled"));
         ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
         String baseUrl = "";
-        String apiKey = "";
         String customTransforms = "{}";
         if (provider != null) {
             baseUrl = provider.baseUrl() != null ? provider.baseUrl() : "";
-            apiKey = provider.apiKey() != null ? provider.apiKey() : "";
             customTransforms = provider.customTransforms() != null ? provider.customTransforms() : "{}";
         }
-        // saveProvider 在记录不存在时会自动插入（首次启用场景）
-        providerConfigRepository.saveProvider(providerKey, enabled, baseUrl, apiKey, "openai", customTransforms);
+        // saveProvider 在记录不存在时会自动插入（首次启用场景）；API Key 独立管理，不受启停影响
+        providerConfigRepository.saveProvider(providerKey, enabled, baseUrl, "openai", customTransforms);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("providerKey", providerKey);
         result.put("enabled", enabled);
@@ -160,12 +212,9 @@ public class AdminPageController {
                 return v != null ? v : def;
             };
             String baseUrl = getParam.apply("baseUrl", "").trim();
-            String apiKeys = getParam.apply("apiKeys", "[]").trim();
-            int activeApiKeyIndex = 0;
-            try {
-                activeApiKeyIndex = Integer.parseInt(getParam.apply("activeApiKeyIndex", "0").trim());
-            } catch (NumberFormatException ignored) {}
-            int providerId = providerConfigRepository.updateProviderConfig(providerKey, baseUrl, apiKeys, activeApiKeyIndex, "openai");
+            String apiKeysJson = getParam.apply("apiKeys", "[]").trim();
+            String activeKeyUuid = getParam.apply("activeKeyUuid", "").trim();
+            List<ProviderApiKeyRepository.ApiKeyInput> apiKeyInputs = parseApiKeyInputs(apiKeysJson, activeKeyUuid);
             List<Map<String, Object>> models = new ArrayList<>();
             String prefix = "models[";
             java.util.Set<Integer> indices = new java.util.TreeSet<>();
@@ -190,13 +239,55 @@ public class AdminPageController {
                 m.put("reasoningEffort", getParam.apply(prefix + i + "].reasoningEffort", "Medium").trim());
                 models.add(m);
             }
-            providerConfigRepository.saveModels(providerId, models);
+            providerConfigRepository.saveProviderConfigWithModels(
+                    providerKey, baseUrl, apiKeyInputs, "openai", models);
             return ResponseEntity.ok(Map.<String, Object>of("ok", true));
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
     /**
+     * 解析前端提交的 API Key JSON 列表为仓储输入。
+     *
+     * 每项结构为 keyUuid（可选）、name、apiKey（可选，未修改时缺省）。
+     * activeKeyUuid 指向激活项；若无法匹配则默认激活第一项。
+     */
+    private List<ProviderApiKeyRepository.ApiKeyInput> parseApiKeyInputs(String apiKeysJson, String activeKeyUuid) {
+        List<ProviderApiKeyRepository.ApiKeyInput> inputs = new ArrayList<>();
+        try {
+            com.fasterxml.jackson.databind.JsonNode array =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(apiKeysJson);
+            if (!array.isArray()) {
+                return inputs;
+            }
+            boolean anyActiveMatched = false;
+            for (com.fasterxml.jackson.databind.JsonNode node : array) {
+                String uuid = node.hasNonNull("keyUuid") ? node.get("keyUuid").asText() : null;
+                String name = node.hasNonNull("name") ? node.get("name").asText() : "";
+                String plaintext = node.hasNonNull("apiKey") ? node.get("apiKey").asText() : null;
+                boolean active = uuid != null && !uuid.isBlank() && uuid.equals(activeKeyUuid);
+                if (active) {
+                    anyActiveMatched = true;
+                }
+                inputs.add(new ProviderApiKeyRepository.ApiKeyInput(uuid, name, plaintext, active));
+            }
+            // 无匹配激活项时默认激活第一项
+            if (!anyActiveMatched && !inputs.isEmpty()) {
+                ProviderApiKeyRepository.ApiKeyInput first = inputs.get(0);
+                inputs.set(0, new ProviderApiKeyRepository.ApiKeyInput(
+                        first.keyUuid(), first.keyName(), first.plaintext(), true));
+            }
+        } catch (Exception e) {
+            throw new IllegalArgumentException("API Key 列表格式错误: " + e.getMessage(), e);
+        }
+        return inputs;
+    }
+
+    /**
      * 使用当前表单中的 Base URL 与 API Key 从上游拉取模型列表。
+     *
+     * 支持两种 Key 来源：
+     * 1. 前端传入明文 apiKey（新增未保存 / 已保存但重新输入了明文）
+     * 2. 前端传入 keyUuid（已保存的 Key，由后端从数据库解密得到明文）
      */
     @PostMapping("/config/api/providers/{providerKey}/pull-models") @ResponseBody
     public Mono<ResponseEntity<Object>> pullProviderModels(@PathVariable String providerKey, @RequestBody Map<String, String> body) {
@@ -206,15 +297,42 @@ public class AdminPageController {
 
         String baseUrl = body.getOrDefault("baseUrl", "").trim();
         String apiKey = body.getOrDefault("apiKey", "").trim();
+        String keyUuid = body.getOrDefault("keyUuid", "").trim();
         String modelPullPath = body.getOrDefault("modelPullPath", "").trim();
         if (baseUrl.isBlank()) {
             return Mono.just(ResponseEntity.badRequest().body((Object) Map.of("ok", false, "error", "请先填写 API 地址。")));
+        }
+
+        // 优先使用前端传入的明文 Key；其次通过 keyUuid 从数据库解密
+        if (apiKey.isBlank() && !keyUuid.isBlank()) {
+            apiKey = resolveApiKeyByUuid(providerKey, keyUuid);
+            if (apiKey == null) {
+                return Mono.just(ResponseEntity.badRequest().body((Object) Map.of("ok", false, "error", "指定的 API Key 不存在或已被删除，请重新选择。")));
+            }
         }
         if (apiKey.isBlank()) {
             return Mono.just(ResponseEntity.badRequest().body((Object) Map.of("ok", false, "error", "请先填写 API Key。")));
         }
 
         return forwardModelsRequest(providerKey, baseUrl, apiKey, modelPullPath);
+    }
+
+    /**
+     * 根据 keyUuid 从数据库查找并解密 API Key。
+     *
+     * @return 明文 API Key，找不到时返回 null
+     */
+    private String resolveApiKeyByUuid(String providerKey, String keyUuid) {
+        ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
+        if (provider == null) {
+            return null;
+        }
+        for (ProviderApiKeyRow row : providerApiKeyRepository.findByProviderId(provider.id())) {
+            if (keyUuid.equals(row.keyUuid())) {
+                return providerApiKeyRepository.decrypt(row);
+            }
+        }
+        return null;
     }
 
     // ==================== 账号修改（JSON API） ====================
@@ -331,10 +449,13 @@ public class AdminPageController {
     // ==================== 自定义供应商 API ====================
 
     @GetMapping("/config/api/custom-providers") @ResponseBody
-    public ResponseEntity<List<ProviderConfigRow>> listCustomProviders() {
-        // 从 provider_config 中筛选 custom- 前缀的供应商
+    public ResponseEntity<List<Map<String, Object>>> listCustomProviders() {
+        // 从 provider_config 中筛选 custom- 前缀的供应商，附带脱敏 API Key
         List<ProviderConfigRow> all = providerConfigRepository.findAllWithModels();
-        List<ProviderConfigRow> custom = all.stream().filter(p -> p.providerKey().startsWith("custom-")).toList();
+        List<Map<String, Object>> custom = all.stream()
+                .filter(p -> p.providerKey().startsWith("custom-"))
+                .map(this::buildProviderView)
+                .toList();
         return ResponseEntity.ok(custom);
     }
 
@@ -356,8 +477,8 @@ public class AdminPageController {
             // 验证 customTransforms 格式
             String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
             String url = baseUrl == null ? "" : baseUrl.trim();
-            // 在 provider_config 中创建记录（默认启用）
-            providerConfigRepository.saveProvider(providerKey, true, url, "", "openai", transforms);
+            // 在 provider_config 中创建记录（默认启用），API Key 后续在配置页面单独添加
+            providerConfigRepository.saveProvider(providerKey, true, url, "openai", transforms);
             return ResponseEntity.ok(Map.<String, Object>of("ok", true, "providerKey", providerKey, "displayName", name));
         }).subscribeOn(Schedulers.boundedElastic());
     }
@@ -461,15 +582,16 @@ public class AdminPageController {
     // ==================== API 调用日志接口 ====================
 
     /**
-     * 分页查询 API 调用日志。
+     * 基于游标分页查询 API 调用日志。
      *
-     * @param pageNum  页码（从 1 开始，默认 1）
+     * @param cursor 上一页最后一条记录的 ID，首屏传 null
      * @param pageSize 每页条数（默认 20，最大 100）
-     * @return 分页结果：currentPage, totalPages, pageSize, totalItems, items
+     * @return 游标分页结果：items、nextCursor、hasMore、pageSize
      */
     @GetMapping("/config/api/logs") @ResponseBody
-    public ResponseEntity<Map<String, Object>> listLogs(@RequestParam(value = "pageNum", defaultValue = "1") int pageNum, @RequestParam(value = "pageSize", defaultValue = "20") int pageSize) {
-        Map<String, Object> result = apiCallLogRepository.findLogs(pageNum, pageSize);
+    public ResponseEntity<Map<String, Object>> listLogs(@RequestParam(value = "cursor", required = false) Long cursor,
+                                                        @RequestParam(value = "pageSize", defaultValue = "20") int pageSize) {
+        Map<String, Object> result = apiCallLogRepository.findLogs(cursor, pageSize);
         return ResponseEntity.ok(result);
     }
 

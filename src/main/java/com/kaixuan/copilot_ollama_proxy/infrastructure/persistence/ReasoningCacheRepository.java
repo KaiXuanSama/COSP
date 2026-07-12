@@ -1,6 +1,8 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
 import com.kaixuan.copilot_ollama_proxy.application.reasoning.ReasoningCache;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Repository;
@@ -14,10 +16,12 @@ import org.springframework.stereotype.Repository;
  * 用于存储 DeepSeek 等模型在工具调用时的 reasoning_content，
  * 以便在下一轮请求中回填，满足上游对工具调用历史的校验要求。
  * <p>
- * 缓存记录默认保留 180 天，由 {@link #cleanupExpired()} 定时清理。
+ * 缓存记录默认保留 15 天，由 {@link #cleanupExpired()} 每日定时清理。
  */
 @Repository
 public class ReasoningCacheRepository implements ReasoningCache {
+
+     private static final Logger log = LoggerFactory.getLogger(ReasoningCacheRepository.class);
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -63,14 +67,14 @@ public class ReasoningCacheRepository implements ReasoningCache {
     }
 
     /**
-     * 定时清理超过 180 天的缓存记录，每周一零点执行。
+     * 定时清理超过 15 天的缓存记录，每日凌晨 3 点执行。
      */
-    @Scheduled(cron = "0 0 0 * * 1")
+    @Scheduled(cron = "0 0 3 * * *")
     public void cleanupExpired() {
-        int deleted = jdbcTemplate.update("DELETE FROM reasoning_cache WHERE created_at < datetime('now', '-180 day', 'localtime')");
+        int deleted = jdbcTemplate.update("DELETE FROM reasoning_cache WHERE created_at < "
+                + "strftime('%Y-%m-%dT%H:%M:%S', 'now', '-15 day', 'localtime')");
         if (deleted > 0) {
-            // 使用 System.out 避免引入 Logger 依赖
-            System.out.println("[ReasoningCache] 已清理 " + deleted + " 条过期思考链缓存");
+            log.info("[ReasoningCache] 已清理 {} 条超过 15 天的思考链缓存", deleted);
         }
     }
 }

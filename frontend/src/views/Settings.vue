@@ -163,7 +163,7 @@ const editingKey = ref<string | null>(null)
 const editForm = ref({
   baseUrl: '',
   apiKeys: [] as ApiKeyEntry[],
-  activeApiKeyIndex: 0,
+  activeKeyUuid: '' as string,
   models: [] as any[],
 })
 const pullingModels = ref(false)
@@ -190,15 +190,21 @@ const editingApiKeys = ref<ApiKeyEntry[]>([])
 
 /** 脱敏显示 API Key：前4位 + **** + 后4位 */
 function maskApiKey(key: string): string {
-  if (!key || key.length <= 8) return key ? '****' : ''
-  return key.substring(0, 4) + '****' + key.substring(key.length - 4)
+  if (!key || key.length <= 10) return key ? '****' : ''
+  return key.substring(0, 6) + '****' + key.substring(key.length - 4)
 }
 
-/** 构建下拉选项 */
+/** 展示某条 Key 的脱敏值：优先展示后端脱敏值，其次对新输入的明文脱敏 */
+function displayKey(entry: ApiKeyEntry): string {
+  if (entry.apiKey && entry.apiKey.trim()) return maskApiKey(entry.apiKey.trim())
+  return entry.masked || ''
+}
+
+/** 构建下拉选项，value 使用 keyUuid（新增未保存项用临时标记） */
 const apiKeyOptions = computed(() =>
   editForm.value.apiKeys.map((entry, index) => ({
-    label: `${entry.name || '未命名'}: ${maskApiKey(entry.api_key)}`,
-    value: index,
+    label: `${entry.name || '未命名'}: ${displayKey(entry)}`,
+    value: entry.keyUuid || `__new_${index}`,
   }))
 )
 
@@ -208,7 +214,7 @@ function openApiKeyModal() {
 }
 
 function addApiKeyEntry() {
-  editingApiKeys.value.push({ name: '', api_key: '' })
+  editingApiKeys.value.push({ name: '', apiKey: '' })
 }
 
 function removeApiKeyEntry(index: number) {
@@ -216,12 +222,13 @@ function removeApiKeyEntry(index: number) {
 }
 
 function saveApiKeyModal() {
-  // 过滤掉 api_key 为空的项
-  const valid = editingApiKeys.value.filter(k => k.api_key.trim())
+  // 保留有 keyUuid（已有）或填了新明文的项
+  const valid = editingApiKeys.value.filter(k => (k.keyUuid && k.keyUuid.length > 0) || (k.apiKey && k.apiKey.trim()))
   editForm.value.apiKeys = valid
-  // 如果激活索引超出范围，重置为 0
-  if (editForm.value.activeApiKeyIndex >= valid.length) {
-    editForm.value.activeApiKeyIndex = Math.max(0, valid.length - 1)
+  // 若激活项已被删除，重置为第一项
+  const activeStillExists = valid.some(k => k.keyUuid && k.keyUuid === editForm.value.activeKeyUuid)
+  if (!activeStillExists) {
+    editForm.value.activeKeyUuid = valid[0]?.keyUuid || (valid.length > 0 ? `__new_0` : '')
   }
   showApiKeyModal.value = false
 }
@@ -555,19 +562,15 @@ function openEditPanel(key: string) {
   editingKey.value = key
   const p = providerStore.providers[key]
   if (p) {
-    // 解析 apiKey JSON 数组
-    let apiKeys: ApiKeyEntry[] = []
-    try {
-      const parsed = typeof p.apiKey === 'string' ? JSON.parse(p.apiKey || '[]') : []
-      apiKeys = Array.isArray(parsed) ? parsed : []
-    } catch {
-      // 旧格式纯字符串兜底
-      if (p.apiKey) apiKeys = [{ name: 'Default', api_key: p.apiKey }]
-    }
+    // 后端返回脱敏后的 apiKeys（含 keyUuid / masked / active）
+    const apiKeys: ApiKeyEntry[] = Array.isArray(p.apiKeys)
+      ? p.apiKeys.map(k => ({ keyUuid: k.keyUuid, name: k.name, masked: k.masked, active: k.active }))
+      : []
+    const activeEntry = apiKeys.find(k => k.active)
     editForm.value = {
       baseUrl: p.baseUrl || providerMeta.value[key]?.apiUrlPlaceholder || '',
       apiKeys,
-      activeApiKeyIndex: p.activeApiKeyIndex ?? 0,
+      activeKeyUuid: activeEntry?.keyUuid || apiKeys[0]?.keyUuid || '',
       models: p.models.map(m => ({
         ...m,
         contextSize: String(m.contextSize ?? '0'),
@@ -671,10 +674,17 @@ function closeEditPanel() {
 async function saveEditPanel() {
   if (!editingKey.value) return
   const key = editingKey.value
+  // 序列化 apiKeys：仅回传 keyUuid（未修改）或 keyUuid+apiKey（修改）或 apiKey（新增）
+  const apiKeysPayload = editForm.value.apiKeys.map(k => {
+    const entry: Record<string, string> = { name: k.name || '' }
+    if (k.keyUuid) entry.keyUuid = k.keyUuid
+    if (k.apiKey && k.apiKey.trim()) entry.apiKey = k.apiKey.trim()
+    return entry
+  })
   const params: Record<string, string> = {
     baseUrl: editForm.value.baseUrl,
-    apiKeys: JSON.stringify(editForm.value.apiKeys),
-    activeApiKeyIndex: String(editForm.value.activeApiKeyIndex),
+    apiKeys: JSON.stringify(apiKeysPayload),
+    activeKeyUuid: editForm.value.activeKeyUuid.startsWith('__new_') ? '' : editForm.value.activeKeyUuid,
   }
   editForm.value.models.forEach((m, i) => {
     params[`models[${i}].name`] = m.modelName
@@ -689,13 +699,8 @@ async function saveEditPanel() {
   })
   try {
     await providerStore.saveProviderConfig(key, params)
-    // 更新本地缓存
-    if (providerStore.providers[key]) {
-      providerStore.providers[key].baseUrl = editForm.value.baseUrl
-      providerStore.providers[key].apiKey = JSON.stringify(editForm.value.apiKeys)
-      providerStore.providers[key].activeApiKeyIndex = editForm.value.activeApiKeyIndex
-      providerStore.providers[key].models = editForm.value.models.map((model: any) => buildEditableModel(model.modelName, model))
-    }
+    // 保存后从后端重新拉取，确保拿到最新的 keyUuid 与脱敏值
+    await providerStore.fetchAll()
     message.success('保存成功')
     setTimeout(() => closeEditPanel(), 600)
   } catch {
@@ -721,20 +726,47 @@ async function saveFakeVersion() {
 async function pullModels() {
   if (!editingKey.value) return
   const providerKey = editingKey.value
-  const activeKey = editForm.value.apiKeys[editForm.value.activeApiKeyIndex]
-  const apiKey = activeKey?.api_key?.trim() || ''
+
+  // 解析拉取模型所需的 Key：
+  // 1. 优先使用当前选中 Key 条目中新输入的明文（覆盖新增未保存 + 重新输入的场景）
+  // 2. 其次使用任意一条有明文输入的 Key
+  // 3. 若表单中完全没有明文，但当前选中 Key 已保存（有 keyUuid）→ 通过 UUID 让后端解密
+  // 4. 以上都不满足 → 提示用户
+  const activeUuid = editForm.value.activeKeyUuid
+  const activeEntry = editForm.value.apiKeys.find(
+    k => (k.keyUuid && k.keyUuid === activeUuid) || `__new_0` === activeUuid
+  )
+  let apiKey = activeEntry?.apiKey?.trim() || ''
+  let keyUuid = ''
   if (!apiKey) {
-    message.warning('请先添加并选择一个 API Key')
+    const anyPlain = editForm.value.apiKeys.find(k => k.apiKey && k.apiKey.trim())
+    apiKey = anyPlain?.apiKey?.trim() || ''
+  }
+  if (!apiKey) {
+    // 没有明文可用，尝试使用已保存 Key 的 UUID 让后端解密
+    if (activeEntry?.keyUuid) {
+      keyUuid = activeEntry.keyUuid
+    } else {
+      // 尝试任意一条已保存的 Key
+      const anySaved = editForm.value.apiKeys.find(k => k.keyUuid)
+      keyUuid = anySaved?.keyUuid || ''
+    }
+  }
+  if (!apiKey && !keyUuid) {
+    message.warning('拉取模型需要 API Key。请在"管理 API Key"中新增一条 Key 后再拉取。')
     return
   }
 
   pullingModels.value = true
   try {
     const resolvedBaseUrl = editForm.value.baseUrl.trim() || providerMeta.value[providerKey]?.apiUrlPlaceholder || ''
-    const responsePayload = await providerStore.pullProviderModels(providerKey, {
-      baseUrl: resolvedBaseUrl,
-      apiKey,
-    })
+    const payload: Record<string, string> = { baseUrl: resolvedBaseUrl }
+    if (apiKey) {
+      payload.apiKey = apiKey
+    } else {
+      payload.keyUuid = keyUuid
+    }
+    const responsePayload = await providerStore.pullProviderModels(providerKey, payload)
     const modelNames = extractModelNames(responsePayload)
     if (modelNames.length === 0) {
       message.warning('未拉取到模型')
@@ -1081,7 +1113,7 @@ function removeModel(index: number) {
           <label class="field-label">API Key</label>
           <div style="display: flex; gap: 8px; align-items: center;">
             <n-select
-              v-model:value="editForm.activeApiKeyIndex"
+              v-model:value="editForm.activeKeyUuid"
               :options="apiKeyOptions"
               :placeholder="editForm.apiKeys.length ? '选择 API Key' : '暂无 API Key，请点击管理添加'"
               style="flex: 1;"
@@ -1144,7 +1176,8 @@ function removeModel(index: number) {
         <div v-for="(entry, index) in editingApiKeys" :key="index"
           style="display: flex; gap: 8px; align-items: center;">
           <n-input v-model:value="entry.name" placeholder="名称" style="flex: 0 0 120px;" />
-          <n-input v-model:value="entry.api_key" type="password" show-password-on="click" placeholder="API Key"
+          <n-input v-model:value="entry.apiKey" type="password"
+            :placeholder="entry.masked ? `已保存：${entry.masked}（留空不修改）` : 'API Key'"
             style="flex: 1;" />
           <n-button size="small" quaternary type="error" @click="removeApiKeyEntry(index)"
             style="flex-shrink: 0;">删除</n-button>

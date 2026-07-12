@@ -87,51 +87,52 @@ public class ApiCallLogRepository implements ApiCallLogService {
                     "INSERT INTO api_call_log (provider_key, model_name, is_stream, status_code, request_headers, request_body, response_headers, response_body, chunks, duration_ms) "
                             + "VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)",
                     providerKey, modelName,
-                    statusCode,
+                    errorCode,
                     toJson(requestHeaders), toJson(requestBody),
-                    toJson(responseHeaders), errorBody, toJson(chunks), durationMs);
+                    toJson(errorHeaders), errorBody, toJson(chunks), durationMs);
         } catch (Exception e) {
             log.warn("保存 API 调用日志失败: {}", e.getMessage());
         }
     }
 
     /**
-     * 分页查询 API 调用日志，按时间倒序。
+     * 基于游标分页查询 API 调用日志，按时间倒序。
      *
-     * @param page     页码（从 1 开始）
+     * @param cursor 上一页最后一条记录的 ID，首屏传 null
      * @param pageSize 每页条数
-     * @return 包含分页信息的 Map：currentPage, totalPages, pageSize, totalItems, items
+     * @return 包含分页信息的 Map：items、nextCursor、hasMore、pageSize
      */
-    public Map<String, Object> findLogs(int page, int pageSize) {
-        // 参数校验
-        if (page < 1) page = 1;
+    public Map<String, Object> findLogs(Long cursor, int pageSize) {
         if (pageSize < 1) pageSize = 10;
         if (pageSize > 100) pageSize = 100;
 
-        // 查询总数
-        Long totalItems = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM api_call_log", Long.class);
-        if (totalItems == null) totalItems = 0L;
+        List<Map<String, Object>> items;
+        if (cursor == null) {
+            items = jdbcTemplate.queryForList(
+                    "SELECT id, provider_key, model_name, is_stream, status_code, duration_ms, created_at "
+                            + "FROM api_call_log ORDER BY created_at DESC, id DESC LIMIT ?",
+                    pageSize);
+        } else {
+            items = jdbcTemplate.queryForList(
+                    "SELECT id, provider_key, model_name, is_stream, status_code, duration_ms, created_at "
+                            + "FROM api_call_log WHERE id < ? ORDER BY created_at DESC, id DESC LIMIT ?",
+                    cursor, pageSize);
+        }
 
-        // 计算分页
-        int totalPages = (int) Math.ceil((double) totalItems / pageSize);
-        if (totalPages < 1) totalPages = 1;
-        if (page > totalPages) page = totalPages;
+        Long nextCursor = null;
+        boolean hasMore = false;
+        if (!items.isEmpty()) {
+            hasMore = items.size() == pageSize;
+            if (hasMore) {
+                nextCursor = ((Number) items.get(items.size() - 1).get("id")).longValue();
+            }
+        }
 
-        int offset = (page - 1) * pageSize;
-
-        // 查询当前页数据（不含大字段 request_body, response_body, chunks）
-        List<Map<String, Object>> items = jdbcTemplate.queryForList(
-                "SELECT id, provider_key, model_name, is_stream, status_code, duration_ms, created_at "
-                        + "FROM api_call_log ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                pageSize, offset);
-
-        // 构建响应
         Map<String, Object> result = new HashMap<>();
-        result.put("currentPage", page);
-        result.put("totalPages", totalPages);
-        result.put("pageSize", pageSize);
-        result.put("totalItems", totalItems);
         result.put("items", items);
+        result.put("nextCursor", nextCursor);
+        result.put("hasMore", hasMore);
+        result.put("pageSize", pageSize);
         return result;
     }
 
@@ -145,6 +146,25 @@ public class ApiCallLogRepository implements ApiCallLogService {
         List<Map<String, Object>> logs = jdbcTemplate.queryForList(
                 "SELECT * FROM api_call_log WHERE id = ?", id);
         return logs.isEmpty() ? null : logs.get(0);
+    }
+
+    /**
+     * 删除超出数量上限的旧日志，仅保留 ID 最大的最新记录。
+     *
+     * 完整请求、响应和 SSE chunks 不做任何截断；该方法只删除整条旧记录。
+     *
+     * @param maxRecords 最多保留的记录数，必须大于 0
+     * @return 删除的旧日志数量
+     */
+    public int trimToLatest(int maxRecords) {
+        if (maxRecords <= 0) {
+            throw new IllegalArgumentException("maxRecords 必须大于 0");
+        }
+        return jdbcTemplate.update(
+                "DELETE FROM api_call_log WHERE id < COALESCE(("
+                        + "SELECT MIN(id) FROM (SELECT id FROM api_call_log ORDER BY id DESC LIMIT ?)"
+                        + "), 0)",
+                maxRecords);
     }
 
     private String toJson(Object obj) {

@@ -13,17 +13,23 @@ export interface ProviderModel {
 }
 
 export interface ApiKeyEntry {
+  keyUuid?: string
   name: string
-  api_key: string
+  // 后端返回的脱敏值，仅用于展示；新增或修改时使用 apiKey 字段承载明文
+  masked?: string
+  // 编辑时用户输入的新明文；未修改时为空
+  apiKey?: string
+  active?: boolean
 }
 
 export interface Provider {
+  id?: number
   providerKey: string
   enabled: boolean
   baseUrl: string | null
-  apiKey: string
-  activeApiKeyIndex: number
   apiFormat: string
+  customTransforms?: string
+  apiKeys: ApiKeyEntry[]
   models: ProviderModel[]
 }
 
@@ -64,7 +70,7 @@ export const useProviderStore = defineStore('providers', () => {
     })
   }
 
-  async function pullProviderModels(providerKey: string, payload: { baseUrl: string; apiKey: string; modelPullPath?: string }) {
+  async function pullProviderModels(providerKey: string, payload: Record<string, string>) {
    const res = await http.post(`/providers/${providerKey}/pull-models`, payload, {
    skipAuthRedirect: true as any,
    } as any)

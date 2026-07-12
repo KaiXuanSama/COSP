@@ -32,8 +32,26 @@
   {
     "name": "spring.datasource.hikari.maximum-pool-size",
     "type": "java.lang.Integer",
-    "description": "SQLite 连接池最大连接数，SQLite 单文件建议设为 1。",
+    "description": "SQLite 连接池最大连接数。为兼顾调试重启和写入串行性，默认使用 2。",
+    "defaultValue": "2"
+  },
+  {
+    "name": "spring.datasource.hikari.minimum-idle",
+    "type": "java.lang.Integer",
+    "description": "SQLite 连接池最小空闲连接数。环境变量：SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE",
     "defaultValue": "1"
+  },
+  {
+    "name": "spring.datasource.hikari.connection-init-sql",
+    "type": "java.lang.String",
+    "description": "连接初始化 SQL。测试环境默认使用 PRAGMA foreign_keys = ON。环境变量：SPRING_DATASOURCE_HIKARI_CONNECTION_INIT_SQL",
+    "defaultValue": "PRAGMA foreign_keys = ON"
+  },
+  {
+    "name": "call-log.max-records",
+    "type": "java.lang.Integer",
+    "description": "API 调用日志最多保留的最新记录数。环境变量：CALL_LOG_MAX_RECORDS。完整正文和 SSE chunks 不做截断。",
+    "defaultValue": "100"
   },
   {
     "name": "spring.sql.init.mode",
@@ -56,25 +74,25 @@
   {
     "name": "proxy.upstream-chat-service",
     "type": "java.lang.String",
-    "description": "OpenAI 控制器使用的上游实现，支持 openai。",
+    "description": "OpenAI 控制器使用的上游实现，支持 openai。环境变量：PROXY_UPSTREAM_CHAT_SERVICE",
     "defaultValue": "openai"
   },
   {
     "name": "mimo.api-key",
     "type": "java.lang.String",
-    "description": "MiMo API 认证密钥，OpenAI 兼容接口使用 api-key，请求兼容层也会附带 x-api-key。",
+    "description": "MiMo API 认证密钥，OpenAI 兼容接口使用 api-key，请求兼容层也会附带 x-api-key。环境变量：MIMO_API_KEY",
     "defaultValue": ""
   },
   {
     "name": "mimo.base-url",
     "type": "java.lang.String",
-    "description": "MiMo 上游基础 URL，可填写根地址或 /v1 路径，系统会自动归一化。",
+    "description": "MiMo 上游基础 URL，可填写根地址或 /v1 路径，系统会自动归一化。环境变量：MIMO_BASE_URL",
     "defaultValue": "https://api.xiaomimimo.com"
   },
   {
     "name": "mimo.default-model",
     "type": "java.lang.String",
-    "description": "当 Copilot 请求中未指定模型时的回退模型名。",
+    "description": "当 Copilot 请求中未指定模型时的回退模型名。环境变量：MIMO_DEFAULT_MODEL",
     "defaultValue": "mimo-v2.5-pro"
   },
   {
@@ -84,9 +102,26 @@
     "defaultValue": "kimi-k2.5"
   },
   {
+    "name": "jwt.secret",
+    "type": "java.lang.String",
+    "description": "JWT 签名密钥。环境变量：JWT_SECRET",
+    "defaultValue": "cosp-default-jwt-secret-key-change-me-in-production"
+  },
+  {
+    "name": "jwt.ttl-hours",
+    "type": "java.lang.Long",
+    "description": "JWT 过期时间（小时）。环境变量：JWT_TTL_HOURS",
+    "defaultValue": "24"
+  },
+  {
+    "name": "COSP_MASTER_KEY",
+    "type": "java.lang.String",
+    "description": "API Key 加解密主密钥。环境变量：COSP_MASTER_KEY"
+  },
+  {
     "name": "logging.level.com.kaixuan.copilot_ollama_proxy",
     "type": "java.lang.String",
-    "description": "日志级别配置。",
+    "description": "日志级别配置。环境变量：LOGGING_LEVEL_COM_KAIXUAN_COPILOT_OLLAMA_PROXY",
     "defaultValue": "DEBUG"
   },
   {
@@ -122,31 +157,36 @@
   {
     "name": "sensenova.default-model",
     "type": "java.lang.String",
-    "description": "A description for 'sensenova.default-model'"
+    "description": "SenseNova 默认模型名称，当请求中未指定模型时使用。"
   },
   {
     "name": "deepseek.default-model",
     "type": "java.lang.String",
-    "description": "A description for 'deepseek.default-model'"
+    "description": "DeepSeek 默认模型名称，当请求中未指定模型时使用。"
   },
   {
     "name": "uumit.default-model",
     "type": "java.lang.String",
-    "description": "A description for 'uumit.default-model'"
+    "description": "UmiT 默认模型名称，当请求中未指定模型时使用。"
   },
   {
     "name": "agnes.default-model",
     "type": "java.lang.String",
-    "description": "A description for 'agnes.default-model'"
+    "description": "Agnes 默认模型名称，当请求中未指定模型时使用。"
   },
   {
     "name": "zhipu.default-model",
     "type": "java.lang.String",
-    "description": "智谱AI 默认模型名称，当请求中未指定模型时使用。推荐 glm-4.5-air（高性价比）或 glm-5.1（旗舰）。"
+    "description": "智谱 AI 默认模型名称，当请求中未指定模型时使用。推荐 glm-4.5-air（高性价比）或 glm-5.1（旗舰）。"
   },
   {
     "name": "xunfei.default-model",
     "type": "java.lang.String",
     "description": "讯飞星火默认模型名称，当请求中未指定模型时使用。推荐 xdeepseekv3（DeepSeek V3）或 xqwen257b（通义千问）。"
+  },
+  {
+    "name": "COSP_MASTER_KEY",
+    "type": "java.lang.String",
+    "description": "A description for 'COSP_MASTER_KEY'"
   }
 ]}
