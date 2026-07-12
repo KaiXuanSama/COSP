@@ -284,6 +284,10 @@ public class AdminPageController {
 
     /**
      * 使用当前表单中的 Base URL 与 API Key 从上游拉取模型列表。
+     *
+     * 支持两种 Key 来源：
+     * 1. 前端传入明文 apiKey（新增未保存 / 已保存但重新输入了明文）
+     * 2. 前端传入 keyUuid（已保存的 Key，由后端从数据库解密得到明文）
      */
     @PostMapping("/config/api/providers/{providerKey}/pull-models") @ResponseBody
     public Mono<ResponseEntity<Object>> pullProviderModels(@PathVariable String providerKey, @RequestBody Map<String, String> body) {
@@ -293,15 +297,42 @@ public class AdminPageController {
 
         String baseUrl = body.getOrDefault("baseUrl", "").trim();
         String apiKey = body.getOrDefault("apiKey", "").trim();
+        String keyUuid = body.getOrDefault("keyUuid", "").trim();
         String modelPullPath = body.getOrDefault("modelPullPath", "").trim();
         if (baseUrl.isBlank()) {
             return Mono.just(ResponseEntity.badRequest().body((Object) Map.of("ok", false, "error", "请先填写 API 地址。")));
+        }
+
+        // 优先使用前端传入的明文 Key；其次通过 keyUuid 从数据库解密
+        if (apiKey.isBlank() && !keyUuid.isBlank()) {
+            apiKey = resolveApiKeyByUuid(providerKey, keyUuid);
+            if (apiKey == null) {
+                return Mono.just(ResponseEntity.badRequest().body((Object) Map.of("ok", false, "error", "指定的 API Key 不存在或已被删除，请重新选择。")));
+            }
         }
         if (apiKey.isBlank()) {
             return Mono.just(ResponseEntity.badRequest().body((Object) Map.of("ok", false, "error", "请先填写 API Key。")));
         }
 
         return forwardModelsRequest(providerKey, baseUrl, apiKey, modelPullPath);
+    }
+
+    /**
+     * 根据 keyUuid 从数据库查找并解密 API Key。
+     *
+     * @return 明文 API Key，找不到时返回 null
+     */
+    private String resolveApiKeyByUuid(String providerKey, String keyUuid) {
+        ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
+        if (provider == null) {
+            return null;
+        }
+        for (ProviderApiKeyRow row : providerApiKeyRepository.findByProviderId(provider.id())) {
+            if (keyUuid.equals(row.keyUuid())) {
+                return providerApiKeyRepository.decrypt(row);
+            }
+        }
+        return null;
     }
 
     // ==================== 账号修改（JSON API） ====================

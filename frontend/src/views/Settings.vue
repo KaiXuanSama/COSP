@@ -726,28 +726,47 @@ async function saveFakeVersion() {
 async function pullModels() {
   if (!editingKey.value) return
   const providerKey = editingKey.value
-  // 拉取模型需要明文 Key；已保存的 Key 是脱敏的，无法用于请求。
-  // 优先使用激活项中新输入的明文，其次使用任意一条新输入了明文的 Key。
+
+  // 解析拉取模型所需的 Key：
+  // 1. 优先使用当前选中 Key 条目中新输入的明文（覆盖新增未保存 + 重新输入的场景）
+  // 2. 其次使用任意一条有明文输入的 Key
+  // 3. 若表单中完全没有明文，但当前选中 Key 已保存（有 keyUuid）→ 通过 UUID 让后端解密
+  // 4. 以上都不满足 → 提示用户
+  const activeUuid = editForm.value.activeKeyUuid
   const activeEntry = editForm.value.apiKeys.find(
-    k => (k.keyUuid && k.keyUuid === editForm.value.activeKeyUuid) || `__new_0` === editForm.value.activeKeyUuid
+    k => (k.keyUuid && k.keyUuid === activeUuid) || `__new_0` === activeUuid
   )
   let apiKey = activeEntry?.apiKey?.trim() || ''
+  let keyUuid = ''
   if (!apiKey) {
     const anyPlain = editForm.value.apiKeys.find(k => k.apiKey && k.apiKey.trim())
     apiKey = anyPlain?.apiKey?.trim() || ''
   }
   if (!apiKey) {
-    message.warning('拉取模型需要明文 API Key。请在"管理 API Key"中新增或重新输入一条 Key 后再拉取。')
+    // 没有明文可用，尝试使用已保存 Key 的 UUID 让后端解密
+    if (activeEntry?.keyUuid) {
+      keyUuid = activeEntry.keyUuid
+    } else {
+      // 尝试任意一条已保存的 Key
+      const anySaved = editForm.value.apiKeys.find(k => k.keyUuid)
+      keyUuid = anySaved?.keyUuid || ''
+    }
+  }
+  if (!apiKey && !keyUuid) {
+    message.warning('拉取模型需要 API Key。请在"管理 API Key"中新增一条 Key 后再拉取。')
     return
   }
 
   pullingModels.value = true
   try {
     const resolvedBaseUrl = editForm.value.baseUrl.trim() || providerMeta.value[providerKey]?.apiUrlPlaceholder || ''
-    const responsePayload = await providerStore.pullProviderModels(providerKey, {
-      baseUrl: resolvedBaseUrl,
-      apiKey,
-    })
+    const payload: Record<string, string> = { baseUrl: resolvedBaseUrl }
+    if (apiKey) {
+      payload.apiKey = apiKey
+    } else {
+      payload.keyUuid = keyUuid
+    }
+    const responsePayload = await providerStore.pullProviderModels(providerKey, payload)
     const modelNames = extractModelNames(responsePayload)
     if (modelNames.length === 0) {
       message.warning('未拉取到模型')

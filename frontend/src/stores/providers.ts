@@ -70,7 +70,7 @@ export const useProviderStore = defineStore('providers', () => {
     })
   }
 
-  async function pullProviderModels(providerKey: string, payload: { baseUrl: string; apiKey: string; modelPullPath?: string }) {
+  async function pullProviderModels(providerKey: string, payload: Record<string, string>) {
    const res = await http.post(`/providers/${providerKey}/pull-models`, payload, {
    skipAuthRedirect: true as any,
    } as any)
