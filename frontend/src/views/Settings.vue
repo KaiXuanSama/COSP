@@ -2,7 +2,10 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NSelect, useMessage } from 'naive-ui'
 import ProviderModelsSection from '@/components/settings/ProviderModelsSection.vue'
+import RequestBodyRuleEditor from '@/components/settings/request-body-rules/RequestBodyRuleEditor.vue'
 import { useProviderStore, type ApiKeyEntry } from '@/stores/providers'
+import type { RuleSet } from '@/features/request-body-rules/types'
+import { createEmptyRuleSet } from '@/features/request-body-rules/types'
 
 const providerStore = useProviderStore()
 const message = useMessage()
@@ -362,6 +365,10 @@ const customHeaders = ref<KeyValueEntry[]>([])
 /** 高级设置 - 请求体修剪列表 */
 const customBodyTransforms = ref<KeyValueEntry[]>([])
 
+/** 请求体映射规则（V1 仅前端预览，不落库） */
+const requestBodyRules = ref<RuleSet>(createEmptyRuleSet())
+const showRequestBodyRuleEditor = ref(false)
+
 function addCustomHeader() {
   customHeaders.value.push({ key: '', value: '' })
 }
@@ -382,6 +389,7 @@ function resetCustomAdvanced() {
   customAdvancedExpanded.value = false
   customHeaders.value = []
   customBodyTransforms.value = []
+  requestBodyRules.value = createEmptyRuleSet()
   customBaseUrl.value = ''
   editingCustomKey.value = null
 }
@@ -1024,6 +1032,20 @@ function removeModel(index: number) {
             </button>
           </div>
         </div>
+
+        <!-- 请求体映射规则（V1 仅前端预览） -->
+        <div class="advanced-section">
+          <div class="advanced-section-header">
+            <span class="advanced-section-title">请求体映射规则</span>
+            <n-button text size="tiny" class="advanced-add-btn" @click="showRequestBodyRuleEditor = true">
+              配置规则
+            </n-button>
+          </div>
+          <div class="advanced-empty" style="cursor: pointer;" @click="showRequestBodyRuleEditor = true">
+            已配置 {{ requestBodyRules.rules.length }} 条规则
+            <span class="request-body-rules-hint">（第一版仅用于预览，不会随供应商保存）</span>
+          </div>
+        </div>
       </div>
 
       <template #footer>
@@ -1033,6 +1055,13 @@ function removeModel(index: number) {
         </div>
       </template>
     </n-modal>
+
+    <!-- 请求体规则编辑器（二级模态框） -->
+    <RequestBodyRuleEditor
+      v-model:show="showRequestBodyRuleEditor"
+      :model-rules="requestBodyRules"
+      @apply="requestBodyRules = $event"
+    />
 
     <!-- 预设供应商选择模态框 -->
     <n-modal v-model:show="showPresetModal" preset="card" title="选择预设供应商"
@@ -1734,6 +1763,11 @@ function removeModel(index: number) {
   font-family: $font-body;
   font-size: 12px;
   color: $text-muted;
+}
+
+.request-body-rules-hint {
+  font-size: 11px;
+  opacity: 0.7;
 }
 
 .advanced-row {
