@@ -8,7 +8,7 @@
  * 草稿语义：打开时复制父级规则，"应用"才提交，"取消"丢弃。
  * 第一版不落库，仅前端内存态。
  */
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
 import { NModal, NButton, NInput, NScrollbar, useMessage } from 'naive-ui'
 import type { RuleSet, FieldRule } from '@/features/request-body-rules/types'
 import { createEmptyRuleSet } from '@/features/request-body-rules/types'
@@ -71,6 +71,123 @@ function parseInput() {
     inputError.value = `JSON 语法错误: ${e.message}`
   }
 }
+
+// ==================== 高度同步：左栏 resize → 右栏跟随 ====================
+
+const leftInputRef = ref<HTMLElement | null>(null)
+const rightOutputRef = ref<HTMLElement | null>(null)
+const rightOutputHeight = ref<string>('140px')
+let resizeObserver: ResizeObserver | null = null
+
+function syncRightHeight(height: number) {
+  rightOutputHeight.value = `${height}px`
+}
+
+function resolveLeftDom(): HTMLElement | null {
+  const ref = leftInputRef.value as any
+  if (!ref) return null
+  return ref.$el || ref
+}
+
+// ==================== 滚动同步：左右两栏垂直滚动比例同步 ====================
+
+let isSyncingLeftToRight = false
+let isSyncingRightToLeft = false
+let leftTextarea: HTMLTextAreaElement | null = null
+let rightScrollEl: HTMLElement | null = null
+
+function findLeftTextarea(root: HTMLElement | null): HTMLTextAreaElement | null {
+  if (!root) return null
+  return root.querySelector('textarea')
+}
+
+function findRightScrollEl(root: HTMLElement | null): HTMLElement | null {
+  // NScrollbar 内部用 .n-scrollbar-container 承载滚动
+  if (!root) return null
+  return root.querySelector('.n-scrollbar-container') || root.querySelector('.n-scrollbar')
+}
+
+function getScrollMetrics(el: HTMLElement): { ratio: number; max: number } {
+  const max = el.scrollHeight - el.clientHeight
+  const ratio = max > 0 ? el.scrollTop / max : 0
+  return { ratio, max }
+}
+
+function onLeftScroll() {
+  if (isSyncingRightToLeft) return
+  if (!leftTextarea || !rightScrollEl) return
+  const { ratio, max } = getScrollMetrics(leftTextarea)
+  isSyncingLeftToRight = true
+  rightScrollEl.scrollTop = ratio * max
+  requestAnimationFrame(() => {
+    isSyncingLeftToRight = false
+  })
+}
+
+function onRightScroll() {
+  if (isSyncingLeftToRight) return
+  if (!leftTextarea || !rightScrollEl) return
+  const { ratio, max } = getScrollMetrics(rightScrollEl)
+  isSyncingRightToLeft = true
+  leftTextarea.scrollTop = ratio * (leftTextarea.scrollHeight - leftTextarea.clientHeight)
+  requestAnimationFrame(() => {
+    isSyncingRightToLeft = false
+  })
+}
+
+watch(
+  () => props.show,
+  async (visible) => {
+    if (visible) {
+      await nextTick()
+      const el = resolveLeftDom()
+      if (el && typeof ResizeObserver !== 'undefined') {
+        syncRightHeight(el.getBoundingClientRect().height)
+        resizeObserver = new ResizeObserver((entries) => {
+          for (const entry of entries) {
+            const h = entry.contentRect.height
+            if (h > 0) syncRightHeight(h)
+          }
+        })
+        resizeObserver.observe(el)
+      }
+
+      // 绑定滚动同步
+      await nextTick()
+      leftTextarea = findLeftTextarea(el)
+      const rightRoot = rightOutputRef.value
+      rightScrollEl = findRightScrollEl(rightRoot)
+      if (leftTextarea) leftTextarea.addEventListener('scroll', onLeftScroll)
+      if (rightScrollEl) rightScrollEl.addEventListener('scroll', onRightScroll)
+    } else {
+      if (resizeObserver) {
+        resizeObserver.disconnect()
+        resizeObserver = null
+      }
+      if (leftTextarea) {
+        leftTextarea.removeEventListener('scroll', onLeftScroll)
+        leftTextarea = null
+      }
+      if (rightScrollEl) {
+        rightScrollEl.removeEventListener('scroll', onRightScroll)
+        rightScrollEl = null
+      }
+    }
+  },
+)
+
+onBeforeUnmount(() => {
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
+  if (leftTextarea) {
+    leftTextarea.removeEventListener('scroll', onLeftScroll)
+  }
+  if (rightScrollEl) {
+    rightScrollEl.removeEventListener('scroll', onRightScroll)
+  }
+})
 
 watch(inputJsonText, parseInput)
 
@@ -177,10 +294,12 @@ function handleCancel() {
           </div>
         </div>
         <NInput
+          ref="leftInputRef"
           :value="inputJsonText"
           @update:value="inputJsonText = $event"
           type="textarea"
-          :autosize="{ minRows: 8, maxRows: 14 }"
+          :autosize="{ minRows: 3, maxRows: 30 }"
+          :resizable="true"
           class="preview-input"
           placeholder="在此编辑或粘贴请求体 JSON"
         />
@@ -198,9 +317,11 @@ function handleCancel() {
             <NButton text size="tiny" :disabled="!outputJsonText" @click="copyOutput">复制</NButton>
           </div>
         </div>
-        <NScrollbar class="preview-output-scroll">
-          <pre class="preview-output">{{ outputJsonText || '（请先修正左侧 JSON）' }}</pre>
-        </NScrollbar>
+        <div ref="rightOutputRef" class="preview-output-wrapper" :style="{ height: rightOutputHeight }">
+          <NScrollbar class="preview-output-scroll">
+            <pre class="preview-output">{{ outputJsonText || '（请先修正左侧 JSON）' }}</pre>
+          </NScrollbar>
+        </div>
       </div>
     </div>
 
@@ -299,13 +420,40 @@ function handleCancel() {
 .preview-input {
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   font-size: 12px;
+  height: 140px;
+  min-height: 100px;
+  max-height: 600px;
+  border: 1px solid $border;
+  border-radius: $radius;
+  resize: vertical;
+  overflow: auto;
 }
 
-.preview-output-scroll {
-  max-height: 300px;
+.preview-input :deep(.n-input) {
+  height: 100%;
+}
+
+.preview-input :deep(.n-input-wrapper),
+.preview-input :deep(.n-input__textarea) {
+  height: 100%;
+}
+
+.preview-input :deep(.n-input__textarea-el) {
+  height: 100%;
+}
+
+.preview-output-wrapper {
   border: 1px solid $border;
   border-radius: $radius;
   background: $bg;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-output-scroll {
+  flex: 1;
+  height: 100%;
 }
 
 .preview-output {
