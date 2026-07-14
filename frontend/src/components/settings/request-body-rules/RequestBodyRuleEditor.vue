@@ -154,7 +154,8 @@ function handleCancel() {
     @update:show="emit('update:show', $event)"
     preset="card"
     title="请求体映射规则配置（预览）"
-    :style="{ width: '90vw', maxWidth: '1200px' }"
+    :style="{ width: '90vw', maxWidth: '1200px', maxHeight: '90vh', display: 'flex', 'flex-direction': 'column' }"
+    content-style="overflow: auto; flex: 1; min-height: 0"
     closable
     :mask-closable="true"
   >
@@ -179,7 +180,7 @@ function handleCancel() {
           :value="inputJsonText"
           @update:value="inputJsonText = $event"
           type="textarea"
-          :autosize="{ minRows: 12, maxRows: 20 }"
+          :autosize="{ minRows: 8, maxRows: 14 }"
           class="preview-input"
           placeholder="在此编辑或粘贴请求体 JSON"
         />
@@ -301,7 +302,7 @@ function handleCancel() {
 }
 
 .preview-output-scroll {
-  max-height: 400px;
+  max-height: 300px;
   border: 1px solid $border;
   border-radius: $radius;
   background: $bg;
