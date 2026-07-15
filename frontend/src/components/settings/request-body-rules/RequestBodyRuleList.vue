@@ -82,9 +82,10 @@ function renumber(rules: FieldRule[]) {
       @remove="removeRule(index)"
     />
 
-    <NButton dashed size="small" @click="addRule" class="rule-list-add-btn">
-      + 添加规则
-    </NButton>
+    <button class="rule-list-add" @click="addRule" type="button">
+      <span class="rule-list-add-icon">+</span>
+      <span>添加规则</span>
+    </button>
   </div>
 </template>
 
@@ -94,19 +95,47 @@ function renumber(rules: FieldRule[]) {
 .rule-list {
   display: flex;
   flex-direction: column;
-  gap: $space-xs;
+  gap: 4px;
 }
 
 .rule-list-empty {
-  padding: $space-md;
+  padding: 12px;
   text-align: center;
   color: $text-muted;
-  font-size: 13px;
-  border: 1px dashed $border;
+  font-size: 12px;
+  border: 1px dashed rgba($border, 0.6);
   border-radius: $radius;
+  background: transparent;
 }
 
-.rule-list-add-btn {
-  margin-top: $space-xs;
+.rule-list-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: $accent;
+  background: rgba($accent, 0.06);
+  border: none;
+  border-radius: $radius;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+
+  &:hover {
+    background: rgba($accent, 0.12);
+    color: darken($accent, 8%);
+  }
+
+  &:active {
+    background: rgba($accent, 0.18);
+  }
+}
+
+.rule-list-add-icon {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
 }
 </style>

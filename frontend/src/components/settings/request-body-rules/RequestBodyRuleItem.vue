@@ -265,15 +265,38 @@ function updateField(val: string) {
       </label>
 
       <div class="rule-actions">
-        <NButton text size="tiny" :disabled="rule.order === 0" @click="emit('move-up')" title="上移">
-          ↑
-        </NButton>
-        <NButton text size="tiny" @click="emit('move-down')" title="下移">
-          ↓
-        </NButton>
-        <NButton text size="tiny" type="error" @click="emit('remove')" title="删除">
-          ✕
-        </NButton>
+        <button
+          class="rule-icon-btn"
+          :disabled="rule.order === 0"
+          @click="emit('move-up')"
+          title="上移"
+          type="button"
+        >
+          <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="4 10 8 6 12 10" />
+          </svg>
+        </button>
+        <button
+          class="rule-icon-btn"
+          @click="emit('move-down')"
+          title="下移"
+          type="button"
+        >
+          <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="4 6 8 10 12 6" />
+          </svg>
+        </button>
+        <button
+          class="rule-icon-btn rule-icon-btn--danger"
+          @click="emit('remove')"
+          title="删除"
+          type="button"
+        >
+          <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="4" y1="4" x2="12" y2="12" />
+            <line x1="12" y1="4" x2="4" y2="12" />
+          </svg>
+        </button>
       </div>
     </div>
 
@@ -324,9 +347,17 @@ function updateField(val: string) {
           class="cond-value"
         />
         <span v-else class="cond-value-placeholder">—</span>
-        <NButton text size="tiny" type="error" @click="removeCondition(idx)" title="删除条件">
-          ✕
-        </NButton>
+        <button
+          class="rule-icon-btn rule-icon-btn--danger"
+          @click="removeCondition(idx)"
+          title="删除条件"
+          type="button"
+        >
+          <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="4" y1="4" x2="12" y2="12" />
+            <line x1="12" y1="4" x2="4" y2="12" />
+          </svg>
+        </button>
       </div>
       <div v-if="rule.conditions.length === 0" class="rule-conditions-empty">
         未添加条件（将始终执行）
@@ -353,22 +384,24 @@ function updateField(val: string) {
 @use '@/styles/variables' as *;
 
 .rule-item {
-  border: 1px solid $border;
+  border: 1px solid rgba($accent, 0.18);
   border-radius: $radius;
-  padding: $space-sm $space-sm $space-sm $space-xs;
-  background: $bg;
-  margin-bottom: $space-xs;
+  padding: 6px 8px;
+  background: rgba($accent, 0.03);
+  margin-bottom: 4px;
+  font-size: 13px;
 
   &--nested {
-    margin-left: $space-sm;
-    border-left: 3px solid $accent;
+    margin-left: 8px;
+    border-left: 2px solid rgba($accent, 0.5);
+    background: transparent;
   }
 }
 
 .rule-header {
   display: flex;
   align-items: center;
-  gap: $space-xs;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
@@ -376,22 +409,22 @@ function updateField(val: string) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 22px;
-  height: 22px;
+  min-width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: $accent;
   color: #fff;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   flex-shrink: 0;
 }
 
 .rule-field-select {
-  width: 160px;
+  width: 150px;
 }
 
 .rule-op-select {
-  width: 140px;
+  width: 130px;
 }
 
 .rule-conditional-toggle {
@@ -413,16 +446,58 @@ function updateField(val: string) {
   margin-left: auto;
 }
 
+.rule-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: $text-muted;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+
+  &:hover:not(:disabled) {
+    background: rgba($accent, 0.12);
+    color: $accent;
+  }
+
+  &:active:not(:disabled) {
+    background: rgba($accent, 0.2);
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  &--danger {
+    color: $danger;
+
+    &:hover:not(:disabled) {
+      background: rgba($danger, 0.12);
+      color: $danger;
+    }
+  }
+
+  svg {
+    display: block;
+  }
+}
+
 .rule-value-section {
-  margin-top: $space-xs;
-  padding-left: 30px;
+  margin-top: 4px;
+  padding-left: 24px;
 }
 
 .rule-value-label {
   display: block;
-  font-size: 12px;
+  font-size: 11px;
   color: $text-muted;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
 .rule-error {
@@ -433,27 +508,27 @@ function updateField(val: string) {
 }
 
 .rule-conditions {
-  margin-top: $space-xs;
-  padding-left: 30px;
+  margin-top: 4px;
+  padding-left: 24px;
 }
 
 .rule-conditions-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
 .rule-conditions-title {
-  font-size: 12px;
+  font-size: 11px;
   color: $text-muted;
 }
 
 .rule-condition-row {
   display: flex;
   align-items: center;
-  gap: $space-xs;
-  margin-bottom: 4px;
+  gap: 4px;
+  margin-bottom: 2px;
 }
 
 .cond-path {
@@ -461,7 +536,7 @@ function updateField(val: string) {
 }
 
 .cond-op {
-  width: 100px;
+  width: 90px;
 }
 
 .cond-value {
@@ -477,20 +552,20 @@ function updateField(val: string) {
 }
 
 .rule-conditions-empty {
-  font-size: 12px;
+  font-size: 11px;
   color: $text-muted;
   font-style: italic;
 }
 
 .rule-nested {
-  margin-top: $space-xs;
-  padding-left: 30px;
+  margin-top: 4px;
+  padding-left: 24px;
 }
 
 .rule-nested-empty {
-  font-size: 12px;
+  font-size: 11px;
   color: $text-muted;
   font-style: italic;
-  padding: $space-xs;
+  padding: 4px;
 }
 </style>
