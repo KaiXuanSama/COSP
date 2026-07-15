@@ -15,6 +15,8 @@ const props = defineProps<{
   scopeObject: Record<string, unknown> | null
   /** 层级深度 */
   depth: number
+  /** 是否仅用于展示；为 true 时禁止修改、排序和增删规则 */
+  readonly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -76,13 +78,14 @@ function renumber(rules: FieldRule[]) {
       :rule="rule"
       :scope-object="scopeObject"
       :depth="depth"
+      :readonly="readonly"
       @update:rule="updateRule(index, $event)"
       @move-up="moveUp(index)"
       @move-down="moveDown(index)"
       @remove="removeRule(index)"
     />
 
-    <button class="rule-list-add" @click="addRule" type="button">
+    <button class="rule-list-add" :disabled="readonly" @click="addRule" type="button">
       <span class="rule-list-add-icon">+</span>
       <span>添加规则</span>
     </button>
@@ -130,6 +133,11 @@ function renumber(rules: FieldRule[]) {
 
   &:active {
     background: rgba($accent, 0.18);
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 }
 

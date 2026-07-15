@@ -5,12 +5,12 @@
  * 每个选项卡都使用正式转换引擎实时执行示例，左侧 JSON 可编辑，
  * 右侧通过与主编辑器相同的差异树展示结果，避免文档示例与实际行为脱节。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { NButton, NInput, NModal, NScrollbar, NTabPane, NTabs } from 'naive-ui'
 import { transform } from '@/features/request-body-rules/engine'
 import { buildDiffTree } from '@/features/request-body-rules/diff'
 import { RULE_HELP_EXAMPLES } from '@/features/request-body-rules/helpExamples'
-import type { FieldRule, RuleSet, TransformWarning } from '@/features/request-body-rules/types'
+import type { RuleSet, TransformWarning } from '@/features/request-body-rules/types'
 import DiffJsonNode from './DiffJsonNode.vue'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
 
@@ -25,6 +25,12 @@ const emit = defineEmits<{
 const activeTab = ref(RULE_HELP_EXAMPLES[0].key)
 const exampleInputs = ref<Record<string, string>>({})
 const exampleRules = ref<Record<string, RuleSet>>({})
+const helpContentRoot = ref<HTMLElement | null>(null)
+
+let leftTextarea: HTMLTextAreaElement | null = null
+let rightScrollEl: HTMLElement | null = null
+let syncingLeftToRight = false
+let syncingRightToLeft = false
 
 function cloneRuleSet(rules: RuleSet): RuleSet {
   return JSON.parse(JSON.stringify(rules))
@@ -96,16 +102,56 @@ function restoreCurrentInput() {
   exampleInputs.value[activeExample.value.key] = JSON.stringify(activeExample.value.input, null, 2)
 }
 
-function restoreCurrentRules() {
-  exampleRules.value[activeExample.value.key] = cloneRuleSet(activeExample.value.rules)
+function scrollRatio(element: HTMLElement): number {
+  const max = element.scrollHeight - element.clientHeight
+  return max > 0 ? element.scrollTop / max : 0
 }
 
-function updateExampleRules(exampleKey: string, rules: FieldRule[]) {
-  const example = RULE_HELP_EXAMPLES.find((item) => item.key === exampleKey)
-  if (!example) return
-  const current = exampleRules.value[exampleKey] ?? cloneRuleSet(example.rules)
-  exampleRules.value[exampleKey] = { ...current, rules }
+function onLeftScroll() {
+  if (syncingRightToLeft || !leftTextarea || !rightScrollEl) return
+  syncingLeftToRight = true
+  const rightMax = rightScrollEl.scrollHeight - rightScrollEl.clientHeight
+  rightScrollEl.scrollTop = scrollRatio(leftTextarea) * rightMax
+  requestAnimationFrame(() => {
+    syncingLeftToRight = false
+  })
 }
+
+function onRightScroll() {
+  if (syncingLeftToRight || !leftTextarea || !rightScrollEl) return
+  syncingRightToLeft = true
+  const leftMax = leftTextarea.scrollHeight - leftTextarea.clientHeight
+  leftTextarea.scrollTop = scrollRatio(rightScrollEl) * leftMax
+  requestAnimationFrame(() => {
+    syncingRightToLeft = false
+  })
+}
+
+function unbindPreviewScroll() {
+  leftTextarea?.removeEventListener('scroll', onLeftScroll)
+  rightScrollEl?.removeEventListener('scroll', onRightScroll)
+  leftTextarea = null
+  rightScrollEl = null
+}
+
+async function bindPreviewScroll() {
+  unbindPreviewScroll()
+  await nextTick()
+  const panel = helpContentRoot.value?.querySelector<HTMLElement>(
+    `[data-help-example="${activeTab.value}"]`,
+  )
+  leftTextarea = panel?.querySelector<HTMLTextAreaElement>('.demo-input textarea') ?? null
+  rightScrollEl = panel?.querySelector<HTMLElement>('.demo-output .n-scrollbar-container') ?? null
+  leftTextarea?.addEventListener('scroll', onLeftScroll)
+  rightScrollEl?.addEventListener('scroll', onRightScroll)
+}
+
+watch([() => props.show, activeTab], ([visible]) => {
+  if (visible) void bindPreviewScroll()
+  else unbindPreviewScroll()
+}, { flush: 'post' })
+
+onBeforeUnmount(unbindPreviewScroll)
 </script>
 
 <template>
@@ -118,6 +164,7 @@ function updateExampleRules(exampleKey: string, rules: FieldRule[]) {
     content-style="overflow-x: hidden; overflow-y: auto; flex: 1; min-height: 0; padding-top: 8px"
     closable
   >
+    <div ref="helpContentRoot" class="help-content-root">
     <div class="help-intro">
       <div>
         <div class="help-intro-title">先看效果，再照着配置</div>
@@ -139,7 +186,7 @@ function updateExampleRules(exampleKey: string, rules: FieldRule[]) {
         :name="example.key"
         :tab="example.title"
       >
-        <div class="help-tab-content">
+        <div class="help-tab-content" :data-help-example="example.key">
             <section class="explanation-card">
               <div class="explanation-main">
                 <span class="example-badge">规则效果</span>
@@ -197,20 +244,19 @@ function updateExampleRules(exampleKey: string, rules: FieldRule[]) {
               <div class="example-rule-header">
                 <div>
                   <span class="demo-title">对应规则设置</span>
-                  <span class="demo-subtitle">与主编辑器完全一致，可修改并实时观察上方结果</span>
+                  <span class="demo-subtitle">与主编辑器完全一致，作为只读配置供对照学习</span>
                 </div>
                 <div class="example-rule-actions">
                   <span class="example-rule-count">
                     {{ exampleRules[example.key]?.rules.length ?? 0 }} 条顶层规则
                   </span>
-                  <NButton text size="tiny" @click="restoreCurrentRules">恢复规则</NButton>
                 </div>
               </div>
               <RequestBodyRuleList
                 :rules="exampleRules[example.key]?.rules ?? []"
                 :scope-object="exampleResults[example.key]?.input ?? null"
                 :depth="0"
-                @update:rules="updateExampleRules(example.key, $event)"
+                :readonly="true"
               />
             </section>
 
@@ -233,6 +279,7 @@ function updateExampleRules(exampleKey: string, rules: FieldRule[]) {
         </div>
       </NTabPane>
     </NTabs>
+    </div>
   </NModal>
 </template>
 
@@ -295,6 +342,10 @@ function updateExampleRules(exampleKey: string, rules: FieldRule[]) {
 }
 
 .help-tabs {
+  min-width: 0;
+}
+
+.help-content-root {
   min-width: 0;
 }
 
@@ -392,7 +443,7 @@ function updateExampleRules(exampleKey: string, rules: FieldRule[]) {
 }
 
 .demo-input {
-  height: 280px;
+  height: 240px;
   border-radius: $radius;
   font-family: $font-mono, 'Cascadia Code', monospace;
   font-size: 11px;
@@ -405,7 +456,7 @@ function updateExampleRules(exampleKey: string, rules: FieldRule[]) {
 }
 
 .demo-output {
-  height: 280px;
+  height: 240px;
   overflow: hidden;
   border: 1px solid $border;
   border-radius: $radius;
@@ -536,7 +587,7 @@ function updateExampleRules(exampleKey: string, rules: FieldRule[]) {
 
   .demo-input,
   .demo-output {
-    height: 230px;
+    height: 210px;
   }
 
   .example-rule-header {

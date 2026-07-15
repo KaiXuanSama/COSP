@@ -17,6 +17,8 @@ const props = defineProps<{
   scopeObject: Record<string, unknown> | null
   /** 层级深度，用于缩进和标签 */
   depth: number
+  /** 是否仅用于展示；为 true 时禁用全部编辑控件 */
+  readonly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -248,6 +250,7 @@ function updateField(val: string) {
         tag
         size="small"
         class="rule-field-select"
+        :disabled="readonly"
       />
 
       <NSelect
@@ -257,17 +260,23 @@ function updateField(val: string) {
         placeholder="选择操作"
         size="small"
         class="rule-op-select"
+        :disabled="readonly"
       />
 
       <label class="rule-conditional-toggle">
-        <NSwitch :value="rule.conditional" @update:value="updateConditional" size="small" />
+        <NSwitch
+          :value="rule.conditional"
+          @update:value="updateConditional"
+          size="small"
+          :disabled="readonly"
+        />
         <span class="rule-conditional-label">条件执行</span>
       </label>
 
       <div class="rule-actions">
         <button
           class="rule-icon-btn"
-          :disabled="rule.order === 0"
+          :disabled="readonly || rule.order === 0"
           @click="emit('move-up')"
           title="上移"
           type="button"
@@ -278,6 +287,7 @@ function updateField(val: string) {
         </button>
         <button
           class="rule-icon-btn"
+          :disabled="readonly"
           @click="emit('move-down')"
           title="下移"
           type="button"
@@ -288,6 +298,7 @@ function updateField(val: string) {
         </button>
         <button
           class="rule-icon-btn rule-icon-btn--danger"
+          :disabled="readonly"
           @click="emit('remove')"
           title="删除"
           type="button"
@@ -310,6 +321,7 @@ function updateField(val: string) {
         :autosize="{ minRows: 1, maxRows: 6 }"
         placeholder='如 "user" 或 0.7 或 true 或 null'
         size="small"
+        :disabled="readonly"
       />
       <span v-if="setValueError" class="rule-error">{{ setValueError }}</span>
     </div>
@@ -318,7 +330,7 @@ function updateField(val: string) {
     <div v-if="rule.conditional" class="rule-conditions">
       <div class="rule-conditions-header">
         <span class="rule-conditions-title">条件（全部满足）</span>
-        <NButton text size="tiny" @click="addCondition">+ 添加条件</NButton>
+        <NButton text size="tiny" :disabled="readonly" @click="addCondition">+ 添加条件</NButton>
       </div>
       <div v-for="(cond, idx) in rule.conditions" :key="idx" class="rule-condition-row">
         <NSelect
@@ -330,6 +342,7 @@ function updateField(val: string) {
           tag
           size="small"
           class="cond-path"
+          :disabled="readonly"
         />
         <NSelect
           :value="cond.operator"
@@ -337,6 +350,7 @@ function updateField(val: string) {
           :options="conditionOperatorOptions"
           size="small"
           class="cond-op"
+          :disabled="readonly"
         />
         <NInput
           v-if="cond.operator === 'equals'"
@@ -345,10 +359,12 @@ function updateField(val: string) {
           placeholder='比较值，如 "tool"'
           size="small"
           class="cond-value"
+          :disabled="readonly"
         />
         <span v-else class="cond-value-placeholder">—</span>
         <button
           class="rule-icon-btn rule-icon-btn--danger"
+          :disabled="readonly"
           @click="removeCondition(idx)"
           title="删除条件"
           type="button"
@@ -374,6 +390,7 @@ function updateField(val: string) {
         :rules="nestedRules"
         :scope-object="nestedScopeObject"
         :depth="depth + 1"
+        :readonly="readonly"
         @update:rules="updateNestedRules"
       />
     </div>
