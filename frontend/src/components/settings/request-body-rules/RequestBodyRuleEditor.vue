@@ -20,6 +20,7 @@ import {
 import { buildDiffTree } from '@/features/request-body-rules/diff'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
 import DiffJsonNode from './DiffJsonNode.vue'
+import RequestBodyRuleHelp from './RequestBodyRuleHelp.vue'
 
 const props = defineProps<{
   show: boolean
@@ -40,6 +41,7 @@ const draftRules = ref<RuleSet>(createEmptyRuleSet())
 const inputJsonText = ref(DEFAULT_REQUEST_BODY_JSON)
 const inputError = ref('')
 const lastValidInput = ref<unknown>(null)
+const showRuleHelp = ref(false)
 
 // 打开模态框时初始化草稿
 watch(
@@ -349,7 +351,18 @@ function handleCancel() {
     <!-- 下方：规则列表 -->
     <div class="editor-rules-section">
       <div class="rules-section-header">
-        <span class="rules-section-title">请求体调整规则列表</span>
+        <div class="rules-section-heading">
+          <span class="rules-section-title">请求体调整规则列表</span>
+          <button
+            type="button"
+            class="rules-help-button"
+            aria-label="查看请求体规则帮助"
+            title="查看规则帮助与实时示例"
+            @click="showRuleHelp = true"
+          >
+            ?
+          </button>
+        </div>
         <div class="rules-section-actions">
           <NButton text size="tiny" @click="loadMimoExample">加载 MiMo 示例</NButton>
           <NButton text size="tiny" @click="clearRules">清空</NButton>
@@ -374,6 +387,8 @@ function handleCancel() {
       </div>
     </template>
   </NModal>
+
+  <RequestBodyRuleHelp v-model:show="showRuleHelp" />
 </template>
 
 <style lang="scss" scoped>
@@ -537,10 +552,46 @@ function handleCancel() {
   margin-bottom: $space-xs;
 }
 
+.rules-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .rules-section-title {
   font-size: 14px;
   font-weight: 600;
   color: $text-primary;
+}
+
+.rules-help-button {
+  display: inline-flex;
+  width: 19px;
+  height: 19px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid rgba($accent, 0.42);
+  border-radius: 50%;
+  background: $accent-light;
+  color: $accent;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+}
+
+.rules-help-button:hover {
+  border-color: $accent;
+  background: $accent-mid;
+  transform: translateY(-1px);
+}
+
+.rules-help-button:focus-visible {
+  outline: 2px solid $accent-glow;
+  outline-offset: 2px;
 }
 
 .rules-section-actions {
