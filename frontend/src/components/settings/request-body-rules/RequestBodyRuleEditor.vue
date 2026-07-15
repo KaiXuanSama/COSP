@@ -9,14 +9,19 @@
  * 第一版不落库，仅前端内存态。
  */
 import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
-import { NModal, NButton, NInput, NScrollbar, useMessage } from 'naive-ui'
+import { NModal, NButton, NInput, NScrollbar, NSelect, useMessage } from 'naive-ui'
 import type { RuleSet, FieldRule } from '@/features/request-body-rules/types'
 import { createEmptyRuleSet } from '@/features/request-body-rules/types'
 import { transform } from '@/features/request-body-rules/engine'
 import {
-  DEFAULT_REQUEST_BODY_JSON,
   MIMO_EXAMPLE_RULESET,
 } from '@/features/request-body-rules/defaultRequestBody'
+import {
+  composeRequestBodyTemplate,
+  DEFAULT_TEMPLATE_KEYS,
+  REQUEST_BODY_TEMPLATE_OPTIONS,
+} from '@/features/request-body-rules/requestBodyTemplates'
+import type { RequestBodyTemplateKey } from '@/features/request-body-rules/requestBodyTemplates'
 import { buildDiffTree } from '@/features/request-body-rules/diff'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
 import DiffJsonNode from './DiffJsonNode.vue'
@@ -38,10 +43,15 @@ const message = useMessage()
 // ==================== 草稿状态 ====================
 
 const draftRules = ref<RuleSet>(createEmptyRuleSet())
-const inputJsonText = ref(DEFAULT_REQUEST_BODY_JSON)
+const inputJsonText = ref('')
 const inputError = ref('')
 const lastValidInput = ref<unknown>(null)
 const showRuleHelp = ref(false)
+const selectedTemplateKeys = ref<RequestBodyTemplateKey[]>([...DEFAULT_TEMPLATE_KEYS])
+
+function templateJson(keys: readonly RequestBodyTemplateKey[]): string {
+  return JSON.stringify(composeRequestBodyTemplate(keys), null, 2)
+}
 
 // 打开模态框时初始化草稿
 watch(
@@ -49,7 +59,8 @@ watch(
   (visible) => {
     if (visible) {
       draftRules.value = JSON.parse(JSON.stringify(props.modelRules || createEmptyRuleSet()))
-      inputJsonText.value = DEFAULT_REQUEST_BODY_JSON
+      selectedTemplateKeys.value = [...DEFAULT_TEMPLATE_KEYS]
+      inputJsonText.value = templateJson(selectedTemplateKeys.value)
       parseInput()
     }
   },
@@ -195,6 +206,28 @@ onBeforeUnmount(() => {
 
 watch(inputJsonText, parseInput)
 
+// ==================== 请求体显示内容组合 ====================
+
+function updateTemplateSelection(keys: RequestBodyTemplateKey[]) {
+  if (keys.includes('custom')) {
+    const structuredKeys = keys.filter((key) => key !== 'custom')
+    if (selectedTemplateKeys.value.length === 1 && selectedTemplateKeys.value[0] === 'custom') {
+      selectedTemplateKeys.value = structuredKeys
+      inputJsonText.value = templateJson(structuredKeys)
+      return
+    }
+    selectedTemplateKeys.value = ['custom']
+    return
+  }
+  selectedTemplateKeys.value = keys
+  inputJsonText.value = templateJson(keys)
+}
+
+function updateInputJsonText(value: string) {
+  inputJsonText.value = value
+  selectedTemplateKeys.value = ['custom']
+}
+
 // ==================== 转换预览 ====================
 
 const transformResult = computed(() => {
@@ -242,7 +275,8 @@ function formatJson() {
 }
 
 function restoreDefault() {
-  inputJsonText.value = DEFAULT_REQUEST_BODY_JSON
+  selectedTemplateKeys.value = [...DEFAULT_TEMPLATE_KEYS]
+  inputJsonText.value = templateJson(selectedTemplateKeys.value)
   message.info('已恢复默认模板')
 }
 
@@ -298,7 +332,20 @@ function handleCancel() {
       <!-- 左栏：原始 JSON（可编辑） -->
       <div class="preview-panel">
         <div class="preview-header">
-          <span class="preview-title">Copilot 原始请求体</span>
+          <div class="preview-heading">
+            <span class="preview-title">Copilot 原始请求体</span>
+            <NSelect
+              :value="selectedTemplateKeys"
+              @update:value="updateTemplateSelection"
+              :options="REQUEST_BODY_TEMPLATE_OPTIONS"
+              multiple
+              clearable
+              max-tag-count="responsive"
+              size="small"
+              class="preview-template-select"
+              placeholder="选择显示内容"
+            />
+          </div>
           <div class="preview-actions">
             <NButton text size="tiny" @click="formatJson">格式化</NButton>
             <NButton text size="tiny" @click="restoreDefault">恢复默认</NButton>
@@ -307,7 +354,7 @@ function handleCancel() {
         <NInput
           ref="leftInputRef"
           :value="inputJsonText"
-          @update:value="inputJsonText = $event"
+          @update:value="updateInputJsonText"
           type="textarea"
           :autosize="{ minRows: 3, maxRows: 30 }"
           :resizable="true"
@@ -431,6 +478,18 @@ function handleCancel() {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 4px;
+}
+
+.preview-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: $space-sm;
+}
+
+.preview-template-select {
+  width: 260px;
+  min-width: 160px;
 }
 
 .preview-title {
