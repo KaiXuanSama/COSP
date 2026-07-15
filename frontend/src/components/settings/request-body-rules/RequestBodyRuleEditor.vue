@@ -17,7 +17,9 @@ import {
   DEFAULT_REQUEST_BODY_JSON,
   MIMO_EXAMPLE_RULESET,
 } from '@/features/request-body-rules/defaultRequestBody'
+import { buildDiffTree } from '@/features/request-body-rules/diff'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
+import DiffJsonNode from './DiffJsonNode.vue'
 
 const props = defineProps<{
   show: boolean
@@ -205,6 +207,13 @@ const outputJsonText = computed(() => {
   return JSON.stringify(transformResult.value.output, null, 2)
 })
 
+const diffTree = computed(() => {
+  if (inputError.value || lastValidInput.value == null || !transformResult.value) {
+    return null
+  }
+  return buildDiffTree(lastValidInput.value, transformResult.value.output)
+})
+
 const warnings = computed(() => transformResult.value?.warnings || [])
 
 // ==================== 规则编辑 ====================
@@ -319,7 +328,10 @@ function handleCancel() {
         </div>
         <div ref="rightOutputRef" class="preview-output-wrapper" :style="{ height: rightOutputHeight }">
           <NScrollbar class="preview-output-scroll">
-            <pre class="preview-output">{{ outputJsonText || '（请先修正左侧 JSON）' }}</pre>
+            <div v-if="diffTree" class="preview-output-tree">
+              <DiffJsonNode :node="diffTree" :is-last="true" />
+            </div>
+            <pre v-else class="preview-output">（请先修正左侧 JSON）</pre>
           </NScrollbar>
         </div>
       </div>
@@ -462,9 +474,14 @@ function handleCancel() {
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   font-size: 12px;
   line-height: 1.6;
-  color: $text-primary;
+  color: $text-muted;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.preview-output-tree {
+  padding: $space-sm;
+  color: $text-muted;
 }
 
 .preview-error {
