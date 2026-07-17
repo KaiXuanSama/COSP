@@ -93,6 +93,7 @@ function renumber(rules: FieldRule[]) {
 </template>
 
 <style lang="scss" scoped>
+@use 'sass:color';
 @use '@/styles/variables' as *;
 
 .rule-list {
@@ -128,7 +129,7 @@ function renumber(rules: FieldRule[]) {
 
   &:hover {
     background: rgba($accent, 0.12);
-    color: darken($accent, 8%);
+    color: color.adjust($accent, $lightness: -8%);
   }
 
   &:active {
