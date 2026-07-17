@@ -10,6 +10,7 @@ import { NButton, NInput, NModal, NScrollbar, NTabPane, NTabs } from 'naive-ui'
 import { transform } from '@/features/request-body-rules/engine'
 import { buildDiffTree } from '@/features/request-body-rules/diff'
 import { RULE_HELP_EXAMPLES } from '@/features/request-body-rules/helpExamples'
+import { formatRuleSetJson } from '@/features/request-body-rules/ruleSetJson'
 import type { RuleSet, TransformWarning } from '@/features/request-body-rules/types'
 import DiffJsonNode from './DiffJsonNode.vue'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
@@ -25,6 +26,7 @@ const emit = defineEmits<{
 const activeTab = ref(RULE_HELP_EXAMPLES[0].key)
 const exampleInputs = ref<Record<string, string>>({})
 const exampleRules = ref<Record<string, RuleSet>>({})
+const exampleRuleViewModes = ref<Record<string, 'visual' | 'json'>>({})
 const helpContentRoot = ref<HTMLElement | null>(null)
 
 let leftTextarea: HTMLTextAreaElement | null = null
@@ -42,6 +44,9 @@ function resetExamples() {
   )
   exampleRules.value = Object.fromEntries(
     RULE_HELP_EXAMPLES.map((example) => [example.key, cloneRuleSet(example.rules)]),
+  )
+  exampleRuleViewModes.value = Object.fromEntries(
+    RULE_HELP_EXAMPLES.map((example) => [example.key, 'visual' as const]),
   )
 }
 
@@ -100,6 +105,12 @@ const exampleResults = computed<Record<string, HelpLiveResult>>(() => {
 
 function restoreCurrentInput() {
   exampleInputs.value[activeExample.value.key] = JSON.stringify(activeExample.value.input, null, 2)
+}
+
+function toggleRuleView(exampleKey: string) {
+  exampleRuleViewModes.value[exampleKey] = exampleRuleViewModes.value[exampleKey] === 'json'
+    ? 'visual'
+    : 'json'
 }
 
 function scrollRatio(element: HTMLElement): number {
@@ -250,13 +261,31 @@ onBeforeUnmount(unbindPreviewScroll)
                   <span class="example-rule-count">
                     {{ exampleRules[example.key]?.rules.length ?? 0 }} 条顶层规则
                   </span>
+                  <NButton
+                    size="tiny"
+                    class="example-rule-view-button"
+                    @click="toggleRuleView(example.key)"
+                  >
+                    {{ exampleRuleViewModes[example.key] === 'json' ? '切换可视化视图' : '切换 JSON 视图' }}
+                  </NButton>
                 </div>
               </div>
               <RequestBodyRuleList
+                v-if="exampleRuleViewModes[example.key] !== 'json'"
                 :rules="exampleRules[example.key]?.rules ?? []"
                 :scope-object="exampleResults[example.key]?.input ?? null"
                 :depth="0"
                 :readonly="true"
+              />
+              <NInput
+                v-else
+                :value="formatRuleSetJson(exampleRules[example.key] ?? example.rules)"
+                type="textarea"
+                :autosize="{ minRows: 12, maxRows: 24 }"
+                :resizable="true"
+                readonly
+                class="example-rule-json"
+                aria-label="只读规则 JSON，可框选复制"
               />
             </section>
 
@@ -517,7 +546,40 @@ onBeforeUnmount(unbindPreviewScroll)
 .example-rule-actions {
   display: flex;
   align-items: center;
-  gap: $space-sm;
+  gap: $space-xs;
+}
+
+.example-rule-view-button {
+  --n-height: 24px !important;
+  --n-padding: 0 9px !important;
+  --n-border: 1px solid rgba(194, 122, 62, 0.3) !important;
+  --n-border-hover: 1px solid rgba(194, 122, 62, 0.58) !important;
+  --n-border-pressed: 1px solid $accent !important;
+  --n-border-focus: 1px solid rgba(194, 122, 62, 0.58) !important;
+  --n-color: rgba(194, 122, 62, 0.07) !important;
+  --n-color-hover: rgba(194, 122, 62, 0.13) !important;
+  --n-color-pressed: rgba(194, 122, 62, 0.18) !important;
+  --n-color-focus: rgba(194, 122, 62, 0.13) !important;
+  --n-text-color: $text-secondary !important;
+  --n-text-color-hover: $accent !important;
+  --n-text-color-pressed: $accent !important;
+  --n-text-color-focus: $accent !important;
+  --n-border-radius: 6px !important;
+  font-size: 11px;
+}
+
+.example-rule-json {
+  min-height: 240px;
+  border: 1px solid $border;
+  border-radius: $radius;
+  font-family: $font-mono, 'Cascadia Code', monospace;
+  font-size: 11px;
+  user-select: text;
+}
+
+.example-rule-json :deep(textarea) {
+  cursor: text;
+  user-select: text;
 }
 
 .example-warnings {
