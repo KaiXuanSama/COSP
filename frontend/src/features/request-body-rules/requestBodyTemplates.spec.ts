@@ -57,13 +57,10 @@ describe('请求体模板片段组合', () => {
     expect(composeRequestBodyTemplate([])).toEqual({})
   })
 
-  it('默认选项生成完整模板的五条消息和工具定义', () => {
-    const result = composeRequestBodyTemplate(DEFAULT_TEMPLATE_KEYS) as {
-      messages: unknown[]
-      tools: unknown[]
-    }
-
-    expect(result.messages).toHaveLength(5)
-    expect(result.tools).toHaveLength(1)
+  it('默认选项仅生成基础参数', () => {
+    expect(DEFAULT_TEMPLATE_KEYS).toEqual(['base'])
+    expect(composeRequestBodyTemplate(DEFAULT_TEMPLATE_KEYS)).toEqual(
+      composeRequestBodyTemplate(['base']),
+    )
   })
 })

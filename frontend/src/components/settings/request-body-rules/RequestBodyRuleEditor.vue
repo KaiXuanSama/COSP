@@ -274,12 +274,6 @@ function formatJson() {
   }
 }
 
-function restoreDefault() {
-  selectedTemplateKeys.value = [...DEFAULT_TEMPLATE_KEYS]
-  inputJsonText.value = templateJson(selectedTemplateKeys.value)
-  message.info('已恢复默认模板')
-}
-
 function copyOutput() {
   if (!outputJsonText.value) return
   navigator.clipboard.writeText(outputJsonText.value).then(() => {
@@ -348,7 +342,6 @@ function handleCancel() {
           </div>
           <div class="preview-actions">
             <NButton text size="tiny" @click="formatJson">格式化</NButton>
-            <NButton text size="tiny" @click="restoreDefault">恢复默认</NButton>
           </div>
         </div>
         <NInput

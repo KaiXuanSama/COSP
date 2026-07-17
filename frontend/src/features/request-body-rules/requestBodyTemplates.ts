@@ -13,8 +13,8 @@ export type RequestBodyTemplateKey =
 /** 会实际生成请求体字段的模板键。 */
 type StructuredTemplateKey = Exclude<RequestBodyTemplateKey, 'custom'>
 
-/** 默认勾选全部结构化片段，得到常用的完整消息场景。 */
-export const DEFAULT_TEMPLATE_KEYS: StructuredTemplateKey[] = [
+/** 请求体片段的固定组合顺序。 */
+const TEMPLATE_COMPOSITION_ORDER: StructuredTemplateKey[] = [
   'base',
   'message-start',
   'message-assistant',
@@ -22,6 +22,9 @@ export const DEFAULT_TEMPLATE_KEYS: StructuredTemplateKey[] = [
   'message-tool-image',
   'tools',
 ]
+
+/** 默认仅展示基础参数。 */
+export const DEFAULT_TEMPLATE_KEYS: StructuredTemplateKey[] = ['base']
 
 /** 多选下拉框显示选项。 */
 export const REQUEST_BODY_TEMPLATE_OPTIONS = [
@@ -138,7 +141,7 @@ export function composeRequestBodyTemplate(
   const result: Record<string, unknown> = {}
   const messages: unknown[] = []
 
-  for (const key of DEFAULT_TEMPLATE_KEYS) {
+  for (const key of TEMPLATE_COMPOSITION_ORDER) {
     if (!selected.has(key)) continue
     const fragment = TEMPLATE_FRAGMENTS[key]
     for (const [field, value] of Object.entries(fragment)) {
