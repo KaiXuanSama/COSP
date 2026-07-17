@@ -23,6 +23,7 @@ import {
 } from '@/features/request-body-rules/requestBodyTemplates'
 import type { RequestBodyTemplateKey } from '@/features/request-body-rules/requestBodyTemplates'
 import { buildDiffTree } from '@/features/request-body-rules/diff'
+import { formatRuleSetJson, parseRuleSetJson } from '@/features/request-body-rules/ruleSetJson'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
 import DiffJsonNode from './DiffJsonNode.vue'
 import RequestBodyRuleHelp from './RequestBodyRuleHelp.vue'
@@ -48,6 +49,9 @@ const inputError = ref('')
 const lastValidInput = ref<unknown>(null)
 const showRuleHelp = ref(false)
 const selectedTemplateKeys = ref<RequestBodyTemplateKey[]>([...DEFAULT_TEMPLATE_KEYS])
+const rulesViewMode = ref<'visual' | 'json'>('visual')
+const rulesJsonText = ref('')
+const rulesJsonError = ref('')
 
 function templateJson(keys: readonly RequestBodyTemplateKey[]): string {
   return JSON.stringify(composeRequestBodyTemplate(keys), null, 2)
@@ -59,6 +63,9 @@ watch(
   (visible) => {
     if (visible) {
       draftRules.value = JSON.parse(JSON.stringify(props.modelRules || createEmptyRuleSet()))
+      rulesViewMode.value = 'visual'
+      rulesJsonText.value = formatRuleSetJson(draftRules.value)
+      rulesJsonError.value = ''
       selectedTemplateKeys.value = [...DEFAULT_TEMPLATE_KEYS]
       inputJsonText.value = templateJson(selectedTemplateKeys.value)
       parseInput()
@@ -262,6 +269,35 @@ function updateRules(rules: FieldRule[]) {
   draftRules.value = { ...draftRules.value, rules }
 }
 
+function updateRulesJson(value: string) {
+  rulesJsonText.value = value
+  const parsed = parseRuleSetJson(value)
+  if (!parsed.valid) {
+    rulesJsonError.value = parsed.error
+    return
+  }
+  draftRules.value = parsed.rules
+  rulesJsonError.value = ''
+}
+
+function toggleRulesView() {
+  if (rulesViewMode.value === 'visual') {
+    rulesJsonText.value = formatRuleSetJson(draftRules.value)
+    rulesJsonError.value = ''
+    rulesViewMode.value = 'json'
+    return
+  }
+  const parsed = parseRuleSetJson(rulesJsonText.value)
+  if (!parsed.valid) {
+    rulesJsonError.value = parsed.error
+    message.error('请先修正规则 JSON')
+    return
+  }
+  draftRules.value = parsed.rules
+  rulesJsonError.value = ''
+  rulesViewMode.value = 'visual'
+}
+
 // ==================== 工具操作 ====================
 
 function formatJson() {
@@ -283,17 +319,29 @@ function copyOutput() {
 
 function loadMimoExample() {
   draftRules.value = JSON.parse(JSON.stringify(MIMO_EXAMPLE_RULESET))
+  if (rulesViewMode.value === 'json') {
+    rulesJsonText.value = formatRuleSetJson(draftRules.value)
+    rulesJsonError.value = ''
+  }
   message.success('已加载 MiMo 示例规则')
 }
 
 function clearRules() {
   draftRules.value = createEmptyRuleSet()
+  if (rulesViewMode.value === 'json') {
+    rulesJsonText.value = formatRuleSetJson(draftRules.value)
+    rulesJsonError.value = ''
+  }
   message.info('已清空规则')
 }
 
 // ==================== 应用/取消 ====================
 
 function handleApply() {
+  if (rulesJsonError.value) {
+    message.error('请先修正规则 JSON')
+    return
+  }
   emit('apply', JSON.parse(JSON.stringify(draftRules.value)))
   emit('update:show', false)
   message.success(`已应用 ${draftRules.value.rules.length} 条规则（仅前端预览，不会随供应商保存）`)
@@ -404,16 +452,33 @@ function handleCancel() {
           </button>
         </div>
         <div class="rules-section-actions">
-          <NButton text size="tiny" @click="loadMimoExample">加载 MiMo 示例</NButton>
-          <NButton text size="tiny" @click="clearRules">清空</NButton>
+          <NButton size="tiny" class="rules-action-button" @click="loadMimoExample">加载 MiMo 示例</NButton>
+          <NButton size="tiny" class="rules-action-button" @click="clearRules">清空</NButton>
+          <NButton size="tiny" class="rules-action-button" @click="toggleRulesView">
+            {{ rulesViewMode === 'visual' ? '切换 JSON 视图' : '切换可视化视图' }}
+          </NButton>
         </div>
       </div>
       <RequestBodyRuleList
+        v-if="rulesViewMode === 'visual'"
         :rules="draftRules.rules"
         :scope-object="scopeObject"
         :depth="0"
         @update:rules="updateRules"
       />
+      <div v-else class="rules-json-editor">
+        <NInput
+          :value="rulesJsonText"
+          @update:value="updateRulesJson"
+          type="textarea"
+          :autosize="{ minRows: 12, maxRows: 30 }"
+          :resizable="true"
+          class="rules-json-input"
+          placeholder="在此编辑或粘贴完整的规则集 JSON"
+        />
+        <div v-if="rulesJsonError" class="rules-json-error">{{ rulesJsonError }}</div>
+        <div v-else class="rules-json-valid">JSON 已同步到转换预览</div>
+      </div>
     </div>
 
     <!-- 底部操作 -->
@@ -422,7 +487,7 @@ function handleCancel() {
         <span class="editor-footer-count">当前规则：{{ draftRules.rules.length }} 条</span>
         <div class="editor-footer-actions">
           <NButton @click="handleCancel">取消</NButton>
-          <NButton type="primary" @click="handleApply">应用</NButton>
+          <NButton type="primary" :disabled="Boolean(rulesJsonError)" @click="handleApply">应用</NButton>
         </div>
       </div>
     </template>
@@ -649,6 +714,52 @@ function handleCancel() {
 .rules-section-actions {
   display: flex;
   gap: $space-xs;
+}
+
+.rules-action-button {
+  --n-height: 24px !important;
+  --n-padding: 0 9px !important;
+  --n-border: 1px solid rgba(194, 122, 62, 0.3) !important;
+  --n-border-hover: 1px solid rgba(194, 122, 62, 0.58) !important;
+  --n-border-pressed: 1px solid $accent !important;
+  --n-border-focus: 1px solid rgba(194, 122, 62, 0.58) !important;
+  --n-color: rgba(194, 122, 62, 0.07) !important;
+  --n-color-hover: rgba(194, 122, 62, 0.13) !important;
+  --n-color-pressed: rgba(194, 122, 62, 0.18) !important;
+  --n-color-focus: rgba(194, 122, 62, 0.13) !important;
+  --n-text-color: $text-secondary !important;
+  --n-text-color-hover: $accent !important;
+  --n-text-color-pressed: $accent !important;
+  --n-text-color-focus: $accent !important;
+  --n-border-radius: 6px !important;
+  font-size: 11px;
+}
+
+.rules-json-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rules-json-input {
+  min-height: 260px;
+  border: 1px solid $border;
+  border-radius: $radius;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+}
+
+.rules-json-error,
+.rules-json-valid {
+  font-size: 12px;
+}
+
+.rules-json-error {
+  color: $danger;
+}
+
+.rules-json-valid {
+  color: $text-muted;
 }
 
 .editor-footer {
