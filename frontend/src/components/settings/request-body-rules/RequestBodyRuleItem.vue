@@ -549,20 +549,28 @@ function updateField(val: string) {
 }
 
 .cond-path {
-  width: 200px;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 240px;
 }
 
 .cond-op {
+  flex: 0 0 90px;
   width: 90px;
 }
 
 .cond-value {
-  flex: 1;
-  min-width: 100px;
+  flex: 0 1 160px;
+  width: 160px;
+  min-width: 110px;
+  max-width: 180px;
 }
 
 .cond-value-placeholder {
-  flex: 1;
+  flex: 0 1 160px;
+  width: 160px;
+  min-width: 110px;
+  max-width: 180px;
   text-align: center;
   color: $text-muted;
   font-size: 12px;
