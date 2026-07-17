@@ -174,24 +174,45 @@ const conditionPathOptions = computed<FieldOption[]>(() => {
   return generatePathOptions(props.scopeObject, '', 0)
 })
 
-function generatePathOptions(obj: Record<string, unknown>, prefix: string, depth: number): FieldOption[] {
+function generatePathOptions(
+  obj: Record<string, unknown>,
+  prefix: string,
+  depth: number,
+  seenPaths = new Set<string>(),
+): FieldOption[] {
   if (depth > 2) return [] // 限制路径深度
   const options: FieldOption[] = []
+  const addOption = (path: string) => {
+    if (seenPaths.has(path)) return
+    seenPaths.add(path)
+    options.push({ label: path, value: path })
+  }
   for (const [key, val] of Object.entries(obj)) {
     const path = prefix ? `${prefix}/${key}` : `./${key}`
     if (Array.isArray(val)) {
-      options.push({ label: `${path}[*]`, value: `${path}[*]` })
+      const arrayPath = `${path}[*]`
+      addOption(arrayPath)
       // 继续展开数组元素的子字段
       for (const item of val) {
         if (item && typeof item === 'object' && !Array.isArray(item)) {
-          options.push(...generatePathOptions(item as Record<string, unknown>, `${path}[*]`, depth + 1))
+          options.push(...generatePathOptions(
+            item as Record<string, unknown>,
+            arrayPath,
+            depth + 1,
+            seenPaths,
+          ))
         }
       }
     } else if (val && typeof val === 'object') {
-      options.push({ label: path, value: path })
-      options.push(...generatePathOptions(val as Record<string, unknown>, path, depth + 1))
+      addOption(path)
+      options.push(...generatePathOptions(
+        val as Record<string, unknown>,
+        path,
+        depth + 1,
+        seenPaths,
+      ))
     } else {
-      options.push({ label: path, value: path })
+      addOption(path)
     }
   }
   return options
