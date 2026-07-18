@@ -68,28 +68,15 @@ public class ProviderConfigRepository {
      *
      * @return 对应的 provider_config.id
      */
-    public int saveProvider(String providerKey, boolean enabled, String baseUrl, String apiFormat, String customTransforms) {
-        jdbcTemplate.update(
-            "INSERT INTO provider_config (provider_key, enabled, base_url, api_format, custom_transforms) "
-                + "VALUES (?, ?, ?, ?, ?) ON CONFLICT(provider_key) DO UPDATE SET "
-                + "enabled = excluded.enabled, base_url = excluded.base_url, "
-                + "api_format = excluded.api_format, custom_transforms = excluded.custom_transforms, "
-                + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
-            providerKey, enabled ? 1 : 0, baseUrl, apiFormat, customTransforms);
-        return jdbcTemplate.queryForObject("SELECT id FROM provider_config WHERE provider_key = ?", Integer.class, providerKey);
-    }
-
-    /**
-     * 保存服务商配置，旧 custom_transforms 始终写入空对象。
-     *
-     * @param providerKey 服务商标识
-     * @param enabled 是否启用
-     * @param baseUrl API 基础地址
-     * @param apiFormat API 格式
-     * @return 对应的 provider_config.id
-     */
     public int saveProvider(String providerKey, boolean enabled, String baseUrl, String apiFormat) {
-        return saveProvider(providerKey, enabled, baseUrl, apiFormat, "{}");
+        jdbcTemplate.update(
+            "INSERT INTO provider_config (provider_key, enabled, base_url, api_format) "
+                + "VALUES (?, ?, ?, ?) ON CONFLICT(provider_key) DO UPDATE SET "
+                + "enabled = excluded.enabled, base_url = excluded.base_url, "
+                + "api_format = excluded.api_format, "
+                + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
+            providerKey, enabled ? 1 : 0, baseUrl, apiFormat);
+        return jdbcTemplate.queryForObject("SELECT id FROM provider_config WHERE provider_key = ?", Integer.class, providerKey);
     }
 
     /**
@@ -177,37 +164,18 @@ public class ProviderConfigRepository {
     // ==================== 工具 ====================
 
     /**
-     * 更新自定义供应商的 custom_transforms 字段。
+     * 更新自定义供应商标识和 API 地址。
+     *
+     * @param oldProviderKey 原供应商标识
+     * @param newProviderKey 新供应商标识
+     * @param baseUrl API 基础地址
      */
-    public void updateCustomTransforms(String providerKey, String customTransforms) {
-        jdbcTemplate.update(
-                "UPDATE provider_config SET custom_transforms = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?",
-                customTransforms, providerKey);
-    }
-
-    /**
-     * 更新供应商的 provider_key、custom_transforms 和 base_url（用于编辑自定义供应商）。
-     * 直接修改 provider_key，保留关联的模型配置不变。
-     */
-    public void updateProviderKeyAndTransforms(String oldProviderKey, String newProviderKey, String customTransforms, String baseUrl) {
-        jdbcTemplate.update(
-                "UPDATE provider_config SET provider_key = ?, custom_transforms = ?, base_url = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?",
-                newProviderKey, customTransforms, baseUrl, oldProviderKey);
-    }
-
-            /**
-             * 更新自定义供应商标识和 API 地址，并清空废弃的 custom_transforms。
-             *
-             * @param oldProviderKey 原供应商标识
-             * @param newProviderKey 新供应商标识
-             * @param baseUrl API 基础地址
-             */
-            public void updateProviderKeyAndBaseUrl(String oldProviderKey, String newProviderKey, String baseUrl) {
+    public void updateProviderKeyAndBaseUrl(String oldProviderKey, String newProviderKey, String baseUrl) {
             jdbcTemplate.update(
-                "UPDATE provider_config SET provider_key = ?, custom_transforms = '{}', base_url = ?, "
+                "UPDATE provider_config SET provider_key = ?, base_url = ?, "
                     + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?",
                 newProviderKey, baseUrl, oldProviderKey);
-            }
+    }
 
     /**
      * 根据 provider_key 删除服务商配置及其关联的模型。
@@ -226,7 +194,7 @@ public class ProviderConfigRepository {
     }
 
     private List<ProviderConfigRow> loadProvidersWithModels(String providerKey, boolean activeOnly, boolean enabledModelsOnly) {
-        StringBuilder sql = new StringBuilder("SELECT pc.id, pc.provider_key, pc.enabled, pc.base_url, pc.api_format, pc.custom_transforms, pc.updated_at,")
+        StringBuilder sql = new StringBuilder("SELECT pc.id, pc.provider_key, pc.enabled, pc.base_url, pc.api_format, pc.updated_at,")
                 .append(" pm.id AS model_id, pm.provider_id AS model_provider_id, pm.model_name, pm.enabled AS model_enabled,")
                 .append(" pm.context_size, pm.max_output_tokens, pm.caps_tools, pm.caps_vision, pm.reasoning_effort, pm.sort_order")
                 .append(" FROM provider_config pc")
@@ -257,7 +225,6 @@ public class ProviderConfigRepository {
                     ((Number) row.get("enabled")).intValue() == 1,
                     (String) row.get("base_url"),
                     (String) row.get("api_format"),
-                    (String) row.get("custom_transforms"),
                     (String) row.get("updated_at")
             ));
 
@@ -294,7 +261,6 @@ public class ProviderConfigRepository {
                     provider.enabled,
                     provider.baseUrl,
                     provider.apiFormat,
-                    provider.customTransforms,
                     provider.updatedAt,
                     provider.models
             ));
@@ -320,18 +286,16 @@ public class ProviderConfigRepository {
         private final boolean enabled;
         private final String baseUrl;
         private final String apiFormat;
-        private final String customTransforms;
         private final String updatedAt;
         private final List<ProviderModelRow> models = new ArrayList<>();
 
         private MutableProviderConfig(int id, String providerKey, boolean enabled, String baseUrl,
-                                      String apiFormat, String customTransforms, String updatedAt) {
+                                      String apiFormat, String updatedAt) {
             this.id = id;
             this.providerKey = providerKey;
             this.enabled = enabled;
             this.baseUrl = baseUrl;
             this.apiFormat = apiFormat;
-            this.customTransforms = customTransforms;
             this.updatedAt = updatedAt;
         }
     }

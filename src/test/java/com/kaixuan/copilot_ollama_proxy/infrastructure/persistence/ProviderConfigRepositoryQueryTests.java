@@ -31,7 +31,7 @@ class ProviderConfigRepositoryQueryTests {
         jdbcTemplate = new CountingJdbcTemplate(dataSource);
         jdbcTemplate.execute("CREATE TABLE provider_config ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL DEFAULT 0, "
-                + "base_url TEXT NOT NULL DEFAULT '', api_format TEXT NOT NULL DEFAULT 'openai', custom_transforms TEXT NOT NULL DEFAULT '{}', "
+            + "base_url TEXT NOT NULL DEFAULT '', api_format TEXT NOT NULL DEFAULT 'openai', "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         jdbcTemplate.execute("CREATE TABLE provider_model ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, "

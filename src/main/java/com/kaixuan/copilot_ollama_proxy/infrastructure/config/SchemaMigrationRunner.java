@@ -28,9 +28,10 @@ import java.util.UUID;
 public class SchemaMigrationRunner implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(SchemaMigrationRunner.class);
+    private static final int CURRENT_SCHEMA_VERSION = 7;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
-        private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
-        private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
+    private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
+    private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
             + "\"model\":\"<string>\","
             + "\"temperature\":0.1,"
             + "\"top_p\":1.0,"
@@ -38,7 +39,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
             + "\"n\":1,"
             + "\"stream_options\":{\"include_usage\":true},"
             + "\"reasoning_effort\":\"medium\"}";
-        private static final String EMPTY_BODY_RULES_JSON = "{\"version\":1,\"rules\":[]}";
+    private static final String EMPTY_BODY_RULES_JSON = "{\"version\":1,\"rules\":[]}";
 
     private final JdbcTemplate jdbcTemplate;
     private final TransactionTemplate transactionTemplate;
@@ -72,9 +73,16 @@ public class SchemaMigrationRunner implements ApplicationRunner {
      */
     @Override
     public void run(ApplicationArguments args) {
-        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS schema_version ("
-                + "version INTEGER PRIMARY KEY, description TEXT NOT NULL, "
-                + "applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
+        if (isCurrentBaseline()) {
+            return;
+        }
+
+        if (!hasLegacyProviderConfigColumns()) {
+            establishCurrentBaseline();
+            return;
+        }
+
+        prepareHistoricalVersionTracking();
 
         migrate(1, "补齐历史增量字段", this::migrateLegacyColumns);
         migrate(2, "API Key 转换为 JSON 数组", this::migrateApiKeyToJsonArray);
@@ -82,12 +90,84 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         migrate(4, "API Key 拆表与加密", this::migrateApiKeysToEncryptedTable);
         migrate(5, "新增供应商请求转换配置表", this::migrateProviderRequestTransforms);
         migrate(6, "清理遗留请求转换配置", this::clearLegacyRequestTransforms);
+        migrate(7, "移除废弃字段并压缩迁移历史", this::migrateToV7Baseline);
+    }
+
+    /**
+     * 判断数据库是否已处于当前单行基线。
+     */
+    private boolean isCurrentBaseline() {
+        if (!tableExists("schema_version") || !columnExists("schema_version", "id")) {
+            return false;
+        }
+        Integer version = jdbcTemplate.query(
+                "SELECT version FROM schema_version WHERE id = 1",
+                resultSet -> resultSet.next() ? resultSet.getInt("version") : null);
+        return version != null && version >= CURRENT_SCHEMA_VERSION && !hasLegacyProviderConfigColumns();
+    }
+
+    /**
+     * 为由当前 schema.sql 创建的新数据库写入基线，不回放历史迁移。
+     */
+    private void establishCurrentBaseline() {
+        ensureBaselineVersionTable();
+        transactionTemplate.executeWithoutResult(status -> jdbcTemplate.update(
+                "INSERT INTO schema_version (id, version, description) VALUES (1, ?, ?) "
+                        + "ON CONFLICT(id) DO UPDATE SET version = excluded.version, "
+                        + "description = excluded.description, "
+                        + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
+                CURRENT_SCHEMA_VERSION, "V7 架构基线：最终物理结构"));
+        log.info("[SchemaMigration] 已建立 V{} 架构基线", CURRENT_SCHEMA_VERSION);
+    }
+
+    /**
+     * 准备旧数据库的多版本迁移记录表。
+     *
+     * schema.sql 可能已为无历史记录的旧库创建单行基线表；在确认仍存在旧列后，
+     * 该空表会被替换为历史记录表，供 V1 至 V7 逐步升级使用。
+     */
+    private void prepareHistoricalVersionTracking() {
+        if (!tableExists("schema_version")) {
+            createHistoricalVersionTable();
+            return;
+        }
+        if (columnExists("schema_version", "id")) {
+            Integer count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_version", Integer.class);
+            if (count != null && count > 0) {
+                throw new IllegalStateException("检测到旧供应商结构与 V7 基线记录同时存在，无法安全判断迁移状态");
+            }
+            jdbcTemplate.execute("DROP TABLE schema_version");
+            createHistoricalVersionTable();
+        }
+    }
+
+    private void createHistoricalVersionTable() {
+        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS schema_version ("
+                + "version INTEGER PRIMARY KEY, description TEXT NOT NULL, "
+                + "applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
+    }
+
+    private void ensureBaselineVersionTable() {
+        if (tableExists("schema_version") && !columnExists("schema_version", "id")) {
+            jdbcTemplate.execute("DROP TABLE schema_version");
+        }
+        if (!tableExists("schema_version")) {
+            jdbcTemplate.execute("CREATE TABLE schema_version ("
+                    + "id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL, "
+                    + "description TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT "
+                    + "(strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
+        }
     }
 
     private void migrate(int version, String description, Runnable action) {
         Integer applied = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM schema_version WHERE version = ?", Integer.class, version);
         if (applied != null && applied > 0) {
+            return;
+        }
+        if (version == CURRENT_SCHEMA_VERSION) {
+            transactionTemplate.executeWithoutResult(status -> action.run());
+            log.info("[SchemaMigration] 已应用 V{}: {}", version, description);
             return;
         }
         transactionTemplate.executeWithoutResult(status -> {
@@ -108,9 +188,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     }
 
     private void addColumnIfNotExists(String table, String column, String definition) {
-        boolean exists = jdbcTemplate.queryForList("PRAGMA table_info(" + table + ")").stream()
-                .anyMatch(col -> column.equals(col.get("name")));
-        if (!exists) {
+        if (!columnExists(table, column)) {
             jdbcTemplate.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
             log.info("[SchemaMigration] 已添加列 {}.{}", table, column);
         }
@@ -224,6 +302,46 @@ public class SchemaMigrationRunner implements ApplicationRunner {
      */
     private void clearLegacyRequestTransforms() {
         jdbcTemplate.update("UPDATE provider_config SET custom_transforms = '{}'");
+    }
+
+    /**
+     * V7：物理删除已被替代的 API Key 和请求转换列，并将多行迁移历史压缩为唯一基线。
+     */
+    private void migrateToV7Baseline() {
+        dropTrigger("trg_provider_config_validate_insert");
+        dropTrigger("trg_provider_config_validate_update");
+        jdbcTemplate.execute("ALTER TABLE provider_config DROP COLUMN api_key");
+        jdbcTemplate.execute("ALTER TABLE provider_config DROP COLUMN active_api_key_index");
+        jdbcTemplate.execute("ALTER TABLE provider_config DROP COLUMN custom_transforms");
+        createProviderConfigValidationTriggers();
+
+        jdbcTemplate.execute("DROP TABLE schema_version");
+        jdbcTemplate.execute("CREATE TABLE schema_version ("
+                + "id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL, "
+                + "description TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT "
+                + "(strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
+        jdbcTemplate.update("INSERT INTO schema_version (id, version, description) VALUES (1, ?, ?)",
+            CURRENT_SCHEMA_VERSION, "V7 架构基线：移除废弃字段并压缩迁移历史");
+    }
+
+    private boolean hasLegacyProviderConfigColumns() {
+        return columnExists("provider_config", "api_key")
+                || columnExists("provider_config", "active_api_key_index")
+                || columnExists("provider_config", "custom_transforms");
+    }
+
+    private boolean tableExists(String table) {
+        Integer count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", Integer.class, table);
+        return count != null && count > 0;
+    }
+
+    private boolean columnExists(String table, String column) {
+        if (!tableExists(table)) {
+            return false;
+        }
+        return jdbcTemplate.queryForList("PRAGMA table_info(" + table + ")").stream()
+                .anyMatch(row -> column.equals(row.get("name")));
     }
 
     private void createProviderRequestTransformTable() {
@@ -419,10 +537,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private void createValidationTriggers() {
         createTrigger("trg_users_validate_insert", "users", "INSERT", "NEW.enabled NOT IN (0, 1)");
         createTrigger("trg_users_validate_update", "users", "UPDATE", "NEW.enabled NOT IN (0, 1)");
-        createTrigger("trg_provider_config_validate_insert", "provider_config", "INSERT",
-                "NEW.enabled NOT IN (0, 1) OR NEW.active_api_key_index < 0");
-        createTrigger("trg_provider_config_validate_update", "provider_config", "UPDATE",
-                "NEW.enabled NOT IN (0, 1) OR NEW.active_api_key_index < 0");
+        createProviderConfigValidationTriggers();
         String modelInvalid = "NEW.enabled NOT IN (0, 1) OR NEW.caps_tools NOT IN (0, 1) "
                 + "OR NEW.caps_vision NOT IN (0, 1) OR NEW.context_size < 0 "
                 + "OR NEW.max_output_tokens < 0 OR NEW.sort_order < 0";
@@ -440,5 +555,16 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         jdbcTemplate.execute("CREATE TRIGGER IF NOT EXISTS " + name + " BEFORE " + operation + " ON " + table
                 + " WHEN " + invalidCondition + " BEGIN SELECT RAISE(ABORT, '数据约束校验失败: "
                 + table + "'); END");
+    }
+
+    private void createProviderConfigValidationTriggers() {
+        createTrigger("trg_provider_config_validate_insert", "provider_config", "INSERT",
+                "NEW.enabled NOT IN (0, 1)");
+        createTrigger("trg_provider_config_validate_update", "provider_config", "UPDATE",
+                "NEW.enabled NOT IN (0, 1)");
+    }
+
+    private void dropTrigger(String name) {
+        jdbcTemplate.execute("DROP TRIGGER IF EXISTS " + name);
     }
 }

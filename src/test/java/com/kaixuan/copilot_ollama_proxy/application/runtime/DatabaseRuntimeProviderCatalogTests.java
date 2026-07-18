@@ -24,8 +24,6 @@ class DatabaseRuntimeProviderCatalogTests {
         ProviderRequestTransformRepository requestTransformRepository = mock(ProviderRequestTransformRepository.class);
         ProviderConfigRow provider = new ProviderConfigRow(
                 42, "custom-mimo-user", true, "https://api.example/v1", "openai",
-                "{\"custom_headers\":[{\"key\":\"X-Legacy\",\"value\":\"old\"}],"
-                        + "\"body_transforms\":[]}",
                 "2026-07-18T00:00:00", List.of(new ProviderModelRow(
                         1, 42, "mimo-v2.5-pro", true, 32768, 8192,
                         true, false, "Medium", 0)));
@@ -52,7 +50,6 @@ class DatabaseRuntimeProviderCatalogTests {
         ProviderRequestTransformRepository requestTransformRepository = mock(ProviderRequestTransformRepository.class);
         ProviderConfigRow provider = new ProviderConfigRow(
                 42, "custom-mimo-user", true, "https://api.example/v1", "openai",
-                "{\"custom_headers\":[{\"key\":\"X-Legacy\",\"value\":\"old\"}]}",
                 "2026-07-18T00:00:00", List.of());
         when(providerConfigRepository.findAllActiveProvidersWithEnabledModels()).thenReturn(List.of(provider));
         when(providerApiKeyRepository.resolveActiveApiKey(42)).thenReturn("test-key");

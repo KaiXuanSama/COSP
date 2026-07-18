@@ -84,10 +84,7 @@ class ProviderRequestTransformServiceTests {
                 "custom-alpha", "https://alpha.example/v1", HEADER_RULES,
                 TEMPLATE_KEYS, PREVIEW, RULES);
 
-        String legacyJson = jdbcTemplate.queryForObject(
-                "SELECT custom_transforms FROM provider_config WHERE id = ?", String.class, providerId);
         ProviderRequestTransformRow transform = transformRepository.findByProviderId(providerId);
-        assertThat(legacyJson).isEqualTo("{}");
         assertThat(transform).isNotNull();
         assertThat(transform.headerRulesJson())
                 .isEqualTo("[{\"key\":\"api-key\",\"value\":\"{apiKey}\"}]");
@@ -113,11 +110,8 @@ class ProviderRequestTransformServiceTests {
 
         Integer persistedId = jdbcTemplate.queryForObject(
                 "SELECT id FROM provider_config WHERE provider_key = 'custom-renamed'", Integer.class);
-        String legacyJson = jdbcTemplate.queryForObject(
-                "SELECT custom_transforms FROM provider_config WHERE id = ?", String.class, providerId);
         ProviderRequestTransformRow transform = transformRepository.findByProviderId(providerId);
         assertThat(persistedId).isEqualTo(providerId);
-        assertThat(legacyJson).isEqualTo("{}");
         assertThat(transform.headerRulesJson()).contains("x-token");
         assertThat(transform.bodyTemplateKeysJson()).isEqualTo("[\"custom\"]");
         assertThat(transform.bodyPreviewJson()).isEqualTo("{\"temperature\":0.2}");
@@ -156,12 +150,9 @@ class ProviderRequestTransformServiceTests {
                 "SELECT COUNT(*) FROM provider_config WHERE provider_key = 'custom-renamed'", Integer.class);
         String baseUrl = jdbcTemplate.queryForObject(
                 "SELECT base_url FROM provider_config WHERE id = ?", String.class, providerId);
-        String legacyJson = jdbcTemplate.queryForObject(
-                "SELECT custom_transforms FROM provider_config WHERE id = ?", String.class, providerId);
         assertThat(oldCount).isEqualTo(1);
         assertThat(renamedCount).isZero();
         assertThat(baseUrl).isEqualTo("https://old.example/v1");
-        assertThat(legacyJson).isEqualTo("{}");
     }
 
     @Test
@@ -181,8 +172,7 @@ class ProviderRequestTransformServiceTests {
         jdbcTemplate.execute("CREATE TABLE provider_config ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, "
                 + "enabled INTEGER NOT NULL DEFAULT 0, base_url TEXT NOT NULL DEFAULT '', "
-                + "api_key TEXT NOT NULL DEFAULT '[]', active_api_key_index INTEGER NOT NULL DEFAULT 0, "
-                + "api_format TEXT NOT NULL DEFAULT 'openai', custom_transforms TEXT NOT NULL DEFAULT '{}', "
+                + "api_format TEXT NOT NULL DEFAULT 'openai', "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         jdbcTemplate.execute("CREATE TABLE provider_request_transform ("
                 + "provider_id INTEGER PRIMARY KEY, header_rules_version INTEGER NOT NULL, "

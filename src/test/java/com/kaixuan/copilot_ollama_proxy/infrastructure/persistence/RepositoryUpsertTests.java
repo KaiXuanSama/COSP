@@ -31,8 +31,7 @@ class RepositoryUpsertTests {
         jdbcTemplate.execute("CREATE TABLE provider_config ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, "
                 + "enabled INTEGER NOT NULL DEFAULT 0, base_url TEXT NOT NULL DEFAULT '', "
-                + "api_key TEXT NOT NULL DEFAULT '[]', active_api_key_index INTEGER NOT NULL DEFAULT 0, "
-                + "api_format TEXT NOT NULL DEFAULT 'openai', custom_transforms TEXT NOT NULL DEFAULT '{}', "
+                + "api_format TEXT NOT NULL DEFAULT 'openai', "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         jdbcTemplate.execute("CREATE TABLE provider_model ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, "
@@ -63,22 +62,21 @@ class RepositoryUpsertTests {
     @Test
     void providerUpsertUpdatesExistingRowWithoutChangingItsId() {
         int firstId = providerConfigRepository.saveProvider(
-                "mimo", false, "https://old.example", "openai", "{}");
+                "mimo", false, "https://old.example", "openai");
         int secondId = providerConfigRepository.saveProvider(
-                "mimo", true, "https://new.example", "openai", "{\"requestBody\":{}}");
+                "mimo", true, "https://new.example", "openai");
 
         assertThat(secondId).isEqualTo(firstId);
         assertThat(providerConfigRepository.findAllWithModels()).hasSize(1);
         ProviderConfigRow row = providerConfigRepository.findByKey("mimo");
         assertThat(row.enabled()).isTrue();
         assertThat(row.baseUrl()).isEqualTo("https://new.example");
-        assertThat(row.customTransforms()).isEqualTo("{\"requestBody\":{}}");
     }
 
     @Test
-    void partialProviderConfigUpsertPreservesEnabledStateAndCustomTransforms() {
+        void partialProviderConfigUpsertPreservesEnabledState() {
         providerConfigRepository.saveProvider(
-                "mimo", true, "https://old.example", "openai", "{\"keep\":true}");
+                                "mimo", true, "https://old.example", "openai");
 
         int providerId = providerConfigRepository.updateProviderConfig(
                 "mimo", "https://new.example", "openai");
@@ -86,7 +84,6 @@ class RepositoryUpsertTests {
         ProviderConfigRow row = providerConfigRepository.findByKey("mimo");
         assertThat(row.id()).isEqualTo(providerId);
         assertThat(row.enabled()).isTrue();
-        assertThat(row.customTransforms()).isEqualTo("{\"keep\":true}");
         assertThat(row.baseUrl()).isEqualTo("https://new.example");
     }
 
