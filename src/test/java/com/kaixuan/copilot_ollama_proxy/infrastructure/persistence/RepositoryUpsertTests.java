@@ -9,6 +9,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.sqlite.SQLiteDataSource;
 
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -19,6 +20,7 @@ class RepositoryUpsertTests {
 
     private JdbcTemplate jdbcTemplate;
     private ProviderConfigRepository providerConfigRepository;
+        private ProviderApiKeyRepository providerApiKeyRepository;
     private AppConfigRepository appConfigRepository;
 
     @BeforeEach
@@ -46,12 +48,14 @@ class RepositoryUpsertTests {
                 + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), "
                 + "UNIQUE (provider_id, key_name))");
+        jdbcTemplate.execute("CREATE UNIQUE INDEX ux_provider_api_key_active "
+                + "ON provider_api_key(provider_id) WHERE is_active = 1");
         jdbcTemplate.execute("CREATE TABLE app_config ("
                 + "config_key TEXT PRIMARY KEY, config_value TEXT NOT NULL DEFAULT '', "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         ApiKeyCryptoService cryptoService = new ApiKeyCryptoService("test-master-key");
         ReflectionTestUtils.invokeMethod(cryptoService, "initialize");
-        ProviderApiKeyRepository providerApiKeyRepository = new ProviderApiKeyRepository(jdbcTemplate, cryptoService);
+        providerApiKeyRepository = new ProviderApiKeyRepository(jdbcTemplate, cryptoService);
         providerConfigRepository = new ProviderConfigRepository(jdbcTemplate, providerApiKeyRepository);
         appConfigRepository = new AppConfigRepository(jdbcTemplate);
     }
@@ -95,5 +99,33 @@ class RepositoryUpsertTests {
                 "SELECT COUNT(*) FROM app_config WHERE config_key = 'fake_version'", Integer.class);
         assertThat(count).isEqualTo(1);
         assertThat(appConfigRepository.findConfigValue("fake_version")).isEqualTo("0.7.0");
+    }
+
+    @Test
+    void savingKeysCanSwitchActiveKeyWithoutViolatingPartialUniqueIndex() {
+        int providerId = providerConfigRepository.saveProvider("mimo", true, "https://api.example", "openai");
+        providerApiKeyRepository.saveKeys(providerId, List.of(
+                new ProviderApiKeyRepository.ApiKeyInput(null, "first", "sk-first", true),
+                new ProviderApiKeyRepository.ApiKeyInput(null, "second", "sk-second", false)));
+
+        List<ProviderApiKeyRow> initial = providerApiKeyRepository.findByProviderId(providerId);
+        ProviderApiKeyRow first = initial.stream()
+                .filter(key -> "first".equals(key.keyName()))
+                .findFirst()
+                .orElseThrow();
+        ProviderApiKeyRow second = initial.stream()
+                .filter(key -> "second".equals(key.keyName()))
+                .findFirst()
+                .orElseThrow();
+
+        providerApiKeyRepository.saveKeys(providerId, List.of(
+                new ProviderApiKeyRepository.ApiKeyInput(first.keyUuid(), "first", null, false),
+                new ProviderApiKeyRepository.ApiKeyInput(second.keyUuid(), "second", null, true)));
+
+        List<ProviderApiKeyRow> saved = providerApiKeyRepository.findByProviderId(providerId);
+        assertThat(saved).filteredOn(ProviderApiKeyRow::active)
+                .singleElement()
+                .extracting(ProviderApiKeyRow::keyUuid)
+                .isEqualTo(second.keyUuid());
     }
 }
