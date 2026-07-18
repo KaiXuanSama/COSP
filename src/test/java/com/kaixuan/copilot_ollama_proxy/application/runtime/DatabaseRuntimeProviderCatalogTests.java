@@ -31,7 +31,7 @@ class DatabaseRuntimeProviderCatalogTests {
                         true, false, "Medium", 0)));
         ProviderRequestTransformRow transform = new ProviderRequestTransformRow(
                 42, 1, "[{\"key\":\"X-New\",\"value\":\"new\"}]",
-                "[\"base\"]", "{}", 1, "{\"version\":1,\"rules\":[]}",
+                "[\"base\"]", "{}", 1, "{\"version\":1,\"rules\":[{\"id\":\"rule-1\"}]}",
                 "2026-07-18T00:00:00", "2026-07-18T00:00:00");
         when(providerConfigRepository.findAllActiveProvidersWithEnabledModels()).thenReturn(List.of(provider));
         when(providerApiKeyRepository.resolveActiveApiKey(42)).thenReturn("test-key");
@@ -42,6 +42,7 @@ class DatabaseRuntimeProviderCatalogTests {
 
         ProviderRuntimeConfiguration configuration = catalog.getActiveProvider("custom-mimo-user");
         assertThat(configuration.headerRulesJson()).isEqualTo("[{\"key\":\"X-New\",\"value\":\"new\"}]");
+        assertThat(configuration.bodyRulesJson()).isEqualTo("{\"version\":1,\"rules\":[{\"id\":\"rule-1\"}]}");
         assertThat(configuration.customTransforms()).contains("X-Legacy");
     }
 
@@ -63,5 +64,6 @@ class DatabaseRuntimeProviderCatalogTests {
 
         ProviderRuntimeConfiguration configuration = catalog.getActiveProvider("custom-mimo-user");
         assertThat(configuration.headerRulesJson()).isEqualTo("[]");
+                assertThat(configuration.bodyRulesJson()).isEqualTo("{\"version\":1,\"rules\":[]}");
     }
 }

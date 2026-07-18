@@ -72,7 +72,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_api_key_active
 
 -- ==================== 供应商请求转换配置表（V5） ====================
 -- 请求头运行时读取本表的 header_rules_json；provider_config.custom_transforms 中的旧请求头仅为迁移期双写副本。
--- 旧请求体调整仍由 provider_config.custom_transforms.body_transforms 执行；新请求体规则及编辑器状态只在本表保存、读取和回显。
+-- 请求体运行时读取本表 body_rules_json；provider_config.custom_transforms 中的旧 body_transforms 仅为迁移期兼容副本。
 
 CREATE TABLE IF NOT EXISTS provider_request_transform (
     provider_id             INTEGER PRIMARY KEY,       -- 与供应商一对一关联

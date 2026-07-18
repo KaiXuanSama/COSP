@@ -5,11 +5,11 @@ import java.util.List;
 /**
  * 运行时 Provider 配置快照。
  *
- * 请求头规则从 provider_request_transform 读取；customTransforms 在迁移期仅保存旧请求体转换配置。
+ * 请求头和请求体规则从 provider_request_transform 读取；customTransforms 是迁移期保留的旧配置副本。
  */
 public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey, String apiFormat,
                                            List<ProviderRuntimeModel> models, String customTransforms,
-                                           String headerRulesJson) {
+                                           String headerRulesJson, String bodyRulesJson) {
 
     /**
      * 创建无自定义转换的运行时供应商配置。
@@ -21,7 +21,7 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
      * @param models 供应商模型
      */
     public ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey, String apiFormat, List<ProviderRuntimeModel> models) {
-        this(providerKey, baseUrl, apiKey, apiFormat, models, "{}", "[]");
+        this(providerKey, baseUrl, apiKey, apiFormat, models, "{}", "[]", "{\"version\":1,\"rules\":[]}");
     }
 
     /**
@@ -36,7 +36,7 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
      */
     public ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey, String apiFormat,
                                         List<ProviderRuntimeModel> models, String customTransforms) {
-        this(providerKey, baseUrl, apiKey, apiFormat, models, customTransforms, "[]");
+        this(providerKey, baseUrl, apiKey, apiFormat, models, customTransforms, "[]", "{\"version\":1,\"rules\":[]}");
     }
 
     public ProviderRuntimeConfiguration {
@@ -47,6 +47,8 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
         models = models == null ? List.of() : List.copyOf(models);
         customTransforms = (customTransforms == null || customTransforms.isBlank()) ? "{}" : customTransforms;
         headerRulesJson = (headerRulesJson == null || headerRulesJson.isBlank()) ? "[]" : headerRulesJson;
+        bodyRulesJson = (bodyRulesJson == null || bodyRulesJson.isBlank())
+            ? "{\"version\":1,\"rules\":[]}" : bodyRulesJson;
     }
 
     public boolean supportsModel(String modelName) {

@@ -16,7 +16,7 @@ import java.util.Map;
  * 通用 OpenAI 上游服务 —— 处理所有 custom-* 前缀的自定义供应商。
  * 从数据库动态读取配置，复用父类的请求准备、SSE 解析、日志和流式翻译基础设施。
  * <p>
- * 请求头规则从 provider_request_transform 读取，请求体仍使用 custom_transforms.body_transforms。
+ * 请求头和请求体规则均从 provider_request_transform 读取。
  */
 @Service
 public class GenericOpenAiChatService extends AbstractUpstreamChatService {
@@ -24,6 +24,7 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
     private static final String PROVIDER_KEY = "__generic__";
     private final RuntimeProviderCatalog runtimeProviderCatalog;
     private final ObjectMapper objectMapper;
+    private final RequestBodyRuleEngine requestBodyRuleEngine;
 
     /** 当前请求动态解析的 providerKey，由 chatCompletion/chatCompletionStream 设置 */
     private final ThreadLocal<String> currentProviderKey = new ThreadLocal<>();
@@ -32,6 +33,7 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
         super(runtimeProviderCatalog, objectMapper, "");
         this.runtimeProviderCatalog = runtimeProviderCatalog;
         this.objectMapper = objectMapper;
+        this.requestBodyRuleEngine = new RequestBodyRuleEngine(objectMapper);
     }
 
     @Override
@@ -71,13 +73,21 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
     }
 
     /**
-    * 根据 custom_transforms.body_transforms 配置对请求体进行动态转换。
+     * 根据新表 body_rules_json 对请求体进行动态转换。
+     *
+     * 旧 custom_transforms.body_transforms 在此路径中不再执行，也不会作为回退来源。
      */
     @Override
     protected void customizeRequestBody(Map<String, Object> body, String resolvedModel) {
         ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
         if (config != null) {
-            RequestTransformEngine.applyBodyTransforms(body, config.customTransforms(), objectMapper);
+            RequestBodyRuleEngine.TransformResult result = requestBodyRuleEngine.transform(body, config.bodyRulesJson());
+            body.clear();
+            body.putAll(result.output());
+            for (RequestBodyRuleEngine.TransformWarning warning : result.warnings()) {
+                log.warn("请求体规则已跳过: ruleId={}, path={}, message={}",
+                        warning.ruleId(), warning.fieldPath(), warning.message());
+            }
         }
     }
 
