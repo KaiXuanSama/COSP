@@ -28,7 +28,8 @@ import java.util.UUID;
 public class SchemaMigrationRunner implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(SchemaMigrationRunner.class);
-    private static final int CURRENT_SCHEMA_VERSION = 7;
+    private static final double V7_BASELINE_VERSION = 7.0;
+    private static final double CURRENT_SCHEMA_VERSION = 7.1;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -78,6 +79,10 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
 
         if (!hasLegacyProviderConfigColumns()) {
+            if (hasBaselineVersionRecord()) {
+                migrate(CURRENT_SCHEMA_VERSION, "新增供应商完整显示名", this::migrateDisplayNameToV71);
+                return;
+            }
             establishCurrentBaseline();
             return;
         }
@@ -90,7 +95,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         migrate(4, "API Key 拆表与加密", this::migrateApiKeysToEncryptedTable);
         migrate(5, "新增供应商请求转换配置表", this::migrateProviderRequestTransforms);
         migrate(6, "清理遗留请求转换配置", this::clearLegacyRequestTransforms);
-        migrate(7, "移除废弃字段并压缩迁移历史", this::migrateToV7Baseline);
+        migrate(V7_BASELINE_VERSION, "移除废弃字段并压缩迁移历史", this::migrateToV7Baseline);
+        migrate(CURRENT_SCHEMA_VERSION, "新增供应商完整显示名", this::migrateDisplayNameToV71);
     }
 
     /**
@@ -100,10 +106,11 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         if (!tableExists("schema_version") || !columnExists("schema_version", "id")) {
             return false;
         }
-        Integer version = jdbcTemplate.query(
+        Double version = jdbcTemplate.query(
                 "SELECT version FROM schema_version WHERE id = 1",
-                resultSet -> resultSet.next() ? resultSet.getInt("version") : null);
-        return version != null && version >= CURRENT_SCHEMA_VERSION && !hasLegacyProviderConfigColumns();
+            resultSet -> resultSet.next() ? resultSet.getDouble("version") : null);
+        return version != null && version >= CURRENT_SCHEMA_VERSION
+            && columnExists("provider_config", "display_name") && !hasLegacyProviderConfigColumns();
     }
 
     /**
@@ -159,13 +166,18 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
     }
 
-    private void migrate(int version, String description, Runnable action) {
+    private boolean hasBaselineVersionRecord() {
+        return tableExists("schema_version") && columnExists("schema_version", "id")
+                && jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_version WHERE id = 1", Integer.class) == 1;
+    }
+
+    private void migrate(double version, String description, Runnable action) {
         Integer applied = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM schema_version WHERE version = ?", Integer.class, version);
         if (applied != null && applied > 0) {
             return;
         }
-        if (version == CURRENT_SCHEMA_VERSION) {
+        if (version >= V7_BASELINE_VERSION) {
             transactionTemplate.executeWithoutResult(status -> action.run());
             log.info("[SchemaMigration] 已应用 V{}: {}", version, description);
             return;
@@ -321,7 +333,48 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                 + "description TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT "
                 + "(strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         jdbcTemplate.update("INSERT INTO schema_version (id, version, description) VALUES (1, ?, ?)",
-            CURRENT_SCHEMA_VERSION, "V7 架构基线：移除废弃字段并压缩迁移历史");
+            V7_BASELINE_VERSION, "V7 架构基线：移除废弃字段并压缩迁移历史");
+    }
+
+    /**
+     * V7.1：新增供应商完整显示名列，并为已有数据回填可读名称。
+     *
+     * 此版本是 V7 基线上的增量迁移。版本记录由统一迁移框架驱动，
+     * 完成后仍只保留单条最新版本状态。
+     */
+    private void migrateDisplayNameToV71() {
+        dropTrigger("trg_provider_config_validate_update");
+        addColumnIfNotExists("provider_config", "display_name", "TEXT NOT NULL DEFAULT ''");
+        var providers = jdbcTemplate.queryForList(
+            "SELECT id, provider_key, display_name FROM provider_config WHERE trim(display_name) = ''");
+        for (var provider : providers) {
+            int providerId = ((Number) provider.get("id")).intValue();
+            String providerKey = (String) provider.get("provider_key");
+            jdbcTemplate.update("UPDATE provider_config SET display_name = ? WHERE id = ?",
+                deriveDisplayName(providerKey), providerId);
+        }
+        createProviderConfigValidationTriggers();
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+            CURRENT_SCHEMA_VERSION, "V7.1 增量迁移：新增供应商完整显示名");
+    }
+
+    private String deriveDisplayName(String providerKey) {
+        if (providerKey == null || providerKey.isBlank()) {
+            return "";
+        }
+        String source = providerKey.startsWith("custom-") ? providerKey.substring(7) : providerKey;
+        StringBuilder displayName = new StringBuilder();
+        for (String part : source.split("[-_\\s]+")) {
+            if (part.isBlank()) {
+                continue;
+            }
+            if (!displayName.isEmpty()) {
+                displayName.append(' ');
+            }
+            displayName.append(Character.toUpperCase(part.charAt(0))).append(part.substring(1));
+        }
+        return displayName.isEmpty() ? source : displayName.toString();
     }
 
     private boolean hasLegacyProviderConfigColumns() {

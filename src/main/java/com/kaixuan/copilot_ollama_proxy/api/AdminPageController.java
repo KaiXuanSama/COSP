@@ -106,6 +106,7 @@ public class AdminPageController {
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("id", p.id());
         view.put("providerKey", p.providerKey());
+        view.put("displayName", p.displayName());
         view.put("enabled", p.enabled());
         view.put("baseUrl", p.baseUrl());
         view.put("apiFormat", p.apiFormat());
@@ -504,7 +505,7 @@ public class AdminPageController {
             String url = baseUrl == null ? "" : baseUrl.trim();
             try {
                 providerRequestTransformService.createCustomProvider(
-                        providerKey, url, headers,
+                    providerKey, name, url, headers,
                         defaultIfBlank(bodyTemplateKeysJson, ProviderRequestTransformService.DEFAULT_TEMPLATE_KEYS_JSON),
                         defaultIfBlank(bodyPreviewJson, ProviderRequestTransformService.DEFAULT_BODY_PREVIEW_JSON),
                         defaultIfBlank(bodyRulesJson, ProviderRequestTransformService.EMPTY_BODY_RULES_JSON));
@@ -552,7 +553,7 @@ public class AdminPageController {
             String url = baseUrl == null ? "" : baseUrl.trim();
             try {
                 providerRequestTransformService.updateCustomProvider(
-                        existing.id(), providerKey, newProviderKey, url, headers,
+                    existing.id(), providerKey, newProviderKey, name, url, headers,
                         defaultIfBlank(bodyTemplateKeysJson, ProviderRequestTransformService.DEFAULT_TEMPLATE_KEYS_JSON),
                         defaultIfBlank(bodyPreviewJson, ProviderRequestTransformService.DEFAULT_BODY_PREVIEW_JSON),
                         defaultIfBlank(bodyRulesJson, ProviderRequestTransformService.EMPTY_BODY_RULES_JSON));

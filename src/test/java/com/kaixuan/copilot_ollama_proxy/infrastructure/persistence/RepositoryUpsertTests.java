@@ -30,6 +30,7 @@ class RepositoryUpsertTests {
         jdbcTemplate = new JdbcTemplate(dataSource);
         jdbcTemplate.execute("CREATE TABLE provider_config ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, "
+                + "display_name TEXT NOT NULL DEFAULT '', "
                 + "enabled INTEGER NOT NULL DEFAULT 0, base_url TEXT NOT NULL DEFAULT '', "
                 + "api_format TEXT NOT NULL DEFAULT 'openai', "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
@@ -71,7 +72,18 @@ class RepositoryUpsertTests {
         ProviderConfigRow row = providerConfigRepository.findByKey("mimo");
         assertThat(row.enabled()).isTrue();
         assertThat(row.baseUrl()).isEqualTo("https://new.example");
+        assertThat(row.displayName()).isEqualTo("Mimo");
     }
+
+        @Test
+        void providerUpsertPersistsExactDisplayNameAndNormalConfigUpdateKeepsIt() {
+                providerConfigRepository.saveProvider("custom-stepfun", "StepFun", true, "https://old.example", "openai");
+                providerConfigRepository.updateProviderConfig("custom-stepfun", "https://new.example", "openai");
+
+                ProviderConfigRow row = providerConfigRepository.findByKey("custom-stepfun");
+                assertThat(row.displayName()).isEqualTo("StepFun");
+                assertThat(row.baseUrl()).isEqualTo("https://new.example");
+        }
 
     @Test
         void partialProviderConfigUpsertPreservesEnabledState() {

@@ -25,6 +25,7 @@ export interface ApiKeyEntry {
 export interface Provider {
   id?: number
   providerKey: string
+  displayName: string
   enabled: boolean
   baseUrl: string | null
   apiFormat: string

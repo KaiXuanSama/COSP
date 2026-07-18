@@ -535,7 +535,8 @@ function resetCustomAdvanced() {
 function openEditCustomModal(key: string) {
   editingCustomKey.value = key
   const provider = providerStore.providers[key]
-  const displayName = providerMeta.value[key]?.displayName || key.replace('custom-', '').replace(/-/g, ' ')
+  const displayName = provider?.displayName || providerMeta.value[key]?.displayName
+    || key.replace('custom-', '').replace(/-/g, ' ')
   customProviderName.value = displayName
   customHeaders.value = []
   requestBodyEditorState.value = createCustomProviderDefaultEditorState()
@@ -689,9 +690,10 @@ onMounted(async () => {
   // 将 custom- 前缀的供应商注入 providerMeta
   for (const key of Object.keys(providerStore.providers)) {
     if (key.startsWith('custom-') && !providerMeta.value[key]) {
-      // 从 key 生成可读的 displayName
-      const displayName = key.replace('custom-', '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-      const actualBaseUrl = providerStore.providers[key]?.baseUrl || ''
+      const provider = providerStore.providers[key]
+      const displayName = provider?.displayName || key.replace('custom-', '')
+        .replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+      const actualBaseUrl = provider?.baseUrl || ''
       providerMeta.value[key] = {
         displayName,
         colorClass: 'custom',

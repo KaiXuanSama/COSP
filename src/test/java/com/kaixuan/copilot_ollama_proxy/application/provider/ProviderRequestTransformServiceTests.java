@@ -81,7 +81,7 @@ class ProviderRequestTransformServiceTests {
     @Test
         void createCustomProviderPersistsHeaderRulesOnlyInNewTransformTable() {
         int providerId = service.createCustomProvider(
-                "custom-alpha", "https://alpha.example/v1", HEADER_RULES,
+                "custom-alpha", "Alpha", "https://alpha.example/v1", HEADER_RULES,
                 TEMPLATE_KEYS, PREVIEW, RULES);
 
         ProviderRequestTransformRow transform = transformRepository.findByProviderId(providerId);
@@ -96,7 +96,7 @@ class ProviderRequestTransformServiceTests {
     @Test
     void updateCustomProviderKeepsStableIdAndUpdatesNewTransformTable() {
         int providerId = service.createCustomProvider(
-                "custom-alpha", "https://old.example/v1", HEADER_RULES,
+                "custom-alpha", "Alpha", "https://old.example/v1", HEADER_RULES,
                 TEMPLATE_KEYS, PREVIEW, RULES);
         String updatedHeaderRules = "[{\"key\":\"x-token\",\"value\":\"new\"}]";
         String updatedRules = "{\"version\":1,\"rules\":[{\"id\":\"r1\",\"order\":0,"
@@ -105,13 +105,16 @@ class ProviderRequestTransformServiceTests {
                 + "\"operations\":[{\"type\":\"delete\"}]}]}";
 
         service.updateCustomProvider(
-                providerId, "custom-alpha", "custom-renamed", "https://new.example/v1",
+                providerId, "custom-alpha", "custom-renamed", "RenamedAPI", "https://new.example/v1",
                 updatedHeaderRules, "[\"custom\"]", "{\"temperature\":0.2}", updatedRules);
 
         Integer persistedId = jdbcTemplate.queryForObject(
                 "SELECT id FROM provider_config WHERE provider_key = 'custom-renamed'", Integer.class);
         ProviderRequestTransformRow transform = transformRepository.findByProviderId(providerId);
         assertThat(persistedId).isEqualTo(providerId);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT display_name FROM provider_config WHERE id = ?", String.class, providerId))
+                .isEqualTo("RenamedAPI");
         assertThat(transform.headerRulesJson()).contains("x-token");
         assertThat(transform.bodyTemplateKeysJson()).isEqualTo("[\"custom\"]");
         assertThat(transform.bodyPreviewJson()).isEqualTo("{\"temperature\":0.2}");
@@ -123,7 +126,7 @@ class ProviderRequestTransformServiceTests {
         jdbcTemplate.execute("DROP TABLE provider_request_transform");
 
         assertThatThrownBy(() -> service.createCustomProvider(
-                                "custom-rollback", "https://rollback.example/v1", HEADER_RULES,
+                                "custom-rollback", "Rollback", "https://rollback.example/v1", HEADER_RULES,
                 TEMPLATE_KEYS, PREVIEW, RULES))
                 .isInstanceOf(org.springframework.dao.DataAccessException.class);
 
@@ -135,12 +138,12 @@ class ProviderRequestTransformServiceTests {
     @Test
     void updateCustomProviderRollsBackLegacyChangesWhenNewStorageWriteFails() {
         int providerId = service.createCustomProvider(
-                "custom-alpha", "https://old.example/v1", HEADER_RULES,
+                "custom-alpha", "Alpha", "https://old.example/v1", HEADER_RULES,
                 TEMPLATE_KEYS, PREVIEW, RULES);
         jdbcTemplate.execute("DROP TABLE provider_request_transform");
 
         assertThatThrownBy(() -> service.updateCustomProvider(
-                providerId, "custom-alpha", "custom-renamed", "https://new.example/v1",
+                providerId, "custom-alpha", "custom-renamed", "Renamed", "https://new.example/v1",
                 "[]", TEMPLATE_KEYS, PREVIEW, RULES))
                 .isInstanceOf(org.springframework.dao.DataAccessException.class);
 
@@ -158,7 +161,7 @@ class ProviderRequestTransformServiceTests {
     @Test
     void invalidEditorConfigurationIsRejectedBeforeAnyDatabaseWrite() {
         assertThatThrownBy(() -> service.createCustomProvider(
-                "custom-invalid", "https://invalid.example/v1", HEADER_RULES,
+                "custom-invalid", "Invalid", "https://invalid.example/v1", HEADER_RULES,
                 "[\"custom\",\"base\"]", "[]", "{\"version\":2,\"rules\":[]}"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("custom 模板不能与其他模板同时选择");
@@ -171,6 +174,7 @@ class ProviderRequestTransformServiceTests {
     private void createProviderTables() {
         jdbcTemplate.execute("CREATE TABLE provider_config ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, "
+                + "display_name TEXT NOT NULL DEFAULT '', "
                 + "enabled INTEGER NOT NULL DEFAULT 0, base_url TEXT NOT NULL DEFAULT '', "
                 + "api_format TEXT NOT NULL DEFAULT 'openai', "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");

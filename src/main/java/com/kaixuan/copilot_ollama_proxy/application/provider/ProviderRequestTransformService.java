@@ -65,13 +65,13 @@ public class ProviderRequestTransformService {
      * @return 供应商主键
      */
     @Transactional
-        public int createCustomProvider(String providerKey, String baseUrl, String headerRulesJson,
+        public int createCustomProvider(String providerKey, String displayName, String baseUrl, String headerRulesJson,
                                     String templateKeysJson, String bodyPreviewJson,
                                     String bodyRulesJson) {
         ValidatedTransform transform = validate(
             headerRulesJson, templateKeysJson, bodyPreviewJson, bodyRulesJson);
         int providerId = providerConfigRepository.saveProvider(
-            providerKey, true, baseUrl, "openai");
+            providerKey, displayName, true, baseUrl, "openai");
         saveRequestTransform(providerId, transform);
         return providerId;
     }
@@ -90,12 +90,13 @@ public class ProviderRequestTransformService {
      */
     @Transactional
     public void updateCustomProvider(int providerId, String oldProviderKey, String newProviderKey,
+                                     String displayName,
                                      String baseUrl, String headerRulesJson,
                                      String templateKeysJson, String bodyPreviewJson,
                                      String bodyRulesJson) {
         ValidatedTransform transform = validate(
             headerRulesJson, templateKeysJson, bodyPreviewJson, bodyRulesJson);
-        providerConfigRepository.updateProviderKeyAndBaseUrl(oldProviderKey, newProviderKey, baseUrl);
+        providerConfigRepository.updateProviderKeyAndBaseUrl(oldProviderKey, newProviderKey, displayName, baseUrl);
         saveRequestTransform(providerId, transform);
     }
 
