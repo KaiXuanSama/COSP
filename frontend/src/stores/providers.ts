@@ -28,7 +28,6 @@ export interface Provider {
   enabled: boolean
   baseUrl: string | null
   apiFormat: string
-  customTransforms?: string
   requestTransform?: ProviderRequestTransform
   apiKeys: ApiKeyEntry[]
   models: ProviderModel[]
@@ -109,11 +108,11 @@ export const useProviderStore = defineStore('providers', () => {
 
   // ==================== 自定义供应商 ====================
 
-  async function addCustomProvider(displayName: string, customTransforms: string,
+  async function addCustomProvider(displayName: string, headerRulesJson: string,
                                    baseUrl: string, requestTransform: CustomProviderRequestTransformInput) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
-    formData.append('customTransforms', customTransforms)
+    formData.append('headerRulesJson', headerRulesJson)
     formData.append('baseUrl', baseUrl)
     formData.append('bodyTemplateKeysJson', requestTransform.bodyTemplateKeysJson)
     formData.append('bodyPreviewJson', requestTransform.bodyPreviewJson)
@@ -133,11 +132,11 @@ export const useProviderStore = defineStore('providers', () => {
   }
 
   async function updateCustomProvider(providerKey: string, displayName: string,
-                                      customTransforms: string, baseUrl: string,
+                                      headerRulesJson: string, baseUrl: string,
                                       requestTransform: CustomProviderRequestTransformInput) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
-    formData.append('customTransforms', customTransforms)
+    formData.append('headerRulesJson', headerRulesJson)
     formData.append('baseUrl', baseUrl)
     formData.append('bodyTemplateKeysJson', requestTransform.bodyTemplateKeysJson)
     formData.append('bodyPreviewJson', requestTransform.bodyPreviewJson)

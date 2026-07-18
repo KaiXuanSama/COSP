@@ -26,12 +26,7 @@ import static org.mockito.Mockito.mock;
 
 class ProviderRequestTransformServiceTests {
 
-    private static final String CUSTOM_TRANSFORMS = """
-            {
-              "custom_headers": [{"key":"api-key","value":"{apiKey}"}],
-              "body_transforms": [{"path":"temperature","action":"remove"}]
-            }
-            """;
+                private static final String HEADER_RULES = "[{\"key\":\"api-key\",\"value\":\"{apiKey}\"}]";
     private static final String TEMPLATE_KEYS = "[\"base\",\"tools\"]";
     private static final String PREVIEW = "{\"model\":\"<string>\",\"stream\":true}";
     private static final String RULES = "{\"version\":1,\"rules\":[]}";
@@ -84,15 +79,15 @@ class ProviderRequestTransformServiceTests {
     }
 
     @Test
-    void createCustomProviderAtomicallySavesLegacyConfigurationAndNewEditorState() {
+        void createCustomProviderPersistsHeaderRulesOnlyInNewTransformTable() {
         int providerId = service.createCustomProvider(
-                "custom-alpha", "https://alpha.example/v1", CUSTOM_TRANSFORMS,
+                "custom-alpha", "https://alpha.example/v1", HEADER_RULES,
                 TEMPLATE_KEYS, PREVIEW, RULES);
 
         String legacyJson = jdbcTemplate.queryForObject(
                 "SELECT custom_transforms FROM provider_config WHERE id = ?", String.class, providerId);
         ProviderRequestTransformRow transform = transformRepository.findByProviderId(providerId);
-        assertThat(legacyJson).contains("custom_headers", "body_transforms", "temperature");
+        assertThat(legacyJson).isEqualTo("{}");
         assertThat(transform).isNotNull();
         assertThat(transform.headerRulesJson())
                 .isEqualTo("[{\"key\":\"api-key\",\"value\":\"{apiKey}\"}]");
@@ -102,12 +97,11 @@ class ProviderRequestTransformServiceTests {
     }
 
     @Test
-    void updateCustomProviderKeepsStableIdAndUpdatesBothStorageLocations() {
+    void updateCustomProviderKeepsStableIdAndUpdatesNewTransformTable() {
         int providerId = service.createCustomProvider(
-                "custom-alpha", "https://old.example/v1", CUSTOM_TRANSFORMS,
+                "custom-alpha", "https://old.example/v1", HEADER_RULES,
                 TEMPLATE_KEYS, PREVIEW, RULES);
-        String updatedTransforms = "{\"custom_headers\":[{\"key\":\"x-token\",\"value\":\"new\"}],"
-                + "\"body_transforms\":[]}";
+        String updatedHeaderRules = "[{\"key\":\"x-token\",\"value\":\"new\"}]";
         String updatedRules = "{\"version\":1,\"rules\":[{\"id\":\"r1\",\"order\":0,"
                 + "\"field\":\"temperature\",\"array\":false,\"conditional\":false,"
                 + "\"conditionMode\":\"all\",\"conditions\":[],"
@@ -115,7 +109,7 @@ class ProviderRequestTransformServiceTests {
 
         service.updateCustomProvider(
                 providerId, "custom-alpha", "custom-renamed", "https://new.example/v1",
-                updatedTransforms, "[\"custom\"]", "{\"temperature\":0.2}", updatedRules);
+                updatedHeaderRules, "[\"custom\"]", "{\"temperature\":0.2}", updatedRules);
 
         Integer persistedId = jdbcTemplate.queryForObject(
                 "SELECT id FROM provider_config WHERE provider_key = 'custom-renamed'", Integer.class);
@@ -123,7 +117,7 @@ class ProviderRequestTransformServiceTests {
                 "SELECT custom_transforms FROM provider_config WHERE id = ?", String.class, providerId);
         ProviderRequestTransformRow transform = transformRepository.findByProviderId(providerId);
         assertThat(persistedId).isEqualTo(providerId);
-        assertThat(legacyJson).contains("x-token");
+        assertThat(legacyJson).isEqualTo("{}");
         assertThat(transform.headerRulesJson()).contains("x-token");
         assertThat(transform.bodyTemplateKeysJson()).isEqualTo("[\"custom\"]");
         assertThat(transform.bodyPreviewJson()).isEqualTo("{\"temperature\":0.2}");
@@ -135,7 +129,7 @@ class ProviderRequestTransformServiceTests {
         jdbcTemplate.execute("DROP TABLE provider_request_transform");
 
         assertThatThrownBy(() -> service.createCustomProvider(
-                "custom-rollback", "https://rollback.example/v1", CUSTOM_TRANSFORMS,
+                                "custom-rollback", "https://rollback.example/v1", HEADER_RULES,
                 TEMPLATE_KEYS, PREVIEW, RULES))
                 .isInstanceOf(org.springframework.dao.DataAccessException.class);
 
@@ -147,13 +141,13 @@ class ProviderRequestTransformServiceTests {
     @Test
     void updateCustomProviderRollsBackLegacyChangesWhenNewStorageWriteFails() {
         int providerId = service.createCustomProvider(
-                "custom-alpha", "https://old.example/v1", CUSTOM_TRANSFORMS,
+                "custom-alpha", "https://old.example/v1", HEADER_RULES,
                 TEMPLATE_KEYS, PREVIEW, RULES);
         jdbcTemplate.execute("DROP TABLE provider_request_transform");
 
         assertThatThrownBy(() -> service.updateCustomProvider(
                 providerId, "custom-alpha", "custom-renamed", "https://new.example/v1",
-                "{\"custom_headers\":[]}", TEMPLATE_KEYS, PREVIEW, RULES))
+                "[]", TEMPLATE_KEYS, PREVIEW, RULES))
                 .isInstanceOf(org.springframework.dao.DataAccessException.class);
 
         Integer oldCount = jdbcTemplate.queryForObject(
@@ -167,13 +161,13 @@ class ProviderRequestTransformServiceTests {
         assertThat(oldCount).isEqualTo(1);
         assertThat(renamedCount).isZero();
         assertThat(baseUrl).isEqualTo("https://old.example/v1");
-        assertThat(legacyJson).contains("body_transforms", "temperature");
+        assertThat(legacyJson).isEqualTo("{}");
     }
 
     @Test
     void invalidEditorConfigurationIsRejectedBeforeAnyDatabaseWrite() {
         assertThatThrownBy(() -> service.createCustomProvider(
-                "custom-invalid", "https://invalid.example/v1", CUSTOM_TRANSFORMS,
+                "custom-invalid", "https://invalid.example/v1", HEADER_RULES,
                 "[\"custom\",\"base\"]", "[]", "{\"version\":2,\"rules\":[]}"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("custom 模板不能与其他模板同时选择");

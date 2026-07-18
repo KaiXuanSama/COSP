@@ -42,7 +42,7 @@ class SchemaMigrationRunnerTests {
         runner.run(null);
 
         Integer versionCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_version", Integer.class);
-        assertThat(versionCount).isEqualTo(5);
+        assertThat(versionCount).isEqualTo(6);
         assertThat(columnNames(jdbcTemplate, "provider_model"))
                 .contains("reasoning_effort", "max_output_tokens");
         assertThat(columnNames(jdbcTemplate, "provider_config"))
@@ -60,7 +60,7 @@ class SchemaMigrationRunnerTests {
         assertThat(encrypted).isNotBlank();
         assertThat(cryptoService.decrypt(nonce, encrypted)).isEqualTo("sk-legacy");
 
-        // V5：复制旧请求头配置，保留旧请求体配置，并初始化新规则编辑器状态
+        // V5：复制旧请求头配置并初始化新规则编辑器状态；V6 清空全部旧转换配置
         String headerRules = jdbcTemplate.queryForObject(
                 "SELECT header_rules_json FROM provider_request_transform WHERE provider_id = 1", String.class);
         assertThat(new ObjectMapper().readTree(headerRules)).isEqualTo(new ObjectMapper().readTree(
@@ -79,7 +79,7 @@ class SchemaMigrationRunnerTests {
         assertThat(bodyRules).isEqualTo("{\"version\":1,\"rules\":[]}");
         String legacyTransforms = jdbcTemplate.queryForObject(
                 "SELECT custom_transforms FROM provider_config WHERE id = 1", String.class);
-        assertThat(legacyTransforms).contains("body_transforms");
+        assertThat(legacyTransforms).isEqualTo("{}");
 
         String fingerprint = jdbcTemplate.queryForObject(
                 "SELECT config_value FROM app_config WHERE config_key = 'encryption_key_fingerprint'", String.class);

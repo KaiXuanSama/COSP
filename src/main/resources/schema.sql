@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS provider_config (
     api_key          TEXT         NOT NULL DEFAULT '', -- 【V4 后废弃】API Key 已迁移到 provider_api_key 表，此列保留但恒为 '[]'
     active_api_key_index INTEGER  NOT NULL DEFAULT 0 CHECK (active_api_key_index >= 0), -- 【V4 后废弃】激活状态改由 provider_api_key.is_active 表示，此列恒为 0
     api_format       VARCHAR(20)  NOT NULL DEFAULT 'openai', -- API 格式（仅支持 openai）
-    custom_transforms TEXT        NOT NULL DEFAULT '{}', -- 自定义供应商的请求转换配置（JSON）
+    custom_transforms TEXT        NOT NULL DEFAULT '{}', -- 【V6 后废弃】历史请求转换列，固定为空对象
     updated_at       TEXT         NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
 );
 
@@ -71,8 +71,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_api_key_active
     ON provider_api_key(provider_id) WHERE is_active = 1;
 
 -- ==================== 供应商请求转换配置表（V5） ====================
--- 请求头运行时读取本表的 header_rules_json；provider_config.custom_transforms 中的旧请求头仅为迁移期双写副本。
--- 请求体运行时读取本表 body_rules_json；provider_config.custom_transforms 中的旧 body_transforms 仅为迁移期兼容副本。
+-- 请求头运行时读取本表的 header_rules_json；请求体运行时读取本表 body_rules_json。
+-- provider_config.custom_transforms 已在 V6 清空并废弃保留，后续可单独通过表重建移除该列。
 
 CREATE TABLE IF NOT EXISTS provider_request_transform (
     provider_id             INTEGER PRIMARY KEY,       -- 与供应商一对一关联

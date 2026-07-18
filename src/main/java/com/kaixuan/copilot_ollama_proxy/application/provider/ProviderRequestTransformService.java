@@ -13,7 +13,7 @@ import java.util.Set;
 /**
  * 供应商请求转换配置保存服务。
  *
- * V5 中该服务负责新表落库和请求头双写；运行时请求头读取新表，旧字段仍供请求体转换使用。
+ * 该服务负责将请求头和请求体规则保存到 provider_request_transform。
  */
 @Service
 public class ProviderRequestTransformService {
@@ -58,20 +58,20 @@ public class ProviderRequestTransformService {
      *
      * @param providerKey 供应商标识
      * @param baseUrl API 基础地址
-     * @param customTransforms V5 旧引擎配置 JSON
+    * @param headerRulesJson 请求头规则 JSON
      * @param templateKeysJson 编辑器模板键 JSON
      * @param bodyPreviewJson 编辑器预览请求体 JSON
      * @param bodyRulesJson 请求体规则集 JSON
      * @return 供应商主键
      */
     @Transactional
-    public int createCustomProvider(String providerKey, String baseUrl, String customTransforms,
+        public int createCustomProvider(String providerKey, String baseUrl, String headerRulesJson,
                                     String templateKeysJson, String bodyPreviewJson,
                                     String bodyRulesJson) {
         ValidatedTransform transform = validate(
-                customTransforms, templateKeysJson, bodyPreviewJson, bodyRulesJson);
+            headerRulesJson, templateKeysJson, bodyPreviewJson, bodyRulesJson);
         int providerId = providerConfigRepository.saveProvider(
-                providerKey, true, baseUrl, "openai", transform.customTransformsJson());
+            providerKey, true, baseUrl, "openai");
         saveRequestTransform(providerId, transform);
         return providerId;
     }
@@ -83,20 +83,19 @@ public class ProviderRequestTransformService {
      * @param oldProviderKey 原供应商标识
      * @param newProviderKey 新供应商标识
      * @param baseUrl API 基础地址
-     * @param customTransforms V5 旧引擎配置 JSON
+    * @param headerRulesJson 请求头规则 JSON
      * @param templateKeysJson 编辑器模板键 JSON
      * @param bodyPreviewJson 编辑器预览请求体 JSON
      * @param bodyRulesJson 请求体规则集 JSON
      */
     @Transactional
     public void updateCustomProvider(int providerId, String oldProviderKey, String newProviderKey,
-                                     String baseUrl, String customTransforms,
+                                     String baseUrl, String headerRulesJson,
                                      String templateKeysJson, String bodyPreviewJson,
                                      String bodyRulesJson) {
         ValidatedTransform transform = validate(
-                customTransforms, templateKeysJson, bodyPreviewJson, bodyRulesJson);
-        providerConfigRepository.updateProviderKeyAndTransforms(
-                oldProviderKey, newProviderKey, transform.customTransformsJson(), baseUrl);
+            headerRulesJson, templateKeysJson, bodyPreviewJson, bodyRulesJson);
+        providerConfigRepository.updateProviderKeyAndBaseUrl(oldProviderKey, newProviderKey, baseUrl);
         saveRequestTransform(providerId, transform);
     }
 
@@ -107,14 +106,10 @@ public class ProviderRequestTransformService {
                 1, transform.bodyRulesJson());
     }
 
-    private ValidatedTransform validate(String customTransforms, String templateKeysJson,
+    private ValidatedTransform validate(String headerRulesJson, String templateKeysJson,
                                          String bodyPreviewJson, String bodyRulesJson) {
         try {
-            JsonNode customRoot = parseObject(customTransforms, "customTransforms");
-            JsonNode headers = customRoot.path("custom_headers");
-            if (headers.isMissingNode()) {
-                headers = objectMapper.createArrayNode();
-            }
+            JsonNode headers = objectMapper.readTree(headerRulesJson);
             validateHeaders(headers);
 
             JsonNode templateKeys = objectMapper.readTree(templateKeysJson);
@@ -124,7 +119,6 @@ public class ProviderRequestTransformService {
             validateRuleSet(rules);
 
             return new ValidatedTransform(
-                    objectMapper.writeValueAsString(customRoot),
                     objectMapper.writeValueAsString(headers),
                     objectMapper.writeValueAsString(templateKeys),
                     objectMapper.writeValueAsString(preview),
@@ -239,7 +233,6 @@ public class ProviderRequestTransformService {
     }
 
     private record ValidatedTransform(
-            String customTransformsJson,
             String headerRulesJson,
             String templateKeysJson,
             String bodyPreviewJson,

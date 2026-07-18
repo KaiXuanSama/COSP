@@ -80,6 +80,19 @@ public class ProviderConfigRepository {
     }
 
     /**
+     * 保存服务商配置，旧 custom_transforms 始终写入空对象。
+     *
+     * @param providerKey 服务商标识
+     * @param enabled 是否启用
+     * @param baseUrl API 基础地址
+     * @param apiFormat API 格式
+     * @return 对应的 provider_config.id
+     */
+    public int saveProvider(String providerKey, boolean enabled, String baseUrl, String apiFormat) {
+        return saveProvider(providerKey, enabled, baseUrl, apiFormat, "{}");
+    }
+
+    /**
      * 仅更新服务商的 base_url 与 api_format，不修改 enabled 状态，也不涉及 API Key。
      * 如果指定的 providerKey 不存在，则自动插入一条新记录（enabled = 0）。
      * @return 对应的 provider_config.id
@@ -181,6 +194,20 @@ public class ProviderConfigRepository {
                 "UPDATE provider_config SET provider_key = ?, custom_transforms = ?, base_url = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?",
                 newProviderKey, customTransforms, baseUrl, oldProviderKey);
     }
+
+            /**
+             * 更新自定义供应商标识和 API 地址，并清空废弃的 custom_transforms。
+             *
+             * @param oldProviderKey 原供应商标识
+             * @param newProviderKey 新供应商标识
+             * @param baseUrl API 基础地址
+             */
+            public void updateProviderKeyAndBaseUrl(String oldProviderKey, String newProviderKey, String baseUrl) {
+            jdbcTemplate.update(
+                "UPDATE provider_config SET provider_key = ?, custom_transforms = '{}', base_url = ?, "
+                    + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?",
+                newProviderKey, baseUrl, oldProviderKey);
+            }
 
     /**
      * 根据 provider_key 删除服务商配置及其关联的模型。

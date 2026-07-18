@@ -109,7 +109,6 @@ public class AdminPageController {
         view.put("enabled", p.enabled());
         view.put("baseUrl", p.baseUrl());
         view.put("apiFormat", p.apiFormat());
-        view.put("customTransforms", p.customTransforms());
         view.put("updatedAt", p.updatedAt());
         view.put("models", p.models());
         view.put("apiKeys", buildMaskedApiKeys(p.id()));
@@ -196,13 +195,11 @@ public class AdminPageController {
         boolean enabled = Boolean.TRUE.equals(body.get("enabled"));
         ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
         String baseUrl = "";
-        String customTransforms = "{}";
         if (provider != null) {
             baseUrl = provider.baseUrl() != null ? provider.baseUrl() : "";
-            customTransforms = provider.customTransforms() != null ? provider.customTransforms() : "{}";
         }
         // saveProvider 在记录不存在时会自动插入（首次启用场景）；API Key 独立管理，不受启停影响
-        providerConfigRepository.saveProvider(providerKey, enabled, baseUrl, "openai", customTransforms);
+        providerConfigRepository.saveProvider(providerKey, enabled, baseUrl, "openai");
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("providerKey", providerKey);
         result.put("enabled", enabled);
@@ -489,7 +486,7 @@ public class AdminPageController {
     public Mono<ResponseEntity<Map<String, Object>>> addCustomProvider(ServerWebExchange exchange) {
         return exchange.getFormData().map(form -> {
             String displayName = form.getFirst("displayName");
-            String customTransforms = form.getFirst("customTransforms");
+            String headerRulesJson = form.getFirst("headerRulesJson");
             String baseUrl = form.getFirst("baseUrl");
             String bodyTemplateKeysJson = form.getFirst("bodyTemplateKeysJson");
             String bodyPreviewJson = form.getFirst("bodyPreviewJson");
@@ -503,12 +500,11 @@ public class AdminPageController {
             if (providerConfigRepository.findByKey(providerKey) != null) {
                 return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "该供应商名称已存在"));
             }
-            // 验证 customTransforms 格式
-            String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
+            String headers = defaultIfBlank(headerRulesJson, "[]");
             String url = baseUrl == null ? "" : baseUrl.trim();
             try {
                 providerRequestTransformService.createCustomProvider(
-                        providerKey, url, transforms,
+                        providerKey, url, headers,
                         defaultIfBlank(bodyTemplateKeysJson, ProviderRequestTransformService.DEFAULT_TEMPLATE_KEYS_JSON),
                         defaultIfBlank(bodyPreviewJson, ProviderRequestTransformService.DEFAULT_BODY_PREVIEW_JSON),
                         defaultIfBlank(bodyRulesJson, ProviderRequestTransformService.EMPTY_BODY_RULES_JSON));
@@ -530,7 +526,7 @@ public class AdminPageController {
     public Mono<ResponseEntity<Map<String, Object>>> updateCustomProvider(@PathVariable String providerKey, ServerWebExchange exchange) {
         return exchange.getFormData().map(form -> {
             String displayName = form.getFirst("displayName");
-            String customTransforms = form.getFirst("customTransforms");
+            String headerRulesJson = form.getFirst("headerRulesJson");
             String baseUrl = form.getFirst("baseUrl");
             String bodyTemplateKeysJson = form.getFirst("bodyTemplateKeysJson");
             String bodyPreviewJson = form.getFirst("bodyPreviewJson");
@@ -552,11 +548,11 @@ public class AdminPageController {
                     return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "该供应商名称已存在"));
                 }
             }
-            String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
+            String headers = defaultIfBlank(headerRulesJson, "[]");
             String url = baseUrl == null ? "" : baseUrl.trim();
             try {
                 providerRequestTransformService.updateCustomProvider(
-                        existing.id(), providerKey, newProviderKey, url, transforms,
+                        existing.id(), providerKey, newProviderKey, url, headers,
                         defaultIfBlank(bodyTemplateKeysJson, ProviderRequestTransformService.DEFAULT_TEMPLATE_KEYS_JSON),
                         defaultIfBlank(bodyPreviewJson, ProviderRequestTransformService.DEFAULT_BODY_PREVIEW_JSON),
                         defaultIfBlank(bodyRulesJson, ProviderRequestTransformService.EMPTY_BODY_RULES_JSON));

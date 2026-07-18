@@ -1,5 +1,5 @@
 /**
- * 默认完整请求体模板和 MiMo 示例规则。
+ * 默认完整请求体模板和图片工具消息兼容规则。
  *
  * 模板覆盖 Copilot 可能发送的所有字段结构，不做场景切换。
  * 用户可在工作台中自由编辑或粘贴自定义 JSON。
@@ -85,7 +85,7 @@ export const DEFAULT_REQUEST_BODY = {
 export const DEFAULT_REQUEST_BODY_JSON = JSON.stringify(DEFAULT_REQUEST_BODY, null, 2)
 
 /**
- * MiMo 示例规则集 — 用于第一版验收。
+ * 图片工具消息兼容规则集。
  *
  * 目标：将包含图片的 tool 消息的 role 改为 user，并删除 tool_call_id。
  * 不修改 image_url 对象结构。

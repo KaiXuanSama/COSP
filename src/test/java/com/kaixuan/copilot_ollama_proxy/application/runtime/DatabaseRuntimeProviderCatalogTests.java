@@ -18,7 +18,7 @@ import static org.mockito.Mockito.when;
 class DatabaseRuntimeProviderCatalogTests {
 
     @Test
-    void activeProviderUsesHeaderRulesFromNewTransformTableInsteadOfLegacyCustomTransforms() {
+        void activeProviderUsesHeaderRulesFromNewTransformTable() {
         ProviderConfigRepository providerConfigRepository = mock(ProviderConfigRepository.class);
         ProviderApiKeyRepository providerApiKeyRepository = mock(ProviderApiKeyRepository.class);
         ProviderRequestTransformRepository requestTransformRepository = mock(ProviderRequestTransformRepository.class);
@@ -43,7 +43,6 @@ class DatabaseRuntimeProviderCatalogTests {
         ProviderRuntimeConfiguration configuration = catalog.getActiveProvider("custom-mimo-user");
         assertThat(configuration.headerRulesJson()).isEqualTo("[{\"key\":\"X-New\",\"value\":\"new\"}]");
         assertThat(configuration.bodyRulesJson()).isEqualTo("{\"version\":1,\"rules\":[{\"id\":\"rule-1\"}]}");
-        assertThat(configuration.customTransforms()).contains("X-Legacy");
     }
 
     @Test

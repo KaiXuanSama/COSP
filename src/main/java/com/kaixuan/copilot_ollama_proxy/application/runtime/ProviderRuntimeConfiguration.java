@@ -5,11 +5,11 @@ import java.util.List;
 /**
  * 运行时 Provider 配置快照。
  *
- * 请求头和请求体规则从 provider_request_transform 读取；customTransforms 是迁移期保留的旧配置副本。
+ * 请求头和请求体规则均从 provider_request_transform 读取。
  */
 public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey, String apiFormat,
-                                           List<ProviderRuntimeModel> models, String customTransforms,
-                                           String headerRulesJson, String bodyRulesJson) {
+                                           List<ProviderRuntimeModel> models, String headerRulesJson,
+                                           String bodyRulesJson) {
 
     /**
      * 创建无自定义转换的运行时供应商配置。
@@ -21,22 +21,7 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
      * @param models 供应商模型
      */
     public ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey, String apiFormat, List<ProviderRuntimeModel> models) {
-        this(providerKey, baseUrl, apiKey, apiFormat, models, "{}", "[]", "{\"version\":1,\"rules\":[]}");
-    }
-
-    /**
-     * 创建使用旧请求体转换配置的运行时供应商配置。
-     *
-     * @param providerKey 供应商标识
-     * @param baseUrl API 基础地址
-     * @param apiKey 激活 API Key
-     * @param apiFormat API 协议格式
-     * @param models 供应商模型
-     * @param customTransforms 旧请求体转换配置
-     */
-    public ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey, String apiFormat,
-                                        List<ProviderRuntimeModel> models, String customTransforms) {
-        this(providerKey, baseUrl, apiKey, apiFormat, models, customTransforms, "[]", "{\"version\":1,\"rules\":[]}");
+        this(providerKey, baseUrl, apiKey, apiFormat, models, "[]", "{\"version\":1,\"rules\":[]}");
     }
 
     public ProviderRuntimeConfiguration {
@@ -45,7 +30,6 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
         apiKey = apiKey == null ? "" : apiKey;
         apiFormat = (apiFormat == null || apiFormat.isBlank()) ? "openai" : apiFormat;
         models = models == null ? List.of() : List.copyOf(models);
-        customTransforms = (customTransforms == null || customTransforms.isBlank()) ? "{}" : customTransforms;
         headerRulesJson = (headerRulesJson == null || headerRulesJson.isBlank()) ? "[]" : headerRulesJson;
         bodyRulesJson = (bodyRulesJson == null || bodyRulesJson.isBlank())
             ? "{\"version\":1,\"rules\":[]}" : bodyRulesJson;

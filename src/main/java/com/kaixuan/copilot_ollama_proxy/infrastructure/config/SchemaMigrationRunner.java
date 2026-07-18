@@ -81,6 +81,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         migrate(3, "增加业务约束与查询索引", this::migrateConstraintsAndIndexes);
         migrate(4, "API Key 拆表与加密", this::migrateApiKeysToEncryptedTable);
         migrate(5, "新增供应商请求转换配置表", this::migrateProviderRequestTransforms);
+        migrate(6, "清理遗留请求转换配置", this::clearLegacyRequestTransforms);
     }
 
     private void migrate(int version, String description, Runnable action) {
@@ -213,6 +214,16 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
 
         verifyProviderRequestTransforms(providers.size());
+    }
+
+    /**
+     * V6：清空 custom_transforms 中的所有历史请求转换配置。
+     *
+     * 请求头和请求体规则均已由 provider_request_transform 管理，旧列不再是配置来源。
+     * 本次仅清空旧列内容，暂不进行 SQLite 表重建删列。
+     */
+    private void clearLegacyRequestTransforms() {
+        jdbcTemplate.update("UPDATE provider_config SET custom_transforms = '{}'");
     }
 
     private void createProviderRequestTransformTable() {

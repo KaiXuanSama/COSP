@@ -255,7 +255,6 @@ interface ProviderPreset {
   label: string
   baseUrl: string
   headers: KeyValueEntry[]
-  bodyTransforms: KeyValueEntry[]
 }
 
 const officialPresets: ProviderPreset[] = [
@@ -263,31 +262,26 @@ const officialPresets: ProviderPreset[] = [
     label: 'LongCat',
     baseUrl: 'https://api.longcat.chat/openai/v1',
     headers: [],
-    bodyTransforms: [],
   },
   {
     label: 'Kimi',
     baseUrl: 'https://api.moonshot.cn/v1',
     headers: [],
-    bodyTransforms: [],
   },
   {
     label: 'Kimi (CodePlan)',
     baseUrl: 'https://api.kimi.com/coding/v1',
     headers: [],
-    bodyTransforms: [{ key: 'top_p', value: '/del/' }, { key: 'temperature', value: '/del/' }],
   },
   {
     label: 'Agnes',
     baseUrl: 'https://apihub.agnes-ai.com/v1',
     headers: [],
-    bodyTransforms: [],
   },
   {
     label: 'Zhipu',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     headers: [],
-    bodyTransforms: [],
   },
 ]
 
@@ -296,25 +290,21 @@ const aggregatorPresets: ProviderPreset[] = [
     label: 'SenseNova',
     baseUrl: 'https://token.sensenova.cn/v1',
     headers: [],
-    bodyTransforms: [],
   },
   {
     label: 'Uumit',
     baseUrl: 'https://agent.uumit.com/v1',
     headers: [],
-    bodyTransforms: [],
   },
   {
     label: 'Xunfei',
     baseUrl: 'https://maas-api.cn-huabei-1.xf-yun.com/v2',
     headers: [],
-    bodyTransforms: [],
   },
   {
     label: 'WorkBuddy',
     baseUrl: 'https://copilot.tencent.com/v2',
     headers: [],
-    bodyTransforms: [],
   },
 ]
 
@@ -323,13 +313,11 @@ const relayPresets: ProviderPreset[] = [
     label: 'AgentRouter',
     baseUrl: 'https://agentrouter.org/v1',
     headers: [{ key: 'User-Agent', value: 'claude-cli/2.1.195 (external, cli)' }],
-    bodyTransforms: [{ key: 'top_p', value: '/del/' }, { key: 'temperature', value: '/del/' }],
   },
   {
     label: 'FreeModel',
     baseUrl: 'https://api.freemodel.dev/v1',
     headers: [],
-    bodyTransforms: [],
   },
 ]
 
@@ -341,7 +329,6 @@ function applyPreset(label: string) {
     customProviderName.value = preset.label
     customBaseUrl.value = preset.baseUrl
     customHeaders.value = preset.headers.map(h => ({ ...h }))
-    customBodyTransforms.value = preset.bodyTransforms.map(t => ({ ...t }))
     customAdvancedExpanded.value = true
   }
   showPresetModal.value = false
@@ -352,7 +339,6 @@ function clearCustomForm() {
   customProviderName.value = ''
   customBaseUrl.value = ''
   customHeaders.value = []
-  customBodyTransforms.value = []
   requestBodyEditorState.value = createDefaultRequestBodyEditorState()
   customAdvancedExpanded.value = false
 }
@@ -363,9 +349,6 @@ interface KeyValueEntry {
   value: string
 }
 const customHeaders = ref<KeyValueEntry[]>([])
-
-/** 高级设置 - 请求体修剪列表 */
-const customBodyTransforms = ref<KeyValueEntry[]>([])
 
 /** 请求体映射规则及编辑器预览状态。 */
 const requestBodyEditorState = ref<RequestBodyEditorState>(createDefaultRequestBodyEditorState())
@@ -379,18 +362,9 @@ function removeCustomHeader(index: number) {
   customHeaders.value.splice(index, 1)
 }
 
-function addCustomBodyTransform() {
-  customBodyTransforms.value.push({ key: '', value: '' })
-}
-
-function removeCustomBodyTransform(index: number) {
-  customBodyTransforms.value.splice(index, 1)
-}
-
 function resetCustomAdvanced() {
   customAdvancedExpanded.value = false
   customHeaders.value = []
-  customBodyTransforms.value = []
   requestBodyEditorState.value = createDefaultRequestBodyEditorState()
   customBaseUrl.value = ''
   editingCustomKey.value = null
@@ -402,20 +376,14 @@ function openEditCustomModal(key: string) {
   const provider = providerStore.providers[key]
   const displayName = providerMeta.value[key]?.displayName || key.replace('custom-', '').replace(/-/g, ' ')
   customProviderName.value = displayName
-  // 解析已有 customTransforms
   customHeaders.value = []
-  customBodyTransforms.value = []
   requestBodyEditorState.value = createDefaultRequestBodyEditorState()
   customBaseUrl.value = (provider as any)?.baseUrl || ''
   if (provider) {
     try {
-      const raw = (provider as any).customTransforms
-      const transforms = typeof raw === 'string' ? JSON.parse(raw) : (raw || {})
-      if (Array.isArray(transforms.custom_headers)) {
-        customHeaders.value = transforms.custom_headers.map((h: any) => ({ key: h.key || '', value: h.value || '' }))
-      }
-      if (Array.isArray(transforms.body_transforms)) {
-        customBodyTransforms.value = transforms.body_transforms.map((t: any) => ({ key: t.key || '', value: t.value || '' }))
+      const headerRules = JSON.parse(provider.requestTransform?.headerRulesJson || '[]')
+      if (Array.isArray(headerRules)) {
+        customHeaders.value = headerRules.map((h: any) => ({ key: h.key || '', value: h.value || '' }))
       }
     } catch { /* ignore */ }
     try {
@@ -435,21 +403,10 @@ function openEditCustomModal(key: string) {
   showCustomAddModal.value = true
 }
 
-/** 构建高级设置 JSON */
-function buildCustomTransformsJson(): string {
+/** 构建请求头规则 JSON。 */
+function buildHeaderRulesJson(): string {
   const headers = customHeaders.value.filter(h => h.key.trim())
-  const transforms = customBodyTransforms.value.filter(t => t.key.trim())
-  if (headers.length === 0 && transforms.length === 0) {
-    return '{}'
-  }
-  const result: Record<string, any> = {}
-  if (headers.length > 0) {
-    result.custom_headers = headers.map(h => ({ key: h.key.trim(), value: h.value }))
-  }
-  if (transforms.length > 0) {
-    result.body_transforms = transforms.map(t => ({ key: t.key.trim(), value: t.value }))
-  }
-  return JSON.stringify(result)
+  return JSON.stringify(headers.map(h => ({ key: h.key.trim(), value: h.value })))
 }
 
 /** 添加自定义供应商 */
@@ -460,7 +417,7 @@ async function addCustomProvider() {
     return
   }
   try {
-    const customTransforms = buildCustomTransformsJson()
+    const headerRulesJson = buildHeaderRulesJson()
     const baseUrl = customBaseUrl.value.trim()
     const requestTransform = {
       bodyTemplateKeysJson: JSON.stringify(requestBodyEditorState.value.templateKeys),
@@ -470,7 +427,7 @@ async function addCustomProvider() {
     if (editingCustomKey.value) {
       // 编辑模式
       await providerStore.updateCustomProvider(
-        editingCustomKey.value, name, customTransforms, baseUrl, requestTransform,
+        editingCustomKey.value, name, headerRulesJson, baseUrl, requestTransform,
       )
       // 更新前端元数据
       const oldKey = editingCustomKey.value
@@ -487,7 +444,7 @@ async function addCustomProvider() {
       message.success(`已修改自定义供应商「${name}」`)
     } else {
       // 新增模式
-      const res = await providerStore.addCustomProvider(name, customTransforms, baseUrl, requestTransform)
+      const res = await providerStore.addCustomProvider(name, headerRulesJson, baseUrl, requestTransform)
       providerMeta.value[res.providerKey] = {
         displayName: name,
         colorClass: 'custom',
@@ -1026,36 +983,7 @@ function removeModel(index: number) {
           </div>
         </div>
 
-        <!-- 请求体修剪 -->
-        <div class="advanced-section">
-          <div class="advanced-section-header">
-            <span class="advanced-section-title">额外覆写或修剪请求体</span>
-            <n-button text size="tiny" class="advanced-add-btn" @click="addCustomBodyTransform">
-              <template #icon>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-              </template>
-              新增
-            </n-button>
-          </div>
-          <div v-if="customBodyTransforms.length === 0" class="advanced-empty">暂无自定义请求体修剪</div>
-          <div v-for="(entry, idx) in customBodyTransforms" :key="idx" class="advanced-row">
-            <n-input v-model:value="entry.key" placeholder="字段路径" class="advanced-input-key" />
-            <n-input v-model:value="entry.value" placeholder="值（/del/ 表示删除）" class="advanced-input-value" />
-            <button class="advanced-delete-btn" title="删除" @click="removeCustomBodyTransform(idx)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        <!-- 请求体映射规则（V5 保存并回显，暂不参与请求执行） -->
+        <!-- 请求体映射规则 -->
         <div class="advanced-section">
           <div class="advanced-section-header">
             <span class="advanced-section-title">请求体映射规则</span>
@@ -1065,7 +993,7 @@ function removeModel(index: number) {
           </div>
           <div class="advanced-empty" style="cursor: pointer;" @click="showRequestBodyRuleEditor = true">
             已配置 {{ requestBodyEditorState.rules.rules.length }} 条规则
-            <span class="request-body-rules-hint">（保存供应商配置后落库，暂不参与请求执行）</span>
+            <span class="request-body-rules-hint">（保存供应商配置后生效）</span>
           </div>
         </div>
       </div>
