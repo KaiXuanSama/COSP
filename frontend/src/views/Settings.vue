@@ -875,8 +875,8 @@ function removeModel(index: number) {
       </div>
     </n-card>
 
-    <!-- 服务商配置 -->
-    <n-card title="服务商配置" :bordered="true" style="margin-top: 16px;">
+    <!-- 供应商配置 -->
+    <n-card title="供应商配置" :bordered="true" style="margin-top: 16px;">
       <template #header-extra>
         <n-button text size="tiny" @click="showAddModal = true" class="add-provider-btn">
           <template #icon>
@@ -912,11 +912,11 @@ function removeModel(index: number) {
       </div>
     </n-card>
 
-    <!-- 添加服务商模态框 -->
-    <n-modal v-model:show="showAddModal" preset="card" title="添加服务商" :style="{ maxWidth: '480px' }" closable
+    <!-- 添加供应商模态框 -->
+    <n-modal v-model:show="showAddModal" preset="card" title="添加供应商" :style="{ maxWidth: '480px' }" closable
       :mask-closable="true">
       <div v-if="disabledProviderKeys.length === 0 && !hasCustomProviders" class="add-modal-empty">
-        所有内置服务商已启用
+        所有内置供应商已启用
       </div>
       <div class="add-modal-grid">
         <div v-for="key in disabledProviderKeys" :key="key" class="add-modal-card"
@@ -1491,7 +1491,7 @@ function removeModel(index: number) {
   border-bottom: 2px solid rgba(194, 122, 62, 0.5);
 }
 
-/* ── 添加服务商模态框 ── */
+/* ── 添加供应商模态框 ── */
 .add-modal-empty {
   text-align: center;
   padding: $space-xl 0;
@@ -1911,7 +1911,7 @@ function removeModel(index: number) {
     }
   }
 
-  /* 添加服务商模态框网格单列 */
+  /* 添加供应商模态框网格单列 */
   .add-modal-grid {
     grid-template-columns: 1fr;
   }

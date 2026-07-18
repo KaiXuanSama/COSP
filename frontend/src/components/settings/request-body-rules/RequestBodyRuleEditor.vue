@@ -6,7 +6,7 @@
  * 下方：递归规则列表。
  *
  * 草稿语义：打开时复制父级规则，"应用"才提交，"取消"丢弃。
- * 应用后的完整编辑器状态由供应商表单统一保存并回显，V5 暂不参与生产请求转换。
+ * 应用后的完整编辑器状态由供应商表单统一保存并回显，并参与生产请求转换。
  */
 import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
 import { NModal, NButton, NInput, NScrollbar, NSelect, useMessage } from 'naive-ui'
