@@ -4,12 +4,39 @@ import java.util.List;
 
 /**
  * 运行时 Provider 配置快照。
+ *
+ * 请求头规则从 provider_request_transform 读取；customTransforms 在迁移期仅保存旧请求体转换配置。
  */
-public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey, String apiFormat, List<ProviderRuntimeModel> models, String customTransforms) {
+public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey, String apiFormat,
+                                           List<ProviderRuntimeModel> models, String customTransforms,
+                                           String headerRulesJson) {
 
-    /** 便捷构造函数 — customTransforms 默认为 "{}"（无自定义转换）。 */
+    /**
+     * 创建无自定义转换的运行时供应商配置。
+     *
+     * @param providerKey 供应商标识
+     * @param baseUrl API 基础地址
+     * @param apiKey 激活 API Key
+     * @param apiFormat API 协议格式
+     * @param models 供应商模型
+     */
     public ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey, String apiFormat, List<ProviderRuntimeModel> models) {
-        this(providerKey, baseUrl, apiKey, apiFormat, models, "{}");
+        this(providerKey, baseUrl, apiKey, apiFormat, models, "{}", "[]");
+    }
+
+    /**
+     * 创建使用旧请求体转换配置的运行时供应商配置。
+     *
+     * @param providerKey 供应商标识
+     * @param baseUrl API 基础地址
+     * @param apiKey 激活 API Key
+     * @param apiFormat API 协议格式
+     * @param models 供应商模型
+     * @param customTransforms 旧请求体转换配置
+     */
+    public ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey, String apiFormat,
+                                        List<ProviderRuntimeModel> models, String customTransforms) {
+        this(providerKey, baseUrl, apiKey, apiFormat, models, customTransforms, "[]");
     }
 
     public ProviderRuntimeConfiguration {
@@ -19,6 +46,7 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
         apiFormat = (apiFormat == null || apiFormat.isBlank()) ? "openai" : apiFormat;
         models = models == null ? List.of() : List.copyOf(models);
         customTransforms = (customTransforms == null || customTransforms.isBlank()) ? "{}" : customTransforms;
+        headerRulesJson = (headerRulesJson == null || headerRulesJson.isBlank()) ? "[]" : headerRulesJson;
     }
 
     public boolean supportsModel(String modelName) {

@@ -384,12 +384,14 @@ public class AdminPageController {
         return webClientBuilder.clone().defaultHeaders(headers -> {
             headers.set(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE);
             applyModelDiscoveryAuthHeaders(providerKey, headers, apiKey);
-            // 自定义供应商：应用 custom_transforms 中的自定义请求头
+            // 自定义供应商：应用新表中的请求头规则。
             if (providerKey.startsWith("custom-")) {
                 ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
                 if (provider != null) {
-                    String customTransforms = provider.customTransforms() != null ? provider.customTransforms() : "{}";
-                    RequestTransformEngine.applyCustomHeaders(headers, apiKey, customTransforms, new com.fasterxml.jackson.databind.ObjectMapper());
+                    ProviderRequestTransformRow transform = providerRequestTransformRepository.findByProviderId(provider.id());
+                    String headerRulesJson = transform != null ? transform.headerRulesJson() : "[]";
+                    RequestTransformEngine.applyHeaderRules(
+                            headers, apiKey, headerRulesJson, new com.fasterxml.jackson.databind.ObjectMapper());
                 }
             }
         }).build().get().uri(requestUrl).exchangeToMono(response -> response.bodyToMono(String.class).defaultIfEmpty("").map(respBody -> {

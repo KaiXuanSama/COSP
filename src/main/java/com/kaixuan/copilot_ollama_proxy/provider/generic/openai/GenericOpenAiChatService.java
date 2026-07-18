@@ -16,11 +16,7 @@ import java.util.Map;
  * 通用 OpenAI 上游服务 —— 处理所有 custom-* 前缀的自定义供应商。
  * 从数据库动态读取配置，复用父类的请求准备、SSE 解析、日志和流式翻译基础设施。
  * <p>
- * 支持通过 custom_transforms 配置对请求头和请求体进行动态转换：
- * <ul>
- *   <li>custom_headers — 新增/覆写/删除请求头</li>
- *   <li>body_transforms — 新增/覆写/删除请求体字段</li>
- * </ul>
+ * 请求头规则从 provider_request_transform 读取，请求体仍使用 custom_transforms.body_transforms。
  */
 @Service
 public class GenericOpenAiChatService extends AbstractUpstreamChatService {
@@ -62,10 +58,10 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
     protected void applyAuthenticationHeaders(HttpHeaders headers, String apiKey) {
         // 先设置默认的 Bearer Token 鉴权（走接口默认实现）
         super.applyAuthenticationHeaders(headers, apiKey);
-        // 再根据 custom_transforms 覆写/新增/删除请求头
+        // 再根据新表请求头规则覆写、新增或删除请求头。
         ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
         if (config != null) {
-            RequestTransformEngine.applyCustomHeaders(headers, apiKey, config.customTransforms(), objectMapper);
+            RequestTransformEngine.applyHeaderRules(headers, apiKey, config.headerRulesJson(), objectMapper);
         }
     }
 
@@ -75,7 +71,7 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
     }
 
     /**
-     * 根据 custom_transforms 配置对请求体进行动态转换。
+    * 根据 custom_transforms.body_transforms 配置对请求体进行动态转换。
      */
     @Override
     protected void customizeRequestBody(Map<String, Object> body, String resolvedModel) {

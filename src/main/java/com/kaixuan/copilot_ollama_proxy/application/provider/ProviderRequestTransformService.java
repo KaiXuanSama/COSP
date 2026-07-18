@@ -13,7 +13,7 @@ import java.util.Set;
 /**
  * 供应商请求转换配置保存服务。
  *
- * V5 中该服务只负责新表落库和请求头双写，生产请求仍读取旧 custom_transforms。
+ * V5 中该服务负责新表落库和请求头双写；运行时请求头读取新表，旧字段仍供请求体转换使用。
  */
 @Service
 public class ProviderRequestTransformService {

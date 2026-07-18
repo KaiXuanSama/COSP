@@ -12,12 +12,7 @@ import java.util.Map;
 /**
  * 自定义供应商的请求转换引擎。
  * <p>
- * 根据数据库中配置的 custom_transforms JSON，对请求头和请求体进行：
- * <ul>
- *   <li>插入 — key 不存在时新增</li>
- *   <li>覆写 — key 已存在时替换</li>
- *   <li>删除 — value 为 "/del/" 时移除该字段</li>
- * </ul>
+ * 执行自定义供应商的旧请求体转换与新请求头规则。
  */
 public final class RequestTransformEngine {
 
@@ -29,26 +24,21 @@ public final class RequestTransformEngine {
     }
 
     /**
-     * 应用自定义请求头。
-     * <p>
-     * 遍历 custom_headers 列表，对每个条目：
-     * <ul>
-     *   <li>value 为 "/del/" → 移除该 header</li>
-     *   <li>其他 → 设置（覆盖或新增）该 header</li>
-     * </ul>
+    * 应用新表保存的请求头规则。
+    *
      * 支持 "{apiKey}" 模板变量，会被替换为实际的 API Key。
      *
      * @param headers           当前请求头（可修改）
      * @param apiKey            当前供应商的 API Key（用于模板替换）
-     * @param customTransforms  custom_transforms JSON 字符串
+    * @param headerRulesJson   provider_request_transform.header_rules_json 数组
      * @param objectMapper      Jackson ObjectMapper
      */
-    public static void applyCustomHeaders(HttpHeaders headers, String apiKey, String customTransforms, ObjectMapper objectMapper) {
-        List<Map<String, String>> customHeaders = parseCustomHeaders(customTransforms, objectMapper);
-        if (customHeaders.isEmpty()) {
+    public static void applyHeaderRules(HttpHeaders headers, String apiKey, String headerRulesJson, ObjectMapper objectMapper) {
+        List<Map<String, String>> headerRules = parseHeaderRules(headerRulesJson, objectMapper);
+        if (headerRules.isEmpty()) {
             return;
         }
-        for (Map<String, String> entry : customHeaders) {
+        for (Map<String, String> entry : headerRules) {
             String key = entry.get("key");
             String value = entry.get("value");
             if (key == null || key.isBlank()) {
@@ -104,16 +94,11 @@ public final class RequestTransformEngine {
 
     // ==================== 内部方法 ====================
 
-    @SuppressWarnings("unchecked")
-    private static List<Map<String, String>> parseCustomHeaders(String json, ObjectMapper objectMapper) {
+    private static List<Map<String, String>> parseHeaderRules(String json, ObjectMapper objectMapper) {
         try {
-            Map<String, Object> root = objectMapper.readValue(json, Map.class);
-            Object headers = root.get("custom_headers");
-            if (headers instanceof List<?> list) {
-                return objectMapper.convertValue(list, MAP_LIST_TYPE);
-            }
+            return objectMapper.readValue(json, MAP_LIST_TYPE);
         } catch (Exception e) {
-            log.warn("[Transform] 解析 custom_headers 失败: {}", e.getMessage());
+            log.warn("[Transform] 解析请求头规则失败: {}", e.getMessage());
         }
         return List.of();
     }
