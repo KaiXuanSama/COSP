@@ -6,7 +6,7 @@
  * 下方：递归规则列表。
  *
  * 草稿语义：打开时复制父级规则，"应用"才提交，"取消"丢弃。
- * 第一版不落库，仅前端内存态。
+ * 应用后的完整编辑器状态由供应商表单统一保存并回显，V5 暂不参与生产请求转换。
  */
 import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
 import { NModal, NButton, NInput, NScrollbar, NSelect, useMessage } from 'naive-ui'
@@ -22,6 +22,7 @@ import {
   REQUEST_BODY_TEMPLATE_OPTIONS,
 } from '@/features/request-body-rules/requestBodyTemplates'
 import type { RequestBodyTemplateKey } from '@/features/request-body-rules/requestBodyTemplates'
+import type { RequestBodyEditorState } from '@/features/request-body-rules/editorState'
 import { buildDiffTree } from '@/features/request-body-rules/diff'
 import { formatRuleSetJson, parseRuleSetJson } from '@/features/request-body-rules/ruleSetJson'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
@@ -30,13 +31,13 @@ import RequestBodyRuleHelp from './RequestBodyRuleHelp.vue'
 
 const props = defineProps<{
   show: boolean
-  /** 父级传入的当前规则集（草稿来源） */
-  modelRules: RuleSet
+  /** 父级传入的完整编辑器状态（草稿来源） */
+  modelValue: RequestBodyEditorState
 }>()
 
 const emit = defineEmits<{
   (e: 'update:show', val: boolean): void
-  (e: 'apply', rules: RuleSet): void
+  (e: 'apply', value: RequestBodyEditorState): void
 }>()
 
 const message = useMessage()
@@ -62,12 +63,12 @@ watch(
   () => props.show,
   (visible) => {
     if (visible) {
-      draftRules.value = JSON.parse(JSON.stringify(props.modelRules || createEmptyRuleSet()))
+      draftRules.value = JSON.parse(JSON.stringify(props.modelValue.rules || createEmptyRuleSet()))
       rulesViewMode.value = 'visual'
       rulesJsonText.value = formatRuleSetJson(draftRules.value)
       rulesJsonError.value = ''
-      selectedTemplateKeys.value = [...DEFAULT_TEMPLATE_KEYS]
-      inputJsonText.value = templateJson(selectedTemplateKeys.value)
+      selectedTemplateKeys.value = [...props.modelValue.templateKeys]
+      inputJsonText.value = JSON.stringify(props.modelValue.previewBody, null, 2)
       parseInput()
     }
   },
@@ -342,9 +343,17 @@ function handleApply() {
     message.error('请先修正规则 JSON')
     return
   }
-  emit('apply', JSON.parse(JSON.stringify(draftRules.value)))
+  if (inputError.value || lastValidInput.value == null) {
+    message.error('请先修正预览请求体 JSON')
+    return
+  }
+  emit('apply', {
+    templateKeys: [...selectedTemplateKeys.value],
+    previewBody: JSON.parse(JSON.stringify(lastValidInput.value)),
+    rules: JSON.parse(JSON.stringify(draftRules.value)),
+  })
   emit('update:show', false)
-  message.success(`已应用 ${draftRules.value.rules.length} 条规则（仅前端预览，不会随供应商保存）`)
+  message.success(`已应用 ${draftRules.value.rules.length} 条规则，请保存供应商配置以完成落库`)
 }
 
 function handleCancel() {
@@ -357,18 +366,12 @@ function handleCancel() {
     :show="show"
     @update:show="emit('update:show', $event)"
     preset="card"
-    title="请求体映射规则配置（预览）"
+    title="请求体映射规则配置"
     :style="{ width: '90vw', maxWidth: '1200px', maxHeight: '90vh', display: 'flex', 'flex-direction': 'column' }"
     content-style="overflow: auto; flex: 1; min-height: 0"
     closable
     :mask-closable="true"
   >
-    <!-- 提示栏 -->
-    <div class="editor-notice">
-      <span class="editor-notice-icon">⚠</span>
-      <span>第一版仅用于前端预览，规则不会随供应商保存。V2 将支持落库，V3 将接入后端转换。</span>
-    </div>
-
     <!-- 顶部：双栏 JSON 预览 -->
     <div class="editor-preview">
       <!-- 左栏：原始 JSON（可编辑） -->

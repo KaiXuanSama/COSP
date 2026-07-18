@@ -70,6 +70,23 @@ CREATE INDEX IF NOT EXISTS idx_provider_api_key_provider_id ON provider_api_key(
 CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_api_key_active
     ON provider_api_key(provider_id) WHERE is_active = 1;
 
+-- ==================== 供应商请求转换配置表（V5） ====================
+-- V5 仅引入新存储：生产请求仍由 provider_config.custom_transforms 和旧引擎处理。
+-- 请求头配置在迁移期双写；新请求体规则及编辑器状态只在本表保存、读取和回显。
+
+CREATE TABLE IF NOT EXISTS provider_request_transform (
+    provider_id             INTEGER PRIMARY KEY,       -- 与供应商一对一关联
+    header_rules_version    INTEGER NOT NULL DEFAULT 1 CHECK (header_rules_version >= 1),
+    header_rules_json       TEXT    NOT NULL DEFAULT '[]' CHECK (json_valid(header_rules_json)),
+    body_template_keys_json TEXT    NOT NULL DEFAULT '["custom"]' CHECK (json_valid(body_template_keys_json)),
+    body_preview_json       TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(body_preview_json)),
+    body_rules_version      INTEGER NOT NULL DEFAULT 1 CHECK (body_rules_version >= 1),
+    body_rules_json         TEXT    NOT NULL DEFAULT '{"version":1,"rules":[]}' CHECK (json_valid(body_rules_json)),
+    created_at              TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')),
+    updated_at              TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')),
+    FOREIGN KEY (provider_id) REFERENCES provider_config(id) ON DELETE CASCADE
+);
+
 -- ==================== 应用运行配置表（键值对） ====================
 
 CREATE TABLE IF NOT EXISTS app_config (

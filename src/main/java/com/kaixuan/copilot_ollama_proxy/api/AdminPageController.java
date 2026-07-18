@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.api;
 
 import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestTransformService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
@@ -8,6 +9,8 @@ import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKe
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRow;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderRequestTransformRepository;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderRequestTransformRow;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.RequestTransformEngine;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -42,20 +45,26 @@ public class AdminPageController {
     private final PasswordEncoder passwordEncoder;
     private final ApiUsageRepository apiUsageRepository;
     private final ProviderConfigRepository providerConfigRepository;
+    private final ProviderRequestTransformRepository providerRequestTransformRepository;
+    private final ProviderRequestTransformService providerRequestTransformService;
     private final ProviderApiKeyRepository providerApiKeyRepository;
     private final AppConfigRepository appConfigRepository;
     private final ApiCallLogRepository apiCallLogRepository;
     private final WebClient.Builder webClientBuilder;
     private final List<UpstreamChatService> upstreamChatServices;
 
-    public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder, ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository,
+        public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder, ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository,
             ProviderApiKeyRepository providerApiKeyRepository,
+            ProviderRequestTransformRepository providerRequestTransformRepository,
+            ProviderRequestTransformService providerRequestTransformService,
             AppConfigRepository appConfigRepository, ApiCallLogRepository apiCallLogRepository, WebClient.Builder webClientBuilder, List<UpstreamChatService> upstreamChatServices) {
         this.userDetailsManager = userDetailsManager;
         this.passwordEncoder = passwordEncoder;
         this.apiUsageRepository = apiUsageRepository;
         this.providerConfigRepository = providerConfigRepository;
         this.providerApiKeyRepository = providerApiKeyRepository;
+        this.providerRequestTransformRepository = providerRequestTransformRepository;
+        this.providerRequestTransformService = providerRequestTransformService;
         this.appConfigRepository = appConfigRepository;
         this.apiCallLogRepository = apiCallLogRepository;
         this.webClientBuilder = webClientBuilder;
@@ -80,9 +89,11 @@ public class AdminPageController {
     @GetMapping("/config/api/providers") @ResponseBody
     public ResponseEntity<Map<String, Object>> listProviders() {
         List<ProviderConfigRow> all = providerConfigRepository.findAllWithModels();
+        Map<Integer, ProviderRequestTransformRow> transforms = providerRequestTransformRepository
+                .findByProviderIds(all.stream().map(ProviderConfigRow::id).toList());
         Map<String, Object> result = new LinkedHashMap<>();
         for (ProviderConfigRow p : all) {
-            result.put(p.providerKey(), buildProviderView(p));
+            result.put(p.providerKey(), buildProviderView(p, transforms.get(p.id())));
         }
         return ResponseEntity.ok(result);
     }
@@ -91,7 +102,7 @@ public class AdminPageController {
      * 构建供应商视图，附带脱敏后的 API Key 列表。
      * 明文永不返回前端，仅返回 keyUuid、名称、脱敏值和激活标记。
      */
-    private Map<String, Object> buildProviderView(ProviderConfigRow p) {
+    private Map<String, Object> buildProviderView(ProviderConfigRow p, ProviderRequestTransformRow transform) {
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("id", p.id());
         view.put("providerKey", p.providerKey());
@@ -102,6 +113,17 @@ public class AdminPageController {
         view.put("updatedAt", p.updatedAt());
         view.put("models", p.models());
         view.put("apiKeys", buildMaskedApiKeys(p.id()));
+        Map<String, Object> requestTransform = new LinkedHashMap<>();
+        requestTransform.put("headerRulesVersion", transform != null ? transform.headerRulesVersion() : 1);
+        requestTransform.put("headerRulesJson", transform != null ? transform.headerRulesJson() : "[]");
+        requestTransform.put("bodyTemplateKeysJson", transform != null
+            ? transform.bodyTemplateKeysJson() : ProviderRequestTransformService.DEFAULT_TEMPLATE_KEYS_JSON);
+        requestTransform.put("bodyPreviewJson", transform != null
+            ? transform.bodyPreviewJson() : ProviderRequestTransformService.DEFAULT_BODY_PREVIEW_JSON);
+        requestTransform.put("bodyRulesVersion", transform != null ? transform.bodyRulesVersion() : 1);
+        requestTransform.put("bodyRulesJson", transform != null
+            ? transform.bodyRulesJson() : ProviderRequestTransformService.EMPTY_BODY_RULES_JSON);
+        view.put("requestTransform", requestTransform);
         return view;
     }
 
@@ -452,9 +474,11 @@ public class AdminPageController {
     public ResponseEntity<List<Map<String, Object>>> listCustomProviders() {
         // 从 provider_config 中筛选 custom- 前缀的供应商，附带脱敏 API Key
         List<ProviderConfigRow> all = providerConfigRepository.findAllWithModels();
+        Map<Integer, ProviderRequestTransformRow> transforms = providerRequestTransformRepository
+            .findByProviderIds(all.stream().map(ProviderConfigRow::id).toList());
         List<Map<String, Object>> custom = all.stream()
                 .filter(p -> p.providerKey().startsWith("custom-"))
-                .map(this::buildProviderView)
+            .map(p -> buildProviderView(p, transforms.get(p.id())))
                 .toList();
         return ResponseEntity.ok(custom);
     }
@@ -465,6 +489,9 @@ public class AdminPageController {
             String displayName = form.getFirst("displayName");
             String customTransforms = form.getFirst("customTransforms");
             String baseUrl = form.getFirst("baseUrl");
+            String bodyTemplateKeysJson = form.getFirst("bodyTemplateKeysJson");
+            String bodyPreviewJson = form.getFirst("bodyPreviewJson");
+            String bodyRulesJson = form.getFirst("bodyRulesJson");
             String name = displayName == null ? "" : displayName.trim();
             if (name.isEmpty()) {
                 return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "供应商名称不能为空"));
@@ -477,9 +504,17 @@ public class AdminPageController {
             // 验证 customTransforms 格式
             String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
             String url = baseUrl == null ? "" : baseUrl.trim();
-            // 在 provider_config 中创建记录（默认启用），API Key 后续在配置页面单独添加
-            providerConfigRepository.saveProvider(providerKey, true, url, "openai", transforms);
-            return ResponseEntity.ok(Map.<String, Object>of("ok", true, "providerKey", providerKey, "displayName", name));
+            try {
+                providerRequestTransformService.createCustomProvider(
+                        providerKey, url, transforms,
+                        defaultIfBlank(bodyTemplateKeysJson, ProviderRequestTransformService.DEFAULT_TEMPLATE_KEYS_JSON),
+                        defaultIfBlank(bodyPreviewJson, ProviderRequestTransformService.DEFAULT_BODY_PREVIEW_JSON),
+                        defaultIfBlank(bodyRulesJson, ProviderRequestTransformService.EMPTY_BODY_RULES_JSON));
+                return ResponseEntity.ok(Map.<String, Object>of(
+                        "ok", true, "providerKey", providerKey, "displayName", name));
+            } catch (IllegalArgumentException e) {
+                return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", e.getMessage()));
+            }
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
@@ -495,6 +530,9 @@ public class AdminPageController {
             String displayName = form.getFirst("displayName");
             String customTransforms = form.getFirst("customTransforms");
             String baseUrl = form.getFirst("baseUrl");
+            String bodyTemplateKeysJson = form.getFirst("bodyTemplateKeysJson");
+            String bodyPreviewJson = form.getFirst("bodyPreviewJson");
+            String bodyRulesJson = form.getFirst("bodyRulesJson");
             String name = displayName == null ? "" : displayName.trim();
             if (name.isEmpty()) {
                 return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "供应商名称不能为空"));
@@ -514,10 +552,22 @@ public class AdminPageController {
             }
             String transforms = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms.trim();
             String url = baseUrl == null ? "" : baseUrl.trim();
-            // 直接更新 provider_key、custom_transforms 和 base_url，保留关联的模型配置
-            providerConfigRepository.updateProviderKeyAndTransforms(providerKey, newProviderKey, transforms, url);
-            return ResponseEntity.ok(Map.<String, Object>of("ok", true, "providerKey", newProviderKey, "displayName", name));
+            try {
+                providerRequestTransformService.updateCustomProvider(
+                        existing.id(), providerKey, newProviderKey, url, transforms,
+                        defaultIfBlank(bodyTemplateKeysJson, ProviderRequestTransformService.DEFAULT_TEMPLATE_KEYS_JSON),
+                        defaultIfBlank(bodyPreviewJson, ProviderRequestTransformService.DEFAULT_BODY_PREVIEW_JSON),
+                        defaultIfBlank(bodyRulesJson, ProviderRequestTransformService.EMPTY_BODY_RULES_JSON));
+                return ResponseEntity.ok(Map.<String, Object>of(
+                        "ok", true, "providerKey", newProviderKey, "displayName", name));
+            } catch (IllegalArgumentException e) {
+                return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", e.getMessage()));
+            }
         }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private String defaultIfBlank(String value, String defaultValue) {
+        return value == null || value.isBlank() ? defaultValue : value.trim();
     }
 
     @PostMapping("/config/api/account") @ResponseBody

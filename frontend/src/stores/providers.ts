@@ -29,8 +29,24 @@ export interface Provider {
   baseUrl: string | null
   apiFormat: string
   customTransforms?: string
+  requestTransform?: ProviderRequestTransform
   apiKeys: ApiKeyEntry[]
   models: ProviderModel[]
+}
+
+export interface ProviderRequestTransform {
+  headerRulesVersion: number
+  headerRulesJson: string
+  bodyTemplateKeysJson: string
+  bodyPreviewJson: string
+  bodyRulesVersion: number
+  bodyRulesJson: string
+}
+
+export interface CustomProviderRequestTransformInput {
+  bodyTemplateKeysJson: string
+  bodyPreviewJson: string
+  bodyRulesJson: string
 }
 
 export const useProviderStore = defineStore('providers', () => {
@@ -93,15 +109,15 @@ export const useProviderStore = defineStore('providers', () => {
 
   // ==================== 自定义供应商 ====================
 
-  async function addCustomProvider(displayName: string, customTransforms?: string, baseUrl?: string) {
+  async function addCustomProvider(displayName: string, customTransforms: string,
+                                   baseUrl: string, requestTransform: CustomProviderRequestTransformInput) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
-    if (customTransforms) {
-      formData.append('customTransforms', customTransforms)
-    }
-    if (baseUrl) {
-      formData.append('baseUrl', baseUrl)
-    }
+    formData.append('customTransforms', customTransforms)
+    formData.append('baseUrl', baseUrl)
+    formData.append('bodyTemplateKeysJson', requestTransform.bodyTemplateKeysJson)
+    formData.append('bodyPreviewJson', requestTransform.bodyPreviewJson)
+    formData.append('bodyRulesJson', requestTransform.bodyRulesJson)
     const res = await http.post('/custom-providers', formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
@@ -116,15 +132,16 @@ export const useProviderStore = defineStore('providers', () => {
     await fetchAll()
   }
 
-  async function updateCustomProvider(providerKey: string, displayName: string, customTransforms?: string, baseUrl?: string) {
+  async function updateCustomProvider(providerKey: string, displayName: string,
+                                      customTransforms: string, baseUrl: string,
+                                      requestTransform: CustomProviderRequestTransformInput) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
-    if (customTransforms) {
-      formData.append('customTransforms', customTransforms)
-    }
-    if (baseUrl !== undefined) {
-      formData.append('baseUrl', baseUrl)
-    }
+    formData.append('customTransforms', customTransforms)
+    formData.append('baseUrl', baseUrl)
+    formData.append('bodyTemplateKeysJson', requestTransform.bodyTemplateKeysJson)
+    formData.append('bodyPreviewJson', requestTransform.bodyPreviewJson)
+    formData.append('bodyRulesJson', requestTransform.bodyRulesJson)
     await http.put(`/custom-providers/${providerKey}`, formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })

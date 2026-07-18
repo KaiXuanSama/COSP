@@ -4,8 +4,9 @@ import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal,
 import ProviderModelsSection from '@/components/settings/ProviderModelsSection.vue'
 import RequestBodyRuleEditor from '@/components/settings/request-body-rules/RequestBodyRuleEditor.vue'
 import { useProviderStore, type ApiKeyEntry } from '@/stores/providers'
-import type { RuleSet } from '@/features/request-body-rules/types'
-import { createEmptyRuleSet } from '@/features/request-body-rules/types'
+import type { RequestBodyEditorState } from '@/features/request-body-rules/editorState'
+import { createDefaultRequestBodyEditorState } from '@/features/request-body-rules/editorState'
+import type { RequestBodyTemplateKey } from '@/features/request-body-rules/requestBodyTemplates'
 
 const providerStore = useProviderStore()
 const message = useMessage()
@@ -352,6 +353,7 @@ function clearCustomForm() {
   customBaseUrl.value = ''
   customHeaders.value = []
   customBodyTransforms.value = []
+  requestBodyEditorState.value = createDefaultRequestBodyEditorState()
   customAdvancedExpanded.value = false
 }
 
@@ -365,8 +367,8 @@ const customHeaders = ref<KeyValueEntry[]>([])
 /** 高级设置 - 请求体修剪列表 */
 const customBodyTransforms = ref<KeyValueEntry[]>([])
 
-/** 请求体映射规则（V1 仅前端预览，不落库） */
-const requestBodyRules = ref<RuleSet>(createEmptyRuleSet())
+/** 请求体映射规则及编辑器预览状态。 */
+const requestBodyEditorState = ref<RequestBodyEditorState>(createDefaultRequestBodyEditorState())
 const showRequestBodyRuleEditor = ref(false)
 
 function addCustomHeader() {
@@ -389,7 +391,7 @@ function resetCustomAdvanced() {
   customAdvancedExpanded.value = false
   customHeaders.value = []
   customBodyTransforms.value = []
-  requestBodyRules.value = createEmptyRuleSet()
+  requestBodyEditorState.value = createDefaultRequestBodyEditorState()
   customBaseUrl.value = ''
   editingCustomKey.value = null
 }
@@ -403,6 +405,7 @@ function openEditCustomModal(key: string) {
   // 解析已有 customTransforms
   customHeaders.value = []
   customBodyTransforms.value = []
+  requestBodyEditorState.value = createDefaultRequestBodyEditorState()
   customBaseUrl.value = (provider as any)?.baseUrl || ''
   if (provider) {
     try {
@@ -415,6 +418,18 @@ function openEditCustomModal(key: string) {
         customBodyTransforms.value = transforms.body_transforms.map((t: any) => ({ key: t.key || '', value: t.value || '' }))
       }
     } catch { /* ignore */ }
+    try {
+      const saved = provider.requestTransform
+      if (saved) {
+        requestBodyEditorState.value = {
+          templateKeys: JSON.parse(saved.bodyTemplateKeysJson) as RequestBodyTemplateKey[],
+          previewBody: JSON.parse(saved.bodyPreviewJson) as Record<string, unknown>,
+          rules: JSON.parse(saved.bodyRulesJson),
+        }
+      }
+    } catch {
+      requestBodyEditorState.value = createDefaultRequestBodyEditorState()
+    }
   }
   showAddModal.value = false
   showCustomAddModal.value = true
@@ -447,9 +462,16 @@ async function addCustomProvider() {
   try {
     const customTransforms = buildCustomTransformsJson()
     const baseUrl = customBaseUrl.value.trim()
+    const requestTransform = {
+      bodyTemplateKeysJson: JSON.stringify(requestBodyEditorState.value.templateKeys),
+      bodyPreviewJson: JSON.stringify(requestBodyEditorState.value.previewBody),
+      bodyRulesJson: JSON.stringify(requestBodyEditorState.value.rules),
+    }
     if (editingCustomKey.value) {
       // 编辑模式
-      await providerStore.updateCustomProvider(editingCustomKey.value, name, customTransforms, baseUrl)
+      await providerStore.updateCustomProvider(
+        editingCustomKey.value, name, customTransforms, baseUrl, requestTransform,
+      )
       // 更新前端元数据
       const oldKey = editingCustomKey.value
       const newKey = 'custom-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
@@ -465,7 +487,7 @@ async function addCustomProvider() {
       message.success(`已修改自定义供应商「${name}」`)
     } else {
       // 新增模式
-      const res = await providerStore.addCustomProvider(name, customTransforms, baseUrl)
+      const res = await providerStore.addCustomProvider(name, customTransforms, baseUrl, requestTransform)
       providerMeta.value[res.providerKey] = {
         displayName: name,
         colorClass: 'custom',
@@ -1033,7 +1055,7 @@ function removeModel(index: number) {
           </div>
         </div>
 
-        <!-- 请求体映射规则（V1 仅前端预览） -->
+        <!-- 请求体映射规则（V5 保存并回显，暂不参与请求执行） -->
         <div class="advanced-section">
           <div class="advanced-section-header">
             <span class="advanced-section-title">请求体映射规则</span>
@@ -1042,8 +1064,8 @@ function removeModel(index: number) {
             </n-button>
           </div>
           <div class="advanced-empty" style="cursor: pointer;" @click="showRequestBodyRuleEditor = true">
-            已配置 {{ requestBodyRules.rules.length }} 条规则
-            <span class="request-body-rules-hint">（第一版仅用于预览，不会随供应商保存）</span>
+            已配置 {{ requestBodyEditorState.rules.rules.length }} 条规则
+            <span class="request-body-rules-hint">（保存供应商配置后落库，暂不参与请求执行）</span>
           </div>
         </div>
       </div>
@@ -1059,8 +1081,8 @@ function removeModel(index: number) {
     <!-- 请求体规则编辑器（二级模态框） -->
     <RequestBodyRuleEditor
       v-model:show="showRequestBodyRuleEditor"
-      :model-rules="requestBodyRules"
-      @apply="requestBodyRules = $event"
+      :model-value="requestBodyEditorState"
+      @apply="requestBodyEditorState = $event"
     />
 
     <!-- 预设供应商选择模态框 -->

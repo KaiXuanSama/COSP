@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.config;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService;
@@ -28,6 +29,16 @@ public class SchemaMigrationRunner implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(SchemaMigrationRunner.class);
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
+        private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
+        private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
+            + "\"model\":\"<string>\","
+            + "\"temperature\":0.1,"
+            + "\"top_p\":1.0,"
+            + "\"stream\":true,"
+            + "\"n\":1,"
+            + "\"stream_options\":{\"include_usage\":true},"
+            + "\"reasoning_effort\":\"medium\"}";
+        private static final String EMPTY_BODY_RULES_JSON = "{\"version\":1,\"rules\":[]}";
 
     private final JdbcTemplate jdbcTemplate;
     private final TransactionTemplate transactionTemplate;
@@ -69,6 +80,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         migrate(2, "API Key 转换为 JSON 数组", this::migrateApiKeyToJsonArray);
         migrate(3, "增加业务约束与查询索引", this::migrateConstraintsAndIndexes);
         migrate(4, "API Key 拆表与加密", this::migrateApiKeysToEncryptedTable);
+        migrate(5, "新增供应商请求转换配置表", this::migrateProviderRequestTransforms);
     }
 
     private void migrate(int version, String description, Runnable action) {
@@ -175,6 +187,101 @@ public class SchemaMigrationRunner implements ApplicationRunner {
 
         // 清空旧明文列（废弃保留策略）
         jdbcTemplate.update("UPDATE provider_config SET api_key = '[]', active_api_key_index = 0");
+    }
+
+    /**
+     * V5：创建供应商请求转换配置表，并从旧 custom_transforms 复制请求头配置。
+     *
+     * V5 只引入新存储，不改变生产请求执行路径。旧请求体调整不做自动语义迁移，
+     * 新请求体规则初始化为空；编辑器预览初始化为当前前端的 base 模板。
+     */
+    private void migrateProviderRequestTransforms() {
+        createProviderRequestTransformTable();
+
+        var providers = jdbcTemplate.queryForList("SELECT id, custom_transforms FROM provider_config ORDER BY id");
+        for (var provider : providers) {
+            int providerId = ((Number) provider.get("id")).intValue();
+            String customTransforms = (String) provider.get("custom_transforms");
+            String headerRulesJson = extractHeaderRulesJson(providerId, customTransforms);
+            jdbcTemplate.update(
+                    "INSERT INTO provider_request_transform "
+                            + "(provider_id, header_rules_version, header_rules_json, "
+                            + "body_template_keys_json, body_preview_json, body_rules_version, body_rules_json) "
+                            + "VALUES (?, 1, ?, ?, ?, 1, ?) ON CONFLICT(provider_id) DO NOTHING",
+                    providerId, headerRulesJson, DEFAULT_BODY_TEMPLATE_KEYS_JSON,
+                    DEFAULT_BODY_PREVIEW_JSON, EMPTY_BODY_RULES_JSON);
+        }
+
+        verifyProviderRequestTransforms(providers.size());
+    }
+
+    private void createProviderRequestTransformTable() {
+        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS provider_request_transform ("
+                + "provider_id INTEGER PRIMARY KEY, "
+                + "header_rules_version INTEGER NOT NULL DEFAULT 1 CHECK (header_rules_version >= 1), "
+                + "header_rules_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(header_rules_json)), "
+                + "body_template_keys_json TEXT NOT NULL DEFAULT '[\"custom\"]' "
+                + "CHECK (json_valid(body_template_keys_json)), "
+                + "body_preview_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(body_preview_json)), "
+                + "body_rules_version INTEGER NOT NULL DEFAULT 1 CHECK (body_rules_version >= 1), "
+                + "body_rules_json TEXT NOT NULL DEFAULT '{\"version\":1,\"rules\":[]}' "
+                + "CHECK (json_valid(body_rules_json)), "
+                + "created_at TEXT NOT NULL DEFAULT "
+                + "(strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), "
+                + "updated_at TEXT NOT NULL DEFAULT "
+                + "(strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), "
+                + "FOREIGN KEY (provider_id) REFERENCES provider_config(id) ON DELETE CASCADE)");
+    }
+
+    private String extractHeaderRulesJson(int providerId, String customTransforms) {
+        String source = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms;
+        try {
+            JsonNode root = objectMapper.readTree(source);
+            if (root == null || !root.isObject()) {
+                throw new IllegalStateException("custom_transforms 必须是 JSON 对象");
+            }
+            JsonNode headers = root.get("custom_headers");
+            if (headers == null || headers.isNull()) {
+                return "[]";
+            }
+            if (!headers.isArray()) {
+                throw new IllegalStateException("custom_headers 必须是 JSON 数组");
+            }
+            return objectMapper.writeValueAsString(headers);
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                    "迁移 provider_config.id=" + providerId + " 的请求头规则失败: " + e.getMessage(), e);
+        }
+    }
+
+    private void verifyProviderRequestTransforms(int expectedProviderCount) {
+        Integer actualCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM provider_request_transform", Integer.class);
+        if (actualCount == null || actualCount != expectedProviderCount) {
+            throw new IllegalStateException("供应商请求转换配置数量校验失败，预期 "
+                    + expectedProviderCount + "，实际 " + actualCount);
+        }
+
+        var rows = jdbcTemplate.queryForList(
+                "SELECT provider_id, header_rules_json, body_template_keys_json, "
+                        + "body_preview_json, body_rules_json FROM provider_request_transform");
+        for (var row : rows) {
+            int providerId = ((Number) row.get("provider_id")).intValue();
+            try {
+                JsonNode headers = objectMapper.readTree((String) row.get("header_rules_json"));
+                JsonNode templateKeys = objectMapper.readTree((String) row.get("body_template_keys_json"));
+                JsonNode preview = objectMapper.readTree((String) row.get("body_preview_json"));
+                JsonNode rules = objectMapper.readTree((String) row.get("body_rules_json"));
+                if (!headers.isArray() || !templateKeys.isArray() || !preview.isObject()
+                        || !rules.isObject() || rules.path("version").asInt() != 1
+                        || !rules.path("rules").isArray()) {
+                    throw new IllegalStateException("JSON 结构不符合 V5 协议");
+                }
+            } catch (Exception e) {
+                throw new IllegalStateException(
+                        "校验 provider_id=" + providerId + " 的请求转换配置失败: " + e.getMessage(), e);
+            }
+        }
     }
 
     private void createProviderApiKeyTable() {
