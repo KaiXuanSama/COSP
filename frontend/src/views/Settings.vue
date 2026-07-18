@@ -358,37 +358,63 @@ interface ProviderPreset {
   requestBodyRules?: RuleSet
 }
 
+const IMAGE_COMPATIBILITY_TEMPLATE_KEYS: RequestBodyTemplateKey[] = ['message-tool-image']
+
+/** 创建自定义供应商默认图片兼容配置，避免共享可变规则集。 */
+function createCustomProviderDefaultEditorState(): RequestBodyEditorState {
+  return {
+    templateKeys: [...IMAGE_COMPATIBILITY_TEMPLATE_KEYS],
+    previewBody: composeRequestBodyTemplate(IMAGE_COMPATIBILITY_TEMPLATE_KEYS),
+    rules: cloneRuleSet(MIMO_EXAMPLE_RULESET),
+  }
+}
+
 const officialPresets: ProviderPreset[] = [
   {
     label: 'LongCat',
     baseUrl: 'https://api.longcat.chat/openai/v1',
     headers: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'Kimi',
     baseUrl: 'https://api.moonshot.cn/v1',
     headers: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'Kimi (CodePlan)',
     baseUrl: 'https://api.kimi.com/coding/v1',
     headers: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'Mimo (TokenPlan)',
     baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
     headers: [],
-    requestBodyTemplateKeys: ['message-tool-image'],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
     requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'Agnes',
     baseUrl: 'https://apihub.agnes-ai.com/v1',
     headers: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'Zhipu',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    headers: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
+  },
+  {
+    label: 'StepFun',
+    baseUrl: 'https://api.stepfun.com/v1',
     headers: [],
   },
 ]
@@ -398,21 +424,29 @@ const aggregatorPresets: ProviderPreset[] = [
     label: 'SenseNova',
     baseUrl: 'https://token.sensenova.cn/v1',
     headers: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'Uumit',
     baseUrl: 'https://agent.uumit.com/v1',
     headers: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'Xunfei',
     baseUrl: 'https://maas-api.cn-huabei-1.xf-yun.com/v2',
     headers: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'WorkBuddy',
     baseUrl: 'https://copilot.tencent.com/v2',
     headers: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
 ]
 
@@ -421,11 +455,15 @@ const relayPresets: ProviderPreset[] = [
     label: 'AgentRouter',
     baseUrl: 'https://agentrouter.org/v1',
     headers: [{ key: 'User-Agent', value: 'claude-cli/2.1.195 (external, cli)' }],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'FreeModel',
     baseUrl: 'https://api.freemodel.dev/v1',
     headers: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
 ]
 
@@ -462,7 +500,7 @@ function clearCustomForm() {
   customProviderName.value = ''
   customBaseUrl.value = ''
   customHeaders.value = []
-  requestBodyEditorState.value = createDefaultRequestBodyEditorState()
+  requestBodyEditorState.value = createCustomProviderDefaultEditorState()
   customAdvancedExpanded.value = false
 }
 
@@ -474,7 +512,7 @@ interface KeyValueEntry {
 const customHeaders = ref<KeyValueEntry[]>([])
 
 /** 请求体映射规则及编辑器预览状态。 */
-const requestBodyEditorState = ref<RequestBodyEditorState>(createDefaultRequestBodyEditorState())
+const requestBodyEditorState = ref<RequestBodyEditorState>(createCustomProviderDefaultEditorState())
 const showRequestBodyRuleEditor = ref(false)
 
 function addCustomHeader() {
@@ -488,7 +526,7 @@ function removeCustomHeader(index: number) {
 function resetCustomAdvanced() {
   customAdvancedExpanded.value = false
   customHeaders.value = []
-  requestBodyEditorState.value = createDefaultRequestBodyEditorState()
+  requestBodyEditorState.value = createCustomProviderDefaultEditorState()
   customBaseUrl.value = ''
   editingCustomKey.value = null
 }
@@ -500,7 +538,7 @@ function openEditCustomModal(key: string) {
   const displayName = providerMeta.value[key]?.displayName || key.replace('custom-', '').replace(/-/g, ' ')
   customProviderName.value = displayName
   customHeaders.value = []
-  requestBodyEditorState.value = createDefaultRequestBodyEditorState()
+  requestBodyEditorState.value = createCustomProviderDefaultEditorState()
   customBaseUrl.value = (provider as any)?.baseUrl || ''
   if (provider) {
     try {
@@ -519,7 +557,7 @@ function openEditCustomModal(key: string) {
         }
       }
     } catch {
-      requestBodyEditorState.value = createDefaultRequestBodyEditorState()
+      requestBodyEditorState.value = createCustomProviderDefaultEditorState()
     }
   }
   showAddModal.value = false
