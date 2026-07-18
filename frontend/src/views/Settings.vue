@@ -6,7 +6,10 @@ import RequestBodyRuleEditor from '@/components/settings/request-body-rules/Requ
 import { useProviderStore, type ApiKeyEntry } from '@/stores/providers'
 import type { RequestBodyEditorState } from '@/features/request-body-rules/editorState'
 import { createDefaultRequestBodyEditorState } from '@/features/request-body-rules/editorState'
+import { MIMO_EXAMPLE_RULESET } from '@/features/request-body-rules/defaultRequestBody'
 import type { RequestBodyTemplateKey } from '@/features/request-body-rules/requestBodyTemplates'
+import { composeRequestBodyTemplate } from '@/features/request-body-rules/requestBodyTemplates'
+import type { RuleSet } from '@/features/request-body-rules/types'
 
 const providerStore = useProviderStore()
 const message = useMessage()
@@ -255,6 +258,10 @@ interface ProviderPreset {
   label: string
   baseUrl: string
   headers: KeyValueEntry[]
+  /** 可选的默认请求体模板键；未配置时回退为基础参数。 */
+  requestBodyTemplateKeys?: RequestBodyTemplateKey[]
+  /** 可选的默认请求体映射规则；未配置时回退为空规则集。 */
+  requestBodyRules?: RuleSet
 }
 
 const officialPresets: ProviderPreset[] = [
@@ -272,6 +279,13 @@ const officialPresets: ProviderPreset[] = [
     label: 'Kimi (CodePlan)',
     baseUrl: 'https://api.kimi.com/coding/v1',
     headers: [],
+  },
+  {
+    label: 'Mimo (TokenPlan)',
+    baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
+    headers: [],
+    requestBodyTemplateKeys: ['message-tool-image'],
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'Agnes',
@@ -322,13 +336,28 @@ const relayPresets: ProviderPreset[] = [
 ]
 
 const allPresets = [...officialPresets, ...aggregatorPresets, ...relayPresets]
-/** 选择预设时自动填充高级设置 */
+
+/** 深拷贝规则集，避免预设常量被编辑器状态原地修改。 */
+function cloneRuleSet(rules: RuleSet): RuleSet {
+  return JSON.parse(JSON.stringify(rules)) as RuleSet
+}
+
+/** 选择预设时自动填充名称、地址、请求头、请求体模板和规则。 */
 function applyPreset(label: string) {
   const preset = allPresets.find(p => p.label === label)
   if (preset) {
     customProviderName.value = preset.label
     customBaseUrl.value = preset.baseUrl
     customHeaders.value = preset.headers.map(h => ({ ...h }))
+    const editorState = createDefaultRequestBodyEditorState()
+    if (preset.requestBodyTemplateKeys && preset.requestBodyTemplateKeys.length > 0) {
+      editorState.templateKeys = [...preset.requestBodyTemplateKeys]
+      editorState.previewBody = composeRequestBodyTemplate(preset.requestBodyTemplateKeys)
+    }
+    if (preset.requestBodyRules) {
+      editorState.rules = cloneRuleSet(preset.requestBodyRules)
+    }
+    requestBodyEditorState.value = editorState
     customAdvancedExpanded.value = true
   }
   showPresetModal.value = false
