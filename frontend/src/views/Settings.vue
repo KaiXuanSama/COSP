@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NSelect, useMessage } from 'naive-ui'
+import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NSelect, NDropdown, useMessage } from 'naive-ui'
 import ProviderModelsSection from '@/components/settings/ProviderModelsSection.vue'
 import RequestBodyRuleEditor from '@/components/settings/request-body-rules/RequestBodyRuleEditor.vue'
 import { useProviderStore, type ApiKeyEntry } from '@/stores/providers'
@@ -189,6 +189,45 @@ const pullDiffModal = ref({
 })
 
 const showAddModal = ref(false)
+
+const providerContextMenu = ref({
+  visible: false,
+  providerKey: '',
+  x: 0,
+  y: 0,
+})
+
+const providerContextOptions = computed(() => {
+  const key = providerContextMenu.value.providerKey
+  const options: Array<{ label: string; key: 'edit' | 'disable'; disabled?: boolean }> = []
+  if (key && isEditableProvider(key)) {
+    options.push({ label: '修改', key: 'edit' })
+  }
+  options.push({ label: '停用', key: 'disable' })
+  return options
+})
+
+function openProviderContextMenu(event: MouseEvent, key: string) {
+  event.preventDefault()
+  providerContextMenu.value = {
+    visible: true,
+    providerKey: key,
+    x: event.clientX,
+    y: event.clientY,
+  }
+}
+
+async function handleProviderContextSelect(action: 'edit' | 'disable') {
+  const key = providerContextMenu.value.providerKey
+  providerContextMenu.value.visible = false
+  if (!key) return
+
+  if (action === 'edit') {
+    openEditCustomModal(key)
+    return
+  }
+  await toggleProvider(key, false)
+}
 
 // ==================== API Key 管理 ====================
 
@@ -890,7 +929,8 @@ function removeModel(index: number) {
         </n-button>
       </template>
       <div class="provider-grid">
-        <div v-for="key in enabledProviderKeys" :key="key" class="provider-card" @click="openEditPanel(key)">
+        <div v-for="key in enabledProviderKeys" :key="key" class="provider-card"
+          @click="openEditPanel(key)" @contextmenu="openProviderContextMenu($event, key)">
           <div class="provider-card-top" :class="providerMeta[key]?.colorClass || 'accent'"></div>
           <div class="provider-card-header">
             <span class="provider-card-name">{{ providerMeta[key]?.displayName || key }}</span>
@@ -911,6 +951,17 @@ function removeModel(index: number) {
         </div>
       </div>
     </n-card>
+
+    <n-dropdown
+      placement="bottom-start"
+      trigger="manual"
+      :show="providerContextMenu.visible"
+      :x="providerContextMenu.x"
+      :y="providerContextMenu.y"
+      :options="providerContextOptions"
+      @select="handleProviderContextSelect"
+      @clickoutside="providerContextMenu.visible = false"
+    />
 
     <!-- 添加供应商模态框 -->
     <n-modal v-model:show="showAddModal" preset="card" title="添加供应商" :style="{ maxWidth: '480px' }" closable
