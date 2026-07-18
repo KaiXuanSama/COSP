@@ -161,8 +161,8 @@ export const RULE_HELP_EXAMPLES: RuleHelpExample[] = [
     rules: conditionalRules,
   },
   {
-    key: 'mimo',
-    title: 'MiMo 完整示例',
+    key: 'image-tool-compatibility',
+    title: '图片工具消息兼容示例',
     summary: '组合数组遍历、两个条件、设置值和删除字段，只转换包含图片的 tool 消息。',
     ruleSummary: '图片 tool 消息：role 改为 user，并删除 tool_call_id；image_url 保持不变',
     steps: ['遍历 messages 数组', '要求 ./role 等于 tool', '同时要求 ./content[*]/image_url 存在', '进入消息对象：设置 role，并删除 tool_call_id'],

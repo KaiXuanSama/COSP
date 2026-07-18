@@ -318,13 +318,13 @@ function copyOutput() {
   })
 }
 
-function loadMimoExample() {
+function loadImageToolCompatibilityRules() {
   draftRules.value = JSON.parse(JSON.stringify(MIMO_EXAMPLE_RULESET))
   if (rulesViewMode.value === 'json') {
     rulesJsonText.value = formatRuleSetJson(draftRules.value)
     rulesJsonError.value = ''
   }
-  message.success('已加载 MiMo 示例规则')
+  message.success('已加载图片工具消息兼容规则')
 }
 
 function clearRules() {
@@ -455,7 +455,9 @@ function handleCancel() {
           </button>
         </div>
         <div class="rules-section-actions">
-          <NButton size="tiny" class="rules-action-button" @click="loadMimoExample">加载 MiMo 示例</NButton>
+          <NButton size="tiny" class="rules-action-button" @click="loadImageToolCompatibilityRules">
+            加载图片工具兼容规则
+          </NButton>
           <NButton size="tiny" class="rules-action-button" @click="clearRules">清空</NButton>
           <NButton size="tiny" class="rules-action-button" @click="toggleRulesView">
             {{ rulesViewMode === 'visual' ? '切换 JSON 视图' : '切换可视化视图' }}
