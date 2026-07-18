@@ -190,6 +190,61 @@ const pullDiffModal = ref({
 
 const showAddModal = ref(false)
 
+const customProviderContextMenu = ref({
+  visible: false,
+  providerKey: '',
+  x: 0,
+  y: 0,
+})
+const deleteCustomProviderModal = ref({
+  visible: false,
+  providerKey: '',
+})
+
+const customProviderContextOptions = computed(() => [
+  { label: '启用', key: 'enable' as const },
+  { label: '修改', key: 'edit' as const },
+  { label: '删除', key: 'delete' as const, props: { class: 'provider-context-menu__delete' } },
+])
+
+const deleteCustomProviderName = computed(() => {
+  const key = deleteCustomProviderModal.value.providerKey
+  return providerMeta.value[key]?.displayName || key
+})
+
+function openCustomProviderContextMenu(event: MouseEvent, key: string) {
+  event.preventDefault()
+  customProviderContextMenu.value = {
+    visible: true,
+    providerKey: key,
+    x: event.clientX,
+    y: event.clientY,
+  }
+}
+
+function handleCustomProviderContextSelect(action: 'enable' | 'edit' | 'delete') {
+  const key = customProviderContextMenu.value.providerKey
+  customProviderContextMenu.value.visible = false
+  if (!key) return
+
+  if (action === 'enable') {
+    enableProvider(key)
+    return
+  }
+  if (action === 'edit') {
+    openEditCustomModal(key)
+    return
+  }
+  deleteCustomProviderModal.value = { visible: true, providerKey: key }
+}
+
+async function confirmRemoveCustomProvider() {
+  const key = deleteCustomProviderModal.value.providerKey
+  if (!key) return
+  deleteCustomProviderModal.value.visible = false
+  await removeCustomProvider(key)
+}
+
 const providerContextMenu = ref({
   visible: false,
   providerKey: '',
@@ -972,24 +1027,9 @@ function removeModel(index: number) {
       <div class="add-modal-grid">
         <div v-for="key in disabledProviderKeys" :key="key" class="add-modal-card"
           :class="{ 'add-modal-card--custom': isCustomProvider(key) }"
-          @click="enableProvider(key)">
+          @click="enableProvider(key)"
+          @contextmenu="isCustomProvider(key) && openCustomProviderContextMenu($event, key)">
           <div class="add-modal-card-top" :class="providerMeta[key]?.colorClass || 'accent'"></div>
-          <button v-if="isEditableProvider(key)" class="add-modal-card-edit" title="修改自定义供应商"
-            @click.stop="openEditCustomModal(key)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-            </svg>
-          </button>
-          <button v-if="isEditableProvider(key)" class="add-modal-card-delete" title="删除自定义供应商"
-            @click.stop="removeCustomProvider(key)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
           <div class="add-modal-card-name">{{ providerMeta[key]?.displayName || key }}</div>
           <div class="add-modal-card-desc">{{ providerMeta[key]?.apiUrlPlaceholder || '' }}</div>
         </div>
@@ -1000,6 +1040,23 @@ function removeModel(index: number) {
           <div class="add-modal-card-desc">标准 OpenAI 兼容接口</div>
         </div>
       </div>
+    </n-modal>
+
+    <n-dropdown
+      placement="bottom-start"
+      trigger="manual"
+      :show="customProviderContextMenu.visible"
+      :x="customProviderContextMenu.x"
+      :y="customProviderContextMenu.y"
+      :options="customProviderContextOptions"
+      @select="handleCustomProviderContextSelect"
+      @clickoutside="customProviderContextMenu.visible = false"
+    />
+
+    <n-modal v-model:show="deleteCustomProviderModal.visible" preset="dialog" type="error"
+      title="确认删除自定义供应商" positive-text="删除" negative-text="取消"
+      @positive-click="confirmRemoveCustomProvider">
+      删除自定义供应商「{{ deleteCustomProviderName }}」后，其 API Key、模型和请求转换配置将无法恢复。确定继续吗？
     </n-modal>
 
     <!-- 自定义供应商名称输入模态框 -->
@@ -1622,50 +1679,8 @@ function removeModel(index: number) {
   position: relative;
 }
 
-.add-modal-card-edit {
-  position: absolute;
-  top: 8px;
-  right: 30px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border: 0;
-  border-radius: 999px;
-  background: rgba(194, 122, 62, 0.08);
-  color: $text-muted;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  z-index: 2;
-
-  &:hover {
-    color: $accent;
-    background: rgba(194, 122, 62, 0.15);
-  }
-}
-
-.add-modal-card-delete {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border: 0;
-  border-radius: 999px;
-  background: rgba(184, 74, 74, 0.08);
-  color: $text-muted;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  z-index: 2;
-
-  &:hover {
-    color: $danger;
-    background: rgba(184, 74, 74, 0.15);
-  }
+:global(.provider-context-menu__delete) {
+  color: $danger !important;
 }
 
 .add-modal-card--new {
