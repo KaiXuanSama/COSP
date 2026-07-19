@@ -5,6 +5,7 @@ import com.kaixuan.copilot_ollama_proxy.application.reasoning.ReasoningCache;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
+import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -58,6 +59,7 @@ public abstract class AbstractUpstreamChatService {
 
     /** 当请求中未指定模型时回退使用的默认模型名称。 */
     private final String fallbackDefaultModel;
+    private final ProviderRequestHeaderService providerRequestHeaderService;
 
     /** API 调用日志写入服务，由子类 Spring Bean 通过 setter 注入。 */
     private ApiCallLogService apiCallLog;
@@ -98,9 +100,11 @@ public abstract class AbstractUpstreamChatService {
      * @param objectMapper Jackson 对象映射器
      * @param fallbackDefaultModel 当请求中未指定模型时使用的默认模型名称
      */
-    protected AbstractUpstreamChatService(ObjectMapper objectMapper, String fallbackDefaultModel) {
+    protected AbstractUpstreamChatService(ObjectMapper objectMapper, String fallbackDefaultModel,
+                                          ProviderRequestHeaderService providerRequestHeaderService) {
         this.objectMapper = objectMapper;
         this.fallbackDefaultModel = fallbackDefaultModel;
+        this.providerRequestHeaderService = providerRequestHeaderService;
     }
 
     /**
@@ -251,11 +255,10 @@ public abstract class AbstractUpstreamChatService {
                                                   ProviderRuntimeConfiguration provider) {
         String apiKey = provider.apiKey();
         String baseUrl = provider.baseUrl().isBlank() ? defaultBaseUrl() : provider.baseUrl();
-        String normalizedUrl = normalizeBaseUrl(baseUrl);
+        String normalizedUrl = providerRequestHeaderService.normalizeBaseUrl(baseUrl);
 
         return webClientBuilder.clone().baseUrl(normalizedUrl).defaultHeaders(headers -> {
-            applyAuthenticationHeaders(headers, apiKey);
-            customizeRequestHeaders(headers, provider);
+            providerRequestHeaderService.applyHeaders(headers, apiKey, provider.headerRulesJson());
             headers.setContentType(MediaType.APPLICATION_JSON);
             // 捕获实际发送的请求头（脱敏后）用于日志
             headers.forEach((k, v) -> {
@@ -563,37 +566,6 @@ public abstract class AbstractUpstreamChatService {
      * @return 默认 Base URL，以协议开头，不含路径后缀
      */
     protected abstract String defaultBaseUrl();
-
-    /**
-     * 规范化 Base URL，确保最终地址符合上游端点要求。
-     *
-     * 子类通常在这里追加 provider 特有的路径前缀（如 "/openai"），
-     * 并去除多余的尾部斜杠。
-     *
-     * @param rawBaseUrl 原始 Base URL
-     * @return 规范化后的 Base URL
-     */
-    protected abstract String normalizeBaseUrl(String rawBaseUrl);
-
-    /**
-    * 在请求头中添加默认 Bearer 认证信息。
-    * 子类可覆写实现供应商的特殊认证方式。
-     *
-     * @param headers 请求头对象，子类直接修改即可
-     * @param apiKey 从运行时配置读取的 API Key，可能为空串
-     */
-    protected void applyAuthenticationHeaders(HttpHeaders headers, String apiKey) {
-        headers.setBearerAuth(apiKey);
-    }
-
-    /**
-     * 根据供应商运行时配置补充、覆写或移除请求头。
-     *
-     * @param headers 请求头
-     * @param provider 已解析的供应商配置
-     */
-    protected void customizeRequestHeaders(HttpHeaders headers, ProviderRuntimeConfiguration provider) {
-    }
 
     /**
      * 提供 Chat Completions 端点的 URI 路径。

@@ -1,9 +1,9 @@
 package com.kaixuan.copilot_ollama_proxy.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import org.junit.jupiter.api.Test;
-import org.springframework.http.HttpHeaders;
 
 import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
@@ -108,7 +108,7 @@ class AbstractUpstreamChatServiceTests {
     private static final class TestOpenAiService extends AbstractUpstreamChatService {
 
         private TestOpenAiService() {
-            super(new ObjectMapper(), "default-model");
+            super(new ObjectMapper(), "default-model", new ProviderRequestHeaderService(new ObjectMapper()));
         }
 
         private Map<String, Object> exposePrepareRequestBody(Map<String, Object> request, boolean stream,
@@ -126,16 +126,6 @@ class AbstractUpstreamChatServiceTests {
         @Override
         protected String defaultBaseUrl() {
             return "https://example.com";
-        }
-
-        @Override
-        protected String normalizeBaseUrl(String rawBaseUrl) {
-            return rawBaseUrl;
-        }
-
-        @Override
-        protected void applyAuthenticationHeaders(HttpHeaders headers, String apiKey) {
-            headers.set("x-api-key", apiKey);
         }
 
         @Override

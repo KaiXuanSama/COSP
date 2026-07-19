@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.api;
 
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestTransformService;
+import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
@@ -10,8 +11,6 @@ import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfi
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderRequestTransformRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderRequestTransformRow;
-import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.RequestTransformEngine;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -46,6 +45,7 @@ public class AdminPageController {
     private final ProviderConfigRepository providerConfigRepository;
     private final ProviderRequestTransformRepository providerRequestTransformRepository;
     private final ProviderRequestTransformService providerRequestTransformService;
+    private final ProviderRequestHeaderService providerRequestHeaderService;
     private final ProviderApiKeyRepository providerApiKeyRepository;
     private final AppConfigRepository appConfigRepository;
     private final ApiCallLogRepository apiCallLogRepository;
@@ -55,6 +55,7 @@ public class AdminPageController {
             ProviderApiKeyRepository providerApiKeyRepository,
             ProviderRequestTransformRepository providerRequestTransformRepository,
             ProviderRequestTransformService providerRequestTransformService,
+            ProviderRequestHeaderService providerRequestHeaderService,
             AppConfigRepository appConfigRepository, ApiCallLogRepository apiCallLogRepository, WebClient.Builder webClientBuilder) {
         this.userDetailsManager = userDetailsManager;
         this.passwordEncoder = passwordEncoder;
@@ -63,6 +64,7 @@ public class AdminPageController {
         this.providerApiKeyRepository = providerApiKeyRepository;
         this.providerRequestTransformRepository = providerRequestTransformRepository;
         this.providerRequestTransformService = providerRequestTransformService;
+        this.providerRequestHeaderService = providerRequestHeaderService;
         this.appConfigRepository = appConfigRepository;
         this.apiCallLogRepository = apiCallLogRepository;
         this.webClientBuilder = webClientBuilder;
@@ -308,25 +310,43 @@ public class AdminPageController {
     @PostMapping("/config/api/providers/{providerKey}/pull-models") @ResponseBody
     public Mono<ResponseEntity<Object>> pullProviderModels(@PathVariable String providerKey, @RequestBody Map<String, String> body) {
         String baseUrl = body.getOrDefault("baseUrl", "").trim();
-        String apiKey = body.getOrDefault("apiKey", "").trim();
+        String submittedApiKey = body.getOrDefault("apiKey", "").trim();
         String keyUuid = body.getOrDefault("keyUuid", "").trim();
         String modelPullPath = body.getOrDefault("modelPullPath", "").trim();
         if (baseUrl.isBlank()) {
             return Mono.just(ResponseEntity.badRequest().body((Object) Map.of("ok", false, "error", "请先填写 API 地址。")));
         }
 
-        // 优先使用前端传入的明文 Key；其次通过 keyUuid 从数据库解密
-        if (apiKey.isBlank() && !keyUuid.isBlank()) {
-            apiKey = resolveApiKeyByUuid(providerKey, keyUuid);
-            if (apiKey == null) {
-                return Mono.just(ResponseEntity.badRequest().body((Object) Map.of("ok", false, "error", "指定的 API Key 不存在或已被删除，请重新选择。")));
-            }
-        }
-        if (apiKey.isBlank()) {
+        if (submittedApiKey.isBlank() && keyUuid.isBlank()) {
             return Mono.just(ResponseEntity.badRequest().body((Object) Map.of("ok", false, "error", "请先填写 API Key。")));
         }
 
-        return forwardModelsRequest(providerKey, baseUrl, apiKey, modelPullPath);
+        return Mono.fromCallable(() -> prepareModelPullRequest(providerKey, submittedApiKey, keyUuid))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(prepared -> {
+                    if (prepared == null) {
+                        return Mono.just(ResponseEntity.badRequest().body((Object) Map.of(
+                                "ok", false, "error", "指定的 API Key 不存在或已被删除，请重新选择。")));
+                    }
+                    return forwardModelsRequest(baseUrl, prepared.apiKey(), modelPullPath, prepared.headerRulesJson());
+                });
+    }
+
+    /**
+     * 读取已保存 Key 和请求头规则；该方法只在 boundedElastic 调度器调用。
+     */
+    private ModelPullRequest prepareModelPullRequest(String providerKey, String submittedApiKey, String keyUuid) {
+        String apiKey = submittedApiKey;
+        if (apiKey.isBlank()) {
+            apiKey = resolveApiKeyByUuid(providerKey, keyUuid);
+            if (apiKey == null) {
+                return null;
+            }
+        }
+        ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
+        ProviderRequestTransformRow transform = provider == null ? null
+                : providerRequestTransformRepository.findByProviderId(provider.id());
+        return new ModelPullRequest(apiKey, transform != null ? transform.headerRulesJson() : "[]");
     }
 
     /**
@@ -347,18 +367,12 @@ public class AdminPageController {
         return null;
     }
 
-    private Mono<ResponseEntity<Object>> forwardModelsRequest(String providerKey, String rawBaseUrl, String apiKey, String rawModelPullPath) {
-        String requestUrl = rawBaseUrl.replaceAll("/+$", "") + normalizeModelPullPath(rawModelPullPath);
+        private Mono<ResponseEntity<Object>> forwardModelsRequest(String rawBaseUrl, String apiKey, String rawModelPullPath,
+                                      String headerRulesJson) {
+        String requestUrl = providerRequestHeaderService.buildRequestUrl(rawBaseUrl, normalizeModelPullPath(rawModelPullPath));
         return webClientBuilder.clone().defaultHeaders(headers -> {
-            headers.set(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE);
-            applyModelDiscoveryAuthHeaders(providerKey, headers, apiKey);
-            ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
-            if (provider != null) {
-                ProviderRequestTransformRow transform = providerRequestTransformRepository.findByProviderId(provider.id());
-                String headerRulesJson = transform != null ? transform.headerRulesJson() : "[]";
-                RequestTransformEngine.applyHeaderRules(
-                        headers, apiKey, headerRulesJson, new com.fasterxml.jackson.databind.ObjectMapper());
-            }
+            headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+            providerRequestHeaderService.applyHeaders(headers, apiKey, headerRulesJson);
         }).build().get().uri(requestUrl).exchangeToMono(response -> response.bodyToMono(String.class).defaultIfEmpty("").map(respBody -> {
             ResponseEntity.BodyBuilder builder = ResponseEntity.status(response.statusCode().value());
             response.headers().contentType().ifPresent(builder::contentType);
@@ -420,14 +434,9 @@ public class AdminPageController {
         return path.startsWith("/") ? path : "/" + path;
     }
 
-    /**
-    * 使用统一 Generic 供应商的默认 Bearer 鉴权。
-    *
-    * 特殊认证头由 provider_request_transform.header_rules_json 覆写。
-     */
-    private void applyModelDiscoveryAuthHeaders(String providerKey, HttpHeaders headers, String apiKey) {
-        headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
+    private record ModelPullRequest(String apiKey, String headerRulesJson) {
     }
+
 
     // ==================== 供应商创建与重命名 API ====================
 

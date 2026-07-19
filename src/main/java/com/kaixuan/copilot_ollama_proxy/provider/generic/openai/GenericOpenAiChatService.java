@@ -1,10 +1,10 @@
 package com.kaixuan.copilot_ollama_proxy.provider.generic.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.provider.AbstractUpstreamChatService;
-import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -20,28 +20,16 @@ import java.util.Map;
 @Service
 public class GenericOpenAiChatService extends AbstractUpstreamChatService {
 
-    private final ObjectMapper objectMapper;
     private final RequestBodyRuleEngine requestBodyRuleEngine;
 
-    public GenericOpenAiChatService(ObjectMapper objectMapper) {
-        super(objectMapper, "");
-        this.objectMapper = objectMapper;
+    public GenericOpenAiChatService(ObjectMapper objectMapper, ProviderRequestHeaderService providerRequestHeaderService) {
+        super(objectMapper, "", providerRequestHeaderService);
         this.requestBodyRuleEngine = new RequestBodyRuleEngine(objectMapper);
     }
 
     @Override
     protected String defaultBaseUrl() {
         return "";
-    }
-
-    @Override
-    protected String normalizeBaseUrl(String rawBaseUrl) {
-        return rawBaseUrl.replaceAll("/+$", "");
-    }
-
-    @Override
-    protected void customizeRequestHeaders(HttpHeaders headers, ProviderRuntimeConfiguration provider) {
-        RequestTransformEngine.applyHeaderRules(headers, provider.apiKey(), provider.headerRulesJson(), objectMapper);
     }
 
     @Override
