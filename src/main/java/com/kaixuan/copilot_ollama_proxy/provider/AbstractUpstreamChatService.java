@@ -1,7 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.reasoning.ReasoningCache;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
@@ -32,7 +31,7 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * 通用 OpenAI 上游执行管道。
  *
- * 本类负责上游响应清洗、reasoning 缓存、请求转换、重试和调用日志。
+ * 本类负责上游响应清洗、请求转换、重试和调用日志。
  *
  * 上游清洗（{@link #normalizeUpstreamChunk}）：
  *   将各上游供应商返回的格式不一致的 SSE chunk 统一为内部标准 OpenAI 格式。
@@ -40,7 +39,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *   统一 finish_reason 等。
  *
  * 中枢处理（在 {@link #chatCompletionStream} 的 Reactor 管道中完成）：
- *   基于清洗后的统一格式进行：reasoning 累积与缓存、reasoning fallback
+ *   基于清洗后的统一格式进行：reasoning fallback
  *   （无正文时回退用思考内容作为回复）、API 调用日志记录。
  *
  * 运行时配置（API Key、Base URL、模型列表）由调用方显式传入。
@@ -65,14 +64,6 @@ public abstract class AbstractUpstreamChatService {
     private ApiCallLogService apiCallLog;
 
     /**
-    * 思考链缓存服务（可选）。
-    * 注入此依赖后，管道自动启用思考链缓存功能：
-     * - 流式响应中自动追踪 tool_call IDs 并在 finish_reason=tool_calls 时持久化 reasoning
-     * - 请求体准备时自动为带 tool_calls 的 assistant 消息注入缓存的 reasoning_content
-     */
-    private ReasoningCache reasoningCache;
-
-    /**
      * 全局 WebClient.Builder，由 Spring 通过 setter 注入。
      * 该 Builder 在 WebClientConfig 中配置了 JDK 系统 DNS 解析器，
      * 避免 Netty 默认异步解析器在 Windows 上的间歇性 DNS 解析失败。
@@ -82,11 +73,6 @@ public abstract class AbstractUpstreamChatService {
     @Autowired(required = false)
     public void setApiCallLog(ApiCallLogService apiCallLog) {
         this.apiCallLog = apiCallLog;
-    }
-
-    @Autowired(required = false)
-    public void setReasoningCache(ReasoningCache reasoningCache) {
-        this.reasoningCache = reasoningCache;
     }
 
     @Autowired(required = false)
@@ -183,9 +169,6 @@ public abstract class AbstractUpstreamChatService {
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
         StringBuilder reasoningBuffer = new StringBuilder();
         AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
-        // 思考链缓存：per-request 追踪 tool_call IDs（仅当 reasoningCache != null 时生效）
-        List<String> pendingToolCallIds = new ArrayList<>();
-
         return buildWebClientWithHeaders(reqHeaders, provider).post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody)
                 .exchangeToFlux(response -> {
                     Map<String, String> respHeaders = new LinkedHashMap<>();
@@ -206,12 +189,9 @@ public abstract class AbstractUpstreamChatService {
                     return response.bodyToFlux(STRING_SSE_TYPE);
                 })
                 .retryWhen(buildRetrySpec("chatCompletionStream", provider)).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
-                .doOnNext(raw -> log.debug("{} 上游原始: {}", provider.providerKey(), raw))
-                .doOnNext(raw -> trackToolCallIds(raw, pendingToolCallIds)).concatMap(chunk -> {
+                .doOnNext(raw -> log.debug("{} 上游原始: {}", provider.providerKey(), raw)).concatMap(chunk -> {
                     String normalizedChunk = normalizeUpstreamChunk(chunk, contentEmitted, reasoningBuffer, chunkId);
                     if (isTerminalChunk(normalizedChunk)) {
-                        // 思考链缓存：finish_reason=tool_calls 时自动持久化
-                        persistReasoningIfToolCalls(normalizedChunk, reasoningBuffer, pendingToolCallIds);
                         // 仅当 contentEmitted=false 且 reasoningBuffer 非空时触发 reasoning fallback
                         if (isStopFinishReason(normalizedChunk) && !contentEmitted.get() && !reasoningBuffer.isEmpty()) {
                             log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
@@ -295,7 +275,6 @@ public abstract class AbstractUpstreamChatService {
             }
         }
         body.values().removeIf(Objects::isNull);
-        injectCachedReasoning(body);
         customizeRequestBody(body, resolvedModel, provider);
         return body;
     }
@@ -365,114 +344,11 @@ public abstract class AbstractUpstreamChatService {
     /**
      * 子类可以重写此方法在请求体中添加特定的字段或格式转换，例如将模型名称转换为特定服务识别的格式。
      * <p>
-     * 注意：如果 reasoningCache 已注入，基类会在调用本方法之前自动注入缓存的 reasoning_content，
-     * 子类无需重复此逻辑。
-     *
      * @param body 请求体的 Map 结构，子类可以直接修改该 Map 来添加或修改字段
      * @param resolvedModel 已经解析出的模型名称，子类可以根据该名称来决定是否进行特定的字段添加或格式转换
      */
     protected void customizeRequestBody(Map<String, Object> body, String resolvedModel,
                                         ProviderRuntimeConfiguration provider) {
-    }
-
-    // ==================== 思考链缓存：基类自动追踪与注入 ====================
-
-    /**
-     * 从原始 SSE chunk 中提取 tool_call ID，累积到 per-request 列表中。
-     * 仅当 reasoningCache 不为 null 时才实际工作。
-     */
-    @SuppressWarnings("unchecked")
-    private void trackToolCallIds(String rawChunkJson, List<String> pendingToolCallIds) {
-        if (reasoningCache == null || "[DONE]".equals(rawChunkJson)) {
-            return;
-        }
-        try {
-            Map<String, Object> chunk = objectMapper.readValue(rawChunkJson, Map.class);
-            List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
-            if (choices == null || choices.isEmpty()) {
-                return;
-            }
-            Map<String, Object> delta = (Map<String, Object>) choices.get(0).get("delta");
-            if (delta == null) {
-                return;
-            }
-            Object toolCallsObj = delta.get("tool_calls");
-            if (toolCallsObj instanceof List<?> toolCalls) {
-                for (Object tcObj : toolCalls) {
-                    if (tcObj instanceof Map<?, ?> tc) {
-                        Object idObj = tc.get("id");
-                        if (idObj instanceof String id && !id.isEmpty() && !pendingToolCallIds.contains(id)) {
-                            pendingToolCallIds.add(id);
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            // 解析异常不影响主流程
-        }
-    }
-
-    /**
-     * 当检测到 finish_reason=tool_calls 时，自动将累积的 reasoning 持久化到缓存。
-     * 仅当 reasoningCache 不为 null 且有待处理的 tool_call IDs 时才执行。
-     */
-    private void persistReasoningIfToolCalls(String normalizedChunk, StringBuilder reasoningBuffer, List<String> pendingToolCallIds) {
-        if (reasoningCache == null || pendingToolCallIds.isEmpty() || reasoningBuffer.isEmpty()) {
-            return;
-        }
-        if (!hasFinishReason(normalizedChunk, "tool_calls")) {
-            return;
-        }
-        String reasoning = reasoningBuffer.toString();
-        for (String toolCallId : pendingToolCallIds) {
-            reasoningCache.save(toolCallId, reasoning);
-        }
-        log.debug("已缓存 {} 条工具调用思考链 (reasoning 长度: {})", pendingToolCallIds.size(), reasoning.length());
-    }
-
-    /**
-     * 在请求体准备阶段，自动为带 tool_calls 的 assistant 消息注入缓存的 reasoning_content。
-     * 仅当 reasoningCache 不为 null 时才执行。
-     */
-    @SuppressWarnings("unchecked")
-    private void injectCachedReasoning(Map<String, Object> body) {
-        if (reasoningCache == null) {
-            return;
-        }
-        Object messagesObj = body.get("messages");
-        if (!(messagesObj instanceof List<?> messages)) {
-            return;
-        }
-        boolean modified = false;
-        for (Object msgObj : messages) {
-            if (!(msgObj instanceof Map<?, ?>)) {
-                continue;
-            }
-            Map<String, Object> msg = (Map<String, Object>) msgObj;
-            if (!"assistant".equals(msg.get("role")) || !msg.containsKey("tool_calls") || msg.containsKey("reasoning_content")) {
-                continue;
-            }
-            String cachedReasoning = null;
-            Object toolCallsObj = msg.get("tool_calls");
-            if (toolCallsObj instanceof List<?> toolCalls) {
-                for (Object tcObj : toolCalls) {
-                    if (tcObj instanceof Map<?, ?> tc) {
-                        Object idObj = tc.get("id");
-                        if (idObj instanceof String id) {
-                            cachedReasoning = reasoningCache.findByToolCallId(id);
-                            if (cachedReasoning != null) {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            msg.put("reasoning_content", cachedReasoning != null ? cachedReasoning : "");
-            modified = true;
-        }
-        if (modified) {
-            log.debug("已向带 tool_calls 的 assistant 消息注入 reasoning_content");
-        }
     }
 
     /**

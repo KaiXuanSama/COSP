@@ -31,7 +31,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final double V7_BASELINE_VERSION = 7.0;
     private static final double V7_1_VERSION = 7.1;
     private static final double V8_VERSION = 8.0;
-    private static final double CURRENT_SCHEMA_VERSION = 8.1;
+    private static final double V8_1_VERSION = 8.1;
+    private static final double CURRENT_SCHEMA_VERSION = 8.2;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -84,7 +85,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
             if (hasBaselineVersionRecord()) {
                 migrate(V7_1_VERSION, "新增供应商完整显示名", this::migrateDisplayNameToV71);
                 migrate(V8_VERSION, "统一供应商实现并移除 custom- 前缀", this::migrateToV8UnifiedProviders);
-                migrate(CURRENT_SCHEMA_VERSION, "移除固定的 API 格式字段", this::migrateToV81RemoveApiFormat);
+                migrate(V8_1_VERSION, "移除固定的 API 格式字段", this::migrateToV81RemoveApiFormat);
+                migrate(CURRENT_SCHEMA_VERSION, "移除思考链缓存", this::migrateToV82RemoveReasoningCache);
                 return;
             }
             establishCurrentBaseline();
@@ -102,7 +104,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         migrate(V7_BASELINE_VERSION, "移除废弃字段并压缩迁移历史", this::migrateToV7Baseline);
         migrate(V7_1_VERSION, "新增供应商完整显示名", this::migrateDisplayNameToV71);
         migrate(V8_VERSION, "统一供应商实现并移除 custom- 前缀", this::migrateToV8UnifiedProviders);
-        migrate(CURRENT_SCHEMA_VERSION, "移除固定的 API 格式字段", this::migrateToV81RemoveApiFormat);
+        migrate(V8_1_VERSION, "移除固定的 API 格式字段", this::migrateToV81RemoveApiFormat);
+        migrate(CURRENT_SCHEMA_VERSION, "移除思考链缓存", this::migrateToV82RemoveReasoningCache);
     }
 
     /**
@@ -117,7 +120,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
             resultSet -> resultSet.next() ? resultSet.getDouble("version") : null);
         return version != null && version >= CURRENT_SCHEMA_VERSION
             && columnExists("provider_config", "display_name") && !columnExists("provider_config", "api_format")
-            && !hasLegacyProviderConfigColumns();
+            && !hasLegacyProviderConfigColumns() && !tableExists("reasoning_cache");
     }
 
     /**
@@ -130,7 +133,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         + "ON CONFLICT(id) DO UPDATE SET version = excluded.version, "
                         + "description = excluded.description, "
                         + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
-                    CURRENT_SCHEMA_VERSION, "V8.1 架构基线：统一供应商实现"));
+                    CURRENT_SCHEMA_VERSION, "V8.2 架构基线：统一供应商实现并移除思考链缓存"));
         log.info("[SchemaMigration] 已建立 V{} 架构基线", CURRENT_SCHEMA_VERSION);
     }
 
@@ -416,7 +419,17 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
         jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
                 + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
-            CURRENT_SCHEMA_VERSION, "V8.1 增量迁移：移除固定的 API 格式字段");
+            V8_1_VERSION, "V8.1 增量迁移：移除固定的 API 格式字段");
+    }
+
+    /**
+     * V8.2：移除不再由当前 GitHub Copilot 客户端需要的跨请求思考链缓存。
+     */
+    private void migrateToV82RemoveReasoningCache() {
+        jdbcTemplate.execute("DROP TABLE IF EXISTS reasoning_cache");
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+            CURRENT_SCHEMA_VERSION, "V8.2 增量迁移：移除思考链缓存");
     }
 
             private void deleteProviderConfiguration(int providerId) {

@@ -24,7 +24,7 @@ class SchemaMigrationRunnerTests {
     Path tempDir;
 
         @Test
-        void migratesLegacySchemaToV81AndPhysicallyRemovesObsoleteColumns() throws Exception {
+        void migratesLegacySchemaToV82AndPhysicallyRemovesObsoleteColumns() throws Exception {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
         createLegacySchema(jdbcTemplate);
         seedLegacyData(jdbcTemplate);
@@ -44,12 +44,13 @@ class SchemaMigrationRunnerTests {
         Integer versionCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_version", Integer.class);
         assertThat(versionCount).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject(
-                "SELECT version FROM schema_version WHERE id = 1", Double.class)).isEqualTo(8.1);
+                "SELECT version FROM schema_version WHERE id = 1", Double.class)).isEqualTo(8.2);
         assertThat(columnNames(jdbcTemplate, "provider_model"))
                 .contains("reasoning_effort", "max_output_tokens");
         assertThat(columnNames(jdbcTemplate, "provider_config"))
                 .contains("display_name")
                 .doesNotContain("api_key", "active_api_key_index", "custom_transforms", "api_format");
+        assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT display_name FROM provider_config WHERE id = 1", String.class)).isEqualTo("Legacy");
 
@@ -106,7 +107,7 @@ class SchemaMigrationRunnerTests {
     }
 
     @Test
-        void newSchemaEstablishesV81BaselineWithoutReplayingHistoricalMigrations() {
+        void newSchemaEstablishesV82BaselineWithoutReplayingHistoricalMigrations() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
         createCurrentSchema(jdbcTemplate);
 
@@ -121,13 +122,14 @@ class SchemaMigrationRunnerTests {
 
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_version", Integer.class)).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
-                .isEqualTo(8.1);
+                .isEqualTo(8.2);
         assertThat(columnNames(jdbcTemplate, "provider_config"))
                 .doesNotContain("api_key", "active_api_key_index", "custom_transforms", "api_format");
+        assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
     }
 
     @Test
-        void legacyDatabaseRecordedAtV2ContinuesThroughV81AndCompactsHistory() {
+        void legacyDatabaseRecordedAtV2ContinuesThroughV82AndCompactsHistory() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
         createLegacySchema(jdbcTemplate);
         seedLegacyData(jdbcTemplate);
@@ -150,10 +152,11 @@ class SchemaMigrationRunnerTests {
 
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_version", Integer.class)).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
-                .isEqualTo(8.1);
+                .isEqualTo(8.2);
         assertThat(columnNames(jdbcTemplate, "provider_config"))
                 .contains("display_name")
                 .doesNotContain("api_key", "active_api_key_index", "custom_transforms", "api_format");
+        assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM provider_request_transform WHERE provider_id = 1", Integer.class)).isEqualTo(1);
     }
@@ -172,7 +175,7 @@ class SchemaMigrationRunnerTests {
         runner.run(null);
 
         assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
-                .isEqualTo(8.1);
+                .isEqualTo(8.2);
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT display_name FROM provider_config WHERE provider_key = 'stepfun'", String.class))
                 .isEqualTo("Stepfun");
@@ -207,6 +210,26 @@ class SchemaMigrationRunnerTests {
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM provider_api_key", Integer.class)).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM provider_request_transform", Integer.class)).isEqualTo(1);
     }
+
+        @Test
+        void v81DatabaseDropsReasoningCacheAndItsIndexDuringV82Migration() {
+                JdbcTemplate jdbcTemplate = createJdbcTemplate();
+                createCurrentSchema(jdbcTemplate);
+                jdbcTemplate.execute("CREATE TABLE reasoning_cache (tool_call_id TEXT PRIMARY KEY, reasoning_content TEXT NOT NULL)");
+                jdbcTemplate.execute("CREATE INDEX idx_reasoning_cache_created_at ON reasoning_cache(reasoning_content)");
+                jdbcTemplate.execute("CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
+                                + "version REAL NOT NULL, description TEXT NOT NULL, applied_at TEXT)");
+                jdbcTemplate.update("INSERT INTO schema_version (id, version, description) VALUES (1, 8.1, 'V8.1')");
+
+                SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+                runner.run(null);
+                runner.run(null);
+
+                assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                                .isEqualTo(8.2);
+                assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
+                assertThat(indexExists(jdbcTemplate, "idx_reasoning_cache_created_at")).isFalse();
+        }
 
     @Test
     void historicalV5MigrationDoesNotOverwriteExistingRequestTransformConfiguration() {
@@ -346,4 +369,16 @@ class SchemaMigrationRunnerTests {
                 .map(row -> String.valueOf(row.get("name")))
                 .toList();
     }
+
+        private boolean tableExists(JdbcTemplate jdbcTemplate, String tableName) {
+                Integer count = jdbcTemplate.queryForObject(
+                                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", Integer.class, tableName);
+                return count != null && count > 0;
+        }
+
+        private boolean indexExists(JdbcTemplate jdbcTemplate, String indexName) {
+                Integer count = jdbcTemplate.queryForObject(
+                                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", Integer.class, indexName);
+                return count != null && count > 0;
+        }
 }
