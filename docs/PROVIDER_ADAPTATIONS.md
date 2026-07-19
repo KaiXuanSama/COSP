@@ -1,34 +1,21 @@
-# Provider 特殊适配记录
+# 供应商适配历史记录
 
-> 记录各供应商相对于"标准 OpenAI 兼容"实现的针对性调整。
-> 标准实现（无特殊逻辑）：**Agnes、SenseNova、Uumit、Xunfei、Zhipu、LongCat**。
+> 本文档记录 V8 之前的专有 Provider 适配历史，不是当前运行时实现说明。
 
----
+当前 COSP 不再按 DeepSeek、MiMo、Kimi 等名称加载专有 Java 服务。所有供应商均使用数据库配置，
+由 `GenericOpenAiChatService` 统一执行。认证差异、上游不支持字段和消息结构差异应通过管理后台的
+请求头规则与请求体 RuleSet 表达。
 
-## DeepSeek
+## 当前通用能力
 
-- **思考链缓存**：多轮工具调用时，流式阶段缓存 `reasoning_content` 到 `reasoning_cache` 表，下一轮请求时回填到 `assistant+tool_calls` 消息中
-- **Ollama 字段注入**：`thinking`（→ `{"type":"..."}`）和 `reasoning_effort` 字段
+- 默认使用 Bearer 认证；请求头规则可覆盖、添加或通过 `/del/` 删除请求头，并支持 `{apiKey}` 占位符。
+- 请求体 RuleSet 可按顺序修改、删除字段或递归调整对象/数组中的消息内容。
+- 上游流式响应中的 `thinking`、`reasoning`、`reasoning_text`、`cot_summary` 等字段会统一为
+	`reasoning_content`。
+- 当前 GitHub Copilot 客户端负责跨请求回放 `reasoning_content`；COSP 不再缓存、注入或定期清理思考内容。
 
-## MiMo
+## 历史范围
 
-- **认证方式**：⚠️ `api-key` + `x-api-key` 双 header（非 Bearer Token）
-- **图片格式转换**：`media_type` → `type: "image_url"`，`role: "tool"` 图片转 `role: "user"`
-- **JSON 工具调用提示**：向 system prompt 注入约束，防止模型输出 XML 格式工具调用
-- **思考链缓存**：同 DeepSeek 的读写逻辑
-
-## Kimi
-
-- **Coding 端点限制**：当 Base URL 含 `api.kimi.com/coding` 时，移除请求体中的 `temperature` 和 `top_p`（OpenAI 链 + Ollama 链双层处理）
-- **Ollama 字段注入**：`thinking`（→ `{"type":"..."}`）字段
-
----
-
-## 汇总矩阵
-
-| Provider | 认证 | customizeRequestBody | onRawStreamChunk | Ollama 字段注入 | ReasoningCache |
-|----------|------|---------------------|-----------------|----------------|----------------|
-| **DeepSeek** | Bearer | ✅ reasoning 注入 | ✅ 缓存写入 | ✅ thinking + effort | ✅ |
-| **MiMo** | ⚠️ api-key | ✅ 图片 + JSON 提示 + reasoning | ✅ 缓存写入 | ❌ | ✅ |
-| **Kimi** | Bearer | ✅ Coding 端点 | ❌ | ✅ thinking | ❌ |
-| 其余 6 个 | Bearer | ❌ | ❌ | ❌ | ❌ |
+旧版专有 Provider 曾包含双请求头认证、图片工具消息改写、Coding 端点字段删除和思考链缓存等逻辑。
+这些 Java 分支均已删除。对于仍需适配的 OpenAI 兼容上游，请建立供应商配置并保存相应请求转换规则；
+模型实际兼容性见 [模型兼容性](MODEL_COMPATIBILITY.md)。

@@ -1,11 +1,9 @@
 package com.kaixuan.copilot_ollama_proxy.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import org.junit.jupiter.api.Test;
-import org.springframework.http.HttpHeaders;
 
 import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
@@ -19,26 +17,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AbstractUpstreamChatServiceTests {
 
     @Test
-    void supportsModelUsesRuntimeCatalogSnapshot() {
-        RuntimeProviderCatalog catalog = () -> List.of(new ProviderRuntimeConfiguration("stub", "", "", "openai", List.of(new ProviderRuntimeModel("model-a", 0, false, false, "Medium"))));
-
-        TestOpenAiService service = new TestOpenAiService(catalog);
-
-        assertThat(service.supportsModel("model-a")).isTrue();
-        assertThat(service.supportsModel("model-b")).isFalse();
-    }
-
-    @Test
     void prepareRequestBodyResolvesFallbackModelAndRunsCustomizationHook() {
-        RuntimeProviderCatalog catalog = List::of;
-        TestOpenAiService service = new TestOpenAiService(catalog);
+        TestOpenAiService service = new TestOpenAiService();
 
         Map<String, Object> request = new LinkedHashMap<>();
         request.put("model", null);
         request.put("temperature", 0.7);
         request.put("tool_choice", null);
 
-        Map<String, Object> prepared = service.exposePrepareRequestBody(request, true, "fallback-model");
+        Map<String, Object> prepared = service.exposePrepareRequestBody(request, true, "fallback-model", provider());
 
         assertThat(prepared).containsEntry("model", "fallback-model");
         assertThat(prepared).containsEntry("stream", true);
@@ -48,8 +35,7 @@ class AbstractUpstreamChatServiceTests {
 
     @Test
     void normalizeChunkRemovesEmptyToolCallsAndNormalizesFinishReason() throws Exception {
-        RuntimeProviderCatalog catalog = List::of;
-        TestOpenAiService service = new TestOpenAiService(catalog);
+        TestOpenAiService service = new TestOpenAiService();
 
         String raw = """
                 {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"","reasoning_content":"The","tool_calls":[]},"finish_reason":""}]}
@@ -65,8 +51,7 @@ class AbstractUpstreamChatServiceTests {
 
     @Test
     void normalizeChunkUnifiesThinkingAliasesToReasoningContent() throws Exception {
-        RuntimeProviderCatalog catalog = List::of;
-        TestOpenAiService service = new TestOpenAiService(catalog);
+        TestOpenAiService service = new TestOpenAiService();
 
         String raw = """
                 {"id":"chatcmpl-2","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"thinking":"Hello thinking"},"finish_reason":null}]}
@@ -80,8 +65,7 @@ class AbstractUpstreamChatServiceTests {
 
     @Test
     void normalizeFinishChunkKeepsEmptyDeltaObjectInsteadOfNullFields() throws Exception {
-        RuntimeProviderCatalog catalog = List::of;
-        TestOpenAiService service = new TestOpenAiService(catalog);
+        TestOpenAiService service = new TestOpenAiService();
 
         String raw = """
                 {"id":"chatcmpl-3","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":null,"content":null},"finish_reason":"stop"}]}
@@ -97,8 +81,7 @@ class AbstractUpstreamChatServiceTests {
 
     @Test
     void normalizeChunkPreservesWhitespaceContentLikeNewlinesAndSpaces() throws Exception {
-        RuntimeProviderCatalog catalog = List::of;
-        TestOpenAiService service = new TestOpenAiService(catalog);
+        TestOpenAiService service = new TestOpenAiService();
 
         // 换行符 content 不应被清理
         String newlineChunk = """
@@ -124,12 +107,13 @@ class AbstractUpstreamChatServiceTests {
 
     private static final class TestOpenAiService extends AbstractUpstreamChatService {
 
-        private TestOpenAiService(RuntimeProviderCatalog runtimeProviderCatalog) {
-            super(runtimeProviderCatalog, new ObjectMapper(), "default-model");
+        private TestOpenAiService() {
+            super(new ObjectMapper(), "default-model", new ProviderRequestHeaderService(new ObjectMapper()));
         }
 
-        private Map<String, Object> exposePrepareRequestBody(Map<String, Object> request, boolean stream, String model) {
-            return prepareRequestBody(request, stream, model);
+        private Map<String, Object> exposePrepareRequestBody(Map<String, Object> request, boolean stream,
+                                                              String model, ProviderRuntimeConfiguration provider) {
+            return prepareRequestBody(request, stream, model, provider);
         }
 
         private String exposeTranslateChunk(String chunk) throws Exception {
@@ -140,23 +124,8 @@ class AbstractUpstreamChatServiceTests {
         }
 
         @Override
-        public String getProviderKey() {
-            return "stub";
-        }
-
-        @Override
         protected String defaultBaseUrl() {
             return "https://example.com";
-        }
-
-        @Override
-        protected String normalizeBaseUrl(String rawBaseUrl) {
-            return rawBaseUrl;
-        }
-
-        @Override
-        public void applyAuthHeaders(HttpHeaders headers, String apiKey) {
-            headers.set("x-api-key", apiKey);
         }
 
         @Override
@@ -165,8 +134,13 @@ class AbstractUpstreamChatServiceTests {
         }
 
         @Override
-        protected void customizeRequestBody(Map<String, Object> body, String resolvedModel) {
+        protected void customizeRequestBody(Map<String, Object> body, String resolvedModel,
+                                            ProviderRuntimeConfiguration provider) {
             body.put("customized", true);
         }
+    }
+
+    private ProviderRuntimeConfiguration provider() {
+        return new ProviderRuntimeConfiguration("stub", "", "", List.of());
     }
 }

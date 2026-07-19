@@ -1,8 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NSelect, useMessage } from 'naive-ui'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NSelect, NDropdown, useMessage } from 'naive-ui'
 import ProviderModelsSection from '@/components/settings/ProviderModelsSection.vue'
+import RequestBodyRuleEditor from '@/components/settings/request-body-rules/RequestBodyRuleEditor.vue'
 import { useProviderStore, type ApiKeyEntry } from '@/stores/providers'
+import type { RequestBodyEditorState } from '@/features/request-body-rules/editorState'
+import { createDefaultRequestBodyEditorState } from '@/features/request-body-rules/editorState'
+import { MIMO_EXAMPLE_RULESET } from '@/features/request-body-rules/defaultRequestBody'
+import type { RequestBodyTemplateKey } from '@/features/request-body-rules/requestBodyTemplates'
+import { composeRequestBodyTemplate } from '@/features/request-body-rules/requestBodyTemplates'
+import type { RuleSet } from '@/features/request-body-rules/types'
 
 const providerStore = useProviderStore()
 const message = useMessage()
@@ -15,149 +22,14 @@ const drawerWidth = computed(() =>
   windowWidth.value <= DRAWER_MIN_WIDTH ? windowWidth.value : DRAWER_MIN_WIDTH
 )
 
-const docsWindow = ref({
-  visible: false,
-  providerKey: null as string | null,
-  x: 24,
-  y: 72,
-  width: 560,
-  height: 680,
-})
-
-function clamp(value: number, min: number, max: number) {
-  if (max < min) return min
-  return Math.min(Math.max(value, min), max)
-}
-
-function clampDocsWindow() {
-  const minWidth = 360
-  const minHeight = 320
-  docsWindow.value.width = clamp(docsWindow.value.width, minWidth, Math.max(minWidth, window.innerWidth - 32))
-  docsWindow.value.height = clamp(docsWindow.value.height, minHeight, Math.max(minHeight, window.innerHeight - 32))
-  docsWindow.value.x = clamp(docsWindow.value.x, 16, Math.max(16, window.innerWidth - docsWindow.value.width - 16))
-  docsWindow.value.y = clamp(docsWindow.value.y, 16, Math.max(16, window.innerHeight - docsWindow.value.height - 16))
-}
-
-function getInitialDocsWindowRect() {
-  const minWidth = 360
-  const preferredWidth = 620
-  const availableLeftWidth = window.innerWidth - drawerWidth.value - 48
-  const width = clamp(
-    availableLeftWidth > minWidth ? Math.min(preferredWidth, availableLeftWidth) : Math.min(preferredWidth, window.innerWidth - 32),
-    minWidth,
-    Math.max(minWidth, window.innerWidth - 32),
-  )
-  const height = clamp(window.innerHeight - 96, 360, 760)
-  const x = clamp(window.innerWidth - drawerWidth.value - width - 24, 16, Math.max(16, window.innerWidth - width - 16))
-  const y = clamp(48, 16, Math.max(16, window.innerHeight - height - 16))
-  return { x, y, width, height }
-}
-
 function onResize() {
   windowWidth.value = window.innerWidth
-  if (docsWindow.value.visible) {
-    clampDocsWindow()
-  }
 }
-
-function startDocsWindowDrag(event: PointerEvent) {
-  event.preventDefault()
-  const startX = event.clientX
-  const startY = event.clientY
-  const originX = docsWindow.value.x
-  const originY = docsWindow.value.y
-
-  const onMove = (moveEvent: PointerEvent) => {
-    docsWindow.value.x = clamp(
-      originX + moveEvent.clientX - startX,
-      16,
-      Math.max(16, window.innerWidth - docsWindow.value.width - 16),
-    )
-    docsWindow.value.y = clamp(
-      originY + moveEvent.clientY - startY,
-      16,
-      Math.max(16, window.innerHeight - docsWindow.value.height - 16),
-    )
-  }
-
-  const onUp = () => {
-    window.removeEventListener('pointermove', onMove)
-    window.removeEventListener('pointerup', onUp)
-  }
-
-  window.addEventListener('pointermove', onMove)
-  window.addEventListener('pointerup', onUp)
-}
-
-function startDocsWindowResize(event: PointerEvent) {
-  event.preventDefault()
-  const startX = event.clientX
-  const startY = event.clientY
-  const originWidth = docsWindow.value.width
-  const originHeight = docsWindow.value.height
-
-  const onMove = (moveEvent: PointerEvent) => {
-    docsWindow.value.width = clamp(
-      originWidth + moveEvent.clientX - startX,
-      360,
-      Math.max(360, window.innerWidth - docsWindow.value.x - 16),
-    )
-    docsWindow.value.height = clamp(
-      originHeight + moveEvent.clientY - startY,
-      320,
-      Math.max(320, window.innerHeight - docsWindow.value.y - 16),
-    )
-  }
-
-  const onUp = () => {
-    window.removeEventListener('pointermove', onMove)
-    window.removeEventListener('pointerup', onUp)
-  }
-
-  window.addEventListener('pointermove', onMove)
-  window.addEventListener('pointerup', onUp)
-}
-
-function closeOfficialDocs() {
-  docsWindow.value.visible = false
-}
-
-function openOfficialDocs() {
-  if (!editingKey.value) return
-  docsWindow.value = {
-    visible: true,
-    providerKey: editingKey.value,
-    ...getInitialDocsWindowRect(),
-  }
-}
-
-const activeDocsUrl = computed(() => {
-  const key = docsWindow.value.providerKey
-  return key ? providerMeta.value[key]?.docsUrl ?? '' : ''
-})
-
-const activeDocsTitle = computed(() => {
-  const key = docsWindow.value.providerKey
-  return key ? `${providerMeta.value[key]?.displayName ?? key} 官方文档` : '官方文档'
-})
 
 onMounted(() => window.addEventListener('resize', onResize))
 onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 
-const providerMeta = ref<Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string; docsUrl: string }>>({
-  mimo: {
-    displayName: 'MiMo',
-    colorClass: 'blue',
-    apiUrlPlaceholder: 'https://api.xiaomimimo.com/v1',
-    docsUrl: 'https://platform.xiaomimimo.com/docs/zh-CN/pricing',
-  },
-  deepseek: {
-    displayName: 'DeepSeek',
-    colorClass: 'warning',
-    apiUrlPlaceholder: 'https://api.deepseek.com/v1',
-    docsUrl: 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing',
-  },
-})
+const providerMeta = ref<Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string }>>({})
 
 const editingKey = ref<string | null>(null)
 const editForm = ref({
@@ -182,6 +54,100 @@ const pullDiffModal = ref({
 })
 
 const showAddModal = ref(false)
+
+const providerContextMenuForDisabled = ref({
+  visible: false,
+  providerKey: '',
+  x: 0,
+  y: 0,
+})
+const deleteProviderModal = ref({
+  visible: false,
+  providerKey: '',
+})
+
+const disabledProviderContextOptions = computed(() => [
+  { label: '启用', key: 'enable' as const },
+  { label: '修改', key: 'edit' as const },
+  { label: '删除', key: 'delete' as const, props: { class: 'provider-context-menu__delete' } },
+])
+
+const deleteProviderName = computed(() => {
+  const key = deleteProviderModal.value.providerKey
+  return providerMeta.value[key]?.displayName || key
+})
+
+function openDisabledProviderContextMenu(event: MouseEvent, key: string) {
+  event.preventDefault()
+  providerContextMenuForDisabled.value = {
+    visible: true,
+    providerKey: key,
+    x: event.clientX,
+    y: event.clientY,
+  }
+}
+
+function handleDisabledProviderContextSelect(action: 'enable' | 'edit' | 'delete') {
+  const key = providerContextMenuForDisabled.value.providerKey
+  providerContextMenuForDisabled.value.visible = false
+  if (!key) return
+
+  if (action === 'enable') {
+    enableProvider(key)
+    return
+  }
+  if (action === 'edit') {
+    openEditProviderModal(key)
+    return
+  }
+  deleteProviderModal.value = { visible: true, providerKey: key }
+}
+
+async function confirmRemoveProvider() {
+  const key = deleteProviderModal.value.providerKey
+  if (!key) return
+  deleteProviderModal.value.visible = false
+  await removeProvider(key)
+}
+
+const providerContextMenu = ref({
+  visible: false,
+  providerKey: '',
+  x: 0,
+  y: 0,
+})
+
+const providerContextOptions = computed(() => {
+  const key = providerContextMenu.value.providerKey
+  const options: Array<{ label: string; key: 'edit' | 'disable'; disabled?: boolean }> = []
+  if (key) {
+    options.push({ label: '修改', key: 'edit' })
+  }
+  options.push({ label: '停用', key: 'disable' })
+  return options
+})
+
+function openProviderContextMenu(event: MouseEvent, key: string) {
+  event.preventDefault()
+  providerContextMenu.value = {
+    visible: true,
+    providerKey: key,
+    x: event.clientX,
+    y: event.clientY,
+  }
+}
+
+async function handleProviderContextSelect(action: 'edit' | 'disable') {
+  const key = providerContextMenu.value.providerKey
+  providerContextMenu.value.visible = false
+  if (!key) return
+
+  if (action === 'edit') {
+    openEditProviderModal(key)
+    return
+  }
+  await toggleProvider(key, false)
+}
 
 // ==================== API Key 管理 ====================
 
@@ -237,13 +203,13 @@ function cancelApiKeyModal() {
   showApiKeyModal.value = false
 }
 
-// ==================== 自定义供应商 ====================
+// ==================== 供应商编辑 ====================
 
-const showCustomAddModal = ref(false)
-const customProviderName = ref('')
-const customAdvancedExpanded = ref(false)
-const editingCustomKey = ref<string | null>(null)
-const customBaseUrl = ref('')
+const showProviderModal = ref(false)
+const providerName = ref('')
+const providerAdvancedExpanded = ref(false)
+const editingProviderKey = ref<string | null>(null)
+const providerBaseUrl = ref('')
 const showPresetModal = ref(false)
 
 /** 预设供应商模板 */
@@ -251,39 +217,82 @@ interface ProviderPreset {
   label: string
   baseUrl: string
   headers: KeyValueEntry[]
-  bodyTransforms: KeyValueEntry[]
+  /** 可选的默认请求体模板键；未配置时回退为基础参数。 */
+  requestBodyTemplateKeys?: RequestBodyTemplateKey[]
+  /** 可选的默认请求体映射规则；未配置时回退为空规则集。 */
+  requestBodyRules?: RuleSet
+}
+
+const IMAGE_COMPATIBILITY_TEMPLATE_KEYS: RequestBodyTemplateKey[] = ['message-tool-image']
+
+/** 创建供应商默认图片兼容配置，避免共享可变规则集。 */
+function createProviderDefaultEditorState(): RequestBodyEditorState {
+  return {
+    templateKeys: [...IMAGE_COMPATIBILITY_TEMPLATE_KEYS],
+    previewBody: composeRequestBodyTemplate(IMAGE_COMPATIBILITY_TEMPLATE_KEYS),
+    rules: cloneRuleSet(MIMO_EXAMPLE_RULESET),
+  }
 }
 
 const officialPresets: ProviderPreset[] = [
   {
+    label: 'MiMo',
+    baseUrl: 'https://api.xiaomimimo.com/v1',
+    headers: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
+  },
+  {
+    label: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com/v1',
+    headers: [],
+  },
+  {
     label: 'LongCat',
     baseUrl: 'https://api.longcat.chat/openai/v1',
     headers: [],
-    bodyTransforms: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'Kimi',
     baseUrl: 'https://api.moonshot.cn/v1',
     headers: [],
-    bodyTransforms: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'Kimi (CodePlan)',
     baseUrl: 'https://api.kimi.com/coding/v1',
     headers: [],
-    bodyTransforms: [{ key: 'top_p', value: '/del/' }, { key: 'temperature', value: '/del/' }],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
+  },
+  {
+    label: 'Mimo (TokenPlan)',
+    baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
+    headers: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'Agnes',
     baseUrl: 'https://apihub.agnes-ai.com/v1',
     headers: [],
-    bodyTransforms: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'Zhipu',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     headers: [],
-    bodyTransforms: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
+  },
+  {
+    label: 'StepFun',
+    baseUrl: 'https://api.stepfun.com/v1',
+    headers: [],
   },
 ]
 
@@ -292,25 +301,29 @@ const aggregatorPresets: ProviderPreset[] = [
     label: 'SenseNova',
     baseUrl: 'https://token.sensenova.cn/v1',
     headers: [],
-    bodyTransforms: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'Uumit',
     baseUrl: 'https://agent.uumit.com/v1',
     headers: [],
-    bodyTransforms: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'Xunfei',
     baseUrl: 'https://maas-api.cn-huabei-1.xf-yun.com/v2',
     headers: [],
-    bodyTransforms: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'WorkBuddy',
     baseUrl: 'https://copilot.tencent.com/v2',
     headers: [],
-    bodyTransforms: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
 ]
 
@@ -319,37 +332,53 @@ const relayPresets: ProviderPreset[] = [
     label: 'AgentRouter',
     baseUrl: 'https://agentrouter.org/v1',
     headers: [{ key: 'User-Agent', value: 'claude-cli/2.1.195 (external, cli)' }],
-    bodyTransforms: [{ key: 'top_p', value: '/del/' }, { key: 'temperature', value: '/del/' }],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
   {
     label: 'FreeModel',
     baseUrl: 'https://api.freemodel.dev/v1',
     headers: [],
-    bodyTransforms: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
 ]
 
 const allPresets = [...officialPresets, ...aggregatorPresets, ...relayPresets]
-/** 选择预设时自动填充高级设置 */
+
+/** 深拷贝规则集，避免预设常量被编辑器状态原地修改。 */
+function cloneRuleSet(rules: RuleSet): RuleSet {
+  return JSON.parse(JSON.stringify(rules)) as RuleSet
+}
+
+/** 选择预设时自动填充名称、地址、请求头、请求体模板和规则。 */
 function applyPreset(label: string) {
   const preset = allPresets.find(p => p.label === label)
   if (preset) {
-    customProviderName.value = preset.label
-    customBaseUrl.value = preset.baseUrl
-    customHeaders.value = preset.headers.map(h => ({ ...h }))
-    customBodyTransforms.value = preset.bodyTransforms.map(t => ({ ...t }))
-    customAdvancedExpanded.value = true
+    providerName.value = preset.label
+    providerBaseUrl.value = preset.baseUrl
+    providerHeaders.value = preset.headers.map(h => ({ ...h }))
+    const editorState = createDefaultRequestBodyEditorState()
+    if (preset.requestBodyTemplateKeys && preset.requestBodyTemplateKeys.length > 0) {
+      editorState.templateKeys = [...preset.requestBodyTemplateKeys]
+      editorState.previewBody = composeRequestBodyTemplate(preset.requestBodyTemplateKeys)
+    }
+    if (preset.requestBodyRules) {
+      editorState.rules = cloneRuleSet(preset.requestBodyRules)
+    }
+    requestBodyEditorState.value = editorState
+    providerAdvancedExpanded.value = true
   }
   showPresetModal.value = false
 }
 
-/** 清空自定义供应商表单所有内容 */
-function clearCustomForm() {
-  customProviderName.value = ''
-  customBaseUrl.value = ''
-  customHeaders.value = []
-  customBodyTransforms.value = []
-  customAdvancedExpanded.value = false
+/** 清空供应商表单所有内容。 */
+function clearProviderForm() {
+  providerName.value = ''
+  providerBaseUrl.value = ''
+  providerHeaders.value = []
+  requestBodyEditorState.value = createProviderDefaultEditorState()
+  providerAdvancedExpanded.value = false
 }
 
 /** 高级设置 - 请求头覆盖列表 */
@@ -357,94 +386,90 @@ interface KeyValueEntry {
   key: string
   value: string
 }
-const customHeaders = ref<KeyValueEntry[]>([])
+const providerHeaders = ref<KeyValueEntry[]>([])
 
-/** 高级设置 - 请求体修剪列表 */
-const customBodyTransforms = ref<KeyValueEntry[]>([])
+/** 请求体映射规则及编辑器预览状态。 */
+const requestBodyEditorState = ref<RequestBodyEditorState>(createProviderDefaultEditorState())
+const showRequestBodyRuleEditor = ref(false)
 
-function addCustomHeader() {
-  customHeaders.value.push({ key: '', value: '' })
+function addProviderHeader() {
+  providerHeaders.value.push({ key: '', value: '' })
 }
 
-function removeCustomHeader(index: number) {
-  customHeaders.value.splice(index, 1)
+function removeProviderHeader(index: number) {
+  providerHeaders.value.splice(index, 1)
 }
 
-function addCustomBodyTransform() {
-  customBodyTransforms.value.push({ key: '', value: '' })
+function resetProviderAdvanced() {
+  providerAdvancedExpanded.value = false
+  providerHeaders.value = []
+  requestBodyEditorState.value = createProviderDefaultEditorState()
+  providerBaseUrl.value = ''
+  editingProviderKey.value = null
 }
 
-function removeCustomBodyTransform(index: number) {
-  customBodyTransforms.value.splice(index, 1)
-}
-
-function resetCustomAdvanced() {
-  customAdvancedExpanded.value = false
-  customHeaders.value = []
-  customBodyTransforms.value = []
-  customBaseUrl.value = ''
-  editingCustomKey.value = null
-}
-
-/** 打开编辑自定义供应商模态框 */
-function openEditCustomModal(key: string) {
-  editingCustomKey.value = key
+/** 打开编辑供应商模态框。 */
+function openEditProviderModal(key: string) {
+  editingProviderKey.value = key
   const provider = providerStore.providers[key]
-  const displayName = providerMeta.value[key]?.displayName || key.replace('custom-', '').replace(/-/g, ' ')
-  customProviderName.value = displayName
-  // 解析已有 customTransforms
-  customHeaders.value = []
-  customBodyTransforms.value = []
-  customBaseUrl.value = (provider as any)?.baseUrl || ''
+  const displayName = provider?.displayName || providerMeta.value[key]?.displayName || key.replace(/-/g, ' ')
+  providerName.value = displayName
+  providerHeaders.value = []
+  requestBodyEditorState.value = createProviderDefaultEditorState()
+  providerBaseUrl.value = (provider as any)?.baseUrl || ''
   if (provider) {
     try {
-      const raw = (provider as any).customTransforms
-      const transforms = typeof raw === 'string' ? JSON.parse(raw) : (raw || {})
-      if (Array.isArray(transforms.custom_headers)) {
-        customHeaders.value = transforms.custom_headers.map((h: any) => ({ key: h.key || '', value: h.value || '' }))
-      }
-      if (Array.isArray(transforms.body_transforms)) {
-        customBodyTransforms.value = transforms.body_transforms.map((t: any) => ({ key: t.key || '', value: t.value || '' }))
+      const headerRules = JSON.parse(provider.requestTransform?.headerRulesJson || '[]')
+      if (Array.isArray(headerRules)) {
+        providerHeaders.value = headerRules.map((h: any) => ({ key: h.key || '', value: h.value || '' }))
       }
     } catch { /* ignore */ }
+    try {
+      const saved = provider.requestTransform
+      if (saved) {
+        requestBodyEditorState.value = {
+          templateKeys: JSON.parse(saved.bodyTemplateKeysJson) as RequestBodyTemplateKey[],
+          previewBody: JSON.parse(saved.bodyPreviewJson) as Record<string, unknown>,
+          rules: JSON.parse(saved.bodyRulesJson),
+        }
+      }
+    } catch {
+      requestBodyEditorState.value = createProviderDefaultEditorState()
+    }
   }
   showAddModal.value = false
-  showCustomAddModal.value = true
+  showProviderModal.value = true
 }
 
-/** 构建高级设置 JSON */
-function buildCustomTransformsJson(): string {
-  const headers = customHeaders.value.filter(h => h.key.trim())
-  const transforms = customBodyTransforms.value.filter(t => t.key.trim())
-  if (headers.length === 0 && transforms.length === 0) {
-    return '{}'
-  }
-  const result: Record<string, any> = {}
-  if (headers.length > 0) {
-    result.custom_headers = headers.map(h => ({ key: h.key.trim(), value: h.value }))
-  }
-  if (transforms.length > 0) {
-    result.body_transforms = transforms.map(t => ({ key: t.key.trim(), value: t.value }))
-  }
-  return JSON.stringify(result)
+/** 构建请求头规则 JSON。 */
+function buildHeaderRulesJson(): string {
+  const headers = providerHeaders.value.filter(h => h.key.trim())
+  return JSON.stringify(headers.map(h => ({ key: h.key.trim(), value: h.value })))
 }
 
-/** 添加自定义供应商 */
-async function addCustomProvider() {
-  const name = customProviderName.value.trim()
+/** 保存供应商。 */
+async function saveProvider() {
+  const name = providerName.value.trim()
   if (!name) {
     message.warning('请输入供应商名称')
     return
   }
   try {
-    const customTransforms = buildCustomTransformsJson()
-    const baseUrl = customBaseUrl.value.trim()
-    if (editingCustomKey.value) {
+    const headerRulesJson = buildHeaderRulesJson()
+    const baseUrl = providerBaseUrl.value.trim()
+    const requestTransform = {
+      bodyTemplateKeysJson: JSON.stringify(requestBodyEditorState.value.templateKeys),
+      bodyPreviewJson: JSON.stringify(requestBodyEditorState.value.previewBody),
+      bodyRulesJson: JSON.stringify(requestBodyEditorState.value.rules),
+    }
+    if (editingProviderKey.value) {
       // 编辑模式
-      await providerStore.updateCustomProvider(editingCustomKey.value, name, customTransforms, baseUrl)
+      await providerStore.updateProvider(
+        editingProviderKey.value, name, headerRulesJson, baseUrl, requestTransform,
+      )
       // 更新前端元数据
-      const oldKey = editingCustomKey.value
-      const newKey = 'custom-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+      const oldKey = editingProviderKey.value
+      const newKey = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
       const metaUpdate = { displayName: name, apiUrlPlaceholder: baseUrl || 'https://api.example.com/v1' }
       if (newKey !== oldKey && providerMeta.value[oldKey]) {
         providerMeta.value[newKey] = { ...providerMeta.value[oldKey], ...metaUpdate }
@@ -452,58 +477,43 @@ async function addCustomProvider() {
       } else {
         providerMeta.value[oldKey] = { ...providerMeta.value[oldKey], ...metaUpdate }
       }
-      showCustomAddModal.value = false
-      resetCustomAdvanced()
-      message.success(`已修改自定义供应商「${name}」`)
+      showProviderModal.value = false
+      resetProviderAdvanced()
+      message.success(`已修改供应商「${name}」`)
     } else {
       // 新增模式
-      const res = await providerStore.addCustomProvider(name, customTransforms, baseUrl)
+      const res = await providerStore.addProvider(name, headerRulesJson, baseUrl, requestTransform)
       providerMeta.value[res.providerKey] = {
         displayName: name,
-        colorClass: 'custom',
+        colorClass: 'accent',
         apiUrlPlaceholder: baseUrl || 'https://api.example.com/v1',
-        docsUrl: '',
       }
-      showCustomAddModal.value = false
-      customProviderName.value = ''
-      resetCustomAdvanced()
-      message.success(`已添加自定义供应商「${name}」`)
+      showProviderModal.value = false
+      providerName.value = ''
+      resetProviderAdvanced()
+      message.success(`已添加供应商「${name}」`)
     }
   } catch (e: any) {
     message.error(e?.response?.data?.error || '操作失败')
   }
 }
 
-/** 删除自定义供应商 */
-async function removeCustomProvider(key: string) {
+/** 删除供应商。 */
+async function removeProvider(key: string) {
   const displayName = providerMeta.value[key]?.displayName || key
   try {
-    await providerStore.deleteCustomProvider(key)
+    await providerStore.deleteProvider(key)
     delete providerMeta.value[key]
     if (editingKey.value === key) {
       closeEditPanel()
     }
-    message.success(`已删除自定义供应商「${displayName}」`)
+    message.success(`已删除供应商「${displayName}」`)
   } catch {
     message.error('删除失败')
   }
 }
 
-/** 判断是否为自定义供应商 */
-function isCustomProvider(key: string) {
-  return key.startsWith('custom-')
-}
-
-/** 内置供应商 key 列表 */
-const builtInProviderKeys = new Set(Object.keys(providerMeta.value))
-
-/** 判断是否可编辑/删除（自定义供应商 或 非内置供应商） */
-function isEditableProvider(key: string) {
-  return isCustomProvider(key) || !builtInProviderKeys.has(key)
-}
-
 const enabledProviderKeys = computed(() => {
-  // 内置 + 自定义供应商的 key
   const metaKeys = Object.keys(providerMeta.value)
   // provider_config 中可能存在但 meta 中没有的（如数据库残留）
   const storeKeys = Object.keys(providerStore.providers)
@@ -518,17 +528,6 @@ const disabledProviderKeys = computed(() => {
   return allKeys.filter(k => !providerStore.providers[k]?.enabled)
 })
 
-/**判断是否已有至少一个自定义供应商被创建（用于模态框空状态提示判断） */
-const hasCustomProviders = computed(() => {
-  return Object.keys(providerStore.providers).some(k => k.startsWith('custom-'))
-})
-
-watch(editingKey, (key) => {
-  if (docsWindow.value.visible && key) {
-    docsWindow.value.providerKey = key
-  }
-})
-
 async function enableProvider(key: string) {
   await providerStore.toggleProvider(key, true)
   message.success(`${providerMeta.value[key]?.displayName || key} 已启用`)
@@ -538,17 +537,17 @@ async function enableProvider(key: string) {
 onMounted(async () => {
   await providerStore.fetchAll()
   await providerStore.fetchFakeVersion()
-  // 将 custom- 前缀的供应商注入 providerMeta
+  // 将数据库中尚未配置展示元数据的供应商注入 providerMeta
   for (const key of Object.keys(providerStore.providers)) {
-    if (key.startsWith('custom-') && !providerMeta.value[key]) {
-      // 从 key 生成可读的 displayName
-      const displayName = key.replace('custom-', '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-      const actualBaseUrl = providerStore.providers[key]?.baseUrl || ''
+    if (!providerMeta.value[key]) {
+      const provider = providerStore.providers[key]
+      const displayName = provider?.displayName || key
+        .replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+      const actualBaseUrl = provider?.baseUrl || ''
       providerMeta.value[key] = {
         displayName,
-        colorClass: 'custom',
+          colorClass: 'accent',
         apiUrlPlaceholder: actualBaseUrl || 'https://api.example.com/v1',
-        docsUrl: '',
       }
     }
   }
@@ -809,7 +808,6 @@ async function pullModels() {
 }
 
 function applyPulledModels() {
-  const existingModels = new Map(editForm.value.models.map((model: any) => [model.modelName, model]))
   // 只保留 added 和 unchanged 的模型
   editForm.value.models = pullDiffModal.value.entries
     .filter(e => e.status !== 'removed')
@@ -859,8 +857,8 @@ function removeModel(index: number) {
       </div>
     </n-card>
 
-    <!-- 服务商配置 -->
-    <n-card title="服务商配置" :bordered="true" style="margin-top: 16px;">
+    <!-- 供应商配置 -->
+    <n-card title="供应商配置" :bordered="true" style="margin-top: 16px;">
       <template #header-extra>
         <n-button text size="tiny" @click="showAddModal = true" class="add-provider-btn">
           <template #icon>
@@ -874,7 +872,8 @@ function removeModel(index: number) {
         </n-button>
       </template>
       <div class="provider-grid">
-        <div v-for="key in enabledProviderKeys" :key="key" class="provider-card" @click="openEditPanel(key)">
+        <div v-for="key in enabledProviderKeys" :key="key" class="provider-card"
+          @click="openEditPanel(key)" @contextmenu="openProviderContextMenu($event, key)">
           <div class="provider-card-top" :class="providerMeta[key]?.colorClass || 'accent'"></div>
           <div class="provider-card-header">
             <span class="provider-card-name">{{ providerMeta[key]?.displayName || key }}</span>
@@ -896,82 +895,94 @@ function removeModel(index: number) {
       </div>
     </n-card>
 
-    <!-- 添加服务商模态框 -->
-    <n-modal v-model:show="showAddModal" preset="card" title="添加服务商" :style="{ maxWidth: '480px' }" closable
+    <n-dropdown
+      placement="bottom-start"
+      trigger="manual"
+      :show="providerContextMenu.visible"
+      :x="providerContextMenu.x"
+      :y="providerContextMenu.y"
+      :options="providerContextOptions"
+      @select="handleProviderContextSelect"
+      @clickoutside="providerContextMenu.visible = false"
+    />
+
+    <!-- 添加供应商模态框 -->
+    <n-modal v-model:show="showAddModal" preset="card" title="添加供应商" :style="{ maxWidth: '480px' }" closable
       :mask-closable="true">
-      <div v-if="disabledProviderKeys.length === 0 && !hasCustomProviders" class="add-modal-empty">
-        所有内置服务商已启用
+      <div v-if="disabledProviderKeys.length === 0" class="add-modal-empty">
+        所有供应商已启用
       </div>
       <div class="add-modal-grid">
         <div v-for="key in disabledProviderKeys" :key="key" class="add-modal-card"
-          :class="{ 'add-modal-card--custom': isCustomProvider(key) }"
-          @click="enableProvider(key)">
+          @click="enableProvider(key)"
+          @contextmenu="openDisabledProviderContextMenu($event, key)">
           <div class="add-modal-card-top" :class="providerMeta[key]?.colorClass || 'accent'"></div>
-          <button v-if="isEditableProvider(key)" class="add-modal-card-edit" title="修改自定义供应商"
-            @click.stop="openEditCustomModal(key)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-            </svg>
-          </button>
-          <button v-if="isEditableProvider(key)" class="add-modal-card-delete" title="删除自定义供应商"
-            @click.stop="removeCustomProvider(key)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
           <div class="add-modal-card-name">{{ providerMeta[key]?.displayName || key }}</div>
           <div class="add-modal-card-desc">{{ providerMeta[key]?.apiUrlPlaceholder || '' }}</div>
         </div>
-        <!-- 自定义供应商入口 — 始终显示，不依赖 disabledProviderKeys -->
-        <div class="add-modal-card add-modal-card--new" @click="showAddModal = false; showCustomAddModal = true">
+        <!-- 添加供应商入口 — 始终显示，不依赖 disabledProviderKeys -->
+        <div class="add-modal-card add-modal-card--new" @click="showAddModal = false; showProviderModal = true">
           <div class="add-modal-card-top accent"></div>
-          <div class="add-modal-card-name">自定义供应商</div>
+          <div class="add-modal-card-name">添加供应商</div>
           <div class="add-modal-card-desc">标准 OpenAI 兼容接口</div>
         </div>
       </div>
     </n-modal>
 
-    <!-- 自定义供应商名称输入模态框 -->
-    <n-modal v-model:show="showCustomAddModal" preset="card" :title="editingCustomKey ? '修改自定义供应商' : '添加自定义供应商'"
+    <n-dropdown
+      placement="bottom-start"
+      trigger="manual"
+      :show="providerContextMenuForDisabled.visible"
+      :x="providerContextMenuForDisabled.x"
+      :y="providerContextMenuForDisabled.y"
+      :options="disabledProviderContextOptions"
+      @select="handleDisabledProviderContextSelect"
+      @clickoutside="providerContextMenuForDisabled.visible = false"
+    />
+
+    <n-modal v-model:show="deleteProviderModal.visible" preset="dialog" type="error"
+      title="确认删除供应商" positive-text="删除" negative-text="取消"
+      @positive-click="confirmRemoveProvider">
+      删除供应商「{{ deleteProviderName }}」后，其 API Key、模型和请求转换配置将无法恢复。确定继续吗？
+    </n-modal>
+
+    <!-- 供应商名称输入模态框 -->
+    <n-modal v-model:show="showProviderModal" preset="card" :title="editingProviderKey ? '修改供应商' : '添加供应商'"
       :style="{ maxWidth: '480px' }" closable :mask-closable="true"
-      @update:show="(val: boolean) => { if (!val) resetCustomAdvanced() }">
+      @update:show="(val: boolean) => { if (!val) resetProviderAdvanced() }">
       <div class="field-group">
-        <label class="field-label">自定义供应商名称</label>
-        <div class="custom-name-row">
-          <n-input v-model:value="customProviderName" placeholder="输入供应商名称" />
-          <n-button size="small" @click="clearCustomForm">清空</n-button>
+        <label class="field-label">供应商名称</label>
+        <div class="provider-name-row">
+          <n-input v-model:value="providerName" placeholder="输入供应商名称" />
+          <n-button size="small" @click="clearProviderForm">清空</n-button>
           <n-button size="small" @click="showPresetModal = true">预设</n-button>
         </div>
       </div>
 
       <!-- 高级设置折叠区域 -->
-      <div class="advanced-toggle" @click="customAdvancedExpanded = !customAdvancedExpanded">
+      <div class="advanced-toggle" @click="providerAdvancedExpanded = !providerAdvancedExpanded">
         <span class="advanced-toggle-label">高级设置</span>
-        <svg class="advanced-toggle-arrow" :class="{ 'advanced-toggle-arrow--expanded': customAdvancedExpanded }"
+        <svg class="advanced-toggle-arrow" :class="{ 'advanced-toggle-arrow--expanded': providerAdvancedExpanded }"
           width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 9 12 15 18 9" />
         </svg>
       </div>
 
-      <div v-if="customAdvancedExpanded" class="advanced-panel">
+      <div v-if="providerAdvancedExpanded" class="advanced-panel">
         <!-- API 地址 -->
         <div class="advanced-section">
           <div class="advanced-section-header">
             <span class="advanced-section-title">API 地址</span>
           </div>
-          <n-input v-model:value="customBaseUrl" placeholder="https://api.example.com/v1" />
+          <n-input v-model:value="providerBaseUrl" placeholder="https://api.example.com/v1" />
         </div>
 
         <!-- 请求头覆盖 -->
         <div class="advanced-section">
           <div class="advanced-section-header">
             <span class="advanced-section-title">额外覆写或修剪请求头</span>
-            <n-button text size="tiny" class="advanced-add-btn" @click="addCustomHeader">
+            <n-button text size="tiny" class="advanced-add-btn" @click="addProviderHeader">
               <template #icon>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -982,11 +993,11 @@ function removeModel(index: number) {
               新增
             </n-button>
           </div>
-          <div v-if="customHeaders.length === 0" class="advanced-empty">暂无自定义请求头</div>
-          <div v-for="(header, idx) in customHeaders" :key="idx" class="advanced-row">
+          <div v-if="providerHeaders.length === 0" class="advanced-empty">暂无请求头</div>
+          <div v-for="(header, idx) in providerHeaders" :key="idx" class="advanced-row">
             <n-input v-model:value="header.key" placeholder="Header 名称" class="advanced-input-key" />
             <n-input v-model:value="header.value" placeholder="值（/del/ 表示删除）" class="advanced-input-value" />
-            <button class="advanced-delete-btn" title="删除" @click="removeCustomHeader(idx)">
+            <button class="advanced-delete-btn" title="删除" @click="removeProviderHeader(idx)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <line x1="18" y1="6" x2="6" y2="18" />
@@ -996,43 +1007,35 @@ function removeModel(index: number) {
           </div>
         </div>
 
-        <!-- 请求体修剪 -->
+        <!-- 请求体映射规则 -->
         <div class="advanced-section">
           <div class="advanced-section-header">
-            <span class="advanced-section-title">额外覆写或修剪请求体</span>
-            <n-button text size="tiny" class="advanced-add-btn" @click="addCustomBodyTransform">
-              <template #icon>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-              </template>
-              新增
+            <span class="advanced-section-title">请求体映射规则</span>
+            <n-button text size="tiny" class="advanced-add-btn" @click="showRequestBodyRuleEditor = true">
+              配置规则
             </n-button>
           </div>
-          <div v-if="customBodyTransforms.length === 0" class="advanced-empty">暂无自定义请求体修剪</div>
-          <div v-for="(entry, idx) in customBodyTransforms" :key="idx" class="advanced-row">
-            <n-input v-model:value="entry.key" placeholder="字段路径" class="advanced-input-key" />
-            <n-input v-model:value="entry.value" placeholder="值（/del/ 表示删除）" class="advanced-input-value" />
-            <button class="advanced-delete-btn" title="删除" @click="removeCustomBodyTransform(idx)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
+          <div class="advanced-empty" style="cursor: pointer;" @click="showRequestBodyRuleEditor = true">
+            已配置 {{ requestBodyEditorState.rules.rules.length }} 条规则
+            <span class="request-body-rules-hint">（保存后作用于 Copilot 实际请求）</span>
           </div>
         </div>
       </div>
 
       <template #footer>
-        <div class="custom-add-footer">
-          <n-button @click="showCustomAddModal = false; resetCustomAdvanced()">取消</n-button>
-          <n-button type="primary" @click="addCustomProvider">{{ editingCustomKey ? '应用' : '添加' }}</n-button>
+        <div class="provider-modal-footer">
+          <n-button @click="showProviderModal = false; resetProviderAdvanced()">取消</n-button>
+          <n-button type="primary" @click="saveProvider">{{ editingProviderKey ? '应用' : '添加' }}</n-button>
         </div>
       </template>
     </n-modal>
+
+    <!-- 请求体规则编辑器（二级模态框） -->
+    <RequestBodyRuleEditor
+      v-model:show="showRequestBodyRuleEditor"
+      :model-value="requestBodyEditorState"
+      @apply="requestBodyEditorState = $event"
+    />
 
     <!-- 预设供应商选择模态框 -->
     <n-modal v-model:show="showPresetModal" preset="card" title="选择预设供应商"
@@ -1123,52 +1126,15 @@ function removeModel(index: number) {
           </div>
         </div>
 
-        <ProviderModelsSection v-model:models="editForm.models" :pulling-models="pullingModels" :has-docs="!!(editingKey && providerMeta[editingKey]?.docsUrl)"
+        <ProviderModelsSection v-model:models="editForm.models" :pulling-models="pullingModels"
           :compact="windowWidth <= DRAWER_MIN_WIDTH"
-          @pull-models="pullModels" @open-docs="openOfficialDocs" @add-model="addModel" @remove-model="removeModel" />
+          @pull-models="pullModels" @add-model="addModel" @remove-model="removeModel" />
 
         <template #footer>
           <n-button type="primary" block @click="saveEditPanel">保存</n-button>
         </template>
       </n-drawer-content>
     </n-drawer>
-
-    <teleport to="body">
-      <div v-if="docsWindow.visible && activeDocsUrl" class="docs-window-layer">
-        <section class="docs-window" :style="{
-          left: `${docsWindow.x}px`,
-          top: `${docsWindow.y}px`,
-          width: `${docsWindow.width}px`,
-          height: `${docsWindow.height}px`,
-        }">
-          <div class="docs-window__header">
-            <div class="docs-window__drag-handle" @pointerdown="startDocsWindowDrag">
-              <div class="docs-window__eyebrow">官方文档</div>
-              <div class="docs-window__title">{{ activeDocsTitle }}</div>
-            </div>
-            <div class="docs-window__actions">
-              <a class="docs-window__link" :href="activeDocsUrl" target="_blank" rel="noreferrer" @click.stop>
-                新标签
-              </a>
-              <button type="button" class="docs-window__close" @click.stop="closeOfficialDocs">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                  stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </div>
-          </div>
-          <div class="docs-window__hint">窗口外可直接点击原页面控件；若官网禁止内嵌，可点“新标签”。</div>
-          <div class="docs-window__body">
-            <iframe class="docs-window__iframe" :src="activeDocsUrl" :title="activeDocsTitle"
-              referrerpolicy="no-referrer" />
-          </div>
-          <button type="button" class="docs-window__resize-handle" aria-label="调整文档窗口大小"
-            @pointerdown.stop="startDocsWindowResize"></button>
-        </section>
-      </div>
-    </teleport>
 
     <!-- API Key 管理模态框 -->
     <n-modal v-model:show="showApiKeyModal" preset="card" title="管理 API Key" style="width: 600px; max-width: 90vw;">
@@ -1267,9 +1233,6 @@ function removeModel(index: number) {
     background: $warning;
   }
 
-  &.custom {
-    background: linear-gradient(90deg, $accent, $blue);
-  }
 }
 
 .provider-card-delete {
@@ -1332,158 +1295,7 @@ function removeModel(index: number) {
   }
 }
 
-.docs-window-layer {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 2200;
-}
-
-.docs-window {
-  position: fixed;
-  display: flex;
-  flex-direction: column;
-  min-width: 360px;
-  min-height: 320px;
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid rgba(232, 229, 222, 0.94);
-  border-radius: $radius-lg;
-  box-shadow: $shadow-lg;
-  overflow: hidden;
-  pointer-events: auto;
-  backdrop-filter: blur(10px);
-}
-
-.docs-window__header {
-  display: flex;
-  align-items: stretch;
-  justify-content: space-between;
-  gap: $space-md;
-  padding: 14px 16px 12px;
-  border-bottom: 1px solid $border;
-  background: linear-gradient(135deg, rgba(194, 122, 62, 0.12), rgba(255, 255, 255, 0.92));
-}
-
-.docs-window__drag-handle {
-  flex: 1;
-  min-width: 0;
-  cursor: move;
-  user-select: none;
-}
-
-.docs-window__eyebrow {
-  font-family: $font-mono;
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: $text-muted;
-}
-
-.docs-window__title {
-  margin-top: 4px;
-  font-family: $font-display;
-  font-size: 20px;
-  font-weight: 600;
-  color: $text-primary;
-  line-height: 1.1;
-}
-
-.docs-window__actions {
-  display: flex;
-  align-items: center;
-  gap: $space-sm;
-  flex-shrink: 0;
-}
-
-.docs-window__link {
-  display: inline-flex;
-  align-items: center;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid $border;
-  font-family: $font-mono;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: $text-body;
-  text-decoration: none;
-  background: rgba(255, 255, 255, 0.72);
-  transition: all 0.2s ease;
-
-  &:hover {
-    color: $accent;
-    border-color: rgba(194, 122, 62, 0.35);
-    background: rgba(194, 122, 62, 0.08);
-  }
-}
-
-.docs-window__close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: $text-muted;
-  cursor: pointer;
-  transition: all 0.2s ease;
-
-  &:hover {
-    color: $danger;
-    background: rgba(184, 74, 74, 0.08);
-  }
-}
-
-.docs-window__hint {
-  padding: 8px 16px;
-  border-bottom: 1px solid $border-light;
-  font-family: $font-body;
-  font-size: 13px;
-  color: $text-muted;
-  background: rgba(245, 243, 238, 0.82);
-}
-
-.docs-window__body {
-  flex: 1;
-  min-height: 0;
-  background: $surface;
-}
-
-.docs-window__iframe {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: $surface;
-}
-
-.docs-window__resize-handle {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 18px;
-  height: 18px;
-  border: 0;
-  background: transparent;
-  cursor: nwse-resize;
-}
-
-.docs-window__resize-handle::before {
-  content: '';
-  position: absolute;
-  right: 4px;
-  bottom: 4px;
-  width: 10px;
-  height: 10px;
-  border-right: 2px solid rgba(194, 122, 62, 0.5);
-  border-bottom: 2px solid rgba(194, 122, 62, 0.5);
-}
-
-/* ── 添加服务商模态框 ── */
+/* ── 添加供应商模态框 ── */
 .add-modal-empty {
   text-align: center;
   padding: $space-xl 0;
@@ -1537,9 +1349,6 @@ function removeModel(index: number) {
     background: $warning;
   }
 
-  &.custom {
-    background: linear-gradient(90deg, $accent, $blue);
-  }
 }
 
 .add-modal-card-name {
@@ -1559,54 +1368,8 @@ function removeModel(index: number) {
   white-space: nowrap;
 }
 
-.add-modal-card--custom {
-  position: relative;
-}
-
-.add-modal-card-edit {
-  position: absolute;
-  top: 8px;
-  right: 30px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border: 0;
-  border-radius: 999px;
-  background: rgba(194, 122, 62, 0.08);
-  color: $text-muted;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  z-index: 2;
-
-  &:hover {
-    color: $accent;
-    background: rgba(194, 122, 62, 0.15);
-  }
-}
-
-.add-modal-card-delete {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border: 0;
-  border-radius: 999px;
-  background: rgba(184, 74, 74, 0.08);
-  color: $text-muted;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  z-index: 2;
-
-  &:hover {
-    color: $danger;
-    background: rgba(184, 74, 74, 0.15);
-  }
+:global(.provider-context-menu__delete) {
+  color: $danger !important;
 }
 
 .add-modal-card--new {
@@ -1619,13 +1382,13 @@ function removeModel(index: number) {
   }
 }
 
-.custom-add-footer {
+.provider-modal-footer {
   display: flex;
   justify-content: flex-end;
   gap: $space-sm;
 }
 
-.custom-name-row {
+.provider-name-row {
   display: flex;
   gap: $space-sm;
   align-items: center;
@@ -1734,6 +1497,11 @@ function removeModel(index: number) {
   font-family: $font-body;
   font-size: 12px;
   color: $text-muted;
+}
+
+.request-body-rules-hint {
+  font-size: 11px;
+  opacity: 0.7;
 }
 
 .advanced-row {
@@ -1898,21 +1666,10 @@ function removeModel(index: number) {
     }
   }
 
-  /* 添加服务商模态框网格单列 */
+  /* 添加供应商模态框网格单列 */
   .add-modal-grid {
     grid-template-columns: 1fr;
   }
 
-  .docs-window {
-    min-width: 300px;
-  }
-
-  .docs-window__title {
-    font-size: 18px;
-  }
-
-  .docs-window__hint {
-    font-size: 12px;
-  }
 }
 </style>

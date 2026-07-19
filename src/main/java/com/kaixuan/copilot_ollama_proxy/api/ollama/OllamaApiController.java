@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.api.ollama;
 
-import com.kaixuan.copilot_ollama_proxy.application.ollama.CompositeOllamaService;
+import com.kaixuan.copilot_ollama_proxy.application.ollama.ModelDiscoveryService;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
 import com.kaixuan.copilot_ollama_proxy.application.config.AppConfigService;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowRequest;
@@ -29,16 +29,19 @@ import java.util.UUID;
 @RestController @RequestMapping("/api")
 public class OllamaApiController {
 
-    private final CompositeOllamaService ollamaService;
+    private static final int MINIMUM_CONTEXT_LENGTH = 8192;
+    private static final int NANO_LLM_MAX_OUTPUT_TOKENS = 4096;
+
+    private final ModelDiscoveryService modelDiscoveryService;
     private final ModelCatalogService modelCatalogService;
     private final AppConfigService appConfigService;
     private final String defaultVersion;
 
-    public OllamaApiController(CompositeOllamaService ollamaService,
+    public OllamaApiController(ModelDiscoveryService modelDiscoveryService,
                                ModelCatalogService modelCatalogService,
                                AppConfigService appConfigService,
                                @Value("${ollama.version}") String defaultVersion) {
-        this.ollamaService = ollamaService;
+        this.modelDiscoveryService = modelDiscoveryService;
         this.modelCatalogService = modelCatalogService;
         this.appConfigService = appConfigService;
         this.defaultVersion = defaultVersion;
@@ -114,14 +117,13 @@ public class OllamaApiController {
         if (model.capsVision()) capabilities.add("vision");
         info.setCapabilities(capabilities);
 
-        // 在 tags 中直接返回上下文长度和最大输出，避免插件额外调用 /api/show
-        // 插件计算显示的总上下文 = context_length + max_output_tokens，
-        // 因此 context_length 需减去 max_output_tokens 才能让显示值等于用户配置的上下文大小
-        if (model.contextSize() > 0) {
-            int maxOutput = model.maxOutputTokens() > 0 ? model.maxOutputTokens() : 8192;
-            info.setContextLength(Math.max(model.contextSize() - maxOutput, maxOutput));
-            info.setMaxOutputTokens(maxOutput);
-        }
+        // tags 中的 context_length 公开总上下文窗口；Copilot 会扣除 max_output_tokens 计算输入窗口。
+        // 限制输出不超过总窗口一半，避免 Copilot 得到零可用输入窗口。
+        int totalContext = Math.max(model.contextSize(), MINIMUM_CONTEXT_LENGTH);
+        int requestedMaxOutput = model.maxOutputTokens() > 0 ? model.maxOutputTokens() : NANO_LLM_MAX_OUTPUT_TOKENS;
+        int maxOutput = Math.min(requestedMaxOutput, totalContext / 2);
+        info.setContextLength(totalContext);
+        info.setMaxOutputTokens(maxOutput);
 
         return info;
     }
@@ -146,6 +148,8 @@ public class OllamaApiController {
         details.setQuantizationLevel("none");
         nanoModel.setDetails(details);
         nanoModel.setCapabilities(List.of("completion", "tools"));
+        nanoModel.setContextLength(MINIMUM_CONTEXT_LENGTH);
+        nanoModel.setMaxOutputTokens(NANO_LLM_MAX_OUTPUT_TOKENS);
         return nanoModel;
     }
 
@@ -160,7 +164,7 @@ public class OllamaApiController {
         if ("nano_llm".equals(request.getModel())) {
             return Mono.just(createNanoLlmShowResponse());
         }
-        return Mono.fromCallable(() -> ollamaService.showModel(request.getModel()))
+        return Mono.fromCallable(() -> modelDiscoveryService.showModel(request.getModel()))
                 .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
     }
 
@@ -171,7 +175,7 @@ public class OllamaApiController {
      */
     private OllamaShowResponse createNanoLlmShowResponse() {
         OllamaShowResponse response = new OllamaShowResponse();
-        response.setParameters("temperature 0.7\nnum_ctx 4096");
+        response.setParameters("temperature 0.7\nnum_ctx " + MINIMUM_CONTEXT_LENGTH);
         response.setLicense("Proprietary");
         response.setModifiedAt(java.time.Instant.now().toString());
         response.setCapabilities(List.of("completion", "tools"));
@@ -185,7 +189,11 @@ public class OllamaApiController {
         details.setQuantizationLevel("none");
         response.setDetails(details);
 
-        response.setModelInfo(Map.of("general.architecture", "nano", "general.basename", "nano_llm", "nano.context_length", 4096, "nano.embedding_length", 8192));
+        response.setModelInfo(Map.of(
+            "general.architecture", "nano",
+            "general.basename", "nano_llm",
+            "nano.context_length", MINIMUM_CONTEXT_LENGTH,
+            "nano.embedding_length", MINIMUM_CONTEXT_LENGTH));
         return response;
     }
 }

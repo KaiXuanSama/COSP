@@ -13,7 +13,7 @@ import java.util.List;
  * {@link ModelCatalogService} 的默认实现 —— 基于 {@link ProviderConfigRepository} 聚合可用模型。
  *
  * 封装了原先散落在 OllamaApiController 与 OpenAiController 中的模型聚合逻辑：
- * 遍历已启用供应商、去除自定义供应商的 "custom-" 前缀、拼接展示前缀、读取能力标记。
+ * 遍历已启用供应商、拼接展示前缀、读取能力标记。
  */
 @Service
 public class DatabaseModelCatalogService implements ModelCatalogService {
@@ -34,8 +34,7 @@ public class DatabaseModelCatalogService implements ModelCatalogService {
             if (models == null) {
                 continue;
             }
-            // 自定义供应商展示时去除 custom- 前缀
-            String displayKey = providerKey.startsWith("custom-") ? providerKey.substring(7) : providerKey;
+            String displayKey = providerKey;
             for (ProviderModelRow m : models) {
                 String modelName = m.modelName();
                 if (modelName.isEmpty()) {

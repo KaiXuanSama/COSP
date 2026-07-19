@@ -92,6 +92,11 @@ public class ProviderApiKeyRepository {
         List<ProviderApiKeyRow> existing = findByProviderId(providerId);
         List<String> keptUuids = new ArrayList<>();
 
+        // provider_id + is_active=1 是部分唯一索引。切换激活项时必须先撤销旧项，
+        // 否则表单顺序先写入新激活项会短暂产生两个激活 Key 并触发约束异常。
+        jdbcTemplate.update("UPDATE provider_api_key SET is_active = 0 WHERE provider_id = ? AND is_active = 1",
+            providerId);
+
         int activeCount = 0;
         for (ApiKeyInput input : inputs) {
             if (input.active()) {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import http, { auth } from '@/api'
+import { auth } from '@/api'
 
 const router = useRouter()
 const route = useRoute()

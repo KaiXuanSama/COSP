@@ -1,12 +1,10 @@
 package com.kaixuan.copilot_ollama_proxy.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
-import com.kaixuan.copilot_ollama_proxy.application.reasoning.ReasoningCache;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
+import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,32 +29,22 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * OpenAI 兼容上游服务的公共基类 —— 三阶段流式管道的核心。
+ * 通用 OpenAI 上游执行管道。
  *
- * 本类负责管道的前两个阶段，第三阶段由 Controller 层完成：
+ * 本类负责上游响应清洗、请求转换、重试和调用日志。
  *
- * 阶段 1：上游清洗（{@link #normalizeUpstreamChunk}）
+ * 上游清洗（{@link #normalizeUpstreamChunk}）：
  *   将各上游供应商返回的格式不一致的 SSE chunk 统一为内部标准 OpenAI 格式。
  *   包括：统一 reasoning 字段名（5 种 → reasoning_content）、清理空值/空 tool_calls、
  *   统一 finish_reason 等。
  *
- * 阶段 2：中枢处理（在 {@link #chatCompletionStream} 的 Reactor 管道中完成）
- *   基于清洗后的统一格式进行：reasoning 累积与缓存、reasoning fallback
+ * 中枢处理（在 {@link #chatCompletionStream} 的 Reactor 管道中完成）：
+ *   基于清洗后的统一格式进行：reasoning fallback
  *   （无正文时回退用思考内容作为回复）、API 调用日志记录。
  *
- * 阶段 3：下游序列化（由 Controller 层完成，不在本类中）
- *   根据下游调用来源分流：
- *   - OpenAI 下游（/v1/chat/completions）：清洗后的 chunk 几乎 passthrough 包装为 SSE
- *   - Ollama 下游（/api/chat）：经 OllamaStreamTranslator 结构转换后输出 NDJSON
- *
- * 子类只需实现四个模板方法即可接入一个新的 OpenAI 兼容 provider：
- * {@link #defaultBaseUrl()}、{@link #normalizeBaseUrl(String)}、
- * {@link #applyAuthenticationHeaders} 和 {@link #chatCompletionsUri()}。
- * 如果需要在请求体中添加 provider 特有字段，可以覆写 {@link #customizeRequestBody}。
- *
- * 运行时配置（API Key、Base URL、模型列表）通过 {@link RuntimeProviderCatalog} 从数据库动态加载。
+ * 运行时配置（API Key、Base URL、模型列表）由调用方显式传入。
  */
-public abstract class AbstractUpstreamChatService implements UpstreamChatService {
+public abstract class AbstractUpstreamChatService {
 
     /** SSE 场景下，每个 data 字段的原始字符串类型引用。 */
     private static final ParameterizedTypeReference<ServerSentEvent<String>> STRING_SSE_TYPE = new ParameterizedTypeReference<>() {
@@ -70,20 +58,10 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
 
     /** 当请求中未指定模型时回退使用的默认模型名称。 */
     private final String fallbackDefaultModel;
-
-    /** 运行时 provider 配置目录，统一暴露数据库中的 provider 配置。 */
-    private final RuntimeProviderCatalog runtimeProviderCatalog;
+    private final ProviderRequestHeaderService providerRequestHeaderService;
 
     /** API 调用日志写入服务，由子类 Spring Bean 通过 setter 注入。 */
     private ApiCallLogService apiCallLog;
-
-    /**
-     * 思考链缓存服务（可选）。
-     * 当子类注入此依赖时，基类自动启用思考链缓存功能：
-     * - 流式响应中自动追踪 tool_call IDs 并在 finish_reason=tool_calls 时持久化 reasoning
-     * - 请求体准备时自动为带 tool_calls 的 assistant 消息注入缓存的 reasoning_content
-     */
-    private ReasoningCache reasoningCache;
 
     /**
      * 全局 WebClient.Builder，由 Spring 通过 setter 注入。
@@ -98,19 +76,6 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
     }
 
     @Autowired(required = false)
-    public void setReasoningCache(ReasoningCache reasoningCache) {
-        this.reasoningCache = reasoningCache;
-    }
-
-    /**
-     * 子类可调用此方法获取 ReasoningCache 实例（如需额外操作）。
-     * 如果未注入则返回 null。
-     */
-    protected ReasoningCache getReasoningCache() {
-        return reasoningCache;
-    }
-
-    @Autowired(required = false)
     public void setWebClientBuilder(WebClient.Builder webClientBuilder) {
         if (webClientBuilder != null) {
             this.webClientBuilder = webClientBuilder;
@@ -118,28 +83,14 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
     }
 
     /**
-     * @param runtimeProviderCatalog 运行时 provider 配置目录
      * @param objectMapper Jackson 对象映射器
      * @param fallbackDefaultModel 当请求中未指定模型时使用的默认模型名称
      */
-    protected AbstractUpstreamChatService(RuntimeProviderCatalog runtimeProviderCatalog, ObjectMapper objectMapper, String fallbackDefaultModel) {
-        this.runtimeProviderCatalog = runtimeProviderCatalog;
+    protected AbstractUpstreamChatService(ObjectMapper objectMapper, String fallbackDefaultModel,
+                                          ProviderRequestHeaderService providerRequestHeaderService) {
         this.objectMapper = objectMapper;
         this.fallbackDefaultModel = fallbackDefaultModel;
-    }
-
-    @Override
-    public boolean supportsModel(String modelName) {
-        ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
-        return config != null && config.supportsModel(modelName);
-    }
-
-    /**
-     * 获取用于日志记录的供应商标识。
-     * 默认返回 getProviderKey()，子类可重写以返回动态解析的供应商名称。
-     */
-    protected String getLoggingProviderKey() {
-        return getProviderKey();
+        this.providerRequestHeaderService = providerRequestHeaderService;
     }
 
     /**
@@ -152,20 +103,20 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
      * @param model 请求中指定的模型名称
      * @return 上游返回的原始 OpenAI JSON 响应字符串
      */
-    @Override
-    public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model) {
-        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, false, model);
-        log.info("{} OpenAI 上游，模型: {}, 流式: false", providerDisplayName(), requestBody.get("model"));
+    protected Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
+                                          ProviderRuntimeConfiguration provider) {
+        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, false, model, provider);
+        log.info("{} OpenAI 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
 
         long startTime = System.currentTimeMillis();
-        String providerKey = getLoggingProviderKey();
+        String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
         Map<String, String> reqHeaders = new LinkedHashMap<>();
 
-        return buildWebClientWithHeaders(reqHeaders).post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).bodyValue(requestBody).retrieve()
+        return buildWebClientWithHeaders(reqHeaders, provider).post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).bodyValue(requestBody).retrieve()
                 .toEntity(String.class)
-                .retryWhen(buildRetrySpec("chatCompletion"))
-                .doOnNext(entity -> log.debug("{} 响应: {}", providerDisplayName(), entity.getBody()))
+                .retryWhen(buildRetrySpec("chatCompletion", provider))
+                .doOnNext(entity -> log.debug("{} 响应: {}", provider.providerKey(), entity.getBody()))
                 .map(entity -> {
                     Map<String, String> respHeaders = new LinkedHashMap<>();
                     entity.getHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
@@ -198,13 +149,13 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
      * @param model 请求中指定的模型名称
      * @return 按顺序发出的 chunk JSON 字符串，最后一个元素为 "[DONE]"
      */
-    @Override
-    public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
-        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model);
-        log.info("{} OpenAI 上游，模型: {}, 流式: true", providerDisplayName(), requestBody.get("model"));
+    protected Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model,
+                                                 ProviderRuntimeConfiguration provider) {
+        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model, provider);
+        log.info("{} OpenAI 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
 
         long startTime = System.currentTimeMillis();
-        String providerKey = getLoggingProviderKey();
+        String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
         Map<String, String> reqHeaders = new LinkedHashMap<>();
         List<String> logChunks = new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -218,10 +169,7 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
         StringBuilder reasoningBuffer = new StringBuilder();
         AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
-        // 思考链缓存：per-request 追踪 tool_call IDs（仅当 reasoningCache != null 时生效）
-        List<String> pendingToolCallIds = new ArrayList<>();
-
-        return buildWebClientWithHeaders(reqHeaders).post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody)
+        return buildWebClientWithHeaders(reqHeaders, provider).post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody)
                 .exchangeToFlux(response -> {
                     Map<String, String> respHeaders = new LinkedHashMap<>();
                     response.headers().asHttpHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
@@ -233,27 +181,17 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
                             lastErrorHeaders.set(respHeaders);
                             lastErrorCode.set(response.statusCode().value());
                             lastErrorBody.set(errorBody);
-                            log.warn("{} 上游返回错误响应 {}: {}", providerDisplayName(), response.statusCode().value(), errorBody);
+                            log.warn("{} 上游返回错误响应 {}: {}", provider.providerKey(), response.statusCode().value(), errorBody);
                             return Flux.error(new WebClientResponseException(
                                     response.statusCode().value(), "上游错误响应", null, errorBody.getBytes(), null));
                         });
                     }
                     return response.bodyToFlux(STRING_SSE_TYPE);
                 })
-                .retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
-                .doOnNext(raw -> log.debug("{} 上游原始: {}", providerDisplayName(), raw)).doOnNext(raw -> {
-                    onRawStreamChunk(raw);
-                    trackToolCallIds(raw, pendingToolCallIds);
-                }).concatMap(chunk -> {
+                .retryWhen(buildRetrySpec("chatCompletionStream", provider)).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
+                .doOnNext(raw -> log.debug("{} 上游原始: {}", provider.providerKey(), raw)).concatMap(chunk -> {
                     String normalizedChunk = normalizeUpstreamChunk(chunk, contentEmitted, reasoningBuffer, chunkId);
-                    // 对所有 finish chunk（stop/tool_calls）都调用 onStreamFinish 钩子
                     if (isTerminalChunk(normalizedChunk)) {
-                        // 思考链缓存：finish_reason=tool_calls 时自动持久化
-                        persistReasoningIfToolCalls(normalizedChunk, reasoningBuffer, pendingToolCallIds);
-                        Flux<String> customFinish = onStreamFinish(chunkId.get(), model, reasoningBuffer, contentEmitted.get());
-                        if (customFinish != null) {
-                            return customFinish;
-                        }
                         // 仅当 contentEmitted=false 且 reasoningBuffer 非空时触发 reasoning fallback
                         if (isStopFinishReason(normalizedChunk) && !contentEmitted.get() && !reasoningBuffer.isEmpty()) {
                             log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
@@ -264,7 +202,7 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
                     }
                     return Flux.just(normalizedChunk);
                 }).doOnNext(chunk -> {
-                    log.debug("{} 上游清洗: {}", providerDisplayName(), chunk);
+                    log.debug("{} 上游清洗: {}", provider.providerKey(), chunk);
                     logChunks.add(chunk);
                 }).doFinally(signal -> {
                     // 如果有错误信息（重试耗尽），同时记录错误响应体到非流式响应列
@@ -286,29 +224,21 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
     }
 
     /**
-     * 从运行时配置目录中获取当前激活的 Provider 配置，用于构建 WebClient 和判断支持的模型列表。
-     * @return 当前激活的 Provider 配置，如果没有找到则返回 null
-     */
-    protected ProviderRuntimeConfiguration getActiveProviderConfiguration() {
-        return runtimeProviderCatalog.getActiveProvider(getProviderKey());
-    }
-
-    /**
      * 构建 WebClient，同时捕获实际发送的请求头快照用于日志记录。
      * 返回的 Map 会在 WebClient.defaultHeaders 回调中被填充，
-     * 因此捕获的是经过 applyAuthenticationHeaders 和 customizeRequestBody 处理后的最终请求头。
+    * 因此捕获的是经过认证和规则处理后的最终请求头。
      *
      * @param capturedHeaders 用于捕获请求头的 Map，构建完成后包含实际发送的 headers
      * @return 配置好的 WebClient 实例
      */
-    protected WebClient buildWebClientWithHeaders(Map<String, String> capturedHeaders) {
-        ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
-        String apiKey = config != null ? config.apiKey() : "";
-        String baseUrl = (config == null || config.baseUrl().isBlank()) ? defaultBaseUrl() : config.baseUrl();
-        String normalizedUrl = normalizeBaseUrl(baseUrl);
+    protected WebClient buildWebClientWithHeaders(Map<String, String> capturedHeaders,
+                                                  ProviderRuntimeConfiguration provider) {
+        String apiKey = provider.apiKey();
+        String baseUrl = provider.baseUrl().isBlank() ? defaultBaseUrl() : provider.baseUrl();
+        String normalizedUrl = providerRequestHeaderService.normalizeBaseUrl(baseUrl);
 
         return webClientBuilder.clone().baseUrl(normalizedUrl).defaultHeaders(headers -> {
-            applyAuthenticationHeaders(headers, apiKey);
+            providerRequestHeaderService.applyHeaders(headers, apiKey, provider.headerRulesJson());
             headers.setContentType(MediaType.APPLICATION_JSON);
             // 捕获实际发送的请求头（脱敏后）用于日志
             headers.forEach((k, v) -> {
@@ -323,20 +253,21 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
     }
 
     /**
-     * 准备请求体，解析模型名称，设置流式标志，并调用 customizeRequestBody 进行特定服务的字段定制。
+    * 准备请求体，解析模型名称，设置流式标志，并应用当前供应商的请求体规则。
      * @param openAiRequest 请求体的初始 Map 结构
      * @param stream 是否启用流式响应
      * @param model 模型名称
      * @return 最终准备好的请求体 Map 结构，已经解析了模型名称并设置了流式标志
      */
-    protected Map<String, Object> prepareRequestBody(Map<String, Object> openAiRequest, boolean stream, String model) {
+    protected Map<String, Object> prepareRequestBody(Map<String, Object> openAiRequest, boolean stream, String model,
+                                                      ProviderRuntimeConfiguration provider) {
         Map<String, Object> body = new LinkedHashMap<>(openAiRequest);
         String resolvedModel = resolveModel(body.get("model"), model);
         body.put("model", resolvedModel);
         body.put("stream", stream);
         // 如果请求中没有指定 reasoning_effort，从模型配置中读取
         if (!body.containsKey("reasoning_effort")) {
-            String effort = resolveReasoningEffort(resolvedModel);
+            String effort = resolveReasoningEffort(resolvedModel, provider);
             if (effort != null) {
                 body.put("reasoning_effort", effort);
             } else {
@@ -344,8 +275,7 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
             }
         }
         body.values().removeIf(Objects::isNull);
-        injectCachedReasoning(body);
-        customizeRequestBody(body, resolvedModel);
+        customizeRequestBody(body, resolvedModel, provider);
         return body;
     }
 
@@ -397,20 +327,15 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
 
     /**
      * 从运行时模型配置中读取思考深度。如果未找到，返回 medium。
-     * 使用 getActiveProviderConfiguration() 而非直接查询 catalog，
-     * 以便 GenericOpenAiChatService 的动态供应商覆写能生效。
      */
-    private String resolveReasoningEffort(String resolvedModel) {
-        ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
-        if (config != null) {
-            for (var m : config.models()) {
-                if (resolvedModel.equals(m.modelName())) {
-                    String effort = m.reasoningEffort();
-                    if (effort == null || effort.isBlank() || "none".equalsIgnoreCase(effort.trim())) {
-                        return null;
-                    }
-                    return effort.toLowerCase();
+    private String resolveReasoningEffort(String resolvedModel, ProviderRuntimeConfiguration provider) {
+        for (var m : provider.models()) {
+            if (resolvedModel.equals(m.modelName())) {
+                String effort = m.reasoningEffort();
+                if (effort == null || effort.isBlank() || "none".equalsIgnoreCase(effort.trim())) {
+                    return null;
                 }
+                return effort.toLowerCase();
             }
         }
         return "medium";
@@ -419,124 +344,11 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
     /**
      * 子类可以重写此方法在请求体中添加特定的字段或格式转换，例如将模型名称转换为特定服务识别的格式。
      * <p>
-     * 注意：如果 reasoningCache 已注入，基类会在调用本方法之前自动注入缓存的 reasoning_content，
-     * 子类无需重复此逻辑。
-     *
      * @param body 请求体的 Map 结构，子类可以直接修改该 Map 来添加或修改字段
      * @param resolvedModel 已经解析出的模型名称，子类可以根据该名称来决定是否进行特定的字段添加或格式转换
      */
-    protected void customizeRequestBody(Map<String, Object> body, String resolvedModel) {
-    }
-
-    // ==================== 思考链缓存：基类自动追踪与注入 ====================
-
-    /**
-     * 从原始 SSE chunk 中提取 tool_call ID，累积到 per-request 列表中。
-     * 仅当 reasoningCache 不为 null 时才实际工作。
-     */
-    @SuppressWarnings("unchecked")
-    private void trackToolCallIds(String rawChunkJson, List<String> pendingToolCallIds) {
-        if (reasoningCache == null || "[DONE]".equals(rawChunkJson)) {
-            return;
-        }
-        try {
-            Map<String, Object> chunk = objectMapper.readValue(rawChunkJson, Map.class);
-            List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
-            if (choices == null || choices.isEmpty()) {
-                return;
-            }
-            Map<String, Object> delta = (Map<String, Object>) choices.get(0).get("delta");
-            if (delta == null) {
-                return;
-            }
-            Object toolCallsObj = delta.get("tool_calls");
-            if (toolCallsObj instanceof List<?> toolCalls) {
-                for (Object tcObj : toolCalls) {
-                    if (tcObj instanceof Map<?, ?> tc) {
-                        Object idObj = tc.get("id");
-                        if (idObj instanceof String id && !id.isEmpty() && !pendingToolCallIds.contains(id)) {
-                            pendingToolCallIds.add(id);
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            // 解析异常不影响主流程
-        }
-    }
-
-    /**
-     * 当检测到 finish_reason=tool_calls 时，自动将累积的 reasoning 持久化到缓存。
-     * 仅当 reasoningCache 不为 null 且有待处理的 tool_call IDs 时才执行。
-     */
-    private void persistReasoningIfToolCalls(String normalizedChunk, StringBuilder reasoningBuffer, List<String> pendingToolCallIds) {
-        if (reasoningCache == null || pendingToolCallIds.isEmpty() || reasoningBuffer.isEmpty()) {
-            return;
-        }
-        if (!hasFinishReason(normalizedChunk, "tool_calls")) {
-            return;
-        }
-        String reasoning = reasoningBuffer.toString();
-        for (String toolCallId : pendingToolCallIds) {
-            reasoningCache.save(toolCallId, reasoning);
-        }
-        log.debug("已缓存 {} 条工具调用思考链 (reasoning 长度: {})", pendingToolCallIds.size(), reasoning.length());
-    }
-
-    /**
-     * 在请求体准备阶段，自动为带 tool_calls 的 assistant 消息注入缓存的 reasoning_content。
-     * 仅当 reasoningCache 不为 null 时才执行。
-     */
-    @SuppressWarnings("unchecked")
-    private void injectCachedReasoning(Map<String, Object> body) {
-        if (reasoningCache == null) {
-            return;
-        }
-        Object messagesObj = body.get("messages");
-        if (!(messagesObj instanceof List<?> messages)) {
-            return;
-        }
-        boolean modified = false;
-        for (Object msgObj : messages) {
-            if (!(msgObj instanceof Map<?, ?>)) {
-                continue;
-            }
-            Map<String, Object> msg = (Map<String, Object>) msgObj;
-            if (!"assistant".equals(msg.get("role")) || !msg.containsKey("tool_calls") || msg.containsKey("reasoning_content")) {
-                continue;
-            }
-            String cachedReasoning = null;
-            Object toolCallsObj = msg.get("tool_calls");
-            if (toolCallsObj instanceof List<?> toolCalls) {
-                for (Object tcObj : toolCalls) {
-                    if (tcObj instanceof Map<?, ?> tc) {
-                        Object idObj = tc.get("id");
-                        if (idObj instanceof String id) {
-                            cachedReasoning = reasoningCache.findByToolCallId(id);
-                            if (cachedReasoning != null) {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            msg.put("reasoning_content", cachedReasoning != null ? cachedReasoning : "");
-            modified = true;
-        }
-        if (modified) {
-            log.debug("已向带 tool_calls 的 assistant 消息注入 reasoning_content");
-        }
-    }
-
-    /**
-     * 子类可以重写此方法来拦截并处理上游返回的原始 SSE chunk（在上游清洗之前调用）。
-     * <p>
-     * 典型用途：捕获 tool_calls 相关的 reasoning_content 并存入缓存，
-     * 以便在下一轮请求中通过 {@link #customizeRequestBody} 回填。
-     *
-     * @param rawChunkJson 上游返回的原始 SSE data JSON 字符串（不含 "data: " 前缀）
-     */
-    protected void onRawStreamChunk(String rawChunkJson) {
+    protected void customizeRequestBody(Map<String, Object> body, String resolvedModel,
+                                        ProviderRuntimeConfiguration provider) {
     }
 
     /**
@@ -575,7 +387,7 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
      * @param method 调用方方法名，用于日志区分重试来源
      * @return 配置好的 Retry 实例
      */
-    protected Retry buildRetrySpec(String method) {
+    protected Retry buildRetrySpec(String method, ProviderRuntimeConfiguration provider) {
         return Retry.backoff(5, Duration.ofSeconds(2)).maxBackoff(Duration.ofSeconds(30))
                 .filter(ex -> ((ex instanceof WebClientResponseException responseException) && (responseException.getStatusCode().value() == 429 || responseException.getStatusCode().is5xxServerError()
                         || responseException.getStatusCode().value() == 400 || hasNetworkCause(responseException))) || ex instanceof WebClientRequestException
@@ -583,9 +395,9 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
                 .doBeforeRetry(signal -> {
                     if (signal.failure() instanceof WebClientResponseException responseException && responseException.getStatusCode().value() == 429) {
                         String retryAfter = responseException.getHeaders().getFirst("Retry-After");
-                        log.warn("[{}] {} API 限速 (429)，重试第 {} 次{}", method, providerDisplayName(), signal.totalRetries() + 1, retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
+                        log.warn("[{}] {} API 限速 (429)，重试第 {} 次{}", method, provider.providerKey(), signal.totalRetries() + 1, retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
                     } else {
-                        log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, providerDisplayName(), signal.totalRetries() + 1, signal.failure().getMessage());
+                        log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, provider.providerKey(), signal.totalRetries() + 1, signal.failure().getMessage());
                     }
                 });
     }
@@ -625,42 +437,11 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
     }
 
     /**
-     * 子类可覆写此方法提供更友好的服务显示名称，默认返回 providerKey。
-     *
-     * @return 服务显示名称，用于日志输出
-     */
-    protected String providerDisplayName() {
-        return getProviderKey();
-    }
-
-    /**
      * 提供默认的 Base URL，当运行时配置中未指定地址时使用。
      *
      * @return 默认 Base URL，以协议开头，不含路径后缀
      */
     protected abstract String defaultBaseUrl();
-
-    /**
-     * 规范化 Base URL，确保最终地址符合上游端点要求。
-     *
-     * 子类通常在这里追加 provider 特有的路径前缀（如 "/openai"），
-     * 并去除多余的尾部斜杠。
-     *
-     * @param rawBaseUrl 原始 Base URL
-     * @return 规范化后的 Base URL
-     */
-    protected abstract String normalizeBaseUrl(String rawBaseUrl);
-
-    /**
-     * 在请求头中添加 provider 特有的认证信息。
-     * 默认委托给接口方法 {@link #applyAuthHeaders}，子类覆写接口方法即可。
-     *
-     * @param headers 请求头对象，子类直接修改即可
-     * @param apiKey 从运行时配置读取的 API Key，可能为空串
-     */
-    protected void applyAuthenticationHeaders(HttpHeaders headers, String apiKey) {
-        applyAuthHeaders(headers, apiKey);
-    }
 
     /**
      * 提供 Chat Completions 端点的 URI 路径。
@@ -962,24 +743,4 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
         }
     }
 
-    /**
-     * 流结束时调用，子类可返回替换的 chunks 来覆盖默认的 reasoning fallback 逻辑。
-     *
-     * 当模型只输出了思考内容而未输出正文（contentEmitted 为 false），
-     * 并且 reasoningBuffer 非空时，基类会在发送 finish_reason:stop 之前调用此方法。
-     * 子类可以在此方法中检测特殊情况（如 XML 格式的工具调用意图），
-     * 并返回自定义的替代 chunk 序列。
-     *
-     * 返回 null 表示子类不做特殊处理，基类将执行默认的 reasoning fallback，
-     * 即把思考内容作为正文回复发送给客户端。
-     *
-     * @param chunkId 当前流的 chunk ID
-     * @param model 模型名称
-     * @param reasoningBuffer 累积的思考内容
-     * @param contentEmitted 是否已输出过正文 content
-     * @return 替代的 chunk 序列，或 null 表示使用默认 fallback
-     */
-    protected Flux<String> onStreamFinish(String chunkId, String model, StringBuilder reasoningBuffer, boolean contentEmitted) {
-        return null;
-    }
 }

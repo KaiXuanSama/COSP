@@ -1,54 +1,21 @@
-# GitHub Copilot Instructions for COSP
+# COSP Copilot 指令
 
-本文件为 GitHub Copilot 提供项目特定的指令，帮助理解代码结构和开发约定。
+## 当前架构
 
-## 项目概述
-
-COSP (Copilot Ollama SpringBoot Proxy) 是一个协议适配层服务，将 Copilot 的请求转换为不同 AI 服务提供商的 API 格式。
-
-## 核心原则
-
-1. **双协议架构**：Copilot 通过 Ollama 协议发现模型，通过 OpenAI 协议进行聊天
-2. **Provider 必须包含两个组件**：DiscoveryService（模型发现）、OpenAiChatService（聊天执行），各自继承对应基类
-3. **能力声明从数据库读取**：禁止硬编码能力列表
-
-## 代码审查要点
-
-修改代码时请参考 [模型兼容性问题](../docs/MODEL_COMPATIBILITY.md) 中的已知问题。
-
-### 关键陷阱
-
-- **工具调用参数**：`OllamaStreamTranslator` 中增量 arguments 需要作为字符串累积
-- **400 错误重试**：当前对所有 400 错误重试（含认证失败），需要改进
-- **SSE 流式响应**：`ResponseLoggingFilter` 可能导致 OOM
-- **SQLite 连接池**：建议使用 `maximum-pool-size: 1`
-- **DeepSeek reasoning_content**：多轮工具调用需要缓存 `reasoning_content` 字段
+- Copilot 使用 `/api/version`、`/api/tags`、`/api/show` 发现模型，实际聊天仅走 `/v1/chat/completions`。
+- `ModelDiscoveryService` 与 `ChatCompletionService` 是应用层用例服务，分别委派给 `GenericDiscoveryService` 和 `GenericOpenAiChatService`。
+- 所有供应商都是数据库记录，不存在内置或专有 provider。通过管理后台配置 Base URL、API Key、模型、能力和转换规则。
+- `ProviderRouteResolver` 对前缀模型精确路由；无前缀模型仅在唯一匹配时允许路由。
 
 ## 开发规则
 
-### 新增 Provider
+- 保持 `api -> application -> provider` 分层；DTO 位于独立 `protocol` 层。
+- 能力只能由 `provider_model` 的 `caps_tools`、`caps_vision` 决定，禁止硬编码或通过模型名判断。
+- 上下文窗口最小为 8192。
+- WebFlux 中所有 JDBC 调用使用 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`。
+- 对外调用必须复用注入的 `WebClient.Builder`，不要使用裸 `WebClient.builder()`。
+- 标准供应商不创建新 Java 包；复杂协议适配先评估请求转换规则能否表达。
 
-使用 [新增供应商指南](./skills/cosp-add-provider-skill/SKILL.md) 或 [中文版](./skills/cosp-add-provider-skill/SKILL_ZH.md)。
+## 测试
 
-### 测试规范
-
-- 集成测试使用 `@SpringBootTest(webEnvironment = RANDOM_PORT)` + `WebTestClient`
-- 模拟依赖使用 `@MockBean`
-- 测试方法名使用 camelCase 长名
-
-### 前端开发
-
-- 所有 API 调用通过 `frontend/src/api/index.ts` 封装
-- 状态管理使用 Pinia
-- UI 组件使用 Naive UI
-- 样式参考 `frontend/src/styles/_variables.scss`
-
-## 重要文档
-
-- [AGENTS.md](../AGENTS.md) — 完整项目指南
-- [README.md](../README.md) — 项目介绍和快速开始
-- [Ollama 接口开发指南](./instructions/ollama-api.instructions.md) — Ollama 协议层端点、翻译器、转换器开发规范
-- [编码规范](../copilot-ollama-proxy-springboot.wiki/Guides/Coding-Standards.md)
-- [架构文档](../copilot-ollama-proxy-springboot.wiki/Architecture.md)
-- [模型兼容性](../docs/MODEL_COMPATIBILITY.md) — 已知问题和解决方案
-- [UI 设计系统](../copilot-ollama-proxy-springboot.wiki/Guides/UI-Design-System.md)
+集成测试使用 `@SpringBootTest(webEnvironment = RANDOM_PORT)` 和 `WebTestClient`。修改后先检查编辑器错误，再运行相关 Maven 或前端构建命令。不要主动启动服务或操作 `admin.db`。

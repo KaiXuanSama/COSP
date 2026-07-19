@@ -3,7 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.kaixuan.copilot_ollama_proxy.application.openai.CompositeUpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
@@ -31,14 +31,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 端点：POST /v1/chat/completions
  * <p>
  * 控制器只负责 HTTP 层（请求接收、响应封装、SSE 流转发），
- * 协议转换逻辑由 {@link UpstreamChatService} 的实现类处理。
+ * 应用层负责将模型解析为供应商路由，并交由统一 Generic 执行器处理。
  */
 @RestController
 public class OpenAiController {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiController.class);
 
-    private final CompositeUpstreamChatService upstreamChatService;
+    private final ChatCompletionService chatCompletionService;
     private final ObjectMapper objectMapper;
     private final ApiUsageCollector apiUsageCollector;
     private final ModelCatalogService modelCatalogService;
@@ -46,21 +46,21 @@ public class OpenAiController {
     private final int serverPort;
 
     /**
-     * 构造函数注入 CompositeUpstreamChatService、ObjectMapper、ApiUsageCollector、ModelCatalogService
+    * 构造函数注入 ChatCompletionService、ObjectMapper、ApiUsageCollector、ModelCatalogService
      * 以及 README 模型所需的主机地址和服务端口。
      *
-     * @param upstreamChatService 上游聊天服务组合
+    * @param chatCompletionService 聊天补全应用服务
      * @param objectMapper JSON 对象映射器
      * @param apiUsageCollector API 使用量收集器
      * @param modelCatalogService 模型目录服务，用于获取可用模型列表
      * @param readmeHost README 模型输出配置中的主机地址（环境变量 README_HOST，默认 localhost）
      * @param serverPort 服务器监听端口（环境变量 SERVER_PORT，默认 11434）
      */
-    public OpenAiController(CompositeUpstreamChatService upstreamChatService, ObjectMapper objectMapper,
+    public OpenAiController(ChatCompletionService chatCompletionService, ObjectMapper objectMapper,
                             ApiUsageCollector apiUsageCollector, ModelCatalogService modelCatalogService,
                             @Value("${readme.host:localhost}") String readmeHost,
                             @Value("${server.port:11434}") int serverPort) {
-        this.upstreamChatService = upstreamChatService;
+        this.chatCompletionService = chatCompletionService;
         this.objectMapper = objectMapper;
         this.apiUsageCollector = apiUsageCollector;
         this.readmeHost = readmeHost;
@@ -133,7 +133,7 @@ public class OpenAiController {
         }
 
         // 非流式：获取完整响应后提取 usage 进行记录，并返回给客户端。
-        return upstreamChatService.chatCompletion(requestBody, request.getModel()).doOnNext(this::recordUsage)
+        return chatCompletionService.chatCompletion(requestBody, request.getModel()).doOnNext(this::recordUsage)
                 .<ResponseEntity<?>>map(openAiJson -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(openAiJson))
                 .onErrorResume(ex -> {
                     if (isClientDisconnect(ex)) {
@@ -168,7 +168,7 @@ public class OpenAiController {
         AtomicInteger streamInputTokens = new AtomicInteger(0);
         AtomicInteger streamOutputTokens = new AtomicInteger(0);
 
-        return upstreamChatService.chatCompletionStream(requestBody, model)
+        return chatCompletionService.chatCompletionStream(requestBody, model)
                 .doOnNext(chunk -> accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens))
                 .map(chunk -> ServerSentEvent.builder(chunk).build())
                 .doOnComplete(() -> apiUsageCollector.record(streamInputTokens.get(), streamOutputTokens.get()))

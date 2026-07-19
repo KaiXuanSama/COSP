@@ -19,7 +19,7 @@ import org.springframework.test.web.reactive.server.FluxExchangeResult;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
-import com.kaixuan.copilot_ollama_proxy.application.openai.CompositeUpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -31,7 +31,7 @@ class OpenAiControllerStreamingTests {
   private int port;
 
   @SuppressWarnings("removal") @MockBean
-  private CompositeUpstreamChatService upstreamChatService;
+  private ChatCompletionService chatCompletionService;
 
   private WebTestClient webTestClient;
 
@@ -43,7 +43,7 @@ class OpenAiControllerStreamingTests {
 
   @Test
   void forwardsTheFirstStreamingChunkBeforeTheUpstreamStreamFinishes() {
-    given(upstreamChatService.chatCompletionStream(anyMap(), anyString())).willReturn(Flux.concat(
+    given(chatCompletionService.chatCompletionStream(anyMap(), anyString())).willReturn(Flux.concat(
         Mono.just(
             """
                 {"id":"chatcmpl-msg_123","object":"chat.completion.chunk","created":1735689600,"model":"mimo-v2.5-pro","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}

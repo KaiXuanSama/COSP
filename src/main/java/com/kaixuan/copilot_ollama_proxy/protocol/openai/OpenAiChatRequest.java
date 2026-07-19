@@ -6,11 +6,11 @@ import java.util.Map;
 
 /**
  * OpenAI Chat Completions API 请求体 —— Copilot 发送给本代理的请求格式。
- * 本代理接收此格式后，会交给 {@link com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService}
- * 的具体实现处理，默认实现会直接调用各供应商的 OpenAI 兼容接口。
+ * 本代理接收此格式后，按模型前缀解析数据库中的供应商配置，
+ * 再交由统一 Generic 执行器处理。
  * OpenAI 格式示例：
  * {
- *   "model": "mimo-v2.5-pro",
+ *   "model": "[provider-key] model-name",
  *   "messages": [
  *     {"role": "system", "content": "你是一个助手"},
  *     {"role": "user", "content": "你好"}

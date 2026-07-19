@@ -25,12 +25,27 @@ export interface ApiKeyEntry {
 export interface Provider {
   id?: number
   providerKey: string
+  displayName: string
   enabled: boolean
   baseUrl: string | null
-  apiFormat: string
-  customTransforms?: string
+  requestTransform?: ProviderRequestTransform
   apiKeys: ApiKeyEntry[]
   models: ProviderModel[]
+}
+
+export interface ProviderRequestTransform {
+  headerRulesVersion: number
+  headerRulesJson: string
+  bodyTemplateKeysJson: string
+  bodyPreviewJson: string
+  bodyRulesVersion: number
+  bodyRulesJson: string
+}
+
+export interface ProviderRequestTransformInput {
+  bodyTemplateKeysJson: string
+  bodyPreviewJson: string
+  bodyRulesJson: string
 }
 
 export const useProviderStore = defineStore('providers', () => {
@@ -91,18 +106,18 @@ export const useProviderStore = defineStore('providers', () => {
     }
   }
 
-  // ==================== 自定义供应商 ====================
+  // ==================== 供应商创建与重命名 ====================
 
-  async function addCustomProvider(displayName: string, customTransforms?: string, baseUrl?: string) {
+  async function addProvider(displayName: string, headerRulesJson: string,
+                                   baseUrl: string, requestTransform: ProviderRequestTransformInput) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
-    if (customTransforms) {
-      formData.append('customTransforms', customTransforms)
-    }
-    if (baseUrl) {
-      formData.append('baseUrl', baseUrl)
-    }
-    const res = await http.post('/custom-providers', formData.toString(), {
+    formData.append('headerRulesJson', headerRulesJson)
+    formData.append('baseUrl', baseUrl)
+    formData.append('bodyTemplateKeysJson', requestTransform.bodyTemplateKeysJson)
+    formData.append('bodyPreviewJson', requestTransform.bodyPreviewJson)
+    formData.append('bodyRulesJson', requestTransform.bodyRulesJson)
+    const res = await http.post('/providers', formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
     // 重新拉取列表
@@ -110,27 +125,28 @@ export const useProviderStore = defineStore('providers', () => {
     return res.data
   }
 
-  async function deleteCustomProvider(providerKey: string) {
-    await http.delete(`/custom-providers/${providerKey}`)
+  async function deleteProvider(providerKey: string) {
+    await http.delete(`/providers/${providerKey}`)
     // 重新拉取列表
     await fetchAll()
   }
 
-  async function updateCustomProvider(providerKey: string, displayName: string, customTransforms?: string, baseUrl?: string) {
+  async function updateProvider(providerKey: string, displayName: string,
+                                      headerRulesJson: string, baseUrl: string,
+                                      requestTransform: ProviderRequestTransformInput) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
-    if (customTransforms) {
-      formData.append('customTransforms', customTransforms)
-    }
-    if (baseUrl !== undefined) {
-      formData.append('baseUrl', baseUrl)
-    }
-    await http.put(`/custom-providers/${providerKey}`, formData.toString(), {
+    formData.append('headerRulesJson', headerRulesJson)
+    formData.append('baseUrl', baseUrl)
+    formData.append('bodyTemplateKeysJson', requestTransform.bodyTemplateKeysJson)
+    formData.append('bodyPreviewJson', requestTransform.bodyPreviewJson)
+    formData.append('bodyRulesJson', requestTransform.bodyRulesJson)
+    await http.put(`/providers/${providerKey}`, formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
     // 重新拉取列表
     await fetchAll()
   }
 
-  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchFakeVersion, addCustomProvider, deleteCustomProvider, updateCustomProvider }
+  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchFakeVersion, addProvider, deleteProvider, updateProvider }
 })
