@@ -29,28 +29,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * OpenAI 兼容上游服务的公共基类 —— 三阶段流式管道的核心。
+ * 通用 OpenAI 上游执行管道。
  *
- * 本类负责管道的前两个阶段，第三阶段由 Controller 层完成：
+ * 本类负责上游响应清洗、reasoning 缓存、请求转换、重试和调用日志。
  *
- * 阶段 1：上游清洗（{@link #normalizeUpstreamChunk}）
+ * 上游清洗（{@link #normalizeUpstreamChunk}）：
  *   将各上游供应商返回的格式不一致的 SSE chunk 统一为内部标准 OpenAI 格式。
  *   包括：统一 reasoning 字段名（5 种 → reasoning_content）、清理空值/空 tool_calls、
  *   统一 finish_reason 等。
  *
- * 阶段 2：中枢处理（在 {@link #chatCompletionStream} 的 Reactor 管道中完成）
+ * 中枢处理（在 {@link #chatCompletionStream} 的 Reactor 管道中完成）：
  *   基于清洗后的统一格式进行：reasoning 累积与缓存、reasoning fallback
  *   （无正文时回退用思考内容作为回复）、API 调用日志记录。
- *
- * 阶段 3：下游序列化（由 Controller 层完成，不在本类中）
- *   根据下游调用来源分流：
- *   - OpenAI 下游（/v1/chat/completions）：清洗后的 chunk 几乎 passthrough 包装为 SSE
- *   - Ollama 下游（/api/chat）：经 OllamaStreamTranslator 结构转换后输出 NDJSON
- *
- * 子类只需实现四个模板方法即可接入一个新的 OpenAI 兼容 provider：
- * {@link #defaultBaseUrl()}、{@link #normalizeBaseUrl(String)}、
- * {@link #applyAuthenticationHeaders} 和 {@link #chatCompletionsUri()}。
- * 如果需要在请求体中添加 provider 特有字段，可以覆写 {@link #customizeRequestBody}。
  *
  * 运行时配置（API Key、Base URL、模型列表）由调用方显式传入。
  */
@@ -73,8 +63,8 @@ public abstract class AbstractUpstreamChatService {
     private ApiCallLogService apiCallLog;
 
     /**
-     * 思考链缓存服务（可选）。
-     * 当子类注入此依赖时，基类自动启用思考链缓存功能：
+    * 思考链缓存服务（可选）。
+    * 注入此依赖后，管道自动启用思考链缓存功能：
      * - 流式响应中自动追踪 tool_call IDs 并在 finish_reason=tool_calls 时持久化 reasoning
      * - 请求体准备时自动为带 tool_calls 的 assistant 消息注入缓存的 reasoning_content
      */
@@ -95,14 +85,6 @@ public abstract class AbstractUpstreamChatService {
     @Autowired(required = false)
     public void setReasoningCache(ReasoningCache reasoningCache) {
         this.reasoningCache = reasoningCache;
-    }
-
-    /**
-     * 子类可调用此方法获取 ReasoningCache 实例（如需额外操作）。
-     * 如果未注入则返回 null。
-     */
-    protected ReasoningCache getReasoningCache() {
-        return reasoningCache;
     }
 
     @Autowired(required = false)
@@ -220,19 +202,12 @@ public abstract class AbstractUpstreamChatService {
                     return response.bodyToFlux(STRING_SSE_TYPE);
                 })
                 .retryWhen(buildRetrySpec("chatCompletionStream", provider)).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
-                .doOnNext(raw -> log.debug("{} 上游原始: {}", provider.providerKey(), raw)).doOnNext(raw -> {
-                    onRawStreamChunk(raw);
-                    trackToolCallIds(raw, pendingToolCallIds);
-                }).concatMap(chunk -> {
+                .doOnNext(raw -> log.debug("{} 上游原始: {}", provider.providerKey(), raw))
+                .doOnNext(raw -> trackToolCallIds(raw, pendingToolCallIds)).concatMap(chunk -> {
                     String normalizedChunk = normalizeUpstreamChunk(chunk, contentEmitted, reasoningBuffer, chunkId);
-                    // 对所有 finish chunk（stop/tool_calls）都调用 onStreamFinish 钩子
                     if (isTerminalChunk(normalizedChunk)) {
                         // 思考链缓存：finish_reason=tool_calls 时自动持久化
                         persistReasoningIfToolCalls(normalizedChunk, reasoningBuffer, pendingToolCallIds);
-                        Flux<String> customFinish = onStreamFinish(chunkId.get(), model, reasoningBuffer, contentEmitted.get());
-                        if (customFinish != null) {
-                            return customFinish;
-                        }
                         // 仅当 contentEmitted=false 且 reasoningBuffer 非空时触发 reasoning fallback
                         if (isStopFinishReason(normalizedChunk) && !contentEmitted.get() && !reasoningBuffer.isEmpty()) {
                             log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
@@ -267,7 +242,7 @@ public abstract class AbstractUpstreamChatService {
     /**
      * 构建 WebClient，同时捕获实际发送的请求头快照用于日志记录。
      * 返回的 Map 会在 WebClient.defaultHeaders 回调中被填充，
-     * 因此捕获的是经过 applyAuthenticationHeaders 和 customizeRequestBody 处理后的最终请求头。
+    * 因此捕获的是经过认证和规则处理后的最终请求头。
      *
      * @param capturedHeaders 用于捕获请求头的 Map，构建完成后包含实际发送的 headers
      * @return 配置好的 WebClient 实例
@@ -295,7 +270,7 @@ public abstract class AbstractUpstreamChatService {
     }
 
     /**
-     * 准备请求体，解析模型名称，设置流式标志，并调用 customizeRequestBody 进行特定服务的字段定制。
+    * 准备请求体，解析模型名称，设置流式标志，并应用当前供应商的请求体规则。
      * @param openAiRequest 请求体的初始 Map 结构
      * @param stream 是否启用流式响应
      * @param model 模型名称
@@ -495,17 +470,6 @@ public abstract class AbstractUpstreamChatService {
         if (modified) {
             log.debug("已向带 tool_calls 的 assistant 消息注入 reasoning_content");
         }
-    }
-
-    /**
-     * 子类可以重写此方法来拦截并处理上游返回的原始 SSE chunk（在上游清洗之前调用）。
-     * <p>
-     * 典型用途：捕获 tool_calls 相关的 reasoning_content 并存入缓存，
-     * 以便在下一轮请求中通过 {@link #customizeRequestBody} 回填。
-     *
-     * @param rawChunkJson 上游返回的原始 SSE data JSON 字符串（不含 "data: " 前缀）
-     */
-    protected void onRawStreamChunk(String rawChunkJson) {
     }
 
     /**
@@ -931,24 +895,4 @@ public abstract class AbstractUpstreamChatService {
         }
     }
 
-    /**
-     * 流结束时调用，子类可返回替换的 chunks 来覆盖默认的 reasoning fallback 逻辑。
-     *
-     * 当模型只输出了思考内容而未输出正文（contentEmitted 为 false），
-     * 并且 reasoningBuffer 非空时，基类会在发送 finish_reason:stop 之前调用此方法。
-     * 子类可以在此方法中检测特殊情况（如 XML 格式的工具调用意图），
-     * 并返回自定义的替代 chunk 序列。
-     *
-     * 返回 null 表示子类不做特殊处理，基类将执行默认的 reasoning fallback，
-     * 即把思考内容作为正文回复发送给客户端。
-     *
-     * @param chunkId 当前流的 chunk ID
-     * @param model 模型名称
-     * @param reasoningBuffer 累积的思考内容
-     * @param contentEmitted 是否已输出过正文 content
-     * @return 替代的 chunk 序列，或 null 表示使用默认 fallback
-     */
-    protected Flux<String> onStreamFinish(String chunkId, String model, StringBuilder reasoningBuffer, boolean contentEmitted) {
-        return null;
-    }
 }

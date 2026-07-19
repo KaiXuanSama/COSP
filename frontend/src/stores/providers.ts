@@ -28,7 +28,6 @@ export interface Provider {
   displayName: string
   enabled: boolean
   baseUrl: string | null
-  apiFormat: string
   requestTransform?: ProviderRequestTransform
   apiKeys: ApiKeyEntry[]
   models: ProviderModel[]

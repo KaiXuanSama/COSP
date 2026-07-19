@@ -11,21 +11,15 @@ export interface StatsData {
 
 export const useStatsStore = defineStore('stats', () => {
   const stats = ref<StatsData | null>(null)
-  const loading = ref(false)
-  const error = ref('')
 
   async function fetchStats() {
-    loading.value = true
-    error.value = ''
     try {
       const res = await http.get<StatsData>('/stats')
       stats.value = res.data
-    } catch (e: any) {
-      error.value = '获取统计数据失败: ' + e.message
-    } finally {
-      loading.value = false
+    } catch {
+      // 概览页保留最近一次统计值，避免短暂网络错误造成界面闪烁。
     }
   }
 
-  return { stats, loading, error, fetchStats }
+  return { stats, fetchStats }
 })

@@ -31,7 +31,7 @@ class ProviderConfigRepositoryQueryTests {
         jdbcTemplate = new CountingJdbcTemplate(dataSource);
         jdbcTemplate.execute("CREATE TABLE provider_config ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0, "
-                + "base_url TEXT NOT NULL DEFAULT '', api_format TEXT NOT NULL DEFAULT 'openai', "
+                + "base_url TEXT NOT NULL DEFAULT '', "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         jdbcTemplate.execute("CREATE TABLE provider_model ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, "
@@ -43,8 +43,8 @@ class ProviderConfigRepositoryQueryTests {
                 + "sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), UNIQUE (provider_id, key_name))");
 
-        jdbcTemplate.update("INSERT INTO provider_config (provider_key, enabled, base_url, api_format) VALUES (?, ?, ?, ?)", "deepseek", 1, "https://deepseek", "openai");
-        jdbcTemplate.update("INSERT INTO provider_config (provider_key, enabled, base_url, api_format) VALUES (?, ?, ?, ?)", "mimo", 1, "https://mimo", "openai");
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, enabled, base_url) VALUES (?, ?, ?)", "deepseek", 1, "https://deepseek");
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, enabled, base_url) VALUES (?, ?, ?)", "mimo", 1, "https://mimo");
         jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, enabled, context_size, caps_tools, caps_vision, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)", 1, "deepseek-v3", 1, 16384, 1, 0, 0);
         jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, enabled, context_size, caps_tools, caps_vision, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)", 2, "mimo-v2", 1, 8192, 0, 1, 0);
 

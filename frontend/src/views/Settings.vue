@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NSelect, NDropdown, useMessage } from 'naive-ui'
 import ProviderModelsSection from '@/components/settings/ProviderModelsSection.vue'
 import RequestBodyRuleEditor from '@/components/settings/request-body-rules/RequestBodyRuleEditor.vue'
@@ -22,136 +22,14 @@ const drawerWidth = computed(() =>
   windowWidth.value <= DRAWER_MIN_WIDTH ? windowWidth.value : DRAWER_MIN_WIDTH
 )
 
-const docsWindow = ref({
-  visible: false,
-  providerKey: null as string | null,
-  x: 24,
-  y: 72,
-  width: 560,
-  height: 680,
-})
-
-function clamp(value: number, min: number, max: number) {
-  if (max < min) return min
-  return Math.min(Math.max(value, min), max)
-}
-
-function clampDocsWindow() {
-  const minWidth = 360
-  const minHeight = 320
-  docsWindow.value.width = clamp(docsWindow.value.width, minWidth, Math.max(minWidth, window.innerWidth - 32))
-  docsWindow.value.height = clamp(docsWindow.value.height, minHeight, Math.max(minHeight, window.innerHeight - 32))
-  docsWindow.value.x = clamp(docsWindow.value.x, 16, Math.max(16, window.innerWidth - docsWindow.value.width - 16))
-  docsWindow.value.y = clamp(docsWindow.value.y, 16, Math.max(16, window.innerHeight - docsWindow.value.height - 16))
-}
-
-function getInitialDocsWindowRect() {
-  const minWidth = 360
-  const preferredWidth = 620
-  const availableLeftWidth = window.innerWidth - drawerWidth.value - 48
-  const width = clamp(
-    availableLeftWidth > minWidth ? Math.min(preferredWidth, availableLeftWidth) : Math.min(preferredWidth, window.innerWidth - 32),
-    minWidth,
-    Math.max(minWidth, window.innerWidth - 32),
-  )
-  const height = clamp(window.innerHeight - 96, 360, 760)
-  const x = clamp(window.innerWidth - drawerWidth.value - width - 24, 16, Math.max(16, window.innerWidth - width - 16))
-  const y = clamp(48, 16, Math.max(16, window.innerHeight - height - 16))
-  return { x, y, width, height }
-}
-
 function onResize() {
   windowWidth.value = window.innerWidth
-  if (docsWindow.value.visible) {
-    clampDocsWindow()
-  }
 }
-
-function startDocsWindowDrag(event: PointerEvent) {
-  event.preventDefault()
-  const startX = event.clientX
-  const startY = event.clientY
-  const originX = docsWindow.value.x
-  const originY = docsWindow.value.y
-
-  const onMove = (moveEvent: PointerEvent) => {
-    docsWindow.value.x = clamp(
-      originX + moveEvent.clientX - startX,
-      16,
-      Math.max(16, window.innerWidth - docsWindow.value.width - 16),
-    )
-    docsWindow.value.y = clamp(
-      originY + moveEvent.clientY - startY,
-      16,
-      Math.max(16, window.innerHeight - docsWindow.value.height - 16),
-    )
-  }
-
-  const onUp = () => {
-    window.removeEventListener('pointermove', onMove)
-    window.removeEventListener('pointerup', onUp)
-  }
-
-  window.addEventListener('pointermove', onMove)
-  window.addEventListener('pointerup', onUp)
-}
-
-function startDocsWindowResize(event: PointerEvent) {
-  event.preventDefault()
-  const startX = event.clientX
-  const startY = event.clientY
-  const originWidth = docsWindow.value.width
-  const originHeight = docsWindow.value.height
-
-  const onMove = (moveEvent: PointerEvent) => {
-    docsWindow.value.width = clamp(
-      originWidth + moveEvent.clientX - startX,
-      360,
-      Math.max(360, window.innerWidth - docsWindow.value.x - 16),
-    )
-    docsWindow.value.height = clamp(
-      originHeight + moveEvent.clientY - startY,
-      320,
-      Math.max(320, window.innerHeight - docsWindow.value.y - 16),
-    )
-  }
-
-  const onUp = () => {
-    window.removeEventListener('pointermove', onMove)
-    window.removeEventListener('pointerup', onUp)
-  }
-
-  window.addEventListener('pointermove', onMove)
-  window.addEventListener('pointerup', onUp)
-}
-
-function closeOfficialDocs() {
-  docsWindow.value.visible = false
-}
-
-function openOfficialDocs() {
-  if (!editingKey.value) return
-  docsWindow.value = {
-    visible: true,
-    providerKey: editingKey.value,
-    ...getInitialDocsWindowRect(),
-  }
-}
-
-const activeDocsUrl = computed(() => {
-  const key = docsWindow.value.providerKey
-  return key ? providerMeta.value[key]?.docsUrl ?? '' : ''
-})
-
-const activeDocsTitle = computed(() => {
-  const key = docsWindow.value.providerKey
-  return key ? `${providerMeta.value[key]?.displayName ?? key} 官方文档` : '官方文档'
-})
 
 onMounted(() => window.addEventListener('resize', onResize))
 onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 
-const providerMeta = ref<Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string; docsUrl: string }>>({})
+const providerMeta = ref<Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string }>>({})
 
 const editingKey = ref<string | null>(null)
 const editForm = ref({
@@ -607,9 +485,8 @@ async function saveProvider() {
       const res = await providerStore.addProvider(name, headerRulesJson, baseUrl, requestTransform)
       providerMeta.value[res.providerKey] = {
         displayName: name,
-        colorClass: 'custom',
+        colorClass: 'accent',
         apiUrlPlaceholder: baseUrl || 'https://api.example.com/v1',
-        docsUrl: '',
       }
       showProviderModal.value = false
       providerName.value = ''
@@ -651,12 +528,6 @@ const disabledProviderKeys = computed(() => {
   return allKeys.filter(k => !providerStore.providers[k]?.enabled)
 })
 
-watch(editingKey, (key) => {
-  if (docsWindow.value.visible && key) {
-    docsWindow.value.providerKey = key
-  }
-})
-
 async function enableProvider(key: string) {
   await providerStore.toggleProvider(key, true)
   message.success(`${providerMeta.value[key]?.displayName || key} 已启用`)
@@ -677,7 +548,6 @@ onMounted(async () => {
         displayName,
           colorClass: 'accent',
         apiUrlPlaceholder: actualBaseUrl || 'https://api.example.com/v1',
-        docsUrl: '',
       }
     }
   }
@@ -938,7 +808,6 @@ async function pullModels() {
 }
 
 function applyPulledModels() {
-  const existingModels = new Map(editForm.value.models.map((model: any) => [model.modelName, model]))
   // 只保留 added 和 unchanged 的模型
   editForm.value.models = pullDiffModal.value.entries
     .filter(e => e.status !== 'removed')
@@ -1257,52 +1126,15 @@ function removeModel(index: number) {
           </div>
         </div>
 
-        <ProviderModelsSection v-model:models="editForm.models" :pulling-models="pullingModels" :has-docs="!!(editingKey && providerMeta[editingKey]?.docsUrl)"
+        <ProviderModelsSection v-model:models="editForm.models" :pulling-models="pullingModels"
           :compact="windowWidth <= DRAWER_MIN_WIDTH"
-          @pull-models="pullModels" @open-docs="openOfficialDocs" @add-model="addModel" @remove-model="removeModel" />
+          @pull-models="pullModels" @add-model="addModel" @remove-model="removeModel" />
 
         <template #footer>
           <n-button type="primary" block @click="saveEditPanel">保存</n-button>
         </template>
       </n-drawer-content>
     </n-drawer>
-
-    <teleport to="body">
-      <div v-if="docsWindow.visible && activeDocsUrl" class="docs-window-layer">
-        <section class="docs-window" :style="{
-          left: `${docsWindow.x}px`,
-          top: `${docsWindow.y}px`,
-          width: `${docsWindow.width}px`,
-          height: `${docsWindow.height}px`,
-        }">
-          <div class="docs-window__header">
-            <div class="docs-window__drag-handle" @pointerdown="startDocsWindowDrag">
-              <div class="docs-window__eyebrow">官方文档</div>
-              <div class="docs-window__title">{{ activeDocsTitle }}</div>
-            </div>
-            <div class="docs-window__actions">
-              <a class="docs-window__link" :href="activeDocsUrl" target="_blank" rel="noreferrer" @click.stop>
-                新标签
-              </a>
-              <button type="button" class="docs-window__close" @click.stop="closeOfficialDocs">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                  stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </div>
-          </div>
-          <div class="docs-window__hint">窗口外可直接点击原页面控件；若官网禁止内嵌，可点“新标签”。</div>
-          <div class="docs-window__body">
-            <iframe class="docs-window__iframe" :src="activeDocsUrl" :title="activeDocsTitle"
-              referrerpolicy="no-referrer" />
-          </div>
-          <button type="button" class="docs-window__resize-handle" aria-label="调整文档窗口大小"
-            @pointerdown.stop="startDocsWindowResize"></button>
-        </section>
-      </div>
-    </teleport>
 
     <!-- API Key 管理模态框 -->
     <n-modal v-model:show="showApiKeyModal" preset="card" title="管理 API Key" style="width: 600px; max-width: 90vw;">
@@ -1401,9 +1233,6 @@ function removeModel(index: number) {
     background: $warning;
   }
 
-  &.custom {
-    background: linear-gradient(90deg, $accent, $blue);
-  }
 }
 
 .provider-card-delete {
@@ -1466,157 +1295,6 @@ function removeModel(index: number) {
   }
 }
 
-.docs-window-layer {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 2200;
-}
-
-.docs-window {
-  position: fixed;
-  display: flex;
-  flex-direction: column;
-  min-width: 360px;
-  min-height: 320px;
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid rgba(232, 229, 222, 0.94);
-  border-radius: $radius-lg;
-  box-shadow: $shadow-lg;
-  overflow: hidden;
-  pointer-events: auto;
-  backdrop-filter: blur(10px);
-}
-
-.docs-window__header {
-  display: flex;
-  align-items: stretch;
-  justify-content: space-between;
-  gap: $space-md;
-  padding: 14px 16px 12px;
-  border-bottom: 1px solid $border;
-  background: linear-gradient(135deg, rgba(194, 122, 62, 0.12), rgba(255, 255, 255, 0.92));
-}
-
-.docs-window__drag-handle {
-  flex: 1;
-  min-width: 0;
-  cursor: move;
-  user-select: none;
-}
-
-.docs-window__eyebrow {
-  font-family: $font-mono;
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: $text-muted;
-}
-
-.docs-window__title {
-  margin-top: 4px;
-  font-family: $font-display;
-  font-size: 20px;
-  font-weight: 600;
-  color: $text-primary;
-  line-height: 1.1;
-}
-
-.docs-window__actions {
-  display: flex;
-  align-items: center;
-  gap: $space-sm;
-  flex-shrink: 0;
-}
-
-.docs-window__link {
-  display: inline-flex;
-  align-items: center;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid $border;
-  font-family: $font-mono;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: $text-body;
-  text-decoration: none;
-  background: rgba(255, 255, 255, 0.72);
-  transition: all 0.2s ease;
-
-  &:hover {
-    color: $accent;
-    border-color: rgba(194, 122, 62, 0.35);
-    background: rgba(194, 122, 62, 0.08);
-  }
-}
-
-.docs-window__close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: $text-muted;
-  cursor: pointer;
-  transition: all 0.2s ease;
-
-  &:hover {
-    color: $danger;
-    background: rgba(184, 74, 74, 0.08);
-  }
-}
-
-.docs-window__hint {
-  padding: 8px 16px;
-  border-bottom: 1px solid $border-light;
-  font-family: $font-body;
-  font-size: 13px;
-  color: $text-muted;
-  background: rgba(245, 243, 238, 0.82);
-}
-
-.docs-window__body {
-  flex: 1;
-  min-height: 0;
-  background: $surface;
-}
-
-.docs-window__iframe {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: $surface;
-}
-
-.docs-window__resize-handle {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 18px;
-  height: 18px;
-  border: 0;
-  background: transparent;
-  cursor: nwse-resize;
-}
-
-.docs-window__resize-handle::before {
-  content: '';
-  position: absolute;
-  right: 4px;
-  bottom: 4px;
-  width: 10px;
-  height: 10px;
-  border-right: 2px solid rgba(194, 122, 62, 0.5);
-  border-bottom: 2px solid rgba(194, 122, 62, 0.5);
-}
-
 /* ── 添加供应商模态框 ── */
 .add-modal-empty {
   text-align: center;
@@ -1671,9 +1349,6 @@ function removeModel(index: number) {
     background: $warning;
   }
 
-  &.custom {
-    background: linear-gradient(90deg, $accent, $blue);
-  }
 }
 
 .add-modal-card-name {
@@ -1691,10 +1366,6 @@ function removeModel(index: number) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.add-modal-card--custom {
-  position: relative;
 }
 
 :global(.provider-context-menu__delete) {
@@ -2000,16 +1671,5 @@ function removeModel(index: number) {
     grid-template-columns: 1fr;
   }
 
-  .docs-window {
-    min-width: 300px;
-  }
-
-  .docs-window__title {
-    font-size: 18px;
-  }
-
-  .docs-window__hint {
-    font-size: 12px;
-  }
 }
 </style>

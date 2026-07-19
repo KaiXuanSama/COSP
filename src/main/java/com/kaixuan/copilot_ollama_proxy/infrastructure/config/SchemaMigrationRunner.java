@@ -30,7 +30,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final Logger log = LoggerFactory.getLogger(SchemaMigrationRunner.class);
     private static final double V7_BASELINE_VERSION = 7.0;
     private static final double V7_1_VERSION = 7.1;
-    private static final double CURRENT_SCHEMA_VERSION = 8.0;
+    private static final double V8_VERSION = 8.0;
+    private static final double CURRENT_SCHEMA_VERSION = 8.1;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -82,7 +83,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         if (!hasLegacyProviderConfigColumns()) {
             if (hasBaselineVersionRecord()) {
                 migrate(V7_1_VERSION, "新增供应商完整显示名", this::migrateDisplayNameToV71);
-                migrate(CURRENT_SCHEMA_VERSION, "统一供应商实现并移除 custom- 前缀", this::migrateToV8UnifiedProviders);
+                migrate(V8_VERSION, "统一供应商实现并移除 custom- 前缀", this::migrateToV8UnifiedProviders);
+                migrate(CURRENT_SCHEMA_VERSION, "移除固定的 API 格式字段", this::migrateToV81RemoveApiFormat);
                 return;
             }
             establishCurrentBaseline();
@@ -99,7 +101,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         migrate(6, "清理遗留请求转换配置", this::clearLegacyRequestTransforms);
         migrate(V7_BASELINE_VERSION, "移除废弃字段并压缩迁移历史", this::migrateToV7Baseline);
         migrate(V7_1_VERSION, "新增供应商完整显示名", this::migrateDisplayNameToV71);
-        migrate(CURRENT_SCHEMA_VERSION, "统一供应商实现并移除 custom- 前缀", this::migrateToV8UnifiedProviders);
+        migrate(V8_VERSION, "统一供应商实现并移除 custom- 前缀", this::migrateToV8UnifiedProviders);
+        migrate(CURRENT_SCHEMA_VERSION, "移除固定的 API 格式字段", this::migrateToV81RemoveApiFormat);
     }
 
     /**
@@ -113,7 +116,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                 "SELECT version FROM schema_version WHERE id = 1",
             resultSet -> resultSet.next() ? resultSet.getDouble("version") : null);
         return version != null && version >= CURRENT_SCHEMA_VERSION
-            && columnExists("provider_config", "display_name") && !hasLegacyProviderConfigColumns();
+            && columnExists("provider_config", "display_name") && !columnExists("provider_config", "api_format")
+            && !hasLegacyProviderConfigColumns();
     }
 
     /**
@@ -126,7 +130,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         + "ON CONFLICT(id) DO UPDATE SET version = excluded.version, "
                         + "description = excluded.description, "
                         + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
-                CURRENT_SCHEMA_VERSION, "V8 架构基线：统一供应商实现"));
+                    CURRENT_SCHEMA_VERSION, "V8.1 架构基线：统一供应商实现"));
         log.info("[SchemaMigration] 已建立 V{} 架构基线", CURRENT_SCHEMA_VERSION);
     }
 
@@ -400,8 +404,20 @@ public class SchemaMigrationRunner implements ApplicationRunner {
             }
             jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
                     + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
-                CURRENT_SCHEMA_VERSION, "V8 增量迁移：统一供应商实现并移除 custom- 前缀");
+                V8_VERSION, "V8 增量迁移：统一供应商实现并移除 custom- 前缀");
             }
+
+    /**
+     * V8.1：移除始终固定为 openai、不会影响运行时行为的 API 格式字段。
+     */
+    private void migrateToV81RemoveApiFormat() {
+        if (columnExists("provider_config", "api_format")) {
+            jdbcTemplate.execute("ALTER TABLE provider_config DROP COLUMN api_format");
+        }
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+            CURRENT_SCHEMA_VERSION, "V8.1 增量迁移：移除固定的 API 格式字段");
+    }
 
             private void deleteProviderConfiguration(int providerId) {
             jdbcTemplate.update("DELETE FROM provider_api_key WHERE provider_id = ?", providerId);

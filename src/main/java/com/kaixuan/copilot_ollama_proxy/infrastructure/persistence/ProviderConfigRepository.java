@@ -40,26 +40,6 @@ public class ProviderConfigRepository {
         return providers.isEmpty() ? null : providers.get(0);
     }
 
-    /**
-     * 查询某个服务商的模型列表。
-     */
-    public List<ProviderModelRow> findModelsByProviderId(int providerId) {
-        return jdbcTemplate.query(
-                "SELECT id, provider_id, model_name, enabled, context_size, max_output_tokens, caps_tools, caps_vision, reasoning_effort, sort_order " + "FROM provider_model WHERE provider_id = ? ORDER BY sort_order, id",
-                (rs, rowNum) -> new ProviderModelRow(
-                        rs.getInt("id"),
-                        rs.getInt("provider_id"),
-                        rs.getString("model_name"),
-                        rs.getInt("enabled") == 1,
-                        rs.getInt("context_size"),
-                        rs.getInt("max_output_tokens"),
-                        rs.getInt("caps_tools") == 1,
-                        rs.getInt("caps_vision") == 1,
-                        rs.getString("reasoning_effort"),
-                        rs.getInt("sort_order")
-                ), providerId);
-    }
-
     // ==================== 写入 ====================
 
     /**
@@ -68,38 +48,37 @@ public class ProviderConfigRepository {
      *
      * @return 对应的 provider_config.id
      */
-    public int saveProvider(String providerKey, String displayName, boolean enabled, String baseUrl, String apiFormat) {
+    public int saveProvider(String providerKey, String displayName, boolean enabled, String baseUrl) {
         jdbcTemplate.update(
-            "INSERT INTO provider_config (provider_key, display_name, enabled, base_url, api_format) "
-                + "VALUES (?, ?, ?, ?, ?) ON CONFLICT(provider_key) DO UPDATE SET "
+            "INSERT INTO provider_config (provider_key, display_name, enabled, base_url) "
+                + "VALUES (?, ?, ?, ?) ON CONFLICT(provider_key) DO UPDATE SET "
                 + "display_name = excluded.display_name, enabled = excluded.enabled, base_url = excluded.base_url, "
-                + "api_format = excluded.api_format, "
                 + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
-            providerKey, resolveDisplayName(providerKey, displayName), enabled ? 1 : 0, baseUrl, apiFormat);
+            providerKey, resolveDisplayName(providerKey, displayName), enabled ? 1 : 0, baseUrl);
         return jdbcTemplate.queryForObject("SELECT id FROM provider_config WHERE provider_key = ?", Integer.class, providerKey);
     }
 
     /**
      * 保存服务商配置，显示名缺省时从 provider_key 推导。
      */
-    public int saveProvider(String providerKey, boolean enabled, String baseUrl, String apiFormat) {
-        return saveProvider(providerKey, null, enabled, baseUrl, apiFormat);
+    public int saveProvider(String providerKey, boolean enabled, String baseUrl) {
+        return saveProvider(providerKey, null, enabled, baseUrl);
     }
 
     /**
-     * 仅更新服务商的 base_url 与 api_format，不修改 enabled 状态，也不涉及 API Key。
+     * 仅更新服务商的 base_url，不修改 enabled 状态，也不涉及 API Key。
      * 如果指定的 providerKey 不存在，则自动插入一条新记录（enabled = 0）。
      * @return 对应的 provider_config.id
      */
-    public int updateProviderConfig(String providerKey, String baseUrl, String apiFormat) {
+    public int updateProviderConfig(String providerKey, String baseUrl) {
         jdbcTemplate.update(
-            "INSERT INTO provider_config (provider_key, display_name, enabled, base_url, api_format) "
-                + "VALUES (?, ?, 0, ?, ?) ON CONFLICT(provider_key) DO UPDATE SET "
+            "INSERT INTO provider_config (provider_key, display_name, enabled, base_url) "
+                + "VALUES (?, ?, 0, ?) ON CONFLICT(provider_key) DO UPDATE SET "
                 + "display_name = CASE WHEN trim(provider_config.display_name) = '' "
                 + "THEN excluded.display_name ELSE provider_config.display_name END, "
-                + "base_url = excluded.base_url, api_format = excluded.api_format, "
+                + "base_url = excluded.base_url, "
                 + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
-            providerKey, deriveDisplayNameFromKey(providerKey), baseUrl, apiFormat);
+            providerKey, deriveDisplayNameFromKey(providerKey), baseUrl);
         return jdbcTemplate.queryForObject("SELECT id FROM provider_config WHERE provider_key = ?", Integer.class, providerKey);
     }
 
@@ -112,15 +91,14 @@ public class ProviderConfigRepository {
      * @param providerKey 服务商标识
      * @param baseUrl API 基础地址
      * @param apiKeys API Key 输入列表（明文按需加密，未修改项沿用原密文）
-     * @param apiFormat API 协议格式
      * @param models 完整模型列表
      * @return 对应的 provider_config.id
      */
     @Transactional
     public int saveProviderConfigWithModels(String providerKey, String baseUrl,
-                                            List<ProviderApiKeyRepository.ApiKeyInput> apiKeys, String apiFormat,
+                                                          List<ProviderApiKeyRepository.ApiKeyInput> apiKeys,
                                             List<Map<String, Object>> models) {
-        int providerId = updateProviderConfig(providerKey, baseUrl, apiFormat);
+          int providerId = updateProviderConfig(providerKey, baseUrl);
         providerApiKeyRepository.saveKeys(providerId, apiKeys);
         saveModels(providerId, models);
         return providerId;
@@ -161,15 +139,6 @@ public class ProviderConfigRepository {
         return loadProvidersWithModels(null, true, true);
     }
 
-    /**
-     * 根据 provider_key 查询单个服务商配置（运行时使用）。
-     * 如果服务商不存在或未启用，返回 null。
-     */
-    public ProviderConfigRow findActiveProviderByKey(String providerKey) {
-        List<ProviderConfigRow> providers = loadProvidersWithModels(providerKey, true, true);
-        return providers.isEmpty() ? null : providers.get(0);
-    }
-
     // ==================== 工具 ====================
 
     /**
@@ -205,7 +174,7 @@ public class ProviderConfigRepository {
     }
 
     private List<ProviderConfigRow> loadProvidersWithModels(String providerKey, boolean activeOnly, boolean enabledModelsOnly) {
-        StringBuilder sql = new StringBuilder("SELECT pc.id, pc.provider_key, pc.display_name, pc.enabled, pc.base_url, pc.api_format, pc.updated_at,")
+        StringBuilder sql = new StringBuilder("SELECT pc.id, pc.provider_key, pc.display_name, pc.enabled, pc.base_url, pc.updated_at,")
                 .append(" pm.id AS model_id, pm.provider_id AS model_provider_id, pm.model_name, pm.enabled AS model_enabled,")
                 .append(" pm.context_size, pm.max_output_tokens, pm.caps_tools, pm.caps_vision, pm.reasoning_effort, pm.sort_order")
                 .append(" FROM provider_config pc")
@@ -237,7 +206,6 @@ public class ProviderConfigRepository {
                     resolveDisplayName(providerKeyValue, (String) row.get("display_name")),
                     ((Number) row.get("enabled")).intValue() == 1,
                     (String) row.get("base_url"),
-                    (String) row.get("api_format"),
                     (String) row.get("updated_at")
             ));
 
@@ -274,7 +242,6 @@ public class ProviderConfigRepository {
                     provider.displayName,
                     provider.enabled,
                     provider.baseUrl,
-                    provider.apiFormat,
                     provider.updatedAt,
                     provider.models
             ));
@@ -328,18 +295,16 @@ public class ProviderConfigRepository {
         private final String displayName;
         private final boolean enabled;
         private final String baseUrl;
-        private final String apiFormat;
         private final String updatedAt;
         private final List<ProviderModelRow> models = new ArrayList<>();
 
         private MutableProviderConfig(int id, String providerKey, String displayName, boolean enabled, String baseUrl,
-                                      String apiFormat, String updatedAt) {
+                                      String updatedAt) {
             this.id = id;
             this.providerKey = providerKey;
             this.displayName = displayName;
             this.enabled = enabled;
             this.baseUrl = baseUrl;
-            this.apiFormat = apiFormat;
             this.updatedAt = updatedAt;
         }
     }

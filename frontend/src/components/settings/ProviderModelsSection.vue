@@ -5,7 +5,6 @@ type EditableModel = Record<string, any>
 
 defineProps<{
     pullingModels: boolean
-    hasDocs?: boolean
     compact?: boolean
 }>()
 
@@ -13,7 +12,6 @@ const models = defineModel<EditableModel[]>('models', { required: true })
 
 const emit = defineEmits<{
     (e: 'pull-models'): void
-    (e: 'open-docs'): void
     (e: 'add-model'): void
     (e: 'remove-model', index: number): void
 }>()
@@ -58,16 +56,6 @@ const effortOptions = [
                         </svg>
                     </template>
                     拉取模型
-                </n-button>
-                <n-button v-if="hasDocs" text size="tiny" @click="emit('open-docs')" class="docs-window-btn">
-                    <template #icon>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M6 3h9l3 3v15H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2" />
-                            <path d="M15 3v4h4" />
-                        </svg>
-                    </template>
-                    官方文档
                 </n-button>
                 <n-button text size="tiny" @click="emit('add-model')" class="add-model-btn">
                     <template #icon>

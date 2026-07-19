@@ -23,7 +23,7 @@ class DatabaseRuntimeProviderCatalogTests {
         ProviderApiKeyRepository providerApiKeyRepository = mock(ProviderApiKeyRepository.class);
         ProviderRequestTransformRepository requestTransformRepository = mock(ProviderRequestTransformRepository.class);
         ProviderConfigRow provider = new ProviderConfigRow(
-                42, "mimo-user", "Mimo User", true, "https://api.example/v1", "openai",
+                42, "mimo-user", "Mimo User", true, "https://api.example/v1",
                 "2026-07-18T00:00:00", List.of(new ProviderModelRow(
                         1, 42, "mimo-v2.5-pro", true, 32768, 8192,
                         true, false, "Medium", 0)));
@@ -49,7 +49,7 @@ class DatabaseRuntimeProviderCatalogTests {
         ProviderApiKeyRepository providerApiKeyRepository = mock(ProviderApiKeyRepository.class);
         ProviderRequestTransformRepository requestTransformRepository = mock(ProviderRequestTransformRepository.class);
         ProviderConfigRow provider = new ProviderConfigRow(
-                42, "mimo-user", "Mimo User", true, "https://api.example/v1", "openai",
+                42, "mimo-user", "Mimo User", true, "https://api.example/v1",
                 "2026-07-18T00:00:00", List.of());
         when(providerConfigRepository.findAllActiveProvidersWithEnabledModels()).thenReturn(List.of(provider));
         when(providerApiKeyRepository.resolveActiveApiKey(42)).thenReturn("test-key");

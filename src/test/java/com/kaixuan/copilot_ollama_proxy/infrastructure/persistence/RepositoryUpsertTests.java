@@ -32,7 +32,6 @@ class RepositoryUpsertTests {
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, "
                 + "display_name TEXT NOT NULL DEFAULT '', "
                 + "enabled INTEGER NOT NULL DEFAULT 0, base_url TEXT NOT NULL DEFAULT '', "
-                + "api_format TEXT NOT NULL DEFAULT 'openai', "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         jdbcTemplate.execute("CREATE TABLE provider_model ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, "
@@ -63,9 +62,9 @@ class RepositoryUpsertTests {
     @Test
     void providerUpsertUpdatesExistingRowWithoutChangingItsId() {
         int firstId = providerConfigRepository.saveProvider(
-                "mimo", false, "https://old.example", "openai");
+                "mimo", false, "https://old.example");
         int secondId = providerConfigRepository.saveProvider(
-                "mimo", true, "https://new.example", "openai");
+                "mimo", true, "https://new.example");
 
         assertThat(secondId).isEqualTo(firstId);
         assertThat(providerConfigRepository.findAllWithModels()).hasSize(1);
@@ -77,8 +76,8 @@ class RepositoryUpsertTests {
 
         @Test
         void providerUpsertPersistsExactDisplayNameAndNormalConfigUpdateKeepsIt() {
-                providerConfigRepository.saveProvider("stepfun", "StepFun", true, "https://old.example", "openai");
-                providerConfigRepository.updateProviderConfig("stepfun", "https://new.example", "openai");
+                providerConfigRepository.saveProvider("stepfun", "StepFun", true, "https://old.example");
+                providerConfigRepository.updateProviderConfig("stepfun", "https://new.example");
 
                 ProviderConfigRow row = providerConfigRepository.findByKey("stepfun");
                 assertThat(row.displayName()).isEqualTo("StepFun");
@@ -88,10 +87,10 @@ class RepositoryUpsertTests {
     @Test
         void partialProviderConfigUpsertPreservesEnabledState() {
         providerConfigRepository.saveProvider(
-                                "mimo", true, "https://old.example", "openai");
+                                "mimo", true, "https://old.example");
 
         int providerId = providerConfigRepository.updateProviderConfig(
-                "mimo", "https://new.example", "openai");
+                "mimo", "https://new.example");
 
         ProviderConfigRow row = providerConfigRepository.findByKey("mimo");
         assertThat(row.id()).isEqualTo(providerId);
@@ -112,7 +111,7 @@ class RepositoryUpsertTests {
 
     @Test
     void savingKeysCanSwitchActiveKeyWithoutViolatingPartialUniqueIndex() {
-        int providerId = providerConfigRepository.saveProvider("mimo", true, "https://api.example", "openai");
+        int providerId = providerConfigRepository.saveProvider("mimo", true, "https://api.example");
         providerApiKeyRepository.saveKeys(providerId, List.of(
                 new ProviderApiKeyRepository.ApiKeyInput(null, "first", "sk-first", true),
                 new ProviderApiKeyRepository.ApiKeyInput(null, "second", "sk-second", false)));

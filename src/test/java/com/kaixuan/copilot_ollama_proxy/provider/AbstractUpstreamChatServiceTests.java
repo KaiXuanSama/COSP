@@ -151,6 +151,6 @@ class AbstractUpstreamChatServiceTests {
     }
 
     private ProviderRuntimeConfiguration provider() {
-        return new ProviderRuntimeConfiguration("stub", "", "", "openai", List.of());
+        return new ProviderRuntimeConfiguration("stub", "", "", List.of());
     }
 }

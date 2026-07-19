@@ -15,7 +15,7 @@ class GenericOpenAiChatServiceRequestBodyRulesTests {
     @Test
     void customizeRequestBodyUsesNewRuleSetAndDoesNotExecuteLegacyBodyTransforms() {
         ProviderRuntimeConfiguration configuration = new ProviderRuntimeConfiguration(
-                "mimo-user", "https://api.example/v1", "key", "openai", List.of(),
+                "mimo-user", "https://api.example/v1", "key", List.of(),
                 "[]", """
                         {"version":1,"rules":[{
                           "id":"new-rule","order":0,"field":"temperature","array":false,
@@ -35,7 +35,7 @@ class GenericOpenAiChatServiceRequestBodyRulesTests {
     @Test
     void customizeRequestBodyAppliesMimoImageToolMessageRuleFromNewTableConfiguration() {
         ProviderRuntimeConfiguration configuration = new ProviderRuntimeConfiguration(
-                "mimo-user", "https://api.example/v1", "key", "openai", List.of(),
+                "mimo-user", "https://api.example/v1", "key", List.of(),
             "[]", mimoImageToolRuleSet());
         TestGenericOpenAiChatService service = new TestGenericOpenAiChatService(configuration);
         Map<String, Object> body = new LinkedHashMap<>();

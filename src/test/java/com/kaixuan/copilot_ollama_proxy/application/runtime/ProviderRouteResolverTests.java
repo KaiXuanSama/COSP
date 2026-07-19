@@ -64,6 +64,6 @@ class ProviderRouteResolverTests {
         List<ProviderRuntimeModel> runtimeModels = java.util.Arrays.stream(models)
                 .map(model -> new ProviderRuntimeModel(model, 8192, false, false, "medium"))
                 .toList();
-        return new ProviderRuntimeConfiguration(key, "", "", "openai", runtimeModels);
+        return new ProviderRuntimeConfiguration(key, "", "", runtimeModels);
     }
 }

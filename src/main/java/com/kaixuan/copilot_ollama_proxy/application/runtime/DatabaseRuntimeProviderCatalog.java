@@ -42,7 +42,6 @@ public class DatabaseRuntimeProviderCatalog implements RuntimeProviderCatalog {
                 source.providerKey() != null ? source.providerKey() : "",
                 source.baseUrl() != null ? source.baseUrl() : "",
                 providerApiKeyRepository.resolveActiveApiKey(source.id()),
-                source.apiFormat() != null ? source.apiFormat() : "openai",
                 source.models().stream().map(this::toModel).toList(),
                 transform != null ? transform.headerRulesJson() : "[]",
                 transform != null ? transform.bodyRulesJson() : "{\"version\":1,\"rules\":[]}"

@@ -71,7 +71,7 @@ public class ProviderRequestTransformService {
         ValidatedTransform transform = validate(
             headerRulesJson, templateKeysJson, bodyPreviewJson, bodyRulesJson);
         int providerId = providerConfigRepository.saveProvider(
-            providerKey, displayName, true, baseUrl, "openai");
+            providerKey, displayName, true, baseUrl);
         saveRequestTransform(providerId, transform);
         return providerId;
     }

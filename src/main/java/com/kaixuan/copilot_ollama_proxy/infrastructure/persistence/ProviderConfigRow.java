@@ -12,11 +12,10 @@ import java.util.List;
  * @param displayName       前端完整显示名
  * @param enabled           是否启用
  * @param baseUrl           API 基础地址
- * @param apiFormat         协议格式（如 "openai"）
  * @param updatedAt         更新时间
  * @param models            关联的模型列表
  */
 public record ProviderConfigRow(int id, String providerKey, String displayName, boolean enabled, String baseUrl,
-                                String apiFormat, String updatedAt,
+                                String updatedAt,
                                 List<ProviderModelRow> models) {
 }

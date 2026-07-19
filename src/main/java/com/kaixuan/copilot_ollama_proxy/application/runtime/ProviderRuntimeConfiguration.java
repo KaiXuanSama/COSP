@@ -7,7 +7,7 @@ import java.util.List;
  *
  * 请求头和请求体规则均从 provider_request_transform 读取。
  */
-public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey, String apiFormat,
+public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey,
                                            List<ProviderRuntimeModel> models, String headerRulesJson,
                                            String bodyRulesJson) {
 
@@ -17,18 +17,17 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
      * @param providerKey 供应商标识
      * @param baseUrl API 基础地址
      * @param apiKey 激活 API Key
-     * @param apiFormat API 协议格式
      * @param models 供应商模型
      */
-    public ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey, String apiFormat, List<ProviderRuntimeModel> models) {
-        this(providerKey, baseUrl, apiKey, apiFormat, models, "[]", "{\"version\":1,\"rules\":[]}");
+    public ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey,
+                                        List<ProviderRuntimeModel> models) {
+        this(providerKey, baseUrl, apiKey, models, "[]", "{\"version\":1,\"rules\":[]}");
     }
 
     public ProviderRuntimeConfiguration {
         providerKey = providerKey == null ? "" : providerKey;
         baseUrl = baseUrl == null ? "" : baseUrl;
         apiKey = apiKey == null ? "" : apiKey;
-        apiFormat = (apiFormat == null || apiFormat.isBlank()) ? "openai" : apiFormat;
         models = models == null ? List.of() : List.copyOf(models);
         headerRulesJson = (headerRulesJson == null || headerRulesJson.isBlank()) ? "[]" : headerRulesJson;
         bodyRulesJson = (bodyRulesJson == null || bodyRulesJson.isBlank())

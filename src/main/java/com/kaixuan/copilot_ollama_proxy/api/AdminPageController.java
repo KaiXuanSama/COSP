@@ -106,7 +106,6 @@ public class AdminPageController {
         view.put("displayName", p.displayName());
         view.put("enabled", p.enabled());
         view.put("baseUrl", p.baseUrl());
-        view.put("apiFormat", p.apiFormat());
         view.put("updatedAt", p.updatedAt());
         view.put("models", p.models());
         view.put("apiKeys", buildMaskedApiKeys(p.id()));
@@ -197,7 +196,7 @@ public class AdminPageController {
             baseUrl = provider.baseUrl() != null ? provider.baseUrl() : "";
         }
         // saveProvider 在记录不存在时会自动插入（首次启用场景）；API Key 独立管理，不受启停影响
-        providerConfigRepository.saveProvider(providerKey, enabled, baseUrl, "openai");
+        providerConfigRepository.saveProvider(providerKey, enabled, baseUrl);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("providerKey", providerKey);
         result.put("enabled", enabled);
@@ -257,7 +256,7 @@ public class AdminPageController {
                 models.add(m);
             }
             providerConfigRepository.saveProviderConfigWithModels(
-                    providerKey, baseUrl, apiKeyInputs, "openai", models);
+                    providerKey, baseUrl, apiKeyInputs, models);
             return ResponseEntity.ok(Map.<String, Object>of("ok", true));
         }).subscribeOn(Schedulers.boundedElastic());
     }
@@ -346,21 +345,6 @@ public class AdminPageController {
             }
         }
         return null;
-    }
-
-    // ==================== 账号修改（JSON API） ====================
-
-    /**
-     * 获取当前登录用户信息。
-     */
-    @GetMapping("/config/api/me") @ResponseBody
-    public Mono<ResponseEntity<Map<String, Object>>> currentUser(Mono<Authentication> authentication) {
-        return authentication.map(auth -> {
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("username", auth.getName());
-            result.put("role", auth.getAuthorities().stream().findFirst().map(Object::toString).orElse(""));
-            return ResponseEntity.ok(result);
-        });
     }
 
     private Mono<ResponseEntity<Object>> forwardModelsRequest(String providerKey, String rawBaseUrl, String apiKey, String rawModelPullPath) {
