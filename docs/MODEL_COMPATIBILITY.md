@@ -28,10 +28,12 @@ MiMo 曾在此场景下存在以下问题（均已由官方修复）：
 
 DeepSeek 在收到包含 `tool_calls` 的 assistant 消息时，要求同一消息中必须包含 `reasoning_content` 字段，否则返回 400 错误。
 
-**解决方案：** 已在代理层实现 `reasoning_content` 缓存机制：
-- 首次工具调用时捕获 `reasoning_content` 存入 SQLite 数据库
-- 后续请求中根据 `tool_call_id` 回填缓存的思考内容
-- 缓存未命中时使用空字符串 `""` 作为 fallback
+**当前处理：** VS Code 1.123.0 及以上的 GitHub Copilot 会保存并在后续工具调用请求中回放
+`reasoning_content`。COSP 统一上游返回的 reasoning 字段并透传该历史消息，不再将思考内容
+写入 SQLite 或自行回填。
+
+**兼容范围：** 当前版本仅支持会自行回放 reasoning 字段的 GitHub Copilot 客户端；旧版客户端和
+第三方 OpenAI 客户端不再由代理层提供缓存兜底。
 
 #### 2. 思考链较长
 
