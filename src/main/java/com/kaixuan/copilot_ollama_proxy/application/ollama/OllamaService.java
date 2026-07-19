@@ -1,12 +1,10 @@
 package com.kaixuan.copilot_ollama_proxy.application.ollama;
 
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
-import reactor.core.publisher.Mono;
 
 /**
- * Ollama 服务接口 —— 每个服务商各自实现一份，提供模型发现和详情查询能力。
- * Spring 容器中会同时存在多个实现，由 CompositeOllamaService 统一路由。
+ * Ollama 发现服务接口。
+ * 统一发现实现提供模型详情查询能力。
  */
 public interface OllamaService {
 
@@ -22,12 +20,6 @@ public interface OllamaService {
      * @return 如果支持则返回 true，否则返回 false
      */
     boolean supportsModel(String modelName);
-
-    /** 
-     * 获取该服务商支持的模型列表。
-     * @return 支持的模型列表
-     */
-    Mono<OllamaTagsResponse> listModels();
 
     /** 
      * 获取指定模型的详细信息。

@@ -24,10 +24,10 @@ public class OllamaServiceResolver {
     private final RuntimeProviderCatalog runtimeProviderCatalog;
     private final GenericDiscoveryService genericService;
 
-    public OllamaServiceResolver(RuntimeProviderCatalog runtimeProviderCatalog, List<OllamaService> ollamaServices, GenericDiscoveryService genericService) {
+    public OllamaServiceResolver(RuntimeProviderCatalog runtimeProviderCatalog, GenericDiscoveryService genericService) {
         this.runtimeProviderCatalog = runtimeProviderCatalog;
         this.genericService = genericService;
-        log.info("OllamaServiceResolver 初始化，已注册 {} 个服务商实现: {}", ollamaServices.size(), ollamaServices.stream().map(OllamaService::getProviderKey).collect(Collectors.joining(", ")));
+        log.info("OllamaServiceResolver 初始化，统一发现实现: {}", genericService.getProviderKey());
     }
 
     public OllamaService resolve(String modelName) {

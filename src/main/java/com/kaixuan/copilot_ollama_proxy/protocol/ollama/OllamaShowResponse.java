@@ -45,9 +45,9 @@ public class OllamaShowResponse {
     /**
      * 模型的元数据信息，key 格式遵循 Ollama 规范。
      * 关键字段：
-     * - general.architecture：架构名称（如 "mimo"），Copilot 用它来查找对应的参数
-     * - mimo.context_length：上下文窗口大小（token 数），Copilot 用此值决定消息截断策略
-     * - mimo.embedding_length：嵌入维度
+    * - general.architecture：架构名称，Copilot 用它来查找对应的参数
+    * - {architecture}.context_length：上下文窗口大小（token 数），Copilot 用此值决定消息截断策略
+    * - {architecture}.embedding_length：嵌入维度
      * - general.parameter_count：总参数量
      */
     @JsonProperty("model_info")
@@ -116,9 +116,9 @@ public class OllamaShowResponse {
         /** 父模型（如微调模型的基模型），本代理为空 */
         @JsonProperty("parent_model")
         private String parentModel;
-        /** 模型格式，如 "mimo" */
+        /** 模型格式，如 "openai" */
         private String format;
-        /** 模型家族，如 "Mimo" */
+        /** 模型家族，如 "generic" */
         private String family;
         /** 所属家族列表 */
         private List<String> families;

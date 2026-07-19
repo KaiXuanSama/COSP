@@ -3,7 +3,6 @@ package com.kaixuan.copilot_ollama_proxy.provider;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -14,18 +13,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class AbstractDiscoveryServiceTests {
 
     @Test
-    void supportsModelAndListsModelsFromRuntimeCatalog() {
+    void supportsModelFromRuntimeCatalog() {
         RuntimeProviderCatalog catalog = () -> List.of(new ProviderRuntimeConfiguration("stub", "", "", "openai", List.of(new ProviderRuntimeModel("model-a", 4096, true, false, "Medium"))));
         TestDiscoveryService service = new TestDiscoveryService(catalog);
 
-        OllamaTagsResponse response = service.listModels().block();
-
         assertThat(service.supportsModel("model-a")).isTrue();
         assertThat(service.supportsModel("model-b")).isFalse();
-        assertThat(response).isNotNull();
-        assertThat(response.getModels()).hasSize(1);
-        assertThat(response.getModels().get(0).getName()).isEqualTo("[stub] model-a");
-        assertThat(response.getModels().get(0).getDetails().getFormat()).isEqualTo("stub");
     }
 
     @Test

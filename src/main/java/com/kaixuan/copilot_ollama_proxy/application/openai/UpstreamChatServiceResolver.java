@@ -24,12 +24,10 @@ public class UpstreamChatServiceResolver {
         private final RuntimeProviderCatalog runtimeProviderCatalog;
         private final GenericOpenAiChatService genericService;
 
-        public UpstreamChatServiceResolver(RuntimeProviderCatalog runtimeProviderCatalog, List<UpstreamChatService> upstreamServices, GenericOpenAiChatService genericService) {
+        public UpstreamChatServiceResolver(RuntimeProviderCatalog runtimeProviderCatalog, GenericOpenAiChatService genericService) {
                 this.runtimeProviderCatalog = runtimeProviderCatalog;
                 this.genericService = genericService;
-
-                log.info("UpstreamChatServiceResolver 初始化，已注册 {} 个上游实现: {}", upstreamServices.size(),
-                                upstreamServices.stream().map(UpstreamChatService::getProviderKey).collect(Collectors.joining(", ")));
+                log.info("UpstreamChatServiceResolver 初始化，统一上游实现: {}", genericService.getProviderKey());
         }
 
         public UpstreamChatService resolve(String modelName) {

@@ -1083,7 +1083,7 @@ function removeModel(index: number) {
       @update:show="(val: boolean) => { if (!val) resetProviderAdvanced() }">
       <div class="field-group">
         <label class="field-label">供应商名称</label>
-        <div class="custom-name-row">
+        <div class="provider-name-row">
           <n-input v-model:value="providerName" placeholder="输入供应商名称" />
           <n-button size="small" @click="clearProviderForm">清空</n-button>
           <n-button size="small" @click="showPresetModal = true">预设</n-button>
@@ -1154,7 +1154,7 @@ function removeModel(index: number) {
       </div>
 
       <template #footer>
-        <div class="custom-add-footer">
+        <div class="provider-modal-footer">
           <n-button @click="showProviderModal = false; resetProviderAdvanced()">取消</n-button>
           <n-button type="primary" @click="saveProvider">{{ editingProviderKey ? '应用' : '添加' }}</n-button>
         </div>
@@ -1711,13 +1711,13 @@ function removeModel(index: number) {
   }
 }
 
-.custom-add-footer {
+.provider-modal-footer {
   display: flex;
   justify-content: flex-end;
   gap: $space-sm;
 }
 
-.custom-name-row {
+.provider-name-row {
   display: flex;
   gap: $space-sm;
   align-items: center;

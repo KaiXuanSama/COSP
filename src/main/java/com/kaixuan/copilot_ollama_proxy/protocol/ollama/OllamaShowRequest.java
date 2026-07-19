@@ -3,7 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.protocol.ollama;
 /**
  * Ollama /api/show 请求体。
  * Copilot 调用此接口获取指定模型的详细信息（上下文长度、能力、参数量等）。
- * 示例请求：{"model": "mimo-v2.5-pro"}
+ * 示例请求：{"model": "[provider-key] model-name"}
  */
 public class OllamaShowRequest {
 

@@ -652,14 +652,14 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
     protected abstract String normalizeBaseUrl(String rawBaseUrl);
 
     /**
-     * 在请求头中添加 provider 特有的认证信息。
-     * 默认委托给接口方法 {@link #applyAuthHeaders}，子类覆写接口方法即可。
+    * 在请求头中添加默认 Bearer 认证信息。
+    * 子类可覆写实现供应商的特殊认证方式。
      *
      * @param headers 请求头对象，子类直接修改即可
      * @param apiKey 从运行时配置读取的 API Key，可能为空串
      */
     protected void applyAuthenticationHeaders(HttpHeaders headers, String apiKey) {
-        applyAuthHeaders(headers, apiKey);
+        headers.setBearerAuth(apiKey);
     }
 
     /**

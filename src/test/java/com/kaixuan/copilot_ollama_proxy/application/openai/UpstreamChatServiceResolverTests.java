@@ -7,14 +7,10 @@ import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiCha
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
-
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 class UpstreamChatServiceResolverTests {
 
@@ -25,7 +21,7 @@ class UpstreamChatServiceResolverTests {
 
         GenericOpenAiChatService generic = mock(GenericOpenAiChatService.class);
 
-        UpstreamChatServiceResolver resolver = new UpstreamChatServiceResolver(catalog, List.of(generic), generic);
+        UpstreamChatServiceResolver resolver = new UpstreamChatServiceResolver(catalog, generic);
 
         assertThat(resolver.resolve("mimo-v2.5-pro")).isSameAs(generic);
     }
@@ -37,7 +33,7 @@ class UpstreamChatServiceResolverTests {
 
         GenericOpenAiChatService generic = mock(GenericOpenAiChatService.class);
 
-        UpstreamChatServiceResolver resolver = new UpstreamChatServiceResolver(catalog, List.of(generic), generic);
+        UpstreamChatServiceResolver resolver = new UpstreamChatServiceResolver(catalog, generic);
 
         assertThat(resolver.resolve("unknown-model")).isNull();
     }
@@ -45,41 +41,5 @@ class UpstreamChatServiceResolverTests {
     private ProviderRuntimeConfiguration provider(String providerKey, String apiFormat, String... modelNames) {
         List<ProviderRuntimeModel> models = java.util.Arrays.stream(modelNames).map(modelName -> new ProviderRuntimeModel(modelName, 0, false, false, "Medium")).toList();
         return new ProviderRuntimeConfiguration(providerKey, "", "", apiFormat, models);
-    }
-
-    private static final class StubUpstreamChatService implements UpstreamChatService {
-
-        private final String providerKey;
-        private final String apiFormat;
-
-        private StubUpstreamChatService(String providerKey, String apiFormat) {
-            this.providerKey = providerKey;
-            this.apiFormat = apiFormat;
-        }
-
-        @Override
-        public String getProviderKey() {
-            return providerKey;
-        }
-
-        @Override
-        public String getUpstreamApiFormat() {
-            return apiFormat;
-        }
-
-        @Override
-        public boolean supportsModel(String modelName) {
-            return false;
-        }
-
-        @Override
-        public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model) {
-            return Mono.empty();
-        }
-
-        @Override
-        public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
-            return Flux.empty();
-        }
     }
 }

@@ -155,7 +155,7 @@ class AbstractUpstreamChatServiceTests {
         }
 
         @Override
-        public void applyAuthHeaders(HttpHeaders headers, String apiKey) {
+        protected void applyAuthenticationHeaders(HttpHeaders headers, String apiKey) {
             headers.set("x-api-key", apiKey);
         }
 

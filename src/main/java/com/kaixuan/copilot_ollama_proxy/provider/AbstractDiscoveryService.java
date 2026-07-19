@@ -6,21 +6,18 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel
 import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
-import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaTagsResponse;
-import reactor.core.publisher.Mono;
 
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * 模型发现服务的运行时基类。
  *
  * 这个类把所有与具体 provider 无关的模型发现协议原语集中在一起：
- * 模型解析、tags 列表构造、showModel 的公共模板，以及 supportsModel 的默认实现。
+ * 模型解析、showModel 的公共模板，以及 supportsModel 的默认实现。
  *
  * 子类只需要提供 provider 特化点（providerKey、family、format、license 等）。
  * showModel 已有默认实现（解析模型 → 读能力 → 读上下文长度 → 构建响应），
@@ -64,20 +61,6 @@ public abstract class AbstractDiscoveryService implements OllamaService {
 
         // 无前缀时，使用原有匹配逻辑
         return config.supportsModel(modelName);
-    }
-
-    @Override
-    public Mono<OllamaTagsResponse> listModels() {
-        OllamaTagsResponse response = new OllamaTagsResponse();
-        ProviderRuntimeConfiguration config = getProviderConfiguration();
-
-        if (config == null) {
-            response.setModels(List.of());
-            return Mono.just(response);
-        }
-
-        response.setModels(config.models().stream().map(this::createModelInfo).toList());
-        return Mono.just(response);
     }
 
     /**
@@ -139,8 +122,9 @@ public abstract class AbstractDiscoveryService implements OllamaService {
     }
 
     /**
-     * 获取当前时间的 ISO 8601 格式字符串，通常用于响应中的时间戳字段。
-     * @return 当前时间的 ISO 8601 格式字符串
+     * 获取当前时间的 ISO 8601 格式字符串，用于发现响应中的时间戳字段。
+     *
+     * @return 当前时间的 ISO 8601 字符串
      */
     protected String currentTimestamp() {
         return DateTimeFormatter.ISO_INSTANT.format(Instant.now());
@@ -183,8 +167,7 @@ public abstract class AbstractDiscoveryService implements OllamaService {
     /**
      * 默认的 showModel 实现 —— 解析模型名、读能力、读上下文长度、构建响应。
      *
-     * 对于标准供应商（DeepSeek、MiMo 等）这个默认实现已经足够；
-     * 只有需要特殊路由逻辑的供应商（如 Generic）才需要覆写。
+    * 统一 Generic 发现服务可复用该实现，也可在需要时覆写路由逻辑。
      */
     @Override
     public OllamaShowResponse showModel(String modelName) {
@@ -192,40 +175,6 @@ public abstract class AbstractDiscoveryService implements OllamaService {
         List<String> capabilities = buildCapabilitiesFromDb(resolvedModel);
         int contextLength = requireContextLength(resolvedModel);
         return buildShowResponse(resolvedModel, contextLength, capabilities);
-    }
-
-    /**
-     * 创建模型信息对象。
-     * 模型名称会添加供应商前缀，格式为 [ProviderKey]modelName。
-     * @param model 模型对象
-     * @return 模型信息对象
-     */
-    private OllamaTagsResponse.ModelInfo createModelInfo(ProviderRuntimeModel model) {
-        OllamaTagsResponse.ModelInfo info = new OllamaTagsResponse.ModelInfo();
-        // 添加供应商前缀，确保所有模型名称格式统一
-        String prefixedName = ModelNameUtil.buildPrefixedName(getProviderKey(), model.modelName());
-        info.setName(prefixedName);
-        info.setModel(prefixedName);
-        info.setModifiedAt(currentTimestamp());
-        info.setSize(0);
-        info.setDigest("sha256:" + UUID.randomUUID().toString().replace("-", ""));
-        info.setDetails(buildTagDetails(model));
-        return info;
-    }
-
-    /**
-     * 从模型配置中构建标签详情对象。
-     * @param model 模型对象
-     * @return 标签详情对象
-     */
-    protected OllamaTagsResponse.ModelDetails buildTagDetails(ProviderRuntimeModel model) {
-        OllamaTagsResponse.ModelDetails details = new OllamaTagsResponse.ModelDetails();
-        details.setFormat(providerFormat());
-        details.setFamily(providerFamily());
-        details.setFamilies(providerFamilies());
-        details.setParameterSize(providerParameterSize());
-        details.setQuantizationLevel(providerQuantizationLevel());
-        return details;
     }
 
     /** 获取 provider 的协议格式标识。 */
