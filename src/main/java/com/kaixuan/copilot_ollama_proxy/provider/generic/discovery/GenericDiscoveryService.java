@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 通用模型发现服务 —— 处理所有 custom-* 前缀的自定义供应商。
+ * 通用模型发现服务 —— 处理所有数据库供应商配置。
  * 从数据库动态读取配置，提供模型发现和详情查询能力。
  */
 @Service
@@ -60,11 +60,10 @@ public class GenericDiscoveryService extends AbstractDiscoveryService {
     }
 
     /**
-     * 判断此服务是否能处理给定的 providerKey。
-     * 支持所有 custom- 前缀的供应商。
+    * 判断此服务是否能处理给定的 providerKey。
      */
     public boolean supports(String providerKey) {
-        return providerKey != null && providerKey.startsWith("custom-");
+        return providerKey != null && runtimeProviderCatalog.getActiveProvider(providerKey) != null;
     }
 
     @Override
@@ -73,24 +72,23 @@ public class GenericDiscoveryService extends AbstractDiscoveryService {
         String resolvedModel = resolveModelOrDefault(modelName);
         if (providerKey == null) {
             log.warn("通用服务无法找到模型 [{}] 对应的供应商", resolvedModel);
-            return buildGenericShowResponse(resolvedModel, 4096, List.of("completion"), "generic");
+            return buildGenericShowResponse(resolvedModel, 8192, List.of("completion"), "generic");
         }
         ProviderRuntimeConfiguration config = runtimeProviderCatalog.getActiveProvider(providerKey);
         List<String> caps = new ArrayList<>();
         caps.add("completion");
-        int contextLength = 4096;
+        int contextLength = 8192;
         if (config != null) {
             for (var m : config.models()) {
                 if (resolvedModel.equals(m.modelName())) {
-                    contextLength = m.contextSize() > 0 ? m.contextSize() : 4096;
+                    contextLength = m.contextSize() >= 8192 ? m.contextSize() : 8192;
                     if (m.capsTools()) caps.add("tools");
                     if (m.capsVision()) caps.add("vision");
                     break;
                 }
             }
         }
-        String displayKey = providerKey.startsWith("custom-") ? providerKey.substring(7) : providerKey;
-        return buildGenericShowResponse(resolvedModel, contextLength, caps, displayKey);
+        return buildGenericShowResponse(resolvedModel, contextLength, caps, providerKey);
     }
 
     /**
@@ -134,17 +132,13 @@ public class GenericDiscoveryService extends AbstractDiscoveryService {
             if (runtimeProviderCatalog.getActiveProvider(key) != null) {
                 return key;
             }
-            String customKey = "custom-" + key;
-            if (runtimeProviderCatalog.getActiveProvider(customKey) != null) {
-                return customKey;
-            }
         }
         return findProviderKeyForModel(parsed.modelName());
     }
 
     private String findProviderKeyForModel(String modelName) {
         for (var provider : runtimeProviderCatalog.getActiveProviders()) {
-            if (provider.providerKey().startsWith("custom-") && provider.supportsModel(modelName)) {
+            if (provider.supportsModel(modelName)) {
                 return provider.providerKey();
             }
         }

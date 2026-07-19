@@ -13,7 +13,7 @@ import reactor.core.publisher.Mono;
 import java.util.Map;
 
 /**
- * 通用 OpenAI 上游服务 —— 处理所有 custom-* 前缀的自定义供应商。
+ * 通用 OpenAI 上游服务 —— 处理所有数据库供应商配置。
  * 从数据库动态读取配置，复用父类的请求准备、SSE 解析、日志和流式翻译基础设施。
  * <p>
  * 请求头和请求体规则均从 provider_request_transform 读取。
@@ -105,13 +105,13 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
     }
 
     /**
-     * 重写日志记录的供应商标识，返回实际的自定义供应商名称（去掉 custom- 前缀）。
+    * 重写日志记录的供应商标识，返回实际的供应商键。
      */
     @Override
     protected String getLoggingProviderKey() {
         String key = currentProviderKey.get();
         if (key != null) {
-            return key.startsWith("custom-") ? key.substring(7) : key;
+            return key;
         }
         return getProviderKey();
     }
@@ -123,11 +123,13 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
     public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model) {
         String providerKey = resolveProviderKey(model);
         if (providerKey == null) {
-            return Mono.error(new IllegalStateException("无法解析自定义供应商: " + model));
+            return Mono.error(new IllegalStateException("无法解析供应商: " + model));
         }
-        currentProviderKey.set(providerKey);
-        return super.chatCompletion(openAiRequest, model)
-                .doFinally(signal -> currentProviderKey.remove());
+        return Mono.defer(() -> {
+            currentProviderKey.set(providerKey);
+            return super.chatCompletion(openAiRequest, model)
+                    .doFinally(signal -> currentProviderKey.remove());
+        });
     }
 
     /**
@@ -137,18 +139,20 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
     public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
         String providerKey = resolveProviderKey(model);
         if (providerKey == null) {
-            return Flux.error(new IllegalStateException("无法解析自定义供应商: " + model));
+            return Flux.error(new IllegalStateException("无法解析供应商: " + model));
         }
-        currentProviderKey.set(providerKey);
-        return super.chatCompletionStream(openAiRequest, model)
-                .doFinally(signal -> currentProviderKey.remove());
+        return Flux.defer(() -> {
+            currentProviderKey.set(providerKey);
+            return super.chatCompletionStream(openAiRequest, model)
+                    .doFinally(signal -> currentProviderKey.remove());
+        });
     }
 
     /**
-     * 判断此服务是否能处理给定的 providerKey。
+    * 判断此服务是否能处理给定的 providerKey。
      */
     public boolean supports(String providerKey) {
-        return providerKey != null && providerKey.startsWith("custom-");
+        return providerKey != null && runtimeProviderCatalog.getActiveProvider(providerKey) != null;
     }
 
     private String resolveProviderKey(String model) {
@@ -158,13 +162,9 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
             if (runtimeProviderCatalog.getActiveProvider(key) != null) {
                 return key;
             }
-            String customKey = "custom-" + key;
-            if (runtimeProviderCatalog.getActiveProvider(customKey) != null) {
-                return customKey;
-            }
         }
         for (var provider : runtimeProviderCatalog.getActiveProviders()) {
-            if (provider.providerKey().startsWith("custom-") && provider.supportsModel(parsed.modelName())) {
+            if (provider.supportsModel(parsed.modelName())) {
                 return provider.providerKey();
             }
         }

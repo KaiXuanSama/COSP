@@ -29,7 +29,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(SchemaMigrationRunner.class);
     private static final double V7_BASELINE_VERSION = 7.0;
-    private static final double CURRENT_SCHEMA_VERSION = 7.1;
+    private static final double V7_1_VERSION = 7.1;
+    private static final double CURRENT_SCHEMA_VERSION = 8.0;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -80,7 +81,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
 
         if (!hasLegacyProviderConfigColumns()) {
             if (hasBaselineVersionRecord()) {
-                migrate(CURRENT_SCHEMA_VERSION, "新增供应商完整显示名", this::migrateDisplayNameToV71);
+                migrate(V7_1_VERSION, "新增供应商完整显示名", this::migrateDisplayNameToV71);
+                migrate(CURRENT_SCHEMA_VERSION, "统一供应商实现并移除 custom- 前缀", this::migrateToV8UnifiedProviders);
                 return;
             }
             establishCurrentBaseline();
@@ -96,7 +98,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         migrate(5, "新增供应商请求转换配置表", this::migrateProviderRequestTransforms);
         migrate(6, "清理遗留请求转换配置", this::clearLegacyRequestTransforms);
         migrate(V7_BASELINE_VERSION, "移除废弃字段并压缩迁移历史", this::migrateToV7Baseline);
-        migrate(CURRENT_SCHEMA_VERSION, "新增供应商完整显示名", this::migrateDisplayNameToV71);
+        migrate(V7_1_VERSION, "新增供应商完整显示名", this::migrateDisplayNameToV71);
+        migrate(CURRENT_SCHEMA_VERSION, "统一供应商实现并移除 custom- 前缀", this::migrateToV8UnifiedProviders);
     }
 
     /**
@@ -123,7 +126,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         + "ON CONFLICT(id) DO UPDATE SET version = excluded.version, "
                         + "description = excluded.description, "
                         + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
-                CURRENT_SCHEMA_VERSION, "V7 架构基线：最终物理结构"));
+                CURRENT_SCHEMA_VERSION, "V8 架构基线：统一供应商实现"));
         log.info("[SchemaMigration] 已建立 V{} 架构基线", CURRENT_SCHEMA_VERSION);
     }
 
@@ -356,16 +359,63 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         createProviderConfigValidationTriggers();
         jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
                 + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
-            CURRENT_SCHEMA_VERSION, "V7.1 增量迁移：新增供应商完整显示名");
+                V7_1_VERSION, "V7.1 增量迁移：新增供应商完整显示名");
     }
+
+            /**
+             * V8：将 custom-* 服务商键收敛为普通键，并移除运行时的服务商类别语义。
+             *
+             * 当 custom-x 与 x 同时存在时，custom-x 被视为用户已配置的通用供应商，
+             * 会删除旧 x 及其关联配置后接管 x。调用日志保留历史 provider_key 原值。
+             */
+            private void migrateToV8UnifiedProviders() {
+            var customProviders = jdbcTemplate.queryForList(
+                "SELECT id, provider_key FROM provider_config WHERE provider_key LIKE 'custom-%' ORDER BY id");
+            for (var provider : customProviders) {
+                int providerId = ((Number) provider.get("id")).intValue();
+                String oldKey = (String) provider.get("provider_key");
+                String targetKey = oldKey.substring("custom-".length());
+                if (targetKey.isBlank()) {
+                throw new IllegalStateException("V8 迁移发现无效供应商键: " + oldKey);
+                }
+                Integer conflictingProviderId = jdbcTemplate.query(
+                    "SELECT id FROM provider_config WHERE provider_key = ?", resultSet ->
+                        resultSet.next() ? resultSet.getInt("id") : null, targetKey);
+                if (conflictingProviderId != null && conflictingProviderId != providerId) {
+                deleteProviderConfiguration(conflictingProviderId);
+                log.warn("[SchemaMigration] V8 删除被 [{}] 覆盖的旧供应商配置 [{}]", oldKey, targetKey);
+                }
+                jdbcTemplate.update("UPDATE provider_config SET provider_key = ? WHERE id = ?",
+                    "__v8_tmp_" + providerId, providerId);
+            }
+            for (var provider : customProviders) {
+                int providerId = ((Number) provider.get("id")).intValue();
+                String oldKey = (String) provider.get("provider_key");
+                jdbcTemplate.update("UPDATE provider_config SET provider_key = ? WHERE id = ?",
+                    oldKey.substring("custom-".length()), providerId);
+                String legacyDisplayName = deriveDisplayName(oldKey);
+                String normalizedDisplayName = deriveDisplayName(oldKey.substring("custom-".length()));
+                jdbcTemplate.update("UPDATE provider_config SET display_name = ? WHERE id = ? AND display_name = ?",
+                    normalizedDisplayName, providerId, legacyDisplayName);
+            }
+            jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                    + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+                CURRENT_SCHEMA_VERSION, "V8 增量迁移：统一供应商实现并移除 custom- 前缀");
+            }
+
+            private void deleteProviderConfiguration(int providerId) {
+            jdbcTemplate.update("DELETE FROM provider_api_key WHERE provider_id = ?", providerId);
+            jdbcTemplate.update("DELETE FROM provider_model WHERE provider_id = ?", providerId);
+            jdbcTemplate.update("DELETE FROM provider_request_transform WHERE provider_id = ?", providerId);
+            jdbcTemplate.update("DELETE FROM provider_config WHERE id = ?", providerId);
+            }
 
     private String deriveDisplayName(String providerKey) {
         if (providerKey == null || providerKey.isBlank()) {
             return "";
         }
-        String source = providerKey.startsWith("custom-") ? providerKey.substring(7) : providerKey;
         StringBuilder displayName = new StringBuilder();
-        for (String part : source.split("[-_\\s]+")) {
+        for (String part : providerKey.split("[-_\\s]+")) {
             if (part.isBlank()) {
                 continue;
             }
@@ -374,7 +424,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
             }
             displayName.append(Character.toUpperCase(part.charAt(0))).append(part.substring(1));
         }
-        return displayName.isEmpty() ? source : displayName.toString();
+        return displayName.isEmpty() ? providerKey : displayName.toString();
     }
 
     private boolean hasLegacyProviderConfigColumns() {

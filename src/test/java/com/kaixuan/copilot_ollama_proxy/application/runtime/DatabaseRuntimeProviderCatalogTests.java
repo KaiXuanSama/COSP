@@ -23,7 +23,7 @@ class DatabaseRuntimeProviderCatalogTests {
         ProviderApiKeyRepository providerApiKeyRepository = mock(ProviderApiKeyRepository.class);
         ProviderRequestTransformRepository requestTransformRepository = mock(ProviderRequestTransformRepository.class);
         ProviderConfigRow provider = new ProviderConfigRow(
-                42, "custom-mimo-user", "Mimo User", true, "https://api.example/v1", "openai",
+                42, "mimo-user", "Mimo User", true, "https://api.example/v1", "openai",
                 "2026-07-18T00:00:00", List.of(new ProviderModelRow(
                         1, 42, "mimo-v2.5-pro", true, 32768, 8192,
                         true, false, "Medium", 0)));
@@ -38,7 +38,7 @@ class DatabaseRuntimeProviderCatalogTests {
         DatabaseRuntimeProviderCatalog catalog = new DatabaseRuntimeProviderCatalog(
                 providerConfigRepository, providerApiKeyRepository, requestTransformRepository);
 
-        ProviderRuntimeConfiguration configuration = catalog.getActiveProvider("custom-mimo-user");
+        ProviderRuntimeConfiguration configuration = catalog.getActiveProvider("mimo-user");
         assertThat(configuration.headerRulesJson()).isEqualTo("[{\"key\":\"X-New\",\"value\":\"new\"}]");
         assertThat(configuration.bodyRulesJson()).isEqualTo("{\"version\":1,\"rules\":[{\"id\":\"rule-1\"}]}");
     }
@@ -49,7 +49,7 @@ class DatabaseRuntimeProviderCatalogTests {
         ProviderApiKeyRepository providerApiKeyRepository = mock(ProviderApiKeyRepository.class);
         ProviderRequestTransformRepository requestTransformRepository = mock(ProviderRequestTransformRepository.class);
         ProviderConfigRow provider = new ProviderConfigRow(
-                42, "custom-mimo-user", "Mimo User", true, "https://api.example/v1", "openai",
+                42, "mimo-user", "Mimo User", true, "https://api.example/v1", "openai",
                 "2026-07-18T00:00:00", List.of());
         when(providerConfigRepository.findAllActiveProvidersWithEnabledModels()).thenReturn(List.of(provider));
         when(providerApiKeyRepository.resolveActiveApiKey(42)).thenReturn("test-key");
@@ -58,7 +58,7 @@ class DatabaseRuntimeProviderCatalogTests {
         DatabaseRuntimeProviderCatalog catalog = new DatabaseRuntimeProviderCatalog(
                 providerConfigRepository, providerApiKeyRepository, requestTransformRepository);
 
-        ProviderRuntimeConfiguration configuration = catalog.getActiveProvider("custom-mimo-user");
+        ProviderRuntimeConfiguration configuration = catalog.getActiveProvider("mimo-user");
         assertThat(configuration.headerRulesJson()).isEqualTo("[]");
                 assertThat(configuration.bodyRulesJson()).isEqualTo("{\"version\":1,\"rules\":[]}");
     }

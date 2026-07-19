@@ -19,31 +19,27 @@ import reactor.core.publisher.Mono;
 class OllamaServiceResolverTests {
 
     @Test
-    void resolvesServiceByProviderKeyFromRuntimeCatalog() {
+    void resolvesEveryConfiguredProviderToTheSingleGenericImplementation() {
         RuntimeProviderCatalog catalog = mock(RuntimeProviderCatalog.class);
         given(catalog.getActiveProviders()).willReturn(List.of(provider("mimo", "mimo-v2.5-pro")));
 
-        OllamaService mimo = new StubOllamaService("mimo");
-        OllamaService longcat = new StubOllamaService("longcat");
         GenericDiscoveryService generic = mock(GenericDiscoveryService.class);
 
-        OllamaServiceResolver resolver = new OllamaServiceResolver(catalog, List.of(longcat, mimo), generic);
+        OllamaServiceResolver resolver = new OllamaServiceResolver(catalog, List.of(generic), generic);
 
-        assertThat(resolver.resolve("mimo-v2.5-pro")).isSameAs(mimo);
+        assertThat(resolver.resolve("mimo-v2.5-pro")).isSameAs(generic);
     }
 
     @Test
-    void fallsBackToFirstRegisteredServiceWhenModelIsUnknown() {
+    void returnsNullWhenModelIsUnknownRatherThanUsingAnArbitraryProvider() {
         RuntimeProviderCatalog catalog = mock(RuntimeProviderCatalog.class);
         given(catalog.getActiveProviders()).willReturn(List.of(provider("mimo", "mimo-v2.5-pro")));
 
-        OllamaService fallback = new StubOllamaService("longcat");
-        OllamaService second = new StubOllamaService("mimo");
         GenericDiscoveryService generic = mock(GenericDiscoveryService.class);
 
-        OllamaServiceResolver resolver = new OllamaServiceResolver(catalog, List.of(fallback, second), generic);
+        OllamaServiceResolver resolver = new OllamaServiceResolver(catalog, List.of(generic), generic);
 
-        assertThat(resolver.resolve("unknown-model")).isSameAs(fallback);
+        assertThat(resolver.resolve("unknown-model")).isNull();
     }
 
     private ProviderRuntimeConfiguration provider(String providerKey, String... modelNames) {

@@ -24,7 +24,7 @@ class SchemaMigrationRunnerTests {
     Path tempDir;
 
         @Test
-        void migratesLegacySchemaToV71AndPhysicallyRemovesObsoleteColumns() throws Exception {
+        void migratesLegacySchemaToV8AndPhysicallyRemovesObsoleteColumns() throws Exception {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
         createLegacySchema(jdbcTemplate);
         seedLegacyData(jdbcTemplate);
@@ -44,7 +44,7 @@ class SchemaMigrationRunnerTests {
         Integer versionCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_version", Integer.class);
         assertThat(versionCount).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject(
-                "SELECT version FROM schema_version WHERE id = 1", Double.class)).isEqualTo(7.1);
+                "SELECT version FROM schema_version WHERE id = 1", Double.class)).isEqualTo(8.0);
         assertThat(columnNames(jdbcTemplate, "provider_model"))
                 .contains("reasoning_effort", "max_output_tokens");
         assertThat(columnNames(jdbcTemplate, "provider_config"))
@@ -106,7 +106,7 @@ class SchemaMigrationRunnerTests {
     }
 
     @Test
-        void newSchemaEstablishesV71BaselineWithoutReplayingHistoricalMigrations() {
+        void newSchemaEstablishesV8BaselineWithoutReplayingHistoricalMigrations() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
         createCurrentSchema(jdbcTemplate);
 
@@ -121,13 +121,13 @@ class SchemaMigrationRunnerTests {
 
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_version", Integer.class)).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
-                .isEqualTo(7.1);
+                .isEqualTo(8.0);
         assertThat(columnNames(jdbcTemplate, "provider_config"))
                 .doesNotContain("api_key", "active_api_key_index", "custom_transforms");
     }
 
     @Test
-        void legacyDatabaseRecordedAtV2ContinuesThroughV71AndCompactsHistory() {
+        void legacyDatabaseRecordedAtV2ContinuesThroughV8AndCompactsHistory() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
         createLegacySchema(jdbcTemplate);
         seedLegacyData(jdbcTemplate);
@@ -150,7 +150,7 @@ class SchemaMigrationRunnerTests {
 
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_version", Integer.class)).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
-                .isEqualTo(7.1);
+                .isEqualTo(8.0);
         assertThat(columnNames(jdbcTemplate, "provider_config"))
                 .contains("display_name")
                 .doesNotContain("api_key", "active_api_key_index", "custom_transforms");
@@ -159,10 +159,11 @@ class SchemaMigrationRunnerTests {
     }
 
     @Test
-    void v7BaselineDatabaseIncrementallyAddsAndBackfillsDisplayName() {
+        void v7BaselineDatabaseIncrementallyAddsDisplayNameAndRemovesCustomPrefix() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
         createCurrentSchema(jdbcTemplate);
-        jdbcTemplate.update("INSERT INTO provider_config (provider_key) VALUES ('custom-stepfun')");
+                createCurrentProviderAssociations(jdbcTemplate);
+                jdbcTemplate.update("INSERT INTO provider_config (provider_key) VALUES ('custom-stepfun')");
         jdbcTemplate.execute("CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
                 + "version INTEGER NOT NULL, description TEXT NOT NULL, applied_at TEXT)");
         jdbcTemplate.update("INSERT INTO schema_version (id, version, description) VALUES (1, 7, 'V7 baseline')");
@@ -171,10 +172,40 @@ class SchemaMigrationRunnerTests {
         runner.run(null);
 
         assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
-                .isEqualTo(7.1);
+                .isEqualTo(8.0);
         assertThat(jdbcTemplate.queryForObject(
-                "SELECT display_name FROM provider_config WHERE provider_key = 'custom-stepfun'", String.class))
+                "SELECT display_name FROM provider_config WHERE provider_key = 'stepfun'", String.class))
                 .isEqualTo("Stepfun");
+    }
+
+    @Test
+    void v8MigrationLetsCustomConfigurationReplaceConflictingProviderAndKeepsItsAssociations() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createCurrentSchema(jdbcTemplate);
+        createCurrentProviderAssociations(jdbcTemplate);
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, display_name) VALUES ('mimo', '旧 MiMo')");
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, display_name) VALUES ('custom-mimo', '新 MiMo')");
+        jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name) VALUES (1, 'old-model')");
+        jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name) VALUES (2, 'new-model')");
+        jdbcTemplate.update("INSERT INTO provider_api_key (provider_id) VALUES (1)");
+        jdbcTemplate.update("INSERT INTO provider_api_key (provider_id) VALUES (2)");
+        jdbcTemplate.update("INSERT INTO provider_request_transform (provider_id) VALUES (1)");
+        jdbcTemplate.update("INSERT INTO provider_request_transform (provider_id) VALUES (2)");
+        jdbcTemplate.execute("CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
+                + "version REAL NOT NULL, description TEXT NOT NULL, applied_at TEXT)");
+        jdbcTemplate.update("INSERT INTO schema_version (id, version, description) VALUES (1, 7.1, 'V7.1')");
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM provider_config", Integer.class)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT display_name FROM provider_config WHERE provider_key = 'mimo'", String.class))
+                .isEqualTo("新 MiMo");
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM provider_model WHERE model_name = 'new-model'", Integer.class))
+                .isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM provider_model WHERE model_name = 'old-model'", Integer.class))
+                .isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM provider_api_key", Integer.class)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM provider_request_transform", Integer.class)).isEqualTo(1);
     }
 
     @Test
@@ -288,8 +319,14 @@ class SchemaMigrationRunnerTests {
 
         private void createCurrentSchema(JdbcTemplate jdbcTemplate) {
                 jdbcTemplate.execute("CREATE TABLE provider_config (id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                                + "provider_key TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL DEFAULT 0, "
+                                                                + "provider_key TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0, "
                                 + "base_url TEXT NOT NULL DEFAULT '', api_format TEXT NOT NULL DEFAULT 'openai', updated_at TEXT)");
+        }
+
+        private void createCurrentProviderAssociations(JdbcTemplate jdbcTemplate) {
+                jdbcTemplate.execute("CREATE TABLE provider_model (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL)");
+                jdbcTemplate.execute("CREATE TABLE provider_api_key (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL)");
+                jdbcTemplate.execute("CREATE TABLE provider_request_transform (provider_id INTEGER PRIMARY KEY)");
         }
 
     private void seedLegacyData(JdbcTemplate jdbcTemplate) {

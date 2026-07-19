@@ -173,7 +173,7 @@ public class ProviderConfigRepository {
     // ==================== 工具 ====================
 
     /**
-     * 更新自定义供应商标识和 API 地址。
+    * 更新供应商标识和 API 地址。
      *
      * @param oldProviderKey 原供应商标识
      * @param newProviderKey 新供应商标识
@@ -309,9 +309,8 @@ public class ProviderConfigRepository {
         if (providerKey == null || providerKey.isBlank()) {
             return "";
         }
-        String source = providerKey.startsWith("custom-") ? providerKey.substring(7) : providerKey;
         StringBuilder result = new StringBuilder();
-        for (String part : source.split("[-_\\s]+")) {
+        for (String part : providerKey.split("[-_\\s]+")) {
             if (part.isBlank()) {
                 continue;
             }
@@ -320,7 +319,7 @@ public class ProviderConfigRepository {
             }
             result.append(Character.toUpperCase(part.charAt(0))).append(part.substring(1));
         }
-        return result.isEmpty() ? source : result.toString();
+        return result.isEmpty() ? providerKey : result.toString();
     }
 
     private static class MutableProviderConfig {

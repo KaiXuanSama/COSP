@@ -151,20 +151,7 @@ const activeDocsTitle = computed(() => {
 onMounted(() => window.addEventListener('resize', onResize))
 onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 
-const providerMeta = ref<Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string; docsUrl: string }>>({
-  mimo: {
-    displayName: 'MiMo',
-    colorClass: 'blue',
-    apiUrlPlaceholder: 'https://api.xiaomimimo.com/v1',
-    docsUrl: 'https://platform.xiaomimimo.com/docs/zh-CN/pricing',
-  },
-  deepseek: {
-    displayName: 'DeepSeek',
-    colorClass: 'warning',
-    apiUrlPlaceholder: 'https://api.deepseek.com/v1',
-    docsUrl: 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing',
-  },
-})
+const providerMeta = ref<Record<string, { displayName: string; colorClass: string; apiUrlPlaceholder: string; docsUrl: string }>>({})
 
 const editingKey = ref<string | null>(null)
 const editForm = ref({
@@ -190,31 +177,31 @@ const pullDiffModal = ref({
 
 const showAddModal = ref(false)
 
-const customProviderContextMenu = ref({
+const providerContextMenuForDisabled = ref({
   visible: false,
   providerKey: '',
   x: 0,
   y: 0,
 })
-const deleteCustomProviderModal = ref({
+const deleteProviderModal = ref({
   visible: false,
   providerKey: '',
 })
 
-const customProviderContextOptions = computed(() => [
+const disabledProviderContextOptions = computed(() => [
   { label: '启用', key: 'enable' as const },
   { label: '修改', key: 'edit' as const },
   { label: '删除', key: 'delete' as const, props: { class: 'provider-context-menu__delete' } },
 ])
 
-const deleteCustomProviderName = computed(() => {
-  const key = deleteCustomProviderModal.value.providerKey
+const deleteProviderName = computed(() => {
+  const key = deleteProviderModal.value.providerKey
   return providerMeta.value[key]?.displayName || key
 })
 
-function openCustomProviderContextMenu(event: MouseEvent, key: string) {
+function openDisabledProviderContextMenu(event: MouseEvent, key: string) {
   event.preventDefault()
-  customProviderContextMenu.value = {
+  providerContextMenuForDisabled.value = {
     visible: true,
     providerKey: key,
     x: event.clientX,
@@ -222,9 +209,9 @@ function openCustomProviderContextMenu(event: MouseEvent, key: string) {
   }
 }
 
-function handleCustomProviderContextSelect(action: 'enable' | 'edit' | 'delete') {
-  const key = customProviderContextMenu.value.providerKey
-  customProviderContextMenu.value.visible = false
+function handleDisabledProviderContextSelect(action: 'enable' | 'edit' | 'delete') {
+  const key = providerContextMenuForDisabled.value.providerKey
+  providerContextMenuForDisabled.value.visible = false
   if (!key) return
 
   if (action === 'enable') {
@@ -232,17 +219,17 @@ function handleCustomProviderContextSelect(action: 'enable' | 'edit' | 'delete')
     return
   }
   if (action === 'edit') {
-    openEditCustomModal(key)
+    openEditProviderModal(key)
     return
   }
-  deleteCustomProviderModal.value = { visible: true, providerKey: key }
+  deleteProviderModal.value = { visible: true, providerKey: key }
 }
 
-async function confirmRemoveCustomProvider() {
-  const key = deleteCustomProviderModal.value.providerKey
+async function confirmRemoveProvider() {
+  const key = deleteProviderModal.value.providerKey
   if (!key) return
-  deleteCustomProviderModal.value.visible = false
-  await removeCustomProvider(key)
+  deleteProviderModal.value.visible = false
+  await removeProvider(key)
 }
 
 const providerContextMenu = ref({
@@ -255,7 +242,7 @@ const providerContextMenu = ref({
 const providerContextOptions = computed(() => {
   const key = providerContextMenu.value.providerKey
   const options: Array<{ label: string; key: 'edit' | 'disable'; disabled?: boolean }> = []
-  if (key && isEditableProvider(key)) {
+  if (key) {
     options.push({ label: '修改', key: 'edit' })
   }
   options.push({ label: '停用', key: 'disable' })
@@ -278,7 +265,7 @@ async function handleProviderContextSelect(action: 'edit' | 'disable') {
   if (!key) return
 
   if (action === 'edit') {
-    openEditCustomModal(key)
+    openEditProviderModal(key)
     return
   }
   await toggleProvider(key, false)
@@ -338,13 +325,13 @@ function cancelApiKeyModal() {
   showApiKeyModal.value = false
 }
 
-// ==================== 自定义供应商 ====================
+// ==================== 供应商编辑 ====================
 
-const showCustomAddModal = ref(false)
-const customProviderName = ref('')
-const customAdvancedExpanded = ref(false)
-const editingCustomKey = ref<string | null>(null)
-const customBaseUrl = ref('')
+const showProviderModal = ref(false)
+const providerName = ref('')
+const providerAdvancedExpanded = ref(false)
+const editingProviderKey = ref<string | null>(null)
+const providerBaseUrl = ref('')
 const showPresetModal = ref(false)
 
 /** 预设供应商模板 */
@@ -360,8 +347,8 @@ interface ProviderPreset {
 
 const IMAGE_COMPATIBILITY_TEMPLATE_KEYS: RequestBodyTemplateKey[] = ['message-tool-image']
 
-/** 创建自定义供应商默认图片兼容配置，避免共享可变规则集。 */
-function createCustomProviderDefaultEditorState(): RequestBodyEditorState {
+/** 创建供应商默认图片兼容配置，避免共享可变规则集。 */
+function createProviderDefaultEditorState(): RequestBodyEditorState {
   return {
     templateKeys: [...IMAGE_COMPATIBILITY_TEMPLATE_KEYS],
     previewBody: composeRequestBodyTemplate(IMAGE_COMPATIBILITY_TEMPLATE_KEYS),
@@ -370,6 +357,18 @@ function createCustomProviderDefaultEditorState(): RequestBodyEditorState {
 }
 
 const officialPresets: ProviderPreset[] = [
+  {
+    label: 'MiMo',
+    baseUrl: 'https://api.xiaomimimo.com/v1',
+    headers: [],
+    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
+    requestBodyRules: MIMO_EXAMPLE_RULESET,
+  },
+  {
+    label: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com/v1',
+    headers: [],
+  },
   {
     label: 'LongCat',
     baseUrl: 'https://api.longcat.chat/openai/v1',
@@ -478,9 +477,9 @@ function cloneRuleSet(rules: RuleSet): RuleSet {
 function applyPreset(label: string) {
   const preset = allPresets.find(p => p.label === label)
   if (preset) {
-    customProviderName.value = preset.label
-    customBaseUrl.value = preset.baseUrl
-    customHeaders.value = preset.headers.map(h => ({ ...h }))
+    providerName.value = preset.label
+    providerBaseUrl.value = preset.baseUrl
+    providerHeaders.value = preset.headers.map(h => ({ ...h }))
     const editorState = createDefaultRequestBodyEditorState()
     if (preset.requestBodyTemplateKeys && preset.requestBodyTemplateKeys.length > 0) {
       editorState.templateKeys = [...preset.requestBodyTemplateKeys]
@@ -490,18 +489,18 @@ function applyPreset(label: string) {
       editorState.rules = cloneRuleSet(preset.requestBodyRules)
     }
     requestBodyEditorState.value = editorState
-    customAdvancedExpanded.value = true
+    providerAdvancedExpanded.value = true
   }
   showPresetModal.value = false
 }
 
-/** 清空自定义供应商表单所有内容 */
-function clearCustomForm() {
-  customProviderName.value = ''
-  customBaseUrl.value = ''
-  customHeaders.value = []
-  requestBodyEditorState.value = createCustomProviderDefaultEditorState()
-  customAdvancedExpanded.value = false
+/** 清空供应商表单所有内容。 */
+function clearProviderForm() {
+  providerName.value = ''
+  providerBaseUrl.value = ''
+  providerHeaders.value = []
+  requestBodyEditorState.value = createProviderDefaultEditorState()
+  providerAdvancedExpanded.value = false
 }
 
 /** 高级设置 - 请求头覆盖列表 */
@@ -509,43 +508,42 @@ interface KeyValueEntry {
   key: string
   value: string
 }
-const customHeaders = ref<KeyValueEntry[]>([])
+const providerHeaders = ref<KeyValueEntry[]>([])
 
 /** 请求体映射规则及编辑器预览状态。 */
-const requestBodyEditorState = ref<RequestBodyEditorState>(createCustomProviderDefaultEditorState())
+const requestBodyEditorState = ref<RequestBodyEditorState>(createProviderDefaultEditorState())
 const showRequestBodyRuleEditor = ref(false)
 
-function addCustomHeader() {
-  customHeaders.value.push({ key: '', value: '' })
+function addProviderHeader() {
+  providerHeaders.value.push({ key: '', value: '' })
 }
 
-function removeCustomHeader(index: number) {
-  customHeaders.value.splice(index, 1)
+function removeProviderHeader(index: number) {
+  providerHeaders.value.splice(index, 1)
 }
 
-function resetCustomAdvanced() {
-  customAdvancedExpanded.value = false
-  customHeaders.value = []
-  requestBodyEditorState.value = createCustomProviderDefaultEditorState()
-  customBaseUrl.value = ''
-  editingCustomKey.value = null
+function resetProviderAdvanced() {
+  providerAdvancedExpanded.value = false
+  providerHeaders.value = []
+  requestBodyEditorState.value = createProviderDefaultEditorState()
+  providerBaseUrl.value = ''
+  editingProviderKey.value = null
 }
 
-/** 打开编辑自定义供应商模态框 */
-function openEditCustomModal(key: string) {
-  editingCustomKey.value = key
+/** 打开编辑供应商模态框。 */
+function openEditProviderModal(key: string) {
+  editingProviderKey.value = key
   const provider = providerStore.providers[key]
-  const displayName = provider?.displayName || providerMeta.value[key]?.displayName
-    || key.replace('custom-', '').replace(/-/g, ' ')
-  customProviderName.value = displayName
-  customHeaders.value = []
-  requestBodyEditorState.value = createCustomProviderDefaultEditorState()
-  customBaseUrl.value = (provider as any)?.baseUrl || ''
+  const displayName = provider?.displayName || providerMeta.value[key]?.displayName || key.replace(/-/g, ' ')
+  providerName.value = displayName
+  providerHeaders.value = []
+  requestBodyEditorState.value = createProviderDefaultEditorState()
+  providerBaseUrl.value = (provider as any)?.baseUrl || ''
   if (provider) {
     try {
       const headerRules = JSON.parse(provider.requestTransform?.headerRulesJson || '[]')
       if (Array.isArray(headerRules)) {
-        customHeaders.value = headerRules.map((h: any) => ({ key: h.key || '', value: h.value || '' }))
+        providerHeaders.value = headerRules.map((h: any) => ({ key: h.key || '', value: h.value || '' }))
       }
     } catch { /* ignore */ }
     try {
@@ -558,42 +556,42 @@ function openEditCustomModal(key: string) {
         }
       }
     } catch {
-      requestBodyEditorState.value = createCustomProviderDefaultEditorState()
+      requestBodyEditorState.value = createProviderDefaultEditorState()
     }
   }
   showAddModal.value = false
-  showCustomAddModal.value = true
+  showProviderModal.value = true
 }
 
 /** 构建请求头规则 JSON。 */
 function buildHeaderRulesJson(): string {
-  const headers = customHeaders.value.filter(h => h.key.trim())
+  const headers = providerHeaders.value.filter(h => h.key.trim())
   return JSON.stringify(headers.map(h => ({ key: h.key.trim(), value: h.value })))
 }
 
-/** 添加自定义供应商 */
-async function addCustomProvider() {
-  const name = customProviderName.value.trim()
+/** 保存供应商。 */
+async function saveProvider() {
+  const name = providerName.value.trim()
   if (!name) {
     message.warning('请输入供应商名称')
     return
   }
   try {
     const headerRulesJson = buildHeaderRulesJson()
-    const baseUrl = customBaseUrl.value.trim()
+    const baseUrl = providerBaseUrl.value.trim()
     const requestTransform = {
       bodyTemplateKeysJson: JSON.stringify(requestBodyEditorState.value.templateKeys),
       bodyPreviewJson: JSON.stringify(requestBodyEditorState.value.previewBody),
       bodyRulesJson: JSON.stringify(requestBodyEditorState.value.rules),
     }
-    if (editingCustomKey.value) {
+    if (editingProviderKey.value) {
       // 编辑模式
-      await providerStore.updateCustomProvider(
-        editingCustomKey.value, name, headerRulesJson, baseUrl, requestTransform,
+      await providerStore.updateProvider(
+        editingProviderKey.value, name, headerRulesJson, baseUrl, requestTransform,
       )
       // 更新前端元数据
-      const oldKey = editingCustomKey.value
-      const newKey = 'custom-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+      const oldKey = editingProviderKey.value
+      const newKey = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
       const metaUpdate = { displayName: name, apiUrlPlaceholder: baseUrl || 'https://api.example.com/v1' }
       if (newKey !== oldKey && providerMeta.value[oldKey]) {
         providerMeta.value[newKey] = { ...providerMeta.value[oldKey], ...metaUpdate }
@@ -601,58 +599,44 @@ async function addCustomProvider() {
       } else {
         providerMeta.value[oldKey] = { ...providerMeta.value[oldKey], ...metaUpdate }
       }
-      showCustomAddModal.value = false
-      resetCustomAdvanced()
-      message.success(`已修改自定义供应商「${name}」`)
+      showProviderModal.value = false
+      resetProviderAdvanced()
+      message.success(`已修改供应商「${name}」`)
     } else {
       // 新增模式
-      const res = await providerStore.addCustomProvider(name, headerRulesJson, baseUrl, requestTransform)
+      const res = await providerStore.addProvider(name, headerRulesJson, baseUrl, requestTransform)
       providerMeta.value[res.providerKey] = {
         displayName: name,
         colorClass: 'custom',
         apiUrlPlaceholder: baseUrl || 'https://api.example.com/v1',
         docsUrl: '',
       }
-      showCustomAddModal.value = false
-      customProviderName.value = ''
-      resetCustomAdvanced()
-      message.success(`已添加自定义供应商「${name}」`)
+      showProviderModal.value = false
+      providerName.value = ''
+      resetProviderAdvanced()
+      message.success(`已添加供应商「${name}」`)
     }
   } catch (e: any) {
     message.error(e?.response?.data?.error || '操作失败')
   }
 }
 
-/** 删除自定义供应商 */
-async function removeCustomProvider(key: string) {
+/** 删除供应商。 */
+async function removeProvider(key: string) {
   const displayName = providerMeta.value[key]?.displayName || key
   try {
-    await providerStore.deleteCustomProvider(key)
+    await providerStore.deleteProvider(key)
     delete providerMeta.value[key]
     if (editingKey.value === key) {
       closeEditPanel()
     }
-    message.success(`已删除自定义供应商「${displayName}」`)
+    message.success(`已删除供应商「${displayName}」`)
   } catch {
     message.error('删除失败')
   }
 }
 
-/** 判断是否为自定义供应商 */
-function isCustomProvider(key: string) {
-  return key.startsWith('custom-')
-}
-
-/** 内置供应商 key 列表 */
-const builtInProviderKeys = new Set(Object.keys(providerMeta.value))
-
-/** 判断是否可编辑/删除（自定义供应商 或 非内置供应商） */
-function isEditableProvider(key: string) {
-  return isCustomProvider(key) || !builtInProviderKeys.has(key)
-}
-
 const enabledProviderKeys = computed(() => {
-  // 内置 + 自定义供应商的 key
   const metaKeys = Object.keys(providerMeta.value)
   // provider_config 中可能存在但 meta 中没有的（如数据库残留）
   const storeKeys = Object.keys(providerStore.providers)
@@ -665,11 +649,6 @@ const disabledProviderKeys = computed(() => {
   const storeKeys = Object.keys(providerStore.providers)
   const allKeys = [...new Set([...metaKeys, ...storeKeys])]
   return allKeys.filter(k => !providerStore.providers[k]?.enabled)
-})
-
-/**判断是否已有至少一个自定义供应商被创建（用于模态框空状态提示判断） */
-const hasCustomProviders = computed(() => {
-  return Object.keys(providerStore.providers).some(k => k.startsWith('custom-'))
 })
 
 watch(editingKey, (key) => {
@@ -687,16 +666,16 @@ async function enableProvider(key: string) {
 onMounted(async () => {
   await providerStore.fetchAll()
   await providerStore.fetchFakeVersion()
-  // 将 custom- 前缀的供应商注入 providerMeta
+  // 将数据库中尚未配置展示元数据的供应商注入 providerMeta
   for (const key of Object.keys(providerStore.providers)) {
-    if (key.startsWith('custom-') && !providerMeta.value[key]) {
+    if (!providerMeta.value[key]) {
       const provider = providerStore.providers[key]
-      const displayName = provider?.displayName || key.replace('custom-', '')
+      const displayName = provider?.displayName || key
         .replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
       const actualBaseUrl = provider?.baseUrl || ''
       providerMeta.value[key] = {
         displayName,
-        colorClass: 'custom',
+          colorClass: 'accent',
         apiUrlPlaceholder: actualBaseUrl || 'https://api.example.com/v1',
         docsUrl: '',
       }
@@ -1061,22 +1040,21 @@ function removeModel(index: number) {
     <!-- 添加供应商模态框 -->
     <n-modal v-model:show="showAddModal" preset="card" title="添加供应商" :style="{ maxWidth: '480px' }" closable
       :mask-closable="true">
-      <div v-if="disabledProviderKeys.length === 0 && !hasCustomProviders" class="add-modal-empty">
-        所有内置供应商已启用
+      <div v-if="disabledProviderKeys.length === 0" class="add-modal-empty">
+        所有供应商已启用
       </div>
       <div class="add-modal-grid">
         <div v-for="key in disabledProviderKeys" :key="key" class="add-modal-card"
-          :class="{ 'add-modal-card--custom': isCustomProvider(key) }"
           @click="enableProvider(key)"
-          @contextmenu="isCustomProvider(key) && openCustomProviderContextMenu($event, key)">
+          @contextmenu="openDisabledProviderContextMenu($event, key)">
           <div class="add-modal-card-top" :class="providerMeta[key]?.colorClass || 'accent'"></div>
           <div class="add-modal-card-name">{{ providerMeta[key]?.displayName || key }}</div>
           <div class="add-modal-card-desc">{{ providerMeta[key]?.apiUrlPlaceholder || '' }}</div>
         </div>
-        <!-- 自定义供应商入口 — 始终显示，不依赖 disabledProviderKeys -->
-        <div class="add-modal-card add-modal-card--new" @click="showAddModal = false; showCustomAddModal = true">
+        <!-- 添加供应商入口 — 始终显示，不依赖 disabledProviderKeys -->
+        <div class="add-modal-card add-modal-card--new" @click="showAddModal = false; showProviderModal = true">
           <div class="add-modal-card-top accent"></div>
-          <div class="add-modal-card-name">自定义供应商</div>
+          <div class="add-modal-card-name">添加供应商</div>
           <div class="add-modal-card-desc">标准 OpenAI 兼容接口</div>
         </div>
       </div>
@@ -1085,57 +1063,57 @@ function removeModel(index: number) {
     <n-dropdown
       placement="bottom-start"
       trigger="manual"
-      :show="customProviderContextMenu.visible"
-      :x="customProviderContextMenu.x"
-      :y="customProviderContextMenu.y"
-      :options="customProviderContextOptions"
-      @select="handleCustomProviderContextSelect"
-      @clickoutside="customProviderContextMenu.visible = false"
+      :show="providerContextMenuForDisabled.visible"
+      :x="providerContextMenuForDisabled.x"
+      :y="providerContextMenuForDisabled.y"
+      :options="disabledProviderContextOptions"
+      @select="handleDisabledProviderContextSelect"
+      @clickoutside="providerContextMenuForDisabled.visible = false"
     />
 
-    <n-modal v-model:show="deleteCustomProviderModal.visible" preset="dialog" type="error"
-      title="确认删除自定义供应商" positive-text="删除" negative-text="取消"
-      @positive-click="confirmRemoveCustomProvider">
-      删除自定义供应商「{{ deleteCustomProviderName }}」后，其 API Key、模型和请求转换配置将无法恢复。确定继续吗？
+    <n-modal v-model:show="deleteProviderModal.visible" preset="dialog" type="error"
+      title="确认删除供应商" positive-text="删除" negative-text="取消"
+      @positive-click="confirmRemoveProvider">
+      删除供应商「{{ deleteProviderName }}」后，其 API Key、模型和请求转换配置将无法恢复。确定继续吗？
     </n-modal>
 
-    <!-- 自定义供应商名称输入模态框 -->
-    <n-modal v-model:show="showCustomAddModal" preset="card" :title="editingCustomKey ? '修改自定义供应商' : '添加自定义供应商'"
+    <!-- 供应商名称输入模态框 -->
+    <n-modal v-model:show="showProviderModal" preset="card" :title="editingProviderKey ? '修改供应商' : '添加供应商'"
       :style="{ maxWidth: '480px' }" closable :mask-closable="true"
-      @update:show="(val: boolean) => { if (!val) resetCustomAdvanced() }">
+      @update:show="(val: boolean) => { if (!val) resetProviderAdvanced() }">
       <div class="field-group">
-        <label class="field-label">自定义供应商名称</label>
+        <label class="field-label">供应商名称</label>
         <div class="custom-name-row">
-          <n-input v-model:value="customProviderName" placeholder="输入供应商名称" />
-          <n-button size="small" @click="clearCustomForm">清空</n-button>
+          <n-input v-model:value="providerName" placeholder="输入供应商名称" />
+          <n-button size="small" @click="clearProviderForm">清空</n-button>
           <n-button size="small" @click="showPresetModal = true">预设</n-button>
         </div>
       </div>
 
       <!-- 高级设置折叠区域 -->
-      <div class="advanced-toggle" @click="customAdvancedExpanded = !customAdvancedExpanded">
+      <div class="advanced-toggle" @click="providerAdvancedExpanded = !providerAdvancedExpanded">
         <span class="advanced-toggle-label">高级设置</span>
-        <svg class="advanced-toggle-arrow" :class="{ 'advanced-toggle-arrow--expanded': customAdvancedExpanded }"
+        <svg class="advanced-toggle-arrow" :class="{ 'advanced-toggle-arrow--expanded': providerAdvancedExpanded }"
           width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="6 9 12 15 18 9" />
         </svg>
       </div>
 
-      <div v-if="customAdvancedExpanded" class="advanced-panel">
+      <div v-if="providerAdvancedExpanded" class="advanced-panel">
         <!-- API 地址 -->
         <div class="advanced-section">
           <div class="advanced-section-header">
             <span class="advanced-section-title">API 地址</span>
           </div>
-          <n-input v-model:value="customBaseUrl" placeholder="https://api.example.com/v1" />
+          <n-input v-model:value="providerBaseUrl" placeholder="https://api.example.com/v1" />
         </div>
 
         <!-- 请求头覆盖 -->
         <div class="advanced-section">
           <div class="advanced-section-header">
             <span class="advanced-section-title">额外覆写或修剪请求头</span>
-            <n-button text size="tiny" class="advanced-add-btn" @click="addCustomHeader">
+            <n-button text size="tiny" class="advanced-add-btn" @click="addProviderHeader">
               <template #icon>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1146,11 +1124,11 @@ function removeModel(index: number) {
               新增
             </n-button>
           </div>
-          <div v-if="customHeaders.length === 0" class="advanced-empty">暂无自定义请求头</div>
-          <div v-for="(header, idx) in customHeaders" :key="idx" class="advanced-row">
+          <div v-if="providerHeaders.length === 0" class="advanced-empty">暂无请求头</div>
+          <div v-for="(header, idx) in providerHeaders" :key="idx" class="advanced-row">
             <n-input v-model:value="header.key" placeholder="Header 名称" class="advanced-input-key" />
             <n-input v-model:value="header.value" placeholder="值（/del/ 表示删除）" class="advanced-input-value" />
-            <button class="advanced-delete-btn" title="删除" @click="removeCustomHeader(idx)">
+            <button class="advanced-delete-btn" title="删除" @click="removeProviderHeader(idx)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <line x1="18" y1="6" x2="6" y2="18" />
@@ -1177,8 +1155,8 @@ function removeModel(index: number) {
 
       <template #footer>
         <div class="custom-add-footer">
-          <n-button @click="showCustomAddModal = false; resetCustomAdvanced()">取消</n-button>
-          <n-button type="primary" @click="addCustomProvider">{{ editingCustomKey ? '应用' : '添加' }}</n-button>
+          <n-button @click="showProviderModal = false; resetProviderAdvanced()">取消</n-button>
+          <n-button type="primary" @click="saveProvider">{{ editingProviderKey ? '应用' : '添加' }}</n-button>
         </div>
       </template>
     </n-modal>

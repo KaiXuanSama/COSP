@@ -34,18 +34,3 @@ call-log:
 ollama:
   version: ${OLLAMA_VERSION:0.6.4}
 
-# ===== 服务商默认模型（数据库为空时的 fallback） =====
-mimo:
-  default-model: mimo-v2.5-pro
-
-longcat:
-  default-model: LongCat-Flash-Chat
-
-sensenova:
-  default-model: sensenova-6.7-flash-lite
-
-deepseek:
-  default-model: deepseek-v4-flash
-
-kimi:
-  default-model: kimi-k2.5

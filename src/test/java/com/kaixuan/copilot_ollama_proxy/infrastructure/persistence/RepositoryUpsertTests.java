@@ -77,10 +77,10 @@ class RepositoryUpsertTests {
 
         @Test
         void providerUpsertPersistsExactDisplayNameAndNormalConfigUpdateKeepsIt() {
-                providerConfigRepository.saveProvider("custom-stepfun", "StepFun", true, "https://old.example", "openai");
-                providerConfigRepository.updateProviderConfig("custom-stepfun", "https://new.example", "openai");
+                providerConfigRepository.saveProvider("stepfun", "StepFun", true, "https://old.example", "openai");
+                providerConfigRepository.updateProviderConfig("stepfun", "https://new.example", "openai");
 
-                ProviderConfigRow row = providerConfigRepository.findByKey("custom-stepfun");
+                ProviderConfigRow row = providerConfigRepository.findByKey("stepfun");
                 assertThat(row.displayName()).isEqualTo("StepFun");
                 assertThat(row.baseUrl()).isEqualTo("https://new.example");
         }

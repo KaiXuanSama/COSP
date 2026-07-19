@@ -19,30 +19,27 @@ import reactor.core.publisher.Mono;
 class UpstreamChatServiceResolverTests {
 
     @Test
-    void resolvesOpenAiImplementationByProviderKeyAndApiFormat() {
+    void resolvesEveryConfiguredProviderToTheSingleGenericImplementation() {
         RuntimeProviderCatalog catalog = mock(RuntimeProviderCatalog.class);
         given(catalog.getActiveProviders()).willReturn(List.of(provider("mimo", "openai", "mimo-v2.5-pro")));
 
-        UpstreamChatService openAi = new StubUpstreamChatService("mimo", "openai");
         GenericOpenAiChatService generic = mock(GenericOpenAiChatService.class);
 
-        UpstreamChatServiceResolver resolver = new UpstreamChatServiceResolver(catalog, List.of(openAi), generic);
+        UpstreamChatServiceResolver resolver = new UpstreamChatServiceResolver(catalog, List.of(generic), generic);
 
-        assertThat(resolver.resolve("mimo-v2.5-pro")).isSameAs(openAi);
+        assertThat(resolver.resolve("mimo-v2.5-pro")).isSameAs(generic);
     }
 
     @Test
-    void fallsBackToFirstRegisteredServiceWhenModelIsUnknown() {
+    void returnsNullWhenModelIsUnknownRatherThanUsingAnArbitraryProvider() {
         RuntimeProviderCatalog catalog = mock(RuntimeProviderCatalog.class);
         given(catalog.getActiveProviders()).willReturn(List.of(provider("mimo", "openai", "mimo-v2.5-pro")));
 
-        UpstreamChatService fallback = new StubUpstreamChatService("longcat", "openai");
-        UpstreamChatService second = new StubUpstreamChatService("mimo", "openai");
         GenericOpenAiChatService generic = mock(GenericOpenAiChatService.class);
 
-        UpstreamChatServiceResolver resolver = new UpstreamChatServiceResolver(catalog, List.of(fallback, second), generic);
+        UpstreamChatServiceResolver resolver = new UpstreamChatServiceResolver(catalog, List.of(generic), generic);
 
-        assertThat(resolver.resolve("unknown-model")).isSameAs(fallback);
+        assertThat(resolver.resolve("unknown-model")).isNull();
     }
 
     private ProviderRuntimeConfiguration provider(String providerKey, String apiFormat, String... modelNames) {

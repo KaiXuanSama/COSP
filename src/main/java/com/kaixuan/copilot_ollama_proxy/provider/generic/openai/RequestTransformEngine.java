@@ -10,9 +10,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 自定义供应商的请求转换引擎。
+ * 供应商请求转换引擎。
  * <p>
- * 执行自定义供应商的新请求头规则。
+ * 执行供应商的新请求头规则。
  */
 public final class RequestTransformEngine {
 

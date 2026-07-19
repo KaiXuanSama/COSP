@@ -79,9 +79,9 @@ class ProviderRequestTransformServiceTests {
     }
 
     @Test
-        void createCustomProviderPersistsHeaderRulesOnlyInNewTransformTable() {
-        int providerId = service.createCustomProvider(
-                "custom-alpha", "Alpha", "https://alpha.example/v1", HEADER_RULES,
+    void createProviderPersistsHeaderRulesOnlyInNewTransformTable() {
+        int providerId = service.createProvider(
+                "alpha", "Alpha", "https://alpha.example/v1", HEADER_RULES,
                 TEMPLATE_KEYS, PREVIEW, RULES);
 
         ProviderRequestTransformRow transform = transformRepository.findByProviderId(providerId);
@@ -94,9 +94,9 @@ class ProviderRequestTransformServiceTests {
     }
 
     @Test
-    void updateCustomProviderKeepsStableIdAndUpdatesNewTransformTable() {
-        int providerId = service.createCustomProvider(
-                "custom-alpha", "Alpha", "https://old.example/v1", HEADER_RULES,
+        void updateProviderKeepsStableIdAndUpdatesNewTransformTable() {
+        int providerId = service.createProvider(
+                                "alpha", "Alpha", "https://old.example/v1", HEADER_RULES,
                 TEMPLATE_KEYS, PREVIEW, RULES);
         String updatedHeaderRules = "[{\"key\":\"x-token\",\"value\":\"new\"}]";
         String updatedRules = "{\"version\":1,\"rules\":[{\"id\":\"r1\",\"order\":0,"
@@ -104,12 +104,12 @@ class ProviderRequestTransformServiceTests {
                 + "\"conditionMode\":\"all\",\"conditions\":[],"
                 + "\"operations\":[{\"type\":\"delete\"}]}]}";
 
-        service.updateCustomProvider(
-                providerId, "custom-alpha", "custom-renamed", "RenamedAPI", "https://new.example/v1",
+        service.updateProvider(
+                providerId, "alpha", "renamed", "RenamedAPI", "https://new.example/v1",
                 updatedHeaderRules, "[\"custom\"]", "{\"temperature\":0.2}", updatedRules);
 
         Integer persistedId = jdbcTemplate.queryForObject(
-                "SELECT id FROM provider_config WHERE provider_key = 'custom-renamed'", Integer.class);
+                "SELECT id FROM provider_config WHERE provider_key = 'renamed'", Integer.class);
         ProviderRequestTransformRow transform = transformRepository.findByProviderId(providerId);
         assertThat(persistedId).isEqualTo(providerId);
         assertThat(jdbcTemplate.queryForObject(
@@ -122,35 +122,35 @@ class ProviderRequestTransformServiceTests {
     }
 
     @Test
-    void createCustomProviderRollsBackLegacyInsertWhenNewStorageWriteFails() {
+        void createProviderRollsBackInsertWhenTransformWriteFails() {
         jdbcTemplate.execute("DROP TABLE provider_request_transform");
 
-        assertThatThrownBy(() -> service.createCustomProvider(
-                                "custom-rollback", "Rollback", "https://rollback.example/v1", HEADER_RULES,
+        assertThatThrownBy(() -> service.createProvider(
+                                "rollback", "Rollback", "https://rollback.example/v1", HEADER_RULES,
                 TEMPLATE_KEYS, PREVIEW, RULES))
                 .isInstanceOf(org.springframework.dao.DataAccessException.class);
 
         Integer count = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM provider_config WHERE provider_key = 'custom-rollback'", Integer.class);
+                "SELECT COUNT(*) FROM provider_config WHERE provider_key = 'rollback'", Integer.class);
         assertThat(count).isZero();
     }
 
     @Test
-    void updateCustomProviderRollsBackLegacyChangesWhenNewStorageWriteFails() {
-        int providerId = service.createCustomProvider(
-                "custom-alpha", "Alpha", "https://old.example/v1", HEADER_RULES,
+        void updateProviderRollsBackChangesWhenTransformWriteFails() {
+        int providerId = service.createProvider(
+                                "alpha", "Alpha", "https://old.example/v1", HEADER_RULES,
                 TEMPLATE_KEYS, PREVIEW, RULES);
         jdbcTemplate.execute("DROP TABLE provider_request_transform");
 
-        assertThatThrownBy(() -> service.updateCustomProvider(
-                providerId, "custom-alpha", "custom-renamed", "Renamed", "https://new.example/v1",
+        assertThatThrownBy(() -> service.updateProvider(
+                providerId, "alpha", "renamed", "Renamed", "https://new.example/v1",
                 "[]", TEMPLATE_KEYS, PREVIEW, RULES))
                 .isInstanceOf(org.springframework.dao.DataAccessException.class);
 
         Integer oldCount = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM provider_config WHERE provider_key = 'custom-alpha'", Integer.class);
+                "SELECT COUNT(*) FROM provider_config WHERE provider_key = 'alpha'", Integer.class);
         Integer renamedCount = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM provider_config WHERE provider_key = 'custom-renamed'", Integer.class);
+                "SELECT COUNT(*) FROM provider_config WHERE provider_key = 'renamed'", Integer.class);
         String baseUrl = jdbcTemplate.queryForObject(
                 "SELECT base_url FROM provider_config WHERE id = ?", String.class, providerId);
         assertThat(oldCount).isEqualTo(1);
@@ -160,14 +160,14 @@ class ProviderRequestTransformServiceTests {
 
     @Test
     void invalidEditorConfigurationIsRejectedBeforeAnyDatabaseWrite() {
-        assertThatThrownBy(() -> service.createCustomProvider(
-                "custom-invalid", "Invalid", "https://invalid.example/v1", HEADER_RULES,
+        assertThatThrownBy(() -> service.createProvider(
+                "invalid", "Invalid", "https://invalid.example/v1", HEADER_RULES,
                 "[\"custom\",\"base\"]", "[]", "{\"version\":2,\"rules\":[]}"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("custom 模板不能与其他模板同时选择");
 
         Integer count = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM provider_config WHERE provider_key = 'custom-invalid'", Integer.class);
+                "SELECT COUNT(*) FROM provider_config WHERE provider_key = 'invalid'", Integer.class);
         assertThat(count).isZero();
     }
 

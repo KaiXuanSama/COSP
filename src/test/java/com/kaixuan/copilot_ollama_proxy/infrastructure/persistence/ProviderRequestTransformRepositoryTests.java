@@ -49,7 +49,7 @@ class ProviderRequestTransformRepositoryTests {
 
     @Test
     void upsertInsertsAndReturnsEveryPersistedField() {
-        int providerId = insertProvider("custom-alpha");
+        int providerId = insertProvider("alpha");
 
         repository.upsert(
                 providerId, 1, "[{\"key\":\"api-key\",\"value\":\"{apiKey}\"}]",
@@ -71,7 +71,7 @@ class ProviderRequestTransformRepositoryTests {
 
     @Test
     void upsertUpdatesExistingRowWithoutCreatingDuplicate() {
-        int providerId = insertProvider("custom-alpha");
+        int providerId = insertProvider("alpha");
         repository.upsert(providerId, 1, "[]", "[\"base\"]", "{}", 1,
                 "{\"version\":1,\"rules\":[]}");
 
@@ -93,9 +93,9 @@ class ProviderRequestTransformRepositoryTests {
 
     @Test
     void findByProviderIdsReturnsOnlyRequestedRowsKeyedByProviderId() {
-        int firstId = insertProvider("custom-alpha");
-        int secondId = insertProvider("custom-beta");
-        int thirdId = insertProvider("custom-gamma");
+        int firstId = insertProvider("alpha");
+        int secondId = insertProvider("beta");
+        int thirdId = insertProvider("gamma");
         repository.upsert(firstId, 1, "[]", "[\"base\"]", "{\"id\":1}", 1,
                 "{\"version\":1,\"rules\":[]}");
         repository.upsert(secondId, 1, "[]", "[\"base\"]", "{\"id\":2}", 1,

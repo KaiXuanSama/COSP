@@ -54,7 +54,7 @@ public class ProviderRequestTransformService {
     }
 
     /**
-     * 新增自定义供应商并原子保存请求转换配置。
+    * 新增供应商并原子保存请求转换配置。
      *
      * @param providerKey 供应商标识
      * @param baseUrl API 基础地址
@@ -65,7 +65,7 @@ public class ProviderRequestTransformService {
      * @return 供应商主键
      */
     @Transactional
-        public int createCustomProvider(String providerKey, String displayName, String baseUrl, String headerRulesJson,
+    public int createProvider(String providerKey, String displayName, String baseUrl, String headerRulesJson,
                                     String templateKeysJson, String bodyPreviewJson,
                                     String bodyRulesJson) {
         ValidatedTransform transform = validate(
@@ -77,7 +77,7 @@ public class ProviderRequestTransformService {
     }
 
     /**
-     * 编辑自定义供应商并原子保存请求转换配置。
+    * 编辑供应商并原子保存请求转换配置。
      *
      * @param providerId 稳定的供应商主键
      * @param oldProviderKey 原供应商标识
@@ -89,7 +89,7 @@ public class ProviderRequestTransformService {
      * @param bodyRulesJson 请求体规则集 JSON
      */
     @Transactional
-    public void updateCustomProvider(int providerId, String oldProviderKey, String newProviderKey,
+    public void updateProvider(int providerId, String oldProviderKey, String newProviderKey,
                                      String displayName,
                                      String baseUrl, String headerRulesJson,
                                      String templateKeysJson, String bodyPreviewJson,

@@ -1,6 +1,5 @@
 package com.kaixuan.copilot_ollama_proxy.api;
 
-import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestTransformService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
@@ -51,13 +50,12 @@ public class AdminPageController {
     private final AppConfigRepository appConfigRepository;
     private final ApiCallLogRepository apiCallLogRepository;
     private final WebClient.Builder webClientBuilder;
-    private final List<UpstreamChatService> upstreamChatServices;
 
         public AdminPageController(JdbcUserDetailsManager userDetailsManager, PasswordEncoder passwordEncoder, ApiUsageRepository apiUsageRepository, ProviderConfigRepository providerConfigRepository,
             ProviderApiKeyRepository providerApiKeyRepository,
             ProviderRequestTransformRepository providerRequestTransformRepository,
             ProviderRequestTransformService providerRequestTransformService,
-            AppConfigRepository appConfigRepository, ApiCallLogRepository apiCallLogRepository, WebClient.Builder webClientBuilder, List<UpstreamChatService> upstreamChatServices) {
+            AppConfigRepository appConfigRepository, ApiCallLogRepository apiCallLogRepository, WebClient.Builder webClientBuilder) {
         this.userDetailsManager = userDetailsManager;
         this.passwordEncoder = passwordEncoder;
         this.apiUsageRepository = apiUsageRepository;
@@ -68,7 +66,6 @@ public class AdminPageController {
         this.appConfigRepository = appConfigRepository;
         this.apiCallLogRepository = apiCallLogRepository;
         this.webClientBuilder = webClientBuilder;
-        this.upstreamChatServices = upstreamChatServices;
     }
 
     // ==================== API 统计接口（JSON） ====================
@@ -311,10 +308,6 @@ public class AdminPageController {
      */
     @PostMapping("/config/api/providers/{providerKey}/pull-models") @ResponseBody
     public Mono<ResponseEntity<Object>> pullProviderModels(@PathVariable String providerKey, @RequestBody Map<String, String> body) {
-        if (!supportsProviderKey(providerKey)) {
-            return Mono.just(ResponseEntity.badRequest().body((Object) Map.of("ok", false, "error", "不支持的服务商。")));
-        }
-
         String baseUrl = body.getOrDefault("baseUrl", "").trim();
         String apiKey = body.getOrDefault("apiKey", "").trim();
         String keyUuid = body.getOrDefault("keyUuid", "").trim();
@@ -370,27 +363,17 @@ public class AdminPageController {
         });
     }
 
-    private boolean supportsProviderKey(String providerKey) {
-        return switch (providerKey) {
-        case "mimo", "deepseek" -> true;
-        default -> providerKey.startsWith("custom-");
-        };
-    }
-
     private Mono<ResponseEntity<Object>> forwardModelsRequest(String providerKey, String rawBaseUrl, String apiKey, String rawModelPullPath) {
         String requestUrl = rawBaseUrl.replaceAll("/+$", "") + normalizeModelPullPath(rawModelPullPath);
         return webClientBuilder.clone().defaultHeaders(headers -> {
             headers.set(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE);
             applyModelDiscoveryAuthHeaders(providerKey, headers, apiKey);
-            // 自定义供应商：应用新表中的请求头规则。
-            if (providerKey.startsWith("custom-")) {
-                ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
-                if (provider != null) {
-                    ProviderRequestTransformRow transform = providerRequestTransformRepository.findByProviderId(provider.id());
-                    String headerRulesJson = transform != null ? transform.headerRulesJson() : "[]";
-                    RequestTransformEngine.applyHeaderRules(
-                            headers, apiKey, headerRulesJson, new com.fasterxml.jackson.databind.ObjectMapper());
-                }
+            ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
+            if (provider != null) {
+                ProviderRequestTransformRow transform = providerRequestTransformRepository.findByProviderId(provider.id());
+                String headerRulesJson = transform != null ? transform.headerRulesJson() : "[]";
+                RequestTransformEngine.applyHeaderRules(
+                        headers, apiKey, headerRulesJson, new com.fasterxml.jackson.databind.ObjectMapper());
             }
         }).build().get().uri(requestUrl).exchangeToMono(response -> response.bodyToMono(String.class).defaultIfEmpty("").map(respBody -> {
             ResponseEntity.BodyBuilder builder = ResponseEntity.status(response.statusCode().value());
@@ -454,37 +437,36 @@ public class AdminPageController {
     }
 
     /**
-     * 委托给对应 provider 的自描述鉴权方法注入认证头。
-     * 如果没有找到匹配的 provider 实现，使用默认的 Bearer Token 方式。
+    * 使用统一 Generic 供应商的默认 Bearer 鉴权。
+    *
+    * 特殊认证头由 provider_request_transform.header_rules_json 覆写。
      */
     private void applyModelDiscoveryAuthHeaders(String providerKey, HttpHeaders headers, String apiKey) {
-        for (UpstreamChatService service : upstreamChatServices) {
-            if (service.getProviderKey().equals(providerKey)) {
-                service.applyAuthHeaders(headers, apiKey);
-                return;
-            }
-        }
-        // 无匹配 provider（如新建的自定义供应商尚未注册），使用默认 Bearer Token
         headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
     }
 
-    // ==================== 自定义供应商 API ====================
+    // ==================== 供应商创建与重命名 API ====================
 
+    // TODO: 下一个 API major 移除 /custom-providers 兼容路径，前端改用 /providers。
+
+    /**
+     * 返回旧版自定义供应商接口格式。
+     *
+     * 该兼容端点将在下一个 API 主版本移除，新客户端应使用 {@code /config/api/providers}。
+     *
+     * @return 所有供应商的列表视图
+     */
+    @Deprecated
     @GetMapping("/config/api/custom-providers") @ResponseBody
-    public ResponseEntity<List<Map<String, Object>>> listCustomProviders() {
-        // 从 provider_config 中筛选 custom- 前缀的供应商，附带脱敏 API Key
+    public ResponseEntity<List<Map<String, Object>>> listLegacyCustomProviders() {
         List<ProviderConfigRow> all = providerConfigRepository.findAllWithModels();
         Map<Integer, ProviderRequestTransformRow> transforms = providerRequestTransformRepository
             .findByProviderIds(all.stream().map(ProviderConfigRow::id).toList());
-        List<Map<String, Object>> custom = all.stream()
-                .filter(p -> p.providerKey().startsWith("custom-"))
-            .map(p -> buildProviderView(p, transforms.get(p.id())))
-                .toList();
-        return ResponseEntity.ok(custom);
+        return ResponseEntity.ok(all.stream().map(p -> buildProviderView(p, transforms.get(p.id()))).toList());
     }
 
-    @PostMapping("/config/api/custom-providers") @ResponseBody
-    public Mono<ResponseEntity<Map<String, Object>>> addCustomProvider(ServerWebExchange exchange) {
+    @PostMapping({"/config/api/providers", "/config/api/custom-providers"}) @ResponseBody
+    public Mono<ResponseEntity<Map<String, Object>>> addProvider(ServerWebExchange exchange) {
         return exchange.getFormData().map(form -> {
             String displayName = form.getFirst("displayName");
             String headerRulesJson = form.getFirst("headerRulesJson");
@@ -496,7 +478,7 @@ public class AdminPageController {
             if (name.isEmpty()) {
                 return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "供应商名称不能为空"));
             }
-            String providerKey = "custom-" + name.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
+            String providerKey = toProviderKey(name);
             // 检查是否已存在
             if (providerConfigRepository.findByKey(providerKey) != null) {
                 return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "该供应商名称已存在"));
@@ -504,7 +486,7 @@ public class AdminPageController {
             String headers = defaultIfBlank(headerRulesJson, "[]");
             String url = baseUrl == null ? "" : baseUrl.trim();
             try {
-                providerRequestTransformService.createCustomProvider(
+                providerRequestTransformService.createProvider(
                     providerKey, name, url, headers,
                         defaultIfBlank(bodyTemplateKeysJson, ProviderRequestTransformService.DEFAULT_TEMPLATE_KEYS_JSON),
                         defaultIfBlank(bodyPreviewJson, ProviderRequestTransformService.DEFAULT_BODY_PREVIEW_JSON),
@@ -517,14 +499,14 @@ public class AdminPageController {
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    @DeleteMapping("/config/api/custom-providers/{providerKey}") @ResponseBody
-    public ResponseEntity<Map<String, Object>> deleteCustomProvider(@PathVariable String providerKey) {
+    @DeleteMapping({"/config/api/providers/{providerKey}", "/config/api/custom-providers/{providerKey}"}) @ResponseBody
+    public ResponseEntity<Map<String, Object>> deleteProvider(@PathVariable String providerKey) {
         providerConfigRepository.deleteByKey(providerKey);
         return ResponseEntity.ok(Map.of("ok", true));
     }
 
-    @PutMapping("/config/api/custom-providers/{providerKey}") @ResponseBody
-    public Mono<ResponseEntity<Map<String, Object>>> updateCustomProvider(@PathVariable String providerKey, ServerWebExchange exchange) {
+    @PutMapping({"/config/api/providers/{providerKey}", "/config/api/custom-providers/{providerKey}"}) @ResponseBody
+    public Mono<ResponseEntity<Map<String, Object>>> updateProvider(@PathVariable String providerKey, ServerWebExchange exchange) {
         return exchange.getFormData().map(form -> {
             String displayName = form.getFirst("displayName");
             String headerRulesJson = form.getFirst("headerRulesJson");
@@ -541,8 +523,7 @@ public class AdminPageController {
             if (existing == null) {
                 return ResponseEntity.badRequest().body(Map.<String, Object>of("ok", false, "error", "供应商不存在"));
             }
-            // 生成新的 providerKey
-            String newProviderKey = "custom-" + name.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
+            String newProviderKey = toProviderKey(name);
             // 如果名称改变了，检查新 key 是否冲突
             if (!newProviderKey.equals(providerKey)) {
                 if (providerConfigRepository.findByKey(newProviderKey) != null) {
@@ -552,7 +533,7 @@ public class AdminPageController {
             String headers = defaultIfBlank(headerRulesJson, "[]");
             String url = baseUrl == null ? "" : baseUrl.trim();
             try {
-                providerRequestTransformService.updateCustomProvider(
+                providerRequestTransformService.updateProvider(
                     existing.id(), providerKey, newProviderKey, name, url, headers,
                         defaultIfBlank(bodyTemplateKeysJson, ProviderRequestTransformService.DEFAULT_TEMPLATE_KEYS_JSON),
                         defaultIfBlank(bodyPreviewJson, ProviderRequestTransformService.DEFAULT_BODY_PREVIEW_JSON),
@@ -567,6 +548,10 @@ public class AdminPageController {
 
     private String defaultIfBlank(String value, String defaultValue) {
         return value == null || value.isBlank() ? defaultValue : value.trim();
+    }
+
+    private String toProviderKey(String displayName) {
+        return displayName.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
     }
 
     @PostMapping("/config/api/account") @ResponseBody

@@ -43,7 +43,7 @@ export interface ProviderRequestTransform {
   bodyRulesJson: string
 }
 
-export interface CustomProviderRequestTransformInput {
+export interface ProviderRequestTransformInput {
   bodyTemplateKeysJson: string
   bodyPreviewJson: string
   bodyRulesJson: string
@@ -107,10 +107,10 @@ export const useProviderStore = defineStore('providers', () => {
     }
   }
 
-  // ==================== 自定义供应商 ====================
+  // ==================== 供应商创建与重命名 ====================
 
-  async function addCustomProvider(displayName: string, headerRulesJson: string,
-                                   baseUrl: string, requestTransform: CustomProviderRequestTransformInput) {
+  async function addProvider(displayName: string, headerRulesJson: string,
+                                   baseUrl: string, requestTransform: ProviderRequestTransformInput) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
     formData.append('headerRulesJson', headerRulesJson)
@@ -118,7 +118,7 @@ export const useProviderStore = defineStore('providers', () => {
     formData.append('bodyTemplateKeysJson', requestTransform.bodyTemplateKeysJson)
     formData.append('bodyPreviewJson', requestTransform.bodyPreviewJson)
     formData.append('bodyRulesJson', requestTransform.bodyRulesJson)
-    const res = await http.post('/custom-providers', formData.toString(), {
+    const res = await http.post('/providers', formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
     // 重新拉取列表
@@ -126,15 +126,15 @@ export const useProviderStore = defineStore('providers', () => {
     return res.data
   }
 
-  async function deleteCustomProvider(providerKey: string) {
-    await http.delete(`/custom-providers/${providerKey}`)
+  async function deleteProvider(providerKey: string) {
+    await http.delete(`/providers/${providerKey}`)
     // 重新拉取列表
     await fetchAll()
   }
 
-  async function updateCustomProvider(providerKey: string, displayName: string,
+  async function updateProvider(providerKey: string, displayName: string,
                                       headerRulesJson: string, baseUrl: string,
-                                      requestTransform: CustomProviderRequestTransformInput) {
+                                      requestTransform: ProviderRequestTransformInput) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
     formData.append('headerRulesJson', headerRulesJson)
@@ -142,12 +142,12 @@ export const useProviderStore = defineStore('providers', () => {
     formData.append('bodyTemplateKeysJson', requestTransform.bodyTemplateKeysJson)
     formData.append('bodyPreviewJson', requestTransform.bodyPreviewJson)
     formData.append('bodyRulesJson', requestTransform.bodyRulesJson)
-    await http.put(`/custom-providers/${providerKey}`, formData.toString(), {
+    await http.put(`/providers/${providerKey}`, formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
     // 重新拉取列表
     await fetchAll()
   }
 
-  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchFakeVersion, addCustomProvider, deleteCustomProvider, updateCustomProvider }
+  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchFakeVersion, addProvider, deleteProvider, updateProvider }
 })
