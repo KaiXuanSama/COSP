@@ -8,6 +8,8 @@ import org.junit.jupiter.api.io.TempDir;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.sqlite.SQLiteDataSource;
@@ -44,7 +46,8 @@ class SchemaMigrationRunnerTests {
         Integer versionCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_version", Integer.class);
         assertThat(versionCount).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject(
-                "SELECT version FROM schema_version WHERE id = 1", Double.class)).isEqualTo(8.2);
+                "SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
         assertThat(columnNames(jdbcTemplate, "provider_model"))
                 .contains("reasoning_effort", "max_output_tokens");
         assertThat(columnNames(jdbcTemplate, "provider_config"))
@@ -107,9 +110,10 @@ class SchemaMigrationRunnerTests {
     }
 
     @Test
-        void newSchemaEstablishesV82BaselineWithoutReplayingHistoricalMigrations() {
+        void emptyDatabaseInitializesSchemaSqlAndEstablishesCurrentBaseline() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
-        createCurrentSchema(jdbcTemplate);
+                new ResourceDatabasePopulator(new ClassPathResource("schema.sql"))
+                                .execute(jdbcTemplate.getDataSource());
 
         ApiKeyCryptoService cryptoService = new ApiKeyCryptoService("test-master-key");
         ReflectionTestUtils.invokeMethod(cryptoService, "initialize");
@@ -122,7 +126,7 @@ class SchemaMigrationRunnerTests {
 
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_version", Integer.class)).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
-                .isEqualTo(8.2);
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
         assertThat(columnNames(jdbcTemplate, "provider_config"))
                 .doesNotContain("api_key", "active_api_key_index", "custom_transforms", "api_format");
         assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
@@ -152,7 +156,7 @@ class SchemaMigrationRunnerTests {
 
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_version", Integer.class)).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
-                .isEqualTo(8.2);
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
         assertThat(columnNames(jdbcTemplate, "provider_config"))
                 .contains("display_name")
                 .doesNotContain("api_key", "active_api_key_index", "custom_transforms", "api_format");
@@ -175,7 +179,7 @@ class SchemaMigrationRunnerTests {
         runner.run(null);
 
         assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
-                .isEqualTo(8.2);
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT display_name FROM provider_config WHERE provider_key = 'stepfun'", String.class))
                 .isEqualTo("Stepfun");
@@ -226,7 +230,7 @@ class SchemaMigrationRunnerTests {
                 runner.run(null);
 
                 assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
-                                .isEqualTo(8.2);
+                                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
                 assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
                 assertThat(indexExists(jdbcTemplate, "idx_reasoning_cache_created_at")).isFalse();
         }
@@ -317,6 +321,25 @@ class SchemaMigrationRunnerTests {
                 .isInstanceOf(IllegalStateException.class);
     }
 
+        @Test
+        void recursivelyUpgradesEveryRegisteredMigrationCheckpoint() {
+                JdbcTemplate jdbcTemplate = createJdbcTemplate();
+                createLegacySchema(jdbcTemplate);
+                seedLegacyData(jdbcTemplate);
+                SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+
+                for (double version : runner.registeredMigrationVersions()) {
+                        runner.migrateThrough(version);
+                        assertCheckpoint(jdbcTemplate, version);
+                }
+
+                runner.run(null);
+                assertCheckpoint(jdbcTemplate, SchemaMigrationRunner.currentSchemaVersion());
+                assertThat(jdbcTemplate.queryForObject("SELECT display_name FROM provider_config WHERE id = 1", String.class))
+                                .isEqualTo("Legacy");
+                assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
+        }
+
     private JdbcTemplate createJdbcTemplate() {
         SQLiteDataSource dataSource = new SQLiteDataSource();
         dataSource.setUrl("jdbc:sqlite:" + tempDir.resolve("migration.db"));
@@ -380,5 +403,26 @@ class SchemaMigrationRunnerTests {
                 Integer count = jdbcTemplate.queryForObject(
                                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", Integer.class, indexName);
                 return count != null && count > 0;
+        }
+
+        private void assertCheckpoint(JdbcTemplate jdbcTemplate, double version) {
+                if (version < 7) {
+                        List<Double> applied = jdbcTemplate.queryForList(
+                                        "SELECT version FROM schema_version ORDER BY version", Double.class);
+                        assertThat(applied).contains(version);
+                        return;
+                }
+                assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_version", Integer.class)).isEqualTo(1);
+                assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                                .isEqualTo(version);
+                if (version >= 7.1) {
+                        assertThat(columnNames(jdbcTemplate, "provider_config")).contains("display_name");
+                }
+                if (version >= 8.1) {
+                        assertThat(columnNames(jdbcTemplate, "provider_config")).doesNotContain("api_format");
+                }
+                if (version >= SchemaMigrationRunner.currentSchemaVersion()) {
+                        assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
+                }
         }
 }

@@ -77,35 +77,74 @@ public class SchemaMigrationRunner implements ApplicationRunner {
      */
     @Override
     public void run(ApplicationArguments args) {
+        migrateThrough(CURRENT_SCHEMA_VERSION);
+    }
+
+    /**
+     * 执行迁移直至目标版本。
+     *
+     * 生产启动始终传入当前版本；同包测试可逐个传入已注册版本，验证每个迁移 checkpoint
+     * 使用的仍是与生产完全相同的执行路径。
+     */
+    void migrateThrough(double targetVersion) {
+        if (!registeredMigrationVersions().contains(targetVersion)) {
+            throw new IllegalArgumentException("未注册的 Schema 迁移版本: " + targetVersion);
+        }
         if (isCurrentBaseline()) {
             return;
         }
 
         if (!hasLegacyProviderConfigColumns()) {
             if (hasBaselineVersionRecord()) {
-                migrate(V7_1_VERSION, "新增供应商完整显示名", this::migrateDisplayNameToV71);
-                migrate(V8_VERSION, "统一供应商实现并移除 custom- 前缀", this::migrateToV8UnifiedProviders);
-                migrate(V8_1_VERSION, "移除固定的 API 格式字段", this::migrateToV81RemoveApiFormat);
-                migrate(CURRENT_SCHEMA_VERSION, "移除思考链缓存", this::migrateToV82RemoveReasoningCache);
+                applyMigrationsThrough(baselineMigrations(), targetVersion);
                 return;
+            }
+            if (targetVersion != CURRENT_SCHEMA_VERSION) {
+                throw new IllegalStateException("当前 Schema 无版本记录时只能建立最新基线");
             }
             establishCurrentBaseline();
             return;
         }
 
         prepareHistoricalVersionTracking();
+        applyMigrationsThrough(historicalMigrations(), targetVersion);
+    }
 
-        migrate(1, "补齐历史增量字段", this::migrateLegacyColumns);
-        migrate(2, "API Key 转换为 JSON 数组", this::migrateApiKeyToJsonArray);
-        migrate(3, "增加业务约束与查询索引", this::migrateConstraintsAndIndexes);
-        migrate(4, "API Key 拆表与加密", this::migrateApiKeysToEncryptedTable);
-        migrate(5, "新增供应商请求转换配置表", this::migrateProviderRequestTransforms);
-        migrate(6, "清理遗留请求转换配置", this::clearLegacyRequestTransforms);
-        migrate(V7_BASELINE_VERSION, "移除废弃字段并压缩迁移历史", this::migrateToV7Baseline);
-        migrate(V7_1_VERSION, "新增供应商完整显示名", this::migrateDisplayNameToV71);
-        migrate(V8_VERSION, "统一供应商实现并移除 custom- 前缀", this::migrateToV8UnifiedProviders);
-        migrate(V8_1_VERSION, "移除固定的 API 格式字段", this::migrateToV81RemoveApiFormat);
-        migrate(CURRENT_SCHEMA_VERSION, "移除思考链缓存", this::migrateToV82RemoveReasoningCache);
+    static double currentSchemaVersion() {
+        return CURRENT_SCHEMA_VERSION;
+    }
+
+    List<Double> registeredMigrationVersions() {
+        return historicalMigrations().stream().map(MigrationStep::version).toList();
+    }
+
+    private List<MigrationStep> historicalMigrations() {
+        return List.of(
+                new MigrationStep(1, "补齐历史增量字段", this::migrateLegacyColumns),
+                new MigrationStep(2, "API Key 转换为 JSON 数组", this::migrateApiKeyToJsonArray),
+                new MigrationStep(3, "增加业务约束与查询索引", this::migrateConstraintsAndIndexes),
+                new MigrationStep(4, "API Key 拆表与加密", this::migrateApiKeysToEncryptedTable),
+                new MigrationStep(5, "新增供应商请求转换配置表", this::migrateProviderRequestTransforms),
+                new MigrationStep(6, "清理遗留请求转换配置", this::clearLegacyRequestTransforms),
+                new MigrationStep(V7_BASELINE_VERSION, "移除废弃字段并压缩迁移历史", this::migrateToV7Baseline),
+                new MigrationStep(V7_1_VERSION, "新增供应商完整显示名", this::migrateDisplayNameToV71),
+                new MigrationStep(V8_VERSION, "统一供应商实现并移除 custom- 前缀", this::migrateToV8UnifiedProviders),
+                new MigrationStep(V8_1_VERSION, "移除固定的 API 格式字段", this::migrateToV81RemoveApiFormat),
+                new MigrationStep(CURRENT_SCHEMA_VERSION, "移除思考链缓存", this::migrateToV82RemoveReasoningCache));
+    }
+
+    private List<MigrationStep> baselineMigrations() {
+        return historicalMigrations().stream()
+                .filter(step -> step.version() > V7_BASELINE_VERSION)
+                .toList();
+    }
+
+    private void applyMigrationsThrough(List<MigrationStep> migrations, double targetVersion) {
+        for (MigrationStep migration : migrations) {
+            if (migration.version() <= targetVersion) {
+                migrate(migration.version(), migration.description(), migration.action());
+            }
+        }
     }
 
     /**
@@ -198,6 +237,9 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                     version, description);
         });
         log.info("[SchemaMigration] 已应用 V{}: {}", version, description);
+    }
+
+    private record MigrationStep(double version, String description, Runnable action) {
     }
 
     private void migrateLegacyColumns() {
