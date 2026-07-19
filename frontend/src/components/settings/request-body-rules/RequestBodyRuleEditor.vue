@@ -372,13 +372,17 @@ function handleCancel() {
     closable
     :mask-closable="true"
   >
+    <div class="editor-notice">
+      左侧模板和预览仅用于编辑、验证规则效果；实际请求体始终由 Copilot 提交，再应用已保存的规则。
+    </div>
+
     <!-- 顶部：双栏 JSON 预览 -->
     <div class="editor-preview">
       <!-- 左栏：原始 JSON（可编辑） -->
       <div class="preview-panel">
         <div class="preview-header">
           <div class="preview-heading">
-            <span class="preview-title">Copilot 原始请求体</span>
+            <span class="preview-title">请求体编辑预览</span>
             <NSelect
               :value="selectedTemplateKeys"
               @update:value="updateTemplateSelection"

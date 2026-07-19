@@ -1017,7 +1017,7 @@ function removeModel(index: number) {
           </div>
           <div class="advanced-empty" style="cursor: pointer;" @click="showRequestBodyRuleEditor = true">
             已配置 {{ requestBodyEditorState.rules.rules.length }} 条规则
-            <span class="request-body-rules-hint">（保存供应商配置后生效）</span>
+            <span class="request-body-rules-hint">（保存后作用于 Copilot 实际请求）</span>
           </div>
         </div>
       </div>

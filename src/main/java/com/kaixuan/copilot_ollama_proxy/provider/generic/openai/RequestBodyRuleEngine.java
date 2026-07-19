@@ -14,8 +14,9 @@ import java.util.Map;
 /**
  * 请求体 RuleSet V1 转换引擎。
  *
- * 该类是独立的纯转换组件，仅将输入请求体深拷贝后按 body_rules_json 执行，不读取数据库，
- * 不参与当前生产请求链路。规则语义与前端 request-body-rules/engine.ts 保持一致。
+ * 该类是独立的纯转换组件，仅将输入请求体深拷贝后按 body_rules_json 执行，不读取数据库。
+ * 它由 {@link GenericOpenAiChatService} 在生产聊天请求发送到上游前调用；规则语义与前端
+ * request-body-rules/engine.ts 保持一致。
  */
 public final class RequestBodyRuleEngine {
 
