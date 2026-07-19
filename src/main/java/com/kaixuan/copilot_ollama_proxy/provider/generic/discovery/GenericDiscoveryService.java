@@ -1,13 +1,12 @@
 package com.kaixuan.copilot_ollama_proxy.provider.generic.discovery;
 
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
-import com.kaixuan.copilot_ollama_proxy.provider.AbstractDiscoveryService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -17,75 +16,27 @@ import java.util.Map;
  * 从数据库动态读取配置，提供模型发现和详情查询能力。
  */
 @Service
-public class GenericDiscoveryService extends AbstractDiscoveryService {
-
-    private static final Logger log = LoggerFactory.getLogger(GenericDiscoveryService.class);
-    private static final String PROVIDER_KEY = "generic";
-
-    private final RuntimeProviderCatalog runtimeProviderCatalog;
-
-    public GenericDiscoveryService(RuntimeProviderCatalog runtimeProviderCatalog) {
-        super(runtimeProviderCatalog, "");
-        this.runtimeProviderCatalog = runtimeProviderCatalog;
-    }
-
-    @Override
-    public String getProviderKey() {
-        return PROVIDER_KEY;
-    }
-
-    @Override
-    protected String providerFormat() {
-        return "generic";
-    }
-
-    @Override
-    protected String providerFamily() {
-        return "Generic";
-    }
-
-    @Override
-    protected List<String> providerFamilies() {
-        return List.of("Generic");
-    }
-
-    @Override
-    protected String providerParameterSize() {
-        return "Unknown";
-    }
-
-    @Override
-    protected String providerLicense() {
-        return "Proprietary";
-    }
+public class GenericDiscoveryService {
 
     /**
-    * 判断此服务是否能处理给定的 providerKey。
+     * 根据已解析路由构建模型详情响应。
+     *
+     * @param route 应用层解析出的供应商模型路由
+     * @return Ollama 模型详情响应
      */
-    public boolean supports(String providerKey) {
-        return providerKey != null && runtimeProviderCatalog.getActiveProvider(providerKey) != null;
-    }
-
-    @Override
-    public OllamaShowResponse showModel(String modelName) {
-        String providerKey = resolveProviderKey(modelName);
-        String resolvedModel = resolveModelOrDefault(modelName);
-        if (providerKey == null) {
-            log.warn("通用服务无法找到模型 [{}] 对应的供应商", resolvedModel);
-            return buildGenericShowResponse(resolvedModel, 8192, List.of("completion"), "generic");
-        }
-        ProviderRuntimeConfiguration config = runtimeProviderCatalog.getActiveProvider(providerKey);
+    public OllamaShowResponse showModel(ResolvedProviderRoute route) {
+        ProviderRuntimeConfiguration config = route.provider();
+        String providerKey = config.providerKey();
+        String resolvedModel = route.model();
         List<String> caps = new ArrayList<>();
         caps.add("completion");
         int contextLength = 8192;
-        if (config != null) {
-            for (var m : config.models()) {
-                if (resolvedModel.equals(m.modelName())) {
-                    contextLength = m.contextSize() >= 8192 ? m.contextSize() : 8192;
-                    if (m.capsTools()) caps.add("tools");
-                    if (m.capsVision()) caps.add("vision");
-                    break;
-                }
+        for (var m : config.models()) {
+            if (resolvedModel.equals(m.modelName())) {
+                contextLength = m.contextSize() >= 8192 ? m.contextSize() : 8192;
+                if (m.capsTools()) caps.add("tools");
+                if (m.capsVision()) caps.add("vision");
+                break;
             }
         }
         return buildGenericShowResponse(resolvedModel, contextLength, caps, providerKey);
@@ -99,7 +50,7 @@ public class GenericDiscoveryService extends AbstractDiscoveryService {
         OllamaShowResponse response = new OllamaShowResponse();
         response.setParameters("temperature 0.7\nnum_ctx " + contextLength);
         response.setLicense("Proprietary");
-        response.setModifiedAt(currentTimestamp());
+        response.setModifiedAt(DateTimeFormatter.ISO_INSTANT.format(Instant.now()));
         response.setTemplate("{{ .System }}\n{{ .Prompt }}");
         response.setCapabilities(capabilities);
 
@@ -125,23 +76,4 @@ public class GenericDiscoveryService extends AbstractDiscoveryService {
         return s.substring(0, 1).toUpperCase() + s.substring(1);
     }
 
-    private String resolveProviderKey(String modelName) {
-        var parsed = com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil.parse(modelName);
-        if (parsed.hasProviderPrefix()) {
-            String key = parsed.providerKey().toLowerCase();
-            if (runtimeProviderCatalog.getActiveProvider(key) != null) {
-                return key;
-            }
-        }
-        return findProviderKeyForModel(parsed.modelName());
-    }
-
-    private String findProviderKeyForModel(String modelName) {
-        for (var provider : runtimeProviderCatalog.getActiveProviders()) {
-            if (provider.supportsModel(modelName)) {
-                return provider.providerKey();
-            }
-        }
-        return null;
-    }
 }

@@ -17,7 +17,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
-import com.kaixuan.copilot_ollama_proxy.application.openai.CompositeUpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderModelRow;
@@ -31,7 +31,7 @@ class OpenAiControllerTests {
   private int port;
 
   @SuppressWarnings("removal") @MockBean
-  private CompositeUpstreamChatService upstreamChatService;
+  private ChatCompletionService chatCompletionService;
 
   @SuppressWarnings("removal") @MockBean
   private ProviderConfigRepository providerConfigRepository;
@@ -46,7 +46,7 @@ class OpenAiControllerTests {
 
   @Test
   void returnsNonStreamingOpenAiChatCompletionsWithoutBlockingTheControllerPath() {
-    given(upstreamChatService.chatCompletion(anyMap(), anyString())).willReturn(Mono.just("""
+    given(chatCompletionService.chatCompletion(anyMap(), anyString())).willReturn(Mono.just("""
         {
           "id": "chatcmpl-msg_123",
           "object": "chat.completion",

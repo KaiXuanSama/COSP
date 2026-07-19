@@ -1,10 +1,8 @@
 package com.kaixuan.copilot_ollama_proxy.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService;
 import com.kaixuan.copilot_ollama_proxy.application.reasoning.ReasoningCache;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import org.slf4j.Logger;
@@ -54,9 +52,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@link #applyAuthenticationHeaders} 和 {@link #chatCompletionsUri()}。
  * 如果需要在请求体中添加 provider 特有字段，可以覆写 {@link #customizeRequestBody}。
  *
- * 运行时配置（API Key、Base URL、模型列表）通过 {@link RuntimeProviderCatalog} 从数据库动态加载。
+ * 运行时配置（API Key、Base URL、模型列表）由调用方显式传入。
  */
-public abstract class AbstractUpstreamChatService implements UpstreamChatService {
+public abstract class AbstractUpstreamChatService {
 
     /** SSE 场景下，每个 data 字段的原始字符串类型引用。 */
     private static final ParameterizedTypeReference<ServerSentEvent<String>> STRING_SSE_TYPE = new ParameterizedTypeReference<>() {
@@ -70,9 +68,6 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
 
     /** 当请求中未指定模型时回退使用的默认模型名称。 */
     private final String fallbackDefaultModel;
-
-    /** 运行时 provider 配置目录，统一暴露数据库中的 provider 配置。 */
-    private final RuntimeProviderCatalog runtimeProviderCatalog;
 
     /** API 调用日志写入服务，由子类 Spring Bean 通过 setter 注入。 */
     private ApiCallLogService apiCallLog;
@@ -118,28 +113,12 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
     }
 
     /**
-     * @param runtimeProviderCatalog 运行时 provider 配置目录
      * @param objectMapper Jackson 对象映射器
      * @param fallbackDefaultModel 当请求中未指定模型时使用的默认模型名称
      */
-    protected AbstractUpstreamChatService(RuntimeProviderCatalog runtimeProviderCatalog, ObjectMapper objectMapper, String fallbackDefaultModel) {
-        this.runtimeProviderCatalog = runtimeProviderCatalog;
+    protected AbstractUpstreamChatService(ObjectMapper objectMapper, String fallbackDefaultModel) {
         this.objectMapper = objectMapper;
         this.fallbackDefaultModel = fallbackDefaultModel;
-    }
-
-    @Override
-    public boolean supportsModel(String modelName) {
-        ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
-        return config != null && config.supportsModel(modelName);
-    }
-
-    /**
-     * 获取用于日志记录的供应商标识。
-     * 默认返回 getProviderKey()，子类可重写以返回动态解析的供应商名称。
-     */
-    protected String getLoggingProviderKey() {
-        return getProviderKey();
     }
 
     /**
@@ -152,20 +131,20 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
      * @param model 请求中指定的模型名称
      * @return 上游返回的原始 OpenAI JSON 响应字符串
      */
-    @Override
-    public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model) {
-        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, false, model);
-        log.info("{} OpenAI 上游，模型: {}, 流式: false", providerDisplayName(), requestBody.get("model"));
+    protected Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
+                                          ProviderRuntimeConfiguration provider) {
+        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, false, model, provider);
+        log.info("{} OpenAI 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
 
         long startTime = System.currentTimeMillis();
-        String providerKey = getLoggingProviderKey();
+        String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
         Map<String, String> reqHeaders = new LinkedHashMap<>();
 
-        return buildWebClientWithHeaders(reqHeaders).post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).bodyValue(requestBody).retrieve()
+        return buildWebClientWithHeaders(reqHeaders, provider).post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).bodyValue(requestBody).retrieve()
                 .toEntity(String.class)
-                .retryWhen(buildRetrySpec("chatCompletion"))
-                .doOnNext(entity -> log.debug("{} 响应: {}", providerDisplayName(), entity.getBody()))
+                .retryWhen(buildRetrySpec("chatCompletion", provider))
+                .doOnNext(entity -> log.debug("{} 响应: {}", provider.providerKey(), entity.getBody()))
                 .map(entity -> {
                     Map<String, String> respHeaders = new LinkedHashMap<>();
                     entity.getHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
@@ -198,13 +177,13 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
      * @param model 请求中指定的模型名称
      * @return 按顺序发出的 chunk JSON 字符串，最后一个元素为 "[DONE]"
      */
-    @Override
-    public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
-        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model);
-        log.info("{} OpenAI 上游，模型: {}, 流式: true", providerDisplayName(), requestBody.get("model"));
+    protected Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model,
+                                                 ProviderRuntimeConfiguration provider) {
+        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model, provider);
+        log.info("{} OpenAI 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
 
         long startTime = System.currentTimeMillis();
-        String providerKey = getLoggingProviderKey();
+        String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
         Map<String, String> reqHeaders = new LinkedHashMap<>();
         List<String> logChunks = new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -221,7 +200,7 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
         // 思考链缓存：per-request 追踪 tool_call IDs（仅当 reasoningCache != null 时生效）
         List<String> pendingToolCallIds = new ArrayList<>();
 
-        return buildWebClientWithHeaders(reqHeaders).post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody)
+        return buildWebClientWithHeaders(reqHeaders, provider).post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody)
                 .exchangeToFlux(response -> {
                     Map<String, String> respHeaders = new LinkedHashMap<>();
                     response.headers().asHttpHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
@@ -233,15 +212,15 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
                             lastErrorHeaders.set(respHeaders);
                             lastErrorCode.set(response.statusCode().value());
                             lastErrorBody.set(errorBody);
-                            log.warn("{} 上游返回错误响应 {}: {}", providerDisplayName(), response.statusCode().value(), errorBody);
+                            log.warn("{} 上游返回错误响应 {}: {}", provider.providerKey(), response.statusCode().value(), errorBody);
                             return Flux.error(new WebClientResponseException(
                                     response.statusCode().value(), "上游错误响应", null, errorBody.getBytes(), null));
                         });
                     }
                     return response.bodyToFlux(STRING_SSE_TYPE);
                 })
-                .retryWhen(buildRetrySpec("chatCompletionStream")).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
-                .doOnNext(raw -> log.debug("{} 上游原始: {}", providerDisplayName(), raw)).doOnNext(raw -> {
+                .retryWhen(buildRetrySpec("chatCompletionStream", provider)).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
+                .doOnNext(raw -> log.debug("{} 上游原始: {}", provider.providerKey(), raw)).doOnNext(raw -> {
                     onRawStreamChunk(raw);
                     trackToolCallIds(raw, pendingToolCallIds);
                 }).concatMap(chunk -> {
@@ -264,7 +243,7 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
                     }
                     return Flux.just(normalizedChunk);
                 }).doOnNext(chunk -> {
-                    log.debug("{} 上游清洗: {}", providerDisplayName(), chunk);
+                    log.debug("{} 上游清洗: {}", provider.providerKey(), chunk);
                     logChunks.add(chunk);
                 }).doFinally(signal -> {
                     // 如果有错误信息（重试耗尽），同时记录错误响应体到非流式响应列
@@ -286,14 +265,6 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
     }
 
     /**
-     * 从运行时配置目录中获取当前激活的 Provider 配置，用于构建 WebClient 和判断支持的模型列表。
-     * @return 当前激活的 Provider 配置，如果没有找到则返回 null
-     */
-    protected ProviderRuntimeConfiguration getActiveProviderConfiguration() {
-        return runtimeProviderCatalog.getActiveProvider(getProviderKey());
-    }
-
-    /**
      * 构建 WebClient，同时捕获实际发送的请求头快照用于日志记录。
      * 返回的 Map 会在 WebClient.defaultHeaders 回调中被填充，
      * 因此捕获的是经过 applyAuthenticationHeaders 和 customizeRequestBody 处理后的最终请求头。
@@ -301,14 +272,15 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
      * @param capturedHeaders 用于捕获请求头的 Map，构建完成后包含实际发送的 headers
      * @return 配置好的 WebClient 实例
      */
-    protected WebClient buildWebClientWithHeaders(Map<String, String> capturedHeaders) {
-        ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
-        String apiKey = config != null ? config.apiKey() : "";
-        String baseUrl = (config == null || config.baseUrl().isBlank()) ? defaultBaseUrl() : config.baseUrl();
+    protected WebClient buildWebClientWithHeaders(Map<String, String> capturedHeaders,
+                                                  ProviderRuntimeConfiguration provider) {
+        String apiKey = provider.apiKey();
+        String baseUrl = provider.baseUrl().isBlank() ? defaultBaseUrl() : provider.baseUrl();
         String normalizedUrl = normalizeBaseUrl(baseUrl);
 
         return webClientBuilder.clone().baseUrl(normalizedUrl).defaultHeaders(headers -> {
             applyAuthenticationHeaders(headers, apiKey);
+            customizeRequestHeaders(headers, provider);
             headers.setContentType(MediaType.APPLICATION_JSON);
             // 捕获实际发送的请求头（脱敏后）用于日志
             headers.forEach((k, v) -> {
@@ -329,14 +301,15 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
      * @param model 模型名称
      * @return 最终准备好的请求体 Map 结构，已经解析了模型名称并设置了流式标志
      */
-    protected Map<String, Object> prepareRequestBody(Map<String, Object> openAiRequest, boolean stream, String model) {
+    protected Map<String, Object> prepareRequestBody(Map<String, Object> openAiRequest, boolean stream, String model,
+                                                      ProviderRuntimeConfiguration provider) {
         Map<String, Object> body = new LinkedHashMap<>(openAiRequest);
         String resolvedModel = resolveModel(body.get("model"), model);
         body.put("model", resolvedModel);
         body.put("stream", stream);
         // 如果请求中没有指定 reasoning_effort，从模型配置中读取
         if (!body.containsKey("reasoning_effort")) {
-            String effort = resolveReasoningEffort(resolvedModel);
+            String effort = resolveReasoningEffort(resolvedModel, provider);
             if (effort != null) {
                 body.put("reasoning_effort", effort);
             } else {
@@ -345,7 +318,7 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
         }
         body.values().removeIf(Objects::isNull);
         injectCachedReasoning(body);
-        customizeRequestBody(body, resolvedModel);
+        customizeRequestBody(body, resolvedModel, provider);
         return body;
     }
 
@@ -397,20 +370,15 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
 
     /**
      * 从运行时模型配置中读取思考深度。如果未找到，返回 medium。
-     * 使用 getActiveProviderConfiguration() 而非直接查询 catalog，
-     * 以便 GenericOpenAiChatService 的动态供应商覆写能生效。
      */
-    private String resolveReasoningEffort(String resolvedModel) {
-        ProviderRuntimeConfiguration config = getActiveProviderConfiguration();
-        if (config != null) {
-            for (var m : config.models()) {
-                if (resolvedModel.equals(m.modelName())) {
-                    String effort = m.reasoningEffort();
-                    if (effort == null || effort.isBlank() || "none".equalsIgnoreCase(effort.trim())) {
-                        return null;
-                    }
-                    return effort.toLowerCase();
+    private String resolveReasoningEffort(String resolvedModel, ProviderRuntimeConfiguration provider) {
+        for (var m : provider.models()) {
+            if (resolvedModel.equals(m.modelName())) {
+                String effort = m.reasoningEffort();
+                if (effort == null || effort.isBlank() || "none".equalsIgnoreCase(effort.trim())) {
+                    return null;
                 }
+                return effort.toLowerCase();
             }
         }
         return "medium";
@@ -425,7 +393,8 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
      * @param body 请求体的 Map 结构，子类可以直接修改该 Map 来添加或修改字段
      * @param resolvedModel 已经解析出的模型名称，子类可以根据该名称来决定是否进行特定的字段添加或格式转换
      */
-    protected void customizeRequestBody(Map<String, Object> body, String resolvedModel) {
+    protected void customizeRequestBody(Map<String, Object> body, String resolvedModel,
+                                        ProviderRuntimeConfiguration provider) {
     }
 
     // ==================== 思考链缓存：基类自动追踪与注入 ====================
@@ -575,7 +544,7 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
      * @param method 调用方方法名，用于日志区分重试来源
      * @return 配置好的 Retry 实例
      */
-    protected Retry buildRetrySpec(String method) {
+    protected Retry buildRetrySpec(String method, ProviderRuntimeConfiguration provider) {
         return Retry.backoff(5, Duration.ofSeconds(2)).maxBackoff(Duration.ofSeconds(30))
                 .filter(ex -> ((ex instanceof WebClientResponseException responseException) && (responseException.getStatusCode().value() == 429 || responseException.getStatusCode().is5xxServerError()
                         || responseException.getStatusCode().value() == 400 || hasNetworkCause(responseException))) || ex instanceof WebClientRequestException
@@ -583,9 +552,9 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
                 .doBeforeRetry(signal -> {
                     if (signal.failure() instanceof WebClientResponseException responseException && responseException.getStatusCode().value() == 429) {
                         String retryAfter = responseException.getHeaders().getFirst("Retry-After");
-                        log.warn("[{}] {} API 限速 (429)，重试第 {} 次{}", method, providerDisplayName(), signal.totalRetries() + 1, retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
+                        log.warn("[{}] {} API 限速 (429)，重试第 {} 次{}", method, provider.providerKey(), signal.totalRetries() + 1, retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
                     } else {
-                        log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, providerDisplayName(), signal.totalRetries() + 1, signal.failure().getMessage());
+                        log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, provider.providerKey(), signal.totalRetries() + 1, signal.failure().getMessage());
                     }
                 });
     }
@@ -625,15 +594,6 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
     }
 
     /**
-     * 子类可覆写此方法提供更友好的服务显示名称，默认返回 providerKey。
-     *
-     * @return 服务显示名称，用于日志输出
-     */
-    protected String providerDisplayName() {
-        return getProviderKey();
-    }
-
-    /**
      * 提供默认的 Base URL，当运行时配置中未指定地址时使用。
      *
      * @return 默认 Base URL，以协议开头，不含路径后缀
@@ -660,6 +620,15 @@ public abstract class AbstractUpstreamChatService implements UpstreamChatService
      */
     protected void applyAuthenticationHeaders(HttpHeaders headers, String apiKey) {
         headers.setBearerAuth(apiKey);
+    }
+
+    /**
+     * 根据供应商运行时配置补充、覆写或移除请求头。
+     *
+     * @param headers 请求头
+     * @param provider 已解析的供应商配置
+     */
+    protected void customizeRequestHeaders(HttpHeaders headers, ProviderRuntimeConfiguration provider) {
     }
 
     /**

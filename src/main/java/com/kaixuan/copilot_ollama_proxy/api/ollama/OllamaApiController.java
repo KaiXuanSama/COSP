@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.api.ollama;
 
-import com.kaixuan.copilot_ollama_proxy.application.ollama.CompositeOllamaService;
+import com.kaixuan.copilot_ollama_proxy.application.ollama.ModelDiscoveryService;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
 import com.kaixuan.copilot_ollama_proxy.application.config.AppConfigService;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowRequest;
@@ -29,16 +29,16 @@ import java.util.UUID;
 @RestController @RequestMapping("/api")
 public class OllamaApiController {
 
-    private final CompositeOllamaService ollamaService;
+    private final ModelDiscoveryService modelDiscoveryService;
     private final ModelCatalogService modelCatalogService;
     private final AppConfigService appConfigService;
     private final String defaultVersion;
 
-    public OllamaApiController(CompositeOllamaService ollamaService,
+    public OllamaApiController(ModelDiscoveryService modelDiscoveryService,
                                ModelCatalogService modelCatalogService,
                                AppConfigService appConfigService,
                                @Value("${ollama.version}") String defaultVersion) {
-        this.ollamaService = ollamaService;
+        this.modelDiscoveryService = modelDiscoveryService;
         this.modelCatalogService = modelCatalogService;
         this.appConfigService = appConfigService;
         this.defaultVersion = defaultVersion;
@@ -160,7 +160,7 @@ public class OllamaApiController {
         if ("nano_llm".equals(request.getModel())) {
             return Mono.just(createNanoLlmShowResponse());
         }
-        return Mono.fromCallable(() -> ollamaService.showModel(request.getModel()))
+        return Mono.fromCallable(() -> modelDiscoveryService.showModel(request.getModel()))
                 .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
     }
 

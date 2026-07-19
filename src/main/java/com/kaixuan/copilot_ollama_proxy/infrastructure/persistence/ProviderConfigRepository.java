@@ -150,7 +150,7 @@ public class ProviderConfigRepository {
         }
     }
 
-    // ==================== 运行时读取（供 OllamaService 使用） ====================
+    // ==================== 运行时读取（供 ProviderRouteResolver 使用） ====================
 
     /**
      * 查询所有已启用的服务商配置（含已启用的模型列表）。

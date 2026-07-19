@@ -6,8 +6,8 @@ import java.util.Map;
 
 /**
  * OpenAI Chat Completions API 请求体 —— Copilot 发送给本代理的请求格式。
- * 本代理接收此格式后，会交给 {@link com.kaixuan.copilot_ollama_proxy.application.openai.UpstreamChatService}
- * 的统一 Generic 实现处理，并按模型前缀路由到数据库中的供应商配置。
+ * 本代理接收此格式后，按模型前缀解析数据库中的供应商配置，
+ * 再交由统一 Generic 执行器处理。
  * OpenAI 格式示例：
  * {
  *   "model": "[provider-key] model-name",

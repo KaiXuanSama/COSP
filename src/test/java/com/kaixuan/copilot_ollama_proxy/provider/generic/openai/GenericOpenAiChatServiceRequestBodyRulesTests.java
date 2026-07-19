@@ -2,7 +2,6 @@ package com.kaixuan.copilot_ollama_proxy.provider.generic.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.RuntimeProviderCatalog;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
@@ -74,17 +73,12 @@ class GenericOpenAiChatServiceRequestBodyRulesTests {
         private final ProviderRuntimeConfiguration configuration;
 
         private TestGenericOpenAiChatService(ProviderRuntimeConfiguration configuration) {
-            super((RuntimeProviderCatalog) List::of, new ObjectMapper());
+            super(new ObjectMapper());
             this.configuration = configuration;
         }
 
         private void applyBodyRules(Map<String, Object> body) {
-            customizeRequestBody(body, "mimo-v2.5-pro");
-        }
-
-        @Override
-        protected ProviderRuntimeConfiguration getActiveProviderConfiguration() {
-            return configuration;
+            customizeRequestBody(body, "mimo-v2.5-pro", configuration);
         }
     }
 }

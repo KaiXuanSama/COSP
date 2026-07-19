@@ -19,7 +19,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
-import com.kaixuan.copilot_ollama_proxy.application.openai.CompositeUpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
 
 import reactor.core.publisher.Mono;
 
@@ -31,7 +31,7 @@ class ResponseLoggingFilterTests {
   private int port;
 
   @SuppressWarnings("removal") @MockBean
-  private CompositeUpstreamChatService upstreamChatService;
+  private ChatCompletionService chatCompletionService;
 
   private WebTestClient webTestClient;
 
@@ -43,7 +43,7 @@ class ResponseLoggingFilterTests {
 
   @Test
   void logsTheResponseBodyForAsyncJsonEndpoints(CapturedOutput output) {
-    given(upstreamChatService.chatCompletion(anyMap(), anyString())).willReturn(Mono.just("""
+    given(chatCompletionService.chatCompletion(anyMap(), anyString())).willReturn(Mono.just("""
         {
           "id": "chatcmpl-msg_123",
           "object": "chat.completion",
