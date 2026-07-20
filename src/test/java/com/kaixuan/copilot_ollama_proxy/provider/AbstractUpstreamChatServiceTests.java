@@ -10,14 +10,22 @@ import org.springframework.http.MediaType;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DefaultDataBufferFactory;
+
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 class AbstractUpstreamChatServiceTests {
@@ -145,6 +153,71 @@ class AbstractUpstreamChatServiceTests {
         assertThat(capturedHeaders.values()).doesNotContain("actual-api-key");
     }
 
+    /**
+     * C1 实锤测试：流式响应吐出若干 chunk 后中途以原始 IOException 断开，观察真实行为。
+     *
+     * <p>关注两个事实（如实断言，不预设结论）：
+     * <ol>
+     *   <li>上游被调用几次 —— 揭示这种"流中途 IOException"是否命中 {@code buildRetrySpec} 的重试 filter；</li>
+     *   <li>下游实际收到的 chunk 序列 —— 揭示若重试是否会把两次的 chunk 叠加（计数虚高）。</li>
+     * </ol>
+     *
+     * <p>不改任何 provider 生产代码：用 {@code exchangeFunction} mock 上游，它在 build 时
+     * 优先于 {@code clientConnector}，因此流式路径的 mock 有效。
+     */
+    @Test
+    void midStreamIoExceptionRevealsWhetherRetryDuplicatesChunks() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            int attempt = upstreamCallCount.incrementAndGet();
+            DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+            // 每次尝试都吐 3 个 chunk，随后本次流以原始 IOException 中途断开。
+            Flux<DataBuffer> body = Flux.<DataBuffer>concat(
+                    Mono.just(sseData(factory, "{\"id\":\"c-" + attempt + "-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a\"},\"finish_reason\":null}]}")),
+                    Mono.just(sseData(factory, "{\"id\":\"c-" + attempt + "-2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"b\"},\"finish_reason\":null}]}")),
+                    Mono.just(sseData(factory, "{\"id\":\"c-" + attempt + "-3\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"c\"},\"finish_reason\":null}]}")))
+                    .concatWith(Flux.error(new java.io.IOException("connection reset by peer")));
+
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body)
+                    .build());
+        }));
+
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("model", "model-a");
+
+        List<String> received = new java.util.ArrayList<>();
+        Throwable error = catchThrowable(() -> service.exposeChatCompletionStream(request, "model-a", provider())
+                .doOnNext(received::add)
+                .blockLast(Duration.ofSeconds(20)));
+
+        // 如实记录真实行为，便于诊断：上游调用次数 + 下游收到的 chunk。
+        System.out.println("[C1] 上游调用次数 = " + upstreamCallCount.get());
+        System.out.println("[C1] 下游收到 chunk 数 = " + received.size() + "，内容 = " + received);
+        System.out.println("[C1] 终态异常 = " + (error == null ? "无（正常完成）" : error.getClass().getSimpleName() + ": " + error.getMessage()));
+
+        // 断言揭示两种可能之一：
+        // - 若 IOException 不命中重试 filter：upstreamCallCount == 1，received 只含首次的 3 个 chunk，随后异常终止；
+        // - 若命中重试：upstreamCallCount > 1，received 会累加多次尝试的 chunk（计数虚高）。
+        if (upstreamCallCount.get() == 1) {
+            assertThat(received).hasSize(3);
+            assertThat(received).allMatch(chunk -> chunk.contains("c-1-"));
+            assertThat(error).isNotNull();
+        } else {
+            // 命中重试的情况下，received 至少包含多于一次尝试的 chunk，实锤计数虚高。
+            assertThat(received.size()).isGreaterThan(3);
+        }
+    }
+
+    /** 把一段 JSON 包装成 SSE data 帧的 DataBuffer（{@code data: {...}\n\n}）。 */
+    private static DataBuffer sseData(DefaultDataBufferFactory factory, String json) {
+        byte[] bytes = ("data: " + json + "\n\n").getBytes(StandardCharsets.UTF_8);
+        return factory.wrap(bytes);
+    }
+
     private static final class TestOpenAiService extends AbstractUpstreamChatService {
 
         private TestOpenAiService() {
@@ -159,6 +232,11 @@ class AbstractUpstreamChatServiceTests {
         private WebClient exposeBuildWebClient(Map<String, String> capturedHeaders,
                                                ProviderRuntimeConfiguration provider) {
             return buildWebClientWithHeaders(capturedHeaders, provider, HttpHeaders.EMPTY, false);
+        }
+
+        private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
+                                                        ProviderRuntimeConfiguration provider) {
+            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY);
         }
 
         private String exposeTranslateChunk(String chunk) throws Exception {
