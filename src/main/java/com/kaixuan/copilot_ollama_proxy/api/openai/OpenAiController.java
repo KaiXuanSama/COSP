@@ -28,7 +28,6 @@ import reactor.core.scheduler.Schedulers;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * OpenAI 兼容 API 控制器 —— 处理 Copilot 发出的 OpenAI 格式请求。
@@ -42,9 +41,6 @@ import java.util.concurrent.atomic.AtomicLong;
 public class OpenAiController {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiController.class);
-
-    /** CHUNK 生命周期事件的推送节流间隔（毫秒），避免长响应把 SSE 通道打爆。首个 chunk 不受此限制。 */
-    private static final long CHUNK_PUSH_INTERVAL_MS = 200L;
 
     private final ChatCompletionService chatCompletionService;
     private final ObjectMapper objectMapper;
@@ -199,9 +195,8 @@ public class OpenAiController {
                                                           HttpHeaders requestHeaders, String requestId) {
         AtomicInteger streamInputTokens = new AtomicInteger(0);
         AtomicInteger streamOutputTokens = new AtomicInteger(0);
-        // chunkCount 记录累计 chunk 数；lastPushAt 用于对 CHUNK 事件做时间节流，避免长响应产生每秒上百 SSE 帧。
+        // chunkCount 记录累计 chunk 数，每个 chunk 到达即推一次 CHUNK 事件，让 Toast 计数逐个跟手更新。
         AtomicInteger chunkCount = new AtomicInteger(0);
-        AtomicLong lastChunkPushAt = new AtomicLong(0L);
 
         return chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders)
                 // CONNECTED：已向上游发起调用，正在等待首字响应。
@@ -209,12 +204,14 @@ public class OpenAiController {
                         CallLifecycleEvent.of(requestId, CallPhase.CONNECTED, model, true)))
                 .doOnNext(chunk -> {
                     accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens);
-                    publishChunkThrottled(requestId, model, chunkCount.incrementAndGet(), lastChunkPushAt);
+                    // 每个 chunk 都推一次 CHUNK 事件（不节流）。单次响应 chunk 数通常不过数百，SSE 开销可接受。
+                    callLifecyclePublisher.publish(
+                            CallLifecycleEvent.of(requestId, CallPhase.CHUNK, model, true, chunkCount.incrementAndGet()));
                 })
                 .map(chunk -> ServerSentEvent.builder(chunk).build())
                 .doOnComplete(() -> {
                     apiUsageCollector.record(streamInputTokens.get(), streamOutputTokens.get());
-                    // COMPLETED：带最终精确 chunk 总数，纠正节流期间可能漏推的中间计数。
+                    // COMPLETED：带最终精确 chunk 总数作为兜底，确保前端计数与实际一致。
                     callLifecyclePublisher.publish(
                             CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, true, chunkCount.get()));
                 })
@@ -235,30 +232,6 @@ public class OpenAiController {
                     log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(error), extractRequestUrl(error));
                     return Flux.just(ServerSentEvent.<String>builder("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}").event("error").build());
                 });
-    }
-
-    /**
-     * 对 CHUNK 生命周期事件做时间节流后推送。
-     *
-     * <p>首个 chunk（{@code count == 1}）立即推送——这是"首字到达"的关键状态转换，
-     * 前端 Toast 据此从"等待首字响应"切换到"已产生 chunk"。之后每 {@link #CHUNK_PUSH_INTERVAL_MS}
-     * 毫秒最多推一次最新计数，避免长响应把 SSE 通道打爆。最终精确计数由 COMPLETED 事件兜底。
-     *
-     * @param requestId    调用唯一标识
-     * @param model        模型名称
-     * @param count        当前累计 chunk 数
-     * @param lastPushAt   上次推送时间戳（毫秒）的原子引用，用于节流判定
-     */
-    private void publishChunkThrottled(String requestId, String model, int count, AtomicLong lastPushAt) {
-        long now = System.currentTimeMillis();
-        long previous = lastPushAt.get();
-        boolean firstChunk = count == 1;
-        if (firstChunk || now - previous >= CHUNK_PUSH_INTERVAL_MS) {
-            if (lastPushAt.compareAndSet(previous, now)) {
-                callLifecyclePublisher.publish(
-                        CallLifecycleEvent.of(requestId, CallPhase.CHUNK, model, true, count));
-            }
-        }
     }
 
     /**
