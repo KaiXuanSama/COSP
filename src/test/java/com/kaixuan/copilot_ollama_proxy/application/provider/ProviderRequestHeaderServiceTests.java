@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.application.provider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -73,5 +74,33 @@ class ProviderRequestHeaderServiceTests {
         assertThat(snapshot).containsEntry("X-Auth-Token", "****");
         assertThat(snapshot).containsEntry(HttpHeaders.COOKIE, "****");
         assertThat(snapshot.values()).doesNotContain("actual-api-key", "actual-token", "session=secret-value");
+    }
+
+    @Test
+    void applyHeadersForwardsSafeDownstreamHeadersThenLetsRulesOverrideOrDeleteThem() {
+        HttpHeaders downstreamHeaders = new HttpHeaders();
+        downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-token");
+        downstreamHeaders.set(HttpHeaders.COOKIE, "session=downstream-cookie");
+        downstreamHeaders.set(HttpHeaders.USER_AGENT, "DownstreamClient/1.0");
+        downstreamHeaders.set("X-Trace-Id", "trace-123");
+        downstreamHeaders.set(HttpHeaders.HOST, "localhost:11434");
+        downstreamHeaders.set(HttpHeaders.CONTENT_LENGTH, "99999");
+        downstreamHeaders.set(HttpHeaders.CONNECTION, "keep-alive");
+
+        HttpHeaders headers = new HttpHeaders();
+        service.applyHeaders(headers, downstreamHeaders, "provider-api-key", """
+                [
+                  {"key":"Authorization","value":"Provider {apiKey}"},
+                  {"key":"Cookie","value":"/del/"},
+                  {"key":"X-Trace-Id","value":"provider-trace"}
+                ]
+                """, true);
+
+        assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Provider provider-api-key");
+        assertThat(headers).doesNotContainKey(HttpHeaders.COOKIE);
+        assertThat(headers.getFirst(HttpHeaders.USER_AGENT)).isEqualTo("DownstreamClient/1.0");
+        assertThat(headers.getFirst("X-Trace-Id")).isEqualTo("provider-trace");
+        assertThat(headers.getFirst(HttpHeaders.ACCEPT)).isEqualTo(MediaType.TEXT_EVENT_STREAM_VALUE);
+        assertThat(headers).doesNotContainKeys(HttpHeaders.HOST, HttpHeaders.CONTENT_LENGTH, HttpHeaders.CONNECTION);
     }
 }

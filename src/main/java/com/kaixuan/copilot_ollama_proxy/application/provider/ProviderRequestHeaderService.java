@@ -5,11 +5,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 准备数据库供应商的通用出站请求头与 URL。
@@ -22,6 +25,9 @@ public class ProviderRequestHeaderService {
     private static final Logger log = LoggerFactory.getLogger(ProviderRequestHeaderService.class);
     private static final String DELETE_MARKER = "/del/";
     private static final TypeReference<List<Map<String, String>>> HEADER_RULE_LIST_TYPE = new TypeReference<>() {};
+        private static final Set<String> NON_FORWARDABLE_HEADERS = Set.of(
+            "connection", "content-length", "host", "keep-alive", "proxy-authenticate",
+            "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade");
 
     private final ObjectMapper objectMapper;
 
@@ -30,10 +36,17 @@ public class ProviderRequestHeaderService {
     }
 
     /**
-     * 写入默认 Bearer 认证并应用请求头规则。
+     * 合并默认头、下游请求头和供应商请求头规则。
+     *
+     * 优先级从低到高：默认认证/媒体类型、下游可透传头、供应商规则。
+     * Host、Content-Length 和 hop-by-hop 头不跨请求透传，由上游 HTTP 客户端重新计算。
      */
-    public void applyHeaders(HttpHeaders headers, String apiKey, String headerRulesJson) {
+    public void applyHeaders(HttpHeaders headers, HttpHeaders downstreamHeaders, String apiKey,
+                             String headerRulesJson, boolean stream) {
         headers.setBearerAuth(apiKey == null ? "" : apiKey);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setAccept(List.of(stream ? MediaType.TEXT_EVENT_STREAM : MediaType.ALL));
+        copyForwardableHeaders(headers, downstreamHeaders);
         for (Map<String, String> rule : parseHeaderRules(headerRulesJson)) {
             String key = rule.get("key");
             String value = rule.get("value");
@@ -50,6 +63,13 @@ public class ProviderRequestHeaderService {
             headers.set(trimmedKey, resolvedValue);
             log.debug("[Transform] 设置请求头: {} = {}", trimmedKey, maskValue(trimmedKey, resolvedValue));
         }
+    }
+
+    /**
+     * 向后兼容的默认请求头构造入口，供独立单元测试和无下游上下文的调用使用。
+     */
+    public void applyHeaders(HttpHeaders headers, String apiKey, String headerRulesJson) {
+        applyHeaders(headers, HttpHeaders.EMPTY, apiKey, headerRulesJson, false);
     }
 
     /**
@@ -103,6 +123,23 @@ public class ProviderRequestHeaderService {
                 target.put(existingName, value);
             }
         });
+    }
+
+    private void copyForwardableHeaders(HttpHeaders target, HttpHeaders source) {
+        if (source == null || source.isEmpty()) {
+            return;
+        }
+        source.forEach((name, values) -> {
+            if (!isForwardableHeader(name)) {
+                return;
+            }
+            target.remove(name);
+            target.put(name, List.copyOf(values));
+        });
+    }
+
+    private boolean isForwardableHeader(String headerName) {
+        return headerName != null && !NON_FORWARDABLE_HEADERS.contains(headerName.toLowerCase(Locale.ROOT));
     }
 
     private List<Map<String, String>> parseHeaderRules(String headerRulesJson) {

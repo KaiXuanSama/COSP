@@ -158,7 +158,7 @@ class AbstractUpstreamChatServiceTests {
 
         private WebClient exposeBuildWebClient(Map<String, String> capturedHeaders,
                                                ProviderRuntimeConfiguration provider) {
-            return buildWebClientWithHeaders(capturedHeaders, provider);
+            return buildWebClientWithHeaders(capturedHeaders, provider, HttpHeaders.EMPTY, false);
         }
 
         private String exposeTranslateChunk(String chunk) throws Exception {

@@ -13,6 +13,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.test.web.reactive.server.FluxExchangeResult;
@@ -43,7 +44,7 @@ class OpenAiControllerStreamingTests {
 
   @Test
   void forwardsTheFirstStreamingChunkBeforeTheUpstreamStreamFinishes() {
-    given(chatCompletionService.chatCompletionStream(anyMap(), anyString())).willReturn(Flux.concat(
+    given(chatCompletionService.chatCompletionStream(anyMap(), anyString(), org.mockito.ArgumentMatchers.any(HttpHeaders.class))).willReturn(Flux.concat(
         Mono.just(
             """
                 {"id":"chatcmpl-msg_123","object":"chat.completion.chunk","created":1735689600,"model":"mimo-v2.5-pro","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}

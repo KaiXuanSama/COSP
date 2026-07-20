@@ -15,6 +15,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
@@ -43,7 +44,7 @@ class ResponseLoggingFilterTests {
 
   @Test
   void logsTheResponseBodyForAsyncJsonEndpoints(CapturedOutput output) {
-    given(chatCompletionService.chatCompletion(anyMap(), anyString())).willReturn(Mono.just("""
+    given(chatCompletionService.chatCompletion(anyMap(), anyString(), org.mockito.ArgumentMatchers.any(HttpHeaders.class))).willReturn(Mono.just("""
         {
           "id": "chatcmpl-msg_123",
           "object": "chat.completion",

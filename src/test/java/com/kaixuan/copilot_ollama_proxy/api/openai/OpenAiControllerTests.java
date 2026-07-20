@@ -10,6 +10,7 @@ import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -46,7 +47,7 @@ class OpenAiControllerTests {
 
   @Test
   void returnsNonStreamingOpenAiChatCompletionsWithoutBlockingTheControllerPath() {
-    given(chatCompletionService.chatCompletion(anyMap(), anyString())).willReturn(Mono.just("""
+    given(chatCompletionService.chatCompletion(anyMap(), anyString(), org.mockito.ArgumentMatchers.any(HttpHeaders.class))).willReturn(Mono.just("""
         {
           "id": "chatcmpl-msg_123",
           "object": "chat.completion",

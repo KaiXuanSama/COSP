@@ -15,6 +15,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.http.HttpHeaders;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.sqlite.SQLiteDataSource;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -120,11 +121,20 @@ class ProviderRequestBodyTransformationIntegrationTests {
         ChatCompletionService chatCompletionService = new ChatCompletionService(
                 new ProviderRouteResolver(catalog), genericChatService);
 
+        HttpHeaders downstreamHeaders = new HttpHeaders();
+        downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-token");
+        downstreamHeaders.set(HttpHeaders.COOKIE, "session=downstream-cookie");
+        downstreamHeaders.set(HttpHeaders.USER_AGENT, "DownstreamClient/1.0");
+        downstreamHeaders.set("X-Trace-Id", "trace-123");
+        downstreamHeaders.set(HttpHeaders.HOST, "localhost:11434");
+        downstreamHeaders.set(HttpHeaders.CONTENT_LENGTH, "99999");
+        downstreamHeaders.set(HttpHeaders.CONNECTION, "keep-alive");
+
         String response = chatCompletionService.chatCompletion(Map.of(
                 "model", "[alpha] model-a",
                 "messages", List.of(Map.of("role", "user", "content", "hello")),
                 "temperature", 0.8,
-                "reasoning_effort", "high"), "[alpha] model-a").block(Duration.ofSeconds(3));
+                "reasoning_effort", "high"), "[alpha] model-a", downstreamHeaders).block(Duration.ofSeconds(3));
 
         assertThat(response).contains("chatcmpl-test");
         JsonNode upstreamBody = objectMapper.readTree(capturedRequest.get());
@@ -133,13 +143,21 @@ class ProviderRequestBodyTransformationIntegrationTests {
         assertThat(upstreamBody.path("temperature").asDouble()).isEqualTo(0.2);
         assertThat(upstreamBody.has("reasoning_effort")).isFalse();
         assertThat(upstreamBody.path("messages").get(0).path("content").asText()).isEqualTo("hello");
-        assertThat(capturedRequestHeaders.get().get("User-agent")).startsWith("ReactorNetty/");
+        assertThat(capturedRequestHeaders.get().get("User-agent")).isEqualTo("DownstreamClient/1.0");
         assertThat(loggedRequestHeaders.get()).containsEntry(
                 "User-Agent", capturedRequestHeaders.get().get("User-agent"));
         assertThat(loggedRequestHeaders.get()).containsEntry("Authorization", "****");
         assertThat(loggedRequestHeaders.get()).containsKeys("Host", "Content-Type", "Accept");
         assertThat(loggedRequestHeaders.get().containsKey("Content-Length")
                 || loggedRequestHeaders.get().containsKey("Transfer-Encoding")).isTrue();
+        assertThat(capturedRequestHeaders.get()).containsEntry("X-trace-id", "trace-123");
+        assertThat(capturedRequestHeaders.get()).containsEntry("Cookie", "session=downstream-cookie");
+        assertThat(capturedRequestHeaders.get()).containsEntry("Authorization", "Bearer downstream-token");
+        assertThat(capturedRequestHeaders.get()).containsEntry("User-agent", "DownstreamClient/1.0");
+        assertThat(capturedRequestHeaders.get().get("Host")).doesNotContain("11434");
+        assertThat(loggedRequestHeaders.get()).containsEntry("X-Trace-Id", "trace-123");
+        assertThat(loggedRequestHeaders.get()).containsEntry("Cookie", "****");
+        assertThat(loggedRequestHeaders.get()).containsEntry("User-Agent", "DownstreamClient/1.0");
     }
 
     private String upstreamBaseUrl() {

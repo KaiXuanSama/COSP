@@ -10,7 +10,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -114,7 +113,7 @@ public abstract class AbstractUpstreamChatService {
      * @return 上游返回的原始 OpenAI JSON 响应字符串
      */
     protected Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
-                                          ProviderRuntimeConfiguration provider) {
+                                          ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders) {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, false, model, provider);
         log.info("{} OpenAI 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
 
@@ -123,7 +122,8 @@ public abstract class AbstractUpstreamChatService {
         String modelName = (String) requestBody.get("model");
         Map<String, String> reqHeaders = new LinkedHashMap<>();
 
-        return buildWebClientWithHeaders(reqHeaders, provider).post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).bodyValue(requestBody).retrieve()
+        return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, false)
+            .post().uri(chatCompletionsUri()).bodyValue(requestBody).retrieve()
                 .toEntity(String.class)
                 .retryWhen(buildRetrySpec("chatCompletion", provider))
                 .doOnNext(entity -> log.debug("{} 响应: {}", provider.providerKey(), entity.getBody()))
@@ -160,7 +160,7 @@ public abstract class AbstractUpstreamChatService {
      * @return 按顺序发出的 chunk JSON 字符串，最后一个元素为 "[DONE]"
      */
     protected Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model,
-                                                 ProviderRuntimeConfiguration provider) {
+                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders) {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model, provider);
         log.info("{} OpenAI 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
 
@@ -179,7 +179,8 @@ public abstract class AbstractUpstreamChatService {
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
         StringBuilder reasoningBuffer = new StringBuilder();
         AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
-        return buildWebClientWithHeaders(reqHeaders, provider).post().uri(chatCompletionsUri()).contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue(requestBody)
+        return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, true)
+            .post().uri(chatCompletionsUri()).bodyValue(requestBody)
                 .exchangeToFlux(response -> {
                     Map<String, String> respHeaders = new LinkedHashMap<>();
                     response.headers().asHttpHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
@@ -244,7 +245,8 @@ public abstract class AbstractUpstreamChatService {
      * @return 配置好的 WebClient 实例
      */
     protected WebClient buildWebClientWithHeaders(Map<String, String> capturedHeaders,
-                                                  ProviderRuntimeConfiguration provider) {
+                                                  ProviderRuntimeConfiguration provider,
+                                                  HttpHeaders downstreamHeaders, boolean stream) {
         String apiKey = provider.apiKey();
         String baseUrl = provider.baseUrl().isBlank() ? defaultBaseUrl() : provider.baseUrl();
         String normalizedUrl = providerRequestHeaderService.normalizeBaseUrl(baseUrl);
@@ -258,8 +260,8 @@ public abstract class AbstractUpstreamChatService {
         return webClientBuilder.clone()
             .clientConnector(new ReactorClientHttpConnector(capturingHttpClient))
             .baseUrl(normalizedUrl).defaultHeaders(headers -> {
-            providerRequestHeaderService.applyHeaders(headers, apiKey, provider.headerRulesJson());
-            headers.setContentType(MediaType.APPLICATION_JSON);
+                providerRequestHeaderService.applyHeaders(
+                    headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream);
         }).filter((request, next) -> {
             capturedHeaders.clear();
             capturedHeaders.putAll(providerRequestHeaderService.createLogSnapshot(request.headers()));

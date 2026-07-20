@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.application.openai;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -38,12 +39,21 @@ public class ChatCompletionService {
      * @param model 模型名称
      * @return 上游原始 OpenAI 响应
      */
-    public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model) {
+    public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
+                                       HttpHeaders downstreamHeaders) {
         ResolvedProviderRoute route = providerRouteResolver.resolve(model);
         if (route == null) {
             return Mono.error(new RuntimeException("没有可用的上游服务来处理模型: " + model));
         }
-        return genericChatService.chatCompletion(openAiRequest, route);
+        return genericChatService.chatCompletion(openAiRequest, route, downstreamHeaders);
+    }
+
+    /**
+     * 执行不含下游请求头上下文的非流式聊天补全。
+     * 仅供内部兼容调用与单元测试使用；HTTP API 必须调用带 downstreamHeaders 的重载。
+     */
+    public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model) {
+        return chatCompletion(openAiRequest, model, HttpHeaders.EMPTY);
     }
 
     /**
@@ -53,11 +63,20 @@ public class ChatCompletionService {
      * @param model 模型名称
      * @return 上游 SSE 数据块
      */
-    public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
+    public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model,
+                                              HttpHeaders downstreamHeaders) {
         ResolvedProviderRoute route = providerRouteResolver.resolve(model);
         if (route == null) {
             return Flux.error(new RuntimeException("没有可用的上游服务来处理模型: " + model));
         }
-        return genericChatService.chatCompletionStream(openAiRequest, route);
+        return genericChatService.chatCompletionStream(openAiRequest, route, downstreamHeaders);
+    }
+
+    /**
+     * 执行不含下游请求头上下文的流式聊天补全。
+     * 仅供内部兼容调用与单元测试使用；HTTP API 必须调用带 downstreamHeaders 的重载。
+     */
+    public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
+        return chatCompletionStream(openAiRequest, model, HttpHeaders.EMPTY);
     }
 }
