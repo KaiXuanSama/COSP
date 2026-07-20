@@ -149,10 +149,8 @@ public class OpenAiController {
         }
 
         // 非流式：获取完整响应后提取 usage 进行记录，并返回给客户端。
-        return chatCompletionService.chatCompletion(requestBody, model, requestHeaders)
-                // CONNECTED：已向上游发起调用，正在等待响应。
-                .doOnSubscribe(subscription -> callLifecyclePublisher.publish(
-                        CallLifecycleEvent.of(requestId, CallPhase.CONNECTED, model, stream)))
+        // CONNECTED 现由 provider 层在上游响应真正到达时发出（更准确），此处不再乐观发出。
+        return chatCompletionService.chatCompletion(requestBody, model, requestHeaders, requestId)
                 .doOnNext(this::recordUsage)
                 // COMPLETED：非流式无 chunk 计数，最终计数为 0。
                 .doOnNext(json -> callLifecyclePublisher.publish(
@@ -198,10 +196,8 @@ public class OpenAiController {
         // chunkCount 记录累计 chunk 数，每个 chunk 到达即推一次 CHUNK 事件，让 Toast 计数逐个跟手更新。
         AtomicInteger chunkCount = new AtomicInteger(0);
 
-        return chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders)
-                // CONNECTED：已向上游发起调用，正在等待首字响应。
-                .doOnSubscribe(subscription -> callLifecyclePublisher.publish(
-                        CallLifecycleEvent.of(requestId, CallPhase.CONNECTED, model, true)))
+        // CONNECTED 现由 provider 层在上游响应真正到达时发出（更准确），此处不再乐观发出。
+        return chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders, requestId)
                 .doOnNext(chunk -> {
                     accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens);
                     // 每个 chunk 都推一次 CHUNK 事件（不节流）。单次响应 chunk 数通常不过数百，SSE 开销可接受。

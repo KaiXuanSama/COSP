@@ -44,7 +44,7 @@ class OpenAiControllerStreamingTests {
 
   @Test
   void forwardsTheFirstStreamingChunkBeforeTheUpstreamStreamFinishes() {
-    given(chatCompletionService.chatCompletionStream(anyMap(), anyString(), org.mockito.ArgumentMatchers.any(HttpHeaders.class))).willReturn(Flux.concat(
+    given(chatCompletionService.chatCompletionStream(anyMap(), anyString(), org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString())).willReturn(Flux.concat(
         Mono.just(
             """
                 {"id":"chatcmpl-msg_123","object":"chat.completion.chunk","created":1735689600,"model":"mimo-v2.5-pro","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}

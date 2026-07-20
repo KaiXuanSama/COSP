@@ -134,7 +134,7 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 "model", "[alpha] model-a",
                 "messages", List.of(Map.of("role", "user", "content", "hello")),
                 "temperature", 0.8,
-                "reasoning_effort", "high"), "[alpha] model-a", downstreamHeaders).block(Duration.ofSeconds(3));
+                "reasoning_effort", "high"), "[alpha] model-a", downstreamHeaders, null).block(Duration.ofSeconds(3));
 
         assertThat(response).contains("chatcmpl-test");
         JsonNode upstreamBody = objectMapper.readTree(capturedRequest.get());

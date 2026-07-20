@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import http from '@/api'
 
 /** 单次调用的生命周期阶段，与后端 CallPhase 枚举一一对应。 */
-export type CallPhase = 'RECEIVED' | 'CONNECTED' | 'CHUNK' | 'COMPLETED' | 'FAILED' | 'CANCELED'
+export type CallPhase = 'RECEIVED' | 'CONNECTED' | 'CHUNK' | 'RETRYING' | 'COMPLETED' | 'FAILED' | 'CANCELED'
 
 /** 后端推送的生命周期事件，与 CallLifecycleEvent DTO 对应。 */
 export interface CallLifecycleEvent {
@@ -12,6 +12,8 @@ export interface CallLifecycleEvent {
   model: string
   stream: boolean
   chunkCount: number
+  /** 重试次数（RETRYING 阶段有意义，表示即将进行的第几次重试，其余为 0）。 */
+  attempt: number
   timestamp: number
 }
 
@@ -22,6 +24,8 @@ export interface CallToast {
   model: string
   stream: boolean
   chunkCount: number
+  /** 当前重试次数（RETRYING 阶段展示用）。 */
+  attempt: number
   /** 是否正在退场淡出（COMPLETED/FAILED 后短暂保留再移除）。 */
   leaving: boolean
 }
@@ -96,6 +100,10 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
       if (event.chunkCount > existing.chunkCount) {
         existing.chunkCount = event.chunkCount
       }
+      // RETRYING 携带的重试次数需同步；其余阶段 attempt 为 0，不覆盖已有值。
+      if (event.attempt > 0) {
+        existing.attempt = event.attempt
+      }
     } else {
       toasts.value = [
         ...toasts.value,
@@ -105,6 +113,7 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
           model: event.model,
           stream: event.stream,
           chunkCount: event.chunkCount,
+          attempt: event.attempt,
           leaving: false,
         },
       ]

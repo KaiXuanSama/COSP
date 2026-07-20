@@ -7,11 +7,14 @@ package com.kaixuan.copilot_ollama_proxy.protocol.lifecycle;
  * 判断"是否卡住 / 上游是否有响应"。阶段流转：
  *
  * <pre>
- *   流式：  RECEIVED -> CONNECTED -> CHUNK(多次) -> COMPLETED
- *   非流式：RECEIVED -> CONNECTED -> COMPLETED
+ *   流式：  RECEIVED -> [RETRYING...] -> CONNECTED -> CHUNK(多次) -> COMPLETED
+ *   非流式：RECEIVED -> [RETRYING...] -> CONNECTED -> COMPLETED
  *   任意阶段出错：-> FAILED
  *   客户端（下游 Copilot）主动断连：-> CANCELED
  * </pre>
+ *
+ * <p>RETRYING 只在首字到达之前出现（连接建立失败、429/5xx/可重试 400、SSL 握手失败），
+ * 可能出现多次（每次重试前一次）；一旦收到上游响应头进入 CONNECTED，就不会再退回 RETRYING。
  *
  * <p>后端只下发阶段枚举与必要数据（chunk 计数等），具体展示文案由前端根据阶段渲染，
  * 保持"能力/展示分离"——后端不掺杂 UI 文案。
@@ -21,8 +24,11 @@ public enum CallPhase {
     /** 下游请求已被代理接收（虚拟模型拦截之后、真正调上游之前）。 */
     RECEIVED,
 
-    /** 已向上游发起调用，正在等待首字响应。 */
+    /** 已收到上游响应头（连接真正建立、开始等待首字响应）。 */
     CONNECTED,
+
+    /** 上游异常，正在重试（携带当前重试次数，仅出现在首字到达之前）。 */
+    RETRYING,
 
     /** 已收到上游 chunk（流式专属），携带当前累计 chunk 数。 */
     CHUNK,

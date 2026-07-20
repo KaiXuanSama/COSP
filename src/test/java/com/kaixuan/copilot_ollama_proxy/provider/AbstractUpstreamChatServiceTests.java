@@ -3,6 +3,8 @@ package com.kaixuan.copilot_ollama_proxy.provider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
+import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
+import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -212,6 +214,63 @@ class AbstractUpstreamChatServiceTests {
         }
     }
 
+    /**
+     * RETRYING 实锤测试：上游首次返回可重试的 500，第二次成功，
+     * 验证 {@code buildRetrySpec} 的 doBeforeRetry 真的通过注入的 notifier 发出了 RETRYING 事件。
+     *
+     * <p>断言两点：
+     * <ol>
+     *   <li>至少发出一个 RETRYING 阶段事件（重试对前端可见）；</li>
+     *   <li>RETRYING 事件携带正确的 requestId 与递增的 attempt（首次重试 attempt=1）。</li>
+     * </ol>
+     */
+    @Test
+    void upstreamRetryEmitsRetryingLifecycleEvent() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        List<CallLifecycleEvent> events = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        TestOpenAiService service = new TestOpenAiService();
+        service.setLifecycleNotifier(events::add);
+
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            int attempt = upstreamCallCount.incrementAndGet();
+            if (attempt == 1) {
+                // 首次返回可重试的 500，触发一次重试。
+                return Mono.just(ClientResponse.create(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                        .body("{\"error\":\"upstream boom\"}").build());
+            }
+            // 第二次成功，吐一个 chunk 后正常结束。
+            DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+            Flux<DataBuffer> body = Mono.just(sseData(factory,
+                    "{\"id\":\"ok-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}")).flux();
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("model", "model-a");
+
+        List<String> received = new java.util.ArrayList<>();
+        catchThrowable(() -> service.exposeChatCompletionStream(request, "model-a", provider(), "req-retry-1")
+                .doOnNext(received::add)
+                .blockLast(Duration.ofSeconds(20)));
+
+        List<CallLifecycleEvent> retryingEvents = events.stream()
+                .filter(e -> e.phase() == CallPhase.RETRYING)
+                .toList();
+
+        System.out.println("[RETRYING] 上游调用次数 = " + upstreamCallCount.get());
+        System.out.println("[RETRYING] RETRYING 事件数 = " + retryingEvents.size());
+
+        assertThat(upstreamCallCount.get()).isGreaterThanOrEqualTo(2);
+        assertThat(retryingEvents).isNotEmpty();
+        assertThat(retryingEvents).allMatch(e -> "req-retry-1".equals(e.requestId()));
+        assertThat(retryingEvents.get(0).attempt()).isEqualTo(1);
+        assertThat(retryingEvents.get(0).stream()).isTrue();
+    }
+
     /** 把一段 JSON 包装成 SSE data 帧的 DataBuffer（{@code data: {...}\n\n}）。 */
     private static DataBuffer sseData(DefaultDataBufferFactory factory, String json) {
         byte[] bytes = ("data: " + json + "\n\n").getBytes(StandardCharsets.UTF_8);
@@ -236,7 +295,12 @@ class AbstractUpstreamChatServiceTests {
 
         private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
                                                         ProviderRuntimeConfiguration provider) {
-            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY);
+            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, null);
+        }
+
+        private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
+                                                        ProviderRuntimeConfiguration provider, String requestId) {
+            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, requestId);
         }
 
         private String exposeTranslateChunk(String chunk) throws Exception {

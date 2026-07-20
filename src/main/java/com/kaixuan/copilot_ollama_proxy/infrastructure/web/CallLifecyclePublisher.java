@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.web;
 
+import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
@@ -24,11 +25,12 @@ import reactor.core.publisher.Sinks;
  * </ul>
  */
 @Component
-public class CallLifecyclePublisher {
+public class CallLifecyclePublisher implements CallLifecycleNotifier {
 
     private final Sinks.Many<CallLifecycleEvent> sink = Sinks.many().multicast().directBestEffort();
 
     /** 发布一个生命周期事件。 */
+    @Override
     public void publish(CallLifecycleEvent event) {
         sink.tryEmitNext(event);
     }

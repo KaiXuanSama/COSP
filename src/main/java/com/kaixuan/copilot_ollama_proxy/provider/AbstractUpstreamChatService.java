@@ -3,8 +3,11 @@ package com.kaixuan.copilot_ollama_proxy.provider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
+import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
+import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
+import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -64,6 +67,9 @@ public abstract class AbstractUpstreamChatService {
     /** API 调用日志写入服务，由子类 Spring Bean 通过 setter 注入。 */
     private ApiCallLogService apiCallLog;
 
+    /** 调用生命周期事件通知器，由 Spring 可选注入；用于发出 CONNECTED / RETRYING 等 provider 层观测点。 */
+    private CallLifecycleNotifier lifecycleNotifier;
+
     /**
      * 全局 WebClient.Builder，由 Spring 通过 setter 注入。
      * 该 Builder 在 WebClientConfig 中配置了 JDK 系统 DNS 解析器，
@@ -75,6 +81,11 @@ public abstract class AbstractUpstreamChatService {
     @Autowired(required = false)
     public void setApiCallLog(ApiCallLogService apiCallLog) {
         this.apiCallLog = apiCallLog;
+    }
+
+    @Autowired(required = false)
+    public void setLifecycleNotifier(CallLifecycleNotifier lifecycleNotifier) {
+        this.lifecycleNotifier = lifecycleNotifier;
     }
 
     @Autowired(required = false)
@@ -113,7 +124,8 @@ public abstract class AbstractUpstreamChatService {
      * @return 上游返回的原始 OpenAI JSON 响应字符串
      */
     protected Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
-                                          ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders) {
+                                          ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                          String requestId) {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, false, model, provider);
         log.info("{} OpenAI 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
 
@@ -125,9 +137,11 @@ public abstract class AbstractUpstreamChatService {
         return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, false)
             .post().uri(chatCompletionsUri()).bodyValue(requestBody).retrieve()
                 .toEntity(String.class)
-                .retryWhen(buildRetrySpec("chatCompletion", provider))
+                .retryWhen(buildRetrySpec("chatCompletion", provider, requestId, modelName, false))
                 .doOnNext(entity -> log.debug("{} 响应: {}", provider.providerKey(), entity.getBody()))
                 .map(entity -> {
+                    // CONNECTED：上游完整响应已到达（非流式无首字概念，响应到达即视为已连接）。
+                    publishLifecycle(CallLifecycleEvent.of(requestId, CallPhase.CONNECTED, modelName, false));
                     Map<String, String> respHeaders = new LinkedHashMap<>();
                     entity.getHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
                     int statusCode = entity.getStatusCode().value();
@@ -160,7 +174,8 @@ public abstract class AbstractUpstreamChatService {
      * @return 按顺序发出的 chunk JSON 字符串，最后一个元素为 "[DONE]"
      */
     protected Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model,
-                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders) {
+                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                                 String requestId) {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model, provider);
         log.info("{} OpenAI 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
 
@@ -197,9 +212,13 @@ public abstract class AbstractUpstreamChatService {
                                     response.statusCode().value(), "上游错误响应", null, errorBody.getBytes(), null));
                         });
                     }
+                    // CONNECTED：真正收到上游非错误响应头的那一刻，此时才准确表示"已连接，等待首字"。
+                    // 放在此处而非控制器 doOnSubscribe，可覆盖 A1/A2（订阅即谎报"已连接"）。
+                    // 重试时每次成功拿到响应头都会重新发一次，属预期行为。
+                    publishLifecycle(CallLifecycleEvent.of(requestId, CallPhase.CONNECTED, model, true));
                     return response.bodyToFlux(STRING_SSE_TYPE);
                 })
-                .retryWhen(buildRetrySpec("chatCompletionStream", provider)).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
+                .retryWhen(buildRetrySpec("chatCompletionStream", provider, requestId, model, true)).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
                 .doOnNext(raw -> log.debug("{} 上游原始: {}", provider.providerKey(), raw)).concatMap(chunk -> {
                     String normalizedChunk = normalizeUpstreamChunk(chunk, contentEmitted, reasoningBuffer, chunkId);
                     if (isTerminalChunk(normalizedChunk)) {
@@ -408,21 +427,44 @@ public abstract class AbstractUpstreamChatService {
      *    （如 SocketException: Connection reset，即 HTTP 200 但 SSE 流中途断开）
      *
      * @param method 调用方方法名，用于日志区分重试来源
+     * @param requestId 本次调用唯一标识，用于发出 RETRYING 生命周期事件
+     * @param model 模型名称（含前缀），用于 RETRYING 事件展示
+     * @param stream 是否流式请求
      * @return 配置好的 Retry 实例
      */
-    protected Retry buildRetrySpec(String method, ProviderRuntimeConfiguration provider) {
+    protected Retry buildRetrySpec(String method, ProviderRuntimeConfiguration provider,
+                                   String requestId, String model, boolean stream) {
         return Retry.backoff(5, Duration.ofSeconds(2)).maxBackoff(Duration.ofSeconds(30))
                 .filter(ex -> ((ex instanceof WebClientResponseException responseException) && (responseException.getStatusCode().value() == 429 || responseException.getStatusCode().is5xxServerError()
                         || responseException.getStatusCode().value() == 400 || hasNetworkCause(responseException))) || ex instanceof WebClientRequestException
                         || hasSslHandshakeFailure(ex))
                 .doBeforeRetry(signal -> {
+                    int attempt = (int) (signal.totalRetries() + 1);
+                    // RETRYING：让前端 Toast 从“已连接/等待中”切换到“上游异常，正在重试（第N次）”，
+                    // 避免重试期间静默卡顿让用户误以为卡死。
+                    publishLifecycle(CallLifecycleEvent.retrying(requestId, model, stream, attempt));
                     if (signal.failure() instanceof WebClientResponseException responseException && responseException.getStatusCode().value() == 429) {
                         String retryAfter = responseException.getHeaders().getFirst("Retry-After");
-                        log.warn("[{}] {} API 限速 (429)，重试第 {} 次{}", method, provider.providerKey(), signal.totalRetries() + 1, retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
+                        log.warn("[{}] {} API 限速 (429)，重试第 {} 次{}", method, provider.providerKey(), attempt, retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
                     } else {
-                        log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, provider.providerKey(), signal.totalRetries() + 1, signal.failure().getMessage());
+                        log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, provider.providerKey(), attempt, signal.failure().getMessage());
                     }
                 });
+    }
+
+    /**
+     * best-effort 发出一个生命周期事件；notifier 未注入（如单元测试）或发布异常时静默跳过，
+     * 绝不影响正在进行的聊天数据流。
+     */
+    private void publishLifecycle(CallLifecycleEvent event) {
+        if (lifecycleNotifier == null) {
+            return;
+        }
+        try {
+            lifecycleNotifier.publish(event);
+        } catch (Exception e) {
+            log.debug("生命周期事件发布失败（已忽略）: {}", e.getMessage());
+        }
     }
 
     /**

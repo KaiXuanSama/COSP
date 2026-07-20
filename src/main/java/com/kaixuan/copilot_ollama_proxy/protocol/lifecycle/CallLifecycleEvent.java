@@ -14,6 +14,7 @@ package com.kaixuan.copilot_ollama_proxy.protocol.lifecycle;
  *   <li>{@link #model} —— 请求的模型名（含前缀，供 Toast 展示是哪个调用）；</li>
  *   <li>{@link #stream} —— 是否流式请求，前端据此决定显示完整版还是简化版 Toast；</li>
  *   <li>{@link #chunkCount} —— 已产生的 chunk 数（CHUNK/COMPLETED 阶段有意义，其余为 0）；</li>
+ *   <li>{@link #attempt} —— 重试次数（RETRYING 阶段有意义，表示即将进行的第几次重试，其余为 0）；</li>
  *   <li>{@link #timestamp} —— 事件产生时的服务端毫秒时间戳。</li>
  * </ul>
  *
@@ -24,6 +25,7 @@ package com.kaixuan.copilot_ollama_proxy.protocol.lifecycle;
  * @param model      模型名称（含前缀）
  * @param stream     是否流式请求
  * @param chunkCount 当前累计 chunk 数
+ * @param attempt    重试次数（RETRYING 阶段有意义）
  * @param timestamp  服务端毫秒时间戳
  */
 public record CallLifecycleEvent(
@@ -32,15 +34,21 @@ public record CallLifecycleEvent(
         String model,
         boolean stream,
         int chunkCount,
+        int attempt,
         long timestamp) {
 
-    /** 构造一个不含 chunk 计数的阶段事件（RECEIVED / CONNECTED / FAILED）。 */
+    /** 构造一个不含计数的阶段事件（RECEIVED / CONNECTED / FAILED / CANCELED）。 */
     public static CallLifecycleEvent of(String requestId, CallPhase phase, String model, boolean stream) {
-        return new CallLifecycleEvent(requestId, phase, model, stream, 0, System.currentTimeMillis());
+        return new CallLifecycleEvent(requestId, phase, model, stream, 0, 0, System.currentTimeMillis());
     }
 
-    /** 构造一个带 chunk 计数的阶段事件（CHUNK / COMPLETED）。 */
+    /** 构造一个带 chunk 计数的阶段事件（CHUNK / COMPLETED / CANCELED）。 */
     public static CallLifecycleEvent of(String requestId, CallPhase phase, String model, boolean stream, int chunkCount) {
-        return new CallLifecycleEvent(requestId, phase, model, stream, chunkCount, System.currentTimeMillis());
+        return new CallLifecycleEvent(requestId, phase, model, stream, chunkCount, 0, System.currentTimeMillis());
+    }
+
+    /** 构造一个 RETRYING 事件，携带即将进行的重试次数。 */
+    public static CallLifecycleEvent retrying(String requestId, String model, boolean stream, int attempt) {
+        return new CallLifecycleEvent(requestId, CallPhase.RETRYING, model, stream, 0, attempt, System.currentTimeMillis());
     }
 }
