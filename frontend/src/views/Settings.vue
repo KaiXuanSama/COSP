@@ -331,7 +331,10 @@ const relayPresets: ProviderPreset[] = [
   {
     label: 'AgentRouter',
     baseUrl: 'https://agentrouter.org/v1',
-    headers: [{ key: 'User-Agent', value: 'claude-cli/2.1.195 (external, cli)' }],
+    headers: [
+      { key: 'User-Agent', value: 'claude-cli/2.1.195 (external, cli)' },
+      { key: 'Accept-Encoding', value: '/del/' }
+    ],
     requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
     requestBodyRules: MIMO_EXAMPLE_RULESET,
   },
