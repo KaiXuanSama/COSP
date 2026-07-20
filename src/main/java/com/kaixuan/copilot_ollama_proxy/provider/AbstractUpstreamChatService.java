@@ -241,6 +241,12 @@ public abstract class AbstractUpstreamChatService {
      * doOnRequest 随后用传输层快照覆盖它，因此生产日志还包含 User-Agent、Host
      * 等由底层 HTTP 客户端最后补入的头。重试时快照更新为最后一次实际尝试。
      *
+     * 注意：此处用注入的 {@code httpClient} 派生 capturingHttpClient 并覆盖了
+     * webClientBuilder 自带的 connector，因此实际的 DNS 解析行为由注入的
+     * {@code httpClient}（WebClientConfig 中配置了 JDK 系统解析器的全局 Bean）决定，
+     * 而非 webClientBuilder 内部的 connector。修改 DNS 规避策略时应改 httpClient Bean，
+     * 只改 webClientBuilder 的 connector 不会在这条链上生效。
+     *
      * @param capturedHeaders 用于存放最终请求头安全快照的 Map
      * @return 配置好的 WebClient 实例
      */
