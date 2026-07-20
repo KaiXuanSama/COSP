@@ -5,6 +5,7 @@ import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHead
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.provider.AbstractUpstreamChatService;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -61,8 +62,17 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
      * @param route 应用层解析出的供应商模型路由
      * @return 上游返回的 OpenAI 响应
      */
+    public Mono<String> chatCompletion(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
+                                       HttpHeaders downstreamHeaders) {
+        return super.chatCompletion(openAiRequest, route.model(), route.provider(), downstreamHeaders);
+    }
+
+    /**
+     * 执行不含下游请求头上下文的非流式聊天补全。
+     * 仅供直接调用的兼容路径使用。
+     */
     public Mono<String> chatCompletion(Map<String, Object> openAiRequest, ResolvedProviderRoute route) {
-        return super.chatCompletion(openAiRequest, route.model(), route.provider());
+        return chatCompletion(openAiRequest, route, HttpHeaders.EMPTY);
     }
 
     /**
@@ -72,7 +82,16 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
      * @param route 应用层解析出的供应商模型路由
      * @return 上游 SSE 数据块
      */
+    public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
+                                              HttpHeaders downstreamHeaders) {
+        return super.chatCompletionStream(openAiRequest, route.model(), route.provider(), downstreamHeaders);
+    }
+
+    /**
+     * 执行不含下游请求头上下文的流式聊天补全。
+     * 仅供直接调用的兼容路径使用。
+     */
     public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, ResolvedProviderRoute route) {
-        return super.chatCompletionStream(openAiRequest, route.model(), route.provider());
+        return chatCompletionStream(openAiRequest, route, HttpHeaders.EMPTY);
     }
 }

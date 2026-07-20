@@ -13,6 +13,7 @@ import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiModelsResponse.Mod
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
@@ -110,7 +111,8 @@ public class OpenAiController {
      *         流式 body 为 ServerSentEvent 流（text/event-stream）。
      */
     @PostMapping(value = "/v1/chat/completions")
-    public Mono<ResponseEntity<?>> chatCompletions(@RequestBody OpenAiChatRequest request) {
+    public Mono<ResponseEntity<?>> chatCompletions(@RequestBody OpenAiChatRequest request,
+                                                   @RequestHeader HttpHeaders requestHeaders) {
         // 拦截兜底模型 nano_llm：无任何供应商启用时返回引导信息，避免调用上游 API
         if ("nano_llm".equals(request.getModel())) {
             return Mono.just(buildNanoLlmResponse(request.isStream()));
@@ -125,7 +127,7 @@ public class OpenAiController {
 
         // 流式：将 SSE 流作为 ResponseEntity 的 body 返回，由 WebFlux 框架托管背压、取消与超时。
         if (request.isStream()) {
-            Flux<ServerSentEvent<String>> stream = streamResponse(requestBody, request.getModel());
+            Flux<ServerSentEvent<String>> stream = streamResponse(requestBody, request.getModel(), requestHeaders);
             return Mono.just(ResponseEntity.ok()
                     .contentType(MediaType.TEXT_EVENT_STREAM)
                     .header("Cache-Control", "no-cache")
@@ -133,7 +135,7 @@ public class OpenAiController {
         }
 
         // 非流式：获取完整响应后提取 usage 进行记录，并返回给客户端。
-        return chatCompletionService.chatCompletion(requestBody, request.getModel()).doOnNext(this::recordUsage)
+        return chatCompletionService.chatCompletion(requestBody, request.getModel(), requestHeaders).doOnNext(this::recordUsage)
                 .<ResponseEntity<?>>map(openAiJson -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(openAiJson))
                 .onErrorResume(ex -> {
                     if (isClientDisconnect(ex)) {
@@ -164,11 +166,12 @@ public class OpenAiController {
      * @param model 模型名称
      * @return ServerSentEvent 流
      */
-    private Flux<ServerSentEvent<String>> streamResponse(Map<String, Object> requestBody, String model) {
+    private Flux<ServerSentEvent<String>> streamResponse(Map<String, Object> requestBody, String model,
+                                                          HttpHeaders requestHeaders) {
         AtomicInteger streamInputTokens = new AtomicInteger(0);
         AtomicInteger streamOutputTokens = new AtomicInteger(0);
 
-        return chatCompletionService.chatCompletionStream(requestBody, model)
+        return chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders)
                 .doOnNext(chunk -> accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens))
                 .map(chunk -> ServerSentEvent.builder(chunk).build())
                 .doOnComplete(() -> apiUsageCollector.record(streamInputTokens.get(), streamOutputTokens.get()))
