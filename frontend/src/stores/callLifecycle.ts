@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import http from '@/api'
 
 /** 单次调用的生命周期阶段，与后端 CallPhase 枚举一一对应。 */
-export type CallPhase = 'RECEIVED' | 'CONNECTED' | 'CHUNK' | 'COMPLETED' | 'FAILED'
+export type CallPhase = 'RECEIVED' | 'CONNECTED' | 'CHUNK' | 'COMPLETED' | 'FAILED' | 'CANCELED'
 
 /** 后端推送的生命周期事件，与 CallLifecycleEvent DTO 对应。 */
 export interface CallLifecycleEvent {
@@ -80,14 +80,14 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
    * 将一个生命周期事件应用到 Toast 列表：
    * - 新 requestId：插入一个 Toast；
    * - 已存在：就地更新阶段与 chunk 计数；
-   * - 终态（COMPLETED/FAILED）：安排延迟淡出移除。
+   * - 终态（COMPLETED/FAILED/CANCELED）：安排延迟淡出移除。
    */
   function applyEvent(event: CallLifecycleEvent) {
     const existing = toasts.value.find((t) => t.requestId === event.requestId)
 
     if (existing) {
-      // 终态事件不应被迟到的中间事件覆盖（节流下 COMPLETED 可能先于最后一个 CHUNK 到达）。
-      if ((existing.phase === 'COMPLETED' || existing.phase === 'FAILED') && event.phase === 'CHUNK') {
+      // 终态事件不应被迟到的中间事件覆盖（节流下终态可能先于最后一个 CHUNK 到达）。
+      if (isTerminalPhase(existing.phase) && event.phase === 'CHUNK') {
         return
       }
       existing.phase = event.phase
@@ -110,9 +110,14 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
       ]
     }
 
-    if (event.phase === 'COMPLETED' || event.phase === 'FAILED') {
+    if (isTerminalPhase(event.phase)) {
       scheduleRemoval(event.requestId)
     }
+  }
+
+  /** 终态：完成 / 失败 / 客户端断连，均需安排 Toast 淡出移除。 */
+  function isTerminalPhase(phase: CallPhase): boolean {
+    return phase === 'COMPLETED' || phase === 'FAILED' || phase === 'CANCELED'
   }
 
   /** 为终态 Toast 安排延迟淡出与移除；重复终态事件只保留最初的定时器。 */

@@ -28,6 +28,8 @@ function phaseText(toast: CallToast): string {
       return toast.stream ? `响应完成，总 chunk 数：${toast.chunkCount}` : '响应完成'
     case 'FAILED':
       return '响应失败'
+    case 'CANCELED':
+      return toast.stream && toast.chunkCount > 0 ? `下游已断开，已产生 chunk：${toast.chunkCount}` : '下游已断开连接'
     default:
       return ''
   }
@@ -46,6 +48,8 @@ function phaseClass(phase: CallPhase): string {
       return 'is-completed'
     case 'FAILED':
       return 'is-failed'
+    case 'CANCELED':
+      return 'is-canceled'
     default:
       return ''
   }
@@ -127,6 +131,10 @@ function isPulsing(phase: CallPhase): boolean {
 
   &.is-failed {
     background: $danger;
+  }
+
+  &.is-canceled {
+    background: $text-muted;
   }
 
   &[data-pulsing='true'] {

@@ -164,6 +164,8 @@ public class OpenAiController {
                 .<ResponseEntity<?>>map(openAiJson -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(openAiJson))
                 .onErrorResume(ex -> {
                     if (isClientDisconnect(ex)) {
+                        // CANCELED：客户端主动断连，发出终态让 Toast 收尾淡出，避免僵尸 Toast。
+                        callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, stream));
                         return Mono.empty();
                     }
                     // FAILED：上游错误或连接失败（客户端主动断连已在上面 return，不计入）。
@@ -218,6 +220,8 @@ public class OpenAiController {
                 })
                 .onErrorResume(error -> {
                     if (isClientDisconnect(error)) {
+                        // CANCELED：客户端主动断连，发出终态让 Toast 收尾淡出，避免僵尸 Toast。
+                        callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, true, chunkCount.get()));
                         return Flux.empty();
                     }
                     // FAILED：上游错误或连接失败（客户端主动断连已在上面 return，不计入）。

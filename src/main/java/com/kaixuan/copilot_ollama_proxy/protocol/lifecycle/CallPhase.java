@@ -10,6 +10,7 @@ package com.kaixuan.copilot_ollama_proxy.protocol.lifecycle;
  *   流式：  RECEIVED -> CONNECTED -> CHUNK(多次) -> COMPLETED
  *   非流式：RECEIVED -> CONNECTED -> COMPLETED
  *   任意阶段出错：-> FAILED
+ *   客户端（下游 Copilot）主动断连：-> CANCELED
  * </pre>
  *
  * <p>后端只下发阶段枚举与必要数据（chunk 计数等），具体展示文案由前端根据阶段渲染，
@@ -29,6 +30,9 @@ public enum CallPhase {
     /** 响应正常完成，携带最终 chunk 总数（非流式为 0）。 */
     COMPLETED,
 
-    /** 调用失败（上游错误、连接失败等；客户端主动断连不计入）。 */
-    FAILED
+    /** 调用失败（上游错误、连接失败等；客户端主动断连不计入，见 {@link #CANCELED}）。 */
+    FAILED,
+
+    /** 客户端（下游 Copilot）主动断开连接，本次调用被取消（非错误，属于用户预期行为）。 */
+    CANCELED
 }
