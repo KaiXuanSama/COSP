@@ -7,6 +7,9 @@ import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
+import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
+import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiModelsResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiModelsResponse.ModelData;
@@ -25,6 +28,7 @@ import reactor.core.scheduler.Schedulers;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * OpenAI 兼容 API 控制器 —— 处理 Copilot 发出的 OpenAI 格式请求。
@@ -39,10 +43,14 @@ public class OpenAiController {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiController.class);
 
+    /** CHUNK 生命周期事件的推送节流间隔（毫秒），避免长响应把 SSE 通道打爆。首个 chunk 不受此限制。 */
+    private static final long CHUNK_PUSH_INTERVAL_MS = 200L;
+
     private final ChatCompletionService chatCompletionService;
     private final ObjectMapper objectMapper;
     private final ApiUsageCollector apiUsageCollector;
     private final ModelCatalogService modelCatalogService;
+    private final CallLifecyclePublisher callLifecyclePublisher;
     private final String readmeHost;
     private final int serverPort;
 
@@ -59,11 +67,13 @@ public class OpenAiController {
      */
     public OpenAiController(ChatCompletionService chatCompletionService, ObjectMapper objectMapper,
                             ApiUsageCollector apiUsageCollector, ModelCatalogService modelCatalogService,
+                            CallLifecyclePublisher callLifecyclePublisher,
                             @Value("${readme.host:localhost}") String readmeHost,
                             @Value("${server.port:11434}") int serverPort) {
         this.chatCompletionService = chatCompletionService;
         this.objectMapper = objectMapper;
         this.apiUsageCollector = apiUsageCollector;
+        this.callLifecyclePublisher = callLifecyclePublisher;
         this.readmeHost = readmeHost;
         this.serverPort = serverPort;
         this.modelCatalogService = modelCatalogService;
@@ -125,31 +135,48 @@ public class OpenAiController {
 
         Map<String, Object> requestBody = buildRequestBody(request);
 
+        // 每次调用生成唯一 requestId，作为生命周期 Toast 的分组 key（每条 Reactor 订阅链一个，天然会话隔离）。
+        String requestId = UUID.randomUUID().toString();
+        String model = request.getModel();
+        boolean stream = request.isStream();
+
+        // RECEIVED：下游请求已被代理接收（虚拟模型拦截之后、真正调上游之前），同步发出。
+        callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.RECEIVED, model, stream));
+
         // 流式：将 SSE 流作为 ResponseEntity 的 body 返回，由 WebFlux 框架托管背压、取消与超时。
-        if (request.isStream()) {
-            Flux<ServerSentEvent<String>> stream = streamResponse(requestBody, request.getModel(), requestHeaders);
+        if (stream) {
+            Flux<ServerSentEvent<String>> streamBody = streamResponse(requestBody, model, requestHeaders, requestId);
             return Mono.just(ResponseEntity.ok()
                     .contentType(MediaType.TEXT_EVENT_STREAM)
                     .header("Cache-Control", "no-cache")
-                    .body(stream));
+                    .body(streamBody));
         }
 
         // 非流式：获取完整响应后提取 usage 进行记录，并返回给客户端。
-        return chatCompletionService.chatCompletion(requestBody, request.getModel(), requestHeaders).doOnNext(this::recordUsage)
+        return chatCompletionService.chatCompletion(requestBody, model, requestHeaders)
+                // CONNECTED：已向上游发起调用，正在等待响应。
+                .doOnSubscribe(subscription -> callLifecyclePublisher.publish(
+                        CallLifecycleEvent.of(requestId, CallPhase.CONNECTED, model, stream)))
+                .doOnNext(this::recordUsage)
+                // COMPLETED：非流式无 chunk 计数，最终计数为 0。
+                .doOnNext(json -> callLifecyclePublisher.publish(
+                        CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, stream, 0)))
                 .<ResponseEntity<?>>map(openAiJson -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(openAiJson))
                 .onErrorResume(ex -> {
                     if (isClientDisconnect(ex)) {
                         return Mono.empty();
                     }
+                    // FAILED：上游错误或连接失败（客户端主动断连已在上面 return，不计入）。
+                    callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.FAILED, model, stream));
                     // 透传上游错误响应（重试耗尽时 WebClientResponseException 被包装在 RetryExhaustedException 中，需要解包）
                     WebClientResponseException responseException = findWebResponseException(ex);
                     if (responseException != null) {
-                        log.warn("上游 API 返回错误 [{}] {}: {}", request.getModel(), responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
+                        log.warn("上游 API 返回错误 [{}] {}: {}", model, responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
                         return Mono.just(ResponseEntity.status(responseException.getStatusCode().value())
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .body(responseException.getResponseBodyAsString()));
                     }
-                    log.warn("上游 API 调用失败 [{}]: {} ({})", request.getModel(), extractRootCause(ex), extractRequestUrl(ex));
+                    log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(ex), extractRequestUrl(ex));
                     return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
                             .body("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}"));
                 });
@@ -167,18 +194,34 @@ public class OpenAiController {
      * @return ServerSentEvent 流
      */
     private Flux<ServerSentEvent<String>> streamResponse(Map<String, Object> requestBody, String model,
-                                                          HttpHeaders requestHeaders) {
+                                                          HttpHeaders requestHeaders, String requestId) {
         AtomicInteger streamInputTokens = new AtomicInteger(0);
         AtomicInteger streamOutputTokens = new AtomicInteger(0);
+        // chunkCount 记录累计 chunk 数；lastPushAt 用于对 CHUNK 事件做时间节流，避免长响应产生每秒上百 SSE 帧。
+        AtomicInteger chunkCount = new AtomicInteger(0);
+        AtomicLong lastChunkPushAt = new AtomicLong(0L);
 
         return chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders)
-                .doOnNext(chunk -> accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens))
+                // CONNECTED：已向上游发起调用，正在等待首字响应。
+                .doOnSubscribe(subscription -> callLifecyclePublisher.publish(
+                        CallLifecycleEvent.of(requestId, CallPhase.CONNECTED, model, true)))
+                .doOnNext(chunk -> {
+                    accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens);
+                    publishChunkThrottled(requestId, model, chunkCount.incrementAndGet(), lastChunkPushAt);
+                })
                 .map(chunk -> ServerSentEvent.builder(chunk).build())
-                .doOnComplete(() -> apiUsageCollector.record(streamInputTokens.get(), streamOutputTokens.get()))
+                .doOnComplete(() -> {
+                    apiUsageCollector.record(streamInputTokens.get(), streamOutputTokens.get());
+                    // COMPLETED：带最终精确 chunk 总数，纠正节流期间可能漏推的中间计数。
+                    callLifecyclePublisher.publish(
+                            CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, true, chunkCount.get()));
+                })
                 .onErrorResume(error -> {
                     if (isClientDisconnect(error)) {
                         return Flux.empty();
                     }
+                    // FAILED：上游错误或连接失败（客户端主动断连已在上面 return，不计入）。
+                    callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.FAILED, model, true));
                     // 透传上游错误响应（解包重试耗尽包装）
                     WebClientResponseException responseException = findWebResponseException(error);
                     if (responseException != null) {
@@ -188,6 +231,30 @@ public class OpenAiController {
                     log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(error), extractRequestUrl(error));
                     return Flux.just(ServerSentEvent.<String>builder("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}").event("error").build());
                 });
+    }
+
+    /**
+     * 对 CHUNK 生命周期事件做时间节流后推送。
+     *
+     * <p>首个 chunk（{@code count == 1}）立即推送——这是"首字到达"的关键状态转换，
+     * 前端 Toast 据此从"等待首字响应"切换到"已产生 chunk"。之后每 {@link #CHUNK_PUSH_INTERVAL_MS}
+     * 毫秒最多推一次最新计数，避免长响应把 SSE 通道打爆。最终精确计数由 COMPLETED 事件兜底。
+     *
+     * @param requestId    调用唯一标识
+     * @param model        模型名称
+     * @param count        当前累计 chunk 数
+     * @param lastPushAt   上次推送时间戳（毫秒）的原子引用，用于节流判定
+     */
+    private void publishChunkThrottled(String requestId, String model, int count, AtomicLong lastPushAt) {
+        long now = System.currentTimeMillis();
+        long previous = lastPushAt.get();
+        boolean firstChunk = count == 1;
+        if (firstChunk || now - previous >= CHUNK_PUSH_INTERVAL_MS) {
+            if (lastPushAt.compareAndSet(previous, now)) {
+                callLifecyclePublisher.publish(
+                        CallLifecycleEvent.of(requestId, CallPhase.CHUNK, model, true, count));
+            }
+        }
     }
 
     /**
