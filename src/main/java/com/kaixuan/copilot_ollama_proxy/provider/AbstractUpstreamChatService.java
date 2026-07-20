@@ -11,12 +11,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientRequestException;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.netty.http.client.HttpClient;
 import reactor.util.retry.Retry;
 
 import java.time.Duration;
@@ -69,6 +71,7 @@ public abstract class AbstractUpstreamChatService {
      * 避免 Netty 默认异步解析器在 Windows 上的间歇性 DNS 解析失败。
      */
     private WebClient.Builder webClientBuilder = WebClient.builder();
+    private HttpClient httpClient = HttpClient.create();
 
     @Autowired(required = false)
     public void setApiCallLog(ApiCallLogService apiCallLog) {
@@ -79,6 +82,13 @@ public abstract class AbstractUpstreamChatService {
     public void setWebClientBuilder(WebClient.Builder webClientBuilder) {
         if (webClientBuilder != null) {
             this.webClientBuilder = webClientBuilder;
+        }
+    }
+
+    @Autowired(required = false)
+    public void setHttpClient(HttpClient httpClient) {
+        if (httpClient != null) {
+            this.httpClient = httpClient;
         }
     }
 
@@ -224,11 +234,13 @@ public abstract class AbstractUpstreamChatService {
     }
 
     /**
-     * 构建 WebClient，同时捕获实际发送的请求头快照用于日志记录。
-     * 返回的 Map 会在 WebClient.defaultHeaders 回调中被填充，
-    * 因此捕获的是经过认证和规则处理后的最终请求头。
+     * 构建 WebClient，并在 WebClient 与 Reactor Netty 两个层级记录出站请求头。
      *
-     * @param capturedHeaders 用于捕获请求头的 Map，构建完成后包含实际发送的 headers
+     * WebClient 过滤器先记录默认头、转换规则头和请求级头；Reactor Netty 的
+     * doOnRequest 随后用传输层快照覆盖它，因此生产日志还包含 User-Agent、Host
+     * 等由底层 HTTP 客户端最后补入的头。重试时快照更新为最后一次实际尝试。
+     *
+     * @param capturedHeaders 用于存放最终请求头安全快照的 Map
      * @return 配置好的 WebClient 实例
      */
     protected WebClient buildWebClientWithHeaders(Map<String, String> capturedHeaders,
@@ -236,19 +248,22 @@ public abstract class AbstractUpstreamChatService {
         String apiKey = provider.apiKey();
         String baseUrl = provider.baseUrl().isBlank() ? defaultBaseUrl() : provider.baseUrl();
         String normalizedUrl = providerRequestHeaderService.normalizeBaseUrl(baseUrl);
+        HttpClient capturingHttpClient = httpClient.doAfterRequest((request, connection) -> {
+            HttpHeaders transportHeaders = new HttpHeaders();
+            request.requestHeaders().forEach(entry ->
+                transportHeaders.add(entry.getKey(), entry.getValue()));
+            providerRequestHeaderService.mergeLogSnapshot(capturedHeaders, transportHeaders);
+        });
 
-        return webClientBuilder.clone().baseUrl(normalizedUrl).defaultHeaders(headers -> {
+        return webClientBuilder.clone()
+            .clientConnector(new ReactorClientHttpConnector(capturingHttpClient))
+            .baseUrl(normalizedUrl).defaultHeaders(headers -> {
             providerRequestHeaderService.applyHeaders(headers, apiKey, provider.headerRulesJson());
             headers.setContentType(MediaType.APPLICATION_JSON);
-            // 捕获实际发送的请求头（脱敏后）用于日志
-            headers.forEach((k, v) -> {
-                if (HttpHeaders.AUTHORIZATION.equalsIgnoreCase(k) || "api-key".equalsIgnoreCase(k)) {
-                    String val = v.stream().findFirst().orElse("");
-                    capturedHeaders.put(k, val.length() > 8 ? val.substring(0, 4) + "****" + val.substring(val.length() - 4) : "****");
-                } else {
-                    capturedHeaders.put(k, String.join(", ", v));
-                }
-            });
+        }).filter((request, next) -> {
+            capturedHeaders.clear();
+            capturedHeaders.putAll(providerRequestHeaderService.createLogSnapshot(request.headers()));
+            return next.exchange(request);
         }).build();
     }
 

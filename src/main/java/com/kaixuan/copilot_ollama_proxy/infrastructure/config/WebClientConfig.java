@@ -40,6 +40,17 @@ public class WebClientConfig implements WebFluxConfigurer {
     private static final int MAX_IN_MEMORY_SIZE = 64 * 1024 * 1024;
 
     /**
+     * 提供统一配置的 Reactor Netty HttpClient。
+     *
+     * 独立暴露该 Bean，使上游调用可以基于同一客户端派生请求级 doOnRequest 钩子，
+     * 在传输层记录 User-Agent、Host 等由 Reactor Netty 最后补入的请求头。
+     */
+    @Bean
+    public HttpClient httpClient() {
+        return HttpClient.create().resolver(DefaultAddressResolverGroup.INSTANCE);
+    }
+
+    /**
      * 提供全局 WebClient.Builder，底层使用配置了 JDK 系统 DNS 解析器的 Reactor Netty HttpClient，
      * 并将编解码内存缓冲上限提升至 64MB。
      *
@@ -49,8 +60,7 @@ public class WebClientConfig implements WebFluxConfigurer {
      * @return 配置好系统 DNS 解析器与内存缓冲上限的 WebClient.Builder
      */
     @Bean
-    public WebClient.Builder webClientBuilder() {
-        HttpClient httpClient = HttpClient.create().resolver(DefaultAddressResolverGroup.INSTANCE);
+    public WebClient.Builder webClientBuilder(HttpClient httpClient) {
         ExchangeStrategies strategies = ExchangeStrategies.builder()
                 .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(MAX_IN_MEMORY_SIZE))
                 .build();

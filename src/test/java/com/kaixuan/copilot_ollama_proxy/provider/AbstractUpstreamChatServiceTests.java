@@ -4,6 +4,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.web.reactive.function.client.ClientResponse;
+import org.springframework.web.reactive.function.client.WebClient;
 
 import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
@@ -13,6 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import reactor.core.publisher.Mono;
 
 class AbstractUpstreamChatServiceTests {
 
@@ -105,6 +111,40 @@ class AbstractUpstreamChatServiceTests {
         assertThat(normalizedIndent).contains("\"content\":\"  \\n\"");
     }
 
+    @Test
+    void webClientFilterCapturesFinalRequestHeadersInsteadOfOnlyDefaultHeaders() {
+        TestOpenAiService service = new TestOpenAiService();
+        AtomicReference<Map<String, String>> sentHeaders = new AtomicReference<>();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            Map<String, String> headers = new LinkedHashMap<>();
+            request.headers().forEach((name, values) -> headers.put(name, String.join(", ", values)));
+            sentHeaders.set(headers);
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                    .body("{}").build());
+        }));
+
+        Map<String, String> capturedHeaders = new LinkedHashMap<>();
+        ProviderRuntimeConfiguration provider = new ProviderRuntimeConfiguration(
+                "stub", "https://example.com", "actual-api-key", List.of(),
+                "[{\"key\":\"X-Api-Key\",\"value\":\"{apiKey}\"},{\"key\":\"X-Provider\",\"value\":\"generic\"}]",
+                "{\"version\":1,\"rules\":[]}");
+
+        service.exposeBuildWebClient(capturedHeaders, provider).post().uri("/chat/completions")
+                .contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM)
+                .bodyValue(Map.of("model", "model-a")).retrieve().bodyToMono(String.class).block();
+
+        assertThat(sentHeaders.get()).containsEntry(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE);
+        assertThat(sentHeaders.get()).containsEntry(HttpHeaders.ACCEPT, MediaType.TEXT_EVENT_STREAM_VALUE);
+        assertThat(sentHeaders.get()).containsEntry("X-Provider", "generic");
+        assertThat(sentHeaders.get()).containsEntry("X-Api-Key", "actual-api-key");
+        assertThat(capturedHeaders).containsEntry(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE);
+        assertThat(capturedHeaders).containsEntry(HttpHeaders.ACCEPT, MediaType.TEXT_EVENT_STREAM_VALUE);
+        assertThat(capturedHeaders).containsEntry("X-Provider", "generic");
+        assertThat(capturedHeaders).containsEntry("X-Api-Key", "****");
+        assertThat(capturedHeaders.values()).doesNotContain("actual-api-key");
+    }
+
     private static final class TestOpenAiService extends AbstractUpstreamChatService {
 
         private TestOpenAiService() {
@@ -114,6 +154,11 @@ class AbstractUpstreamChatServiceTests {
         private Map<String, Object> exposePrepareRequestBody(Map<String, Object> request, boolean stream,
                                                               String model, ProviderRuntimeConfiguration provider) {
             return prepareRequestBody(request, stream, model, provider);
+        }
+
+        private WebClient exposeBuildWebClient(Map<String, String> capturedHeaders,
+                                               ProviderRuntimeConfiguration provider) {
+            return buildWebClientWithHeaders(capturedHeaders, provider);
         }
 
         private String exposeTranslateChunk(String chunk) throws Exception {

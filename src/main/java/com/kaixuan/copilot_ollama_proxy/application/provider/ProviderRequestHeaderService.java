@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -69,6 +70,41 @@ public class ProviderRequestHeaderService {
         return normalizeBaseUrl(rawBaseUrl) + path;
     }
 
+    /**
+     * 为调用日志生成请求头安全快照。
+     *
+     * 调用方应传入 WebClient 请求过滤器收到的 headers，以确保快照已经包含默认头、
+     * 规则头和请求级头（如 Accept）。敏感值统一脱敏，避免 API Key、Cookie 或令牌落库。
+     */
+    public Map<String, String> createLogSnapshot(HttpHeaders headers) {
+        Map<String, String> snapshot = new LinkedHashMap<>();
+        headers.forEach((name, values) -> {
+            String value = String.join(", ", values);
+            snapshot.put(canonicalHeaderName(name), isSensitiveHeader(name) ? "****" : value);
+        });
+        return snapshot;
+    }
+
+    /**
+     * 将后续捕获的请求头合并到现有日志快照，头名按 HTTP 语义忽略大小写。
+     *
+     * WebClient 层与 Reactor Netty 层看到的头集合并不完全相同：前者包含规则头和
+     * 编码器头，后者包含 User-Agent、Host、Transfer-Encoding 等传输层头。
+     */
+    public void mergeLogSnapshot(Map<String, String> target, HttpHeaders headers) {
+        createLogSnapshot(headers).forEach((name, value) -> {
+            String existingName = target.keySet().stream()
+                    .filter(key -> key.equalsIgnoreCase(name))
+                    .findFirst()
+                    .orElse(null);
+            if (existingName == null) {
+                target.put(name, value);
+            } else {
+                target.put(existingName, value);
+            }
+        });
+    }
+
     private List<Map<String, String>> parseHeaderRules(String headerRulesJson) {
         try {
             return objectMapper.readValue(headerRulesJson == null ? "[]" : headerRulesJson, HEADER_RULE_LIST_TYPE);
@@ -79,10 +115,38 @@ public class ProviderRequestHeaderService {
     }
 
     private String maskValue(String headerName, String value) {
-        String lowerCaseName = headerName.toLowerCase();
-        if (lowerCaseName.contains("authorization") || lowerCaseName.contains("api-key") || lowerCaseName.contains("token")) {
+        if (isSensitiveHeader(headerName)) {
             return value.length() > 8 ? value.substring(0, 4) + "****" : "****";
         }
         return value;
+    }
+
+    private boolean isSensitiveHeader(String headerName) {
+        String normalizedName = headerName == null ? "" : headerName.toLowerCase();
+        return normalizedName.contains("authorization")
+                || normalizedName.contains("api-key")
+                || normalizedName.contains("apikey")
+                || normalizedName.contains("api_key")
+                || normalizedName.contains("token")
+                || normalizedName.contains("secret")
+                || normalizedName.contains("password")
+                || normalizedName.contains("cookie");
+    }
+
+    private String canonicalHeaderName(String headerName) {
+        if (headerName == null) {
+            return "";
+        }
+        return switch (headerName.toLowerCase()) {
+            case "accept" -> HttpHeaders.ACCEPT;
+            case "authorization" -> HttpHeaders.AUTHORIZATION;
+            case "content-length" -> HttpHeaders.CONTENT_LENGTH;
+            case "content-type" -> HttpHeaders.CONTENT_TYPE;
+            case "cookie" -> HttpHeaders.COOKIE;
+            case "host" -> HttpHeaders.HOST;
+            case "transfer-encoding" -> HttpHeaders.TRANSFER_ENCODING;
+            case "user-agent" -> HttpHeaders.USER_AGENT;
+            default -> headerName;
+        };
     }
 }

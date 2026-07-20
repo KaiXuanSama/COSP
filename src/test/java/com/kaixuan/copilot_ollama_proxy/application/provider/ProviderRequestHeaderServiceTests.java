@@ -53,4 +53,25 @@ class ProviderRequestHeaderServiceTests {
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer actual-api-key");
     }
+
+    @Test
+    void createLogSnapshotPreservesNonSensitiveHeadersAndMasksCredentials() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.ACCEPT, "text/event-stream");
+        headers.set("X-Request-Id", "request-123");
+        headers.set(HttpHeaders.AUTHORIZATION, "Bearer actual-api-key");
+        headers.set("X-Api-Key", "actual-api-key");
+        headers.set("X-Auth-Token", "actual-token");
+        headers.set(HttpHeaders.COOKIE, "session=secret-value");
+
+        var snapshot = service.createLogSnapshot(headers);
+
+        assertThat(snapshot).containsEntry(HttpHeaders.ACCEPT, "text/event-stream");
+        assertThat(snapshot).containsEntry("X-Request-Id", "request-123");
+        assertThat(snapshot).containsEntry(HttpHeaders.AUTHORIZATION, "****");
+        assertThat(snapshot).containsEntry("X-Api-Key", "****");
+        assertThat(snapshot).containsEntry("X-Auth-Token", "****");
+        assertThat(snapshot).containsEntry(HttpHeaders.COOKIE, "****");
+        assertThat(snapshot.values()).doesNotContain("actual-api-key", "actual-token", "session=secret-value");
+    }
 }
