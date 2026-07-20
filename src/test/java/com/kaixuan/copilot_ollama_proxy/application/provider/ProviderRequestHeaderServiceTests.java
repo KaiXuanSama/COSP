@@ -103,4 +103,17 @@ class ProviderRequestHeaderServiceTests {
         assertThat(headers.getFirst(HttpHeaders.ACCEPT)).isEqualTo(MediaType.TEXT_EVENT_STREAM_VALUE);
         assertThat(headers).doesNotContainKeys(HttpHeaders.HOST, HttpHeaders.CONTENT_LENGTH, HttpHeaders.CONNECTION);
     }
+
+    @Test
+    void applyHeadersUsesProviderApiKeyInsteadOfForwardedDownstreamAuthorization() {
+        HttpHeaders downstreamHeaders = new HttpHeaders();
+        downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-token");
+        downstreamHeaders.set("X-Trace-Id", "trace-123");
+
+        HttpHeaders headers = new HttpHeaders();
+        service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false);
+
+        assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
+        assertThat(headers.getFirst("X-Trace-Id")).isEqualTo("trace-123");
+    }
 }

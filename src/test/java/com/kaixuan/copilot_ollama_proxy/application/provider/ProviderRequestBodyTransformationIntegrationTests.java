@@ -152,7 +152,7 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 || loggedRequestHeaders.get().containsKey("Transfer-Encoding")).isTrue();
         assertThat(capturedRequestHeaders.get()).containsEntry("X-trace-id", "trace-123");
         assertThat(capturedRequestHeaders.get()).containsEntry("Cookie", "session=downstream-cookie");
-        assertThat(capturedRequestHeaders.get()).containsEntry("Authorization", "Bearer downstream-token");
+        assertThat(capturedRequestHeaders.get()).containsEntry("Authorization", "Bearer test-api-key");
         assertThat(capturedRequestHeaders.get()).containsEntry("User-agent", "DownstreamClient/1.0");
         assertThat(capturedRequestHeaders.get().get("Host")).doesNotContain("11434");
         assertThat(loggedRequestHeaders.get()).containsEntry("X-Trace-Id", "trace-123");

@@ -17,7 +17,8 @@ import java.util.Set;
 /**
  * 准备数据库供应商的通用出站请求头与 URL。
  *
- * 默认 Bearer 认证先写入，请求头规则随后可覆盖、补充或删除该默认值。
+ * 下游请求头先透传，默认 Bearer 认证随后覆盖下游 Authorization，
+ * 请求头规则最后可覆盖、补充或删除默认值。
  */
 @Service
 public class ProviderRequestHeaderService {
@@ -38,15 +39,15 @@ public class ProviderRequestHeaderService {
     /**
      * 合并默认头、下游请求头和供应商请求头规则。
      *
-     * 优先级从低到高：默认认证/媒体类型、下游可透传头、供应商规则。
+     * 优先级从低到高：下游可透传头、默认认证/媒体类型、供应商规则。
      * Host、Content-Length 和 hop-by-hop 头不跨请求透传，由上游 HTTP 客户端重新计算。
      */
     public void applyHeaders(HttpHeaders headers, HttpHeaders downstreamHeaders, String apiKey,
                              String headerRulesJson, boolean stream) {
+        copyForwardableHeaders(headers, downstreamHeaders);
         headers.setBearerAuth(apiKey == null ? "" : apiKey);
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setAccept(List.of(stream ? MediaType.TEXT_EVENT_STREAM : MediaType.ALL));
-        copyForwardableHeaders(headers, downstreamHeaders);
         for (Map<String, String> rule : parseHeaderRules(headerRulesJson)) {
             String key = rule.get("key");
             String value = rule.get("value");
