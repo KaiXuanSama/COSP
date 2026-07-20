@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NCard, NNumberAnimation } from 'naive-ui'
 import ActivityHeatmap from '@/components/heatmap/ActivityHeatmap.vue'
 import http from '@/api'
 import type { HeatmapModeConfig } from '@/components/heatmap'
-import { useStatsStore } from '@/stores/stats'
+import { useStatsStore, type StatsData } from '@/stores/stats'
 
 const statsStore = useStatsStore()
 const animActive = ref(true)
@@ -16,9 +16,6 @@ const heatmapFailed = ref(false)
 // 记录刷新前的旧值，作为动画起点
 const prev = ref({ total: 0, today: 0, input: 0, output: 0 })
 
-let timer: ReturnType<typeof setInterval> | null = null
-let requestInFlight = false
-
 interface HeatmapDay {
   usageDate: string
   callCount: number
@@ -27,7 +24,6 @@ interface HeatmapDay {
 }
 
 const HEATMAP_DAYS = 360
-const POLL_INTERVAL = 5000
 const heatmapModeOrder: Array<'calls' | 'output' | 'input' | 'total'> = ['calls', 'output', 'input', 'total']
 const heatmapModes: HeatmapModeConfig<HeatmapDay>[] = [
   {
@@ -89,34 +85,57 @@ const activeHeatmapMode = computed(() => {
 })
 
 onMounted(() => {
-  void refreshOverviewData(false)
-  timer = setInterval(() => {
-    void refreshOverviewData(true)
-  }, POLL_INTERVAL)
+  // 热力图历史数据首屏全量拉取一次；统计卡先 HTTP 兜底一次，随后交给 SSE 实时推送。
+  void fetchHeatmap()
+  void statsStore.fetchStats()
+  statsStore.connectStream()
 })
 
 onUnmounted(() => {
-  if (timer) clearInterval(timer)
+  statsStore.disconnectStream()
 })
 
-async function refreshOverviewData(animateNumbers: boolean) {
-  if (requestInFlight) return
-
-  requestInFlight = true
-  try {
-    if (animateNumbers && statsStore.stats) {
-      const s = statsStore.stats
-      prev.value = { total: s.totalApiCalls, today: s.todayApiCalls, input: s.todayInputTokens, output: s.todayOutputTokens }
+// SSE 每次推送新快照时：驱动数字动画（记录旧值作为起点），并把“今日”单格同步进热力图。
+watch(
+  () => statsStore.stats,
+  async (next, prevStats) => {
+    if (!next) return
+    if (prevStats) {
+      prev.value = {
+        total: prevStats.totalApiCalls,
+        today: prevStats.todayApiCalls,
+        input: prevStats.todayInputTokens,
+        output: prevStats.todayOutputTokens,
+      }
+      // 先关动画、下一帧再开，强制 NNumberAnimation 从 prev 重新滚动到新值。
       animActive.value = false
       await nextTick()
-    }
-
-    await Promise.all([statsStore.fetchStats(), fetchHeatmap()])
-  } finally {
-    if (animateNumbers && statsStore.stats) {
       animActive.value = true
     }
-    requestInFlight = false
+    syncTodayHeatmapCell(next)
+  },
+  { deep: true },
+)
+
+/**
+ * 用最新统计快照更新热力图“今日”单格，避免为了单格变化重新全量拉取 360 天数据。
+ * 若今日单格尚未在数据集中（如刚跨天），则追加一格。
+ */
+function syncTodayHeatmapCell(snapshot: StatsData) {
+  if (!heatmapData.value.length) return
+  const now = new Date()
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  const cell: HeatmapDay = {
+    usageDate: todayStr,
+    callCount: snapshot.todayApiCalls,
+    inputTokens: snapshot.todayInputTokens,
+    outputTokens: snapshot.todayOutputTokens,
+  }
+  const index = heatmapData.value.findIndex((day) => day.usageDate === todayStr)
+  if (index >= 0) {
+    heatmapData.value = heatmapData.value.map((day, i) => (i === index ? cell : day))
+  } else {
+    heatmapData.value = [...heatmapData.value, cell]
   }
 }
 
