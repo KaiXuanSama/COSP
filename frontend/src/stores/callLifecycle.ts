@@ -3,7 +3,16 @@ import { ref } from 'vue'
 import http from '@/api'
 
 /** 单次调用的生命周期阶段，与后端 CallPhase 枚举一一对应。 */
-export type CallPhase = 'RECEIVED' | 'CONNECTED' | 'CHUNK' | 'RETRYING' | 'COMPLETED' | 'FAILED' | 'CANCELED' | 'ABORTED'
+export type CallPhase =
+  | 'RECEIVED'
+  | 'CONNECTED'
+  | 'CHUNK'
+  | 'RETRYING'
+  | 'STALLED'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'CANCELED'
+  | 'ABORTED'
 
 /** 后端推送的生命周期事件，与 CallLifecycleEvent DTO 对应。 */
 export interface CallLifecycleEvent {
@@ -115,7 +124,8 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
         existing.attempt = event.attempt
       }
       // 一旦离开“等待产出”状态（收到首个 chunk、完成、或到终态），取消窗口关闭。
-      if (!isWaitingPhase(event.phase)) {
+      // STALLED 例外：首字后停滞时仍需保留取消按钮，由下方统一处理。
+      if (!isWaitingPhase(event.phase) && event.phase !== 'STALLED') {
         existing.canCancel = false
         clearCancelTimer(event.requestId)
       }
@@ -139,6 +149,14 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
     // 等待产出状态下启动取消倒计时；离开该状态则关闭窗口。
     if (isWaitingPhase(event.phase) && !isTerminalPhase(event.phase)) {
       scheduleCancelWindow(event.requestId)
+    }
+
+    // STALLED：首字后停滞。后端已等待阈值（30s）才发此信号，前端直接放开取消按钮，
+    // 无需再自行计时。是否断连交由用户判断（避免误杀工具调用整块 chunk 的合理长阻塞）。
+    if (event.phase === 'STALLED') {
+      const stalled = toasts.value.find((t) => t.requestId === event.requestId)
+      if (stalled) stalled.canCancel = true
+      clearCancelTimer(event.requestId)
     }
 
     if (isTerminalPhase(event.phase)) {
@@ -189,7 +207,8 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
 
   /** 终态：完成 / 失败 / 客户端断连 / 主动取消，均需安排 Toast 淡出移除。 */
   function isTerminalPhase(phase: CallPhase): boolean {
-    return phase === 'COMPLETED' || phase === 'FAILED' || phase === 'CANCELED' || phase === 'ABORTED'
+    return phase === 'COMPLETED' || phase === 'FAILED' || phase === 'CANCELED'
+      || phase === 'ABORTED'
   }
 
   /** 等待产出状态：尚未开始产出 chunk、也未到终态，此时“卡住”超过阈值才允许取消。 */

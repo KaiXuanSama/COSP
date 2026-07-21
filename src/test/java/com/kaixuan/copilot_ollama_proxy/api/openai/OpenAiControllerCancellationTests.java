@@ -35,15 +35,12 @@ import static org.mockito.Mockito.mock;
  * <p>核心洞察：后端取消<strong>不依赖前端那 60 秒</strong>——60s 只是前端放开取消按钮的 UX 门槛，
  * cancel 端点是立即生效的；且 RECEIVED 事件与 {@code registry.register} 都在控制器方法体里<strong>同步</strong>执行。
  * 因此用 {@code Mono.never()} / {@code Flux.never()} 模拟「永远挂起的上游」，即可无真实等待、无网络、
- * 完全确定性地验证取消真的能中止请求、回传 504 错误体、并发出 ABORTED 事件。
+ * 完全确定性地验证取消真的能中止请求、静默断连（不注入错误帧）、并发出 ABORTED 事件。
  *
  * <p>用纯单元测试直接实例化控制器，只 mock {@link ChatCompletionService}，
  * 真实使用 {@link CallCancellationRegistry} 与 {@link CallLifecyclePublisher}。
  */
 class OpenAiControllerCancellationTests {
-
-    /** 与 OpenAiController.CANCELED_ERROR_BODY 保持一致，用于断言下游收到的错误体。 */
-    private static final String EXPECTED_ERROR_TYPE = "upstream_timeout";
 
     private final ChatCompletionService chatCompletionService = mock(ChatCompletionService.class);
     private final ApiUsageCollector apiUsageCollector = mock(ApiUsageCollector.class);
@@ -65,7 +62,7 @@ class OpenAiControllerCancellationTests {
     }
 
     @Test
-    void cancelingHangingNonStreamRequestReturns504AndEmitsAborted() throws Exception {
+    void cancelingHangingNonStreamRequestDisconnectsSilentlyAndEmitsAborted() throws Exception {
         // 上游永远挂起，模拟「已连接但迟迟不吐首字」。
         given(chatCompletionService.chatCompletion(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
                 .willReturn(Mono.never());
@@ -85,9 +82,9 @@ class OpenAiControllerCancellationTests {
         boolean triggered = cancellationRegistry.cancel(requestId);
         assertThat(triggered).isTrue();
 
+        // 静默断连：Mono.empty() 完成且无响应体（不再回传 504 错误体）。
         ResponseEntity<?> response = future.get(2, TimeUnit.SECONDS);
-        assertThat(response.getStatusCode().value()).isEqualTo(504);
-        assertThat(String.valueOf(response.getBody())).contains(EXPECTED_ERROR_TYPE);
+        assertThat(response).isNull();
 
         assertThat(hasPhase(events, CallPhase.ABORTED)).isTrue();
         // doFinally 已清理注册表：再次取消返回 false。
@@ -95,7 +92,7 @@ class OpenAiControllerCancellationTests {
     }
 
     @Test
-    void cancelingHangingStreamRequestInjectsErrorFrameAndEmitsAborted() throws Exception {
+    void cancelingHangingStreamRequestDisconnectsSilentlyAndEmitsAborted() throws Exception {
         given(chatCompletionService.chatCompletionStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
                 .willReturn(Flux.never());
 
@@ -118,12 +115,9 @@ class OpenAiControllerCancellationTests {
         boolean triggered = cancellationRegistry.cancel(requestId);
         assertThat(triggered).isTrue();
 
+        // 静默断连：流被 takeUntilOther 中止，不注入任何错误帧，直接空完成。
         List<ServerSentEvent<String>> frames = future.get(2, TimeUnit.SECONDS);
-        // 取消发生在首字前，流里应只有注入的错误帧。
-        assertThat(frames).isNotEmpty();
-        ServerSentEvent<String> last = frames.get(frames.size() - 1);
-        assertThat(last.event()).isEqualTo("error");
-        assertThat(last.data()).contains(EXPECTED_ERROR_TYPE);
+        assertThat(frames).isEmpty();
 
         assertThat(hasPhase(events, CallPhase.ABORTED)).isTrue();
         assertThat(cancellationRegistry.cancel(requestId)).isFalse();

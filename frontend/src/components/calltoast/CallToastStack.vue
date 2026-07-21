@@ -26,6 +26,8 @@ function phaseText(toast: CallToast): string {
       return `已产生 chunk：${toast.chunkCount}`
     case 'RETRYING':
       return `上游异常，正在重试（第 ${toast.attempt} 次）`
+    case 'STALLED':
+      return `上游响应停滞，已产生 chunk：${toast.chunkCount}`
     case 'COMPLETED':
       return toast.stream ? `响应完成，总 chunk 数：${toast.chunkCount}` : '响应完成'
     case 'FAILED':
@@ -50,6 +52,8 @@ function phaseClass(phase: CallPhase): string {
       return 'is-chunk'
     case 'RETRYING':
       return 'is-retrying'
+    case 'STALLED':
+      return 'is-stalled'
     case 'COMPLETED':
       return 'is-completed'
     case 'FAILED':
@@ -63,9 +67,9 @@ function phaseClass(phase: CallPhase): string {
   }
 }
 
-/** 等待中的状态（未连接、等待首字、重试中）显示脉冲动画，提示"正在进行"。 */
+/** 等待中的状态（未连接、等待首字、重试中、停滞）显示脉冲动画，提示"正在进行/等待恢复"。 */
 function isPulsing(phase: CallPhase): boolean {
-  return phase === 'RECEIVED' || phase === 'CONNECTED' || phase === 'RETRYING'
+  return phase === 'RECEIVED' || phase === 'CONNECTED' || phase === 'RETRYING' || phase === 'STALLED'
 }
 
 /** 点击取消按钮：委托 store 向后端发取消请求。 */
@@ -160,6 +164,10 @@ function onCancel(toast: CallToast) {
 
   &.is-aborted {
     background: $text-muted;
+  }
+
+  &.is-stalled {
+    background: $warning;
   }
 
   &[data-pulsing='true'] {
