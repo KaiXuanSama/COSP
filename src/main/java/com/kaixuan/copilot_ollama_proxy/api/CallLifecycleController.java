@@ -39,12 +39,25 @@ public class CallLifecycleController {
      * 各阶段事件都会通过此流推送，前端按 requestId 分组渲染 Toast。数据帧用 {@code event: call}
      * 标识；心跳用注释帧保活，前端可忽略。
      *
+     * <p>连接建立时先补发一次进行中调用快照（{@link CallLifecyclePublisher#snapshot}），
+     * 使晚打开前端的用户能立即看到已在进行、尚未结束的调用（含卡在等待首字的，从而可被取消），
+     * 消除 multicast sink 不重放历史事件带来的观察盲区。快照用 {@code Flux.defer} 在订阅时求值，
+     * 保证每个新订阅者拿到的是各自建立连接那一刻的最新状态。
+     *
      * <p>事件不携带请求/响应正文，故该端点 permitAll 不泄露数据。
      */
     @GetMapping(value = "/config/api/calls/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<CallLifecycleEvent>> streamCalls() {
-        Flux<ServerSentEvent<CallLifecycleEvent>> data = callLifecyclePublisher.events()
+        // 快照在订阅时求值：先补发所有进行中调用的最新状态，再接实时流。
+        Flux<ServerSentEvent<CallLifecycleEvent>> snapshot = Flux.defer(() ->
+                Flux.fromIterable(callLifecyclePublisher.snapshot()))
                 .map(event -> ServerSentEvent.builder(event).event("call").build());
+
+        Flux<ServerSentEvent<CallLifecycleEvent>> live = callLifecyclePublisher.events()
+                .map(event -> ServerSentEvent.builder(event).event("call").build());
+
+        // 快照先行、实时流紧随（concat 保证顺序）；心跳单独 merge 进来保活。
+        Flux<ServerSentEvent<CallLifecycleEvent>> data = Flux.concat(snapshot, live);
 
         Flux<ServerSentEvent<CallLifecycleEvent>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
                 .map(tick -> ServerSentEvent.<CallLifecycleEvent>builder().comment("keep-alive").build());
