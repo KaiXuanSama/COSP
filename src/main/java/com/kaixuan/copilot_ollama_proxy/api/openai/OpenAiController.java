@@ -7,7 +7,9 @@ import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
+import com.kaixuan.copilot_ollama_proxy.provider.CallCanceledException;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiChatRequest;
@@ -42,11 +44,19 @@ public class OpenAiController {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiController.class);
 
+    /**
+     * 主动取消时向下游回传的错误体。用 504 Gateway Timeout + 明确的 type，
+     * 让下游 Copilot 据此触发重试机制（这是取消功能的核心目的）。
+     */
+    private static final String CANCELED_ERROR_BODY =
+            "{\"error\":{\"message\":\"上游响应超时，请求已被主动取消\",\"type\":\"upstream_timeout\"}}";
+
     private final ChatCompletionService chatCompletionService;
     private final ObjectMapper objectMapper;
     private final ApiUsageCollector apiUsageCollector;
     private final ModelCatalogService modelCatalogService;
     private final CallLifecyclePublisher callLifecyclePublisher;
+    private final CallCancellationRegistry callCancellationRegistry;
     private final String readmeHost;
     private final int serverPort;
 
@@ -64,12 +74,14 @@ public class OpenAiController {
     public OpenAiController(ChatCompletionService chatCompletionService, ObjectMapper objectMapper,
                             ApiUsageCollector apiUsageCollector, ModelCatalogService modelCatalogService,
                             CallLifecyclePublisher callLifecyclePublisher,
+                            CallCancellationRegistry callCancellationRegistry,
                             @Value("${readme.host:localhost}") String readmeHost,
                             @Value("${server.port:11434}") int serverPort) {
         this.chatCompletionService = chatCompletionService;
         this.objectMapper = objectMapper;
         this.apiUsageCollector = apiUsageCollector;
         this.callLifecyclePublisher = callLifecyclePublisher;
+        this.callCancellationRegistry = callCancellationRegistry;
         this.readmeHost = readmeHost;
         this.serverPort = serverPort;
         this.modelCatalogService = modelCatalogService;
@@ -150,13 +162,25 @@ public class OpenAiController {
 
         // 非流式：获取完整响应后提取 usage 进行记录，并返回给客户端。
         // CONNECTED 现由 provider 层在上游响应真正到达时发出（更准确），此处不再乐观发出。
-        return chatCompletionService.chatCompletion(requestBody, model, requestHeaders, requestId)
+        // 注册取消信号：外部点击取消时，cancelSignal 正常 complete，firstWithSignal 会抛 CallCanceledException 中止 chat 链。
+        Mono<String> cancelSignal = callCancellationRegistry.register(requestId)
+                .then(Mono.error(new CallCanceledException()));
+        return Mono.firstWithSignal(
+                        chatCompletionService.chatCompletion(requestBody, model, requestHeaders, requestId),
+                        cancelSignal)
                 .doOnNext(this::recordUsage)
                 // COMPLETED：非流式无 chunk 计数，最终计数为 0。
                 .doOnNext(json -> callLifecyclePublisher.publish(
                         CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, stream, 0)))
                 .<ResponseEntity<?>>map(openAiJson -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(openAiJson))
                 .onErrorResume(ex -> {
+                    // ABORTED：管理后台主动取消，向下游回传 504 + 超时错误体，触发 Copilot 重试。
+                    if (ex instanceof CallCanceledException) {
+                        callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.ABORTED, model, stream));
+                        log.info("调用被主动取消 [{}] {}", model, requestId);
+                        return Mono.just(ResponseEntity.status(504).contentType(MediaType.APPLICATION_JSON)
+                                .body(CANCELED_ERROR_BODY));
+                    }
                     if (isClientDisconnect(ex)) {
                         // CANCELED：客户端主动断连，发出终态让 Toast 收尾淡出，避免僵尸 Toast。
                         callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, stream));
@@ -175,7 +199,9 @@ public class OpenAiController {
                     log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(ex), extractRequestUrl(ex));
                     return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
                             .body("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}"));
-                });
+                })
+                // 无论正常结束、失败还是取消，都清理注册表，避免内存泄漏。
+                .doFinally(signal -> callCancellationRegistry.remove(requestId));
     }
 
     /**
@@ -195,6 +221,13 @@ public class OpenAiController {
         AtomicInteger streamOutputTokens = new AtomicInteger(0);
         // chunkCount 记录累计 chunk 数，每个 chunk 到达即推一次 CHUNK 事件，让 Toast 计数逐个跟手更新。
         AtomicInteger chunkCount = new AtomicInteger(0);
+        // canceled 标志：外部主动取消时置位，用于在流结束后区分 ABORTED 与正常 COMPLETED。
+        java.util.concurrent.atomic.AtomicBoolean canceled = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        // 注册取消信号：外部点击取消时 cancelSignal 正常 complete，takeUntilOther 会中止上游流。
+        // 取消窗口仅在「CONNECTED 后等待首字」，此时尚未吐出任何 chunk，注入错误帧不会截断已发送内容。
+        Mono<Void> cancelSignal = callCancellationRegistry.register(requestId)
+                .doOnSuccess(v -> canceled.set(true));
 
         // CONNECTED 现由 provider 层在上游响应真正到达时发出（更准确），此处不再乐观发出。
         return chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders, requestId)
@@ -205,7 +238,22 @@ public class OpenAiController {
                             CallLifecycleEvent.of(requestId, CallPhase.CHUNK, model, true, chunkCount.incrementAndGet()));
                 })
                 .map(chunk -> ServerSentEvent.builder(chunk).build())
+                .takeUntilOther(cancelSignal)
+                // 取消时补一个错误帧：向下游注入 504 错误体，触发 Copilot 重试机制。
+                .concatWith(Flux.defer(() -> {
+                    if (canceled.get()) {
+                        // ABORTED：管理后台主动取消（首字前），发出终态并注入错误帧。
+                        callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.ABORTED, model, true, chunkCount.get()));
+                        log.info("流式调用被主动取消 [{}] {}", model, requestId);
+                        return Flux.just(ServerSentEvent.<String>builder(CANCELED_ERROR_BODY).event("error").build());
+                    }
+                    return Flux.empty();
+                }))
                 .doOnComplete(() -> {
+                    // 取消时不发 COMPLETED（已由 concatWith 发 ABORTED）。
+                    if (canceled.get()) {
+                        return;
+                    }
                     apiUsageCollector.record(streamInputTokens.get(), streamOutputTokens.get());
                     // COMPLETED：带最终精确 chunk 总数作为兜底，确保前端计数与实际一致。
                     callLifecyclePublisher.publish(
@@ -227,7 +275,9 @@ public class OpenAiController {
                     }
                     log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(error), extractRequestUrl(error));
                     return Flux.just(ServerSentEvent.<String>builder("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}").event("error").build());
-                });
+                })
+                // 无论正常结束、失败还是取消，都清理注册表，避免内存泄漏。
+                .doFinally(signal -> callCancellationRegistry.remove(requestId));
     }
 
     /**

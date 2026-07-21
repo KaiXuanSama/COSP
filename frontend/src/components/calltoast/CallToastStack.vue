@@ -32,6 +32,8 @@ function phaseText(toast: CallToast): string {
       return '响应失败'
     case 'CANCELED':
       return toast.stream && toast.chunkCount > 0 ? `下游已断开，已产生 chunk：${toast.chunkCount}` : '下游已断开连接'
+    case 'ABORTED':
+      return '已主动取消本次调用'
     default:
       return ''
   }
@@ -54,6 +56,8 @@ function phaseClass(phase: CallPhase): string {
       return 'is-failed'
     case 'CANCELED':
       return 'is-canceled'
+    case 'ABORTED':
+      return 'is-aborted'
     default:
       return ''
   }
@@ -62,6 +66,11 @@ function phaseClass(phase: CallPhase): string {
 /** 等待中的状态（未连接、等待首字、重试中）显示脉冲动画，提示"正在进行"。 */
 function isPulsing(phase: CallPhase): boolean {
   return phase === 'RECEIVED' || phase === 'CONNECTED' || phase === 'RETRYING'
+}
+
+/** 点击取消按钮：委托 store 向后端发取消请求。 */
+function onCancel(toast: CallToast) {
+  void store.cancelCall(toast.requestId)
 }
 </script>
 
@@ -76,6 +85,10 @@ function isPulsing(phase: CallPhase): boolean {
           <div class="call-toast__model">{{ toast.model }}</div>
           <div class="call-toast__text">{{ phaseText(toast) }}</div>
         </div>
+        <button v-if="toast.canCancel" type="button" class="call-toast__cancel" :disabled="toast.canceling"
+          @click="onCancel(toast)">
+          {{ toast.canceling ? '取消中' : '取消' }}
+        </button>
       </div>
     </transition-group>
   </div>
@@ -145,6 +158,10 @@ function isPulsing(phase: CallPhase): boolean {
     background: $danger;
   }
 
+  &.is-aborted {
+    background: $text-muted;
+  }
+
   &[data-pulsing='true'] {
     animation: toast-dot-pulse 1.2s ease-in-out infinite;
   }
@@ -182,6 +199,30 @@ function isPulsing(phase: CallPhase): boolean {
   font-family: $font-body;
   font-size: 13px;
   color: $text-body;
+}
+
+.call-toast__cancel {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 2px 10px;
+  border: 1px solid $danger;
+  border-radius: 6px;
+  background: transparent;
+  color: $danger;
+  cursor: pointer;
+  font-family: $font-mono;
+  font-size: 11px;
+  transition: all 0.2s ease;
+
+  &:hover:not(:disabled) {
+    background: $danger;
+    color: #fff;
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
 }
 
 /* 进出场：从右侧淡入，向右淡出。 */

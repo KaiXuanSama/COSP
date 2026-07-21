@@ -11,6 +11,7 @@ package com.kaixuan.copilot_ollama_proxy.protocol.lifecycle;
  *   非流式：RECEIVED -> [RETRYING...] -> CONNECTED -> COMPLETED
  *   任意阶段出错：-> FAILED
  *   客户端（下游 Copilot）主动断连：-> CANCELED
+ *   管理员在等待首字期间主动取消：-> ABORTED
  * </pre>
  *
  * <p>RETRYING 只在首字到达之前出现（连接建立失败、429/5xx/可重试 400、SSL 握手失败），
@@ -40,5 +41,13 @@ public enum CallPhase {
     FAILED,
 
     /** 客户端（下游 Copilot）主动断开连接，本次调用被取消（非错误，属于用户预期行为）。 */
-    CANCELED
+    CANCELED,
+
+    /**
+     * 管理员在管理后台主动取消本次调用（仅在 CONNECTED 后等待首字期间可触发）。
+     *
+     * <p>与 {@link #CANCELED} 区分：CANCELED 是下游 Copilot 断开，ABORTED 是管理员
+     * 通过取消端点主动中止「上游迟迟不吐首字」的调用，代理会向下游回传超时错误以触发其重试。
+     */
+    ABORTED
 }
