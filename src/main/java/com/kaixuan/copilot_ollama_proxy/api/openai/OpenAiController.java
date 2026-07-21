@@ -202,6 +202,12 @@ public class OpenAiController {
                     return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
                             .body("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}"));
                 })
+                // CANCELED：下游（Copilot）主动断连是 Reactor 的 cancel 信号，onErrorResume 捕获不到，
+                // 必须用 doOnCancel 感知，否则不发终态事件 → inFlight 记录永久留存 → 僵尸 toast。
+                .doOnCancel(() -> {
+                    callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, stream));
+                    log.info("下游主动断连 [{}] {}", model, requestId);
+                })
                 // 无论正常结束、失败还是取消，都清理注册表，避免内存泄漏。
                 .doFinally(signal -> callCancellationRegistry.remove(requestId));
     }
@@ -321,6 +327,17 @@ public class OpenAiController {
                     }
                     log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(error), extractRequestUrl(error));
                     return Flux.just(ServerSentEvent.<String>builder("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}").event("error").build());
+                })
+                // CANCELED：下游（Copilot）主动断连是 Reactor 的 cancel 信号，onErrorResume 捕获不到，
+                // 必须用 doOnCancel 感知。管理员取消走 takeUntilOther→concatWith 正常 complete（不触发此处），
+                // 正常/失败结束也走 complete/error，故此处只会在「下游真断连」时命中。
+                // 用 canceled/completed 守卫兜底：若终态已发出则不重复发，避免多条终态事件。
+                .doOnCancel(() -> {
+                    if (canceled.get() || completed.get()) {
+                        return;
+                    }
+                    callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, true, chunkCount.get()));
+                    log.info("下游主动断连，静默收尾 [{}] {}", model, requestId);
                 })
                 // 无论正常结束、失败还是取消，都清理注册表与看门狗，避免内存/定时器泄漏。
                 .doFinally(signal -> {
