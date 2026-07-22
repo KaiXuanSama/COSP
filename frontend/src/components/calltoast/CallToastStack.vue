@@ -90,8 +90,9 @@ function onCancel(toast: CallToast) {
           <div class="call-toast__text">{{ phaseText(toast) }}</div>
         </div>
         <button v-if="toast.canCancel" type="button" class="call-toast__cancel" :disabled="toast.canceling"
+          :title="toast.canceling ? '取消中…' : '取消本次调用'" :aria-label="toast.canceling ? '取消中' : '取消本次调用'"
           @click="onCancel(toast)">
-          {{ toast.canceling ? '取消中' : '取消' }}
+          <span class="call-toast__cancel-icon" :class="{ 'is-spinning': toast.canceling }" aria-hidden="true"></span>
         </button>
       </div>
     </transition-group>
@@ -212,24 +213,74 @@ function onCancel(toast: CallToast) {
 .call-toast__cancel {
   flex: 0 0 auto;
   align-self: center;
-  padding: 2px 10px;
-  border: 1px solid $danger;
-  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
   background: transparent;
-  color: $danger;
+  color: $text-muted;
   cursor: pointer;
-  font-family: $font-mono;
-  font-size: 11px;
-  transition: all 0.2s ease;
+  transition: background 0.15s ease, color 0.15s ease;
 
   &:hover:not(:disabled) {
-    background: $danger;
-    color: #fff;
+    background: rgba($danger, 0.12);
+    color: $danger;
   }
 
   &:disabled {
-    opacity: 0.5;
     cursor: default;
+  }
+}
+
+/* × 图标：用两条伪元素斜线绘制，避免依赖字体字形。 */
+.call-toast__cancel-icon {
+  position: relative;
+  width: 10px;
+  height: 10px;
+
+  &::before,
+  &::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: 100%;
+    height: 1.5px;
+    background: currentColor;
+    border-radius: 1px;
+  }
+
+  &::before {
+    transform: translateY(-50%) rotate(45deg);
+  }
+
+  &::after {
+    transform: translateY(-50%) rotate(-45deg);
+  }
+
+  /* canceling 时切换为旋转的加载小圈。 */
+  &.is-spinning {
+    width: 12px;
+    height: 12px;
+    border: 1.5px solid rgba($text-muted, 0.35);
+    border-top-color: $text-muted;
+    border-radius: 50%;
+    animation: cancel-spin 0.6s linear infinite;
+
+    &::before,
+    &::after {
+      display: none;
+    }
+  }
+}
+
+@keyframes cancel-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
