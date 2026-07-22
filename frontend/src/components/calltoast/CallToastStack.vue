@@ -139,11 +139,11 @@ function onCancel(toast: CallToast) {
   }
 
   &.is-connected {
-    background: $warning;
+    background: $blue;
   }
 
   &.is-chunk {
-    background: $accent;
+    background: $success;
   }
 
   &.is-completed {
@@ -159,7 +159,7 @@ function onCancel(toast: CallToast) {
   }
 
   &.is-retrying {
-    background: $danger;
+    background: $accent;
   }
 
   &.is-aborted {
@@ -167,7 +167,7 @@ function onCancel(toast: CallToast) {
   }
 
   &.is-stalled {
-    background: $warning;
+    background: $accent;
   }
 
   &[data-pulsing='true'] {
