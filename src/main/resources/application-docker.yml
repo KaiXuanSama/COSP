@@ -28,7 +28,7 @@ admin:
 
 # ===== API 调用日志 =====
 call-log:
-  max-records: ${CALL_LOG_MAX_RECORDS:100}
+  max-records: ${CALL_LOG_MAX_RECORDS:1000}
 
 # ===== Ollama 伪装版本 =====
 ollama:
