@@ -61,7 +61,7 @@ public class SecurityConfig {
                         "/config/**", "/auth/**", "/login", "/logout"))
                 .authorizeExchange(exchange -> exchange
                         .pathMatchers("/login", "/logout").permitAll()
-                        .pathMatchers("/config/api/stats", "/config/api/stats/stream", "/config/api/providers", "/config/api/heatmap", "/config/api/logs/stream", "/config/api/calls/stream").permitAll()
+                        .pathMatchers("/config/api/stats", "/config/api/stats/stream", "/config/api/heatmap", "/config/api/logs/stream", "/config/api/calls/stream").permitAll()
                         .pathMatchers("/auth/login").permitAll()
                         .pathMatchers("/config/**").authenticated()
                         .pathMatchers("/auth/me").authenticated()
