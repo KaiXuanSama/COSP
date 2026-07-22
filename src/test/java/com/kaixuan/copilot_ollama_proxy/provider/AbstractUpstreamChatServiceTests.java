@@ -271,6 +271,60 @@ class AbstractUpstreamChatServiceTests {
         assertThat(retryingEvents.get(0).stream()).isTrue();
     }
 
+    /**
+     * 取消穿透 backoff 实锤测试：下游在重试 backoff 等待期间主动断连，重试链应同步停止。
+     *
+     * <p>场景：上游持续返回可重试的 500，若不取消会一路重试（backoff 2s/4s/8s...最多 5 次）。
+     * 订阅后在第一个 backoff 等待窗口内（backoff 最小 ≥1s）dispose 订阅，模拟下游 Copilot 断连。
+     * Reactor 的 cancel 信号应向上穿透到 {@code retryWhen} 的 backoff 定时器，中止后续重试。
+     *
+     * <p>断言：取消前上游只被调用 1 次；dispose 后等待远超第一个 backoff 窗口（jitter 后最大约 3s），
+     * 上游调用次数不再增长——证明重试链随下游断连同步取消，不会空打上游。
+     *
+     * <p>此行为当前由 Reactor cancel 级联天然实现（无显式取消代码）。本测试锁定它，
+     * 防止后续对重试链的重构无意破坏这一特性。
+     */
+    @Test
+    void downstreamCancelDuringRetryBackoffStopsUpstreamRetries() throws InterruptedException {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        // 上游持续返回可重试的 500：若重试不被取消，会一路重试下去。
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            upstreamCallCount.incrementAndGet();
+            return Mono.just(ClientResponse.create(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                    .body("{\"error\":\"upstream boom\"}").build());
+        }));
+
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("model", "model-a");
+
+        // 订阅拿到 Disposable 模拟下游连接；首次上游调用后进入第一个 backoff 等待（≥1s）。
+        // 吞掉可能的终态信号，避免污染测试输出。
+        reactor.core.Disposable subscription = service
+                .exposeChatCompletionStream(request, "model-a", provider(), "req-cancel-retry-1")
+                .subscribe(chunk -> { }, error -> { });
+
+        // 等到首次上游调用已发生，但仍处于第一个 backoff 等待窗口内（backoff 最小 ≥1s，此处 500ms 安全）。
+        Thread.sleep(500);
+        int callsBeforeCancel = upstreamCallCount.get();
+
+        // 模拟下游主动断开：dispose 订阅，取消信号应穿透到 retryWhen 的 backoff。
+        subscription.dispose();
+
+        // 等待远超第一个 backoff 窗口（jitter 后最大约 3s）：若取消未穿透，第 2 次上游调用会在此期间发生。
+        Thread.sleep(4500);
+        int callsAfterCancel = upstreamCallCount.get();
+
+        System.out.println("[CANCEL-RETRY] 取消前上游调用次数 = " + callsBeforeCancel);
+        System.out.println("[CANCEL-RETRY] 取消后上游调用次数 = " + callsAfterCancel);
+
+        // 锁定行为：取消发生在 backoff 等待期间，重试链应停止，上游调用次数不再增长。
+        assertThat(callsBeforeCancel).isEqualTo(1);
+        assertThat(callsAfterCancel).isEqualTo(callsBeforeCancel);
+    }
+
     /** 把一段 JSON 包装成 SSE data 帧的 DataBuffer（{@code data: {...}\n\n}）。 */
     private static DataBuffer sseData(DefaultDataBufferFactory factory, String json) {
         byte[] bytes = ("data: " + json + "\n\n").getBytes(StandardCharsets.UTF_8);
