@@ -24,6 +24,8 @@ export interface CallLifecycleEvent {
   /** 重试次数（RETRYING 阶段有意义，表示即将进行的第几次重试，其余为 0）。 */
   attempt: number
   timestamp: number
+  /** 是否允许手动取消：由后端看门狗裁决（等首字超 N 秒 / 首字后停滞）。前端仅读此字段决定是否显示取消按钮，不再维护本地计时器——刷新/新开页面都能立即显示正确状态。 */
+  canCancel: boolean
 }
 
 /** 前端渲染用的 Toast 状态，按 requestId 分组，随事件流转更新。 */
@@ -51,8 +53,6 @@ const RECONNECT_DELAY = 3000
 const COMPLETED_LINGER = 2200
 /** 淡出动画时长（毫秒），需与 Toast 组件 CSS 的 leave 过渡一致。 */
 const LEAVE_DURATION = 320
-/** 等待产出超过此时长（毫秒）后，Toast 显示“取消”按钮。与后端无强耦合，纯前端体验阈值。 */
-const CANCEL_THRESHOLD = 60000
 /** 取消端点路径（走认证，http 实例自动附带 Bearer Token）。 */
 const CANCEL_PATH = (requestId: string) => `/calls/${requestId}/cancel`
 
@@ -65,8 +65,6 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
   let manualClose = false
   /** requestId -> 该 Toast 的移除定时器，用于终态延迟移除与去重。 */
   const removalTimers = new Map<string, ReturnType<typeof setTimeout>>()
-  /** requestId -> 等待产出的取消倒计时定时器，超过阈值后置位 canCancel 显示取消按钮。 */
-  const cancelTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   /**
    * 建立调用生命周期 SSE 连接。重复调用不会创建多个连接。
@@ -123,12 +121,9 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
       if (event.attempt > 0) {
         existing.attempt = event.attempt
       }
-      // 一旦离开“等待产出”状态（收到首个 chunk、完成、或到终态），取消窗口关闭。
-      // STALLED 例外：首字后停滞时仍需保留取消按钮，由下方统一处理。
-      if (!isWaitingPhase(event.phase) && event.phase !== 'STALLED') {
-        existing.canCancel = false
-        clearCancelTimer(event.requestId)
-      }
+      // canCancel 完全由后端裁决：声明式读取，不再维护本地计时器。
+      // 一旦后端翻转为 true（等首字超时 / 首字后停滞），刷新或新开页面都能立即显示取消按钮。
+      existing.canCancel = event.canCancel
     } else {
       toasts.value = [
         ...toasts.value,
@@ -140,51 +135,14 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
           chunkCount: event.chunkCount,
           attempt: event.attempt,
           leaving: false,
-          canCancel: false,
+          canCancel: event.canCancel,
           canceling: false,
         },
       ]
     }
 
-    // 等待产出状态下启动取消倒计时；离开该状态则关闭窗口。
-    if (isWaitingPhase(event.phase) && !isTerminalPhase(event.phase)) {
-      scheduleCancelWindow(event.requestId)
-    }
-
-    // STALLED：首字后停滞。后端已等待阈值（30s）才发此信号，前端直接放开取消按钮，
-    // 无需再自行计时。是否断连交由用户判断（避免误杀工具调用整块 chunk 的合理长阻塞）。
-    if (event.phase === 'STALLED') {
-      const stalled = toasts.value.find((t) => t.requestId === event.requestId)
-      if (stalled) stalled.canCancel = true
-      clearCancelTimer(event.requestId)
-    }
-
     if (isTerminalPhase(event.phase)) {
-      clearCancelTimer(event.requestId)
       scheduleRemoval(event.requestId)
-    }
-  }
-
-  /** 等待产出超过阈值后放开取消按钮；已存在计时器则不重复安排。 */
-  function scheduleCancelWindow(requestId: string) {
-    if (cancelTimers.has(requestId)) return
-    const timer = setTimeout(() => {
-      const target = toasts.value.find((t) => t.requestId === requestId)
-      // 仍处于等待产出状态才放开取消（期间若已收到 chunk 则 canCancel 已被关闭）。
-      if (target && isWaitingPhase(target.phase)) {
-        target.canCancel = true
-      }
-      cancelTimers.delete(requestId)
-    }, CANCEL_THRESHOLD)
-    cancelTimers.set(requestId, timer)
-  }
-
-  /** 清理某次调用的取消倒计时定时器。 */
-  function clearCancelTimer(requestId: string) {
-    const timer = cancelTimers.get(requestId)
-    if (timer) {
-      clearTimeout(timer)
-      cancelTimers.delete(requestId)
     }
   }
 
@@ -209,11 +167,6 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
   function isTerminalPhase(phase: CallPhase): boolean {
     return phase === 'COMPLETED' || phase === 'FAILED' || phase === 'CANCELED'
       || phase === 'ABORTED'
-  }
-
-  /** 等待产出状态：尚未开始产出 chunk、也未到终态，此时“卡住”超过阈值才允许取消。 */
-  function isWaitingPhase(phase: CallPhase): boolean {
-    return phase === 'RECEIVED' || phase === 'CONNECTED' || phase === 'RETRYING'
   }
 
   /** 为终态 Toast 安排延迟淡出与移除；重复终态事件只保留最初的定时器。 */
@@ -260,10 +213,6 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
       clearTimeout(timer)
     }
     removalTimers.clear()
-    for (const timer of cancelTimers.values()) {
-      clearTimeout(timer)
-    }
-    cancelTimers.clear()
     cleanupSource()
   }
 

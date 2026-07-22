@@ -35,20 +35,31 @@ public record CallLifecycleEvent(
         boolean stream,
         int chunkCount,
         int attempt,
-        long timestamp) {
+        long timestamp,
+        boolean canCancel) {
 
     /** 构造一个不含计数的阶段事件（RECEIVED / CONNECTED / FAILED / CANCELED）。 */
     public static CallLifecycleEvent of(String requestId, CallPhase phase, String model, boolean stream) {
-        return new CallLifecycleEvent(requestId, phase, model, stream, 0, 0, System.currentTimeMillis());
+        return new CallLifecycleEvent(requestId, phase, model, stream, 0, 0, System.currentTimeMillis(), false);
     }
 
     /** 构造一个带 chunk 计数的阶段事件（CHUNK / COMPLETED / CANCELED）。 */
     public static CallLifecycleEvent of(String requestId, CallPhase phase, String model, boolean stream, int chunkCount) {
-        return new CallLifecycleEvent(requestId, phase, model, stream, chunkCount, 0, System.currentTimeMillis());
+        return new CallLifecycleEvent(requestId, phase, model, stream, chunkCount, 0, System.currentTimeMillis(), false);
     }
 
     /** 构造一个 RETRYING 事件，携带即将进行的重试次数。 */
     public static CallLifecycleEvent retrying(String requestId, String model, boolean stream, int attempt) {
-        return new CallLifecycleEvent(requestId, CallPhase.RETRYING, model, stream, 0, attempt, System.currentTimeMillis());
+        return new CallLifecycleEvent(requestId, CallPhase.RETRYING, model, stream, 0, attempt, System.currentTimeMillis(), false);
+    }
+
+    /**
+     * 基于当前事件复制一个 canCancel=true 的新事件，阶段与其余字段保持不变。
+     *
+     * <p>供后端看门狗在等待满阈值后调用：只翻转“可取消”标志，不改变当前阶段（
+     * 可能是 RECEIVED / CONNECTED / RETRYING），避免错误覆盖真实阶段。
+     */
+    public CallLifecycleEvent asCancelable() {
+        return new CallLifecycleEvent(requestId, phase, model, stream, chunkCount, attempt, timestamp, true);
     }
 }

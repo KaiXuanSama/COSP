@@ -54,6 +54,18 @@ public class OpenAiController {
      */
     private static final long STREAM_STALL_WARNING_MS = 30_000L;
 
+    /**
+     * 等待首字超此毫秒数后，放开「手动取消」按钮（由后端裁决，而非前端计时器）。
+     *
+     * <p>过去这是纯前端 setTimeout，起点是事件到达浏览器会话的时刻，刷新即归零——
+     * 一个已等待很久的调用重开页面后又要重新等待。现改由后端看门狗裁决并通过
+     * {@code canCancel} 字段下发，任何新建立的 SSE 连接在快照补发时都能立即拿到正确状态。
+     *
+     * <p>覆盖两处等待场景：非流式全程等待、流式首字到达之前。首字之后的停滞另由
+     * {@link #STREAM_STALL_WARNING_MS} 判定。
+     */
+    private static final long WAIT_CANCELABLE_MS = 60_000L;
+
     private final ChatCompletionService chatCompletionService;
     private final ObjectMapper objectMapper;
     private final ApiUsageCollector apiUsageCollector;
@@ -168,9 +180,24 @@ public class OpenAiController {
         // 注册取消信号：外部点击取消时，cancelSignal 正常 complete，firstWithSignal 会抛 CallCanceledException 中止 chat 链。
         Mono<String> cancelSignal = callCancellationRegistry.register(requestId)
                 .then(Mono.error(new CallCanceledException()));
+        // 非流式全程等待看门狗：满 WAIT_CANCELABLE_MS 仍无结果 -> 放开手动取消（后端裁决，前端仅读 canCancel）。
+        // 独立 interval 订阅，不并入返回的 Mono；完成/失败/取消即在 doFinally 释放。
+        java.util.concurrent.atomic.AtomicReference<reactor.core.Disposable> nonStreamWatchdogRef =
+                new java.util.concurrent.atomic.AtomicReference<>();
         return Mono.firstWithSignal(
                         chatCompletionService.chatCompletion(requestBody, model, requestHeaders, requestId),
                         cancelSignal)
+                .doOnSubscribe(sub -> {
+                    long start = System.nanoTime();
+                    java.util.concurrent.atomic.AtomicBoolean emitted = new java.util.concurrent.atomic.AtomicBoolean(false);
+                    nonStreamWatchdogRef.set(Flux.interval(Duration.ofSeconds(1))
+                            .subscribe(tick -> {
+                                long waitMs = (System.nanoTime() - start) / 1_000_000L;
+                                if (waitMs >= WAIT_CANCELABLE_MS && emitted.compareAndSet(false, true)) {
+                                    callLifecyclePublisher.markCancelable(requestId);
+                                }
+                            }));
+                })
                 .doOnNext(this::recordUsage)
                 // COMPLETED：非流式无 chunk 计数，最终计数为 0。
                 .doOnNext(json -> callLifecyclePublisher.publish(
@@ -209,7 +236,13 @@ public class OpenAiController {
                     log.info("下游主动断连 [{}] {}", model, requestId);
                 })
                 // 无论正常结束、失败还是取消，都清理注册表，避免内存泄漏。
-                .doFinally(signal -> callCancellationRegistry.remove(requestId));
+                .doFinally(signal -> {
+                    callCancellationRegistry.remove(requestId);
+                    reactor.core.Disposable wd = nonStreamWatchdogRef.get();
+                    if (wd != null) {
+                        wd.dispose();
+                    }
+                });
     }
 
     /**
@@ -238,6 +271,10 @@ public class OpenAiController {
         // stalledEmitted 保证 STALLED 警告只发一次（除非收到新 chunk 后重置）。
         java.util.concurrent.atomic.AtomicLong lastChunkAt = new java.util.concurrent.atomic.AtomicLong(-1L);
         java.util.concurrent.atomic.AtomicBoolean stalledEmitted = new java.util.concurrent.atomic.AtomicBoolean(false);
+        // 订阅起始纳秒时间戳：用于计算「等待首字」时长，满 WAIT_CANCELABLE_MS 后放开取消按钮。
+        java.util.concurrent.atomic.AtomicLong subscribedAt = new java.util.concurrent.atomic.AtomicLong(0L);
+        // waitCancelableEmitted 保证「等首字超时放开取消」只发一次（首字到达后不再触发）。
+        java.util.concurrent.atomic.AtomicBoolean waitCancelableEmitted = new java.util.concurrent.atomic.AtomicBoolean(false);
 
         // 注册取消信号：外部点击取消时 cancelSignal 正常 complete，takeUntilOther 会中止上游流。
         // 取消行为对下游一律静默断连（不注入错误帧）：无论首字前还是首字后停滞取消，语义一致，
@@ -254,16 +291,31 @@ public class OpenAiController {
                 new java.util.concurrent.atomic.AtomicReference<>();
         Runnable startWatchdog = () -> watchdogRef.set(Flux.interval(Duration.ofSeconds(1))
                 .subscribe(tick -> {
+                    if (completed.get() || canceled.get()) {
+                        return;
+                    }
                     long last = lastChunkAt.get();
-                    if (last < 0 || completed.get() || canceled.get()) {
+                    if (last < 0) {
+                        // 首字未到：按「等待首字」时长判定是否放开手动取消（由后端裁决，前端仅读 canCancel）。
+                        long start = subscribedAt.get();
+                        if (start > 0) {
+                            long waitMs = (System.nanoTime() - start) / 1_000_000L;
+                            if (waitMs >= WAIT_CANCELABLE_MS && waitCancelableEmitted.compareAndSet(false, true)) {
+                                // 只翻转 canCancel 标志，不改变当前阶段（可能是 CONNECTED / RETRYING）。
+                                callLifecyclePublisher.markCancelable(requestId);
+                            }
+                        }
                         return;
                     }
                     long idleMs = (System.nanoTime() - last) / 1_000_000L;
                     if (idleMs >= STREAM_STALL_WARNING_MS && stalledEmitted.compareAndSet(false, true)) {
                         // 停滞警告：发 STALLED（非终态，inFlight 保留），提示连接停滞但仍可恢复。
                         // 不主动断连——上游可能在为工具调用组装整块 chunk（如创建文件），属合理长阻塞。
+                        // STALLED 直接携带 canCancel=true：首字后停滞时前端应能立即手动取消，
+                        // 语义与「等首字超时放开取消」统一，前端无需再对 STALLED 特殊置位。
                         callLifecyclePublisher.publish(
-                                CallLifecycleEvent.of(requestId, CallPhase.STALLED, model, true, chunkCount.get()));
+                                CallLifecycleEvent.of(requestId, CallPhase.STALLED, model, true, chunkCount.get())
+                                        .asCancelable());
                     }
                 }));
 
@@ -291,7 +343,10 @@ public class OpenAiController {
                 })
                 .map(chunk -> ServerSentEvent.builder(chunk).build())
                 // 订阅时启动首字后空闲看门狗（独立订阅，见上方 startWatchdog）。
-                .doOnSubscribe(sub -> startWatchdog.run())
+                .doOnSubscribe(sub -> {
+                    subscribedAt.set(System.nanoTime());
+                    startWatchdog.run();
+                })
                 .takeUntilOther(cancelSignal)
                 // 取消时静默断连：只发 ABORTED 终态事件，不向下游注入任何错误帧，下游自行处理断连。
                 .concatWith(Flux.defer(() -> {

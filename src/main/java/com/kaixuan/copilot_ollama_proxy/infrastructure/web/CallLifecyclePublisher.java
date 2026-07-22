@@ -61,6 +61,24 @@ public class CallLifecyclePublisher implements CallLifecycleNotifier {
     }
 
     /**
+     * 将某次进行中调用标记为「可手动取消」：取出 inFlight 中的当前事件，
+     * 只翻转 {@code canCancel=true} 后重新发布，阶段与其余字段保持不变。
+     *
+     * <p>由后端看门狗在等待满阈值后调用（等首字超时 / 首字后停滞）。重新发布会
+     * 覆盖写入 inFlight，因此此后任何新建立的 SSE 连接在快照补发时都能立即拿到
+     * canCancel=true 的最新态——刷新浏览器或新开页面都能及时显示取消按钮。
+     *
+     * <p>若该调用已不在 inFlight（已终结或从未存在），则静默忽略：终态调用不应再放开取消。
+     */
+    public void markCancelable(String requestId) {
+        CallLifecycleEvent current = inFlight.get(requestId);
+        if (current == null || current.canCancel()) {
+            return;
+        }
+        publish(current.asCancelable());
+    }
+
+    /**
      * 当前所有进行中调用的最新事件快照。
      *
      * <p>SSE 连接建立时先补发此快照，使新订阅者立即看到已在进行、尚未结束的调用，
