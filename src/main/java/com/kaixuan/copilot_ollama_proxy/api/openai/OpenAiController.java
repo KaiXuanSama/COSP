@@ -64,7 +64,7 @@ public class OpenAiController {
      * <p>覆盖两处等待场景：非流式全程等待、流式首字到达之前。首字之后的停滞另由
      * {@link #STREAM_STALL_WARNING_MS} 判定。
      */
-    private static final long WAIT_CANCELABLE_MS = 60_000L;
+    private static final long WAIT_CANCELABLE_MS = 30_000L;
 
     private final ChatCompletionService chatCompletionService;
     private final ObjectMapper objectMapper;
