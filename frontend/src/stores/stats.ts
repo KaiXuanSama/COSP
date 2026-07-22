@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import http from '@/api'
+import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 
 export interface StatsData {
   totalApiCalls: number
@@ -9,17 +10,13 @@ export interface StatsData {
   todayOutputTokens: number
 }
 
-/** SSE 端点路径。stats 流由后端 permitAll 放行，无需在此附带 Bearer Token。 */
+/** SSE 端点路径（相对 http.baseURL）。走认证，token 由 createAuthEventSource 以 Bearer header 附带。 */
 const STATS_STREAM_PATH = '/stats/stream'
-/** 进入 CLOSED 状态后的手动重连间隔（毫秒）。 */
-const RECONNECT_DELAY = 3000
 
 export const useStatsStore = defineStore('stats', () => {
   const stats = ref<StatsData | null>(null)
 
-  let eventSource: EventSource | null = null
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-  let manualClose = false
+  let source: AuthEventSource | null = null
 
   /**
    * 建立统计快照 SSE 连接，替代原先的定时轮询。
@@ -28,57 +25,27 @@ export const useStatsStore = defineStore('stats', () => {
    * 另有后端定时兜底覆盖跨天与丢帧。重复调用不会创建多个连接。
    */
   function connectStream() {
-    if (eventSource) return
-    manualClose = false
-    openSource()
-  }
-
-  function openSource() {
-    const url = `${http.defaults.baseURL ?? ''}${STATS_STREAM_PATH}`
-    const source = new EventSource(url)
-    eventSource = source
-
-    source.addEventListener('stats', (event) => {
-      try {
-        stats.value = JSON.parse((event as MessageEvent).data) as StatsData
-      } catch {
-        // 忽略无法解析的帧，保留上次快照。
-      }
+    if (source) return
+    source = createAuthEventSource({
+      path: STATS_STREAM_PATH,
+      handlers: {
+        stats: (data) => {
+          try {
+            stats.value = JSON.parse(data) as StatsData
+          } catch {
+            // 忽略无法解析的帧，保留上次快照。
+          }
+        },
+      },
     })
-
-    source.onerror = () => {
-      // 浏览器原生 EventSource 在网络抖动时会自动重连；
-      // 仅当进入 CLOSED（如服务端返回非 2xx）时才手动兜底重连。
-      if (source.readyState === EventSource.CLOSED && !manualClose) {
-        scheduleReconnect()
-      }
-    }
-  }
-
-  function scheduleReconnect() {
-    cleanupSource()
-    if (reconnectTimer) return
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null
-      if (!manualClose) openSource()
-    }, RECONNECT_DELAY)
-  }
-
-  function cleanupSource() {
-    if (eventSource) {
-      eventSource.close()
-      eventSource = null
-    }
   }
 
   /** 主动断开 SSE 连接（离开概览页时调用）。 */
   function disconnectStream() {
-    manualClose = true
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer)
-      reconnectTimer = null
+    if (source) {
+      source.close()
+      source = null
     }
-    cleanupSource()
   }
 
   /** HTTP 首屏拉取，作为 SSE 尚未建立时的兜底。 */

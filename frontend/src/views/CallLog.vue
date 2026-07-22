@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { NCard, NEmpty, NSpin } from 'naive-ui'
-import http, { fetchLogs, fetchLogDetail } from '@/api'
+import { fetchLogs, fetchLogDetail } from '@/api'
+import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 import { JsonViewer, ChunksViewer } from '@/components/calllog'
 import type { CollapseRule } from '@/components/calllog/JsonNode.vue'
 
@@ -218,12 +219,8 @@ function openChunksModal(rawChunks: string | null) {
 
 /** 日志变更信号 SSE 端点路径。信号不携带数据，收到后走带 Token 的 /logs 拉取。 */
 const LOG_STREAM_PATH = '/logs/stream'
-/** 进入 CLOSED 状态后的手动重连间隔（毫秒）。 */
-const RECONNECT_DELAY = 3000
 
-let eventSource: EventSource | null = null
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-let manualClose = false
+let logStreamSource: AuthEventSource | null = null
 let syncing = false
 
 /**
@@ -303,54 +300,25 @@ function sleep(ms: number): Promise<void> {
 /**
  * 建立日志变更信号 SSE 连接，替代手动点刷新。
  * 收到 log 事件即触发一次增量同步；重复调用不会创建多个连接。
+ * token 由 createAuthEventSource 以 Bearer header 附带，断线自动重连。
  */
 function connectStream() {
-  if (eventSource) return
-  manualClose = false
-  openSource()
-}
-
-function openSource() {
-  const url = `${http.defaults.baseURL ?? ''}${LOG_STREAM_PATH}`
-  const source = new EventSource(url)
-  eventSource = source
-
-  source.addEventListener('log', () => {
-    void syncLatestLogs()
+  if (logStreamSource) return
+  logStreamSource = createAuthEventSource({
+    path: LOG_STREAM_PATH,
+    handlers: {
+      log: () => {
+        void syncLatestLogs()
+      },
+    },
   })
-
-  source.onerror = () => {
-    // 浏览器原生 EventSource 网络抖动时会自动重连；
-    // 仅当进入 CLOSED（如服务端返回非 2xx）时才手动兜底重连。
-    if (source.readyState === EventSource.CLOSED && !manualClose) {
-      scheduleReconnect()
-    }
-  }
-}
-
-function scheduleReconnect() {
-  cleanupSource()
-  if (reconnectTimer) return
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null
-    if (!manualClose) openSource()
-  }, RECONNECT_DELAY)
-}
-
-function cleanupSource() {
-  if (eventSource) {
-    eventSource.close()
-    eventSource = null
-  }
 }
 
 function disconnectStream() {
-  manualClose = true
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer)
-    reconnectTimer = null
+  if (logStreamSource) {
+    logStreamSource.close()
+    logStreamSource = null
   }
-  cleanupSource()
 }
 
 onMounted(() => {

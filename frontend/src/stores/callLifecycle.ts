@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import http from '@/api'
+import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 
 /** 单次调用的生命周期阶段，与后端 CallPhase 枚举一一对应。 */
 export type CallPhase =
@@ -45,10 +46,8 @@ export interface CallToast {
   canceling: boolean
 }
 
-/** SSE 端点路径。calls 流由后端 permitAll 放行，无需附带 Bearer Token。 */
+/** SSE 端点路径（相对 http.baseURL）。走认证，token 由 createAuthEventSource 以 Bearer header 附带。 */
 const CALLS_STREAM_PATH = '/calls/stream'
-/** 进入 CLOSED 状态后的手动重连间隔（毫秒）。 */
-const RECONNECT_DELAY = 3000
 /** 终态（COMPLETED/FAILED）Toast 在淡出前的停留时长（毫秒）。 */
 const COMPLETED_LINGER = 2200
 /** 淡出动画时长（毫秒），需与 Toast 组件 CSS 的 leave 过渡一致。 */
@@ -60,9 +59,7 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
   /** 当前存活的 Toast 列表，按接收顺序排列（越新的调用越靠前由组件控制）。 */
   const toasts = ref<CallToast[]>([])
 
-  let eventSource: EventSource | null = null
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-  let manualClose = false
+  let source: AuthEventSource | null = null
   /** requestId -> 该 Toast 的移除定时器，用于终态延迟移除与去重。 */
   const removalTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
@@ -71,30 +68,19 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
    * 在布局挂载时调用一次，连接常驻，跨页面切换不断开。
    */
   function connectStream() {
-    if (eventSource) return
-    manualClose = false
-    openSource()
-  }
-
-  function openSource() {
-    const url = `${http.defaults.baseURL ?? ''}${CALLS_STREAM_PATH}`
-    const source = new EventSource(url)
-    eventSource = source
-
-    source.addEventListener('call', (event) => {
-      try {
-        const data = JSON.parse((event as MessageEvent).data) as CallLifecycleEvent
-        applyEvent(data)
-      } catch {
-        // 忽略无法解析的帧。
-      }
+    if (source) return
+    source = createAuthEventSource({
+      path: CALLS_STREAM_PATH,
+      handlers: {
+        call: (data) => {
+          try {
+            applyEvent(JSON.parse(data) as CallLifecycleEvent)
+          } catch {
+            // 忽略无法解析的帧。
+          }
+        },
+      },
     })
-
-    source.onerror = () => {
-      if (source.readyState === EventSource.CLOSED && !manualClose) {
-        scheduleReconnect()
-      }
-    }
   }
 
   /**
@@ -186,34 +172,16 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
     removalTimers.set(requestId, linger)
   }
 
-  function scheduleReconnect() {
-    cleanupSource()
-    if (reconnectTimer) return
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null
-      if (!manualClose) openSource()
-    }, RECONNECT_DELAY)
-  }
-
-  function cleanupSource() {
-    if (eventSource) {
-      eventSource.close()
-      eventSource = null
-    }
-  }
-
   /** 主动断开 SSE 连接并清理所有定时器（通常无需调用，连接常驻）。 */
   function disconnectStream() {
-    manualClose = true
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer)
-      reconnectTimer = null
+    if (source) {
+      source.close()
+      source = null
     }
     for (const timer of removalTimers.values()) {
       clearTimeout(timer)
     }
     removalTimers.clear()
-    cleanupSource()
   }
 
   return { toasts, connectStream, disconnectStream, cancelCall }

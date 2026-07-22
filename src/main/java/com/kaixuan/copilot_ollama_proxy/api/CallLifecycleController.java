@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.api;
 
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.SseConnectionGate;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -15,6 +16,7 @@ import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** 管理后台单次调用生命周期 SSE API，为前端 Toast 提供实时状态流。 */
 @RestController
@@ -25,11 +27,14 @@ public class CallLifecycleController {
 
     private final CallLifecyclePublisher callLifecyclePublisher;
     private final CallCancellationRegistry callCancellationRegistry;
+    private final SseConnectionGate sseConnectionGate;
 
     public CallLifecycleController(CallLifecyclePublisher callLifecyclePublisher,
-                                   CallCancellationRegistry callCancellationRegistry) {
+                                   CallCancellationRegistry callCancellationRegistry,
+                                   SseConnectionGate sseConnectionGate) {
         this.callLifecyclePublisher = callLifecyclePublisher;
         this.callCancellationRegistry = callCancellationRegistry;
+        this.sseConnectionGate = sseConnectionGate;
     }
 
     /**
@@ -44,25 +49,39 @@ public class CallLifecycleController {
      * 消除 multicast sink 不重放历史事件带来的观察盲区。快照用 {@code Flux.defer} 在订阅时求值，
      * 保证每个新订阅者拿到的是各自建立连接那一刻的最新状态。
      *
-     * <p>事件不携带请求/响应正文，故该端点 permitAll 不泄露数据。
+     * <p>本端点走认证（不在 permitAll）；且受 {@link SseConnectionGate} 总连接数上限保护，
+     * 超限时立即结束连接，避免长连接资源被无限占用。
      */
     @GetMapping(value = "/config/api/calls/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<CallLifecycleEvent>> streamCalls() {
-        // 快照在订阅时求值：先补发所有进行中调用的最新状态，再接实时流。
-        Flux<ServerSentEvent<CallLifecycleEvent>> snapshot = Flux.defer(() ->
-                Flux.fromIterable(callLifecyclePublisher.snapshot()))
-                .map(event -> ServerSentEvent.builder(event).event("call").build());
+        // 订阅时占用一个连接名额；超限则立即结束（不接入数据流），并保证不误释放他人名额。
+        return Flux.defer(() -> {
+            if (!sseConnectionGate.tryAcquire()) {
+                return Flux.<ServerSentEvent<CallLifecycleEvent>>empty();
+            }
+            AtomicBoolean released = new AtomicBoolean(false);
 
-        Flux<ServerSentEvent<CallLifecycleEvent>> live = callLifecyclePublisher.events()
-                .map(event -> ServerSentEvent.builder(event).event("call").build());
+            // 快照在订阅时求值：先补发所有进行中调用的最新状态，再接实时流。
+            Flux<ServerSentEvent<CallLifecycleEvent>> snapshot = Flux.defer(() ->
+                    Flux.fromIterable(callLifecyclePublisher.snapshot()))
+                    .map(event -> ServerSentEvent.builder(event).event("call").build());
 
-        // 快照先行、实时流紧随（concat 保证顺序）；心跳单独 merge 进来保活。
-        Flux<ServerSentEvent<CallLifecycleEvent>> data = Flux.concat(snapshot, live);
+            Flux<ServerSentEvent<CallLifecycleEvent>> live = callLifecyclePublisher.events()
+                    .map(event -> ServerSentEvent.builder(event).event("call").build());
 
-        Flux<ServerSentEvent<CallLifecycleEvent>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
-                .map(tick -> ServerSentEvent.<CallLifecycleEvent>builder().comment("keep-alive").build());
+            // 快照先行、实时流紧随（concat 保证顺序）；心跳单独 merge 进来保活。
+            Flux<ServerSentEvent<CallLifecycleEvent>> data = Flux.concat(snapshot, live);
 
-        return Flux.merge(data, heartbeat);
+            Flux<ServerSentEvent<CallLifecycleEvent>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
+                    .map(tick -> ServerSentEvent.<CallLifecycleEvent>builder().comment("keep-alive").build());
+
+            return Flux.merge(data, heartbeat)
+                    .doFinally(signal -> {
+                        if (released.compareAndSet(false, true)) {
+                            sseConnectionGate.release();
+                        }
+                    });
+        });
     }
 
     /**

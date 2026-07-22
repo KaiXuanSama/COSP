@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.api;
 
 import com.kaixuan.copilot_ollama_proxy.application.logging.CallLogQueryService;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.SseConnectionGate;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
@@ -13,6 +14,7 @@ import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** 管理后台调用日志 API。 */
 @RestController
@@ -22,9 +24,11 @@ public class CallLogController {
     private static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(15);
 
     private final CallLogQueryService callLogQueryService;
+    private final SseConnectionGate sseConnectionGate;
 
-    public CallLogController(CallLogQueryService callLogQueryService) {
+    public CallLogController(CallLogQueryService callLogQueryService, SseConnectionGate sseConnectionGate) {
         this.callLogQueryService = callLogQueryService;
+        this.sseConnectionGate = sseConnectionGate;
     }
 
     @GetMapping("/config/api/logs")
@@ -44,16 +48,32 @@ public class CallLogController {
      *
      * <p>每产生一条新日志即下发一个 {@code event: log} 信号帧（body 为时间戳，仅作占位）；
      * 前端收到后走带 Bearer Token 的 {@code /config/api/logs} 自动拉取最新列表。
-     * 信号不携带日志内容，故该端点 permitAll 不泄露数据。心跳用注释帧保活，前端可忽略。
+     * 信号不携带日志内容。心跳用注释帧保活，前端可忽略。
+     *
+     * <p>本端点走认证（不在 permitAll）；且受 {@link SseConnectionGate} 总连接数上限保护，
+     * 超限时立即结束连接，避免长连接资源被无限占用。
      */
     @GetMapping(value = "/config/api/logs/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<Long>> streamLogs() {
-        Flux<ServerSentEvent<Long>> data = callLogQueryService.streamLogEvents()
-                .map(timestamp -> ServerSentEvent.builder(timestamp).event("log").build());
+        // 订阅时占用一个连接名额；超限则立即结束（不接入数据流），并保证不误释放他人名额。
+        return Flux.defer(() -> {
+            if (!sseConnectionGate.tryAcquire()) {
+                return Flux.<ServerSentEvent<Long>>empty();
+            }
+            AtomicBoolean released = new AtomicBoolean(false);
 
-        Flux<ServerSentEvent<Long>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
-                .map(tick -> ServerSentEvent.<Long>builder().comment("keep-alive").build());
+            Flux<ServerSentEvent<Long>> data = callLogQueryService.streamLogEvents()
+                    .map(timestamp -> ServerSentEvent.builder(timestamp).event("log").build());
 
-        return Flux.merge(data, heartbeat);
+            Flux<ServerSentEvent<Long>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
+                    .map(tick -> ServerSentEvent.<Long>builder().comment("keep-alive").build());
+
+            return Flux.merge(data, heartbeat)
+                    .doFinally(signal -> {
+                        if (released.compareAndSet(false, true)) {
+                            sseConnectionGate.release();
+                        }
+                    });
+        });
     }
 }
