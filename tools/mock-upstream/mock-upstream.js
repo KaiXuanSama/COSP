@@ -35,6 +35,10 @@ const NORMAL_CHUNK_COUNT = 30;
 const SLOW_STEADY_INTERVAL_MS = 3 * 1000;
 /** slow-steady 的 chunk 数。 */
 const SLOW_STEADY_CHUNK_COUNT = 8;
+/** retry-then-succeed 在第几次请求时成功（前 N-1 次返回 500）。 */
+const RETRY_SUCCESS_ATTEMPT = 3;
+/** retry-then-succeed 计数器空闲清零时长（毫秒）：最后一次请求后超过此时长无新请求则清零。 */
+const RETRY_RESET_MS = 30 * 1000;
 // ────────────────────────────────────────────────────
 
 /** 模型清单：name -> 行为描述（供 /v1/models 输出与文档参考）。 */
@@ -48,6 +52,7 @@ const MODELS = [
   { id: 'error-500', desc: '返回 500（COSP 应重试）' },
   { id: 'error-401', desc: '返回 401（COSP 应快速失败不重试）' },
   { id: 'slow-steady', desc: '每 3s 一个 chunk，持续较久（验证不误判 STALLED）' },
+  { id: 'retry-then-succeed', desc: '前 2 次请求返回 500，第 3 次正常回复 chunk + [DONE]（验证 COSP 重试中成功）' },
 ];
 
 const MODEL_IDS = new Set(MODELS.map((m) => m.id));
@@ -138,6 +143,8 @@ function handleChat(req, res, model) {
       return errorResponse(res, 401, 'mock upstream unauthorized (401)', model);
     case 'slow-steady':
       return slowSteady(res, id, model);
+    case 'retry-then-succeed':
+      return retryThenSucceed(res, id, model);
     default:
       // 未知模型：当作 normal 处理，方便随手测试。
       log(`? 未知模型 ${model}，按 normal 处理`);
@@ -306,6 +313,64 @@ function slowSteady(res, id, model) {
     log(`✓ slow-steady 完成  model=${model}`);
   }
   pump();
+}
+
+// ── retry-then-succeed 状态 ──────────────────────────────────────────────
+/**
+ * retry-then-succeed 的请求计数器。
+ *
+ * <p>模块级共享（跨请求持久），记录该端点已收到多少次 /v1/chat/completions 请求：
+ * 第 1、2 次返回 500，第 3 次正常流式回复。计数器由定时器管理：
+ * 每次请求都会重置一个 RETRY_RESET_MS 的清零定时器——若该端点最后一次请求后
+ * 超过此时长仍无新请求，则计数器归零，下一轮测试重新从第 1 次开始；
+ * 第 3 次成功回复时也立即清零，保证下一轮从头计数。
+ */
+let retryCounter = 0;
+/** 计数器清零定时器句柄，供刷新与取消使用。 */
+let retryResetTimer = null;
+
+/** 刷新计数器清零定时器：在最后一次请求后 RETRY_RESET_MS 归零。 */
+function scheduleRetryReset(model) {
+  if (retryResetTimer) {
+    clearTimeout(retryResetTimer);
+  }
+  retryResetTimer = setTimeout(() => {
+    retryCounter = 0;
+    retryResetTimer = null;
+    log(`↺ retry-then-succeed 计数器超时清零  model=${model}`);
+  }, RETRY_RESET_MS);
+}
+
+/** 立即清零计数器并取消清零定时器（第 3 次成功后调用）。 */
+function clearRetryCounter() {
+  retryCounter = 0;
+  if (retryResetTimer) {
+    clearTimeout(retryResetTimer);
+    retryResetTimer = null;
+  }
+}
+
+/**
+ * retry-then-succeed：前 2 次请求返回 500，第 3 次正常流式回复到 [DONE]。
+ *
+ * <p>用于验证 COSP 对 500 的内部重试（backoff 最多 5 次）在中途某次成功产生 chunk 的行为。
+ * 计数器跨请求持久，由 30s 定时器兜底清零；第 3 次成功后立即清零，便于连续测试。
+ */
+function retryThenSucceed(res, id, model) {
+  retryCounter += 1;
+  const attempt = retryCounter;
+  // 每次请求都刷新清零定时器：最后一次请求后 RETRY_RESET_MS 无新请求则归零。
+  scheduleRetryReset(model);
+
+  if (attempt < RETRY_SUCCESS_ATTEMPT) {
+    log(`✗ retry-then-succeed 第 ${attempt} 次请求 -> 返回 500  model=${model}`);
+    return errorResponse(res, 500, `mock retry attempt ${attempt} failed (500)`, model);
+  }
+
+  // 第 3 次：正常流式回复，并立即清零计数器（下一轮从头计数）。
+  clearRetryCounter();
+  log(`✓ retry-then-succeed 第 ${attempt} 次请求 -> 正常流式回复  model=${model}`);
+  return streamNormal(res, id, model);
 }
 
 /** 错误响应：返回指定状态码 + OpenAI 风格错误体。 */
