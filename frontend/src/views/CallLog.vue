@@ -282,7 +282,9 @@ async function flushEnterQueue() {
   try {
     while (enterQueue.length) {
       const item = enterQueue.shift() as LogItem
-      logs.value = [item, ...logs.value]
+      // 头部插入新项的同时移除末尾最老一项（无动画），保持列表长度不随实时流无限增长。
+      // slice(0, -1) 对空数组/单元素数组均安全；此处 logs 必非空（首次填充走另一分支）。
+      logs.value = [item, ...logs.value.slice(0, -1)]
       animatingId.value = item.id
       await nextTick()
       await sleep(ANIM_DURATION)
