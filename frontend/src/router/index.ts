@@ -3,6 +3,7 @@ import Login from '@/views/Login.vue'
 import AdminLayout from '@/layouts/AdminLayout.vue'
 import Overview from '@/views/Overview.vue'
 import Settings from '@/views/Settings.vue'
+import Preferences from '@/views/Preferences.vue'
 import Account from '@/views/Account.vue'
 import CallLog from '@/views/CallLog.vue'
 import { auth } from '@/api'
@@ -37,6 +38,18 @@ const routes = [
         path: '',
         name: 'settings',
         component: Settings,
+        meta: { requiresAuth: true },
+      },
+    ],
+  },
+  {
+    path: '/preferences',
+    component: AdminLayout,
+    children: [
+      {
+        path: '',
+        name: 'preferences',
+        component: Preferences,
         meta: { requiresAuth: true },
       },
     ],

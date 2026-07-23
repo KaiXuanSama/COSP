@@ -127,7 +127,7 @@ public class SecurityConfig {
         return (exchange, chain) -> {
             String path = exchange.getRequest().getPath().value();
             // SPA 内部路由：直接转发到 index.html
-            if (path.equals("/overview") || path.equals("/settings") || path.equals("/account") || path.equals("/call-log")) {
+            if (path.equals("/overview") || path.equals("/settings") || path.equals("/preferences") || path.equals("/account") || path.equals("/call-log")) {
                 return chain.filter(exchange.mutate().request(
                         exchange.getRequest().mutate().path("/index.html").build()).build());
             }

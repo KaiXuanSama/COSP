@@ -13,8 +13,6 @@ import type { RuleSet } from '@/features/request-body-rules/types'
 
 const providerStore = useProviderStore()
 const message = useMessage()
-const fakeVersion = ref('')
-const versionPlaceholder = ref('0.6.4')
 
 const windowWidth = ref(window.innerWidth)
 const DRAWER_MIN_WIDTH = 700
@@ -539,7 +537,6 @@ async function enableProvider(key: string) {
 
 onMounted(async () => {
   await providerStore.fetchAll()
-  await providerStore.fetchFakeVersion()
   // 将数据库中尚未配置展示元数据的供应商注入 providerMeta
   for (const key of Object.keys(providerStore.providers)) {
     if (!providerMeta.value[key]) {
@@ -553,10 +550,6 @@ onMounted(async () => {
         apiUrlPlaceholder: actualBaseUrl || 'https://api.example.com/v1',
       }
     }
-  }
-  if (providerStore.fakeVersion) {
-    fakeVersion.value = providerStore.fakeVersion
-    versionPlaceholder.value = providerStore.fakeVersion
   }
 })
 
@@ -719,12 +712,6 @@ async function toggleProvider(key: string, val: boolean) {
   }
 }
 
-async function saveFakeVersion() {
-  await providerStore.saveFakeVersion(fakeVersion.value)
-  versionPlaceholder.value = fakeVersion.value
-  message.success('版本号已保存')
-}
-
 async function pullModels() {
   if (!editingKey.value) return
   const providerKey = editingKey.value
@@ -848,20 +835,8 @@ function removeModel(index: number) {
 
 <template>
   <div class="settings-page">
-    <!-- 运行配置 -->
-    <n-card title="运行配置" :bordered="true">
-      <div class="field-group">
-        <label class="field-label" for="fakeVersion">伪造版本号</label>
-        <div class="fake-version-row">
-          <n-input id="fakeVersion" v-model:value="fakeVersion" :placeholder="versionPlaceholder"
-            @keyup.enter="saveFakeVersion" />
-          <n-button type="primary" @click="saveFakeVersion">保存</n-button>
-        </div>
-      </div>
-    </n-card>
-
     <!-- 供应商配置 -->
-    <n-card title="供应商配置" :bordered="true" style="margin-top: 16px;">
+    <n-card title="供应商配置" :bordered="true">
       <template #header-extra>
         <n-button text size="tiny" @click="showAddModal = true" class="add-provider-btn">
           <template #icon>
@@ -1183,12 +1158,6 @@ function removeModel(index: number) {
   letter-spacing: 0.15em;
   text-transform: uppercase;
   color: $text-muted;
-}
-
-.fake-version-row {
-  display: flex;
-  gap: $space-sm;
-  align-items: center;
 }
 
 .provider-grid {

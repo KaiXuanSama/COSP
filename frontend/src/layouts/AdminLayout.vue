@@ -14,8 +14,9 @@ const username = ref('root')
 
 const navItems = [
   { path: '/overview', label: '概览', icon: 'overview' },
-  { path: '/settings', label: '配置', icon: 'settings' },
+  { path: '/settings', label: '配置', icon: 'config' },
   { path: '/call-log', label: '日志', icon: 'log' },
+  { path: '/preferences', label: '设置', icon: 'settings' },
 ]
 
 const isActive = (path: string) => route.path === path
@@ -99,6 +100,11 @@ onBeforeUnmount(() => {
           <rect x="14" y="3" width="7" height="7" />
           <rect x="3" y="14" width="7" height="7" />
           <rect x="14" y="14" width="7" height="7" />
+        </svg>
+        <svg v-else-if="item.icon === 'config'" class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 20h9" />
+          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
         </svg>
         <svg v-else-if="item.icon === 'settings'" class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
           stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
