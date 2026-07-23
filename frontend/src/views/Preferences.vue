@@ -179,7 +179,7 @@ async function regenerateGatewayKey() {
           <ol class="gateway-help-steps">
             <li>
               打开命令面板（<code>Ctrl+Shift+P</code>），运行
-              <strong>Preferences: Open User Configuration (JSON)</strong>，
+              <strong>Chat: Open Language Models (JSON)</strong>，
               或直接编辑 <code>chatLanguageModels.json</code>。
             </li>
             <li>
