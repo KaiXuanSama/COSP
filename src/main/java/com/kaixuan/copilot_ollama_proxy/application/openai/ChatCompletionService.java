@@ -40,12 +40,12 @@ public class ChatCompletionService {
      * @return 上游原始 OpenAI 响应
      */
     public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
-                                       HttpHeaders downstreamHeaders) {
+                                       HttpHeaders downstreamHeaders, String requestId) {
         ResolvedProviderRoute route = providerRouteResolver.resolve(model);
         if (route == null) {
             return Mono.error(new RuntimeException("没有可用的上游服务来处理模型: " + model));
         }
-        return genericChatService.chatCompletion(openAiRequest, route, downstreamHeaders);
+        return genericChatService.chatCompletion(openAiRequest, route, downstreamHeaders, requestId);
     }
 
     /**
@@ -53,7 +53,7 @@ public class ChatCompletionService {
      * 仅供内部兼容调用与单元测试使用；HTTP API 必须调用带 downstreamHeaders 的重载。
      */
     public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model) {
-        return chatCompletion(openAiRequest, model, HttpHeaders.EMPTY);
+        return chatCompletion(openAiRequest, model, HttpHeaders.EMPTY, null);
     }
 
     /**
@@ -64,12 +64,12 @@ public class ChatCompletionService {
      * @return 上游 SSE 数据块
      */
     public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model,
-                                              HttpHeaders downstreamHeaders) {
+                                              HttpHeaders downstreamHeaders, String requestId) {
         ResolvedProviderRoute route = providerRouteResolver.resolve(model);
         if (route == null) {
             return Flux.error(new RuntimeException("没有可用的上游服务来处理模型: " + model));
         }
-        return genericChatService.chatCompletionStream(openAiRequest, route, downstreamHeaders);
+        return genericChatService.chatCompletionStream(openAiRequest, route, downstreamHeaders, requestId);
     }
 
     /**
@@ -77,6 +77,6 @@ public class ChatCompletionService {
      * 仅供内部兼容调用与单元测试使用；HTTP API 必须调用带 downstreamHeaders 的重载。
      */
     public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
-        return chatCompletionStream(openAiRequest, model, HttpHeaders.EMPTY);
+        return chatCompletionStream(openAiRequest, model, HttpHeaders.EMPTY, null);
     }
 }

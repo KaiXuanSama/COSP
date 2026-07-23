@@ -3,8 +3,11 @@ package com.kaixuan.copilot_ollama_proxy.provider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
+import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
+import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
+import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,6 +20,7 @@ import org.springframework.web.reactive.function.client.WebClientRequestExceptio
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.SignalType;
 import reactor.netty.http.client.HttpClient;
 import reactor.util.retry.Retry;
 
@@ -27,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -64,6 +69,9 @@ public abstract class AbstractUpstreamChatService {
     /** API 调用日志写入服务，由子类 Spring Bean 通过 setter 注入。 */
     private ApiCallLogService apiCallLog;
 
+    /** 调用生命周期事件通知器，由 Spring 可选注入；用于发出 CONNECTED / RETRYING 等 provider 层观测点。 */
+    private CallLifecycleNotifier lifecycleNotifier;
+
     /**
      * 全局 WebClient.Builder，由 Spring 通过 setter 注入。
      * 该 Builder 在 WebClientConfig 中配置了 JDK 系统 DNS 解析器，
@@ -75,6 +83,11 @@ public abstract class AbstractUpstreamChatService {
     @Autowired(required = false)
     public void setApiCallLog(ApiCallLogService apiCallLog) {
         this.apiCallLog = apiCallLog;
+    }
+
+    @Autowired(required = false)
+    public void setLifecycleNotifier(CallLifecycleNotifier lifecycleNotifier) {
+        this.lifecycleNotifier = lifecycleNotifier;
     }
 
     @Autowired(required = false)
@@ -113,39 +126,48 @@ public abstract class AbstractUpstreamChatService {
      * @return 上游返回的原始 OpenAI JSON 响应字符串
      */
     protected Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
-                                          ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders) {
+                                          ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                          String requestId) {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, false, model, provider);
         log.info("{} OpenAI 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
 
-        long startTime = System.currentTimeMillis();
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
         Map<String, String> reqHeaders = new LinkedHashMap<>();
+        // 每次上游往返（含重试）各自计时并落库：往返开始时刷新起点，使每条日志的 duration 反映该次往返本身。
+        AtomicLong attemptStart = new AtomicLong(System.currentTimeMillis());
 
-        return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, false)
-            .post().uri(chatCompletionsUri()).bodyValue(requestBody).retrieve()
-                .toEntity(String.class)
-                .retryWhen(buildRetrySpec("chatCompletion", provider))
-                .doOnNext(entity -> log.debug("{} 响应: {}", provider.providerKey(), entity.getBody()))
-                .map(entity -> {
+        return Mono.defer(() -> {
+                    attemptStart.set(System.currentTimeMillis());
+                    return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, false)
+                            .post().uri(chatCompletionsUri()).bodyValue(requestBody).retrieve()
+                            .toEntity(String.class);
+                })
+                // 成功往返：立即落一条成功记录（在 retry 上游，每次往返各自记录）。
+                .doOnNext(entity -> {
+                    log.debug("{} 响应: {}", provider.providerKey(), entity.getBody());
+                    // CONNECTED：上游完整响应已到达（非流式无首字概念，响应到达即视为已连接）。
+                    publishLifecycle(CallLifecycleEvent.of(requestId, CallPhase.CONNECTED, modelName, false));
                     Map<String, String> respHeaders = new LinkedHashMap<>();
                     entity.getHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
-                    int statusCode = entity.getStatusCode().value();
-                    saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, entity.getBody(), startTime);
-                    return entity.getBody();
+                    saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, respHeaders,
+                            entity.getStatusCode().value(), entity.getBody(), attemptStart.get());
                 })
+                // 失败往返：每次失败（含被 retry 吞掉的中间失败）都各自落一条（在 retry 上游）。
                 .doOnError(e -> {
-                    // 解包重试耗尽包装，查找原始 WebClientResponseException
                     WebClientResponseException responseException = findWebResponseException(e);
                     if (responseException != null) {
                         Map<String, String> errHeaders = new LinkedHashMap<>();
                         responseException.getHeaders().forEach((k, v) -> errHeaders.put(k, String.join(", ", v)));
                         saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, errHeaders,
-                                responseException.getStatusCode().value(), responseException.getResponseBodyAsString(), startTime);
+                                responseException.getStatusCode().value(), responseException.getResponseBodyAsString(), attemptStart.get());
                     } else {
-                        saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, Map.of(), -1, null, startTime);
+                        saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, Map.of(), -1, null, attemptStart.get());
                     }
-                });
+                })
+                // 重试挂在落库下游：中间失败已在上面各自记录，此处仅负责重订阅。
+                .retryWhen(buildRetrySpec("chatCompletion", provider, requestId, modelName, false))
+                .map(entity -> entity.getBody());
     }
 
     /**
@@ -160,46 +182,65 @@ public abstract class AbstractUpstreamChatService {
      * @return 按顺序发出的 chunk JSON 字符串，最后一个元素为 "[DONE]"
      */
     protected Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model,
-                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders) {
+                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                                 String requestId) {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model, provider);
         log.info("{} OpenAI 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
 
-        long startTime = System.currentTimeMillis();
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
         Map<String, String> reqHeaders = new LinkedHashMap<>();
+        // 本次往返的清洗后 chunk：成功往返落库用；每次往返（defer 重订阅）在起点清空，只反映该次往返。
         List<String> logChunks = new java.util.concurrent.CopyOnWriteArrayList<>();
         AtomicReference<Map<String, String>> capturedRespHeaders = new AtomicReference<>(Map.of());
         AtomicReference<Integer> capturedStatusCode = new AtomicReference<>(0);
-        // 追踪重试过程中的最后一次错误响应
-        AtomicReference<Map<String, String>> lastErrorHeaders = new AtomicReference<>(Map.of());
-        AtomicReference<Integer> lastErrorCode = new AtomicReference<>(0);
-        AtomicReference<String> lastErrorBody = new AtomicReference<>(null);
+        // 每次上游往返（含重试）各自计时并落库：往返开始时刷新起点，使每条日志的 duration 反映该次往返本身。
+        AtomicLong attemptStart = new AtomicLong(System.currentTimeMillis());
 
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
         StringBuilder reasoningBuffer = new StringBuilder();
         AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
-        return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, true)
-            .post().uri(chatCompletionsUri()).bodyValue(requestBody)
-                .exchangeToFlux(response -> {
-                    Map<String, String> respHeaders = new LinkedHashMap<>();
-                    response.headers().asHttpHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
-                    capturedRespHeaders.set(respHeaders);
-                    capturedStatusCode.set(response.statusCode().value());
-                    // 检查是否为错误响应（4xx/5xx）
-                    if (response.statusCode().isError()) {
-                        return response.bodyToMono(String.class).flatMapMany(errorBody -> {
-                            lastErrorHeaders.set(respHeaders);
-                            lastErrorCode.set(response.statusCode().value());
-                            lastErrorBody.set(errorBody);
-                            log.warn("{} 上游返回错误响应 {}: {}", provider.providerKey(), response.statusCode().value(), errorBody);
-                            return Flux.error(new WebClientResponseException(
-                                    response.statusCode().value(), "上游错误响应", null, errorBody.getBytes(), null));
-                        });
-                    }
-                    return response.bodyToFlux(STRING_SSE_TYPE);
+        return Flux.defer(() -> {
+                    // 本次往返起点：重置计时与 chunk 收集，使每条日志只反映该次往返（不跨重试累加）。
+                    attemptStart.set(System.currentTimeMillis());
+                    logChunks.clear();
+                    return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, true)
+                            .post().uri(chatCompletionsUri()).bodyValue(requestBody)
+                            .exchangeToFlux(response -> {
+                                Map<String, String> respHeaders = new LinkedHashMap<>();
+                                response.headers().asHttpHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
+                                capturedRespHeaders.set(respHeaders);
+                                capturedStatusCode.set(response.statusCode().value());
+                                // 检查是否为错误响应（4xx/5xx）
+                                if (response.statusCode().isError()) {
+                                    return response.bodyToMono(String.class).flatMapMany(errorBody -> {
+                                        log.warn("{} 上游返回错误响应 {}: {}", provider.providerKey(), response.statusCode().value(), errorBody);
+                                        // 失败往返：即时落一条错误记录（retry 上游，每次往返各自记录，无 chunk）。
+                                        saveStreamLogWithError(providerKey, modelName, reqHeaders, requestBody,
+                                                respHeaders, response.statusCode().value(), List.of(),
+                                                respHeaders, response.statusCode().value(), errorBody, attemptStart.get());
+                                        return Flux.error(new WebClientResponseException(
+                                                response.statusCode().value(), "上游错误响应", null, errorBody.getBytes(), null));
+                                    });
+                                }
+                                // CONNECTED：真正收到上游非错误响应头的那一刻，此时才准确表示"已连接，等待首字"。
+                                // 放在此处而非控制器 doOnSubscribe，可覆盖 A1/A2（订阅即谎报"已连接"）。
+                                // 重试时每次成功拿到响应头都会重新发一次，属预期行为。
+                                publishLifecycle(CallLifecycleEvent.of(requestId, CallPhase.CONNECTED, model, true));
+                                return response.bodyToFlux(STRING_SSE_TYPE);
+                            });
                 })
-                .retryWhen(buildRetrySpec("chatCompletionStream", provider)).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
+                // 网络类失败往返（无上游错误响应，如连接失败 / HTTP 200 后流中途断开）：即时落一条记录。
+                // 错误响应（4xx/5xx）已在 exchangeToFlux 分支落库，此处用 findWebResponseException==null 排除以免重复。
+                .doOnError(e -> {
+                    if (findWebResponseException(e) == null) {
+                        int statusCode = capturedStatusCode.get() == 0 ? -1 : capturedStatusCode.get();
+                        saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
+                                capturedRespHeaders.get(), statusCode, List.copyOf(logChunks), attemptStart.get());
+                    }
+                })
+                // 重试挂在落库下游：中间失败已在上游各自记录，此处仅负责重订阅。
+                .retryWhen(buildRetrySpec("chatCompletionStream", provider, requestId, model, true)).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
                 .doOnNext(raw -> log.debug("{} 上游原始: {}", provider.providerKey(), raw)).concatMap(chunk -> {
                     String normalizedChunk = normalizeUpstreamChunk(chunk, contentEmitted, reasoningBuffer, chunkId);
                     if (isTerminalChunk(normalizedChunk)) {
@@ -215,21 +256,17 @@ public abstract class AbstractUpstreamChatService {
                 }).doOnNext(chunk -> {
                     log.debug("{} 上游清洗: {}", provider.providerKey(), chunk);
                     logChunks.add(chunk);
-                }).doFinally(signal -> {
-                    // 如果有错误信息（重试耗尽），同时记录错误响应体到非流式响应列
-                    String errorBody = lastErrorBody.get();
-                    if (errorBody != null && !errorBody.isEmpty()) {
-                        saveStreamLogWithError(providerKey, modelName, reqHeaders, requestBody,
-                                capturedRespHeaders.get(), capturedStatusCode.get(), logChunks,
-                                lastErrorHeaders.get(), lastErrorCode.get(), errorBody, startTime);
-                    } else {
-                        // 网络错误时 status_code 保持 0，标记为 -1 表示连接失败
+                })
+                // 成功往返收尾：仅在非错误终结（complete / cancel）时落一条成功记录。
+                // 失败往返（错误响应 / 网络失败）已在 retry 上游即时落库，此处 ON_ERROR 不重复。
+                .doFinally(signal -> {
+                    if (signal != SignalType.ON_ERROR) {
                         int statusCode = capturedStatusCode.get();
                         if (statusCode == 0 && logChunks.isEmpty()) {
                             statusCode = -1;
                         }
                         saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
-                                capturedRespHeaders.get(), statusCode, logChunks, startTime);
+                                capturedRespHeaders.get(), statusCode, logChunks, attemptStart.get());
                     }
                 });
     }
@@ -408,21 +445,44 @@ public abstract class AbstractUpstreamChatService {
      *    （如 SocketException: Connection reset，即 HTTP 200 但 SSE 流中途断开）
      *
      * @param method 调用方方法名，用于日志区分重试来源
+     * @param requestId 本次调用唯一标识，用于发出 RETRYING 生命周期事件
+     * @param model 模型名称（含前缀），用于 RETRYING 事件展示
+     * @param stream 是否流式请求
      * @return 配置好的 Retry 实例
      */
-    protected Retry buildRetrySpec(String method, ProviderRuntimeConfiguration provider) {
+    protected Retry buildRetrySpec(String method, ProviderRuntimeConfiguration provider,
+                                   String requestId, String model, boolean stream) {
         return Retry.backoff(5, Duration.ofSeconds(2)).maxBackoff(Duration.ofSeconds(30))
                 .filter(ex -> ((ex instanceof WebClientResponseException responseException) && (responseException.getStatusCode().value() == 429 || responseException.getStatusCode().is5xxServerError()
                         || responseException.getStatusCode().value() == 400 || hasNetworkCause(responseException))) || ex instanceof WebClientRequestException
                         || hasSslHandshakeFailure(ex))
                 .doBeforeRetry(signal -> {
+                    int attempt = (int) (signal.totalRetries() + 1);
+                    // RETRYING：让前端 Toast 从“已连接/等待中”切换到“上游异常，正在重试（第N次）”，
+                    // 避免重试期间静默卡顿让用户误以为卡死。
+                    publishLifecycle(CallLifecycleEvent.retrying(requestId, model, stream, attempt));
                     if (signal.failure() instanceof WebClientResponseException responseException && responseException.getStatusCode().value() == 429) {
                         String retryAfter = responseException.getHeaders().getFirst("Retry-After");
-                        log.warn("[{}] {} API 限速 (429)，重试第 {} 次{}", method, provider.providerKey(), signal.totalRetries() + 1, retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
+                        log.warn("[{}] {} API 限速 (429)，重试第 {} 次{}", method, provider.providerKey(), attempt, retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
                     } else {
-                        log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, provider.providerKey(), signal.totalRetries() + 1, signal.failure().getMessage());
+                        log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, provider.providerKey(), attempt, signal.failure().getMessage());
                     }
                 });
+    }
+
+    /**
+     * best-effort 发出一个生命周期事件；notifier 未注入（如单元测试）或发布异常时静默跳过，
+     * 绝不影响正在进行的聊天数据流。
+     */
+    private void publishLifecycle(CallLifecycleEvent event) {
+        if (lifecycleNotifier == null) {
+            return;
+        }
+        try {
+            lifecycleNotifier.publish(event);
+        } catch (Exception e) {
+            log.debug("生命周期事件发布失败（已忽略）: {}", e.getMessage());
+        }
     }
 
     /**

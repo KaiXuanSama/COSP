@@ -44,7 +44,7 @@ class ResponseLoggingFilterTests {
 
   @Test
   void logsTheResponseBodyForAsyncJsonEndpoints(CapturedOutput output) {
-    given(chatCompletionService.chatCompletion(anyMap(), anyString(), org.mockito.ArgumentMatchers.any(HttpHeaders.class))).willReturn(Mono.just("""
+    given(chatCompletionService.chatCompletion(anyMap(), anyString(), org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString())).willReturn(Mono.just("""
         {
           "id": "chatcmpl-msg_123",
           "object": "chat.completion",

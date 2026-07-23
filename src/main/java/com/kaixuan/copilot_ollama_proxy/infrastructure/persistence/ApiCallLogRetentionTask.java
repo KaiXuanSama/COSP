@@ -29,7 +29,7 @@ public class ApiCallLogRetentionTask implements ApplicationRunner {
      * @param maxRecords 最多保留的最新日志条数
      */
     public ApiCallLogRetentionTask(ApiCallLogRepository apiCallLogRepository,
-                                   @Value("${call-log.max-records:100}") int maxRecords) {
+                                   @Value("${call-log.max-records:1000}") int maxRecords) {
         this.apiCallLogRepository = apiCallLogRepository;
         this.maxRecords = Math.max(1, maxRecords);
     }

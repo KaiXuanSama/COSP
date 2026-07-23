@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.LogEventPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -27,10 +28,13 @@ public class ApiCallLogRepository implements ApiCallLogService {
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
+    private final LogEventPublisher logEventPublisher;
 
-    public ApiCallLogRepository(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
+    public ApiCallLogRepository(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper,
+                                LogEventPublisher logEventPublisher) {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
+        this.logEventPublisher = logEventPublisher;
     }
 
     /**
@@ -48,6 +52,7 @@ public class ApiCallLogRepository implements ApiCallLogService {
                     statusCode,
                     toJson(requestHeaders), toJson(requestBody),
                     toJson(responseHeaders), responseBody, durationMs);
+            logEventPublisher.publishLogCreated();
         } catch (Exception e) {
             log.warn("保存 API 调用日志失败: {}", e.getMessage());
         }
@@ -68,6 +73,7 @@ public class ApiCallLogRepository implements ApiCallLogService {
                     statusCode,
                     toJson(requestHeaders), toJson(requestBody),
                     toJson(responseHeaders), toJson(chunks), durationMs);
+            logEventPublisher.publishLogCreated();
         } catch (Exception e) {
             log.warn("保存 API 调用日志失败: {}", e.getMessage());
         }
@@ -90,6 +96,7 @@ public class ApiCallLogRepository implements ApiCallLogService {
                     errorCode,
                     toJson(requestHeaders), toJson(requestBody),
                     toJson(errorHeaders), errorBody, toJson(chunks), durationMs);
+            logEventPublisher.publishLogCreated();
         } catch (Exception e) {
             log.warn("保存 API 调用日志失败: {}", e.getMessage());
         }

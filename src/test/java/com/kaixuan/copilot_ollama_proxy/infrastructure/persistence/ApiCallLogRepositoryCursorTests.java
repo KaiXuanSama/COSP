@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.LogEventPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -31,7 +32,7 @@ class ApiCallLogRepositoryCursorTests {
         jdbcTemplate.update("INSERT INTO api_call_log (provider_key, model_name, status_code, created_at) VALUES (?, ?, ?, ?)", "deepseek", "gpt", 200, "2026-07-11T10:00:00");
         jdbcTemplate.update("INSERT INTO api_call_log (provider_key, model_name, status_code, created_at) VALUES (?, ?, ?, ?)", "mimo", "mimo", 200, "2026-07-11T09:00:00");
         jdbcTemplate.update("INSERT INTO api_call_log (provider_key, model_name, status_code, created_at) VALUES (?, ?, ?, ?)", "custom", "custom", 500, "2026-07-11T08:00:00");
-        repository = new ApiCallLogRepository(jdbcTemplate, new ObjectMapper());
+        repository = new ApiCallLogRepository(jdbcTemplate, new ObjectMapper(), new LogEventPublisher());
     }
 
     @Test

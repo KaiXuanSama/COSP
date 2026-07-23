@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { NCard, NEmpty, NSpin } from 'naive-ui'
 import { fetchLogs, fetchLogDetail } from '@/api'
+import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 import { JsonViewer, ChunksViewer } from '@/components/calllog'
 import type { CollapseRule } from '@/components/calllog/JsonNode.vue'
 
@@ -45,6 +46,23 @@ const jsonModal = ref({ show: false, title: '', content: null as unknown, collap
 const chunksModal = ref({ show: false, chunks: [] as string[] })
 
 /**
+ * SSE 新日志的淡入动画时长（毫秒），需与 CSS 中 .log-enter-* 的 transition 时长保持一致。
+ * 队列每插入一条新记录后等待该时长再插下一条，实现“上一个动画播完再播下一个”。
+ */
+const ANIM_DURATION = 420
+/** 已入场动画播放中的新记录 id，模板据此附加高亮类。 */
+const animatingId = ref<number | null>(null)
+/** 待逐条播放淡入动画的新记录队列（按 id 升序，逐条 shift 出队）。 */
+const enterQueue: LogItem[] = []
+/** 队列消费中标志，避免并发 flush 造成多条同时入场。 */
+let flushingQueue = false
+/**
+ * 已知的最大日志 id 水位线，涵盖“已在列表中”和“已排入队列尚未入场”的记录。
+ * 增量同步据此去重，避免动画播放期间又来 SSE 导致同一条重复入队。
+ */
+let knownMaxId = 0
+
+/**
  * 加载第一页日志
  */
 async function loadFirstPage() {
@@ -55,6 +73,7 @@ async function loadFirstPage() {
     logs.value = res.data.items || []
     nextCursor.value = res.data.nextCursor ?? null
     hasMore.value = Boolean(res.data.hasMore)
+    resetKnownMaxId()
   } catch (e) {
     console.error('加载日志失败:', e)
   } finally {
@@ -63,10 +82,21 @@ async function loadFirstPage() {
   }
 }
 
+/** 用当前列表首条（最新）记录重置水位线，并清空未播放的入场队列。 */
+function resetKnownMaxId() {
+  enterQueue.length = 0
+  knownMaxId = logs.value.length ? logs.value[0].id : 0
+}
+
 /**
- * 刷新日志列表（清空后重新加载第一页）
+ * 刷新日志列表（清空后重新加载第一页）。
+ *
+ * 手动刷新是整表替换，不走逐条淡入动画：先清空未播放的入场队列并停止当前动画标记，
+ * 由 loadFirstPage 内的 resetKnownMaxId 重置水位线。
  */
 async function refreshLogs() {
+  enterQueue.length = 0
+  animatingId.value = null
   logs.value = []
   nextCursor.value = null
   hasMore.value = false
@@ -187,8 +217,117 @@ function openChunksModal(rawChunks: string | null) {
   chunksModal.value = { show: true, chunks: parsed }
 }
 
+/** 日志变更信号 SSE 端点路径。信号不携带数据，收到后走带 Token 的 /logs 拉取。 */
+const LOG_STREAM_PATH = '/logs/stream'
+
+let logStreamSource: AuthEventSource | null = null
+let syncing = false
+
+/**
+ * 收到“有新日志”信号后的增量同步。
+ *
+ * 只拉第一页，把 id 超过当前水位线的新记录按 id 升序排入入场队列，
+ * 再交由 {@link flushEnterQueue} 逐条播放淡入动画。列表原有分页与选中详情保持不变。
+ *
+ * 用 knownMaxId 而非列表首条 id 去重：动画播放期间新记录尚未进入 logs，
+ * 若以列表首条为准会导致同一条被重复入队。
+ */
+async function syncLatestLogs() {
+  if (syncing) return
+  syncing = true
+  try {
+    const res = await fetchLogs(null, pageSize)
+    const latest: LogItem[] = res.data.items || []
+    if (!latest.length) return
+
+    // 首次填充（列表为空且无待播队列）：直接铺满，不走逐条动画。
+    if (!logs.value.length && !enterQueue.length && !flushingQueue) {
+      logs.value = latest
+      nextCursor.value = res.data.nextCursor ?? null
+      hasMore.value = Boolean(res.data.hasMore)
+      resetKnownMaxId()
+      return
+    }
+
+    // 只取超过水位线的新记录，按 id 升序排队（越新越后入场，最终最新的排在最顶部）。
+    const fresh = latest
+      .filter((item) => item.id > knownMaxId)
+      .sort((a, b) => a.id - b.id)
+    if (!fresh.length) return
+
+    for (const item of fresh) {
+      enterQueue.push(item)
+      knownMaxId = Math.max(knownMaxId, item.id)
+    }
+    void flushEnterQueue()
+  } catch (e) {
+    console.error('同步最新日志失败:', e)
+  } finally {
+    syncing = false
+  }
+}
+
+/**
+ * 串行消费入场队列：每次 shift 一条 prepend 到列表顶部并标记为入场中，
+ * 等待一个完整动画时长后再处理下一条，实现“上一个淡入播完再播下一个”。
+ *
+ * 期间新到的 SSE 只会往 enterQueue 追加，不会打断当前节奏（flushingQueue 保证单实例消费）。
+ */
+async function flushEnterQueue() {
+  if (flushingQueue) return
+  flushingQueue = true
+  try {
+    while (enterQueue.length) {
+      const item = enterQueue.shift() as LogItem
+      // 头部插入新项的同时移除末尾最老一项（无动画），保持列表长度不随实时流无限增长。
+      // slice(0, -1) 对空数组/单元素数组均安全；此处 logs 必非空（首次填充走另一分支）。
+      logs.value = [item, ...logs.value.slice(0, -1)]
+      animatingId.value = item.id
+      await nextTick()
+      await sleep(ANIM_DURATION)
+    }
+  } finally {
+    animatingId.value = null
+    flushingQueue = false
+  }
+}
+
+/** Promise 化的定时等待，用于队列逐条播放间隔。 */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * 建立日志变更信号 SSE 连接，替代手动点刷新。
+ * 收到 log 事件即触发一次增量同步；重复调用不会创建多个连接。
+ * token 由 createAuthEventSource 以 Bearer header 附带，断线自动重连。
+ */
+function connectStream() {
+  if (logStreamSource) return
+  logStreamSource = createAuthEventSource({
+    path: LOG_STREAM_PATH,
+    handlers: {
+      log: () => {
+        void syncLatestLogs()
+      },
+    },
+  })
+}
+
+function disconnectStream() {
+  if (logStreamSource) {
+    logStreamSource.close()
+    logStreamSource = null
+  }
+}
+
 onMounted(() => {
   loadFirstPage()
+  connectStream()
+})
+
+onUnmounted(() => {
+  disconnectStream()
 })
 </script>
 
@@ -218,19 +357,23 @@ onMounted(() => {
 
       <!-- 日志列表 -->
       <div v-else class="log-list">
-        <div v-for="log in logs" :key="log.id" class="log-item" :class="{ active: selectedLogId === log.id }" @click="selectLog(log.id)">
-          <div class="log-item-top" :class="getStatusClass(log.status_code)"></div>
-          <div class="log-item-content">
-            <div class="log-item-header">
-              <span class="log-provider">{{ log.provider_key }}</span>
-              <span class="log-status">{{ log.status_code }}</span>
-            </div>
-            <div class="log-item-body">
-              <span class="log-model">{{ log.model_name }}</span>
-              <span class="log-time">{{ formatTime(log.created_at) }}</span>
+        <transition-group name="log" tag="div" class="log-list-items">
+          <div v-for="log in logs" :key="log.id" class="log-item"
+            :class="{ active: selectedLogId === log.id, 'log-item--fresh': animatingId === log.id }"
+            @click="selectLog(log.id)">
+            <div class="log-item-top" :class="getStatusClass(log.status_code)"></div>
+            <div class="log-item-content">
+              <div class="log-item-header">
+                <span class="log-provider">{{ log.provider_key }}</span>
+                <span class="log-status">{{ log.status_code }}</span>
+              </div>
+              <div class="log-item-body">
+                <span class="log-model">{{ log.model_name }}</span>
+                <span class="log-time">{{ formatTime(log.created_at) }}</span>
+              </div>
             </div>
           </div>
-        </div>
+        </transition-group>
 
         <!-- 加载更多 -->
         <div class="log-load-more">
@@ -367,6 +510,12 @@ onMounted(() => {
   gap: $space-sm;
 }
 
+.log-list-items {
+  display: flex;
+  flex-direction: column;
+  gap: $space-sm;
+}
+
 .log-item {
   background: $surface;
   border: 1px solid $border;
@@ -384,6 +533,41 @@ onMounted(() => {
   &.active {
     border-color: $accent;
     box-shadow: 0 0 0 1px $accent-mid;
+  }
+}
+
+/*
+ * SSE 新日志入场动画。
+ * enter-from -> enter-to：从上方淡入下滑（透明 + 上移 + 高度收拢 -> 完全展开）。
+ * log-move：下方现有项通过 FLIP 平滑下移让位，形成“向下挤压”的自然效果。
+ * enter 与 move 的时长需与脚本 ANIM_DURATION 对齐（420ms）。
+ */
+.log-enter-from {
+  opacity: 0;
+  transform: translateY(-12px);
+}
+
+.log-enter-active {
+  transition: opacity 0.42s ease, transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+  // 入场项在动画期间不占据布局排挤计算之外的额外空间，确保下方项平滑跟随。
+  will-change: opacity, transform;
+}
+
+.log-move {
+  transition: transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* 新入场记录的一次性高亮，动画结束后由脚本移除 log-item--fresh 类自然淡出。 */
+.log-item--fresh {
+  animation: log-fresh-highlight 1.2s ease;
+}
+
+@keyframes log-fresh-highlight {
+  0% {
+    box-shadow: 0 0 0 1px $accent-mid, 0 0 12px rgba(194, 122, 62, 0.35);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
   }
 }
 

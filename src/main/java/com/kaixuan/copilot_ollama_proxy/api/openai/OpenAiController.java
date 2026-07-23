@@ -7,6 +7,11 @@ import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
+import com.kaixuan.copilot_ollama_proxy.provider.CallCanceledException;
+import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
+import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiChatRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiModelsResponse;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiModelsResponse.ModelData;
@@ -23,6 +28,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -39,10 +45,33 @@ public class OpenAiController {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiController.class);
 
+    /**
+     * 首字后 chunk 间空闲超此毫秒数即发 STALLED 警告（非终态，可恢复）。
+     *
+     * <p>仅作为提示：告知前端「上游停滞」并放开手动断连控件，由用户决定是否中止。
+     * 后端<strong>不再</strong>自动断连——因为工具调用等场景可能把大块内容塞进单个 chunk 导致
+     * 首字后长时间阻塞，自动断连会误杀正常请求。是否断连交给用户判断。
+     */
+    private static final long STREAM_STALL_WARNING_MS = 30_000L;
+
+    /**
+     * 等待首字超此毫秒数后，放开「手动取消」按钮（由后端裁决，而非前端计时器）。
+     *
+     * <p>过去这是纯前端 setTimeout，起点是事件到达浏览器会话的时刻，刷新即归零——
+     * 一个已等待很久的调用重开页面后又要重新等待。现改由后端看门狗裁决并通过
+     * {@code canCancel} 字段下发，任何新建立的 SSE 连接在快照补发时都能立即拿到正确状态。
+     *
+     * <p>覆盖两处等待场景：非流式全程等待、流式首字到达之前。首字之后的停滞另由
+     * {@link #STREAM_STALL_WARNING_MS} 判定。
+     */
+    private static final long WAIT_CANCELABLE_MS = 30_000L;
+
     private final ChatCompletionService chatCompletionService;
     private final ObjectMapper objectMapper;
     private final ApiUsageCollector apiUsageCollector;
     private final ModelCatalogService modelCatalogService;
+    private final CallLifecyclePublisher callLifecyclePublisher;
+    private final CallCancellationRegistry callCancellationRegistry;
     private final String readmeHost;
     private final int serverPort;
 
@@ -59,11 +88,15 @@ public class OpenAiController {
      */
     public OpenAiController(ChatCompletionService chatCompletionService, ObjectMapper objectMapper,
                             ApiUsageCollector apiUsageCollector, ModelCatalogService modelCatalogService,
+                            CallLifecyclePublisher callLifecyclePublisher,
+                            CallCancellationRegistry callCancellationRegistry,
                             @Value("${readme.host:localhost}") String readmeHost,
                             @Value("${server.port:11434}") int serverPort) {
         this.chatCompletionService = chatCompletionService;
         this.objectMapper = objectMapper;
         this.apiUsageCollector = apiUsageCollector;
+        this.callLifecyclePublisher = callLifecyclePublisher;
+        this.callCancellationRegistry = callCancellationRegistry;
         this.readmeHost = readmeHost;
         this.serverPort = serverPort;
         this.modelCatalogService = modelCatalogService;
@@ -125,33 +158,90 @@ public class OpenAiController {
 
         Map<String, Object> requestBody = buildRequestBody(request);
 
+        // 每次调用生成唯一 requestId，作为生命周期 Toast 的分组 key（每条 Reactor 订阅链一个，天然会话隔离）。
+        String requestId = UUID.randomUUID().toString();
+        String model = request.getModel();
+        boolean stream = request.isStream();
+
+        // RECEIVED：下游请求已被代理接收（虚拟模型拦截之后、真正调上游之前），同步发出。
+        callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.RECEIVED, model, stream));
+
         // 流式：将 SSE 流作为 ResponseEntity 的 body 返回，由 WebFlux 框架托管背压、取消与超时。
-        if (request.isStream()) {
-            Flux<ServerSentEvent<String>> stream = streamResponse(requestBody, request.getModel(), requestHeaders);
+        if (stream) {
+            Flux<ServerSentEvent<String>> streamBody = streamResponse(requestBody, model, requestHeaders, requestId);
             return Mono.just(ResponseEntity.ok()
                     .contentType(MediaType.TEXT_EVENT_STREAM)
                     .header("Cache-Control", "no-cache")
-                    .body(stream));
+                    .body(streamBody));
         }
 
         // 非流式：获取完整响应后提取 usage 进行记录，并返回给客户端。
-        return chatCompletionService.chatCompletion(requestBody, request.getModel(), requestHeaders).doOnNext(this::recordUsage)
+        // CONNECTED 现由 provider 层在上游响应真正到达时发出（更准确），此处不再乐观发出。
+        // 注册取消信号：外部点击取消时，cancelSignal 正常 complete，firstWithSignal 会抛 CallCanceledException 中止 chat 链。
+        Mono<String> cancelSignal = callCancellationRegistry.register(requestId)
+                .then(Mono.error(new CallCanceledException()));
+        // 非流式全程等待看门狗：满 WAIT_CANCELABLE_MS 仍无结果 -> 放开手动取消（后端裁决，前端仅读 canCancel）。
+        // 独立 interval 订阅，不并入返回的 Mono；完成/失败/取消即在 doFinally 释放。
+        java.util.concurrent.atomic.AtomicReference<reactor.core.Disposable> nonStreamWatchdogRef =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        return Mono.firstWithSignal(
+                        chatCompletionService.chatCompletion(requestBody, model, requestHeaders, requestId),
+                        cancelSignal)
+                .doOnSubscribe(sub -> {
+                    long start = System.nanoTime();
+                    java.util.concurrent.atomic.AtomicBoolean emitted = new java.util.concurrent.atomic.AtomicBoolean(false);
+                    nonStreamWatchdogRef.set(Flux.interval(Duration.ofSeconds(1))
+                            .subscribe(tick -> {
+                                long waitMs = (System.nanoTime() - start) / 1_000_000L;
+                                if (waitMs >= WAIT_CANCELABLE_MS && emitted.compareAndSet(false, true)) {
+                                    callLifecyclePublisher.markCancelable(requestId);
+                                }
+                            }));
+                })
+                .doOnNext(this::recordUsage)
+                // COMPLETED：非流式无 chunk 计数，最终计数为 0。
+                .doOnNext(json -> callLifecyclePublisher.publish(
+                        CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, stream, 0)))
                 .<ResponseEntity<?>>map(openAiJson -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(openAiJson))
                 .onErrorResume(ex -> {
-                    if (isClientDisconnect(ex)) {
+                    // ABORTED：管理后台主动取消，静默断开连接（不注入错误体），下游 Copilot 自行处理。
+                    if (ex instanceof CallCanceledException) {
+                        callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.ABORTED, model, stream));
+                        log.info("调用被主动取消 [{}] {}", model, requestId);
                         return Mono.empty();
                     }
+                    if (isClientDisconnect(ex)) {
+                        // CANCELED：客户端主动断连，发出终态让 Toast 收尾淡出，避免僵尸 Toast。
+                        callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, stream));
+                        return Mono.empty();
+                    }
+                    // FAILED：上游错误或连接失败（客户端主动断连已在上面 return，不计入）。
+                    callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.FAILED, model, stream));
                     // 透传上游错误响应（重试耗尽时 WebClientResponseException 被包装在 RetryExhaustedException 中，需要解包）
                     WebClientResponseException responseException = findWebResponseException(ex);
                     if (responseException != null) {
-                        log.warn("上游 API 返回错误 [{}] {}: {}", request.getModel(), responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
+                        log.warn("上游 API 返回错误 [{}] {}: {}", model, responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
                         return Mono.just(ResponseEntity.status(responseException.getStatusCode().value())
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .body(responseException.getResponseBodyAsString()));
                     }
-                    log.warn("上游 API 调用失败 [{}]: {} ({})", request.getModel(), extractRootCause(ex), extractRequestUrl(ex));
+                    log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(ex), extractRequestUrl(ex));
                     return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
                             .body("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}"));
+                })
+                // CANCELED：下游（Copilot）主动断连是 Reactor 的 cancel 信号，onErrorResume 捕获不到，
+                // 必须用 doOnCancel 感知，否则不发终态事件 → inFlight 记录永久留存 → 僵尸 toast。
+                .doOnCancel(() -> {
+                    callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, stream));
+                    log.info("下游主动断连 [{}] {}", model, requestId);
+                })
+                // 无论正常结束、失败还是取消，都清理注册表，避免内存泄漏。
+                .doFinally(signal -> {
+                    callCancellationRegistry.remove(requestId);
+                    reactor.core.Disposable wd = nonStreamWatchdogRef.get();
+                    if (wd != null) {
+                        wd.dispose();
+                    }
                 });
     }
 
@@ -167,18 +257,123 @@ public class OpenAiController {
      * @return ServerSentEvent 流
      */
     private Flux<ServerSentEvent<String>> streamResponse(Map<String, Object> requestBody, String model,
-                                                          HttpHeaders requestHeaders) {
+                                                          HttpHeaders requestHeaders, String requestId) {
         AtomicInteger streamInputTokens = new AtomicInteger(0);
         AtomicInteger streamOutputTokens = new AtomicInteger(0);
+        // chunkCount 记录累计 chunk 数，每个 chunk 到达即推一次 CHUNK 事件，让 Toast 计数逐个跟手更新。
+        AtomicInteger chunkCount = new AtomicInteger(0);
+        // canceled 标志：外部主动取消时置位，用于在流结束后区分 ABORTED 与正常 COMPLETED。
+        java.util.concurrent.atomic.AtomicBoolean canceled = new java.util.concurrent.atomic.AtomicBoolean(false);
+        // completed 标志：Layer 1（[DONE] 语义信号）与 Layer 2（doOnComplete TCP 关闭）去重，谁先到谁发 COMPLETED。
+        java.util.concurrent.atomic.AtomicBoolean completed = new java.util.concurrent.atomic.AtomicBoolean(false);
+        // 首字后的空闲看门狗状态：
+        // lastChunkAt 记录最近一次 chunk 到达的纳秒时间戳（<0 表示尚未收到首字，不计时——尊重「首字可无限等」）。
+        // stalledEmitted 保证 STALLED 警告只发一次（除非收到新 chunk 后重置）。
+        java.util.concurrent.atomic.AtomicLong lastChunkAt = new java.util.concurrent.atomic.AtomicLong(-1L);
+        java.util.concurrent.atomic.AtomicBoolean stalledEmitted = new java.util.concurrent.atomic.AtomicBoolean(false);
+        // 订阅起始纳秒时间戳：用于计算「等待首字」时长，满 WAIT_CANCELABLE_MS 后放开取消按钮。
+        java.util.concurrent.atomic.AtomicLong subscribedAt = new java.util.concurrent.atomic.AtomicLong(0L);
+        // waitCancelableEmitted 保证「等首字超时放开取消」只发一次（首字到达后不再触发）。
+        java.util.concurrent.atomic.AtomicBoolean waitCancelableEmitted = new java.util.concurrent.atomic.AtomicBoolean(false);
 
-        return chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders)
-                .doOnNext(chunk -> accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens))
+        // 注册取消信号：外部点击取消时 cancelSignal 正常 complete，takeUntilOther 会中止上游流。
+        // 取消行为对下游一律静默断连（不注入错误帧）：无论首字前还是首字后停滞取消，语义一致，
+        // 下游 Copilot 自行处理断连（工具调用整块 chunk 阻塞时，注入错误/硬超时都可能导致重复消耗，故不做）。
+        Mono<Void> cancelSignal = callCancellationRegistry.register(requestId)
+                .doOnSuccess(v -> canceled.set(true));
+
+        // 首字后空闲看门狗（独立订阅，不并入返回的数据流，以免 interval 永不完成而污染数据流的完成信号）。
+        // 每秒检查距上次 chunk 的间隔，仅在收到首字后（lastChunkAt >= 0）生效——尊重「首字可无限等」：
+        // 停滞超 STREAM_STALL_WARNING_MS 发 STALLED 警告（非终态，可恢复），仅提示，不主动断连。
+        // 是否断连交由用户在前端手动决定（避免误杀工具调用整块 chunk 的合理长阻塞）。
+        // 在 doOnSubscribe 启动、doFinally 释放，随请求生命周期存活。
+        java.util.concurrent.atomic.AtomicReference<reactor.core.Disposable> watchdogRef =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Runnable startWatchdog = () -> watchdogRef.set(Flux.interval(Duration.ofSeconds(1))
+                .subscribe(tick -> {
+                    if (completed.get() || canceled.get()) {
+                        return;
+                    }
+                    long last = lastChunkAt.get();
+                    if (last < 0) {
+                        // 首字未到：按「等待首字」时长判定是否放开手动取消（由后端裁决，前端仅读 canCancel）。
+                        long start = subscribedAt.get();
+                        if (start > 0) {
+                            long waitMs = (System.nanoTime() - start) / 1_000_000L;
+                            if (waitMs >= WAIT_CANCELABLE_MS && waitCancelableEmitted.compareAndSet(false, true)) {
+                                // 只翻转 canCancel 标志，不改变当前阶段（可能是 CONNECTED / RETRYING）。
+                                callLifecyclePublisher.markCancelable(requestId);
+                            }
+                        }
+                        return;
+                    }
+                    long idleMs = (System.nanoTime() - last) / 1_000_000L;
+                    if (idleMs >= STREAM_STALL_WARNING_MS && stalledEmitted.compareAndSet(false, true)) {
+                        // 停滞警告：发 STALLED（非终态，inFlight 保留），提示连接停滞但仍可恢复。
+                        // 不主动断连——上游可能在为工具调用组装整块 chunk（如创建文件），属合理长阻塞。
+                        // STALLED 直接携带 canCancel=true：首字后停滞时前端应能立即手动取消，
+                        // 语义与「等首字超时放开取消」统一，前端无需再对 STALLED 特殊置位。
+                        callLifecyclePublisher.publish(
+                                CallLifecycleEvent.of(requestId, CallPhase.STALLED, model, true, chunkCount.get())
+                                        .asCancelable());
+                    }
+                }));
+
+        // CONNECTED 现由 provider 层在上游响应真正到达时发出（更准确），此处不再乐观发出。
+        return chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders, requestId)
+                .doOnNext(chunk -> {
+                    accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens);
+                    // Layer 1（语义信号优先）：收到 [DONE] 即认定上游内容已发完，立即 finalize，
+                    // 不必等上游关闭 TCP 连接。修复「上游发完 [DONE] 却不断连，Toast 永远悬挂在 CHUNK」的偶发 bug。
+                    // [DONE] 是协议终止标记，不计入 chunk 数。
+                    if ("[DONE]".equals(chunk)) {
+                        finalizeStreamCompletion(requestId, model, chunkCount.get(), completed,
+                                streamInputTokens, streamOutputTokens);
+                        return;
+                    }
+                    // 收到内容 chunk：刷新看门狗时间戳，并清除 STALLED 警告标志（若之前停滞过，现在恢复了）。
+                    lastChunkAt.set(System.nanoTime());
+                    if (stalledEmitted.compareAndSet(true, false)) {
+                        // 从 STALLED 恢复：重新发一次 CHUNK 让前端退回正常态（chunkCount 会在下面自增）。
+                        log.debug("流式调用从停滞恢复 [{}] {}", model, requestId);
+                    }
+                    // 每个 chunk 都推一次 CHUNK 事件（不节流）。单次响应 chunk 数通常不过数百，SSE 开销可接受。
+                    callLifecyclePublisher.publish(
+                            CallLifecycleEvent.of(requestId, CallPhase.CHUNK, model, true, chunkCount.incrementAndGet()));
+                })
                 .map(chunk -> ServerSentEvent.builder(chunk).build())
-                .doOnComplete(() -> apiUsageCollector.record(streamInputTokens.get(), streamOutputTokens.get()))
+                // 订阅时启动首字后空闲看门狗（独立订阅，见上方 startWatchdog）。
+                .doOnSubscribe(sub -> {
+                    subscribedAt.set(System.nanoTime());
+                    startWatchdog.run();
+                })
+                .takeUntilOther(cancelSignal)
+                // 取消时静默断连：只发 ABORTED 终态事件，不向下游注入任何错误帧，下游自行处理断连。
+                .concatWith(Flux.defer(() -> {
+                    if (canceled.get()) {
+                        callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.ABORTED, model, true, chunkCount.get()));
+                        log.info("流式调用被主动取消，静默断连 [{}] {}", model, requestId);
+                    }
+                    return Flux.<ServerSentEvent<String>>empty();
+                }))
+                .doOnComplete(() -> {
+                    // 取消时不发 COMPLETED（已由 concatWith 发 ABORTED）。
+                    if (canceled.get()) {
+                        return;
+                    }
+                    // Layer 2（TCP/SSE 连接关闭兜底）：上游未发 [DONE] 就直接关连接时，靠这里 finalize。
+                    // 若 Layer 1 已在收到 [DONE] 时 finalize，completed 标志会让这里成为 no-op（去重）。
+                    finalizeStreamCompletion(requestId, model, chunkCount.get(), completed,
+                            streamInputTokens, streamOutputTokens);
+                })
                 .onErrorResume(error -> {
                     if (isClientDisconnect(error)) {
+                        // CANCELED：客户端主动断连，发出终态让 Toast 收尾淡出，避免僵尸 Toast。
+                        callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, true, chunkCount.get()));
                         return Flux.empty();
                     }
+                    // FAILED：上游错误或连接失败（客户端主动断连已在上面 return，不计入）。
+                    callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.FAILED, model, true));
                     // 透传上游错误响应（解包重试耗尽包装）
                     WebClientResponseException responseException = findWebResponseException(error);
                     if (responseException != null) {
@@ -187,7 +382,54 @@ public class OpenAiController {
                     }
                     log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(error), extractRequestUrl(error));
                     return Flux.just(ServerSentEvent.<String>builder("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}").event("error").build());
+                })
+                // CANCELED：下游（Copilot）主动断连是 Reactor 的 cancel 信号，onErrorResume 捕获不到，
+                // 必须用 doOnCancel 感知。管理员取消走 takeUntilOther→concatWith 正常 complete（不触发此处），
+                // 正常/失败结束也走 complete/error，故此处只会在「下游真断连」时命中。
+                // 用 canceled/completed 守卫兜底：若终态已发出则不重复发，避免多条终态事件。
+                .doOnCancel(() -> {
+                    if (canceled.get() || completed.get()) {
+                        return;
+                    }
+                    callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, true, chunkCount.get()));
+                    log.info("下游主动断连，静默收尾 [{}] {}", model, requestId);
+                })
+                // 无论正常结束、失败还是取消，都清理注册表与看门狗，避免内存/定时器泄漏。
+                .doFinally(signal -> {
+                    callCancellationRegistry.remove(requestId);
+                    reactor.core.Disposable wd = watchdogRef.get();
+                    if (wd != null) {
+                        wd.dispose();
+                    }
                 });
+    }
+
+    /**
+     * 流式完成收尾：记录 usage 并发出 COMPLETED 事件。
+     *
+     * <p>由三层完成判定的前两层共用（Layer 1 收到 {@code [DONE]}、Layer 2 上游关闭连接），
+     * 用 {@code completed} 标志 CAS 去重，保证只 finalize 一次——谁先到谁发，另一层成为 no-op。
+     * 这样既能在「上游发完 [DONE] 却不断连」时立即收尾（修复 Toast 悬挂），
+     * 也能在「上游不发 [DONE] 直接断连」时靠 Layer 2 兜底。
+     *
+     * @param requestId    调用唯一标识
+     * @param model        模型名称
+     * @param finalChunks  最终 chunk 总数（[DONE] 不计入）
+     * @param completed    完成去重标志（CAS）
+     * @param inputTokens  累计输入 token
+     * @param outputTokens 累计输出 token
+     */
+    private void finalizeStreamCompletion(String requestId, String model, int finalChunks,
+                                          java.util.concurrent.atomic.AtomicBoolean completed,
+                                          AtomicInteger inputTokens, AtomicInteger outputTokens) {
+        // CAS 去重：只有第一个到达的层能 finalize，另一层直接返回。
+        if (!completed.compareAndSet(false, true)) {
+            return;
+        }
+        apiUsageCollector.record(inputTokens.get(), outputTokens.get());
+        // COMPLETED：带最终精确 chunk 总数作为兜底，确保前端计数与实际一致。
+        callLifecyclePublisher.publish(
+                CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, true, finalChunks));
     }
 
     /**

@@ -2,9 +2,12 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { auth } from '@/api'
+import CallToastStack from '@/components/calltoast/CallToastStack.vue'
+import { useCallLifecycleStore } from '@/stores/callLifecycle'
 
 const router = useRouter()
 const route = useRoute()
+const callLifecycleStore = useCallLifecycleStore()
 
 const sidebarOpen = ref(false)
 const username = ref('root')
@@ -59,14 +62,20 @@ function handleResize() {
 onMounted(() => {
   fetchUsername()
   window.addEventListener('resize', handleResize)
+  // 调用生命周期 SSE 连接常驻布局层，跨页面切换不断开，Toast 始终可见。
+  callLifecycleStore.connectStream()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
+  callLifecycleStore.disconnectStream()
 })
 </script>
 
 <template>
+  <!-- 调用生命周期 Toast 栈：固定定位、脱离路由视图，跨页面切换常驻 -->
+  <CallToastStack />
+
   <!-- 遮罩层 -->
   <div class="sidebar-overlay" :class="{ open: sidebarOpen }" @click="sidebarOpen = false"></div>
 

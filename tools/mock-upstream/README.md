@@ -1,0 +1,63 @@
+# COSP 模拟上游供应商
+
+一个零依赖的 Node 脚本，提供 OpenAI 兼容的 `/v1/models` 与 `/v1/chat/completions` 端点，
+通过**模型名**触发各种上游行为，用于在真实 HTTP + SSE 连接下物理复现 COSP 的各种调用生命周期
+Toast 状态（正常 / 卡首字 / 停滞 / 不关连接 / 错误码等），而不依赖真实上游 API。
+
+## 启动
+
+沿用前端的启动方式（复用捆绑的 Node，无需全局安装）：
+
+```bash
+cd frontend
+./node/npm run mock
+```
+
+或直接用 Node 跑：
+
+```bash
+node tools/mock-upstream/mock-upstream.js
+```
+
+默认监听 `http://localhost:8081`（可用环境变量 `MOCK_PORT` 覆盖）。启动后终端会打印可用模型清单，
+每个请求的连接、首字、chunk、结束等阶段都会打日志，状态一目了然。
+
+> 端口选择注意：不要用 9090。它是 Clash / mihomo 等代理软件的 external-controller 默认端口，
+> 请求会被代理控制面接管并返回 404，而非到达本 mock。若 8081 也被占用，用 `MOCK_PORT` 换一个空闲端口。
+
+## 在 COSP 中接入
+
+1. 打开 COSP 管理后台。
+2. 新增一个供应商，**Base URL** 填 `http://localhost:8081`，API Key 随意（mock 不校验）。
+3. 拉取模型或手动添加下表中的模型名，启用后即可在 Copilot 里选中对应模型触发该场景。
+
+## 模型清单（每个映射一种边界场景）
+
+| 模型名 | 行为 | 验证的 Toast 状态 |
+| --- | --- | --- |
+| `normal` | 正常流式，完整 chunk + `[DONE]` + 关连接 | RECEIVED → CONNECTED → CHUNK → COMPLETED 全链路 |
+| `hang-first-byte` | CONNECTED 后卡住不吐首字（默认 10 分钟） | 等待首字 + 60s 后取消按钮出现（手动取消 → ABORTED） |
+| `stall-recover` | 吐若干 chunk 后停滞 35s，再继续到结束 | STALLED（30s 警告）→ 恢复回 CHUNK |
+| `stall-forever` | 吐若干 chunk 后永久停滞（不关连接） | STALLED（30s 警告）→ 出现手动取消控件（手动取消 → ABORTED 静默断连） |
+| `done-no-close` | 发完内容 + `[DONE]`，但保持 TCP 不关闭 | Layer 1（`[DONE]` 触发 COMPLETED，不等连接关闭） |
+| `no-done-close` | 发完内容后直接关连接，不发 `[DONE]` | Layer 2（TCP 关闭兜底完成） |
+| `error-500` | 返回 500 | RETRYING（COSP 应重试） |
+| `error-401` | 返回 401 | FAILED（快速失败，不重试） |
+| `slow-steady` | 每 3s 一个 chunk，持续较久 | 验证 chunk 间隔 < 30s 不会误判 STALLED |
+
+## 可调参数
+
+所有时长常量在 `mock-upstream.js` 顶部的“可调参数”区，直接改即可：
+
+- `PORT` / `MOCK_PORT`：监听端口（默认 8081；避开 9090，那是 Clash/mihomo 控制面默认端口）
+- `HANG_FIRST_BYTE_MS`：`hang-first-byte` 卡首字时长（默认 10 分钟）
+- `STALL_RECOVER_MS`：`stall-recover` 停滞时长（默认 35s，需 > COSP 的 30s STALLED 阈值，以触发 STALLED 后再恢复）
+- `STALL_AFTER_CHUNKS`：停滞前先吐的 chunk 数
+- `NORMAL_CHUNK_INTERVAL_MS` / `NORMAL_CHUNK_COUNT`：正常流的间隔与数量
+- `SLOW_STEADY_INTERVAL_MS` / `SLOW_STEADY_CHUNK_COUNT`：slow-steady 的间隔与数量
+
+## 说明
+
+- 纯 Node 内置 `http` 模块，零依赖，不需要 `npm install`。
+- 挂起类场景（`hang-first-byte` / `stall-forever`）用异步定时驱动，挂着的连接几乎零成本，可同时开多个观察多并发 Toast 堆叠。
+- 未知模型名一律按 `normal` 处理，方便随手测试。

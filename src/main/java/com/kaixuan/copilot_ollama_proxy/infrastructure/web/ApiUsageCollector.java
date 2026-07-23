@@ -17,13 +17,18 @@ public class ApiUsageCollector {
     private static final Logger log = LoggerFactory.getLogger(ApiUsageCollector.class);
 
     private final ApiUsageRepository repository;
+    private final UsageEventPublisher usageEventPublisher;
 
-    public ApiUsageCollector(ApiUsageRepository repository) {
+    public ApiUsageCollector(ApiUsageRepository repository, UsageEventPublisher usageEventPublisher) {
         this.repository = repository;
+        this.usageEventPublisher = usageEventPublisher;
     }
 
     /**
      * 记录一次 API 调用的 token 消耗。
+     *
+     * <p>写库成功后发出一次统计变更信号，供 SSE 推送流即时刷新概览页；
+     * 写库失败不发信号，避免推送与实际持久化状态不一致。
      *
      * @param inputTokens  输入 token 数
      * @param outputTokens 输出 token 数
@@ -31,6 +36,7 @@ public class ApiUsageCollector {
     public void record(int inputTokens, int outputTokens) {
         try {
             repository.insert(inputTokens, outputTokens);
+            usageEventPublisher.publishUsageChanged();
         } catch (Exception e) {
             log.warn("API 调用统计写入失败 — inputTokens={}, outputTokens={}, 原因: {}", inputTokens, outputTokens,
                     e.getMessage());
