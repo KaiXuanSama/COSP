@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { NCard, NInput, NButton, NSwitch, useMessage } from 'naive-ui'
+import { NCard, NInput, NButton, NSwitch, NModal, useMessage } from 'naive-ui'
 import { useProviderStore } from '@/stores/providers'
 import { copyToClipboard } from '@/utils/clipboard'
 
@@ -17,6 +17,7 @@ const gatewayConfigured = ref(false)
 const gatewayToggling = ref(false)
 const gatewayCopying = ref(false)
 const gatewayRegenerating = ref(false)
+const showGatewayHelp = ref(false)
 
 onMounted(async () => {
   await providerStore.fetchFakeVersion()
@@ -111,7 +112,16 @@ async function regenerateGatewayKey() {
     </n-card>
 
     <!-- 下游鉴权管理 -->
-    <n-card title="下游鉴权管理" :bordered="true" style="margin-top: 16px;">
+    <n-card :bordered="true" style="margin-top: 16px;">
+      <template #header>
+        <div class="gateway-card-header">
+          <span class="gateway-card-title">下游鉴权管理</span>
+          <button type="button" class="gateway-help-button" aria-label="查看下游鉴权说明"
+            title="了解下游鉴权功能与 Copilot 接入方法" @click="showGatewayHelp = true">
+            ?
+          </button>
+        </div>
+      </template>
       <div class="gateway-auth-row">
         <n-switch :value="gatewayEnabled" :loading="gatewayToggling" @update:value="onGatewayToggle" />
         <n-input class="gateway-key-input" :value="gatewayConfigured ? gatewayMaskedKey : ''"
@@ -139,6 +149,57 @@ async function regenerateGatewayKey() {
         </n-button>
       </div>
     </n-card>
+
+    <!-- 下游鉴权说明模态框 -->
+    <n-modal :show="showGatewayHelp" @update:show="showGatewayHelp = $event" preset="card" title="下游鉴权管理说明"
+      :style="{ width: '90vw', maxWidth: '640px', maxHeight: '85vh', display: 'flex', 'flex-direction': 'column' }"
+      content-style="overflow: auto; flex: 1; min-height: 0" closable :mask-closable="true">
+      <div class="gateway-help">
+        <section class="gateway-help-section">
+          <h3 class="gateway-help-title">这个功能是做什么的</h3>
+          <p>
+            下游鉴权为本服务对外的聊天接口设置一把「网关 API Key」，用于在把服务部署到公网时防止被他人盗用你配置的上游供应商额度。
+          </p>
+          <p>
+            开启后，来自 Copilot 的聊天请求必须携带正确的 API Key 才会被放行；模型发现类请求（Ollama 的
+            <code>/api/tags</code>、<code>/api/show</code> 等）不受影响，仍可正常探测。
+          </p>
+          <p class="gateway-help-note">
+            提示：API Key 明文只在生成的那一刻显示并复制到剪贴板，之后仅保留脱敏形式。点击刷新会生成一把全新的
+            Key 并使旧 Key 立即失效，请及时更新客户端配置。
+          </p>
+        </section>
+
+        <section class="gateway-help-section">
+          <h3 class="gateway-help-title">如何在 VS Code Copilot 的 Ollama 供应商中启用鉴权</h3>
+          <p>
+            VS Code 的 Ollama 供应商界面本身没有 API Key 输入框，但底层会把配置里的
+            <code>apiKey</code> 字段作为 <code>Authorization: Bearer</code> 头发送。因此需要手动编辑配置文件：
+          </p>
+          <ol class="gateway-help-steps">
+            <li>
+              打开命令面板（<code>Ctrl+Shift+P</code>），运行
+              <strong>Preferences: Open User Configuration (JSON)</strong>，
+              或直接编辑 <code>chatLanguageModels.json</code>。
+            </li>
+            <li>
+              找到指向本服务的 Ollama 供应商条目，添加 <code>apiKey</code> 字段（注意是驼峰拼写）：
+              <pre class="gateway-help-code">{
+  "name": "COSP",
+  "vendor": "ollama",
+  "apiKey": "在此粘贴复制到的 API Key",
+  "url": "http://你的服务地址:11434"
+}</pre>
+            </li>
+            <li>保存后重新加载 VS Code 窗口（<strong>Developer: Reload Window</strong>），让配置生效。</li>
+            <li>之后选中本服务的模型发起聊天，请求会自动带上 Key，鉴权通过即可正常使用。</li>
+          </ol>
+          <p class="gateway-help-note">
+            字段名必须是 <code>apiKey</code>（驼峰），写成 <code>apikey</code> 等其它形式不会被识别，会导致发送空的鉴权头。
+          </p>
+        </section>
+      </div>
+    </n-modal>
   </div>
 </template>
 
@@ -197,5 +258,102 @@ async function regenerateGatewayKey() {
       stroke: $accent;
     }
   }
+}
+
+/* 标题右侧问号：样式参考请求体规则帮助按钮 */
+.gateway-card-header {
+  display: flex;
+  align-items: center;
+  gap: $space-sm;
+}
+
+.gateway-card-title {
+  font-size: 18px;
+}
+
+.gateway-help-button {
+  display: inline-flex;
+  width: 19px;
+  height: 19px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid rgba($accent, 0.42);
+  border-radius: 50%;
+  background: $accent-light;
+  color: $accent;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+}
+
+.gateway-help-button:hover {
+  border-color: $accent;
+  background: $accent-mid;
+  transform: translateY(-1px);
+}
+
+.gateway-help-button:focus-visible {
+  outline: 2px solid $accent-glow;
+  outline-offset: 2px;
+}
+
+/* 帮助模态框内容排版 */
+.gateway-help-section + .gateway-help-section {
+  margin-top: $space-lg;
+}
+
+.gateway-help-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: $text-primary;
+  margin-bottom: $space-sm;
+}
+
+.gateway-help p {
+  color: $text-body;
+  line-height: 1.7;
+  margin-bottom: $space-sm;
+}
+
+.gateway-help-note {
+  font-size: 13px;
+  color: $text-muted;
+}
+
+.gateway-help-steps {
+  padding-left: 1.4em;
+  color: $text-body;
+  line-height: 1.7;
+
+  li {
+    margin-bottom: $space-sm;
+  }
+}
+
+.gateway-help code {
+  font-family: $font-mono;
+  font-size: 0.88em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: $accent-light;
+  color: $accent;
+}
+
+.gateway-help-code {
+  display: block;
+  margin-top: $space-xs;
+  padding: $space-sm $space-md;
+  border-radius: $radius;
+  background: $sidebar-bg;
+  color: $text-light;
+  font-family: $font-mono;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+  overflow-x: auto;
 }
 </style>
