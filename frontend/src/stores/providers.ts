@@ -48,6 +48,17 @@ export interface ProviderRequestTransformInput {
   bodyRulesJson: string
 }
 
+export interface GatewayAuthStatus {
+  enabled: boolean
+  maskedKey: string
+  configured: boolean
+}
+
+export interface GeneratedGatewayKey {
+  apiKey: string
+  maskedKey: string
+}
+
 export const useProviderStore = defineStore('providers', () => {
   const providers = ref<Record<string, Provider>>({})
   const loading = ref(false)
@@ -106,6 +117,38 @@ export const useProviderStore = defineStore('providers', () => {
     }
   }
 
+  // ==================== 下游鉴权（网关 API Key）====================
+
+  // 读取当前状态：开关、脱敏 Key、是否已配置 Key
+  async function fetchGatewayAuth(): Promise<GatewayAuthStatus> {
+    const res = await http.get('/gateway-auth')
+    return {
+      enabled: !!res.data.enabled,
+      maskedKey: res.data.maskedKey || '',
+      configured: !!res.data.configured,
+    }
+  }
+
+  // 切换开关
+  async function setGatewayAuthEnabled(enabled: boolean) {
+    await http.post('/gateway-auth/toggle', null, { params: { enabled } })
+  }
+
+  // 读取明文 Key（供复制到剪贴板）
+  async function revealGatewayApiKey(): Promise<string> {
+    const res = await http.get('/gateway-auth/reveal')
+    return res.data.apiKey || ''
+  }
+
+  // 重新生成 Key，返回明文与脱敏值（一次性显示 + 复制）
+  async function regenerateGatewayApiKey(): Promise<GeneratedGatewayKey> {
+    const res = await http.post('/gateway-auth/regenerate')
+    return {
+      apiKey: res.data.apiKey || '',
+      maskedKey: res.data.maskedKey || '',
+    }
+  }
+
   // ==================== 供应商创建与重命名 ====================
 
   async function addProvider(displayName: string, headerRulesJson: string,
@@ -148,5 +191,5 @@ export const useProviderStore = defineStore('providers', () => {
     await fetchAll()
   }
 
-  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchFakeVersion, addProvider, deleteProvider, updateProvider }
+  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchFakeVersion, fetchGatewayAuth, setGatewayAuthEnabled, revealGatewayApiKey, regenerateGatewayApiKey, addProvider, deleteProvider, updateProvider }
 })
