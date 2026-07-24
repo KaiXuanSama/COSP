@@ -59,6 +59,11 @@ export interface GeneratedGatewayKey {
   maskedKey: string
 }
 
+export interface RuntimeConfigView {
+  fakeVersion: string
+  gatewayAuth: GatewayAuthStatus
+}
+
 export const useProviderStore = defineStore('providers', () => {
   const providers = ref<Record<string, Provider>>({})
   const loading = ref(false)
@@ -108,26 +113,23 @@ export const useProviderStore = defineStore('providers', () => {
     fakeVersion.value = version
   }
 
-  async function fetchFakeVersion() {
-    try {
-      const res = await http.get('/fake-version')
-      fakeVersion.value = res.data.fakeVersion || ''
-    } catch {
-      // ignore
+  // 聚合读取全部运行时配置（伪造版本号 + 下游鉴权状态），一次调用拿全部显示信息。
+  // 敏感值已在后端脱敏；明文 Key 仍只经 reveal / regenerate 按需获取。
+  async function fetchRuntimeConfig(): Promise<RuntimeConfigView> {
+    const res = await http.get('/runtime-config')
+    fakeVersion.value = res.data.fakeVersion || ''
+    const auth = res.data.gatewayAuth || {}
+    return {
+      fakeVersion: res.data.fakeVersion || '',
+      gatewayAuth: {
+        enabled: !!auth.enabled,
+        maskedKey: auth.maskedKey || '',
+        configured: !!auth.configured,
+      },
     }
   }
 
   // ==================== 下游鉴权（网关 API Key）====================
-
-  // 读取当前状态：开关、脱敏 Key、是否已配置 Key
-  async function fetchGatewayAuth(): Promise<GatewayAuthStatus> {
-    const res = await http.get('/gateway-auth')
-    return {
-      enabled: !!res.data.enabled,
-      maskedKey: res.data.maskedKey || '',
-      configured: !!res.data.configured,
-    }
-  }
 
   // 切换开关
   async function setGatewayAuthEnabled(enabled: boolean) {
@@ -191,5 +193,5 @@ export const useProviderStore = defineStore('providers', () => {
     await fetchAll()
   }
 
-  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchFakeVersion, fetchGatewayAuth, setGatewayAuthEnabled, revealGatewayApiKey, regenerateGatewayApiKey, addProvider, deleteProvider, updateProvider }
+  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchRuntimeConfig, setGatewayAuthEnabled, revealGatewayApiKey, regenerateGatewayApiKey, addProvider, deleteProvider, updateProvider }
 })

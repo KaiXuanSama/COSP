@@ -1,7 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.api;
 
 import com.kaixuan.copilot_ollama_proxy.application.config.GatewayAuthService;
-import com.kaixuan.copilot_ollama_proxy.application.config.GatewayAuthService.GatewayAuthStatus;
 import com.kaixuan.copilot_ollama_proxy.application.config.GatewayAuthService.GeneratedKey;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -12,13 +11,14 @@ import reactor.core.publisher.Mono;
 import java.util.Map;
 
 /**
- * 下游鉴权（网关 API Key）管理 API。
+ * 下游鉴权（网关 API Key）管理 API —— 只负责<strong>写</strong>操作：
+ * 切换开关、读取明文（供复制）、重新生成。
  *
- * <p>提供设置页「下游鉴权管理」卡片所需的四个操作：读取状态、切换开关、
- * 读取明文（供复制）、重新生成。全部位于 {@code /config/**} 之下，受管理后台
- * JWT 保护，因此明文 Key 只对已登录管理员可见。
+ * <p>状态<strong>读取</strong>已并入聚合接口 {@code GET /config/api/runtime-config}
+ * （见 {@code RuntimeConfigController}），本控制器不再单独提供 GET 状态接口。
  *
- * <p>本控制器只做配置管理，<strong>不涉及</strong>对外聊天接口的实际拦截鉴权。
+ * <p>全部位于 {@code /config/**} 之下，受管理后台 JWT 保护，明文 Key 只对已登录管理员可见。
+ * 本控制器不涉及对外聊天接口的实际拦截鉴权。
  */
 @RestController
 public class GatewayAuthController {
@@ -27,16 +27,6 @@ public class GatewayAuthController {
 
     public GatewayAuthController(GatewayAuthService gatewayAuthService) {
         this.gatewayAuthService = gatewayAuthService;
-    }
-
-    /**
-     * 读取当前下游鉴权状态（页面初次加载）。
-     *
-     * @return {@code { enabled, maskedKey, configured }}
-     */
-    @GetMapping("/config/api/gateway-auth")
-    public Mono<GatewayAuthStatus> getStatus() {
-        return gatewayAuthService.getStatus();
     }
 
     /**

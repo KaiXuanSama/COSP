@@ -20,29 +20,25 @@ const gatewayRegenerating = ref(false)
 const showGatewayHelp = ref(false)
 
 onMounted(async () => {
-  await providerStore.fetchFakeVersion()
-  if (providerStore.fakeVersion) {
-    fakeVersion.value = providerStore.fakeVersion
-    versionPlaceholder.value = providerStore.fakeVersion
+  // 一次聚合调用拿全部运行时配置：伪造版本号 + 下游鉴权状态。
+  try {
+    const config = await providerStore.fetchRuntimeConfig()
+    if (config.fakeVersion) {
+      fakeVersion.value = config.fakeVersion
+      versionPlaceholder.value = config.fakeVersion
+    }
+    gatewayEnabled.value = config.gatewayAuth.enabled
+    gatewayMaskedKey.value = config.gatewayAuth.maskedKey
+    gatewayConfigured.value = config.gatewayAuth.configured
+  } catch {
+    // 读取失败时保持默认值
   }
-  await loadGatewayAuth()
 })
 
 async function saveFakeVersion() {
   await providerStore.saveFakeVersion(fakeVersion.value)
   versionPlaceholder.value = fakeVersion.value
   message.success('版本号已保存')
-}
-
-async function loadGatewayAuth() {
-  try {
-    const status = await providerStore.fetchGatewayAuth()
-    gatewayEnabled.value = status.enabled
-    gatewayMaskedKey.value = status.maskedKey
-    gatewayConfigured.value = status.configured
-  } catch {
-    // 读取失败时保持默认关闭态
-  }
 }
 
 async function onGatewayToggle(value: boolean) {
