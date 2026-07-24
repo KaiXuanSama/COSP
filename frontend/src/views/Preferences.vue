@@ -101,15 +101,12 @@ async function regenerateGatewayKey() {
 
 <template>
   <div class="preferences-page">
-    <!-- 运行配置 -->
-    <n-card title="运行配置" :bordered="true">
-      <div class="field-group">
-        <label class="field-label" for="fakeVersion">伪造版本号</label>
-        <div class="fake-version-row">
-          <n-input id="fakeVersion" v-model:value="fakeVersion" :placeholder="versionPlaceholder"
-            @keyup.enter="saveFakeVersion" />
-          <n-button type="primary" @click="saveFakeVersion">保存</n-button>
-        </div>
+    <!-- 伪造版本号 -->
+    <n-card title="伪造版本号" :bordered="true">
+      <div class="fake-version-row">
+        <n-input id="fakeVersion" v-model:value="fakeVersion" :placeholder="versionPlaceholder"
+          @keyup.enter="saveFakeVersion" />
+        <n-button type="primary" @click="saveFakeVersion">保存</n-button>
       </div>
     </n-card>
 
@@ -207,20 +204,6 @@ async function regenerateGatewayKey() {
 
 <style lang="scss" scoped>
 @use '@/styles/variables' as *;
-
-.field-group {
-  margin-bottom: $space-md;
-}
-
-.field-label {
-  display: block;
-  font-family: $font-mono;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
-  color: $text-muted;
-}
 
 .fake-version-row {
   display: flex;
