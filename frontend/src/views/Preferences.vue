@@ -46,6 +46,12 @@ async function loadGatewayAuth() {
 }
 
 async function onGatewayToggle(value: boolean) {
+  // 未生成 Key 时禁止开启：即使后端按 1A 放行，开着没有 Key 的开关也毫无意义，
+  // 这里前置拦截并 toast 提示，引导用户先生成 Key。
+  if (value && !gatewayConfigured.value) {
+    message.warning('请先生成 API Key 再开启下游鉴权')
+    return
+  }
   gatewayToggling.value = true
   try {
     await providerStore.setGatewayAuthEnabled(value)

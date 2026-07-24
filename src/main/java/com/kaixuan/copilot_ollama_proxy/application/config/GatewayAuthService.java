@@ -3,10 +3,14 @@ package com.kaixuan.copilot_ollama_proxy.application.config;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService.EncryptedValue;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Base64;
 
@@ -30,6 +34,8 @@ import java.util.Base64;
 @Service
 public class GatewayAuthService {
 
+    private static final Logger log = LoggerFactory.getLogger(GatewayAuthService.class);
+
     /** 功能开关配置键。 */
     private static final String ENABLED_KEY = "gateway_auth_enabled";
     /** 加密 API Key 配置键，值格式为 {@code nonce:ciphertext}。 */
@@ -38,6 +44,8 @@ public class GatewayAuthService {
     private static final String KEY_PREFIX = "cosp-";
     /** 随机字节长度，决定 Key 熵值（24 字节 → 32 个 Base64URL 字符）。 */
     private static final int RANDOM_BYTES = 24;
+    /** Authorization 头的 Bearer 前缀。 */
+    private static final String BEARER_PREFIX = "Bearer ";
 
     private final AppConfigRepository appConfigRepository;
     private final ApiKeyCryptoService cryptoService;
@@ -83,6 +91,64 @@ public class GatewayAuthService {
     public Mono<String> revealKey() {
         return Mono.fromCallable(this::decryptStoredKey)
                 .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 对下游聊天请求做鉴权决策。
+     *
+     * <p>决策规则（对应方案 1A：空 Key 放行，避免自锁死）：
+     * <ul>
+     *   <li>功能未开启 → {@link AuthDecision#PASS}（仅一次廉价查询，不解密）；</li>
+     *   <li>已开启但未配置 Key → {@code PASS}，并打 warning 日志提示配置不完整；</li>
+     *   <li>已开启且已配置 Key → 用<strong>常量时间</strong>比对请求头中的 Bearer token，
+     *       匹配则 {@code PASS}，否则 {@link AuthDecision#UNAUTHORIZED}。</li>
+     * </ul>
+     *
+     * <p>每次请求实时读库，因此刷新 Key 立即生效，无需缓存失效逻辑；读库为阻塞 JDBC，
+     * 调度到 {@code boundedElastic} 执行，不阻塞 event-loop。
+     *
+     * @param authorizationHeader 请求头 {@code Authorization} 的原始值（可能为 {@code null}）
+     * @return 鉴权决策
+     */
+    public Mono<AuthDecision> authorize(String authorizationHeader) {
+        return Mono.fromCallable(() -> {
+            boolean enabled = "true".equals(appConfigRepository.findConfigValue(ENABLED_KEY));
+            if (!enabled) {
+                return AuthDecision.PASS;
+            }
+            String expected = decryptStoredKey();
+            if (expected == null) {
+                log.warn("下游鉴权已开启但未配置 API Key，本次请求按放行处理。请在管理后台生成 Key 或关闭开关。");
+                return AuthDecision.PASS;
+            }
+            String presented = extractBearerToken(authorizationHeader);
+            if (presented == null) {
+                return AuthDecision.UNAUTHORIZED;
+            }
+            boolean match = MessageDigest.isEqual(
+                    expected.getBytes(StandardCharsets.UTF_8),
+                    presented.getBytes(StandardCharsets.UTF_8));
+            return match ? AuthDecision.PASS : AuthDecision.UNAUTHORIZED;
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 从 {@code Authorization} 头提取 Bearer token。
+     *
+     * @param header 原始头值
+     * @return token；缺失或格式不符时为 {@code null}
+     */
+    private String extractBearerToken(String header) {
+        if (header == null) {
+            return null;
+        }
+        String trimmed = header.trim();
+        if (trimmed.length() <= BEARER_PREFIX.length()
+                || !trimmed.regionMatches(true, 0, BEARER_PREFIX, 0, BEARER_PREFIX.length())) {
+            return null;
+        }
+        String token = trimmed.substring(BEARER_PREFIX.length()).trim();
+        return token.isEmpty() ? null : token;
     }
 
     /**
@@ -157,5 +223,13 @@ public class GatewayAuthService {
      * @param maskedKey 脱敏后的 Key
      */
     public record GeneratedKey(String apiKey, String maskedKey) {
+    }
+
+    /** 下游鉴权决策结果。 */
+    public enum AuthDecision {
+        /** 放行，交由后续处理链继续。 */
+        PASS,
+        /** 拒绝，返回 401。 */
+        UNAUTHORIZED
     }
 }
