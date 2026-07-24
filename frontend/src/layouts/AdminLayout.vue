@@ -17,6 +17,7 @@ const navItems = [
   { path: '/settings', label: '配置', icon: 'config' },
   { path: '/call-log', label: '日志', icon: 'log' },
   { path: '/preferences', label: '设置', icon: 'settings' },
+  { path: '/account', label: '账号', icon: 'account' },
 ]
 
 const isActive = (path: string) => route.path === path
@@ -120,6 +121,11 @@ onBeforeUnmount(() => {
           <line x1="16" y1="17" x2="8" y2="17" />
           <polyline points="10 9 9 9 8 9" />
         </svg>
+        <svg v-else-if="item.icon === 'account'" class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+          <circle cx="12" cy="7" r="4" />
+        </svg>
         {{ item.label }}
       </a>
     </nav>
@@ -131,13 +137,6 @@ onBeforeUnmount(() => {
           <div class="sidebar-user-name">{{ username }}</div>
           <div class="sidebar-user-role">管理员</div>
         </div>
-        <router-link to="/account" class="sidebar-user-edit" title="修改账号">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-            stroke-linejoin="round">
-            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-          </svg>
-        </router-link>
         <button class="sidebar-user-logout" title="退出登录" @click="handleLogout">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
             stroke-linejoin="round">
@@ -334,24 +333,6 @@ onBeforeUnmount(() => {
   font-size: 10px;
   letter-spacing: 0.1em;
   color: rgba(245, 243, 238, 0.4);
-}
-
-.sidebar-user-edit {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: rgba(245, 243, 238, 0.3);
-  transition: color 0.2s ease;
-
-  svg {
-    width: 16px;
-    height: 16px;
-  }
-
- &:hover {
-    color: $accent;
-  }
 }
 
 .sidebar-user-logout {
