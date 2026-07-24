@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NInput, NButton, NCheckbox, NForm, NFormItem, useMessage } from 'naive-ui'
 import { auth } from '@/api'
@@ -11,13 +11,14 @@ const formRef = ref<InstanceType<typeof NForm> | null>(null)
 const formValue = ref({ username: '', password: '' })
 const loading = ref(false)
 
-const unauthorized = !!route.query.unauthorized
-const logout = route.query.login === 'logout'
-const loginError = route.query.login === 'error'
-
-if (unauthorized) message.warning('无权限，请先登录。')
-if (logout) message.info('已成功退出登录。')
-if (loginError) message.error('用户名或密码错误。')
+// 提示信息必须在挂载后触发：NMessageProvider 尚未挂载完成时，在 setup 阶段同步调用
+// message API 会在渲染期间修改 provider 状态，Vue 会抛错导致整棵组件树渲染失败（白屏）。
+// 这正是「?unauthorized=true」整页跳转后 100% 白屏的根因。
+onMounted(() => {
+  if (route.query.unauthorized) message.warning('无权限，请先登录。')
+  if (route.query.login === 'logout') message.info('已成功退出登录。')
+  if (route.query.login === 'error') message.error('用户名或密码错误。')
+})
 
 async function handleSubmit() {
   loading.value = true
