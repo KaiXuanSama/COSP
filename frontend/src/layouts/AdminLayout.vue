@@ -165,7 +165,11 @@ onBeforeUnmount(() => {
 
     <!-- 内容 -->
     <main class="content">
-      <router-view />
+      <router-view v-slot="{ Component }">
+        <transition name="page" mode="out-in">
+          <component :is="Component" />
+        </transition>
+      </router-view>
     </main>
   </div>
 </template>
@@ -445,6 +449,23 @@ onBeforeUnmount(() => {
   padding: $space-lg;
   max-width: 960px;
   margin: 0 auto;
-  animation: fadeUp 0.5s ease forwards;
+}
+
+/* ── 页面切换过渡 ──
+   用 out-in：旧页先淡出上移，新页再淡入上移，避免两页重叠导致的跳动。
+   调性沿用 fadeUp（淡入 + 轻微位移），与站点入场动画一致。 */
+.page-enter-active,
+.page-leave-active {
+  transition: opacity 0.1s ease, transform 0.1s ease;
+}
+
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(12px);
+}
+
+.page-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
 }
 </style>
