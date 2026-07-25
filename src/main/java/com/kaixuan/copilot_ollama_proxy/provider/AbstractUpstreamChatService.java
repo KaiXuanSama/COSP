@@ -341,32 +341,36 @@ public abstract class AbstractUpstreamChatService {
 
     /**
      * 保存非流式调用日志。
+     *
+     * @return 新插入日志行的自增 id；日志未启用或写入失败时返回 null
      */
-    private void saveNonStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, String responseBody, long startTime) {
-        if (apiCallLog == null) return;
+    private Long saveNonStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, String responseBody, long startTime) {
+        if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLog.saveNonStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, responseBody, duration);
+        return apiCallLog.saveNonStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, responseBody, duration);
     }
 
     /**
      * 保存流式调用日志。
+     *
+     * @return 新插入日志行的自增 id；日志未启用或写入失败时返回 null
      */
-    private void saveStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, List<String> chunks, long startTime) {
-        if (apiCallLog == null) return;
+    private Long saveStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, List<String> chunks, long startTime) {
+        if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLog.saveStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, chunks, duration);
+        return apiCallLog.saveStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, chunks, duration);
     }
 
     /**
      * 保存流式调用日志（含错误信息）。
      * 当流式响应过程中发生错误且重试耗尽时，将错误响应体保存到非流式响应列。
      */
-    private void saveStreamLogWithError(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody,
+    private Long saveStreamLogWithError(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody,
                                         Map<String, String> respHeaders, int statusCode, List<String> chunks,
                                         Map<String, String> errorHeaders, int errorCode, String errorBody, long startTime) {
-        if (apiCallLog == null) return;
+        if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLog.saveStreamWithError(providerKey, modelName, reqHeaders, requestBody,
+        return apiCallLog.saveStreamWithError(providerKey, modelName, reqHeaders, requestBody,
                 respHeaders, statusCode, chunks, errorHeaders, errorCode, errorBody, duration);
     }
 

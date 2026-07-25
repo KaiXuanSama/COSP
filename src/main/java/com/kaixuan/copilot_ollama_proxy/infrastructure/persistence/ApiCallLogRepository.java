@@ -7,8 +7,12 @@ import com.kaixuan.copilot_ollama_proxy.infrastructure.web.LogEventPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.support.GeneratedKeyHolder;
+import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Repository;
 
+import java.sql.PreparedStatement;
+import java.sql.Statement;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,42 +45,30 @@ public class ApiCallLogRepository implements ApiCallLogService {
      * 保存一条非流式调用日志。
      */
     @Override
-    public void saveNonStream(String providerKey, String modelName,
+    public Long saveNonStream(String providerKey, String modelName,
                               Map<String, String> requestHeaders, Map<String, Object> requestBody,
                               Map<String, String> responseHeaders, int statusCode, String responseBody, long durationMs) {
-        try {
-            jdbcTemplate.update(
-                    "INSERT INTO api_call_log (provider_key, model_name, is_stream, status_code, request_headers, request_body, response_headers, response_body, duration_ms) "
-                            + "VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)",
-                    providerKey, modelName,
-                    statusCode,
-                    toJson(requestHeaders), toJson(requestBody),
-                    toJson(responseHeaders), responseBody, durationMs);
-            logEventPublisher.publishLogCreated();
-        } catch (Exception e) {
-            log.warn("保存 API 调用日志失败: {}", e.getMessage());
-        }
+        String sql = "INSERT INTO api_call_log (provider_key, model_name, is_stream, status_code, request_headers, request_body, response_headers, response_body, duration_ms) "
+                + "VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)";
+        Object[] args = {providerKey, modelName, statusCode,
+                toJson(requestHeaders), toJson(requestBody),
+                toJson(responseHeaders), responseBody, durationMs};
+        return insertReturningId(sql, args);
     }
 
     /**
      * 保存一条流式调用日志。
      */
     @Override
-    public void saveStream(String providerKey, String modelName,
+    public Long saveStream(String providerKey, String modelName,
                            Map<String, String> requestHeaders, Map<String, Object> requestBody,
                            Map<String, String> responseHeaders, int statusCode, List<String> chunks, long durationMs) {
-        try {
-            jdbcTemplate.update(
-                    "INSERT INTO api_call_log (provider_key, model_name, is_stream, status_code, request_headers, request_body, response_headers, chunks, duration_ms) "
-                            + "VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)",
-                    providerKey, modelName,
-                    statusCode,
-                    toJson(requestHeaders), toJson(requestBody),
-                    toJson(responseHeaders), toJson(chunks), durationMs);
-            logEventPublisher.publishLogCreated();
-        } catch (Exception e) {
-            log.warn("保存 API 调用日志失败: {}", e.getMessage());
-        }
+        String sql = "INSERT INTO api_call_log (provider_key, model_name, is_stream, status_code, request_headers, request_body, response_headers, chunks, duration_ms) "
+                + "VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)";
+        Object[] args = {providerKey, modelName, statusCode,
+                toJson(requestHeaders), toJson(requestBody),
+                toJson(responseHeaders), toJson(chunks), durationMs};
+        return insertReturningId(sql, args);
     }
 
     /**
@@ -84,21 +76,45 @@ public class ApiCallLogRepository implements ApiCallLogService {
      * 当流式响应过程中发生错误且重试耗尽时，将错误响应体保存到非流式响应列。
      */
     @Override
-    public void saveStreamWithError(String providerKey, String modelName,
+    public Long saveStreamWithError(String providerKey, String modelName,
                                     Map<String, String> requestHeaders, Map<String, Object> requestBody,
                                     Map<String, String> responseHeaders, int statusCode, List<String> chunks,
                                     Map<String, String> errorHeaders, int errorCode, String errorBody, long durationMs) {
+        String sql = "INSERT INTO api_call_log (provider_key, model_name, is_stream, status_code, request_headers, request_body, response_headers, response_body, chunks, duration_ms) "
+                + "VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)";
+        Object[] args = {providerKey, modelName, errorCode,
+                toJson(requestHeaders), toJson(requestBody),
+                toJson(errorHeaders), errorBody, toJson(chunks), durationMs};
+        return insertReturningId(sql, args);
+    }
+
+    /**
+     * 执行 INSERT 并返回新行的自增 id。
+     *
+     * 仅改变客户端读取生成键的方式（{@link KeyHolder}），不改变 SQL 与表结构；
+     * SQLite 每次 INSERT 本就生成自增 id，此处只是把它读回用于软链接关联。
+     * 沿用原有"只 warn 不抛"的容错策略：写入失败返回 null，绝不影响主调用链。
+     *
+     * @param sql  带占位符的 INSERT 语句
+     * @param args 占位符实参，顺序与 SQL 一致
+     * @return 新行自增 id；写入失败返回 null
+     */
+    private Long insertReturningId(String sql, Object[] args) {
         try {
-            jdbcTemplate.update(
-                    "INSERT INTO api_call_log (provider_key, model_name, is_stream, status_code, request_headers, request_body, response_headers, response_body, chunks, duration_ms) "
-                            + "VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)",
-                    providerKey, modelName,
-                    errorCode,
-                    toJson(requestHeaders), toJson(requestBody),
-                    toJson(errorHeaders), errorBody, toJson(chunks), durationMs);
+            KeyHolder keyHolder = new GeneratedKeyHolder();
+            jdbcTemplate.update(connection -> {
+                PreparedStatement ps = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
+                for (int i = 0; i < args.length; i++) {
+                    ps.setObject(i + 1, args[i]);
+                }
+                return ps;
+            }, keyHolder);
             logEventPublisher.publishLogCreated();
+            Number key = keyHolder.getKey();
+            return key == null ? null : key.longValue();
         } catch (Exception e) {
             log.warn("保存 API 调用日志失败: {}", e.getMessage());
+            return null;
         }
     }
 
