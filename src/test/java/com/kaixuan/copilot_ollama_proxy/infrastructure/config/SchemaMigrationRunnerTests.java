@@ -130,7 +130,35 @@ class SchemaMigrationRunnerTests {
         assertThat(columnNames(jdbcTemplate, "provider_config"))
                 .doesNotContain("api_key", "active_api_key_index", "custom_transforms", "api_format");
         assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
+        assertThat(tableExists(jdbcTemplate, "api_call_usage")).isTrue();
     }
+
+    @Test
+        void v82DatabaseAddsApiCallUsageTableDuringV83Migration() {
+                JdbcTemplate jdbcTemplate = createJdbcTemplate();
+                createCurrentSchema(jdbcTemplate);
+                jdbcTemplate.execute("CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
+                                + "version REAL NOT NULL, description TEXT NOT NULL, applied_at TEXT)");
+                jdbcTemplate.update("INSERT INTO schema_version (id, version, description) VALUES (1, 8.2, 'V8.2')");
+
+                SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+                runner.run(null);
+                runner.run(null);
+
+                assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+                assertThat(tableExists(jdbcTemplate, "api_call_usage")).isTrue();
+                assertThat(indexExists(jdbcTemplate, "idx_api_call_usage_provider_created")).isTrue();
+                assertThat(indexExists(jdbcTemplate, "idx_api_call_usage_log")).isTrue();
+                assertThat(columnNames(jdbcTemplate, "api_call_usage")).contains(
+                                "id", "log_id", "provider_key", "model_name", "is_stream", "usage_raw",
+                                "prompt_tokens", "completion_tokens", "cached_tokens", "ttfb_ms", "created_at");
+                // 可空 token 列：null 与 0 均可写入且各自保留。
+                jdbcTemplate.update("INSERT INTO api_call_usage (log_id, provider_key, model_name, is_stream, prompt_tokens, completion_tokens, cached_tokens, ttfb_ms) "
+                                + "VALUES (NULL, 'p', 'm', 1, NULL, 0, NULL, NULL)");
+                assertThat(jdbcTemplate.queryForObject(
+                                "SELECT cached_tokens FROM api_call_usage WHERE completion_tokens = 0", Integer.class)).isNull();
+        }
 
     @Test
         void legacyDatabaseRecordedAtV2ContinuesThroughV82AndCompactsHistory() {
@@ -423,6 +451,7 @@ class SchemaMigrationRunnerTests {
                 }
                 if (version >= SchemaMigrationRunner.currentSchemaVersion()) {
                         assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
+                        assertThat(tableExists(jdbcTemplate, "api_call_usage")).isTrue();
                 }
         }
 }

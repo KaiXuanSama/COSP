@@ -51,6 +51,53 @@ public final class UsageParser {
     }
 
     /**
+     * 从一段本身即为 {@code usage} 对象的 JSON 文本解析 token 指标。
+     *
+     * <p>与 {@link #parseFromJson} 的区别：后者从外层 JSON 的 {@code usage} 字段取值，
+     * 本方法把传入文本整体视为 usage 对象。用于已从响应中提取出 usage 原始 JSON 的场景
+     * （如 provider 层落库时先提取 usage_raw 再解析）。
+     *
+     * @param objectMapper    Jackson 映射器
+     * @param usageObjectJson 本身即为 usage 对象的 JSON 文本；可为 null / 非法
+     * @return 解析出的 token 指标；无法解析时返回 {@link UsageTokens#EMPTY}
+     */
+    public static UsageTokens parseUsageObject(ObjectMapper objectMapper, String usageObjectJson) {
+        if (usageObjectJson == null || usageObjectJson.isBlank()) {
+            return UsageTokens.EMPTY;
+        }
+        try {
+            return parse(objectMapper.readTree(usageObjectJson));
+        } catch (Exception e) {
+            return UsageTokens.EMPTY;
+        }
+    }
+
+    /**
+     * 从一段可能包含 {@code usage} 字段的 JSON 文本中提取 usage 对象的原始 JSON 字符串。
+     *
+     * <p>用于 usage_raw 落库：零损失保留上游 usage 对象全部字段（含本解析器未提取的
+     * reasoning_tokens、credit、cache_creation_tokens 等），供日后回溯。
+     *
+     * @param objectMapper Jackson 映射器
+     * @param json         含 {@code usage} 的 JSON 文本（响应体或流式尾 chunk）；可为 null / 非法
+     * @return usage 对象的紧凑 JSON 字符串；不含合法 usage 对象时返回 null
+     */
+    public static String extractUsageRawJson(ObjectMapper objectMapper, String json) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode usage = objectMapper.readTree(json).path("usage");
+            if (usage.isObject() && usage.size() > 0) {
+                return objectMapper.writeValueAsString(usage);
+            }
+        } catch (Exception ignored) {
+            // 非法 JSON（如 [DONE]）或无 usage：返回 null
+        }
+        return null;
+    }
+
+    /**
      * 从已解析出的 {@code usage} 节点提取 token 指标。
      *
      * @param usage {@code usage} 节点；非对象（含 missing / null）时返回 {@link UsageTokens#EMPTY}
