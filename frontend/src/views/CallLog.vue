@@ -627,41 +627,86 @@ onUnmounted(() => {
           </span>
         </div>
 
-        <!-- 数据行 -->
+        <!--
+          数据行：整行即点击控件（预览文本本身就是内容入口，比瞄准右侧小按钮更易命中）。
+          "展示"保留为视觉提示，不再单独承担点击。
+        -->
         <div class="detail-rows">
           <!-- 请求头 -->
-          <div class="detail-row">
+          <div
+            class="detail-row"
+            role="button"
+            tabindex="0"
+            aria-label="展示请求头完整内容"
+            @click="openJsonModal('请求头', logDetail.request_headers)"
+            @keydown.enter.prevent="openJsonModal('请求头', logDetail.request_headers)"
+            @keydown.space.prevent="openJsonModal('请求头', logDetail.request_headers)"
+          >
             <span class="detail-row-label">请求头</span>
             <span class="detail-row-value">{{ truncate(logDetail.request_headers) }}</span>
-            <span class="detail-row-action" @click="openJsonModal('请求头', logDetail.request_headers)">展示</span>
+            <span class="detail-row-action">展示</span>
           </div>
 
           <!-- 请求体 -->
-          <div class="detail-row">
+          <div
+            class="detail-row"
+            role="button"
+            tabindex="0"
+            aria-label="展示请求体完整内容"
+            @click="openJsonModal('请求体', logDetail.request_body, requestBodyCollapseRule)"
+            @keydown.enter.prevent="openJsonModal('请求体', logDetail.request_body, requestBodyCollapseRule)"
+            @keydown.space.prevent="openJsonModal('请求体', logDetail.request_body, requestBodyCollapseRule)"
+          >
             <span class="detail-row-label">请求体</span>
             <span class="detail-row-value">{{ truncate(logDetail.request_body) }}</span>
-            <span class="detail-row-action" @click="openJsonModal('请求体', logDetail.request_body, requestBodyCollapseRule)">展示</span>
+            <span class="detail-row-action">展示</span>
           </div>
 
           <!-- 响应头 -->
-          <div class="detail-row">
+          <div
+            class="detail-row"
+            role="button"
+            tabindex="0"
+            aria-label="展示响应头完整内容"
+            @click="openJsonModal('响应头', logDetail.response_headers)"
+            @keydown.enter.prevent="openJsonModal('响应头', logDetail.response_headers)"
+            @keydown.space.prevent="openJsonModal('响应头', logDetail.response_headers)"
+          >
             <span class="detail-row-label">响应头</span>
             <span class="detail-row-value">{{ truncate(logDetail.response_headers) }}</span>
-            <span class="detail-row-action" @click="openJsonModal('响应头', logDetail.response_headers)">展示</span>
+            <span class="detail-row-action">展示</span>
           </div>
 
           <!-- 响应体 -->
-          <div v-if="hasContent(logDetail.response_body)" class="detail-row">
+          <div
+            v-if="hasContent(logDetail.response_body)"
+            class="detail-row"
+            role="button"
+            tabindex="0"
+            aria-label="展示响应体完整内容"
+            @click="openJsonModal('响应体', logDetail.response_body)"
+            @keydown.enter.prevent="openJsonModal('响应体', logDetail.response_body)"
+            @keydown.space.prevent="openJsonModal('响应体', logDetail.response_body)"
+          >
             <span class="detail-row-label">响应体</span>
             <span class="detail-row-value">{{ truncate(logDetail.response_body) }}</span>
-            <span class="detail-row-action" @click="openJsonModal('响应体', logDetail.response_body)">展示</span>
+            <span class="detail-row-action">展示</span>
           </div>
 
           <!-- 流式响应 -->
-          <div v-if="hasContent(logDetail.chunks)" class="detail-row">
+          <div
+            v-if="hasContent(logDetail.chunks)"
+            class="detail-row"
+            role="button"
+            tabindex="0"
+            aria-label="展示流式响应完整内容"
+            @click="openChunksModal(logDetail.chunks)"
+            @keydown.enter.prevent="openChunksModal(logDetail.chunks)"
+            @keydown.space.prevent="openChunksModal(logDetail.chunks)"
+          >
             <span class="detail-row-label">流式响应</span>
             <span class="detail-row-value">{{ truncate(logDetail.chunks) }}</span>
-            <span class="detail-row-action" @click="openChunksModal(logDetail.chunks)">展示</span>
+            <span class="detail-row-action">展示</span>
           </div>
         </div>
       </div>
@@ -1063,19 +1108,31 @@ onUnmounted(() => {
   flex-direction: column;
 }
 
+/* 整行作为点击控件：点击任意位置（含预览文本）即打开查看器 */
 .detail-row {
   display: flex;
   align-items: center;
   gap: $space-sm;
   padding: $space-sm $space-md;
   border-bottom: 1px solid $border-light;
+  cursor: pointer;
+  transition: background 0.2s ease;
 
   &:last-child {
     border-bottom: none;
   }
 
-  &:hover {
+  &:hover,
+  &:focus-visible {
     background: $accent-light;
+    outline: none;
+  }
+
+  /* 整行 hover / 聚焦时，"展示"标记同步高亮，提示可点击 */
+  &:hover .detail-row-action,
+  &:focus-visible .detail-row-action {
+    background: $accent-light;
+    border-color: $accent;
   }
 }
 
@@ -1098,21 +1155,21 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+/*
+  "展示"降级为纯视觉提示：点击由整行承担，故不再单独绑定事件。
+  pointer-events: none 让鼠标事件穿透到整行，避免出现两套 hover 状态。
+ */
 .detail-row-action {
   flex-shrink: 0;
   font-family: $font-body;
   font-size: 12px;
   color: $accent;
-  cursor: pointer;
   padding: $space-xs $space-sm;
   border: 1px solid $accent-mid;
   border-radius: $radius;
   transition: all 0.2s ease;
-
-  &:hover {
-    background: $accent-light;
-    border-color: $accent;
-  }
+  pointer-events: none;
+  user-select: none;
 }
 
 .load-more-end {
