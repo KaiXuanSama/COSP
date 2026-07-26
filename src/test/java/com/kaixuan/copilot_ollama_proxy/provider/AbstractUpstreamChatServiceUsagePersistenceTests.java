@@ -103,6 +103,74 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
         assertThat(ttfbCaptor.getValue()).isGreaterThanOrEqualTo(0);
     }
 
+    /**
+     * 回归：纯思考响应（只有 reasoning_content，无任何 content）也必须测得首字。
+     *
+     * <p>首字语义为"首个 chunk 到达"，与 chunk 载荷形态无关。此前打点挂在
+     * {@code contentEmitted}（仅正文非空才翻转）上，导致这类响应漏记 ttfb。
+     */
+    @Test
+    void reasoningOnlyStreamStillRecordsTtfb() {
+        when(logService.saveStream(anyString(), anyString(), any(), any(), any(), anyInt(), any(), anyLong()))
+                .thenReturn(11L);
+
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+            Flux<DataBuffer> body = Flux.<DataBuffer>concat(
+                    // 只有思考内容，全程没有 delta.content
+                    Mono.just(sseData(factory, "{\"id\":\"r1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"思考中\"},\"finish_reason\":null}]}")),
+                    Mono.just(sseData(factory, "{\"id\":\"r1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}")),
+                    Mono.just(sseData(factory, "{\"id\":\"r1\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":30,\"completion_tokens\":5}}")))
+                    .concatWith(Mono.just(sseData(factory, "[DONE]")));
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("model", "model-a");
+        service.exposeChatCompletionStream(request, "model-a", provider()).blockLast(Duration.ofSeconds(20));
+
+        var ttfbCaptor = org.mockito.ArgumentCaptor.forClass(Integer.class);
+        verify(usageService, times(1)).save(any(), anyString(), anyString(), eq(true),
+                anyString(), any(UsageTokens.class), ttfbCaptor.capture());
+
+        assertThat(ttfbCaptor.getValue()).isNotNull();
+        assertThat(ttfbCaptor.getValue()).isGreaterThanOrEqualTo(0);
+    }
+
+    /**
+     * 回归：纯工具调用响应（只有 tool_calls，无任何 content）也必须测得首字。
+     */
+    @Test
+    void toolCallOnlyStreamStillRecordsTtfb() {
+        when(logService.saveStream(anyString(), anyString(), any(), any(), any(), anyInt(), any(), anyLong()))
+                .thenReturn(12L);
+
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+            Flux<DataBuffer> body = Flux.<DataBuffer>concat(
+                    Mono.just(sseData(factory, "{\"id\":\"t1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"createFile\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}")),
+                    Mono.just(sseData(factory, "{\"id\":\"t1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}")),
+                    Mono.just(sseData(factory, "{\"id\":\"t1\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":7}}")))
+                    .concatWith(Mono.just(sseData(factory, "[DONE]")));
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("model", "model-a");
+        service.exposeChatCompletionStream(request, "model-a", provider()).blockLast(Duration.ofSeconds(20));
+
+        var ttfbCaptor = org.mockito.ArgumentCaptor.forClass(Integer.class);
+        verify(usageService, times(1)).save(any(), anyString(), anyString(), eq(true),
+                anyString(), any(UsageTokens.class), ttfbCaptor.capture());
+
+        assertThat(ttfbCaptor.getValue()).isNotNull();
+        assertThat(ttfbCaptor.getValue()).isGreaterThanOrEqualTo(0);
+    }
+
     @Test
     void nonStreamSuccessWithUsageWritesRowWithNullTtfb() {
         when(logService.saveNonStream(anyString(), anyString(), any(), any(), any(), anyInt(), any(), anyLong()))

@@ -213,7 +213,8 @@ public abstract class AbstractUpstreamChatService {
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
         StringBuilder reasoningBuffer = new StringBuilder();
         AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
-        // 首字响应时长：首个正文 chunk 到达时记 now - attemptStart；-1 表示尚未测得。
+        // 首字响应时长：上游首个 chunk 到达时记 now - attemptStart；-1 表示尚未测得。
+        // 语义为"首 chunk"而非"首正文"，故纯思考、纯工具调用等无正文响应同样能测得。
         // 每次往返（defer 重订阅）在起点重置，使 ttfb 反映最终成功往返的首字延迟（语义2）。
         AtomicLong ttfbMs = new AtomicLong(-1);
         // 本次往返的 usage 原始 JSON：从上游原始 chunk 提取，成功收尾写用量表。往返起点清空。
@@ -263,18 +264,20 @@ public abstract class AbstractUpstreamChatService {
                 .retryWhen(buildRetrySpec("chatCompletionStream", provider, requestId, model, true)).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
                 .doOnNext(raw -> {
                     log.debug("{} 上游原始: {}", provider.providerKey(), raw);
+                    // 首字打点：上游首个 chunk 到达即记时长（语义为"首 chunk"，不区分其载荷形态）。
+                    // 打在最上游的原始 chunk 处，因此纯思考（仅 reasoning_content）、纯工具调用
+                    // （仅 tool_calls）等无正文响应同样能测得首字，不依赖 contentEmitted。
+                    // 每次往返（defer 重订阅）已在起点重置，故反映最终成功往返的首字延迟。
+                    if (ttfbMs.get() < 0) {
+                        ttfbMs.set(System.currentTimeMillis() - attemptStart.get());
+                    }
                     // 从上游原始 chunk 提取 usage 原始 JSON（通常在尾 chunk）；有则记录供成功收尾落库。
                     String rawUsage = UsageParser.extractUsageRawJson(objectMapper, raw);
                     if (rawUsage != null) {
                         usageRaw.set(rawUsage);
                     }
                 }).concatMap(chunk -> {
-                    boolean contentBefore = contentEmitted.get();
                     String normalizedChunk = normalizeUpstreamChunk(chunk, contentEmitted, reasoningBuffer, chunkId);
-                    // 首字打点：contentEmitted 由 false 翻 true 的首个正文 chunk 记首字时长（按最终成功往返计）。
-                    if (!contentBefore && contentEmitted.get() && ttfbMs.get() < 0) {
-                        ttfbMs.set(System.currentTimeMillis() - attemptStart.get());
-                    }
                     if (isTerminalChunk(normalizedChunk)) {
                         // 仅当 contentEmitted=false 且 reasoningBuffer 非空时触发 reasoning fallback
                         if (isStopFinishReason(normalizedChunk) && !contentEmitted.get() && !reasoningBuffer.isEmpty()) {
