@@ -1,8 +1,10 @@
 package com.kaixuan.copilot_ollama_proxy.application.usage;
 
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.StatsSnapshot;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -33,12 +35,38 @@ public class UsageQueryService {
      */
     private static final Duration FALLBACK_INTERVAL = Duration.ofSeconds(30);
 
+    /** 下钻柱状图的回看天数上下限。第一版固定 7 天，保留范围钳制以便后续开放切换。 */
+    private static final int MIN_BREAKDOWN_DAYS = 1;
+    private static final int MAX_BREAKDOWN_DAYS = 90;
+
     private final ApiUsageRepository apiUsageRepository;
+    private final ApiCallUsageRepository apiCallUsageRepository;
     private final UsageEventPublisher usageEventPublisher;
 
-    public UsageQueryService(ApiUsageRepository apiUsageRepository, UsageEventPublisher usageEventPublisher) {
+    public UsageQueryService(ApiUsageRepository apiUsageRepository,
+                            ApiCallUsageRepository apiCallUsageRepository,
+                            UsageEventPublisher usageEventPublisher) {
         this.apiUsageRepository = apiUsageRepository;
+        this.apiCallUsageRepository = apiCallUsageRepository;
         this.usageEventPublisher = usageEventPublisher;
+    }
+
+    /**
+     * 查询概览下钻柱状图的用量明细（日期 × 供应商 × 模型）。
+     *
+     * <p>只在最细粒度聚合一次，三级视图与 hover 明细均由前端从这一份数据 pivot 得出，
+     * 因此下钻无需额外请求。数据源为 {@code api_call_usage}（永久保留、含供应商/模型维度），
+     * 与概览统计卡所用的 {@code api_usage_daily}（全量含失败调用、无维度）互补。
+     *
+     * <p>口径提示：{@code api_call_usage} 仅记录成功且上游返回 usage 的调用，
+     * 故此处次数会略低于统计卡的全量调用数。
+     *
+     * @param requestedDays 请求回看天数，超出 [1, 90] 时钳制
+     */
+    public Mono<List<UsageBreakdownRow>> getUsageBreakdown(int requestedDays) {
+        int days = Math.max(MIN_BREAKDOWN_DAYS, Math.min(MAX_BREAKDOWN_DAYS, requestedDays));
+        return Mono.fromCallable(() -> apiCallUsageRepository.aggregateBreakdown(days))
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
     /** 查询当前统计快照（HTTP 首屏）。 */

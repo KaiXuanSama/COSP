@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.api;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageQueryService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.SseConnectionGate;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.StatsSnapshot;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -72,5 +73,18 @@ public class UsageQueryController {
     @GetMapping("/config/api/heatmap")
     public Mono<List<Map<String, Object>>> heatmapData(@RequestParam(defaultValue = "360") int days) {
         return usageQueryService.getHeatmap(days);
+    }
+
+    /**
+     * 概览下钻柱状图的用量明细（日期 × 供应商 × 模型 × 调用次数）。
+     *
+     * <p>只提供最细粒度数据，三级视图（按天堆叠 / 单日各供应商 / 单供应商各模型）
+     * 与 hover 明细都由前端从同一份结果 pivot 得出，下钻不再产生额外请求。
+     *
+     * @param days 回看天数，默认 7；服务层会钳制到 [1, 90]
+     */
+    @GetMapping("/config/api/usage-breakdown")
+    public Mono<List<UsageBreakdownRow>> usageBreakdown(@RequestParam(defaultValue = "7") int days) {
+        return usageQueryService.getUsageBreakdown(days);
     }
 }
