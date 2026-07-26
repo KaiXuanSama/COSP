@@ -1,2 +1,5 @@
 export * from './usagechart'
 export * from './useUsageBreakdown'
+export { default as StackedBarChart } from './StackedBarChart.vue'
+export { default as CategoryBarChart } from './CategoryBarChart.vue'
+export { default as UsageTooltip } from './UsageTooltip.vue'
