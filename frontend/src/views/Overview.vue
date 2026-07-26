@@ -2,8 +2,10 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NCard, NNumberAnimation } from 'naive-ui'
 import ActivityHeatmap from '@/components/heatmap/ActivityHeatmap.vue'
+import UsageBreakdownPanel from '@/components/usagechart/UsageBreakdownPanel.vue'
 import http from '@/api'
 import type { HeatmapModeConfig } from '@/components/heatmap'
+import type { BreakdownDimension, BreakdownMetric, UsageBreakdownRow } from '@/components/usagechart'
 import { useStatsStore, type StatsData } from '@/stores/stats'
 
 const statsStore = useStatsStore()
@@ -12,6 +14,10 @@ const heatmapMode = ref<'calls' | 'output' | 'input' | 'total'>('calls')
 const heatmapData = ref<HeatmapDay[]>([])
 const heatmapLoading = ref(false)
 const heatmapFailed = ref(false)
+
+const breakdownRows = ref<UsageBreakdownRow[]>([])
+const breakdownLoading = ref(false)
+const breakdownFailed = ref(false)
 
 // 记录刷新前的旧值，作为动画起点
 const prev = ref({ total: 0, today: 0, input: 0, output: 0 })
@@ -24,6 +30,32 @@ interface HeatmapDay {
 }
 
 const HEATMAP_DAYS = 360
+
+/** 下钻柱状图回看天数。第一版固定 7 天，后续版本再开放切换。 */
+const BREAKDOWN_DAYS = 7
+
+/**
+ * 维度配置：第一版以供应商为主维度、模型为次维度。
+ *
+ * 将来要做"以模型为主维度"的视图时，只需把 primaryOf / secondaryOf 与两个 term 对调，
+ * 数据层与图表组件均无需改动。
+ */
+const providerDimension: BreakdownDimension = {
+  key: 'provider-model',
+  primaryOf: (row) => row.providerKey,
+  secondaryOf: (row) => row.modelName,
+  primaryTerm: '供应商',
+  secondaryTerm: '模型',
+}
+
+/** 指标：第一版只有调用次数。 */
+const callCountMetric: BreakdownMetric = {
+  key: 'calls',
+  display: '调用次数',
+  unit: '次',
+  valueOf: (row) => row.callCount,
+}
+
 const heatmapModeOrder: Array<'calls' | 'output' | 'input' | 'total'> = ['calls', 'output', 'input', 'total']
 const heatmapModes: HeatmapModeConfig<HeatmapDay>[] = [
   {
@@ -87,6 +119,8 @@ const activeHeatmapMode = computed(() => {
 onMounted(() => {
   // 热力图历史数据首屏全量拉取一次；统计卡先 HTTP 兜底一次，随后交给 SSE 实时推送。
   void fetchHeatmap()
+  // 下钻柱状图同样首屏一次拉全，三级视图由前端 pivot，无需二次请求。
+  void fetchBreakdown()
   void statsStore.fetchStats()
   statsStore.connectStream()
 })
@@ -154,6 +188,32 @@ async function fetchHeatmap() {
     }
   } finally {
     heatmapLoading.value = false
+  }
+}
+
+/**
+ * 拉取下钻柱状图的用量明细。
+ *
+ * 只请求一次最细粒度数据（日期 × 供应商 × 模型），三级视图与 hover 明细
+ * 全部由前端 pivot 得出，因此下钻过程中不再发起请求。
+ */
+async function fetchBreakdown() {
+  if (!breakdownRows.value.length) {
+    breakdownLoading.value = true
+  }
+
+  try {
+    const response = await http.get<UsageBreakdownRow[]>('/usage-breakdown', {
+      params: { days: BREAKDOWN_DAYS },
+    })
+    breakdownRows.value = Array.isArray(response.data) ? response.data : []
+    breakdownFailed.value = false
+  } catch {
+    if (!breakdownRows.value.length) {
+      breakdownFailed.value = true
+    }
+  } finally {
+    breakdownLoading.value = false
   }
 }
 
@@ -232,6 +292,11 @@ function toKUnit(value: number): number {
       <ActivityHeatmap :data="heatmapData" :modes="heatmapModes" :active-mode="heatmapMode" :loading="heatmapLoading"
         :failed="heatmapFailed" :cell-size="25" empty-text="热力图暂无数据" loading-text="热力图加载中"
         error-text="热力图加载失败" />
+    </n-card>
+
+    <n-card class="breakdown-card" :bordered="true">
+      <UsageBreakdownPanel :rows="breakdownRows" :dimension="providerDimension" :metric="callCountMetric"
+        :days="BREAKDOWN_DAYS" :loading="breakdownLoading" :failed="breakdownFailed" />
     </n-card>
 
     <n-card title="关于本服务" class="info-card" :bordered="true">
@@ -326,6 +391,48 @@ function toKUnit(value: number): number {
 .stat-card-desc {
   font-family: $font-body;
   font-size: 13px;
+  color: $text-muted;
+}
+
+/*
+  下钻柱状图卡片：主题色由页面注入、尺寸由组件自行计算，
+  与 .heatmap-card 保持同一套约定。
+ */
+.breakdown-card {
+  --usage-chart-font-mono: 'DM Mono', monospace;
+  --usage-chart-font-body: #{$font-body};
+  --usage-chart-text-primary: #{$text-primary};
+  --usage-chart-text-body: #{$text-body};
+  --usage-chart-text-muted: #{$text-muted};
+  --usage-chart-border-light: #{$border-light};
+  --usage-chart-accent: #{$accent};
+  --usage-chart-accent-light: #{$accent-light};
+  --usage-chart-accent-mid: #{$accent-mid};
+  --usage-chart-surface: #{$surface};
+  --usage-chart-tooltip-bg: #{$sidebar-bg};
+  --usage-chart-tooltip-text: #{$text-light};
+
+  margin-bottom: $space-lg;
+}
+
+.breakdown-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: $space-md;
+}
+
+.breakdown-title {
+  font-family: $font-display;
+  font-size: 18px;
+  font-weight: 600;
+  color: $text-primary;
+}
+
+/* 口径说明：新表仅记成功且带 usage 的调用，与统计卡的全量口径不同 */
+.breakdown-note {
+  font-family: $font-body;
+  font-size: 12px;
   color: $text-muted;
 }
 
