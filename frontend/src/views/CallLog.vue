@@ -240,7 +240,14 @@ function formatCacheHitRate(usage: UsageDetail | null): string {
  * 原始对象零损失保留了本项未提列的字段（reasoning_tokens、cache_creation_tokens 等），
  * 悬浮即可查看，无需打开弹窗。浮窗定位在鼠标位置的左下角。
  */
-const usagePopover = ref({ show: false, x: 0, y: 0, text: '' })
+/**
+ * usage 浮窗状态。
+ *
+ * - `pinned: false` —— 悬浮态：跟随鼠标移动，移出即隐藏，不接收鼠标事件；
+ * - `pinned: true` —— 固定态（点击表格进入）：位置锁定、可接收鼠标事件以便框选与滚动，
+ *   点击浮窗外区域才关闭。
+ */
+const usagePopover = ref({ show: false, pinned: false, x: 0, y: 0, text: '' })
 
 /** 格式化 usage 原始 JSON 供浮窗展示；无法解析时原样返回。 */
 function formatUsageRaw(raw: string | null): string {
@@ -253,35 +260,83 @@ function formatUsageRaw(raw: string | null): string {
 }
 
 /**
- * 移入问号（或键盘聚焦）：显示浮窗。
+ * 移入用量表格（或键盘聚焦）：以悬浮态显示浮窗。
  *
- * 鼠标事件按光标位置定位；键盘 focus 无光标坐标，回退到问号元素自身的右下角，
- * 使键盘用户也能看到浮窗（可访问性）。
+ * 已处于固定态（点击锁定）时不响应悬浮，避免覆盖用户正在交互的浮窗。
+ * 鼠标事件按光标位置定位；键盘 focus 无光标坐标，回退到表格自身右下角（可访问性）。
  */
 function showUsagePopover(event: MouseEvent | FocusEvent, usage: UsageDetail | null) {
+  if (usagePopover.value.pinned) return
   let x: number
   let y: number
   if (event instanceof MouseEvent) {
     x = event.clientX
     y = event.clientY
   } else {
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+    // 鼠标按下也会让带 tabindex 的表格获得 focus，但此时不应按元素定位——
+    // 否则浮窗会先跳到表格右下角，松开后再被 click 拉回光标处，产生闪现。
+    // :focus-visible 只在键盘聚焦时匹配，据此排除鼠标带来的 focus。
+    const target = event.currentTarget as HTMLElement
+    if (!target.matches(':focus-visible')) return
+    const rect = target.getBoundingClientRect()
     x = rect.right
     y = rect.bottom
   }
-  usagePopover.value = { show: true, x, y, text: formatUsageRaw(usage?.usage_raw ?? null) }
+  usagePopover.value = {
+    show: true,
+    pinned: false,
+    x,
+    y,
+    text: formatUsageRaw(usage?.usage_raw ?? null),
+  }
 }
 
-/** 鼠标随问号移动时同步浮窗位置。 */
+/** 鼠标随表格移动时同步浮窗位置；固定态下位置锁定不再跟随。 */
 function moveUsagePopover(event: MouseEvent) {
-  if (!usagePopover.value.show) return
+  if (!usagePopover.value.show || usagePopover.value.pinned) return
   usagePopover.value.x = event.clientX
   usagePopover.value.y = event.clientY
 }
 
-/** 鼠标移出：隐藏浮窗。 */
+/** 鼠标移出：隐藏浮窗；固定态下保持显示，供鼠标移入框选。 */
 function hideUsagePopover() {
+  if (usagePopover.value.pinned) return
   usagePopover.value.show = false
+}
+
+/**
+ * 点击用量表格：把浮窗切到固定态。
+ *
+ * 固定态下浮窗位置锁定、可接收鼠标事件（可框选、滚动），
+ * 点击浮窗外任意区域即关闭（见 onDocumentClickForPopover）。
+ */
+function pinUsagePopover(event: MouseEvent, usage: UsageDetail | null) {
+  usagePopover.value = {
+    show: true,
+    pinned: true,
+    x: event.clientX,
+    y: event.clientY,
+    text: formatUsageRaw(usage?.usage_raw ?? null),
+  }
+}
+
+/** 关闭浮窗并解除固定态。 */
+function closeUsagePopover() {
+  usagePopover.value.show = false
+  usagePopover.value.pinned = false
+}
+
+/**
+ * 文档级点击：固定态下点击浮窗外区域关闭浮窗。
+ *
+ * 浮窗自身与触发用的用量表格内部点击不关闭——前者是用户正在框选，
+ * 后者由 pinUsagePopover 处理（否则会先关再开导致闪烁）。
+ */
+function onDocumentClickForPopover(event: MouseEvent) {
+  if (!usagePopover.value.pinned) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.usage-popover') || target?.closest('.detail-usage')) return
+  closeUsagePopover()
 }
 
 /**
@@ -440,10 +495,13 @@ function disconnectStream() {
 onMounted(() => {
   loadFirstPage()
   connectStream()
+  // 固定态浮窗需要"点击外部关闭"，故挂文档级监听；用捕获阶段避免被内部 stopPropagation 拦掉。
+  document.addEventListener('click', onDocumentClickForPopover, true)
 })
 
 onUnmounted(() => {
   disconnectStream()
+  document.removeEventListener('click', onDocumentClickForPopover, true)
 })
 </script>
 
@@ -549,6 +607,7 @@ onUnmounted(() => {
           @mouseleave="hideUsagePopover"
           @focus="showUsagePopover($event, logDetail.usage)"
           @blur="hideUsagePopover"
+          @click="pinUsagePopover($event, logDetail.usage)"
         >
           <span class="detail-usage-cell">
             <span class="detail-usage-label">输入</span>
@@ -623,14 +682,17 @@ onUnmounted(() => {
     />
 
     <!--
-      usage 原始数据悬浮窗：显示在鼠标位置的左下角（右下角对齐光标）。
-      Teleport 到 body，避免被详情卡片的滚动容器裁剪；纯展示，故 aria-hidden。
+      usage 原始数据浮窗：右上角对齐光标，整体落在鼠标位置的左下方。
+      悬浮态纯展示（不接收鼠标事件，避免抢光标导致闪烁）；
+      固定态（点击表格进入）可接收鼠标事件，支持框选与滚动，点击窗外关闭。
+      Teleport 到 body，避免被详情卡片的滚动容器裁剪。
     -->
     <Teleport to="body">
       <div
         v-if="usagePopover.show"
         class="usage-popover"
-        aria-hidden="true"
+        :class="{ 'usage-popover--pinned': usagePopover.pinned }"
+        :aria-hidden="!usagePopover.pinned"
         :style="{ left: `${usagePopover.x}px`, top: `${usagePopover.y}px` }"
       >
         <pre class="usage-popover-content">{{ usagePopover.text }}</pre>
@@ -952,10 +1014,15 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-/* 完整 usage 原始 JSON 浮窗：跟随鼠标，显示在光标左下角 */
+/*
+  完整 usage 原始 JSON 浮窗。
+  定位：left/top 设为光标坐标后，translateX(-100%) 把自身右边缘拉到光标处，
+  于是浮窗右上角与光标重叠、整体落在鼠标位置的左下方。
+ */
 .usage-popover {
   position: fixed;
   z-index: 3000;
+  transform: translateX(-100%);
   max-width: 420px;
   max-height: 320px;
   overflow: auto;
@@ -971,7 +1038,24 @@ onUnmounted(() => {
   color: $text-body;
   white-space: pre-wrap;
   word-break: break-word;
+  /* 悬浮态不接收鼠标事件，避免浮窗抢走光标导致 mouseleave 抖动 */
   pointer-events: none;
+  user-select: none;
+}
+
+/* 固定态：可交互，支持框选文本与滚动查看长 JSON */
+.usage-popover--pinned {
+  pointer-events: auto;
+  user-select: text;
+  border-color: $accent-mid;
+}
+
+.usage-popover-content {
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .detail-rows {
