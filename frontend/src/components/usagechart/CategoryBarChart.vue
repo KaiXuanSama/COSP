@@ -176,6 +176,23 @@ onUnmounted(() => {
           @keydown.space.prevent="drillInto(bar)"
         >
           <div class="category-bar__track">
+            <!--
+              柱顶读数。bottom 跟随柱高，故随入场动画一起上升；
+              aria-hidden 是因为该数值已在 tooltip 与 aria-label 中提供。
+            -->
+            <span
+              v-if="bar.value > 0"
+              class="category-bar__value"
+              aria-hidden="true"
+              :style="{
+                bottom: revealed ? `${barHeight(bar)}px` : '0px',
+                opacity: revealed ? 1 : 0,
+                transitionDelay: `${index * 40}ms`,
+              }"
+            >
+              {{ formatValue(bar.value) }}
+            </span>
+
             <div
               class="category-bar__fill"
               :style="{
@@ -305,11 +322,28 @@ onUnmounted(() => {
 }
 
 .category-bar__track {
+  /* 作为柱顶读数的定位上下文 */
+  position: relative;
   display: flex;
   align-items: flex-end;
   width: 100%;
   max-width: 38px;
   height: var(--usagechart-plot-height);
+}
+
+/* 柱顶读数：与堆叠图同一套视觉，随柱高上升 */
+.category-bar__value {
+  position: absolute;
+  left: 50%;
+  margin-bottom: 5px;
+  transform: translateX(-50%);
+  font-family: var(--usagechart-font-mono, 'DM Mono', monospace);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--usagechart-text-muted, #9a9590);
+  white-space: nowrap;
+  pointer-events: none;
+  transition: bottom 0.42s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.28s ease;
 }
 
 .category-bar__fill {

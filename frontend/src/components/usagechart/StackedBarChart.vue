@@ -87,6 +87,20 @@ function segmentHeight(segment: StackSegment): number {
   return Math.max(props.minSegmentHeight, raw)
 }
 
+/**
+ * 整列柱体的实际像素高度 —— 各段高之和，外加段间空隙。
+ *
+ * 不能用 total / basis 直接算：段高对小值做了 minSegmentHeight 兜底，
+ * 加上 segmentGap 的累计，实际柱顶会略高于按比例的理论值。
+ * 顶部读数要贴合真实柱顶，必须与渲染用的同一套高度口径。
+ */
+function columnHeight(column: StackColumn): number {
+  const visible = column.segments.filter((segment) => segment.value > 0)
+  if (!visible.length) return 0
+  const stacked = visible.reduce((sum, segment) => sum + segmentHeight(segment), 0)
+  return stacked + props.segmentGap * (visible.length - 1)
+}
+
 /** 日期标签只保留「月-日」，避免 7 列挤在一起。 */
 function shortDate(date: string): string {
   const parts = date.split('-')
@@ -213,6 +227,22 @@ onUnmounted(() => {
         >
           <!-- 柱体：自下而上堆叠，故用 column-reverse -->
           <div class="stacked-bar__stack">
+            <!--
+              柱顶总量读数。位置由柱高驱动（bottom = 柱高），因此入场动画期间
+              会跟着柱顶一起上升；aria-hidden 是因为列的 aria-label 已含同一数字。
+            -->
+            <span
+              v-if="column.total > 0"
+              class="stacked-bar__value"
+              aria-hidden="true"
+              :style="{
+                bottom: revealed ? `${columnHeight(column)}px` : '0px',
+                opacity: revealed ? 1 : 0,
+              }"
+            >
+              {{ formatValue(column.total) }}
+            </span>
+
             <div
               v-for="(segment, index) in column.segments"
               :key="segment.primary ?? `other-${index}`"
@@ -344,6 +374,8 @@ onUnmounted(() => {
 }
 
 .stacked-bar__stack {
+  /* 作为柱顶读数的定位上下文 */
+  position: relative;
   display: flex;
   /* 自下而上堆叠：值最大的段在最底部 */
   flex-direction: column-reverse;
@@ -352,6 +384,27 @@ onUnmounted(() => {
   width: 100%;
   max-width: 34px;
   height: var(--usagechart-plot-height);
+}
+
+/*
+ * 柱顶总量读数。
+ *
+ * bottom 由柱高驱动并加一段间距，故随入场动画一起上升；
+ * 用 translateX(-50%) 居中而不靠 flex，避免影响堆叠布局。
+ * 数字可能比柱子宽，故不裁剪、不换行。
+ */
+.stacked-bar__value {
+  position: absolute;
+  left: 50%;
+  margin-bottom: 5px;
+  transform: translateX(-50%);
+  font-family: var(--usagechart-font-mono, 'DM Mono', monospace);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--usagechart-text-muted, #9a9590);
+  white-space: nowrap;
+  pointer-events: none;
+  transition: bottom 0.42s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.28s ease;
 }
 
 .stacked-bar__segment {
