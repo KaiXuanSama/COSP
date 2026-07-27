@@ -13,7 +13,7 @@
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { StackColumn, StackSegment } from './usagechart'
-import { buildAxisTicks, COLUMN_PAD_Y, formatTickValue } from './axisTicks'
+import { buildAxisTicks, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from './axisTicks'
 import UsageTooltip from './UsageTooltip.vue'
 
 const props = withDefaults(defineProps<{
@@ -56,6 +56,8 @@ const rootStyle = computed(() => ({
   // 列的纵向内边距（hover 高亮的呼吸空间）。轴与网格线要按同一值下移，
   // 否则柱底会比 0 刻度线低出这段距离。
   '--usagechart-column-pad-y': `${COLUMN_PAD_Y}px`,
+  // 柱顶读数的容身之处，防止接近轴上限的柱子把读数顶出图表外。
+  '--usagechart-value-space': `${VALUE_LABEL_SPACE}px`,
 }))
 
 /**
@@ -279,11 +281,18 @@ onUnmounted(() => {
   width: 100%;
 }
 
-/* 轴区与绘图区并排；轴宽固定，绘图区吃掉剩余空间 */
+/*
+ * 轴区与绘图区并排；轴宽固定，绘图区吃掉剩余空间。
+ *
+ * padding-top 为柱顶读数留白：柱高最多可达绘图区满高（数据最大值落在顶端刻度时），
+ * 此时读数浮在柱顶之上就会溢出容器、与卡片外的元素重叠。
+ * 留白加在 body 上而非绘图区内部，可让轴与网格线一起下移，不破坏基线对齐。
+ */
 .stacked-bar__body {
   display: flex;
   align-items: stretch;
   gap: 8px;
+  padding-top: var(--usagechart-value-space);
 }
 
 /*

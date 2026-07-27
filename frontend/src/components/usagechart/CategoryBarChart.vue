@@ -11,7 +11,7 @@
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { CategoryBar } from './usagechart'
-import { buildAxisTicks, COLUMN_PAD_Y, formatTickValue } from './axisTicks'
+import { buildAxisTicks, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from './axisTicks'
 import UsageTooltip from './UsageTooltip.vue'
 
 const props = withDefaults(defineProps<{
@@ -52,6 +52,8 @@ const rootStyle = computed(() => ({
   '--usagechart-axis-width': `${props.axisWidth}px`,
   // 柱列的纵向内边距。轴与网格线按同一值下移，柱底才会正好落在 0 刻度线上。
   '--usagechart-column-pad-y': `${COLUMN_PAD_Y}px`,
+  // 柱顶读数的容身之处，防止接近轴上限的柱子把读数顶出图表外。
+  '--usagechart-value-space': `${VALUE_LABEL_SPACE}px`,
 }))
 
 /** 本视图内的最大值（各级图独立归一化，不跨级比较）。 */
@@ -225,11 +227,18 @@ onUnmounted(() => {
   width: 100%;
 }
 
-/* 轴与绘图区并排；轴宽固定，绘图区占满剩余空间 */
+/*
+ * 轴与绘图区并排；轴宽固定，绘图区占满剩余空间。
+ *
+ * 顶部留白供柱顶读数落脚：柱高最大时会顶到绘图区上沿，
+ * 读数在其上方，若无留白就会溢出卡片、与外部元素重叠。
+ * 留白加在 body 上（而非绘图区内），轴与网格线一同下移，不影响基线对齐。
+ */
 .category-bar__body {
   display: flex;
   align-items: stretch;
   gap: 8px;
+  padding-top: var(--usagechart-value-space);
 }
 
 /*
