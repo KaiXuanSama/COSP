@@ -19,6 +19,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { StackBar, StackSegment } from './usagechart'
 import { AXIS_WIDTH, buildAxisTicks, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from './axisTicks'
+import { useFlip } from './useFlip'
 import UsageTooltip from './UsageTooltip.vue'
 
 const props = withDefaults(defineProps<{
@@ -68,6 +69,16 @@ const tooltip = ref({ visible: false, left: 0, top: 0, title: '', summary: '', d
 /** 入场动画：挂载后置为 true，触发各柱自下而上升起。 */
 const revealed = ref(false)
 let revealTimer: number | null = null
+
+/**
+ * 柱子横向位移的 FLIP 补偿。
+ *
+ * 柱子的横向位置由 flex 布局决定（`justify-content: space-around` + `flex: 1`），
+ * 层级切换后柱子数量变了，每根柱的位置会瞬间跳到新位置 —— 高度有 CSS transition
+ * 可以平滑过渡，位置却没有，观感上就是「柱子闪现到别处然后才长高」。
+ * FLIP 把这段位移也补成动画，于是留存的柱子看起来是「滑」过去的。
+ */
+const flip = useFlip(() => rootRef.value, '[data-flip-key]')
 
 const rootStyle = computed(() => ({
   '--usagechart-plot-height': `${props.height}px`,
@@ -200,10 +211,22 @@ const structureKey = computed(() =>
  * 结构变化（切换层级、出现新的成员或日期）才重播，保留原有的入场观感。
  */
 watch(structureKey, async () => {
-  revealed.value = false
+  // 在 DOM 更新前量下旧位置，更新后才能算出位移并反向补偿
+  flip.snapshot()
   hideTooltip()
+
   await nextTick()
-  scheduleReveal()
+
+  // 留存下来的柱子：用 FLIP 把「瞬间跳位」补成滑动，不重播入场动画，
+  // 否则它们会先归零再长高，滑动的连续感就断了。
+  const moved = flip.play()
+
+  // 全是新柱子（如首次渲染、或换到完全不同的成员）才走自下而上的入场动画
+  if (!moved) {
+    revealed.value = false
+    await nextTick()
+    scheduleReveal()
+  }
 })
 
 function scheduleReveal() {
@@ -251,6 +274,7 @@ onUnmounted(() => {
         <div
           v-for="(bar, index) in bars"
           :key="bar.key"
+          :data-flip-key="bar.key"
           class="usage-bar__column"
           :class="{ 'usage-bar__column--drillable': drillable }"
           :role="drillable ? 'button' : undefined"
