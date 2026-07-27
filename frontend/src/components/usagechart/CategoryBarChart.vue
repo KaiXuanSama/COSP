@@ -11,6 +11,7 @@
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { CategoryBar } from './usagechart'
+import { buildAxisTicks, COLUMN_PAD_Y, formatTickValue } from './axisTicks'
 import UsageTooltip from './UsageTooltip.vue'
 
 const props = withDefaults(defineProps<{
@@ -23,11 +24,17 @@ const props = withDefaults(defineProps<{
   drillable?: boolean
   /** 柱最小可见高度（px）。 */
   minBarHeight?: number
+  /** 纵轴期望刻度数（含 0），实际数量会取整到好看的刻度值。 */
+  tickCount?: number
+  /** 纵轴刻度栏宽度（px），需容纳最长的刻度读数。 */
+  axisWidth?: number
 }>(), {
   unit: '次',
   height: 180,
   drillable: false,
   minBarHeight: 4,
+  tickCount: 4,
+  axisWidth: 36,
 })
 
 const emit = defineEmits<{
@@ -42,14 +49,28 @@ let revealTimer: number | null = null
 
 const rootStyle = computed(() => ({
   '--usagechart-plot-height': `${props.height}px`,
+  '--usagechart-axis-width': `${props.axisWidth}px`,
+  // 柱列的纵向内边距。轴与网格线按同一值下移，柱底才会正好落在 0 刻度线上。
+  '--usagechart-column-pad-y': `${COLUMN_PAD_Y}px`,
 }))
 
-/** 本视图内的最大值，用于柱高归一化（各级图独立归一化，不跨级比较）。 */
+/** 本视图内的最大值（各级图独立归一化，不跨级比较）。 */
 const maxValue = computed(() => props.bars.reduce((max, bar) => Math.max(max, bar.value), 0))
 
+/** 纵轴刻度。 */
+const axisTicks = computed(() => buildAxisTicks(maxValue.value, props.tickCount))
+
+/**
+ * 归一化基准取刻度顶值而非数据最大值。
+ *
+ * 若仍按数据最大值归一，最高的柱会顶到绘图区上沿、与顶端刻度线错位，
+ * 纵轴读数就失去了意义。改用刻度顶值后，柱高与刻度线严格对应。
+ */
+const axisMax = computed(() => axisTicks.value[axisTicks.value.length - 1]?.value ?? 0)
+
 function barHeight(bar: CategoryBar): number {
-  if (maxValue.value <= 0 || bar.value <= 0) return 0
-  const raw = (bar.value / maxValue.value) * props.height
+  if (axisMax.value <= 0 || bar.value <= 0) return 0
+  const raw = (bar.value / axisMax.value) * props.height
   return Math.max(props.minBarHeight, raw)
 }
 
@@ -118,31 +139,55 @@ onUnmounted(() => {
 
 <template>
   <div ref="rootRef" class="category-bar" :style="rootStyle" @mouseleave="hideTooltip">
-    <div class="category-bar__plot">
-      <div
-        v-for="(bar, index) in bars"
-        :key="bar.key"
-        class="category-bar__item"
-        :class="{ 'category-bar__item--drillable': drillable }"
-        :role="drillable ? 'button' : undefined"
-        :tabindex="drillable ? 0 : undefined"
-        :aria-label="drillable ? `查看 ${bar.label} 的明细` : undefined"
-        @click="drillInto(bar)"
-        @keydown.enter.prevent="drillInto(bar)"
-        @keydown.space.prevent="drillInto(bar)"
-      >
-        <div class="category-bar__track">
-          <div
-            class="category-bar__fill"
-            :style="{
-              height: revealed ? `${barHeight(bar)}px` : '0px',
-              transitionDelay: `${index * 40}ms`,
-            }"
-            @mouseenter="showBarTooltip($event, bar)"
-            @mouseleave="hideTooltip"
+    <div class="category-bar__body">
+      <!-- 纵轴：刻度读数 + 对齐的网格线 -->
+      <div class="category-bar__axis" aria-hidden="true">
+        <span
+          v-for="tick in axisTicks"
+          :key="tick.value"
+          class="category-bar__tick"
+          :style="{ bottom: `${tick.ratio * 100}%` }"
+        >
+          {{ formatTickValue(tick.value) }}
+        </span>
+      </div>
+
+      <div class="category-bar__plot">
+        <div class="category-bar__grid" aria-hidden="true">
+          <span
+            v-for="tick in axisTicks"
+            :key="tick.value"
+            class="category-bar__gridline"
+            :class="{ 'category-bar__gridline--base': tick.value === 0 }"
+            :style="{ bottom: `${tick.ratio * 100}%` }"
           />
         </div>
-        <div class="category-bar__label" :title="bar.label">{{ bar.label }}</div>
+
+        <div
+          v-for="(bar, index) in bars"
+          :key="bar.key"
+          class="category-bar__item"
+          :class="{ 'category-bar__item--drillable': drillable }"
+          :role="drillable ? 'button' : undefined"
+          :tabindex="drillable ? 0 : undefined"
+          :aria-label="drillable ? `查看 ${bar.label} 的明细` : undefined"
+          @click="drillInto(bar)"
+          @keydown.enter.prevent="drillInto(bar)"
+          @keydown.space.prevent="drillInto(bar)"
+        >
+          <div class="category-bar__track">
+            <div
+              class="category-bar__fill"
+              :style="{
+                height: revealed ? `${barHeight(bar)}px` : '0px',
+                transitionDelay: `${index * 40}ms`,
+              }"
+              @mouseenter="showBarTooltip($event, bar)"
+              @mouseleave="hideTooltip"
+            />
+          </div>
+          <div class="category-bar__label" :title="bar.label">{{ bar.label }}</div>
+        </div>
       </div>
     </div>
 
@@ -163,21 +208,88 @@ onUnmounted(() => {
   width: 100%;
 }
 
-.category-bar__plot {
+/* 轴与绘图区并排；轴宽固定，绘图区占满剩余空间 */
+.category-bar__body {
   display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+/*
+ * 刻度按比例绝对定位，故容器高度须与绘图区严格一致（不含标签行）。
+ *
+ * 上边距与柱列的上内边距同值：列有 padding-top 把柱体整体下推，
+ * 轴与网格线必须跟着下移同样的距离，否则柱底会比 0 刻度线低出这段。
+ */
+.category-bar__axis {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--usagechart-axis-width, 36px);
+  height: var(--usagechart-plot-height);
+  margin-top: var(--usagechart-column-pad-y);
+}
+
+.category-bar__tick {
+  position: absolute;
+  right: 0;
+  /* 让读数的视觉中心落在刻度线上 */
+  transform: translateY(50%);
+  font-family: var(--usagechart-font-mono, 'DM Mono', monospace);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--usagechart-text-muted, #9a9590);
+  white-space: nowrap;
+}
+
+.category-bar__plot {
+  position: relative;
+  display: flex;
+  flex: 1;
   align-items: flex-end;
   justify-content: space-around;
   gap: 10px;
+  min-width: 0;
   min-height: var(--usagechart-plot-height);
 }
 
+/*
+ * 网格线层：不参与 flex 布局，高度严格等于绘图区（不含标签行）。
+ *
+ * 用 top + height 而非 inset 的 bottom 偏移 —— 后者依赖对标签行高度的估算，
+ * 字号或行高一变就会错位；直接锁定绘图区高度更稳。
+ */
+.category-bar__grid {
+  position: absolute;
+  top: var(--usagechart-column-pad-y);
+  right: 0;
+  left: 0;
+  height: var(--usagechart-plot-height);
+  pointer-events: none;
+}
+
+.category-bar__gridline {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  border-top: 1px dashed var(--usagechart-grid, rgba(154, 149, 144, 0.22));
+}
+
+/* 基线（0 刻度）用实线，视觉上收住整个绘图区 */
+.category-bar__gridline--base {
+  border-top-style: solid;
+  border-top-color: var(--usagechart-grid-base, rgba(154, 149, 144, 0.4));
+}
+
 .category-bar__item {
+  position: relative;
+  /* 压在网格线之上 */
+  z-index: 1;
   display: flex;
   flex: 1;
   flex-direction: column;
   align-items: center;
   min-width: 0;
-  padding: 4px 2px;
+  padding: var(--usagechart-column-pad-y) 2px;
   border-radius: 8px;
   transition: background 0.18s ease;
 }

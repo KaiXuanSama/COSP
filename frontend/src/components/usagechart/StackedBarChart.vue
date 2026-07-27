@@ -13,6 +13,7 @@
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { StackColumn, StackSegment } from './usagechart'
+import { buildAxisTicks, COLUMN_PAD_Y, formatTickValue } from './axisTicks'
 import UsageTooltip from './UsageTooltip.vue'
 
 const props = withDefaults(defineProps<{
@@ -27,11 +28,14 @@ const props = withDefaults(defineProps<{
   segmentGap?: number
   /** 段的最小可见高度（px），保证有数据的段不会细到看不见。 */
   minSegmentHeight?: number
+  /** 纵轴刻度栏宽度（px）。 */
+  axisWidth?: number
 }>(), {
   unit: '次',
   height: 180,
   segmentGap: 3,
   minSegmentHeight: 4,
+  axisWidth: 30,
 })
 
 const emit = defineEmits<{
@@ -48,17 +52,38 @@ let revealTimer: number | null = null
 const rootStyle = computed(() => ({
   '--usagechart-plot-height': `${props.height}px`,
   '--usagechart-segment-gap': `${props.segmentGap}px`,
+  '--usagechart-axis-width': `${props.axisWidth}px`,
+  // 列的纵向内边距（hover 高亮的呼吸空间）。轴与网格线要按同一值下移，
+  // 否则柱底会比 0 刻度线低出这段距离。
+  '--usagechart-column-pad-y': `${COLUMN_PAD_Y}px`,
 }))
+
+/**
+ * 纵轴刻度。以取整后的上限为基准，使刻度读数是 10、20、50 这类整数。
+ */
+const axisTicks = computed(() => buildAxisTicks(props.maxTotal))
+
+/**
+ * 柱高归一化基准 —— 取整后的轴上限，而非数据真实最大值。
+ *
+ * 必须与刻度同一基准：否则最高的柱会顶到绘图区顶部，
+ * 而顶部刻度标的是取整后的更大值，柱高与刻度线就对不上了。
+ */
+const heightBasis = computed(() => {
+  const ticks = axisTicks.value
+  return ticks.length ? ticks[ticks.length - 1].value : props.maxTotal
+})
 
 /**
  * 段高（px）。
  *
- * 按占「全局最大列总量」的比例映射，使各列柱高可横向比较；
+ * 按占「轴上限」的比例映射，使各列柱高可横向比较且与刻度线对齐；
  * 再对有值的段兜一个最小高度，避免占比极小的段渲染成 0 而在图上消失。
  */
 function segmentHeight(segment: StackSegment): number {
-  if (props.maxTotal <= 0 || segment.value <= 0) return 0
-  const raw = (segment.value / props.maxTotal) * props.height
+  const basis = heightBasis.value
+  if (basis <= 0 || segment.value <= 0) return 0
+  const raw = (segment.value / basis) * props.height
   return Math.max(props.minSegmentHeight, raw)
 }
 
@@ -151,35 +176,59 @@ onUnmounted(() => {
 
 <template>
   <div ref="rootRef" class="stacked-bar" :style="rootStyle" @mouseleave="hideTooltip">
-    <div class="stacked-bar__plot">
-      <div
-        v-for="column in columns"
-        :key="column.date"
-        class="stacked-bar__column"
-        role="button"
-        tabindex="0"
-        :aria-label="`查看 ${column.date} 的构成明细`"
-        @click="drillIntoDay(column.date)"
-        @keydown.enter.prevent="drillIntoDay(column.date)"
-        @keydown.space.prevent="drillIntoDay(column.date)"
-      >
-        <!-- 柱体：自下而上堆叠，故用 column-reverse -->
-        <div class="stacked-bar__stack">
-          <div
-            v-for="(segment, index) in column.segments"
-            :key="segment.primary ?? `other-${index}`"
-            class="stacked-bar__segment"
-            :class="{ 'stacked-bar__segment--other': segment.isOther }"
-            :style="{
-              height: revealed ? `${segmentHeight(segment)}px` : '0px',
-              transitionDelay: `${index * 40}ms`,
-            }"
-            @mouseenter="showSegmentTooltip($event, column, segment)"
-            @mouseleave="hideTooltip"
+    <div class="stacked-bar__body">
+      <!-- 纵轴：刻度读数 + 与之对齐的网格线，让柱高可被量化读出 -->
+      <div class="stacked-bar__axis" aria-hidden="true">
+        <span
+          v-for="tick in axisTicks"
+          :key="tick.value"
+          class="stacked-bar__tick"
+          :style="{ bottom: `${tick.ratio * 100}%` }"
+        >
+          {{ formatTickValue(tick.value) }}
+        </span>
+      </div>
+
+      <div class="stacked-bar__plot">
+        <div class="stacked-bar__grid" aria-hidden="true">
+          <span
+            v-for="tick in axisTicks"
+            :key="tick.value"
+            class="stacked-bar__gridline"
+            :class="{ 'stacked-bar__gridline--base': tick.value === 0 }"
+            :style="{ bottom: `${tick.ratio * 100}%` }"
           />
         </div>
 
-        <div class="stacked-bar__date">{{ shortDate(column.date) }}</div>
+        <div
+          v-for="column in columns"
+          :key="column.date"
+          class="stacked-bar__column"
+          role="button"
+          tabindex="0"
+          :aria-label="`查看 ${column.date} 的构成明细，共 ${formatValue(column.total)} ${unit}`"
+          @click="drillIntoDay(column.date)"
+          @keydown.enter.prevent="drillIntoDay(column.date)"
+          @keydown.space.prevent="drillIntoDay(column.date)"
+        >
+          <!-- 柱体：自下而上堆叠，故用 column-reverse -->
+          <div class="stacked-bar__stack">
+            <div
+              v-for="(segment, index) in column.segments"
+              :key="segment.primary ?? `other-${index}`"
+              class="stacked-bar__segment"
+              :class="{ 'stacked-bar__segment--other': segment.isOther }"
+              :style="{
+                height: revealed ? `${segmentHeight(segment)}px` : '0px',
+                transitionDelay: `${index * 40}ms`,
+              }"
+              @mouseenter="showSegmentTooltip($event, column, segment)"
+              @mouseleave="hideTooltip"
+            />
+          </div>
+
+          <div class="stacked-bar__date">{{ shortDate(column.date) }}</div>
+        </div>
       </div>
     </div>
 
@@ -200,21 +249,89 @@ onUnmounted(() => {
   width: 100%;
 }
 
-.stacked-bar__plot {
+/* 轴区与绘图区并排；轴宽固定，绘图区吃掉剩余空间 */
+.stacked-bar__body {
   display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+/*
+ * 纵轴刻度栏。
+ *
+ * 高度只占绘图区（不含日期标签），故与 __stack 等高；
+ * 每个刻度用 bottom 百分比定位，天然与绘图区内的网格线对齐。
+ * 上边距与列一致，保证刻度、网格线、柱体三者共享同一条基准线。
+ */
+.stacked-bar__axis {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--usagechart-axis-width, 30px);
+  height: var(--usagechart-plot-height);
+  margin-top: var(--usagechart-column-pad-y);
+}
+
+.stacked-bar__tick {
+  position: absolute;
+  right: 0;
+  /* 上移半个行高，使读数中线压在刻度线上 */
+  transform: translateY(50%);
+  font-family: var(--usagechart-font-mono, 'DM Mono', monospace);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--usagechart-text-muted, #9a9590);
+  white-space: nowrap;
+}
+
+.stacked-bar__plot {
+  position: relative;
+  display: flex;
+  flex: 1;
   align-items: flex-end;
   justify-content: space-around;
   gap: 8px;
+  min-width: 0;
   min-height: var(--usagechart-plot-height);
 }
 
+/*
+ * 网格线层：与刻度同高，置于柱体之下，不拦截鼠标。
+ *
+ * top 要与列的上内边距一致 —— 列有 padding-top 把柱体整体下推，
+ * 若网格线仍从 0 起算，柱底就会比 0 刻度线低出这段内边距。
+ */
+.stacked-bar__grid {
+  position: absolute;
+  top: var(--usagechart-column-pad-y);
+  right: 0;
+  left: 0;
+  height: var(--usagechart-plot-height);
+  pointer-events: none;
+}
+
+.stacked-bar__gridline {
+  position: absolute;
+  right: 0;
+  left: 0;
+  border-top: 1px dashed var(--usagechart-gridline, rgba(154, 149, 144, 0.22));
+}
+
+/* 基线（0 刻度）用实线，稍重一点，作为柱子的落脚线 */
+.stacked-bar__gridline--base {
+  border-top-style: solid;
+  border-top-color: var(--usagechart-gridline-base, rgba(154, 149, 144, 0.4));
+}
+
 .stacked-bar__column {
+  position: relative;
+  /* 压在网格线之上，避免虚线穿过柱体 */
+  z-index: 1;
   display: flex;
   flex: 1;
   flex-direction: column;
   align-items: center;
   min-width: 0;
-  padding: 4px 2px;
+  padding: var(--usagechart-column-pad-y) 2px;
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.18s ease;
