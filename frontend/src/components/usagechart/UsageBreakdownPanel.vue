@@ -201,25 +201,23 @@ const subtitle = computed(() => {
         key="overview"
         :columns="columns"
         :max-total="maxColumnTotal"
-        :metric-unit="metric.unit"
-        @select="drillToDay"
+        :unit="metric.unit"
+        @drill="drillToDay"
       />
       <CategoryBarChart
         v-else-if="level === 'day'"
         key="day"
         :bars="dayBars"
-        :metric-unit="metric.unit"
+        :unit="metric.unit"
         :drillable="true"
-        :detail-term="dimension.secondaryTerm"
-        @select="drillToPrimary"
+        @drill="drillToPrimary"
       />
       <CategoryBarChart
         v-else
         key="primary"
         :bars="primaryBars"
-        :metric-unit="metric.unit"
+        :unit="metric.unit"
         :drillable="false"
-        :detail-term="dimension.secondaryTerm"
       />
     </Transition>
   </div>
