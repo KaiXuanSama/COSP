@@ -445,6 +445,8 @@ function toKUnit(value: number): number {
 .breakdown-card {
   --usage-chart-font-mono: 'DM Mono', monospace;
   --usage-chart-font-body: #{$font-body};
+  /* 面包屑当前层级要与 .heatmap-title 同字体同字号，故一并注入展示字体 */
+  --usage-chart-font-display: #{$font-display};
   --usage-chart-text-primary: #{$text-primary};
   --usage-chart-text-body: #{$text-body};
   --usage-chart-text-muted: #{$text-muted};
@@ -457,27 +459,6 @@ function toKUnit(value: number): number {
   --usage-chart-tooltip-text: #{$text-light};
 
   margin-bottom: $space-lg;
-}
-
-.breakdown-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: $space-md;
-}
-
-.breakdown-title {
-  font-family: $font-display;
-  font-size: 18px;
-  font-weight: 600;
-  color: $text-primary;
-}
-
-/* 口径说明：新表仅记成功且带 usage 的调用，与统计卡的全量口径不同 */
-.breakdown-note {
-  font-family: $font-body;
-  font-size: 12px;
-  color: $text-muted;
 }
 
 .heatmap-card {

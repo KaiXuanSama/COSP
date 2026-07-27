@@ -241,27 +241,43 @@ const subtitle = computed(() => {
 .usage-breakdown__crumbs {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 8px;
 }
 
+/*
+ * 面包屑兼任卡片标题，故字号对齐其它卡片的标题（见 .heatmap-title）。
+ *
+ * 已浏览过的父级层级用略小字号 + 强调色，既保留"可点回去"的暗示，
+ * 也让当前层级在视觉上是唯一的标题主体，不至于并列成一排大字。
+ */
 .usage-breakdown__crumb {
   padding: 0;
-  font-family: var(--usage-chart-font-body, inherit);
-  font-size: 13px;
+  font-family: var(--usage-chart-font-display, inherit);
+  font-size: 16px;
+  font-weight: 600;
   color: var(--usage-chart-accent, #c27a3e);
   background: none;
   border: none;
   cursor: pointer;
   transition: opacity 0.15s ease;
+  /*
+   * 强制等高数字（lining figures）。
+   *
+   * 标题字体 Cormorant Garamond 默认用旧式数字：3/4/5/7/9 会垂到基线以下，
+   * 像小写字母那样带降部。纯西文标题里这很雅致，但「7月27日」这种中文混排下，
+   * 汉字端坐基线、数字却往下沉，看起来就像基线错位。
+   */
+  font-variant-numeric: lining-nums;
+  font-feature-settings: 'lnum' 1;
 
   &:hover {
     opacity: 0.7;
   }
 
-  /* 当前层级不可跳转，降级为普通文字 */
+  /* 当前层级不可跳转，降级为普通文字，并取卡片标题字号 */
   &--current {
+    font-size: 22px;
     color: var(--usage-chart-text-primary, #1a1917);
-    font-weight: 600;
     cursor: default;
 
     &:hover {
@@ -271,7 +287,8 @@ const subtitle = computed(() => {
 }
 
 .usage-breakdown__crumb-sep {
-  font-size: 12px;
+  font-family: var(--usage-chart-font-display, inherit);
+  font-size: 16px;
   color: var(--usage-chart-text-muted, #9a9590);
 }
 
