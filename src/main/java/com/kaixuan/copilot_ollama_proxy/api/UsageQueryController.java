@@ -87,4 +87,39 @@ public class UsageQueryController {
     public Mono<List<UsageBreakdownRow>> usageBreakdown(@RequestParam(defaultValue = "7") int days) {
         return usageQueryService.getUsageBreakdown(days);
     }
+
+    /**
+     * 下钻柱状图明细的 SSE 推送流，让柱状图与统计卡同步实时更新。
+     *
+     * <p>与 {@link #streamStats()} 由同一批调用事件驱动，因此不会出现「卡片已涨、柱子还旧」的错位。
+     * 每帧下发完整明细列表（{@code event: breakdown}），前端整体替换即可，
+     * 无需处理增量合并；帧内容未变时后端已用 {@code distinctUntilChanged} 抑制，不会空推。
+     *
+     * <p>本端点走认证，且同样受 {@link SseConnectionGate} 总连接数上限保护。
+     *
+     * @param days 回看天数，默认 7；服务层会钳制到 [1, 90]
+     */
+    @GetMapping(value = "/config/api/usage-breakdown/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<List<UsageBreakdownRow>>> streamUsageBreakdown(
+            @RequestParam(defaultValue = "7") int days) {
+        return Flux.defer(() -> {
+            if (!sseConnectionGate.tryAcquire()) {
+                return Flux.<ServerSentEvent<List<UsageBreakdownRow>>>empty();
+            }
+            AtomicBoolean released = new AtomicBoolean(false);
+
+            Flux<ServerSentEvent<List<UsageBreakdownRow>>> data = usageQueryService.streamUsageBreakdown(days)
+                    .map(rows -> ServerSentEvent.builder(rows).event("breakdown").build());
+
+            Flux<ServerSentEvent<List<UsageBreakdownRow>>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
+                    .map(tick -> ServerSentEvent.<List<UsageBreakdownRow>>builder().comment("keep-alive").build());
+
+            return Flux.merge(data, heartbeat)
+                    .doFinally(signal -> {
+                        if (released.compareAndSet(false, true)) {
+                            sseConnectionGate.release();
+                        }
+                    });
+        });
+    }
 }

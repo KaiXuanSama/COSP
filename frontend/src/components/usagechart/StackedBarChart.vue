@@ -106,8 +106,27 @@ function drillIntoDay(date: string) {
   emit('drill', date)
 }
 
-// 数据变化后重播入场动画，让「切换时间范围/指标」也有一致的观感。
-watch(() => props.columns, async () => {
+/**
+ * 结构指纹：列的日期序列 + 各列的段身份。
+ *
+ * 只用于判断「是不是同一批柱子」，不含数值，因此实时推送导致的纯数值变化不会改变它。
+ */
+const structureKey = computed(() =>
+  props.columns
+    .map((column) => `${column.date}:${column.segments.map((s) => s.primary ?? '~other').join(',')}`)
+    .join('|'),
+)
+
+/**
+ * 仅在结构变化时重播入场动画。
+ *
+ * SSE 实时推送会高频替换 columns，但绝大多数时候只是某些段的数值在涨；
+ * 若每帧都把 revealed 打回 false，柱子会不停地归零重长、图表持续抖动。
+ * 数值变化交给段上的 CSS height transition 自然过渡即可，观感是「柱子平滑长高」。
+ *
+ * 结构变化（切换时间范围、出现新的供应商/日期）才重播，保留原有的入场观感。
+ */
+watch(structureKey, async () => {
   revealed.value = false
   hideTooltip()
   await nextTick()

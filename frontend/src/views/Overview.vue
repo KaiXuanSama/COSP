@@ -4,6 +4,7 @@ import { NCard, NNumberAnimation } from 'naive-ui'
 import ActivityHeatmap from '@/components/heatmap/ActivityHeatmap.vue'
 import UsageBreakdownPanel from '@/components/usagechart/UsageBreakdownPanel.vue'
 import http from '@/api'
+import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 import type { HeatmapModeConfig } from '@/components/heatmap'
 import type { BreakdownDimension, BreakdownMetric, UsageBreakdownRow } from '@/components/usagechart'
 import { useStatsStore, type StatsData } from '@/stores/stats'
@@ -18,6 +19,9 @@ const heatmapFailed = ref(false)
 const breakdownRows = ref<UsageBreakdownRow[]>([])
 const breakdownLoading = ref(false)
 const breakdownFailed = ref(false)
+
+/** 下钻明细的 SSE 连接句柄。非响应式，仅用于生命周期管理。 */
+let breakdownSource: AuthEventSource | null = null
 
 // 记录刷新前的旧值，作为动画起点
 const prev = ref({ total: 0, today: 0, input: 0, output: 0 })
@@ -119,14 +123,17 @@ const activeHeatmapMode = computed(() => {
 onMounted(() => {
   // 热力图历史数据首屏全量拉取一次；统计卡先 HTTP 兜底一次，随后交给 SSE 实时推送。
   void fetchHeatmap()
-  // 下钻柱状图同样首屏一次拉全，三级视图由前端 pivot，无需二次请求。
+  // 柱状图同样是「HTTP 首屏兜底 + SSE 接管」：先拉一次保证立刻有内容，
+  // 再建流实时刷新。三级视图仍由前端 pivot，下钻过程中不产生任何请求。
   void fetchBreakdown()
+  connectBreakdownStream()
   void statsStore.fetchStats()
   statsStore.connectStream()
 })
 
 onUnmounted(() => {
   statsStore.disconnectStream()
+  disconnectBreakdownStream()
 })
 
 // SSE 每次推送新快照时：驱动数字动画（记录旧值作为起点），并把“今日”单格同步进热力图。
@@ -214,6 +221,43 @@ async function fetchBreakdown() {
     }
   } finally {
     breakdownLoading.value = false
+  }
+}
+
+/**
+ * 建立柱状图明细的 SSE 连接，让柱子随调用实时增长。
+ *
+ * 每帧是完整明细列表，整体替换即可，无需增量合并；后端已用 distinctUntilChanged
+ * 抑制内容未变的帧，因此这里每次赋值都代表数据真的变了。
+ *
+ * 与统计卡由同一批调用事件驱动，两处视图不会出现「卡片已涨、柱子还旧」的错位。
+ */
+function connectBreakdownStream() {
+  if (breakdownSource) return
+  breakdownSource = createAuthEventSource({
+    path: `/usage-breakdown/stream?days=${BREAKDOWN_DAYS}`,
+    handlers: {
+      breakdown: (data) => {
+        try {
+          const rows = JSON.parse(data) as UsageBreakdownRow[]
+          if (!Array.isArray(rows)) return
+          breakdownRows.value = rows
+          // 推送成功即视为链路正常：清掉首屏 HTTP 可能留下的失败态。
+          breakdownFailed.value = false
+          breakdownLoading.value = false
+        } catch {
+          // 忽略坏帧，保留上一份明细，避免图表闪空。
+        }
+      },
+    },
+  })
+}
+
+/** 断开柱状图 SSE 连接（离开概览页时调用）。 */
+function disconnectBreakdownStream() {
+  if (breakdownSource) {
+    breakdownSource.close()
+    breakdownSource = null
   }
 }
 

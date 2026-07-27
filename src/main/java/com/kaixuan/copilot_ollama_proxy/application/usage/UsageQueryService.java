@@ -22,9 +22,14 @@ import java.util.Map;
  *
  * <p>提供两条读取链路：
  * <ul>
- *   <li>{@link #getStats()} / {@link #getHeatmap(int)} —— HTTP 首屏拉取；</li>
- *   <li>{@link #streamStats()} —— SSE 增量推送，事件驱动 + 定时兜底，替代前端定时轮询。</li>
+ *   <li>{@link #getStats()} / {@link #getHeatmap(int)} / {@link #getUsageBreakdown(int)}
+ *       —— HTTP 首屏拉取；</li>
+ *   <li>{@link #streamStats()} / {@link #streamUsageBreakdown(int)}
+ *       —— SSE 增量推送，事件驱动 + 定时兜底，替代前端定时轮询。</li>
  * </ul>
+ *
+ * <p>两条 SSE 流共用 {@link UsageEventPublisher} 的同一批信号，因此统计卡与下钻柱状图
+ * 由同一次调用事件同时刷新，视图之间不会出现新旧错位。
  */
 @Service
 public class UsageQueryService {
@@ -64,9 +69,43 @@ public class UsageQueryService {
      * @param requestedDays 请求回看天数，超出 [1, 90] 时钳制
      */
     public Mono<List<UsageBreakdownRow>> getUsageBreakdown(int requestedDays) {
-        int days = Math.max(MIN_BREAKDOWN_DAYS, Math.min(MAX_BREAKDOWN_DAYS, requestedDays));
+        int days = clampBreakdownDays(requestedDays);
         return Mono.fromCallable(() -> apiCallUsageRepository.aggregateBreakdown(days))
                 .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 下钻用量明细的 SSE 推送流，让概览柱状图与统计卡一样实时更新。
+     *
+     * <p>触发源与 {@link #streamStats()} 完全一致（首帧 + {@link UsageEventPublisher} 调用信号
+     * + 定时兜底），因此两处视图由同一批事件驱动，不会出现「卡片已涨、柱子还旧」的错位。
+     *
+     * <p>复用 {@code UsageEventPublisher} 而非新增发布器是有意的：{@code api_call_usage}
+     * 由 provider 层在响应结束时写入，早于 api 层 {@code ApiUsageCollector.record} 发出的信号，
+     * 故信号到达时明细行必定已落库，不存在读到旧数据的时序问题。
+     *
+     * <p>反过来，部分信号对应的调用没有 usage（上游未返回），不会产生明细行；
+     * 这类「空转」由 {@code distinctUntilChanged} 吸收，不会推出重复帧。
+     *
+     * @param requestedDays 请求回看天数，超出 [1, 90] 时钳制
+     */
+    public Flux<List<UsageBreakdownRow>> streamUsageBreakdown(int requestedDays) {
+        int days = clampBreakdownDays(requestedDays);
+
+        Flux<Object> triggers = Flux.merge(
+                Flux.just(new Object()),
+                usageEventPublisher.changes(),
+                Flux.interval(FALLBACK_INTERVAL));
+
+        return triggers
+                .concatMap(ignored -> Mono.fromCallable(() -> apiCallUsageRepository.aggregateBreakdown(days))
+                        .subscribeOn(Schedulers.boundedElastic()))
+                .distinctUntilChanged();
+    }
+
+    /** 钳制回看天数，防止超大范围查询拖垮 SQLite。 */
+    private static int clampBreakdownDays(int requestedDays) {
+        return Math.max(MIN_BREAKDOWN_DAYS, Math.min(MAX_BREAKDOWN_DAYS, requestedDays));
     }
 
     /** 查询当前统计快照（HTTP 首屏）。 */

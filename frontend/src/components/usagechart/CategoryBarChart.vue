@@ -85,7 +85,16 @@ function drillInto(bar: CategoryBar) {
   emit('drill', bar.key)
 }
 
-watch(() => props.bars, async () => {
+/** 结构指纹：柱的身份序列，不含数值，故实时推送的数值变化不会改变它。 */
+const structureKey = computed(() => props.bars.map((bar) => bar.key).join('|'))
+
+/**
+ * 仅在结构变化时重播入场动画。
+ *
+ * 理由同 StackedBarChart：SSE 推送只让数值增长时，重置 revealed 会导致柱子
+ * 归零重长、图表持续抖动；纯数值变化交给 CSS height transition 平滑过渡。
+ */
+watch(structureKey, async () => {
   revealed.value = false
   hideTooltip()
   await nextTick()
