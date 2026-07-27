@@ -19,15 +19,24 @@
  * 将来主次维度互换只需页面层换一份 dimension 配置。
  */
 import { computed, ref } from 'vue'
-import StackedBarChart from './StackedBarChart.vue'
-import CategoryBarChart from './CategoryBarChart.vue'
+import UsageBarChart from './UsageBarChart.vue'
 import { useUsageBreakdown } from './useUsageBreakdown'
 import type {
   BreakdownDimension,
   BreakdownMetric,
   DrilldownLevel,
+  StackBar,
   UsageBreakdownRow,
 } from './usagechart'
+
+/**
+ * 面包屑那一行的固定高度（px）。
+ *
+ * 取当前层级字号（22px）在 line-height: normal 下的行盒高度。写成固定值是为了
+ * 让各层级的这一行等高 —— 一级只有 22px 的当前项，二级起还并排 16px 的父级项，
+ * 若由内容撑开，层级切换时整张卡片会随之长高或缩短，观感上是一次跳动。
+ */
+const CRUMB_LINE_HEIGHT = 26
 
 const props = withDefaults(
   defineProps<{
@@ -79,6 +88,8 @@ const transitionName = computed(() =>
 
 const rootStyle = computed(() => ({
   '--usage-chart-transition': `${props.transitionDuration}ms`,
+  // 面包屑行固定高度，避免各层级字号组合不同导致卡片高度跳动
+  '--usage-breakdown-crumb-line': `${CRUMB_LINE_HEIGHT}px`,
 }))
 
 /** 二级数据：某天各主维度。 */
@@ -92,6 +103,33 @@ const primaryBars = computed(() =>
     ? barsForPrimary(selectedDate.value, selectedPrimary.value)
     : [],
 )
+
+/**
+ * 当前层级要渲染的柱子 —— 三级共用同一个图表组件，只是喂不同的数据。
+ *
+ * 这是合并两个图表组件后的核心收益：图表实例常驻不销毁，层级切换只是换一份
+ * StackBar[]，柱子按 key 复用 DOM 节点，因此高度变化由 CSS transition 平滑衔接
+ * （morph），而不是旧的一批整体淡出、新的一批淡入（fade）。
+ */
+const activeBars = computed<StackBar[]>(() => {
+  if (level.value === 'overview') return columns.value
+  if (level.value === 'day') return dayBars.value
+  return primaryBars.value
+})
+
+/**
+ * 归一化基准。
+ *
+ * 一级用「所有天的最大总量」，使各天柱高可横向比较；
+ * 二 / 三级是各自独立的视图，用本层最大值即可，否则下钻后柱子会被上层的大值压扁。
+ */
+const activeMaxTotal = computed(() => {
+  if (level.value === 'overview') return maxColumnTotal.value
+  return activeBars.value.reduce((max, bar) => Math.max(max, bar.total), 0)
+})
+
+/** 三级为最细粒度，不能再往下钻。 */
+const activeDrillable = computed(() => level.value !== 'primary')
 
 /** 一级是否有可渲染数据。 */
 const hasData = computed(() => columns.value.length > 0)
@@ -138,6 +176,18 @@ function drillToPrimary(primary: string) {
   direction.value = 'down'
   selectedPrimary.value = primary
   level.value = 'primary'
+}
+
+/**
+ * 图表的下钻入口 —— 三级共用一个组件，故由本层按当前层级分派。
+ *
+ * 图表只负责「某根柱子被点了，它的 key 是 X」，不关心这一步该去哪；
+ * 层级语义留在编排层，图表因此完全无状态、可任意复用。
+ * 三级已是最细粒度，不再往下走。
+ */
+function drillFromChart(key: string) {
+  if (level.value === 'overview') drillToDay(key)
+  else if (level.value === 'day') drillToPrimary(key)
 }
 
 /** 面包屑跳转：目标层级在当前之前即为上浮。 */
@@ -194,32 +244,22 @@ const subtitle = computed(() => {
     <div v-else-if="failed && !hasData" class="usage-breakdown__state">{{ errorText }}</div>
     <div v-else-if="!hasData" class="usage-breakdown__state">{{ emptyText }}</div>
 
-    <!-- 层级切换：下探放大淡出，上浮缩小淡出 -->
-    <Transition v-else :name="transitionName" mode="out-in">
-      <StackedBarChart
-        v-if="level === 'overview'"
-        key="overview"
-        :columns="columns"
-        :max-total="maxColumnTotal"
-        :unit="metric.unit"
-        @drill="drillToDay"
-      />
-      <CategoryBarChart
-        v-else-if="level === 'day'"
-        key="day"
-        :bars="dayBars"
-        :unit="metric.unit"
-        :drillable="true"
-        @drill="drillToPrimary"
-      />
-      <CategoryBarChart
-        v-else
-        key="primary"
-        :bars="primaryBars"
-        :unit="metric.unit"
-        :drillable="false"
-      />
-    </Transition>
+    <!--
+      三级共用同一个图表实例，不再按层级切换组件。
+
+      这样柱子在层级间按 key 复用 DOM 节点，高度 / 位置变化交给 CSS transition，
+      观感是「柱子平滑变形到新的一组」而非整批淡出重建 —— 这是 morph 动效的前提，
+      也是把两个近乎重复的图表组件合并的主要动机。
+    -->
+    <UsageBarChart
+      v-else
+      :bars="activeBars"
+      :max-total="activeMaxTotal"
+      :unit="metric.unit"
+      :stacked="level === 'overview'"
+      :drillable="level !== 'primary'"
+      @drill="drillFromChart"
+    />
   </div>
 </template>
 
@@ -238,10 +278,18 @@ const subtitle = computed(() => {
   flex-wrap: wrap;
 }
 
+/*
+ * 固定行高，使各层级的这一行等高。
+ *
+ * 面包屑的字号随层级变化（一级只有 22px 的当前项，二级起还有 16px 的父级项），
+ * 若高度交给内容撑开，层级切换时整张卡片会跟着长高或缩短，产生跳动。
+ * 取当前项字号的行盒高度作为固定值，父级项再小也不会影响它。
+ */
 .usage-breakdown__crumbs {
   display: flex;
   align-items: baseline;
   gap: 8px;
+  height: var(--usage-breakdown-crumb-line);
 }
 
 /*

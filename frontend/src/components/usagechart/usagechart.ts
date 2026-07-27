@@ -79,30 +79,36 @@ export interface SegmentDetail {
   children?: SegmentDetail[]
 }
 
-/** 一级图的一列（一天）。 */
-export interface StackColumn {
-  date: string
-  /** 该列总量，用于计算柱高与各段占比。 */
+/**
+ * 图表中的一根柱子 —— 三级视图共用的唯一柱子模型。
+ *
+ * <h2>为什么三级共用一种结构</h2>
+ * 分类柱状图本质是「只有一段的堆叠柱状图」：
+ * 一级每列由多个主维度段堆叠而成，二 / 三级每列只有一段（该分类自身）。
+ * 既然只是段数不同，就没必要为它们准备两套结构与两个组件 ——
+ * 统一之后图表只认一种数据，样式与交互逻辑都只有一份实现。
+ *
+ * <h2>身份稳定性</h2>
+ * {@link key} 是这根柱子在同一层级内的稳定标识（一级是日期，二 / 三级是分类值）。
+ * 层级切换时按 key 复用 DOM 节点，柱子才能「平滑长高 / 缩短」而不是整批淡出重建，
+ * 这是下钻动效能做成 morph 而非 fade 的前提。
+ */
+export interface StackBar {
+  /** 同层级内唯一的稳定标识：一级为日期，二 / 三级为分类原始值。 */
+  key: string
+  /** 横轴标签（一级为「M/D」，二 / 三级为分类显示名）。 */
+  label: string
+  /** 供 aria-label 与面包屑使用的完整名称（一级为完整日期）。 */
+  fullLabel: string
+  /** 该柱总量，等于各段之和。 */
   total: number
   /**
    * 自下而上的段序列。
    *
-   * 每列<strong>各自独立排序</strong>（值降序，下方更粗），other 固定末尾（最上方）。
-   * 下钻承担精确构成的职责，故不追求跨列位置一致。
+   * 一级：各主维度按值降序（下方更粗），other 固定末尾（最上方）。
+   * 二 / 三级：只有一段，即该分类自身。
    */
   segments: StackSegment[]
-}
-
-/** 二 / 三级分类柱状图的一根柱子。 */
-export interface CategoryBar {
-  /** 分类原始值。 */
-  key: string
-  label: string
-  value: number
-  /** 占当前视图总量的比例（0~1）。 */
-  ratio: number
-  /** 下一级明细；三级图为空数组（已是最细粒度）。 */
-  detail: SegmentDetail[]
 }
 
 /** 下钻层级。 */

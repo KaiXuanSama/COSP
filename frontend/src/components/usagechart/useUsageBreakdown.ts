@@ -2,9 +2,8 @@ import { computed, type Ref } from 'vue'
 import type {
   BreakdownDimension,
   BreakdownMetric,
-  CategoryBar,
   SegmentDetail,
-  StackColumn,
+  StackBar,
   StackSegment,
   UsageBreakdownRow,
 } from './usagechart'
@@ -35,6 +34,12 @@ function sortedByValueDesc(entries: Map<string, number>): Array<[string, number]
 /** 安全除法：分母为 0 时返回 0，避免 NaN 流入样式计算。 */
 function ratioOf(value: number, total: number): number {
   return total > 0 ? value / total : 0
+}
+
+/** 横轴日期标签只保留「M/D」，避免 7 根柱子的标签挤在一起。 */
+function shortDate(date: string): string {
+  const parts = date.split('-')
+  return parts.length === 3 ? `${Number(parts[1])}/${Number(parts[2])}` : date
 }
 
 /**
@@ -104,7 +109,7 @@ export function useUsageBreakdown(
    *
    * 每列独立按值降序排列（下方更粗），占比低于阈值的主维度合并为 other 并固定在末尾。
    */
-  const columns = computed<StackColumn[]>(() =>
+  const columns = computed<StackBar[]>(() =>
     [...rowsByDate.value.entries()].map(([date, columnRows]) => {
       const byPrimary = sumBy(columnRows, dimension.value.primaryOf, metric.value.valueOf)
       const total = [...byPrimary.values()].reduce((sum, value) => sum + value, 0)
@@ -137,7 +142,7 @@ export function useUsageBreakdown(
         })
       }
 
-      return { date, total, segments }
+      return { key: date, label: shortDate(date), fullLabel: date, total, segments }
     }),
   )
 
@@ -147,42 +152,67 @@ export function useUsageBreakdown(
   )
 
   /**
+   * 把「一个分类」包装成单段柱子。
+   *
+   * 二 / 三级的柱子就是只有一段的堆叠柱：段占满整柱，故 ratio 恒为 1。
+   * 段自身的 ratio 用于 tooltip 显示「占本视图的比例」，
+   * 因此这里传入 viewTotal 算出的占比，而非段内占比。
+   */
+  function toSingleSegmentBar(
+    key: string,
+    label: string,
+    value: number,
+    viewRatio: number,
+    detail: SegmentDetail[],
+  ): StackBar {
+    return {
+      key,
+      label,
+      fullLabel: label,
+      total: value,
+      segments: [{ primary: key, label, value, ratio: viewRatio, isOther: false, detail }],
+    }
+  }
+
+  /**
    * 二级图：某天各主维度平铺。
    *
    * 不做 other 合并 —— 下钻的目的正是看清一级图里被合并掉的小成员。
    */
-  function barsForDate(date: string): CategoryBar[] {
+  function barsForDate(date: string): StackBar[] {
     const scoped = rowsByDate.value.get(date) ?? []
     const byPrimary = sumBy(scoped, dimension.value.primaryOf, metric.value.valueOf)
     const total = [...byPrimary.values()].reduce((sum, value) => sum + value, 0)
 
     return sortedByValueDesc(byPrimary).map(([primary, value]) => {
       const own = scoped.filter(row => dimension.value.primaryOf(row) === primary)
-      return {
-        key: primary,
-        label: primaryLabelOf(primary),
+      return toSingleSegmentBar(
+        primary,
+        primaryLabelOf(primary),
         value,
-        ratio: ratioOf(value, total),
-        detail: buildSecondaryDetail(own, value),
-      }
+        ratioOf(value, total),
+        buildSecondaryDetail(own, value),
+      )
     })
   }
 
   /** 三级图：某天某主维度下各次维度平铺，已是最细粒度故无下级明细。 */
-  function barsForPrimary(date: string, primary: string): CategoryBar[] {
+  function barsForPrimary(date: string, primary: string): StackBar[] {
     const scoped = (rowsByDate.value.get(date) ?? []).filter(
       row => dimension.value.primaryOf(row) === primary,
     )
     const bySecondary = sumBy(scoped, dimension.value.secondaryOf, metric.value.valueOf)
     const total = [...bySecondary.values()].reduce((sum, value) => sum + value, 0)
 
-    return sortedByValueDesc(bySecondary).map(([secondary, value]) => ({
-      key: secondary,
-      label: secondaryLabelOf(secondary),
-      value,
-      ratio: ratioOf(value, total),
-      detail: [],
-    }))
+    return sortedByValueDesc(bySecondary).map(([secondary, value]) =>
+      toSingleSegmentBar(
+        secondary,
+        secondaryLabelOf(secondary),
+        value,
+        ratioOf(value, total),
+        [],
+      ),
+    )
   }
 
   return {

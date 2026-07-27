@@ -44,7 +44,8 @@ describe('一级：按天堆叠', () => {
       row('2026-07-26', 'deepseek', 'v4', 7),
     ])
 
-    expect(columns.value.map(c => c.date)).toEqual(['2026-07-24', '2026-07-25', '2026-07-26'])
+    // key 即柱子身份：一级为日期（层级切换时靠它复用 DOM 节点）
+    expect(columns.value.map(c => c.key)).toEqual(['2026-07-24', '2026-07-25', '2026-07-26'])
     expect(columns.value.map(c => c.total)).toEqual([5, 10, 7])
   })
 
@@ -226,7 +227,8 @@ describe('二级：某天各主维度', () => {
 
     const bars = barsForDate('2026-07-26')
     expect(bars.map(b => b.key)).toEqual(['big', 'small'])
-    expect(bars[0].ratio).toBeCloseTo(0.9)
+    // 二 / 三级的柱子是「只有一段的堆叠柱」，占比记在那一段上
+    expect(bars[0].segments[0].ratio).toBeCloseTo(0.9)
   })
 
   it('二级图不做 other 合并，小成员各自成柱', () => {
@@ -245,7 +247,7 @@ describe('二级：某天各主维度', () => {
       row('2026-07-26', 'deepseek', 'v4-pro', 10),
     ])
 
-    const detail = barsForDate('2026-07-26')[0].detail
+    const detail = barsForDate('2026-07-26')[0].segments[0].detail
     expect(detail.map(d => d.label)).toEqual(['v4-flash', 'v4-pro'])
     expect(detail[0].ratio).toBeCloseTo(0.75)
   })
@@ -266,9 +268,9 @@ describe('三级：某天某主维度下各次维度', () => {
 
     const bars = barsForPrimary('2026-07-26', 'deepseek')
     expect(bars.map(b => b.key)).toEqual(['v4-flash', 'v4-pro'])
-    expect(bars[0].ratio).toBeCloseTo(0.8)
+    expect(bars[0].segments[0].ratio).toBeCloseTo(0.8)
     // 已是最细粒度，无更深明细
-    expect(bars[0].detail).toEqual([])
+    expect(bars[0].segments[0].detail).toEqual([])
   })
 
   it('主维度不存在时返回空数组', () => {
@@ -310,5 +312,79 @@ describe('解耦：主次维度互换', () => {
 
     expect(providerView.columns.value[0].total).toBe(modelView.columns.value[0].total)
     expect(providerView.maxColumnTotal.value).toBe(modelView.maxColumnTotal.value)
+  })
+})
+
+/**
+ * 三级共用同一种柱子结构，是「一个图表组件服务三级」的前提。
+ *
+ * 若哪天有人给某一级换回专用结构，图表就得重新分叉成两个组件、
+ * 下钻动效也会退回整体淡入淡出，故在此锁定。
+ */
+describe('统一模型：三级同构', () => {
+  const rows = [
+    row('2026-07-26', 'deepseek', 'v4-flash', 60),
+    row('2026-07-26', 'deepseek', 'v4-pro', 30),
+    row('2026-07-26', 'zhipu', 'glm-5.2', 10),
+  ]
+
+  /** StackBar 的必备字段，三级缺一不可。 */
+  function expectStackBarShape(bar: unknown) {
+    expect(bar).toMatchObject({
+      key: expect.any(String),
+      label: expect.any(String),
+      fullLabel: expect.any(String),
+      total: expect.any(Number),
+      segments: expect.any(Array),
+    })
+  }
+
+  it('三级返回的柱子结构一致', () => {
+    const { columns, barsForDate, barsForPrimary } = setup(rows)
+
+    expectStackBarShape(columns.value[0])
+    expectStackBarShape(barsForDate('2026-07-26')[0])
+    expectStackBarShape(barsForPrimary('2026-07-26', 'deepseek')[0])
+  })
+
+  it('二 / 三级的柱子只有一段，且该段占满整柱', () => {
+    const { barsForDate, barsForPrimary } = setup(rows)
+
+    for (const bar of [...barsForDate('2026-07-26'), ...barsForPrimary('2026-07-26', 'deepseek')]) {
+      expect(bar.segments).toHaveLength(1)
+      // 段值等于柱总量：分类柱就是「只有一段的堆叠柱」
+      expect(bar.segments[0].value).toBe(bar.total)
+      expect(bar.segments[0].isOther).toBe(false)
+    }
+  })
+
+  it('每根柱的 total 等于各段之和', () => {
+    const { columns, barsForDate } = setup(rows)
+
+    for (const bar of [...columns.value, ...barsForDate('2026-07-26')]) {
+      const sum = bar.segments.reduce((acc, s) => acc + s.value, 0)
+      expect(sum).toBe(bar.total)
+    }
+  })
+
+  it('一级的 key 是日期、label 是 M/D 短格式', () => {
+    const { columns } = setup(rows)
+
+    // key 用于 DOM 复用（动效身份），label 仅用于横轴显示
+    expect(columns.value[0].key).toBe('2026-07-26')
+    expect(columns.value[0].label).toBe('7/26')
+    expect(columns.value[0].fullLabel).toBe('2026-07-26')
+  })
+
+  it('同层级内 key 唯一，保证按 key 复用 DOM 不会冲突', () => {
+    const { columns, barsForDate } = setup([
+      ...rows,
+      row('2026-07-27', 'deepseek', 'v4-flash', 5),
+    ])
+
+    for (const bars of [columns.value, barsForDate('2026-07-26')]) {
+      const keys = bars.map(b => b.key)
+      expect(new Set(keys).size).toBe(keys.length)
+    }
   })
 })

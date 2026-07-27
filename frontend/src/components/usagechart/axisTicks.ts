@@ -23,6 +23,22 @@ export const COLUMN_PAD_Y = 4
  */
 export const VALUE_LABEL_SPACE = 18
 
+/**
+ * 纵轴刻度栏宽度（px）。
+ *
+ * 两级图表必须同值：它决定绘图区的左起点，若各自取值，
+ * 层级切换时刻度与柱子会整体横向跳动。取较宽的一档以容纳四位数读数。
+ */
+export const AXIS_WIDTH = 36
+
+/**
+ * 底部分类标签行的高度（px）—— margin 8px + 行高约 17.6px。
+ *
+ * 两级图表的标签内容不同（日期 / 分类名），但行高必须一致，
+ * 否则两级的整体高度不同，切换时卡片会轻微抽动。
+ */
+export const LABEL_ROW_HEIGHT = 26
+
 /** 单个刻度：值 + 它在绘图区内自下而上的高度占比。 */
 export interface AxisTick {
   /** 刻度对应的数值。 */
