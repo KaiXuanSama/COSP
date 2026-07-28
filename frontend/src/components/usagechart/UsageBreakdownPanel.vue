@@ -190,11 +190,13 @@ function drillFromChart(key: string) {
   else if (level.value === 'day') drillToPrimary(key)
 }
 
+/** 层级由浅入深的次序，用于判断跳转方向与求上一级。 */
+const LEVEL_ORDER: DrilldownLevel[] = ['overview', 'day', 'primary']
+
 /** 面包屑跳转：目标层级在当前之前即为上浮。 */
 function jumpTo(target: DrilldownLevel) {
   if (target === level.value) return
-  const order: DrilldownLevel[] = ['overview', 'day', 'primary']
-  direction.value = order.indexOf(target) < order.indexOf(level.value) ? 'up' : 'down'
+  direction.value = LEVEL_ORDER.indexOf(target) < LEVEL_ORDER.indexOf(level.value) ? 'up' : 'down'
   level.value = target
   if (target === 'overview') {
     selectedDate.value = null
@@ -202,6 +204,21 @@ function jumpTo(target: DrilldownLevel) {
   } else if (target === 'day') {
     selectedPrimary.value = null
   }
+}
+
+/** 一级已是顶层，没有上一级可回。 */
+const canAscend = computed(() => level.value !== 'overview')
+
+/**
+ * 图表的上浮入口 —— 右键返回上一级。
+ *
+ * 复用 {@link jumpTo}，因此方向判定、选中路径的清理都与面包屑走同一条逻辑，
+ * 两种回退方式不会出现行为分歧。
+ */
+function ascendFromChart() {
+  const current = LEVEL_ORDER.indexOf(level.value)
+  if (current <= 0) return
+  jumpTo(LEVEL_ORDER[current - 1])
 }
 
 /** 当前层级的副标题，说明纵轴含义与数据口径。 */
@@ -216,6 +233,14 @@ const subtitle = computed(() => {
   }
   return `各${secondaryTerm} · 纵轴为${metricName}`
 })
+
+/**
+ * 右键手势的提示文案。
+ *
+ * 右键没有任何视觉痕迹，不明说就等于没有 —— 面包屑仍是主路径，
+ * 这句只是告诉已经在下层的用户还有更快的退法。顶层不显示（无处可退）。
+ */
+const ascendHint = computed(() => (canAscend.value ? '右键返回上一级' : ''))
 </script>
 
 <template>
@@ -236,7 +261,10 @@ const subtitle = computed(() => {
           </button>
         </template>
       </nav>
-      <span class="usage-breakdown__subtitle">{{ subtitle }}</span>
+      <span class="usage-breakdown__subtitle">
+        {{ subtitle }}
+        <span v-if="ascendHint" class="usage-breakdown__hint">· {{ ascendHint }}</span>
+      </span>
     </div>
 
     <!-- 状态优先级：加载 → 失败 → 空 → 图表 -->
@@ -258,7 +286,9 @@ const subtitle = computed(() => {
       :unit="metric.unit"
       :stacked="level === 'overview'"
       :drillable="level !== 'primary'"
+      :ascendable="canAscend"
       @drill="drillFromChart"
+      @ascend="ascendFromChart"
     />
   </div>
 </template>
@@ -344,6 +374,14 @@ const subtitle = computed(() => {
   font-family: var(--usage-chart-font-body, inherit);
   font-size: 12px;
   color: var(--usage-chart-text-muted, #9a9590);
+}
+
+/*
+ * 右键提示。比副标题再淡一档：它是可选的加速手段，
+ * 不该抢走数据口径说明的注意力。
+ */
+.usage-breakdown__hint {
+  opacity: 0.72;
 }
 
 .usage-breakdown__state {

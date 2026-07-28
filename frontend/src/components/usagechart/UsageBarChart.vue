@@ -35,6 +35,13 @@ const props = withDefaults(defineProps<{
   maxTotal?: number
   /** 是否可继续下钻（三级为最细粒度，应传 false）。 */
   drillable?: boolean
+  /**
+   * 是否可返回上一级（一级已是顶层，应传 false）。
+   *
+   * 为 false 时右键不再拦截，交还浏览器默认菜单 —— 顶层没有「上一级」可去，
+   * 屏蔽菜单却什么也不做只会让人以为页面卡住。
+   */
+  ascendable?: boolean
   /** 下钻提示文案的动词部分，用于 aria-label。 */
   drillHint?: string
   /** 指标单位，用于 tooltip 汇总文案。 */
@@ -59,6 +66,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   maxTotal: 0,
   drillable: true,
+  ascendable: false,
   drillHint: '查看',
   unit: '次',
   height: 180,
@@ -71,6 +79,13 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (e: 'drill', key: string): void
+  /**
+   * 请求返回上一级。
+   *
+   * 图表只报告「用户想上浮」，不关心上一级是谁 —— 与 {@code drill} 对称，
+   * 层级语义一律留在编排层。
+   */
+  (e: 'ascend'): void
 }>()
 
 const rootRef = ref<HTMLElement | null>(null)
@@ -280,6 +295,22 @@ function drillInto(item: MorphBar) {
 }
 
 /**
+ * 右键返回上一级。
+ *
+ * 与左键下钻构成一对自然的手势：左键进、右键退，省去每次都要移到面包屑。
+ * 绑在整个绘图区而非柱子上 —— 「返回」与具体某根柱子无关，
+ * 空白处同样应当响应，否则用户得先瞄准一根柱子才能后退。
+ *
+ * 仅在可上浮时阻止默认菜单：顶层拦下右键却不做事，观感像是页面卡了。
+ */
+function ascend(event: MouseEvent) {
+  if (!props.ascendable) return
+  event.preventDefault()
+  hideTooltip()
+  emit('ascend')
+}
+
+/**
  * 结构指纹：柱的身份序列 + 各柱的段身份。
  *
  * 只用于判断「是不是同一批柱子」，不含数值，因此实时推送导致的纯数值变化不会改变它。
@@ -306,7 +337,14 @@ watch(structureKey, () => {
 </script>
 
 <template>
-  <div ref="rootRef" class="usage-bar" :style="rootStyle" @mouseleave="hideTooltip">
+  <div
+    ref="rootRef"
+    class="usage-bar"
+    :class="{ 'usage-bar--ascendable': ascendable }"
+    :style="rootStyle"
+    @mouseleave="hideTooltip"
+    @contextmenu="ascend"
+  >
     <div class="usage-bar__body">
       <!-- 纵轴：刻度读数 + 与之对齐的网格线，让柱高可被量化读出 -->
       <div class="usage-bar__axis" aria-hidden="true">
@@ -412,6 +450,15 @@ watch(structureKey, () => {
 .usage-bar {
   position: relative;
   width: 100%;
+}
+
+/*
+ * 可上浮时把光标换成右键菜单指针，作为手势的一点视觉线索。
+ * 只作用于柱子之外的空白区域 —— 柱子本身要保留 pointer 表示可下钻，
+ * 两种手势的提示因此不会互相盖掉。
+ */
+.usage-bar--ascendable {
+  cursor: context-menu;
 }
 
 /*
