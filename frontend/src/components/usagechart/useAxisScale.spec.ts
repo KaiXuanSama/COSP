@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cubicBezier, scaleOf } from './useAxisScale'
+import { buildAnimatedAxisTicks, cubicBezier, scaleOf } from './useAxisScale'
 
 /**
  * 纵轴标尺动画的纯数学验证。
@@ -44,5 +44,39 @@ describe('纵轴标尺动画', () => {
     for (let index = 1; index < samples.length; index += 1) {
       expect(samples[index]).toBeGreaterThan(samples[index - 1])
     }
+  })
+
+  it('保留已有刻度值，并通过新标尺让已有线发散', () => {
+    const sparse = [0, 100, 200].map((value, index) => ({ value, ratio: index / 2 }))
+    const dense = [0, 50, 100].map((value, index) => ({ value, ratio: index / 2 }))
+
+    // 旧 100 刻度仍显示 100，但标尺从 1/200 扩到 1/100 的中途，
+    // 其位置已经从 50% 向 100% 发散。
+    const midway = buildAnimatedAxisTicks(sparse, dense, 0.5, 1 / 150)
+    const existing = midway.find((tick) => tick.value === 100)
+
+    expect(existing).toMatchObject({ value: 100, opacity: 1 })
+    expect(existing?.ratio).toBeCloseTo(2 / 3, 10)
+  })
+
+  it('新增细粒度刻度淡入，淘汰的粗粒度刻度淡出', () => {
+    const sparse = [0, 100, 200].map((value, index) => ({ value, ratio: index / 2 }))
+    const dense = [0, 50, 100].map((value, index) => ({ value, ratio: index / 2 }))
+
+    const expanding = buildAnimatedAxisTicks(sparse, dense, 0.5, 1 / 150)
+    expect(expanding.find((tick) => tick.value === 50))
+      .toMatchObject({ opacity: 0.5 })
+    expect(expanding.find((tick) => tick.value === 200))
+      .toMatchObject({ opacity: 0.5 })
+  })
+
+  it('越界的退出刻度钳在顶端后再淡出，不覆盖图表外部', () => {
+    const sparse = [0, 100, 200].map((value, index) => ({ value, ratio: index / 2 }))
+    const dense = [0, 50, 100].map((value, index) => ({ value, ratio: index / 2 }))
+
+    const ticks = buildAnimatedAxisTicks(sparse, dense, 0.5, 1 / 100)
+    const exitingTop = ticks.find((tick) => tick.value === 200)
+
+    expect(exitingTop).toMatchObject({ ratio: 1, opacity: 0.5 })
   })
 })

@@ -19,7 +19,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { StackBar, StackSegment } from './usagechart'
 import { AXIS_WIDTH, buildAxisTicks, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from './axisTicks'
-import { AXIS_SCALE_CULL_MARGIN, useAxisScale } from './useAxisScale'
+import { buildAnimatedAxisTicks, useAxisScale } from './useAxisScale'
 import { useFlip } from './useFlip'
 import UsageTooltip from './UsageTooltip.vue'
 
@@ -129,7 +129,7 @@ const targetCeiling = computed(() => {
  * 刻度与柱高都按它换算，于是刻度线在纵轴上「聚拢 / 散开」——
  * 即压缩与解压的观感。
  */
-const { displayScale, rescaling } = useAxisScale(targetCeiling, {
+const { displayScale, rescaling, progress } = useAxisScale(targetCeiling, {
   duration: props.scaleDuration,
 })
 
@@ -144,22 +144,29 @@ const heightBasis = targetCeiling
 /**
  * 当前要渲染的刻度。
  *
- * 换算进行中时，刻度值仍取<strong>目标</strong>档位（读数不做无意义的中间态，
- * 避免出现 137 这类过渡数字），但位置按动画上限实时投影：
- * 上限从 150 涨到 200 的过程中，150 这档会从顶端逐渐下沉，档间距同步收窄。
- *
- * 超出视野的刻度会被剔除：上限缩小时，旧的大刻度会被顶到绘图区之上，
- * 留着它们会溢出卡片。留一点余量让它们「滑出去」而不是突然消失。
+ * 换算进行中时，同序号的旧/新刻度会同时插值数值与位置；没有配对项的
+ * 旧刻度淡出、新刻度淡入。这样大区间和小区间互转时，不会再发生硬切换。
  */
-const axisTicks = computed(() => {
-  // 静止时用刻度自带的精确占比，避免倒数插值的浮点残差让刻度差出亚像素
-  if (!rescaling.value) return targetTicks.value
+const previousTicks = ref(targetTicks.value)
 
-  const scale = displayScale.value
-  if (scale <= 0) return []
-  return targetTicks.value
-    .map((tick) => ({ value: tick.value, ratio: tick.value * scale }))
-    .filter((tick) => tick.ratio <= 1 + AXIS_SCALE_CULL_MARGIN)
+watch(targetTicks, (_next, previous) => {
+  previousTicks.value = previous
+})
+
+const axisTicks = computed(() => {
+  if (!rescaling.value) {
+    return targetTicks.value.map((tick, index) => ({
+      ...tick,
+      key: `static-${index}`,
+      opacity: 1,
+    }))
+  }
+  return buildAnimatedAxisTicks(
+    previousTicks.value,
+    targetTicks.value,
+    progress.value,
+    displayScale.value,
+  )
 })
 
 /**
@@ -296,11 +303,11 @@ onUnmounted(() => {
       <div class="usage-bar__axis" aria-hidden="true">
         <span
           v-for="tick in axisTicks"
-          :key="tick.value"
+          :key="'axis-' + tick.key"
           class="usage-bar__tick"
-          :style="{ bottom: `${tick.ratio * 100}%` }"
+          :style="{ bottom: `${tick.ratio * 100}%`, opacity: tick.opacity }"
         >
-          {{ formatTickValue(tick.value) }}
+          {{ formatTickValue(Math.round(tick.value)) }}
         </span>
       </div>
 
@@ -308,10 +315,10 @@ onUnmounted(() => {
         <div class="usage-bar__grid" aria-hidden="true">
           <span
             v-for="tick in axisTicks"
-            :key="tick.value"
+              :key="'grid-' + tick.key"
             class="usage-bar__gridline"
             :class="{ 'usage-bar__gridline--base': tick.value === 0 }"
-            :style="{ bottom: `${tick.ratio * 100}%` }"
+              :style="{ bottom: `${tick.ratio * 100}%`, opacity: tick.opacity }"
           />
         </div>
 

@@ -1,4 +1,5 @@
 import { getCurrentScope, onScopeDispose, ref, watch, type Ref } from 'vue'
+import type { AxisTick } from './axisTicks'
 
 /**
  * 纵轴标尺的换算动画 —— 下钻 / 上探时刻度的「压缩」与「解压」。
@@ -73,6 +74,14 @@ export interface AxisScale {
    * 静止时应改用刻度自带的精确占比，避免浮点残差让位置差出亚像素。
    */
   rescaling: Ref<boolean>
+  /** 当前缓动进度（0 到 1），供旧/新刻度的数值、位置与透明度过渡共用。 */
+  progress: Ref<number>
+}
+
+/** 正在过渡中的显示刻度，{@code key} 在整个过渡期间稳定。 */
+export interface AnimatedAxisTick extends AxisTick {
+  key: string
+  opacity: number
 }
 
 /**
@@ -86,6 +95,7 @@ export function useAxisScale(targetCeiling: Ref<number>, options: AxisScaleOptio
 
   const displayScale = ref(scaleOf(targetCeiling.value))
   const rescaling = ref(false)
+  const progress = ref(1)
 
   /** 当前动画帧句柄；null 表示没有动画在跑。 */
   let frame: number | null = null
@@ -110,6 +120,7 @@ export function useAxisScale(targetCeiling: Ref<number>, options: AxisScaleOptio
     ) {
       stop()
       displayScale.value = nextScale
+      progress.value = 1
       return
     }
 
@@ -117,6 +128,7 @@ export function useAxisScale(targetCeiling: Ref<number>, options: AxisScaleOptio
     fromScale = displayScale.value
     toScale = nextScale
     startedAt = now()
+    progress.value = 0
     rescaling.value = true
     schedule()
   })
@@ -124,16 +136,19 @@ export function useAxisScale(targetCeiling: Ref<number>, options: AxisScaleOptio
   /** 推进一帧。 */
   function step(): void {
     frame = null
-    const progress = Math.min(1, (now() - startedAt) / duration)
+    const elapsedProgress = Math.min(1, (now() - startedAt) / duration)
 
-    if (progress >= 1) {
+    if (elapsedProgress >= 1) {
       // 收尾对齐到精确目标，消除插值累积的浮点残差
       displayScale.value = toScale
+      progress.value = 1
       rescaling.value = false
       return
     }
 
-    displayScale.value = fromScale + (toScale - fromScale) * EASING(progress)
+    const eased = EASING(elapsedProgress)
+    displayScale.value = fromScale + (toScale - fromScale) * eased
+    progress.value = eased
     schedule()
   }
 
@@ -154,7 +169,79 @@ export function useAxisScale(targetCeiling: Ref<number>, options: AxisScaleOptio
   // 组件卸载时收掉动画帧，避免回调在已销毁的作用域里继续跑
   if (getCurrentScope()) onScopeDispose(stop)
 
-  return { displayScale, rescaling }
+  return { displayScale, rescaling, progress }
+}
+
+/**
+ * 构造旧/新两组刻度之间的显示帧。
+ *
+ * 旧/新刻度按<strong>数值身份</strong>配对，绝不插值或改写刻度读数。
+ * 旧刻度始终通过动画中的标尺投影到纵轴，因而会真实收束或发散；数量不相等时，
+ * 新增目标刻度在间隙中淡入、已淘汰旧刻度淡出。这样
+ * 0/100/200 → 0/50/100 会保留 0/100 两条已有线并让它们发散，50 在中间淡入。
+ *
+ * @param from 切换前刻度
+ * @param to 切换后刻度
+ * @param progress 已缓动的动画进度（0 到 1），仅控制新增/淘汰刻度的透明度
+ * @param displayScale 当前动画标尺（每个数值单位对应的高度占比）
+ */
+export function buildAnimatedAxisTicks(
+  from: AxisTick[],
+  to: AxisTick[],
+  progress: number,
+  displayScale: number,
+): AnimatedAxisTick[] {
+  const eased = Math.max(0, Math.min(1, progress))
+  const project = (value: number): number => value * displayScale
+  if (!from.length) {
+    return to.map((tick, index) => ({
+      ...tick,
+      ratio: project(tick.value),
+      key: `enter-${index}`,
+      opacity: eased,
+    }))
+  }
+  if (!to.length) {
+    return from.map((tick, index) => ({
+      ...tick,
+      ratio: project(tick.value),
+      key: `exit-${index}`,
+      opacity: 1 - eased,
+    }))
+  }
+
+  const oldValues = new Set(from.map((tick) => tick.value))
+  const newValues = new Set(to.map((tick) => tick.value))
+  const result: AnimatedAxisTick[] = []
+
+  for (const tick of from) {
+    result.push({
+      key: `value-${tick.value}`,
+      value: tick.value,
+      // 已淘汰的大刻度可能被新标尺推到绘图区上方。钳在边界后继续淡出，
+      // 既保留「收束到顶端」的运动方向，也不会溢出卡片。
+      ratio: clampRatio(project(tick.value)),
+      opacity: newValues.has(tick.value) ? 1 : 1 - eased,
+    })
+  }
+
+  for (const tick of to) {
+    if (!oldValues.has(tick.value)) {
+      result.push({
+        key: `value-${tick.value}`,
+        value: tick.value,
+        ratio: clampRatio(project(tick.value)),
+        opacity: eased,
+      })
+    }
+  }
+
+  return result.sort((a, b) => a.ratio - b.ratio)
+}
+
+/** 将过渡刻度限制在绘图区，避免临时刻度越界覆盖卡片其它区域。 */
+function clampRatio(ratio: number): number {
+  return Math.max(0, Math.min(1, ratio))
 }
 
 /**
