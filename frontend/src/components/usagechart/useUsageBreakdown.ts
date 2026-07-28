@@ -152,11 +152,13 @@ export function useUsageBreakdown(
   )
 
   /**
-   * 把「一个分类」包装成单段柱子。
+   * 把「一个分类」包装成单段柱子 —— 仅三级使用。
    *
-   * 二 / 三级的柱子就是只有一段的堆叠柱：段占满整柱，故 ratio 恒为 1。
-   * 段自身的 ratio 用于 tooltip 显示「占本视图的比例」，
-   * 因此这里传入 viewTotal 算出的占比，而非段内占比。
+   * 三级已是最细粒度（次维度自身），无从再往下拆，故柱内只有一段、段占满整柱。
+   * 一级与二级都是真堆叠：一级按主维度分段，二级按次维度分段。
+   *
+   * 段的 ratio 在这里取「占本视图总量」而非段内占比 —— 三级段既然等于整柱，
+   * 段内占比恒为 1 便毫无信息量，tooltip 显示它在本视图中的分量才有意义。
    */
   function toSingleSegmentBar(
     key: string,
@@ -175,24 +177,41 @@ export function useUsageBreakdown(
   }
 
   /**
-   * 二级图：某天各主维度平铺。
+   * 二级图：某天各主维度一柱，柱内按<strong>次维度堆叠</strong>。
    *
-   * 不做 other 合并 —— 下钻的目的正是看清一级图里被合并掉的小成员。
+   * 一级的段是主维度，而二级的横轴正是主维度，因此二级柱内自然该由「该主维度下的
+   * 各次维度」堆叠而成 —— 层级递进因此是「同一份构成被逐层展开」，
+   * 而不是换一种图形语言重新表达。
+   *
+   * 这里不做 other 合并：二级已经限定到单日单主维度，成员数量有限、颗粒度不算细，
+   * 合并只会掩盖下钻本就想让人看清的小成员。三级要用的次维度身份也因此保持完整，
+   * 段与三级柱子共用同一 key，下钻时可继续按身份复用 DOM。
    */
   function barsForDate(date: string): StackBar[] {
     const scoped = rowsByDate.value.get(date) ?? []
     const byPrimary = sumBy(scoped, dimension.value.primaryOf, metric.value.valueOf)
-    const total = [...byPrimary.values()].reduce((sum, value) => sum + value, 0)
 
-    return sortedByValueDesc(byPrimary).map(([primary, value]) => {
+    return sortedByValueDesc(byPrimary).map(([primary, primaryTotal]) => {
       const own = scoped.filter(row => dimension.value.primaryOf(row) === primary)
-      return toSingleSegmentBar(
-        primary,
-        primaryLabelOf(primary),
+      const bySecondary = sumBy(own, dimension.value.secondaryOf, metric.value.valueOf)
+
+      // 段的 ratio 取「占本柱总量」，与一级段语义一致（段占所属柱的比例）
+      const segments: StackSegment[] = sortedByValueDesc(bySecondary).map(([secondary, value]) => ({
+        primary: secondary,
+        label: secondaryLabelOf(secondary),
         value,
-        ratioOf(value, total),
-        buildSecondaryDetail(own, value),
-      )
+        ratio: ratioOf(value, primaryTotal),
+        isOther: false,
+        detail: [],
+      }))
+
+      return {
+        key: primary,
+        label: primaryLabelOf(primary),
+        fullLabel: primaryLabelOf(primary),
+        total: primaryTotal,
+        segments,
+      }
     })
   }
 

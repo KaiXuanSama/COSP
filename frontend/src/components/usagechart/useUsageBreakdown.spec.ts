@@ -217,7 +217,7 @@ describe('hover 明细：other 段双层', () => {
   })
 })
 
-describe('二级：某天各主维度', () => {
+describe('二级：某天各主维度，柱内按次维度堆叠', () => {
   it('筛定日期后按主维度汇总并降序', () => {
     const { barsForDate } = setup([
       row('2026-07-25', 'other-day', 'm', 999),
@@ -227,8 +227,7 @@ describe('二级：某天各主维度', () => {
 
     const bars = barsForDate('2026-07-26')
     expect(bars.map(b => b.key)).toEqual(['big', 'small'])
-    // 二 / 三级的柱子是「只有一段的堆叠柱」，占比记在那一段上
-    expect(bars[0].segments[0].ratio).toBeCloseTo(0.9)
+    expect(bars.map(b => b.total)).toEqual([90, 10])
   })
 
   it('二级图不做 other 合并，小成员各自成柱', () => {
@@ -241,15 +240,41 @@ describe('二级：某天各主维度', () => {
     expect(barsForDate('2026-07-26').map(b => b.key)).toEqual(['big', 'tiny1', 'tiny2'])
   })
 
-  it('每根柱带次维度明细供 hover', () => {
+  it('柱内按次维度分段，段占比为占本柱的比例', () => {
     const { barsForDate } = setup([
       row('2026-07-26', 'deepseek', 'v4-flash', 30),
       row('2026-07-26', 'deepseek', 'v4-pro', 10),
     ])
 
-    const detail = barsForDate('2026-07-26')[0].segments[0].detail
-    expect(detail.map(d => d.label)).toEqual(['v4-flash', 'v4-pro'])
-    expect(detail[0].ratio).toBeCloseTo(0.75)
+    const segments = barsForDate('2026-07-26')[0].segments
+    // 段身份即次维度值，与三级柱子的 key 同源，下钻时可按身份复用 DOM
+    expect(segments.map(s => s.primary)).toEqual(['v4-flash', 'v4-pro'])
+    expect(segments.map(s => s.label)).toEqual(['v4-flash', 'v4-pro'])
+    expect(segments[0].ratio).toBeCloseTo(0.75)
+    expect(segments[1].ratio).toBeCloseTo(0.25)
+  })
+
+  it('二级不做 other 合并：占比极小的次维度也各自成段', () => {
+    // v4-pro 仅占 1%，低于一级的 5% 阈值，但二级仍应保留为独立段
+    const { barsForDate } = setup([
+      row('2026-07-26', 'deepseek', 'v4-flash', 99),
+      row('2026-07-26', 'deepseek', 'v4-pro', 1),
+    ])
+
+    const segments = barsForDate('2026-07-26')[0].segments
+    expect(segments.map(s => s.primary)).toEqual(['v4-flash', 'v4-pro'])
+    expect(segments.every(s => s.isOther === false)).toBe(true)
+  })
+
+  it('段占比之和为 1', () => {
+    const { barsForDate } = setup([
+      row('2026-07-26', 'deepseek', 'v4-flash', 30),
+      row('2026-07-26', 'deepseek', 'v4-pro', 10),
+      row('2026-07-26', 'deepseek', 'v4-lite', 60),
+    ])
+
+    const sum = barsForDate('2026-07-26')[0].segments.reduce((acc, s) => acc + s.ratio, 0)
+    expect(sum).toBeCloseTo(1)
   })
 
   it('日期不存在时返回空数组', () => {
@@ -347,15 +372,24 @@ describe('统一模型：三级同构', () => {
     expectStackBarShape(barsForPrimary('2026-07-26', 'deepseek')[0])
   })
 
-  it('二 / 三级的柱子只有一段，且该段占满整柱', () => {
-    const { barsForDate, barsForPrimary } = setup(rows)
+  it('三级的柱子只有一段，且该段占满整柱', () => {
+    const { barsForPrimary } = setup(rows)
 
-    for (const bar of [...barsForDate('2026-07-26'), ...barsForPrimary('2026-07-26', 'deepseek')]) {
+    for (const bar of barsForPrimary('2026-07-26', 'deepseek')) {
       expect(bar.segments).toHaveLength(1)
-      // 段值等于柱总量：分类柱就是「只有一段的堆叠柱」
+      // 三级已是最细粒度，无从再拆：段值等于柱总量
       expect(bar.segments[0].value).toBe(bar.total)
       expect(bar.segments[0].isOther).toBe(false)
     }
+  })
+
+  it('二级是真堆叠：多次维度的柱子分成多段', () => {
+    const { barsForDate } = setup(rows)
+    const bars = barsForDate('2026-07-26')
+
+    // deepseek 下有两个模型，故两段；zhipu 只有一个模型，故一段
+    expect(bars.find(b => b.key === 'deepseek')?.segments).toHaveLength(2)
+    expect(bars.find(b => b.key === 'zhipu')?.segments).toHaveLength(1)
   })
 
   it('每根柱的 total 等于各段之和', () => {

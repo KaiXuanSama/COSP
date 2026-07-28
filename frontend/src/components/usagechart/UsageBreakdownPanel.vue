@@ -212,7 +212,7 @@ const subtitle = computed(() => {
     return `按天堆叠 · 分段为${primaryTerm} · 纵轴为${metricName}`
   }
   if (level.value === 'day') {
-    return `${formatDateLabel(selectedDate.value ?? '')} 各${primaryTerm} · 纵轴为${metricName}`
+    return `${formatDateLabel(selectedDate.value ?? '')} 各${primaryTerm} · 分段为${secondaryTerm} · 纵轴为${metricName}`
   }
   return `各${secondaryTerm} · 纵轴为${metricName}`
 })
