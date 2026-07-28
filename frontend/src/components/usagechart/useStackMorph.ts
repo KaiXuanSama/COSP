@@ -25,6 +25,17 @@ import type { StackBar, StackSegment } from './usagechart'
  *   <li>多余的尾部柱 —— 向右淡出，不再参与新布局。</li>
  * </ol>
  *
+ * <h2>下钻锚点：让被点的那根柱子延续下去</h2>
+ * 上述左端对齐是无指向的默认规则。但下钻是一次<strong>有明确指向</strong>的操作 ——
+ * 使用者点了第 5 根，新一屏就是那根柱子的内部构成，因此新柱理应看起来
+ * 「从第 5 根长出来」，而不是从第 1 根。若仍按前缀复用，被点的柱子会淡出、
+ * 结果却出现在最左边，因果链在视觉上是断的。
+ *
+ * 解法是把复用位置的选取交给 {@link assignSlots}：被点位置必须入选，
+ * 其余名额按最左优先补齐。5 → 3 且点第 5 根时保留 {@code {0, 1, 4}}，
+ * 中间的 2、3 号位让出宽度退场，第 5 根原地演化成新的末位柱。
+ *
+ * @see assignSlots
  * <h2>堆叠维度：底部复用，顶部进出</h2>
  * 同一根柱内部按层序号配对，锚点在底部（视觉上柱子从下往上生长）：
  * <ol>
@@ -133,26 +144,48 @@ export interface MorphBar {
 }
 
 /**
+ * 上一批柱子及其占用的位置。
+ *
+ * 必须把 slot 与数据一起记住，不能事后由下标推算：锚定复用会留下不连续的
+ * 占用（如 4 → 2 点第 3 根，留存 0 与 2），按下标重排会让同一批柱子换到
+ * 别的 slot，也就换去复用另一个 DOM 节点。
+ */
+export interface MorphSnapshot {
+  slot: number
+  bar: StackBar
+}
+
+/**
  * 计算一批柱子的形变状态。
  *
  * @param bars 目标柱子（当前层级的数据）
- * @param previous 上一批柱子；首次渲染传空数组
+ * @param previous 上一批柱子及其占位；首次渲染传空数组
  * @param ceiling 轴上限，用于把指标值换算成高度比例
  * @param settled 是否已进入目标态。为 {@code false} 时新增柱子仍停在起始高度
  *   （轴中位），供第一帧渲染用；下一帧传 {@code true} 才会驱动它调整到目标值。
  *   已复用的柱子不受此参数影响 —— 它们的起点就是自己上一刻的高度，本就连续。
+ * @param anchor 必须被复用的位置（使用者点击的那根柱子）。
+ *   为 {@code null} 时退化为最左优先，即历史行为。
  */
 export function buildMorphBars(
   bars: StackBar[],
-  previous: StackBar[],
+  previous: MorphSnapshot[],
   ceiling: number,
   settled = true,
+  anchor: number | null = null,
 ): MorphBar[] {
+  /** 旧批各位置上的柱子，供按 slot 取配对参照物。 */
+  const previousBySlot = new Map(previous.map(item => [item.slot, item.bar]))
+  /** 第 i 根新柱占用的位置序号；决定它接着旧批哪一根演化。 */
+  const slots = assignSlots(bars.length, previous.map(item => item.slot), anchor)
+  const taken = new Set(slots)
   const result: MorphBar[] = []
-  const shared = Math.min(bars.length, previous.length)
 
-  bars.forEach((bar, slot) => {
-    const entering = slot >= shared
+  bars.forEach((bar, index) => {
+    const slot = slots[index]
+    const previousBar = previousBySlot.get(slot)
+    // 该位置在旧批里没有柱子，说明是新挤进来的
+    const entering = previousBar === undefined
     result.push({
       slot,
       bar,
@@ -160,18 +193,19 @@ export function buildMorphBars(
         // 新柱的第一帧：整柱压成单层、高度取轴中位。
         // 这一帧只为给 CSS transition 一个起点，紧接着就会被目标态替换。
         ? [{ slot: 0, segment: bar.segments[0] ?? EMPTY_SEGMENT, ratio: ENTER_HEIGHT_RATIO, leaving: false }]
-        : buildMorphSegments(bar, previous[slot], ceiling, settled),
-      // 超出旧批数量的柱子是新挤进来的，需要淡入
+        : buildMorphSegments(bar, previousBar, ceiling, settled),
       phase: entering ? 'enter' : 'stable',
       // 新柱的起始帧宽度为 0，下一帧才涨到满权重 —— 留存柱因此被「挤窄」，
       // 新柱看起来是从右侧挤进队列的。复用柱始终满权重，宽度由 flex 自然分配。
-      weight: entering && !settled ? 0 : 1,
+      weight: entering && !settled ? 0 : FULL_WEIGHT,
     })
   })
 
-  // 旧批多出来的尾部柱子向右淡出；保留旧数据，使淡出期间仍显示原内容
-  for (let slot = bars.length; slot < previous.length; slot += 1) {
-    const bar = previous[slot]
+  // 没被选中的旧位置淡出；保留旧数据，使淡出期间仍显示原内容。
+  // 锚定复用时被淘汰的位置可能在中间（如 5 → 3 点末根，淘汰 2、3 号位），
+  // 故须遍历旧批全部占位，不能只从 bars.length 起算。
+  previous.forEach(({ slot, bar }) => {
+    if (taken.has(slot)) return
     result.push({
       slot,
       bar,
@@ -186,9 +220,11 @@ export function buildMorphBars(
       // 观感就是「被挤出去」，不必再写位移动画。
       weight: 0,
     })
-  }
+  })
 
-  return result
+  // 按位置升序输出：渲染顺序必须与 slot 一致，否则 Vue 会为对不上的 key
+  // 移动 DOM 节点，正在过渡的柱子会被整体搬走，观感是一次硬跳。
+  return result.sort((a, b) => a.slot - b.slot)
 }
 
 /**
@@ -239,19 +275,123 @@ function ratioOf(value: number, ceiling: number): number {
 }
 
 /**
+ * 为新一批柱子分配位置序号（即渲染 key，决定各自复用哪个 DOM 节点）。
+ *
+ * <h2>为什么复用关系归结为一次选位</h2>
+ * 节点复用完全由渲染 key 决定：新柱拿到 slot {@code s}，它就接着上一批
+ * 位于 {@code s} 的柱子演化。于是「复用哪几根」这个问题等价于
+ * 「从旧批的位置里挑出 {@code count} 个留下」，本函数只做这一件事。
+ *
+ * <h2>选取规则</h2>
+ * <ol>
+ *   <li>{@code anchor} 指定的位置<strong>必须入选</strong> —— 它是使用者点击的那根，
+ *       新一屏的内容由它展开而来，视觉上的因果链必须落在它身上；</li>
+ *   <li>其余名额按<strong>最左优先</strong>补齐，与无锚点时的前缀复用保持一致，
+ *       使未被点击的柱子不会无谓地换位；</li>
+ *   <li>结果<strong>升序</strong>返回。</li>
+ * </ol>
+ *
+ * 升序是硬要求：新柱本身有确定次序（一级按日期、二 / 三级按值降序），
+ * 若映射后的 slot 不单调，Vue 会按 key 重排节点，横轴标签与柱体的对应关系
+ * 会当场错位，观感是一次硬跳而非形变。
+ *
+ * <h2>为何以「占用的位置」而非「柱子数量」为输入</h2>
+ * 锚定复用会留下不连续的占用（如 4 → 2 点第 3 根，留存 0 与 2）。此时若下一次
+ * 分配仍按数量从 0 重排，同一批数据的 slot 会<strong>凭空改变</strong> ——
+ * 而 slot 就是渲染 key，改变它等于让柱子去复用另一个 DOM 节点。
+ * 退场清理正是这样一次「数据没变、只是基准推进」的重算，一旦发生重排，
+ * 留存柱会被塞进刚淡出完毕的那具节点（宽 0、透明），随即又得过渡回正常尺寸，
+ * 表现就是动画收尾时突兀地抽一下。
+ *
+ * 因此本函数只在给定的占用集合内做取舍：数量不变时原样返回，
+ * 使「重算」成为幂等操作，退场清理不再有副作用。
+ *
+ * <h2>为何锚点只在「变少」时起作用</h2>
+ * 名额不少于占用数时每个位置都还留着（没有柱子需要被挤掉），
+ * 保留映射已是恒等，锚点无从改变任何结果。只有必须选择性淘汰时，
+ * 「保谁」才是一个真问题。
+ *
+ * @param count 新批柱子数量
+ * @param occupied 旧批实际占用的位置，升序；首次渲染传空数组
+ * @param anchor 必须保留的位置；{@code null} 或不在 {@code occupied} 中时退化为最左优先
+ * @returns 长度为 {@code count} 的升序 slot 序列，第 i 项即第 i 根新柱的 slot
+ */
+export function assignSlots(
+  count: number,
+  occupied: number[],
+  anchor: number | null = null,
+): number[] {
+  if (count <= 0) return []
+
+  // 名额够用时无需淘汰，沿用原占用并为多出的柱子追加新位置。
+  // 新位置从当前最大值之后取，既不与留存者冲突，也天然排在它们右侧。
+  if (count >= occupied.length) {
+    const slots = [...occupied]
+    let free = occupied.length ? Math.max(...occupied) + 1 : 0
+    while (slots.length < count) {
+      slots.push(free)
+      free += 1
+    }
+    return slots
+  }
+
+  // 名额不足，必须淘汰。锚点若在占用集合内则独占一个名额，其余按最左优先补齐。
+  const anchored = anchor !== null && occupied.includes(anchor)
+  if (!anchored) return occupied.slice(0, count)
+
+  const others = occupied.filter(slot => slot !== anchor).slice(0, count - 1)
+  // 最左优先取到的位置天然升序，但锚点偏左时（如 5 → 2 点第 2 根）追加后会失序，
+  // 而失序会让 Vue 重排正在过渡的节点，故统一排序。
+  return [...others, anchor as number].sort((a, b) => a - b)
+}
+
+/**
  * 判断新一批里是否存在「凭空出现」的柱子或堆叠层。
  *
  * 只有它们需要两帧提交 —— 复用的柱与层在 DOM 里已有前一刻的高度，
  * 直接改值就能被 CSS 过渡捕捉；而全新节点若起止值同帧写入会被合并，
  * 表现为「一出现就是最终高度」，正是要避免的硬切换。
  *
+ * 层数比较必须走 {@link assignSlots} 的同一套映射：锚定复用下第 i 根新柱
+ * 接的不再是旧批第 i 根，按下标直接比会拿错参照物，进而误判要不要两帧提交。
+ *
  * @param bars 新一批柱子
- * @param previous 上一批柱子
+ * @param previous 上一批柱子及其占位
+ * @param anchor 必须被复用的位置
  */
-function hasNewcomer(bars: StackBar[], previous: StackBar[]): boolean {
+/**
+ * 结算一批柱子的占位，作为下一次配对的基准。
+ *
+ * 必须与 {@link buildMorphBars} 用同一套分配结果 —— 记忆里存的若是「柱子数据」
+ * 而非「柱子及其占位」，下一次分配就会按数量重新从 0 排列，
+ * 同一批数据的 slot 凭空改变，留存柱因此被塞进别的 DOM 节点。
+ *
+ * 只收留存柱：退场柱的位置本次已让出，不应再占用名额。
+ *
+ * @param bars 本批柱子
+ * @param previous 本次配对所用的基准
+ * @param anchor 本次配对所用的锚点
+ */
+export function snapshotOf(
+  bars: StackBar[],
+  previous: MorphSnapshot[],
+  anchor: number | null,
+): MorphSnapshot[] {
+  const slots = assignSlots(bars.length, previous.map(item => item.slot), anchor)
+  return bars.map((bar, index) => ({ slot: slots[index], bar }))
+}
+
+function hasNewcomer(bars: StackBar[], previous: MorphSnapshot[], anchor: number | null): boolean {
   if (bars.length > previous.length) return true
+  const previousBySlot = new Map(previous.map(item => [item.slot, item.bar]))
+  const slots = assignSlots(bars.length, previous.map(item => item.slot), anchor)
   // 柱数未增，仍需检查各柱内部是否长出了新的顶层
-  return bars.some((bar, slot) => bar.segments.length > (previous[slot]?.segments.length ?? 0))
+  return bars.some((bar, index) => {
+    const previousBar = previousBySlot.get(slots[index])
+    // 该位置本来就空着 —— 柱子本身是新的，自然算凭空出现
+    if (!previousBar) return true
+    return bar.segments.length > previousBar.segments.length
+  })
 }
 
 /**
@@ -275,8 +415,22 @@ export function useStackMorph(
 ) {
   const duration = options.duration ?? MORPH_DURATION
 
-  /** 上一批柱子的快照，用于按位置配对。 */
-  const previous = shallowRef<StackBar[]>([])
+  /**
+   * 上一批柱子及其占位，用于按位置配对。
+   *
+   * 存的是「谁在哪个 slot」而非单纯的柱子列表：slot 就是渲染 key，
+   * 必须与数据一同留存，否则下一次分配会从 0 重排，让柱子改去复用别的 DOM 节点。
+   */
+  const previous = shallowRef<MorphSnapshot[]>([])
+
+  /**
+   * 本次切换必须被复用的旧批位置，见 {@link morphFrom}。
+   *
+   * 只对紧随其后的那一批数据有效，退场清理时即归零 —— 它描述的是
+   * 「这一次变化由谁引发」，而非一个持续的偏好。若让它跨批留存，
+   * 后续无关的数据变化（如 SSE 推送导致柱数减少）会被错误地锚到旧位置上。
+   */
+  const anchor = shallowRef<number | null>(null)
 
   /**
    * 新增柱子是否已被推向目标态。
@@ -294,7 +448,7 @@ export function useStackMorph(
   let retireTimer: number | null = null
 
   const morphBars = computed(() =>
-    buildMorphBars(bars.value, previous.value, ceiling.value, settled.value),
+    buildMorphBars(bars.value, previous.value, ceiling.value, settled.value, anchor.value),
   )
 
   /*
@@ -312,9 +466,11 @@ export function useStackMorph(
     // 需要起始态的只有「凭空出现的东西」：新挤进来的柱子、以及某根柱新长出的顶层。
     // 复用柱与退场层的起点都已存在于 DOM 中，直接改值即可由 CSS 过渡接手。
     // 基准取 previous 而非 watch 的旧值 —— previous 才是本次配对真正用的那一批。
-    settled.value = !hasNewcomer(next, previous.value)
+    settled.value = !hasNewcomer(next, previous.value, anchor.value)
     scheduleSettle()
-    scheduleRetire(next)
+    // 快照取「本次实际渲染出的占位」而非裸数据：占位是这批柱子的 DOM 身份，
+    // 必须与数据一同留存，详见 scheduleRetire。
+    scheduleRetire(snapshotOf(next, previous.value, anchor.value))
   }, { flush: 'post' })
 
   /**
@@ -342,12 +498,18 @@ export function useStackMorph(
   /**
    * 动画结束后推进配对基准，退场柱随之从列表移除。
    *
-   * 必须等满一个 {@link duration}：退场柱是由「previous 比 bars 多出来的尾部」
-   * 派生的，提前推进等于把正在淡出的元素直接从 DOM 摘掉 —— 那正是硬切的来源。
+   * 必须等满一个 {@link duration}：退场柱是由「没被选中的旧位置」派生的，
+   * 提前推进等于把正在淡出的元素直接从 DOM 摘掉 —— 那正是硬切的来源。
    *
-   * @param next 本次的新批柱子，清理时成为下一轮的配对基准
+   * 存进去的是<strong>占位快照</strong>而非裸数据。清理只该移除退场柱，
+   * 不该让留存柱换位：若只记数据、下一轮再按数量重排 slot，那么锚定复用留下的
+   * 不连续占位（如留存 0 与 2）会被压回 0 与 1，留存柱因此被塞进刚淡出完毕的
+   * 那具节点（宽 0、透明），随即又得过渡回正常尺寸 —— 表现就是动画收尾时
+   * 突兀地抽一下。带上占位，这次推进对留存柱就是完全无感的。
+   *
+   * @param next 本次渲染出的占位快照，清理时成为下一轮的配对基准
    */
-  function scheduleRetire(next: StackBar[]): void {
+  function scheduleRetire(next: MorphSnapshot[]): void {
     cancelRetire()
     if (typeof window === 'undefined') {
       previous.value = next
@@ -356,7 +518,22 @@ export function useStackMorph(
     retireTimer = window.setTimeout(() => {
       retireTimer = null
       previous.value = next
+      // 锚点随配对基准一起失效：它只描述「这一次变化的来源」
+      anchor.value = null
     }, duration)
+  }
+
+  /**
+   * 声明下一批数据的形变锚点 —— 即「这次变化是由第 slot 根柱子引发的」。
+   *
+   * 须在改动数据<strong>之前</strong>调用（如点击回调里紧接着 emit 下钻），
+   * 使随后那一批柱子的配对能把该位置算进留存名额。仅影响紧随的一批，
+   * 之后自动归零，因此不必也不应在别处重置。
+   *
+   * @param slot 被点击柱子的位置序号
+   */
+  function morphFrom(slot: number): void {
+    anchor.value = slot
   }
 
   function cancelSettle(): void {
@@ -380,5 +557,5 @@ export function useStackMorph(
     })
   }
 
-  return { morphBars }
+  return { morphBars, morphFrom }
 }

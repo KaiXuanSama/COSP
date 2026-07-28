@@ -164,7 +164,7 @@ const axisTicks = computed(() => {
  * 「堆叠↔单一」：左侧公共前缀原地演化，右侧多出的柱子进出场；
  * 柱内底部公共层原地演化，顶部多出的层进出场。
  */
-const { morphBars } = useStackMorph(computed(() => props.bars), heightBasis)
+const { morphBars, morphFrom } = useStackMorph(computed(() => props.bars), heightBasis)
 
 /**
  * 段高（px）。
@@ -234,10 +234,15 @@ function hideTooltip() {
  *
  * 退场柱要排除掉：它已不属于当前层级，只是为播放淡出而暂留，
  * 点它下钻会跳到一个刚被移除的分类上。
+ *
+ * 下钻前把被点柱的位置登记为形变锚点：下一屏的内容正是由它展开而来，
+ * 因此它必须是留存下来的那根，使「点哪根 → 哪根留下」的因果可见。
+ * 登记要早于 emit —— 上层换数据是同步的，晚一步锚点就赶不上这次配对。
  */
 function drillInto(item: MorphBar) {
   if (!props.drillable || item.phase === 'leave') return
   hideTooltip()
+  morphFrom(item.slot)
   emit('drill', item.bar.key)
 }
 
