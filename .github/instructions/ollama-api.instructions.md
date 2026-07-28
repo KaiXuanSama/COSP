@@ -12,8 +12,12 @@ Ollama 层只用于模型发现：`GET /api/version`、`GET /api/tags`、`POST /
 调用链：
 
 ```text
-OllamaApiController -> ModelDiscoveryService -> ProviderRouteResolver -> GenericDiscoveryService
+/api/show           -> ModelDiscoveryService -> ProviderRouteResolver -> GenericDiscoveryService
+/api/tags           -> ModelCatalogService（直接聚合数据库中启用的模型）
+/api/version        -> app_config.fake_version，回退 ollama.version
 ```
+
+注意 `ModelDiscoveryService` 当前只有 `showModel`，模型列表不经过它。
 
 ## 契约
 
