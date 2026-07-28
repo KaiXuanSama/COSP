@@ -30,7 +30,8 @@ import type { AxisTick } from './axisTicks'
  * <h2>为何不用 CSS transition</h2>
  * 刻度的 {@code bottom} 是百分比，而百分比在换标尺前后可能相同
  * （等分档位下永远是 0/25/50/75/100%），没有属性值变化可供过渡 ——
- * 与 {@link useFlip} 面对的是同一类问题：变的是换算规则，不是某个属性。
+ * 这与柱体形变（{@link useStackMorph}）面对的是同一类问题：变的是换算规则本身，
+ * 而非某个可过渡的属性值，因此都需要在 JS 里显式构造中间态。
  */
 
 /**

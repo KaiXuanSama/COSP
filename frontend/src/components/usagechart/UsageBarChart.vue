@@ -3,24 +3,25 @@
  * UsageBarChart — 三级视图共用的唯一柱状图。
  *
  * <h2>为什么只有一个组件</h2>
- * 分类柱状图本质是「只有一段的堆叠柱状图」：一级每柱由多个主维度段堆叠而成，
- * 二 / 三级每柱只有一段。既然只是段数不同，就不必准备两套结构与两个组件 ——
+ * 三级视图的数据本就同构 —— 单一柱子只是「只有一层的堆叠柱」：
+ * 一级按主维度分层、二级按次维度分层、三级已到最细粒度故只有一层。
+ * 既然只是层数不同，就不必准备两套结构与两个组件 ——
  * 统一之后纵轴、网格线、柱顶读数、tooltip、键盘可达性都只有一份实现，
  * 不会再出现「同一视觉概念在两处各写一份、值悄悄漂移」的问题。
  *
  * 更关键的是动效：层级切换时若换组件，柱子只能整批淡出再淡入；
- * 同一组件内换数据则可按 {@link StackBar.key} 复用 DOM，
- * 让柱子平滑长高 / 缩短 / 位移，得到 morph 而非 fade 的观感。
+ * 同一组件内换数据，则可按<strong>位置序号</strong>复用 DOM 节点
+ * （见 {@link useStackMorph}），让柱子平滑长高 / 缩短，得到 morph 而非 fade。
  *
  * <h2>职责边界</h2>
  * 只负责渲染与交互事件，不请求数据、不感知业务维度：
  * 柱与段由 {@link StackBar} 给定，标签文案由数据层经 dimension 配置产出。
  */
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { StackBar, StackSegment } from './usagechart'
 import { AXIS_WIDTH, buildAxisTicks, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from './axisTicks'
 import { buildAnimatedAxisTicks, useAxisScale } from './useAxisScale'
-import { useFlip } from './useFlip'
+import { useStackMorph, type MorphBar, type MorphSegment } from './useStackMorph'
 import UsageTooltip from './UsageTooltip.vue'
 
 const props = withDefaults(defineProps<{
@@ -51,8 +52,8 @@ const props = withDefaults(defineProps<{
   /**
    * 纵轴标尺换算的动画时长（ms）。
    *
-   * 与柱高 / FLIP 位移同量级，使「柱子长高」「柱子横移」「刻度压缩」
-   * 三个动作看起来是同一次转场，而不是各自为政的三段动画。
+   * 与段高过渡同量级，使「柱子形变」与「刻度压缩」看起来是同一次转场，
+   * 而不是两段各自为政的动画。
    */
   scaleDuration?: number
 }>(), {
@@ -74,20 +75,6 @@ const emit = defineEmits<{
 
 const rootRef = ref<HTMLElement | null>(null)
 const tooltip = ref({ visible: false, left: 0, top: 0, title: '', summary: '', detail: [] as StackSegment['detail'] })
-
-/** 入场动画：挂载后置为 true，触发各柱自下而上升起。 */
-const revealed = ref(false)
-let revealTimer: number | null = null
-
-/**
- * 柱子横向位移的 FLIP 补偿。
- *
- * 柱子的横向位置由 flex 布局决定（`justify-content: space-around` + `flex: 1`），
- * 层级切换后柱子数量变了，每根柱的位置会瞬间跳到新位置 —— 高度有 CSS transition
- * 可以平滑过渡，位置却没有，观感上就是「柱子闪现到别处然后才长高」。
- * FLIP 把这段位移也补成动画，于是留存的柱子看起来是「滑」过去的。
- */
-const flip = useFlip(() => rootRef.value, '[data-flip-key]')
 
 const rootStyle = computed(() => ({
   '--usagechart-plot-height': `${props.height}px`,
@@ -134,10 +121,11 @@ const { displayScale, rescaling, progress } = useAxisScale(targetCeiling, {
 })
 
 /**
- * 柱高继续使用目标轴上限，并沿用现有 CSS 高度过渡。
+ * 柱高换算用<strong>目标</strong>轴上限，而非动画中的标尺。
  *
- * 本次体验优化只负责纵轴标尺的压缩 / 解压，不接管柱体动画；这样不会与
- * 已有的入场、分段延迟和 FLIP 位移互相叠加，两个视觉层各自保持单一职责。
+ * 刻度的压缩 / 解压与柱体的形变是两个独立的视觉层：前者表达「量纲变了」，
+ * 后者表达「数据变了」。若柱高也跟着动画标尺走，一次层级切换里柱子会被
+ * 两股力量同时拉扯，落点难以预期。各用各的基准，两层便都保持单一职责。
  */
 const heightBasis = targetCeiling
 
@@ -170,29 +158,36 @@ const axisTicks = computed(() => {
 })
 
 /**
+ * 统一形变模型 —— 按位置序号配对新旧两批柱子与堆叠层。
+ *
+ * 三级视图的数据本就同构（单一柱是「只有一层的堆叠柱」），故不区分
+ * 「堆叠↔单一」：左侧公共前缀原地演化，右侧多出的柱子进出场；
+ * 柱内底部公共层原地演化，顶部多出的层进出场。
+ */
+const { morphBars } = useStackMorph(computed(() => props.bars), heightBasis)
+
+/**
  * 段高（px）。
  *
- * 按占「轴上限」的比例映射，使柱高与刻度线对齐；
+ * 比例由形变模型给出（退场层为 0，因此会平滑收缩到消失）；
  * 再对有值的段兜一个最小高度，避免占比极小的段渲染成 0 而在图上消失。
  */
-function segmentHeight(segment: StackSegment): number {
-  const basis = heightBasis.value
-  if (basis <= 0 || segment.value <= 0) return 0
-  const raw = (segment.value / basis) * props.height
-  return Math.max(props.minSegmentHeight, raw)
+function morphSegmentHeight(item: MorphSegment): number {
+  if (item.ratio <= 0) return 0
+  return Math.max(props.minSegmentHeight, item.ratio * props.height)
 }
 
 /**
- * 整柱的实际像素高度 —— 各段高之和，外加段间空隙。
+ * 整柱的实际像素高度 —— 各可见层高之和，外加层间空隙。
  *
- * 不能用 total / basis 直接算：段高对小值做了 minSegmentHeight 兜底，
- * 加上 segmentGap 的累计，实际柱顶会略高于按比例的理论值。
- * 顶部读数要贴合真实柱顶，必须与渲染用的同一套高度口径。
+ * 必须与渲染用的同一套口径：层高对小值做了 minSegmentHeight 兜底，
+ * 加上 segmentGap 的累计，实际柱顶会略高于按比例的理论值，
+ * 柱顶读数要贴合真实柱顶就不能用 total / basis 另算一遍。
  */
-function barHeight(bar: StackBar): number {
-  const visible = bar.segments.filter((segment) => segment.value > 0)
+function morphBarHeight(item: MorphBar): number {
+  const visible = item.segments.filter((segment) => segment.ratio > 0)
   if (!visible.length) return 0
-  const stacked = visible.reduce((sum, segment) => sum + segmentHeight(segment), 0)
+  const stacked = visible.reduce((sum, segment) => sum + morphSegmentHeight(segment), 0)
   return stacked + props.segmentGap * (visible.length - 1)
 }
 
@@ -234,11 +229,16 @@ function hideTooltip() {
   tooltip.value.visible = false
 }
 
-/** 点击整柱进入下一级。段上的点击同样冒泡到柱，故段与柱共用一个下钻入口。 */
-function drillInto(bar: StackBar) {
-  if (!props.drillable) return
+/**
+ * 点击整柱进入下一级。段上的点击同样冒泡到柱，故段与柱共用一个下钻入口。
+ *
+ * 退场柱要排除掉：它已不属于当前层级，只是为播放淡出而暂留，
+ * 点它下钻会跳到一个刚被移除的分类上。
+ */
+function drillInto(item: MorphBar) {
+  if (!props.drillable || item.phase === 'leave') return
   hideTooltip()
-  emit('drill', bar.key)
+  emit('drill', item.bar.key)
 }
 
 /**
@@ -253,46 +253,17 @@ const structureKey = computed(() =>
 )
 
 /**
- * 仅在结构变化时重播入场动画。
+ * 结构变化时只需收掉 tooltip，不再重播入场动画。
  *
- * SSE 实时推送会高频替换数据，但绝大多数时候只是某些段的数值在涨；
- * 若每帧都把 revealed 打回 false，柱子会不停地归零重长、图表持续抖动。
- * 数值变化交给段上的 CSS height transition 自然过渡即可，观感是「柱子平滑长高」。
+ * 形变模型已保证每根柱子都有连续的起点（左侧公共前缀延续旧高度，
+ * 新增柱从轴中位起），因此「归零重长」这一步既没必要也有害 ——
+ * 它会把刚建立的连续性打断成一次闪烁。
  *
- * 结构变化（切换层级、出现新的成员或日期）才重播，保留原有的入场观感。
+ * tooltip 必须清掉：它指向的段可能在新结构里已不存在，
+ * 留着会悬停在错误的位置上显示过期数据。
  */
-watch(structureKey, async () => {
-  // 在 DOM 更新前量下旧位置，更新后才能算出位移并反向补偿
-  flip.snapshot()
+watch(structureKey, () => {
   hideTooltip()
-
-  await nextTick()
-
-  // 留存下来的柱子：用 FLIP 把「瞬间跳位」补成滑动，不重播入场动画，
-  // 否则它们会先归零再长高，滑动的连续感就断了。
-  const moved = flip.play()
-
-  // 全是新柱子（如首次渲染、或换到完全不同的成员）才走自下而上的入场动画
-  if (!moved) {
-    revealed.value = false
-    await nextTick()
-    scheduleReveal()
-  }
-})
-
-function scheduleReveal() {
-  if (revealTimer !== null) window.clearTimeout(revealTimer)
-  // 延后一帧，确保初始高度已应用，transition 才会真正播放
-  revealTimer = window.setTimeout(() => {
-    revealed.value = true
-    revealTimer = null
-  }, 30)
-}
-
-onMounted(scheduleReveal)
-
-onUnmounted(() => {
-  if (revealTimer !== null) window.clearTimeout(revealTimer)
 })
 </script>
 
@@ -322,53 +293,68 @@ onUnmounted(() => {
           />
         </div>
 
+        <!--
+          柱子按「位置序号」而非业务身份渲染。
+
+          这是整套形变动效的支点：跨层级时柱子身份被整批替换（日期 → 供应商 → 模型），
+          若用身份做 key，Vue 会判定「旧的全删、新的全建」，只能得到淡出淡入；
+          用位置做 key 则第 N 根柱始终是同一个 DOM 节点，高度变化自然被
+          CSS transition 捕捉成连续形变。
+
+          flex-grow 由形变模型给出：进场柱从 0 涨到 1、退场柱收到 0。
+          柱子的横向位置本就是 flex 分配的结果，让权重可过渡之后，
+          「留存柱挤占空间」「多余柱被挤出去」都是宽度变化的副作用，
+          无需再单独写位移动画。
+        -->
         <div
-          v-for="(bar, index) in bars"
-          :key="bar.key"
-          :data-flip-key="bar.key"
+          v-for="morph in morphBars"
+          :key="morph.slot"
           class="usage-bar__column"
-          :class="{ 'usage-bar__column--drillable': drillable }"
-          :role="drillable ? 'button' : undefined"
-          :tabindex="drillable ? 0 : undefined"
-          :aria-label="barAriaLabel(bar)"
-          @click="drillInto(bar)"
-          @keydown.enter.prevent="drillInto(bar)"
-          @keydown.space.prevent="drillInto(bar)"
+          :style="{ flexGrow: morph.weight }"
+          :class="{
+            'usage-bar__column--drillable': drillable && morph.phase !== 'leave',
+            'usage-bar__column--leaving': morph.phase === 'leave',
+            'usage-bar__column--hidden': morph.weight === 0 && morph.phase === 'enter',
+          }"
+          :role="drillable && morph.phase !== 'leave' ? 'button' : undefined"
+          :tabindex="drillable && morph.phase !== 'leave' ? 0 : undefined"
+          :aria-hidden="morph.phase === 'leave' ? 'true' : undefined"
+          :aria-label="barAriaLabel(morph.bar)"
+          @click="drillInto(morph)"
+          @keydown.enter.prevent="drillInto(morph)"
+          @keydown.space.prevent="drillInto(morph)"
         >
           <!-- 柱体：自下而上堆叠，故用 column-reverse -->
           <div class="usage-bar__stack">
             <!--
-              柱顶总量读数。位置由柱高驱动（bottom = 柱高），因此入场动画期间
-              会跟着柱顶一起上升；aria-hidden 是因为柱的 aria-label 已含同一数字。
+              柱顶总量读数。位置由柱高驱动（bottom = 柱高），故跟着柱顶一起运动；
+              aria-hidden 是因为柱的 aria-label 已含同一数字。
             -->
             <span
-              v-if="bar.total > 0"
+              v-if="morph.bar.total > 0 && morph.phase !== 'leave'"
               class="usage-bar__value"
               aria-hidden="true"
-              :style="{
-                bottom: revealed ? `${barHeight(bar)}px` : '0px',
-                opacity: revealed ? 1 : 0,
-                transitionDelay: `${index * 40}ms`,
-              }"
+              :style="{ bottom: `${morphBarHeight(morph)}px` }"
             >
-              {{ formatValue(bar.total) }}
+              {{ formatValue(morph.bar.total) }}
             </span>
 
+            <!--
+              堆叠层同样按位置序号渲染，底部对齐：
+              公共底层复用节点平滑过渡，新增顶层从 0 膨胀，多余顶层收缩到 0。
+            -->
             <div
-              v-for="(segment, segIndex) in bar.segments"
-              :key="segment.primary ?? `other-${segIndex}`"
+              v-for="seg in morph.segments"
+              :key="seg.slot"
               class="usage-bar__segment"
-              :class="{ 'usage-bar__segment--other': segment.isOther }"
-              :style="{
-                height: revealed ? `${segmentHeight(segment)}px` : '0px',
-                transitionDelay: `${index * 40 + segIndex * 40}ms`,
-              }"
-              @mouseenter="showSegmentTooltip($event, segment)"
+              :class="{ 'usage-bar__segment--other': seg.segment.isOther }"
+              :style="{ height: `${morphSegmentHeight(seg)}px` }"
+              @mouseenter="seg.leaving ? null : showSegmentTooltip($event, seg.segment)"
               @mouseleave="hideTooltip"
             />
           </div>
 
-          <div class="usage-bar__label" :title="bar.fullLabel">{{ bar.label }}</div>
+          <div class="usage-bar__label" :title="morph.bar.fullLabel">{{ morph.bar.label }}</div>
         </div>
       </div>
     </div>
@@ -470,18 +456,29 @@ onUnmounted(() => {
   border-top-color: var(--usagechart-gridline-base, rgba(154, 149, 144, 0.4));
 }
 
+/*
+ * 柱列。
+ *
+ * flex-grow 走内联样式（由形变模型给出），基准尺寸取 0 —— 这样柱子的宽度
+ * 完全由权重决定，权重收到 0 时宽度真的归零，而不是被 flex-basis 撑出残留。
+ * overflow 隐藏让内容随宽度一起被裁掉，柱体因此是「被挤扁」而非溢出到邻居身上。
+ */
 .usage-bar__column {
   position: relative;
   /* 压在网格线之上，避免虚线穿过柱体 */
   z-index: 1;
   display: flex;
-  flex: 1;
+  flex-basis: 0;
+  flex-shrink: 1;
   flex-direction: column;
   align-items: center;
   min-width: 0;
   padding: var(--usagechart-column-pad-y) 2px;
   border-radius: 8px;
-  transition: background 0.18s ease;
+  transition:
+    flex-grow 0.42s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.42s cubic-bezier(0.4, 0, 0.2, 1),
+    background 0.18s ease;
 }
 
 .usage-bar__column--drillable {
@@ -491,6 +488,36 @@ onUnmounted(() => {
   &:focus-visible {
     background: var(--usagechart-accent-light, rgba(194, 122, 62, 0.08));
     outline: none;
+  }
+}
+
+/*
+ * 退场：淡出。
+ *
+ * 只做淡出，不做位移 —— 「向右滑走」的观感来自 flex-grow 收到 0 时
+ * 留存柱挤占它的空间，那是宽度过渡的副作用，无需在这里重复表达。
+ *
+ * pointer-events 关掉，避免正在消失的柱子还能被点中触发下钻。
+ */
+.usage-bar__column--leaving {
+  pointer-events: none;
+  opacity: 0;
+}
+
+/*
+ * 进场起始帧：宽度为 0 时同样透明。
+ *
+ * 与退场恰好互为镜像 —— 下一帧权重涨到 1、本类被摘掉，宽度与不透明度
+ * 便沿同一条曲线一起长出来，观感是「从右侧挤入并显影」。
+ */
+.usage-bar__column--hidden {
+  opacity: 0;
+}
+
+/* 尊重系统「减少动态效果」：直接落位，不播放宽度与淡入淡出过渡 */
+@media (prefers-reduced-motion: reduce) {
+  .usage-bar__column {
+    transition-duration: 0.01s;
   }
 }
 
@@ -533,7 +560,10 @@ onUnmounted(() => {
   /* 圆角 + 间隙即分段依据，与热力图格子风格统一 */
   border-radius: 4px;
   background: var(--usagechart-accent, #c27a3e);
-  /* 升起动画；高度由内联样式在 revealed 翻转时给出 */
+  /*
+   * 形变动画的实际执行者：高度由 useStackMorph 逐帧给到内联样式，
+   * 这条过渡负责把每次取值变化补成连续运动（长高 / 收缩 / 归零消失）。
+   */
   transition: height 0.42s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease;
 
   &:hover {
