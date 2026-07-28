@@ -19,6 +19,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { StackBar, StackSegment } from './usagechart'
 import { AXIS_WIDTH, buildAxisTicks, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from './axisTicks'
+import { AXIS_SCALE_CULL_MARGIN, useAxisScale } from './useAxisScale'
 import { useFlip } from './useFlip'
 import UsageTooltip from './UsageTooltip.vue'
 
@@ -47,6 +48,13 @@ const props = withDefaults(defineProps<{
   barWidth?: number
   /** 纵轴刻度栏宽度（px），需容纳最长的刻度读数。 */
   axisWidth?: number
+  /**
+   * 纵轴标尺换算的动画时长（ms）。
+   *
+   * 与柱高 / FLIP 位移同量级，使「柱子长高」「柱子横移」「刻度压缩」
+   * 三个动作看起来是同一次转场，而不是各自为政的三段动画。
+   */
+  scaleDuration?: number
 }>(), {
   maxTotal: 0,
   drillable: true,
@@ -57,6 +65,7 @@ const props = withDefaults(defineProps<{
   minSegmentHeight: 4,
   barWidth: 36,
   axisWidth: AXIS_WIDTH,
+  scaleDuration: 420,
 })
 
 const emit = defineEmits<{
@@ -104,18 +113,53 @@ const referenceMax = computed(() =>
     : props.bars.reduce((max, bar) => Math.max(max, bar.total), 0),
 )
 
-/** 纵轴刻度。以取整后的上限为基准，使刻度读数是 10、20、50 这类整数。 */
-const axisTicks = computed(() => buildAxisTicks(referenceMax.value))
+/** 目标刻度序列。以取整后的上限为基准，使刻度读数是 10、20、50 这类整数。 */
+const targetTicks = computed(() => buildAxisTicks(referenceMax.value))
+
+/** 目标轴上限 —— 取整后的值，而非数据真实最大值。 */
+const targetCeiling = computed(() => {
+  const ticks = targetTicks.value
+  return ticks.length ? ticks[ticks.length - 1].value : referenceMax.value
+})
 
 /**
- * 柱高归一化基准 —— 取整后的轴上限，而非数据真实最大值。
+ * 动画中的标尺（1 个单位数值对应的高度占比）。
  *
- * 必须与刻度同一基准：否则最高的柱会顶到绘图区顶部，
- * 而顶部刻度标的是取整后的更大值，柱高与刻度线就对不上了。
+ * 上限跳变时它不会立刻到位，而是在 {@link scaleDuration} 内缓动过去。
+ * 刻度与柱高都按它换算，于是刻度线在纵轴上「聚拢 / 散开」——
+ * 即压缩与解压的观感。
  */
-const heightBasis = computed(() => {
-  const ticks = axisTicks.value
-  return ticks.length ? ticks[ticks.length - 1].value : referenceMax.value
+const { displayScale, rescaling } = useAxisScale(targetCeiling, {
+  duration: props.scaleDuration,
+})
+
+/**
+ * 柱高继续使用目标轴上限，并沿用现有 CSS 高度过渡。
+ *
+ * 本次体验优化只负责纵轴标尺的压缩 / 解压，不接管柱体动画；这样不会与
+ * 已有的入场、分段延迟和 FLIP 位移互相叠加，两个视觉层各自保持单一职责。
+ */
+const heightBasis = targetCeiling
+
+/**
+ * 当前要渲染的刻度。
+ *
+ * 换算进行中时，刻度值仍取<strong>目标</strong>档位（读数不做无意义的中间态，
+ * 避免出现 137 这类过渡数字），但位置按动画上限实时投影：
+ * 上限从 150 涨到 200 的过程中，150 这档会从顶端逐渐下沉，档间距同步收窄。
+ *
+ * 超出视野的刻度会被剔除：上限缩小时，旧的大刻度会被顶到绘图区之上，
+ * 留着它们会溢出卡片。留一点余量让它们「滑出去」而不是突然消失。
+ */
+const axisTicks = computed(() => {
+  // 静止时用刻度自带的精确占比，避免倒数插值的浮点残差让刻度差出亚像素
+  if (!rescaling.value) return targetTicks.value
+
+  const scale = displayScale.value
+  if (scale <= 0) return []
+  return targetTicks.value
+    .map((tick) => ({ value: tick.value, ratio: tick.value * scale }))
+    .filter((tick) => tick.ratio <= 1 + AXIS_SCALE_CULL_MARGIN)
 })
 
 /**
