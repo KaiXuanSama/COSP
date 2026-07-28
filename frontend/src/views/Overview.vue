@@ -39,10 +39,9 @@ const HEATMAP_DAYS = 360
 const BREAKDOWN_DAYS = 7
 
 /**
- * 维度配置：第一版以供应商为主维度、模型为次维度。
+ * 维度配置：以供应商为主维度、模型为次维度。
  *
- * 将来要做"以模型为主维度"的视图时，只需把 primaryOf / secondaryOf 与两个 term 对调，
- * 数据层与图表组件均无需改动。
+ * 一级按供应商分层，二级横轴为供应商、柱内按模型分层，三级为模型明细。
  */
 const providerDimension: BreakdownDimension = {
   key: 'provider-model',
@@ -50,6 +49,39 @@ const providerDimension: BreakdownDimension = {
   secondaryOf: (row) => row.modelName,
   primaryTerm: '供应商',
   secondaryTerm: '模型',
+}
+
+/**
+ * 维度配置：主次互换 —— 以模型为主维度、供应商为次维度。
+ *
+ * 这是同一份数据的另一种切法，回答的是「哪个模型用得多、它分散在哪些供应商上」，
+ * 而供应商视图回答的是「哪个供应商用得多、它下面跑了哪些模型」。
+ *
+ * 两份配置只有取值函数与称呼不同：数据层全程经 primaryOf / secondaryOf 取值，
+ * 不认业务字段，因此互换主次即得另一套完整的三级下钻，pivot 逻辑与图表零改动。
+ */
+const modelDimension: BreakdownDimension = {
+  key: 'model-provider',
+  primaryOf: (row) => row.modelName,
+  secondaryOf: (row) => row.providerKey,
+  primaryTerm: '模型',
+  secondaryTerm: '供应商',
+}
+
+/** 两种视图按此顺序轮换。 */
+const breakdownDimensions: BreakdownDimension[] = [providerDimension, modelDimension]
+
+/** 当前视图：默认供应商视图。 */
+const breakdownDimensionKey = ref<string>(providerDimension.key)
+
+const activeBreakdownDimension = computed(
+  () => breakdownDimensions.find((item) => item.key === breakdownDimensionKey.value) ?? providerDimension,
+)
+
+/** 按 breakdownDimensions 的顺序轮换到下一个视图，再增加维度也无需改这里。 */
+function switchBreakdownDimension() {
+  const index = breakdownDimensions.findIndex((item) => item.key === breakdownDimensionKey.value)
+  breakdownDimensionKey.value = breakdownDimensions[(index + 1) % breakdownDimensions.length].key
 }
 
 /** 指标：第一版只有调用次数。 */
@@ -339,8 +371,22 @@ function toKUnit(value: number): number {
     </n-card>
 
     <n-card class="breakdown-card" :bordered="true">
-      <UsageBreakdownPanel :rows="breakdownRows" :dimension="providerDimension" :metric="callCountMetric"
-        :days="BREAKDOWN_DAYS" :loading="breakdownLoading" :failed="breakdownFailed" />
+      <!--
+        视图切换：供应商视图 / 模型视图，两者是同一份数据的主次维度互换。
+
+        不放在 n-card 的 header 插槽里 —— 面包屑本身已兼作卡片标题，
+        再加一行标题就成了双标题。故通过具名插槽塞进面包屑那一行，
+        与副标题并列，样式沿用热力图卡片的「当前项 + 切换」范式。
+      -->
+      <UsageBreakdownPanel :rows="breakdownRows" :dimension="activeBreakdownDimension" :metric="callCountMetric"
+        :days="BREAKDOWN_DAYS" :loading="breakdownLoading" :failed="breakdownFailed">
+        <template #actions>
+          <div class="breakdown-mode-switch">
+            <span class="breakdown-mode-label">{{ activeBreakdownDimension.primaryTerm }}视图</span>
+            <button type="button" class="breakdown-mode-btn" @click="switchBreakdownDimension">切换</button>
+          </div>
+        </template>
+      </UsageBreakdownPanel>
     </n-card>
 
     <n-card title="关于本服务" class="info-card" :bordered="true">
@@ -473,6 +519,43 @@ function toKUnit(value: number): number {
 
   :deep(.n-card-header) {
     padding-bottom: 0;
+  }
+}
+
+/*
+  用量构成的视图切换。沿用热力图的「当前项 + 切换」范式，
+  但不带标题 —— 面包屑已兼作该卡片的标题。
+ */
+.breakdown-mode-switch {
+  display: flex;
+  align-items: center;
+  gap: $space-sm;
+}
+
+.breakdown-mode-label {
+  font-family: $font-mono;
+  font-size: 10px;
+  font-weight: 500;
+  color: $text-muted;
+  letter-spacing: 0.04em;
+}
+
+.breakdown-mode-btn {
+  padding: 3px 12px;
+  border: 1px solid $border;
+  border-radius: 6px;
+  background: $surface;
+  color: $text-body;
+  cursor: pointer;
+  font-family: $font-mono;
+  font-size: 10px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+
+  &:hover {
+    border-color: $accent;
+    color: $accent;
+    background: $accent-light;
   }
 }
 

@@ -18,7 +18,7 @@
  * 全程只用 primary / secondary 抽象，不出现供应商 / 模型字样；
  * 将来主次维度互换只需页面层换一份 dimension 配置。
  */
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import UsageBarChart from './UsageBarChart.vue'
 import { useUsageBreakdown } from './useUsageBreakdown'
 import type {
@@ -81,6 +81,23 @@ const selectedPrimary = ref<string | null>(null)
  * 由它决定进出动画用哪一组 keyframes，使"钻进去 / 退回来"方向感明确。
  */
 const direction = ref<'down' | 'up'>('down')
+
+/**
+ * 维度组合一变就退回一级。
+ *
+ * {@link selectedPrimary} 存的是主维度的<strong>原始值</strong>，其语义随维度配置而变
+ * （供应商视图下是供应商 key，模型视图下是模型名）。互换主次维度后这个值落到了
+ * 另一个取值空间里，三级图会因此查不到任何数据、面包屑也会显示一个不属于当前
+ * 维度的名字。日期不受影响，但二级的柱子身份同样全换了一套，留在原地并无意义。
+ *
+ * 故切换维度时统一回到一级：它是唯一在两种配置下都成立的位置。
+ */
+watch(() => props.dimension.key, () => {
+  direction.value = 'up'
+  level.value = 'overview'
+  selectedDate.value = null
+  selectedPrimary.value = null
+})
 
 const transitionName = computed(() =>
   direction.value === 'down' ? 'drill-down' : 'drill-up',
@@ -265,6 +282,17 @@ const ascendHint = computed(() => (canAscend.value ? '右键返回上一级' : '
         {{ subtitle }}
         <span v-if="ascendHint" class="usage-breakdown__hint">· {{ ascendHint }}</span>
       </span>
+
+      <!--
+        视图级操作的落位处（如维度切换）。
+
+        放在导航行而非卡片头部：面包屑本身兼作卡片标题，头部再加一个标题就成了
+        双标题。留成插槽而不内建具体开关，是为了让本组件继续只认 primary /
+        secondary 抽象 —— 有哪几种维度组合可切、怎么命名，都是页面层的事。
+      -->
+      <div v-if="$slots.actions" class="usage-breakdown__actions">
+        <slot name="actions" />
+      </div>
     </div>
 
     <!-- 状态优先级：加载 → 失败 → 空 → 图表 -->
@@ -374,6 +402,18 @@ const ascendHint = computed(() => (canAscend.value ? '右键返回上一级' : '
   font-family: var(--usage-chart-font-body, inherit);
   font-size: 12px;
   color: var(--usage-chart-text-muted, #9a9590);
+}
+
+/*
+ * 右侧附加控件（如视图切换）。
+ *
+ * 与副标题同处一行的右端：面包屑已兼作卡片标题，此处再放标题会成为双标题，
+ * 故卡片头部只留控件，由本插槽承载。baseline 对齐让按钮与副标题文字齐平。
+ */
+.usage-breakdown__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /*
