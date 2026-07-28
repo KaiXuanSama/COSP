@@ -19,7 +19,7 @@
  */
 import { computed, ref, watch } from 'vue'
 import type { StackBar, StackSegment } from './usagechart'
-import { AXIS_WIDTH, buildAxisTicks, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from './axisTicks'
+import { AXIS_WIDTH, buildAxisTicks, COLUMN_GAP, COLUMN_PAD_X, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from './axisTicks'
 import { buildAnimatedAxisTicks, useAxisScale } from './useAxisScale'
 import { useStackMorph, type MorphBar, type MorphSegment } from './useStackMorph'
 import UsageTooltip from './UsageTooltip.vue'
@@ -86,7 +86,40 @@ const rootStyle = computed(() => ({
   '--usagechart-column-pad-y': `${COLUMN_PAD_Y}px`,
   // 柱顶读数的容身之处，防止接近轴上限的柱子把读数顶出图表外。
   '--usagechart-value-space': `${VALUE_LABEL_SPACE}px`,
+  // 柱列的横向内边距与列间距。两者都按权重缩放（见 columnStyle），
+  // 因此在这里只声明「满权重时的量」，实际值由每根柱子各自算出。
+  '--usagechart-column-pad-x': `${COLUMN_PAD_X}px`,
+  '--usagechart-column-gap': `${COLUMN_GAP}px`,
 }))
+
+/**
+ * 单根柱列的内联样式。
+ *
+ * 横向的每一项都必须<strong>随权重一起归零</strong>，否则退场柱在
+ * {@code flex-grow} 已趋近 0 时仍占着固定宽度，被移除的瞬间这部分空间才
+ * 一次性释放，留存柱因此在动画收尾处「弹」一下。
+ *
+ * 具体有两笔固定开销：
+ * <ul>
+ *   <li><strong>左右 padding</strong> —— {@code flex-basis: 0} 只压内容盒，
+ *       padding 不参与 flex 收缩，构成宽度地板；</li>
+ *   <li><strong>列间距</strong> —— 退场柱作为 flex 项仍占一个 gap 位，
+ *       所以 gap 不能交给容器的 {@code gap}，必须由柱子自己以外边距表达。</li>
+ * </ul>
+ *
+ * 把两者都乘上权重后，退场柱的横向占位真正连续地收到 0，移除时无空间可释放。
+ */
+function columnStyle(item: MorphBar) {
+  return {
+    flexGrow: item.weight,
+    paddingLeft: `${COLUMN_PAD_X * item.weight}px`,
+    paddingRight: `${COLUMN_PAD_X * item.weight}px`,
+    // 半个间距挂在每一侧，相邻两柱各出一半即得完整间距，
+    // 且首尾柱只贡献半格，与容器 gap 的视觉效果一致。
+    marginLeft: `${(COLUMN_GAP / 2) * item.weight}px`,
+    marginRight: `${(COLUMN_GAP / 2) * item.weight}px`,
+  }
+}
 
 /**
  * 归一化参照值。
@@ -315,7 +348,7 @@ watch(structureKey, () => {
           v-for="morph in morphBars"
           :key="morph.slot"
           class="usage-bar__column"
-          :style="{ flexGrow: morph.weight }"
+          :style="columnStyle(morph)"
           :class="{
             'usage-bar__column--drillable': drillable && morph.phase !== 'leave',
             'usage-bar__column--leaving': morph.phase === 'leave',
@@ -422,13 +455,19 @@ watch(structureKey, () => {
   white-space: nowrap;
 }
 
+/*
+ * 绘图区。
+ *
+ * 不设 gap —— 列间距由柱子自己的左右外边距表达（见 columnStyle）。
+ * 容器分配的 gap 无法随权重收缩：退场柱只要还在 DOM 里就占着一整个 gap 位，
+ * 移除瞬间才释放，留存柱会因此在动画收尾处跳一下。
+ */
 .usage-bar__plot {
   position: relative;
   display: flex;
   flex: 1;
   align-items: flex-end;
   justify-content: space-around;
-  gap: 8px;
   min-width: 0;
   min-height: var(--usagechart-plot-height);
 }
@@ -467,6 +506,11 @@ watch(structureKey, () => {
  * flex-grow 走内联样式（由形变模型给出），基准尺寸取 0 —— 这样柱子的宽度
  * 完全由权重决定，权重收到 0 时宽度真的归零，而不是被 flex-basis 撑出残留。
  * overflow 隐藏让内容随宽度一起被裁掉，柱体因此是「被挤扁」而非溢出到邻居身上。
+ *
+ * 横向 padding 与 margin 同样走内联样式并按权重缩放：它们不参与 flex 收缩，
+ * 若固定成常量，退场柱在权重趋零时仍留着这几像素的宽度地板，
+ * 被移除时才一次性释放，观感是留存柱在收尾处弹一下。纵向 padding 无此问题，
+ * 故仍写在这里。
  */
 .usage-bar__column {
   position: relative;
@@ -478,10 +522,15 @@ watch(structureKey, () => {
   flex-direction: column;
   align-items: center;
   min-width: 0;
-  padding: var(--usagechart-column-pad-y) 2px;
+  padding-top: var(--usagechart-column-pad-y);
+  padding-bottom: var(--usagechart-column-pad-y);
   border-radius: 8px;
   transition:
     flex-grow 0.42s cubic-bezier(0.4, 0, 0.2, 1),
+    padding-left 0.42s cubic-bezier(0.4, 0, 0.2, 1),
+    padding-right 0.42s cubic-bezier(0.4, 0, 0.2, 1),
+    margin-left 0.42s cubic-bezier(0.4, 0, 0.2, 1),
+    margin-right 0.42s cubic-bezier(0.4, 0, 0.2, 1),
     opacity 0.42s cubic-bezier(0.4, 0, 0.2, 1),
     background 0.18s ease;
 }
