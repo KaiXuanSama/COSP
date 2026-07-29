@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTimelinePoint;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -94,5 +95,72 @@ public class ApiCallUsageRepository implements ApiCallUsageService {
                         rs.getString("model_name"),
                         rs.getLong("call_count")),
                 "-" + (days - 1) + " days");
+    }
+
+    /**
+     * 按天聚合最近若干天的 token 用量，供折线图的「近 7 日」范围使用。
+     *
+     * <p>与 {@link #aggregateBreakdown(int)} 同源同窗口，因此折线与柱状图的口径一致，
+     * 两图可以互相印证。这里不带供应商 / 模型维度 —— 折线表达的是总量趋势，
+     * 构成分解由柱状图负责。
+     *
+     * <p>{@code COALESCE} 是必需的：三个 token 列都允许 NULL（上游未提供 usage 时），
+     * 若不兜底，全为 NULL 的分组会让 {@code SUM} 返回 NULL，序列化后前端拿到 null
+     * 并在算术中变成 NaN。语义上 NULL ≠ 0，但在「求和」这一步按 0 处理是正确的。
+     *
+     * <p>只返回<strong>有数据的日期</strong>；缺失日期的补零由应用层完成，
+     * 因为「时间轴该有多长」是展示口径，不属于数据访问层的职责。
+     *
+     * @param days 回看天数（含今天），调用方应先做范围钳制
+     * @return 按日期升序的用量点；无数据时返回空列表
+     */
+    public List<UsageTimelinePoint> aggregateDailyTokens(int days) {
+        return jdbcTemplate.query(
+                "SELECT substr(created_at, 1, 10) AS bucket, "
+                        + "SUM(COALESCE(prompt_tokens, 0)) AS input_tokens, "
+                        + "SUM(COALESCE(completion_tokens, 0)) AS output_tokens "
+                        + "FROM api_call_usage "
+                        + "WHERE substr(created_at, 1, 10) >= date('now', 'localtime', ?) "
+                        + "GROUP BY bucket "
+                        + "ORDER BY bucket ASC",
+                (rs, rowNum) -> new UsageTimelinePoint(
+                        rs.getString("bucket"),
+                        rs.getLong("input_tokens"),
+                        rs.getLong("output_tokens")),
+                "-" + (days - 1) + " days");
+    }
+
+    /**
+     * 按小时聚合指定时间窗内的 token 用量，供折线图的「今日时段」范围使用。
+     *
+     * <h2>为什么用字面量比较而非 substr</h2>
+     * {@code created_at} 是 {@code %Y-%m-%dT%H:%M:%S} 定长本地时间字符串，
+     * 其<strong>字典序与时间序一致</strong>，故可直接用 {@code >=} / {@code <} 比较。
+     * 这一点很重要：把列包在 {@code substr(...)} 里会使条件失去 sargable 性质，
+     * 无法利用索引而退化为全表扫描；本方法查询的时间窗很窄，更不该付这个代价。
+     *
+     * <p>分桶键取小时的两位数字后再算桶号 —— 这是 SELECT 侧的表达式，
+     * 不影响 WHERE 的索引可用性。返回的是<strong>原始小时</strong>而非桶号，
+     * 由应用层按颗粒度归并：小时到时段的映射依赖「起始时刻」这一展示口径
+     * （见 {@code UsageQueryService} 的 5 点起算），不属于数据访问层。
+     *
+     * @param startInclusive 窗口起点，格式 {@code yyyy-MM-ddTHH:mm:ss}，含
+     * @param endExclusive   窗口终点，同格式，不含
+     * @return 按小时升序的用量点，{@code bucket} 为两位小时数（如 {@code "05"}）；无数据时返回空列表
+     */
+    public List<UsageTimelinePoint> aggregateHourlyTokens(String startInclusive, String endExclusive) {
+        return jdbcTemplate.query(
+                "SELECT substr(created_at, 12, 2) AS bucket, "
+                        + "SUM(COALESCE(prompt_tokens, 0)) AS input_tokens, "
+                        + "SUM(COALESCE(completion_tokens, 0)) AS output_tokens "
+                        + "FROM api_call_usage "
+                        + "WHERE created_at >= ? AND created_at < ? "
+                        + "GROUP BY bucket "
+                        + "ORDER BY bucket ASC",
+                (rs, rowNum) -> new UsageTimelinePoint(
+                        rs.getString("bucket"),
+                        rs.getLong("input_tokens"),
+                        rs.getLong("output_tokens")),
+                startInclusive, endExclusive);
     }
 }

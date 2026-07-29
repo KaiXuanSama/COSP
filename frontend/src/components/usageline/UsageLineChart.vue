@@ -1,0 +1,638 @@
+<script setup lang="ts">
+/**
+ * UsageLineChart — token 用量折线图。
+ *
+ * <h2>职责边界</h2>
+ * 只负责把已换算好的坐标画成线，不请求数据、不感知时间范围的业务含义。
+ * 分桶、补零、跨夜日期归属等规则全在 {@link useTimelineSeries} 里，
+ * 因此这里没有任何需要单测的分支。
+ *
+ * <h2>为什么用 SVG 而非 CSS</h2>
+ * 折线是连续路径，CSS 只能拼接线段并逐段旋转，接缝处会有明显的锯齿与断口。
+ * SVG 的 `polyline` 天然支持连接处圆滑（`stroke-linejoin`），且坐标用
+ * `viewBox` 归一化后完全不必关心容器实际像素尺寸。
+ *
+ * <h2>三条线共用一个纵轴</h2>
+ * 总量恒等于输入加输出，三者同量纲同数量级。分轴会破坏「总量 = 两者之和」
+ * 这个可以直接读出的关系，故区分靠颜色与线型，不靠各自的坐标系。
+ */
+import { computed, ref, watch } from 'vue'
+import { AXIS_WIDTH, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from '../usagechart/axisTicks'
+import { useAxisScale, buildAnimatedAxisTicks } from '../usagechart/useAxisScale'
+import { toPolylinePoints, useTimelineSeries } from './useTimelineSeries'
+import type { BucketHours, TimelineRange, UsageTimelinePoint } from './usageline'
+
+const props = withDefaults(defineProps<{
+  points: UsageTimelinePoint[]
+  range: TimelineRange
+  bucketHours: BucketHours
+  /** 绘图区高度（px），不含横轴标签。 */
+  height?: number
+  /** 纵轴刻度栏宽度（px）。与柱状图同值，两卡片的绘图区左边界才能对齐。 */
+  axisWidth?: number
+  /**
+   * 纵轴标尺换算的动画时长（ms）。
+   *
+   * 与柱状图同值，使两处的「量纲变化」看起来是同一种运动。
+   */
+  scaleDuration?: number
+}>(), {
+  height: 180,
+  axisWidth: AXIS_WIDTH,
+  scaleDuration: 420,
+})
+
+/** viewBox 的逻辑尺寸。取值本身无意义，只用于把 0~1 的比例放大成整数坐标。 */
+const VIEW_WIDTH = 1000
+const VIEW_HEIGHT = 300
+
+const rootRef = ref<HTMLElement | null>(null)
+
+/** 当前悬停的点序号；null 表示未悬停。 */
+const hoverIndex = ref<number | null>(null)
+
+const pointsRef = computed(() => props.points)
+const rangeRef = computed(() => props.range)
+const bucketRef = computed(() => props.bucketHours)
+
+const { ceiling, axisTicks: targetTicks, series, axisLabels, dateSegments } =
+  useTimelineSeries(pointsRef, rangeRef, bucketRef)
+
+/**
+ * 动画中的标尺。
+ *
+ * 切换时间范围时轴上限会剧变（一天的累计 vs 单个时段的量），若刻度硬切，
+ * 使用者察觉不到量纲已变，会把新旧两屏的线高直接比较而误读趋势。
+ * 与柱状图复用同一个 composable：刻度在纵轴上真实地聚拢或散开。
+ */
+const targetCeiling = computed(() => ceiling.value)
+const { displayScale, rescaling, progress } = useAxisScale(targetCeiling, {
+  duration: props.scaleDuration,
+})
+
+const previousTicks = ref(targetTicks.value)
+watch(targetTicks, (_next, previous) => {
+  previousTicks.value = previous
+})
+
+/** 当前要渲染的刻度：静止时用精确占比，换算中则按动画标尺实时投影。 */
+const renderTicks = computed(() => {
+  if (!rescaling.value) {
+    return targetTicks.value.map((tick, index) => ({
+      ...tick,
+      key: `static-${index}`,
+      opacity: 1,
+    }))
+  }
+  return buildAnimatedAxisTicks(
+    previousTicks.value,
+    targetTicks.value,
+    progress.value,
+    displayScale.value,
+  )
+})
+
+const rootStyle = computed(() => ({
+  '--usage-line-plot-height': `${props.height}px`,
+  '--usage-line-axis-width': `${props.axisWidth}px`,
+  '--usage-line-pad-y': `${COLUMN_PAD_Y}px`,
+  '--usage-line-value-space': `${VALUE_LABEL_SPACE}px`,
+}))
+
+/** 每条线的 SVG `points` 属性。 */
+const polylines = computed(() =>
+  series.value.map((item) => ({
+    key: item.config.key,
+    color: item.config.color,
+    dash: item.config.dash,
+    points: toPolylinePoints(item.points, VIEW_WIDTH, VIEW_HEIGHT),
+  })),
+)
+
+/** 悬停时的垂直参考线位置（占宽度的比例）。 */
+const hoverX = computed(() => {
+  if (hoverIndex.value === null) return null
+  const first = series.value[0]
+  return first?.points[hoverIndex.value]?.x ?? null
+})
+
+/**
+ * 悬停浮框的纵向落点 —— 取三条线中最高的那一点。
+ *
+ * 浮框向上弹出，若锚在某条固定的线上，另外两条更高的线会把它压住。
+ * 锚在最高点则无论哪条线当下最大，浮框总在全部线条之上。
+ */
+const hoverTopRatio = computed(() => {
+  if (hoverIndex.value === null) return 0
+  return series.value.reduce((max, item) => {
+    const point = item.points[hoverIndex.value as number]
+    return point ? Math.max(max, point.y) : max
+  }, 0)
+})
+
+/**
+ * 悬停点的圆点标记。
+ *
+ * 参考线指出「读的是哪一列」，圆点则指出「每条线在这一列的具体高度」——
+ * 少了它，三个数值与三条线的对应关系要靠颜色去猜。
+ */
+const hoverDots = computed(() => {
+  if (hoverIndex.value === null) return []
+  return series.value
+    .map((item) => {
+      const point = item.points[hoverIndex.value as number]
+      return point ? { key: item.config.key, color: item.config.color, x: point.x, y: point.y } : null
+    })
+    .filter((dot): dot is NonNullable<typeof dot> => dot !== null)
+})
+
+/** 悬停时段的三项数值，供浮层列出。 */
+const hoverRows = computed(() => {
+  if (hoverIndex.value === null) return []
+  return series.value.map((item) => ({
+    key: item.config.key,
+    label: item.config.label,
+    color: item.config.color,
+    dash: item.config.dash,
+    value: item.points[hoverIndex.value as number]?.value ?? 0,
+  }))
+})
+
+const hoverLabel = computed(() =>
+  hoverIndex.value === null ? '' : props.points[hoverIndex.value]?.bucket ?? '',
+)
+
+/**
+ * 浮框的水平对齐方式。
+ *
+ * 默认以悬停点为中心，但贴近两端时会溢出卡片，故改为单侧对齐 ——
+ * 这比整体钳制位置更简单，且浮框与参考线始终保持相连。
+ */
+const hoverAlign = computed(() => {
+  const x = hoverX.value
+  if (x === null) return 'center'
+  if (x < 0.16) return 'start'
+  if (x > 0.84) return 'end'
+  return 'center'
+})
+
+/**
+ * 浮框在锚点的上方还是下方。
+ *
+ * 默认在上方（不遮挡下方的折线），但当最高点已接近轴顶时，向上会顶出绘图区、
+ * 与卡片上方的元素重叠，此时翻到下方。这与柱顶读数预留 `VALUE_LABEL_SPACE`
+ * 是同一类问题，只是浮框比读数高得多，单靠留白不够，必须翻转。
+ */
+const hoverFlipped = computed(() => hoverTopRatio.value > 0.58)
+
+/**
+ * 依鼠标横向位置定位最近的点。
+ *
+ * 折线上的点很细，要求精确命中会让 hover 极难触发；按横坐标就近吸附则
+ * 只要鼠标在绘图区内横向移动，读数就连续跟随，这也是三值同显的前提。
+ */
+function updateHover(event: MouseEvent) {
+  const plot = event.currentTarget as HTMLElement | null
+  if (!plot || !props.points.length) return
+
+  const rect = plot.getBoundingClientRect()
+  const ratio = (event.clientX - rect.left) / rect.width
+  const total = props.points.length
+  const nearest = total === 1 ? 0 : Math.round(ratio * (total - 1))
+  hoverIndex.value = Math.max(0, Math.min(total - 1, nearest))
+}
+
+function clearHover() {
+  hoverIndex.value = null
+}
+
+/** 大数用千分位；token 量级动辄数万，不分组几乎无法读。 */
+function formatValue(value: number): string {
+  return value.toLocaleString('zh-CN')
+}
+</script>
+
+<template>
+  <div ref="rootRef" class="usage-line" :style="rootStyle">
+    <div class="usage-line__body">
+      <!-- 纵轴：刻度读数，与网格线对齐 -->
+      <div class="usage-line__axis" aria-hidden="true">
+        <span
+          v-for="tick in renderTicks"
+          :key="'axis-' + tick.key"
+          class="usage-line__tick"
+          :style="{ bottom: `${tick.ratio * 100}%`, opacity: tick.opacity }"
+        >
+          {{ formatTickValue(Math.round(tick.value)) }}
+        </span>
+      </div>
+
+      <div class="usage-line__main">
+        <div
+          class="usage-line__plot"
+          @mousemove="updateHover"
+          @mouseleave="clearHover"
+        >
+          <!-- 网格线，置于折线之下 -->
+          <div class="usage-line__grid" aria-hidden="true">
+            <span
+              v-for="tick in renderTicks"
+              :key="'grid-' + tick.key"
+              class="usage-line__gridline"
+              :class="{ 'usage-line__gridline--base': tick.value === 0 }"
+              :style="{ bottom: `${tick.ratio * 100}%`, opacity: tick.opacity }"
+            />
+          </div>
+
+          <!-- 悬停参考线：贯穿绘图区，标出正在读的是哪个时段 -->
+          <span
+            v-if="hoverX !== null"
+            class="usage-line__cursor"
+            aria-hidden="true"
+            :style="{ left: `${hoverX * 100}%` }"
+          />
+
+          <!--
+            折线层。viewBox 把 0~1 的比例放大成整数坐标，
+            preserveAspectRatio="none" 让它随容器自由拉伸 ——
+            线宽用 vector-effect 保持不变，否则横向拉伸会把线压扁。
+          -->
+          <svg
+            class="usage-line__svg"
+            :viewBox="`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <polyline
+              v-for="line in polylines"
+              :key="line.key"
+              class="usage-line__path"
+              :points="line.points"
+              :stroke="line.color"
+              :stroke-dasharray="line.dash"
+            />
+          </svg>
+
+          <!--
+            悬停点标记。用 div 而非 SVG 圆：viewBox 被非等比拉伸，
+            画在里面的圆会跟着变成椭圆。
+          -->
+          <span
+            v-for="dot in hoverDots"
+            :key="'dot-' + dot.key"
+            class="usage-line__dot"
+            aria-hidden="true"
+            :style="{
+              left: `${dot.x * 100}%`,
+              bottom: `${dot.y * 100}%`,
+              borderColor: dot.color,
+            }"
+          />
+
+          <!--
+            悬停明细浮框。三值同显，故不复用柱状图的 UsageTooltip
+            （那个结构是为「占比明细」设计的），但视觉语言保持一致。
+          -->
+          <div
+            v-if="hoverRows.length && hoverX !== null"
+            class="usage-line__tooltip"
+            :class="[
+              `usage-line__tooltip--${hoverAlign}`,
+              hoverFlipped ? 'usage-line__tooltip--below' : 'usage-line__tooltip--above',
+            ]"
+            aria-hidden="true"
+            :style="{ left: `${hoverX * 100}%`, bottom: `${hoverTopRatio * 100}%` }"
+          >
+            <div class="usage-line__tooltip-head">{{ hoverLabel }}</div>
+            <div v-for="row in hoverRows" :key="row.key" class="usage-line__tooltip-row">
+              <svg class="usage-line__tooltip-mark" viewBox="0 0 14 8" aria-hidden="true">
+                <line
+                  x1="0" y1="4" x2="14" y2="4"
+                  :stroke="row.color"
+                  :stroke-dasharray="row.dash"
+                  stroke-width="2"
+                />
+              </svg>
+              <span class="usage-line__tooltip-label">{{ row.label }}</span>
+              <span class="usage-line__tooltip-value">{{ formatValue(row.value) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 横轴第一行：时刻或日期 -->
+        <div class="usage-line__labels" aria-hidden="true">
+          <span
+            v-for="label in axisLabels"
+            :key="label.key"
+            class="usage-line__label"
+            :class="{ 'usage-line__label--hidden': !label.visible }"
+            :style="{ left: `${label.x * 100}%` }"
+          >
+            {{ label.text }}
+          </span>
+        </div>
+
+        <!--
+          横轴第二行：日期分段，仅今日时段范围有。
+          行高恒定保留，避免切换范围时卡片高度跳动。
+        -->
+        <div class="usage-line__dates" aria-hidden="true">
+          <span
+            v-for="segment in dateSegments"
+            :key="segment.label"
+            class="usage-line__date"
+            :style="{ left: `${segment.start * 100}%`, width: `${segment.width * 100}%` }"
+          >
+            {{ segment.label }}
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 图例：三条线仅靠颜色与线型区分，没有图例便无从解读 -->
+    <div class="usage-line__legend">
+      <span v-for="line in polylines" :key="'legend-' + line.key" class="usage-line__legend-item">
+        <svg class="usage-line__legend-mark" viewBox="0 0 18 8" aria-hidden="true">
+          <line
+            x1="0" y1="4" x2="18" y2="4"
+            :stroke="line.color"
+            :stroke-dasharray="line.dash"
+            stroke-width="2"
+          />
+        </svg>
+        {{ series.find((item) => item.config.key === line.key)?.config.label }}
+      </span>
+    </div>
+  </div>
+</template>
+
+<style lang="scss" scoped>
+.usage-line {
+  position: relative;
+  width: 100%;
+}
+
+/*
+ * 轴区与绘图区并排。padding-top 与柱状图取同一常量，
+ * 使两张卡片的绘图区上边界处于同一水平线。
+ */
+.usage-line__body {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding-top: var(--usage-line-value-space);
+}
+
+.usage-line__axis {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--usage-line-axis-width, 36px);
+  height: var(--usage-line-plot-height);
+  margin-top: var(--usage-line-pad-y);
+}
+
+.usage-line__tick {
+  position: absolute;
+  right: 0;
+  /* 上移半个行高，使读数中线压在刻度线上 */
+  transform: translateY(50%);
+  font-family: var(--usage-line-font-mono, 'DM Mono', monospace);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--usage-line-text-muted, #9a9590);
+  white-space: nowrap;
+}
+
+.usage-line__main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.usage-line__plot {
+  position: relative;
+  height: var(--usage-line-plot-height);
+  margin-top: var(--usage-line-pad-y);
+}
+
+.usage-line__grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.usage-line__gridline {
+  position: absolute;
+  right: 0;
+  left: 0;
+  border-top: 1px dashed var(--usage-line-gridline, rgba(154, 149, 144, 0.22));
+}
+
+/* 基线（0 刻度）用实线，作为折线的落脚参考 */
+.usage-line__gridline--base {
+  border-top-style: solid;
+  border-top-color: var(--usage-line-gridline-base, rgba(154, 149, 144, 0.4));
+}
+
+/* 悬停参考线：细实线，比网格线略重以便与之区分 */
+.usage-line__cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--usage-line-accent-mid, rgba(194, 122, 62, 0.35));
+  pointer-events: none;
+}
+
+.usage-line__svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/*
+ * vector-effect 让线宽不随 viewBox 的非等比拉伸而变形 ——
+ * preserveAspectRatio="none" 会横向拉伸坐标系，不加这条线会被压成扁带。
+ */
+.usage-line__path {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.usage-line__labels,
+.usage-line__dates {
+  position: relative;
+  height: 18px;
+  margin-top: 6px;
+}
+
+.usage-line__label {
+  position: absolute;
+  transform: translateX(-50%);
+  font-family: var(--usage-line-font-mono, 'DM Mono', monospace);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--usage-line-text-muted, #9a9590);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 隐藏而非移除：保留元素使标签位置在稀疏度变化时保持稳定 */
+.usage-line__label--hidden {
+  visibility: hidden;
+}
+
+/*
+ * 日期分段：整段居中显示，明确"这一段时刻属于哪一天"。
+ * 即使当前范围没有分段，本行仍占位，避免切换时卡片高度跳动。
+ */
+.usage-line__dates {
+  height: 16px;
+  margin-top: 2px;
+}
+
+.usage-line__date {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--usage-line-font-mono, 'DM Mono', monospace);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--usage-line-text-muted, #9a9590);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+.usage-line__legend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 10px;
+  padding-left: calc(var(--usage-line-axis-width, 36px) + 8px);
+  font-family: var(--usage-line-font-body, inherit);
+  font-size: 11px;
+  color: var(--usage-line-text-muted, #9a9590);
+}
+
+.usage-line__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.usage-line__legend-mark {
+  width: 18px;
+  height: 8px;
+}
+
+/*
+ * 悬停读数浮框。
+ *
+ * 与柱状图的 tooltip 同一套视觉语言（深底、圆角、等宽字体），但结构不同 ——
+ * 那个是为「占比明细」设计的单/双层列表，这里要并列三条线的绝对值。
+ *
+ * 定位锚在「三条线中最高那一点」上方：若锚在固定某条线上，更高的线会盖住浮框。
+ * pointer-events 关掉，避免浮框抢走鼠标导致 hover 在边界处闪烁。
+ */
+.usage-line__tooltip {
+  position: absolute;
+  z-index: 20;
+  min-width: 132px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--usage-line-tooltip-bg, #1a1917);
+  color: var(--usage-line-tooltip-text, #f5f3ee);
+  font-family: var(--usage-line-font-mono, 'DM Mono', monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/*
+ * 三种水平对齐 × 两种垂直方向，用两个自定义属性拼成一个 transform。
+ *
+ * 拆成变量而非写六条组合规则：水平与垂直是两个独立决策（是否贴边、是否顶格），
+ * 六条规则里有四条会重复同样的位移值，改一处就得同步改另外几处。
+ */
+.usage-line__tooltip {
+  transform: translate(var(--usage-line-tip-x, -50%), var(--usage-line-tip-y, 12px));
+}
+
+/* 居中：以悬停点为轴 */
+.usage-line__tooltip--center {
+  --usage-line-tip-x: -50%;
+}
+
+/* 贴左：左缘对齐参考线，向右展开 */
+.usage-line__tooltip--start {
+  --usage-line-tip-x: -12px;
+}
+
+/* 贴右：右缘对齐参考线，向左展开 */
+.usage-line__tooltip--end {
+  --usage-line-tip-x: calc(-100% + 12px);
+}
+
+/* 在锚点上方（默认）：bottom 已定位到锚点，再整体上移自身高度加间距 */
+.usage-line__tooltip--above {
+  --usage-line-tip-y: calc(-100% - 12px);
+}
+
+/* 翻到锚点下方：最高点贴近轴顶时向上会溢出绘图区 */
+.usage-line__tooltip--below {
+  --usage-line-tip-y: 12px;
+}
+
+.usage-line__tooltip-head {
+  padding-bottom: 4px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid rgba(245, 243, 238, 0.18);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-line__tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.usage-line__tooltip-mark {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 8px;
+}
+
+/* 标签占满中间空隙，把数值推到右端对齐，三行的数字因此上下成列 */
+.usage-line__tooltip-label {
+  flex: 1;
+  opacity: 0.72;
+}
+
+.usage-line__tooltip-value {
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * 悬停点标记。用 div 而非 SVG 圆：viewBox 被 preserveAspectRatio="none"
+ * 非等比拉伸，画在其中的圆会变成椭圆。
+ */
+.usage-line__dot {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid;
+  border-radius: 50%;
+  background: var(--usage-line-surface, #fff);
+  transform: translate(-50%, 50%);
+  pointer-events: none;
+}
+</style>

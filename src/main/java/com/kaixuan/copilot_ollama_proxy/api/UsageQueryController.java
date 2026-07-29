@@ -4,6 +4,7 @@ import com.kaixuan.copilot_ollama_proxy.application.usage.UsageQueryService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.SseConnectionGate;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.StatsSnapshot;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTimelinePoint;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -113,6 +114,64 @@ public class UsageQueryController {
 
             Flux<ServerSentEvent<List<UsageBreakdownRow>>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
                     .map(tick -> ServerSentEvent.<List<UsageBreakdownRow>>builder().comment("keep-alive").build());
+
+            return Flux.merge(data, heartbeat)
+                    .doFinally(signal -> {
+                        if (released.compareAndSet(false, true)) {
+                            sseConnectionGate.release();
+                        }
+                    });
+        });
+    }
+
+    /**
+     * 概览折线图的 token 用量时间线。
+     *
+     * <p>两种范围共用一个端点与一种 DTO：{@code range=7d} 一天一个点，
+     * {@code range=1d} 按 {@code bucket} 小时分桶（今日 5 点起算的 24 小时）。
+     * 结构同构让前端切换范围时无需更换组件。
+     *
+     * <p>数据源与下钻柱状图相同（{@code api_call_usage}），因此折线与柱子口径一致、
+     * 可以互相印证；也因此总量会略低于统计卡的全量口径。
+     *
+     * @param range  时间范围，{@code 1d} 为今日时段，其余按近 7 日处理
+     * @param bucket 时段颗粒度（小时），仅 {@code range=1d} 有效；非 1/2/4 时服务层退回 2
+     */
+    @GetMapping("/config/api/usage-timeline")
+    public Mono<List<UsageTimelinePoint>> usageTimeline(
+            @RequestParam(defaultValue = "7d") String range,
+            @RequestParam(defaultValue = "2") int bucket) {
+        return usageQueryService.getUsageTimeline(range, bucket);
+    }
+
+    /**
+     * token 用量时间线的 SSE 推送流。
+     *
+     * <p>与柱状图、统计卡由同一批调用事件驱动，三处视图同步刷新。今日时段范围另有一层收益：
+     * 定时兜底会随时间推进「当前所在时段」，即使没有新调用，时间轴也会向前延伸。
+     *
+     * <p>每帧下发完整点位列表（{@code event: timeline}），前端整体替换；
+     * 内容未变时后端已用 {@code distinctUntilChanged} 抑制。
+     *
+     * @param range  时间范围，{@code 1d} 为今日时段，其余按近 7 日处理
+     * @param bucket 时段颗粒度（小时），仅 {@code range=1d} 有效
+     */
+    @GetMapping(value = "/config/api/usage-timeline/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<List<UsageTimelinePoint>>> streamUsageTimeline(
+            @RequestParam(defaultValue = "7d") String range,
+            @RequestParam(defaultValue = "2") int bucket) {
+        return Flux.defer(() -> {
+            if (!sseConnectionGate.tryAcquire()) {
+                return Flux.<ServerSentEvent<List<UsageTimelinePoint>>>empty();
+            }
+            AtomicBoolean released = new AtomicBoolean(false);
+
+            Flux<ServerSentEvent<List<UsageTimelinePoint>>> data =
+                    usageQueryService.streamUsageTimeline(range, bucket)
+                            .map(points -> ServerSentEvent.builder(points).event("timeline").build());
+
+            Flux<ServerSentEvent<List<UsageTimelinePoint>>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
+                    .map(tick -> ServerSentEvent.<List<UsageTimelinePoint>>builder().comment("keep-alive").build());
 
             return Flux.merge(data, heartbeat)
                     .doFinally(signal -> {

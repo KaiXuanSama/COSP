@@ -3,10 +3,17 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NCard, NNumberAnimation } from 'naive-ui'
 import ActivityHeatmap from '@/components/heatmap/ActivityHeatmap.vue'
 import UsageBreakdownPanel from '@/components/usagechart/UsageBreakdownPanel.vue'
+import UsageLinePanel from '@/components/usageline/UsageLinePanel.vue'
 import http from '@/api'
 import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 import type { HeatmapModeConfig } from '@/components/heatmap'
 import type { BreakdownDimension, BreakdownMetric, UsageBreakdownRow } from '@/components/usagechart'
+import {
+  DEFAULT_BUCKET_HOURS,
+  type BucketHours,
+  type TimelineRange,
+  type UsageTimelinePoint,
+} from '@/components/usageline'
 import { useStatsStore, type StatsData } from '@/stores/stats'
 
 const statsStore = useStatsStore()
@@ -22,6 +29,15 @@ const breakdownFailed = ref(false)
 
 /** 下钻明细的 SSE 连接句柄。非响应式，仅用于生命周期管理。 */
 let breakdownSource: AuthEventSource | null = null
+
+const timelinePoints = ref<UsageTimelinePoint[]>([])
+const timelineLoading = ref(false)
+const timelineFailed = ref(false)
+const timelineRange = ref<TimelineRange>('7d')
+const timelineBucketHours = ref<BucketHours>(DEFAULT_BUCKET_HOURS)
+
+/** 用量折线的 SSE 连接句柄。 */
+let timelineSource: AuthEventSource | null = null
 
 // 记录刷新前的旧值，作为动画起点
 const prev = ref({ total: 0, today: 0, input: 0, output: 0 })
@@ -159,6 +175,9 @@ onMounted(() => {
   // 再建流实时刷新。三级视图仍由前端 pivot，下钻过程中不产生任何请求。
   void fetchBreakdown()
   connectBreakdownStream()
+  // 折线图同样是「HTTP 首屏兜底 + SSE 接管」
+  void fetchTimeline()
+  connectTimelineStream()
   void statsStore.fetchStats()
   statsStore.connectStream()
 })
@@ -166,6 +185,21 @@ onMounted(() => {
 onUnmounted(() => {
   statsStore.disconnectStream()
   disconnectBreakdownStream()
+  disconnectTimelineStream()
+})
+
+/**
+ * 范围或颗粒度一变就重拉并重建 SSE。
+ *
+ * 两个参数都写在流的 URL 里，故无法复用旧连接。先断后建而非反过来：
+ * 服务端有连接数上限，先建新的会瞬时占用两个名额。
+ */
+watch([timelineRange, timelineBucketHours], () => {
+  // 切换范围后旧点位已不同构（日期 ↔ 时刻），留着会让图先画错一帧
+  timelinePoints.value = []
+  disconnectTimelineStream()
+  void fetchTimeline()
+  connectTimelineStream()
 })
 
 // SSE 每次推送新快照时：驱动数字动画（记录旧值作为起点），并把“今日”单格同步进热力图。
@@ -293,6 +327,67 @@ function disconnectBreakdownStream() {
   }
 }
 
+/**
+ * 拉取 token 用量时间线。
+ *
+ * 补零与「不补未来」都由后端完成，前端拿到的点位可直接按序绘制。
+ */
+async function fetchTimeline() {
+  if (!timelinePoints.value.length) {
+    timelineLoading.value = true
+  }
+
+  try {
+    const response = await http.get<UsageTimelinePoint[]>('/usage-timeline', {
+      params: { range: timelineRange.value, bucket: timelineBucketHours.value },
+    })
+    timelinePoints.value = Array.isArray(response.data) ? response.data : []
+    timelineFailed.value = false
+  } catch {
+    if (!timelinePoints.value.length) {
+      timelineFailed.value = true
+    }
+  } finally {
+    timelineLoading.value = false
+  }
+}
+
+/**
+ * 建立折线图的 SSE 连接。
+ *
+ * 与统计卡、柱状图由同一批调用事件驱动，三处视图同步刷新。今日时段范围另有一层收益：
+ * 后端的定时兜底会随时间推进「当前所在时段」，即使没有新调用，时间轴也会向前延伸。
+ */
+function connectTimelineStream() {
+  if (timelineSource) return
+  const query = `range=${timelineRange.value}&bucket=${timelineBucketHours.value}`
+  timelineSource = createAuthEventSource({
+    path: `/usage-timeline/stream?${query}`,
+    handlers: {
+      timeline: (data) => {
+        try {
+          const points = JSON.parse(data) as UsageTimelinePoint[]
+          if (!Array.isArray(points)) return
+          timelinePoints.value = points
+          // 推送成功即视为链路正常：清掉首屏 HTTP 可能留下的失败态。
+          timelineFailed.value = false
+          timelineLoading.value = false
+        } catch {
+          // 忽略坏帧，保留上一份点位，避免折线闪空。
+        }
+      },
+    },
+  })
+}
+
+/** 断开折线图 SSE 连接。 */
+function disconnectTimelineStream() {
+  if (timelineSource) {
+    timelineSource.close()
+    timelineSource = null
+  }
+}
+
 function switchHeatmapMode() {
   const currentIndex = heatmapModeOrder.indexOf(heatmapMode.value)
   heatmapMode.value = heatmapModeOrder[(currentIndex + 1) % heatmapModeOrder.length]
@@ -387,6 +482,21 @@ function toKUnit(value: number): number {
           </div>
         </template>
       </UsageBreakdownPanel>
+    </n-card>
+
+    <!--
+      token 用量折线。与柱状图分开成卡：折线的横轴是时间（连续量），
+      柱状图下钻后横轴变成供应商 / 模型（类别），把类别连成线会暗示不存在的顺序关系。
+      两者回答的问题也不同 —— 折线看趋势，柱状图看构成。
+    -->
+    <n-card class="usage-line-card" :bordered="true">
+      <UsageLinePanel
+        v-model:range="timelineRange"
+        v-model:bucket-hours="timelineBucketHours"
+        :points="timelinePoints"
+        :loading="timelineLoading"
+        :failed="timelineFailed"
+      />
     </n-card>
 
     <n-card title="关于本服务" class="info-card" :bordered="true">
@@ -503,6 +613,28 @@ function toKUnit(value: number): number {
   --usage-chart-surface: #{$surface};
   --usage-chart-tooltip-bg: #{$sidebar-bg};
   --usage-chart-tooltip-text: #{$text-light};
+
+  margin-bottom: $space-lg;
+}
+
+/*
+  用量折线卡片：主题色由页面注入，尺寸由组件自算，
+  与 .breakdown-card / .heatmap-card 保持同一套约定。
+ */
+.usage-line-card {
+  --usage-line-font-mono: 'DM Mono', monospace;
+  --usage-line-font-body: #{$font-body};
+  --usage-line-font-display: #{$font-display};
+  --usage-line-text-primary: #{$text-primary};
+  --usage-line-text-body: #{$text-body};
+  --usage-line-text-muted: #{$text-muted};
+  --usage-line-border: #{$border};
+  --usage-line-accent: #{$accent};
+  --usage-line-accent-light: #{$accent-light};
+  --usage-line-accent-mid: #{$accent-mid};
+  --usage-line-surface: #{$surface};
+  --usage-line-tooltip-bg: #{$sidebar-bg};
+  --usage-line-tooltip-text: #{$text-light};
 
   margin-bottom: $space-lg;
 }
