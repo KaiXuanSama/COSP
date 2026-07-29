@@ -46,15 +46,14 @@ export type TimelineRange = '7d' | '1d'
 export const DAY_START_HOUR = 5
 
 /**
- * 一条折线的配置。
+ * 一个数据系列的配置。
  *
- * 三条线共用一个纵轴 —— 总量恒等于输入加输出，三者同量纲同数量级，
- * 分轴反而会破坏「总量 = 两者之和」这个可以直接读出的关系。
- * 因此区分靠颜色与线型，而非各自的坐标系。
+ * 三个系列共用一个纵轴 —— 总量恒等于输入加输出，三者同量纲。
+ * 但只有总量画成折线，见 {@link SeriesConfig.drawn}。
  */
 export interface SeriesConfig {
   key: 'total' | 'input' | 'output'
-  /** 图例与 tooltip 中的名称。 */
+  /** 图例与浮框中的名称。 */
   label: string
   /** 从点位取值。总量在此现算，不占用传输字段。 */
   valueOf: (point: UsageTimelinePoint) => number
@@ -62,15 +61,24 @@ export interface SeriesConfig {
   color: string
   /** SVG `stroke-dasharray`；实线传 `undefined`。 */
   dash?: string
+  /**
+   * 是否绘制成折线。
+   *
+   * 输入 token 占总量的绝大部分（实测常在 99% 以上），输出则贴着横轴 ——
+   * 三条线画出来是「总量与输入几乎重合、输出压成一条直线」，
+   * 既看不出输入的独立走势，也看不出输出的起伏，反而让图变脏。
+   *
+   * 故只画总量一条线表达趋势，输入与输出的绝对值改由悬停浮框给出：
+   * 需要看构成时它们精确可读，不需要时不占用视觉带宽。
+   */
+  drawn: boolean
 }
 
 /**
- * 三条线的定义，顺序即绘制与图例顺序。
+ * 三个系列的定义，顺序即浮框中的列出顺序。
  *
- * 视觉层次的分配依据「谁是主角」：
- * - 总量用强调色实线，它是这张图要回答的主要问题；
- * - 输入量最大但属背景信息，用灰实线；
- * - 输出占比很小、线条贴近横轴，用灰虚线 —— 虚线在密集区比实线更不易与轴线混淆。
+ * 总量用强调色实线；输入与输出不绘制，只在浮框里出现，
+ * 颜色与线型仍保留 —— 浮框的行首标记要与「若将来画出来会是什么样」保持一致。
  */
 export const SERIES: SeriesConfig[] = [
   {
@@ -78,12 +86,14 @@ export const SERIES: SeriesConfig[] = [
     label: '总量',
     valueOf: (point) => point.inputTokens + point.outputTokens,
     color: 'var(--usage-line-accent, #c27a3e)',
+    drawn: true,
   },
   {
     key: 'input',
     label: '输入',
     valueOf: (point) => point.inputTokens,
     color: 'var(--usage-line-text-muted, #9a9590)',
+    drawn: false,
   },
   {
     key: 'output',
@@ -91,6 +101,7 @@ export const SERIES: SeriesConfig[] = [
     valueOf: (point) => point.outputTokens,
     color: 'var(--usage-line-text-muted, #9a9590)',
     dash: '4 3',
+    drawn: false,
   },
 ]
 

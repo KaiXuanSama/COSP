@@ -100,10 +100,17 @@ describe('三条线的取值', () => {
   })
 
   it('输出线用虚线，其余为实线', () => {
-    // 输出量小、线条贴近横轴，虚线在密集区比实线更不易与轴线混淆
+    // 线型在浮框的行首标记里仍会用到，故即便不绘制也保留配置
     expect(SERIES.find((series) => series.key === 'output')!.dash).toBeDefined()
     expect(SERIES.find((series) => series.key === 'total')!.dash).toBeUndefined()
     expect(SERIES.find((series) => series.key === 'input')!.dash).toBeUndefined()
+  })
+
+  it('只有总量画成折线', () => {
+    // 输入占总量绝大部分、输出贴着横轴，三条线画出来读不出独立走势，
+    // 只会让图变脏；它们的绝对值改由悬停浮框给出
+    expect(SERIES.filter((series) => series.drawn)).toHaveLength(1)
+    expect(SERIES.find((series) => series.drawn)!.key).toBe('total')
   })
 })
 

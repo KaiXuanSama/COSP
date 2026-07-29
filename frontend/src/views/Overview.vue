@@ -28,7 +28,13 @@ let breakdownSource: AuthEventSource | null = null
 const timelinePoints = ref<UsageTimelinePoint[]>([])
 const timelineLoading = ref(false)
 const timelineFailed = ref(false)
-const timelineRange = ref<TimelineRange>('7d')
+/**
+ * 折线图默认展示今日时段。
+ *
+ * 打开概览时最关心的是「现在用得怎么样」，今日曲线直接回答这个问题；
+ * 近 7 日更适合回溯，作为切换后的第二视图。
+ */
+const timelineRange = ref<TimelineRange>('1d')
 
 /** 用量折线的 SSE 连接句柄。 */
 let timelineSource: AuthEventSource | null = null

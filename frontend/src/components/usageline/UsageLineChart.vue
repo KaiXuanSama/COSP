@@ -12,9 +12,14 @@
  * SVG 的 `polyline` 天然支持连接处圆滑（`stroke-linejoin`），且坐标用
  * `viewBox` 归一化后完全不必关心容器实际像素尺寸。
  *
- * <h2>三条线共用一个纵轴</h2>
- * 总量恒等于输入加输出，三者同量纲同数量级。分轴会破坏「总量 = 两者之和」
- * 这个可以直接读出的关系，故区分靠颜色与线型，不靠各自的坐标系。
+ * <h2>为什么只画一条线</h2>
+ * 输入 token 占总量的绝大部分，输出则贴着横轴 —— 三条线画出来是
+ * 「总量与输入几乎重合、输出压成一条直线」，两条附加线都读不出独立走势，
+ * 只是让图变脏。故图上只留总量表达趋势，输入与输出的绝对值由悬停浮框给出：
+ * 需要看构成时精确可读，不需要时不占视觉带宽。
+ *
+ * <p>三者仍共用一个纵轴（总量恒等于输入加输出，同量纲），
+ * 将来若某个系列值得单独画出，把 {@code SeriesConfig.drawn} 置为 true 即可。
  */
 import { computed, ref, watch } from 'vue'
 import { AXIS_WIDTH, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from '../usagechart/axisTicks'
@@ -104,14 +109,16 @@ const rootStyle = computed(() => ({
   '--usage-line-value-space': `${VALUE_LABEL_SPACE}px`,
 }))
 
-/** 每条线的 SVG `points` 属性。 */
+/** 需要画成折线的系列的 SVG `points` 属性。输入与输出只在浮框里出现。 */
 const polylines = computed(() =>
-  series.value.map((item) => ({
-    key: item.config.key,
-    color: item.config.color,
-    dash: item.config.dash,
-    points: toPolylinePoints(item.points, VIEW_WIDTH, VIEW_HEIGHT),
-  })),
+  series.value
+    .filter((item) => item.config.drawn)
+    .map((item) => ({
+      key: item.config.key,
+      color: item.config.color,
+      dash: item.config.dash,
+      points: toPolylinePoints(item.points, VIEW_WIDTH, VIEW_HEIGHT),
+    })),
 )
 
 /** 悬停时的垂直参考线位置（占宽度的比例）。 */
@@ -122,22 +129,29 @@ const hoverX = computed(() => {
 })
 
 /**
- * 悬停点的圆点标记。
+ * 折线上的数据端点。
  *
- * 参考线指出「读的是哪一列」，圆点则指出「每条线在这一列的具体高度」——
- * 少了它，三个数值与三条线的对应关系要靠颜色去猜。
+ * 显式画出端点是为了让「哪里是一个采样点」可见 —— 只有折线时，
+ * 平缓段落里根本看不出中间有几个点，也就无从判断相邻两点跨了多久。
+ *
+ * 默认空心（描边取线色、内部填卡片底色），悬停那一点转为实心，
+ * 于是「当前正在读哪一点」不必依赖参考线也能看清。
  */
-const hoverDots = computed(() => {
-  if (hoverIndex.value === null) return []
-  return series.value
-    .map((item) => {
-      const point = item.points[hoverIndex.value as number]
-      return point ? { key: item.config.key, color: item.config.color, x: point.x, y: point.y } : null
-    })
-    .filter((dot): dot is NonNullable<typeof dot> => dot !== null)
-})
+const seriesDots = computed(() =>
+  series.value
+    .filter((item) => item.config.drawn)
+    .flatMap((item) =>
+      item.points.map((point, index) => ({
+        key: `${item.config.key}-${index}`,
+        color: item.config.color,
+        x: point.x,
+        y: point.y,
+        active: index === hoverIndex.value,
+      })),
+    ),
+)
 
-/** 悬停时段的三项数值，供浮层列出。 */
+/** 悬停时段的三项数值，供浮框列出。未绘制的系列同样在列 —— 这是它们唯一的出场处。 */
 const hoverRows = computed(() => {
   if (hoverIndex.value === null) return []
   return series.value.map((item) => ({
@@ -248,24 +262,28 @@ function formatValue(value: number): string {
           </svg>
 
           <!--
-            悬停点标记。用 div 而非 SVG 圆：viewBox 被非等比拉伸，
+            数据端点。用 div 而非 SVG 圆：viewBox 被非等比拉伸，
             画在里面的圆会跟着变成椭圆。
+
+            默认空心、悬停那一点转实心，故「当前读的是哪一点」有独立于参考线的提示。
           -->
           <span
-            v-for="dot in hoverDots"
+            v-for="dot in seriesDots"
             :key="'dot-' + dot.key"
             class="usage-line__dot"
+            :class="{ 'usage-line__dot--active': dot.active }"
             aria-hidden="true"
             :style="{
               left: `${dot.x * 100}%`,
               bottom: `${dot.y * 100}%`,
               borderColor: dot.color,
+              '--usage-line-dot-fill': dot.color,
             }"
           />
 
           <!--
-            悬停明细浮框，跟随光标。三值同显，故不复用柱状图的 UsageTooltip
-            （那个结构是为「占比明细」设计的），但视觉语言保持一致。
+            悬停明细浮框，跟随光标。图上只有总量一条线，输入与输出的绝对值全靠这里给出，
+            故它不是可选的补充说明，而是构成信息的唯一出口。
           -->
           <div
             v-if="hoverRows.length"
@@ -322,23 +340,20 @@ function formatValue(value: number): string {
           >
             {{ segment.label }}
           </span>
+
+          <!--
+            分段之间的短竖线。
+            两个日期文字之间若只有空白，读起来像两个并列标签；
+            加一道分隔线，「各自管辖一段区间」的意思才明确。
+          -->
+          <span
+            v-for="segment in dateSegments.slice(1)"
+            :key="'divider-' + segment.label"
+            class="usage-line__date-divider"
+            :style="{ left: `${segment.start * 100}%` }"
+          />
         </div>
       </div>
-    </div>
-
-    <!-- 图例：三条线仅靠颜色与线型区分，没有图例便无从解读 -->
-    <div class="usage-line__legend">
-      <span v-for="line in polylines" :key="'legend-' + line.key" class="usage-line__legend-item">
-        <svg class="usage-line__legend-mark" viewBox="0 0 18 8" aria-hidden="true">
-          <line
-            x1="0" y1="4" x2="18" y2="4"
-            :stroke="line.color"
-            :stroke-dasharray="line.dash"
-            stroke-width="2"
-          />
-        </svg>
-        {{ series.find((item) => item.config.key === line.key)?.config.label }}
-      </span>
     </div>
   </div>
 </template>
@@ -496,26 +511,19 @@ function formatValue(value: number): string {
   opacity: 0.75;
 }
 
-.usage-line__legend {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  margin-top: 10px;
-  padding-left: calc(var(--usage-line-axis-width, 36px) + 8px);
-  font-family: var(--usage-line-font-body, inherit);
-  font-size: 11px;
-  color: var(--usage-line-text-muted, #9a9590);
-}
-
-.usage-line__legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.usage-line__legend-mark {
-  width: 18px;
-  height: 8px;
+/*
+ * 分段之间的短竖线 —— 标出两个日期各自管辖的区间边界。
+ *
+ * 只在段与段之间出现（首段左侧不画），因此渲染时从第二段起遍历。
+ * 高度取满行、颜色比日期文字更淡：它是分隔符而非内容，不该抢注意力。
+ */
+.usage-line__date-divider {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 1px;
+  background: var(--usage-line-text-muted, #9a9590);
+  opacity: 0.32;
 }
 
 /*
@@ -586,8 +594,11 @@ function formatValue(value: number): string {
 }
 
 /*
- * 悬停点标记。用 div 而非 SVG 圆：viewBox 被 preserveAspectRatio="none"
+ * 数据端点。用 div 而非 SVG 圆：viewBox 被 preserveAspectRatio="none"
  * 非等比拉伸，画在其中的圆会变成椭圆。
+ *
+ * 空心（填卡片底色）使端点在折线密集处仍能与线身区分；
+ * 描边色走内联样式，从系列配置取，故与线色永远一致。
  */
 .usage-line__dot {
   position: absolute;
@@ -598,5 +609,18 @@ function formatValue(value: number): string {
   background: var(--usage-line-surface, #fff);
   transform: translate(-50%, 50%);
   pointer-events: none;
+  transition: width 0.15s ease, height 0.15s ease, background 0.15s ease;
+}
+
+/*
+ * 悬停中的端点转为实心并略微放大。
+ *
+ * 填充色取线色本身（由内联样式注入），与空心态形成明确对比 ——
+ * 只靠尺寸变化在 6px 量级上几乎看不出来。
+ */
+.usage-line__dot--active {
+  width: 8px;
+  height: 8px;
+  background: var(--usage-line-dot-fill, var(--usage-line-accent, #c27a3e));
 }
 </style>

@@ -109,6 +109,16 @@ const hasData = computed(() => props.points.length > 0)
   font-size: 22px;
   font-weight: 600;
   color: var(--usage-line-text-primary, #1a1917);
+  /*
+   * 强制等高数字（lining figures）。
+   *
+   * 标题字体 Cormorant Garamond 默认用旧式数字：3/4/5/7/9 会垂到基线以下，
+   * 像小写字母那样带降部。纯西文标题里这很雅致，但「近 7 日 token 用量」
+   * 这种中文混排下，汉字端坐基线、数字却往下沉，看起来就像基线错位。
+   * 与柱状图面包屑保持同一处理。
+   */
+  font-variant-numeric: lining-nums;
+  font-feature-settings: 'lnum' 1;
 }
 
 .usage-line-panel__subtitle {
