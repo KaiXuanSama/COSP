@@ -128,20 +128,18 @@ public class UsageQueryController {
      * 概览折线图的 token 用量时间线。
      *
      * <p>两种范围共用一个端点与一种 DTO：{@code range=7d} 一天一个点，
-     * {@code range=1d} 按 {@code bucket} 小时分桶（今日 5 点起算的 24 小时）。
+     * {@code range=1d} 每小时一个点（今日 5 点起算，共 25 个点使首尾都落在 05:00）。
      * 结构同构让前端切换范围时无需更换组件。
      *
      * <p>数据源与下钻柱状图相同（{@code api_call_usage}），因此折线与柱子口径一致、
      * 可以互相印证；也因此总量会略低于统计卡的全量口径。
      *
-     * @param range  时间范围，{@code 1d} 为今日时段，其余按近 7 日处理
-     * @param bucket 时段颗粒度（小时），仅 {@code range=1d} 有效；非 1/2/4 时服务层退回 2
+     * @param range 时间范围，{@code 1d} 为今日时段，其余按近 7 日处理
      */
     @GetMapping("/config/api/usage-timeline")
     public Mono<List<UsageTimelinePoint>> usageTimeline(
-            @RequestParam(defaultValue = "7d") String range,
-            @RequestParam(defaultValue = "2") int bucket) {
-        return usageQueryService.getUsageTimeline(range, bucket);
+            @RequestParam(defaultValue = "7d") String range) {
+        return usageQueryService.getUsageTimeline(range);
     }
 
     /**
@@ -153,13 +151,11 @@ public class UsageQueryController {
      * <p>每帧下发完整点位列表（{@code event: timeline}），前端整体替换；
      * 内容未变时后端已用 {@code distinctUntilChanged} 抑制。
      *
-     * @param range  时间范围，{@code 1d} 为今日时段，其余按近 7 日处理
-     * @param bucket 时段颗粒度（小时），仅 {@code range=1d} 有效
+     * @param range 时间范围，{@code 1d} 为今日时段，其余按近 7 日处理
      */
     @GetMapping(value = "/config/api/usage-timeline/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<List<UsageTimelinePoint>>> streamUsageTimeline(
-            @RequestParam(defaultValue = "7d") String range,
-            @RequestParam(defaultValue = "2") int bucket) {
+            @RequestParam(defaultValue = "7d") String range) {
         return Flux.defer(() -> {
             if (!sseConnectionGate.tryAcquire()) {
                 return Flux.<ServerSentEvent<List<UsageTimelinePoint>>>empty();
@@ -167,7 +163,7 @@ public class UsageQueryController {
             AtomicBoolean released = new AtomicBoolean(false);
 
             Flux<ServerSentEvent<List<UsageTimelinePoint>>> data =
-                    usageQueryService.streamUsageTimeline(range, bucket)
+                    usageQueryService.streamUsageTimeline(range)
                             .map(points -> ServerSentEvent.builder(points).event("timeline").build());
 
             Flux<ServerSentEvent<List<UsageTimelinePoint>>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)

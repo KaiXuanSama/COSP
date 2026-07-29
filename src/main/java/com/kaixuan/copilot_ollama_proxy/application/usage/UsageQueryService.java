@@ -19,7 +19,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * 管理后台的调用统计查询用例。
@@ -64,16 +63,6 @@ public class UsageQueryService {
     private static final int DAY_START_HOUR = 5;
 
     private static final int HOURS_PER_DAY = 24;
-
-    /**
-     * 允许的时段颗粒度（小时）。
-     *
-     * <p>只收能整除 24 的档位：否则午夜不落在桶边界上，横轴的日期分段线会切进桶内部
-     * 而与刻度错位。
-     */
-    private static final Set<Integer> ALLOWED_BUCKET_HOURS = Set.of(1, 2, 4);
-
-    private static final int DEFAULT_BUCKET_HOURS = 2;
 
     /** 与 {@code api_call_usage.created_at} 完全一致的格式，用于拼时间窗边界。 */
     private static final DateTimeFormatter TIMESTAMP_FORMAT =
@@ -154,11 +143,10 @@ public class UsageQueryService {
      * <p>两种范围同源于 {@code api_call_usage}，故「近 7 日中某天的值」必然等于
      * 「该天各时段之和」，切换范围时数字可以互相印证。
      *
-     * @param range        {@code "1d"} 为今日时段，其余值按近 7 日处理
-     * @param bucketHours  今日时段的颗粒度，仅 {@code range="1d"} 时有意义
+     * @param range {@code "1d"} 为今日时段（每小时一个点），其余值按近 7 日处理
      */
-    public Mono<List<UsageTimelinePoint>> getUsageTimeline(String range, int bucketHours) {
-        return Mono.fromCallable(() -> buildTimeline(range, bucketHours))
+    public Mono<List<UsageTimelinePoint>> getUsageTimeline(String range) {
+        return Mono.fromCallable(() -> buildTimeline(range))
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
@@ -169,25 +157,24 @@ public class UsageQueryService {
      * 两图不会出现新旧错位。今日时段范围还额外受益于定时兜底 ——
      * 时间流逝会让「当前所在时段」前移，即使没有新调用也需要重画时间轴。
      *
-     * @param range       {@code "1d"} 为今日时段，其余值按近 7 日处理
-     * @param bucketHours 今日时段的颗粒度
+     * @param range {@code "1d"} 为今日时段，其余值按近 7 日处理
      */
-    public Flux<List<UsageTimelinePoint>> streamUsageTimeline(String range, int bucketHours) {
+    public Flux<List<UsageTimelinePoint>> streamUsageTimeline(String range) {
         Flux<Object> triggers = Flux.merge(
                 Flux.just(new Object()),
                 usageEventPublisher.changes(),
                 Flux.interval(FALLBACK_INTERVAL));
 
         return triggers
-                .concatMap(ignored -> Mono.fromCallable(() -> buildTimeline(range, bucketHours))
+                .concatMap(ignored -> Mono.fromCallable(() -> buildTimeline(range))
                         .subscribeOn(Schedulers.boundedElastic()))
                 .distinctUntilChanged();
     }
 
     /** 按范围分派到两种时间线构建方式（阻塞查询，需在 boundedElastic 上调用）。 */
-    private List<UsageTimelinePoint> buildTimeline(String range, int bucketHours) {
+    private List<UsageTimelinePoint> buildTimeline(String range) {
         return DAILY_RANGE.equals(range)
-                ? buildHourlyTimeline(bucketHours)
+                ? buildHourlyTimeline()
                 : buildWeeklyTimeline();
     }
 
@@ -215,43 +202,64 @@ public class UsageQueryService {
     }
 
     /**
-     * 今日时段时间线：从 {@link #DAY_START_HOUR} 起算的 24 小时，按颗粒度分桶。
+     * 今日时段时间线：从 {@link #DAY_START_HOUR} 起算的 24 小时，每小时一个点。
      *
      * <h2>为什么从 5 点起算而非 0 点</h2>
      * 跨夜编码是常态。按自然日切分会把一次连续的工作截成两段，看起来像两个互不相关的低谷；
      * 凌晨 5 点基本落在活动的最低谷，以它为界，一天的活动曲线才是完整的一条。
      *
-     * <h2>为什么不补未来时段</h2>
-     * 尚未到来的时段补零会让折线一头扎到底，读起来像用量骤降。截断到当前所在时段为止，
-     * 「后面还没发生」这一点由折线自然的结束位置表达，无需额外说明。
+     * <h2>为什么点位以整点为中心而非区间起点</h2>
+     * 若每点代表「该整点起的一小时」，24 个点的标签就是 05:00 到 04:00，
+     * 横轴两端一个是 05:00 一个是 04:00，看不出这是完整的一圈。
+     *
+     * 改为<strong>以整点为中心</strong>聚合后（{@code 07:00} 覆盖 06:30–07:30），
+     * 轴变成 25 个刻度、首尾都是 05:00，前后对称、一圈闭合的语义直接可见。
+     * 代价是首尾两点各只覆盖半小时（05:00 取 05:00–05:30，末尾 05:00 取 04:30–05:00），
+     * 但两者相加恰好是完整一小时，总量不重不漏。
+     *
+     * <h2>为什么返回完整一天而非截断到当前</h2>
+     * 横轴始终覆盖整个 24 小时，一天之内不再随时间推移而伸缩 ——
+     * 使用者能一眼看出「今天还剩多少时间」，各时段的横向位置也不会在刷新时移动。
+     *
+     * <p>代价是必须区分「用量为 0」与「尚未到来」：两者的 token 都是 0，
+     * 若不加区分，折线会一路贴底延伸到轴末，读起来像用量已归零。故未来时段标记
+     * {@code future}，由展示侧决定断开还是淡化。
      */
-    private List<UsageTimelinePoint> buildHourlyTimeline(int requestedBucketHours) {
-        int bucketHours = clampBucketHours(requestedBucketHours);
+    private List<UsageTimelinePoint> buildHourlyTimeline() {
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime windowStart = resolveWindowStart(now);
 
-        Map<Integer, long[]> byBucket = new LinkedHashMap<>();
-        List<UsageTimelinePoint> hourly = apiCallUsageRepository.aggregateHourlyTokens(
+        /*
+         * 半小时槽 → 累计量。仓储按半小时分组，是「以整点为中心」所需的最小单元：
+         * 每个整点吸收它前后各一个半小时槽。
+         */
+        Map<Integer, long[]> bySlot = new LinkedHashMap<>();
+        List<UsageTimelinePoint> halfHours = apiCallUsageRepository.aggregateHalfHourTokens(
                 windowStart.format(TIMESTAMP_FORMAT),
                 windowStart.plusHours(HOURS_PER_DAY).format(TIMESTAMP_FORMAT));
-        for (UsageTimelinePoint point : hourly) {
-            int slot = bucketIndexOf(Integer.parseInt(point.bucket()), bucketHours);
-            long[] sum = byBucket.computeIfAbsent(slot, ignored -> new long[2]);
+        for (UsageTimelinePoint point : halfHours) {
+            int slot = halfHourSlotOf(point.bucket());
+            long[] sum = bySlot.computeIfAbsent(slot, ignored -> new long[2]);
             sum[0] += point.inputTokens();
             sum[1] += point.outputTokens();
         }
 
-        // 当前时刻落在第几个桶 —— 它是最后一个应当出现的点，之后的时段尚未发生
-        int elapsedHours = (int) Duration.between(windowStart, now).toHours();
-        int lastSlot = elapsedHours / bucketHours;
+        /** 当前时刻所在的整点序号 —— 它之后的点尚未发生。 */
+        int currentPoint = (int) Duration.between(windowStart, now).toHours();
 
-        List<UsageTimelinePoint> full = new ArrayList<>(lastSlot + 1);
-        for (int slot = 0; slot <= lastSlot; slot++) {
-            long[] sum = byBucket.getOrDefault(slot, EMPTY_TOKENS);
+        // 25 个点：05:00 到次日 05:00，首尾同为 05:00 使一圈闭合
+        List<UsageTimelinePoint> full = new ArrayList<>(HOURS_PER_DAY + 1);
+        for (int index = 0; index <= HOURS_PER_DAY; index++) {
+            // 第 index 个整点吸收槽 (2·index − 1) 与 (2·index)，即它前后各半小时。
+            // 首点没有前半小时（槽 −1 不存在），末点没有后半小时（槽 48 超出窗口），
+            // 因此两端各只覆盖半小时，相加正好补成一小时。
+            long[] before = bySlot.getOrDefault(index * 2 - 1, EMPTY_TOKENS);
+            long[] after = bySlot.getOrDefault(index * 2, EMPTY_TOKENS);
             full.add(new UsageTimelinePoint(
-                    formatBucketLabel(windowStart.plusHours((long) slot * bucketHours)),
-                    sum[0],
-                    sum[1]));
+                    formatBucketLabel(windowStart.plusHours(index)),
+                    before[0] + after[0],
+                    before[1] + after[1],
+                    index > currentPoint));
         }
         return full;
     }
@@ -271,35 +279,26 @@ public class UsageQueryService {
     }
 
     /**
-     * 把一天中的小时数换算成桶序号。
+     * 把 {@code HH:00} / {@code HH:30} 换算成窗口内的半小时槽序号。
      *
-     * <p>先减去起始小时得到「窗口内已过的小时数」，跨过午夜的小时会得到负数，
-     * 加一天补回即可（如 1 点在 5 点起算的窗口里是第 20 小时）。
+     * <p>槽 0 是 05:00–05:30，槽 1 是 05:30–06:00，依此类推共 48 个。
+     * 跨过午夜的时刻会算出负数，加一天的槽数补回（如 01:00 属槽 40）。
+     *
+     * @param label 仓储返回的半小时标识
      */
-    private static int bucketIndexOf(int hourOfDay, int bucketHours) {
-        int offset = hourOfDay - DAY_START_HOUR;
+    private static int halfHourSlotOf(String label) {
+        int hour = Integer.parseInt(label.substring(0, 2));
+        boolean secondHalf = label.endsWith(":30");
+        int offset = (hour - DAY_START_HOUR) * 2 + (secondHalf ? 1 : 0);
         if (offset < 0) {
-            offset += HOURS_PER_DAY;
+            offset += HOURS_PER_DAY * 2;
         }
-        return offset / bucketHours;
+        return offset;
     }
 
-    /** 桶标签取该时段的起始时刻，格式 {@code HH:mm}。 */
-    private static String formatBucketLabel(LocalDateTime bucketStart) {
-        return bucketStart.format(BUCKET_LABEL_FORMAT);
-    }
-
-    /**
-     * 钳制时段颗粒度。
-     *
-     * <p>只接受能整除 24 的档位：否则午夜不会落在桶边界上，横轴的「当日 / 次日」
-     * 分段线就会切进某个桶的内部，与刻度错位。非法值退回默认档而非抛错 ——
-     * 这是展示参数，不值得让整个卡片失败。
-     */
-    private static int clampBucketHours(int requestedBucketHours) {
-        return ALLOWED_BUCKET_HOURS.contains(requestedBucketHours)
-                ? requestedBucketHours
-                : DEFAULT_BUCKET_HOURS;
+    /** 点位标签取该整点时刻，格式 {@code HH:mm}。 */
+    private static String formatBucketLabel(LocalDateTime pointTime) {
+        return pointTime.format(BUCKET_LABEL_FORMAT);
     }
 
     /** 查询当前统计快照（HTTP 首屏）。 */

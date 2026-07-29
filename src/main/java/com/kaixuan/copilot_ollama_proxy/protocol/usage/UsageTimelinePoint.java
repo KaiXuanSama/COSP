@@ -23,12 +23,26 @@ package com.kaixuan.copilot_ollama_proxy.protocol.usage;
  * <p>token 列在库中允许为 NULL（语义上 NULL 表示上游未提供，区别于真实的 0），
  * 聚合时统一按 0 处理，故本 DTO 的字段不可空。
  *
+ * <h2>为什么要标记「尚未到来」</h2>
+ * 今日时段范围会返回<strong>完整的 24 小时</strong>，横轴因此始终是一整天，
+ * 不会随时间推移而伸缩 —— 使用者能一眼看出「今天还剩多少时间」。
+ * 但未来时段的 0 不是「没有用量」而是「还没发生」，若照常连线，折线会一路贴底
+ * 延伸到轴末，看起来像用量已经归零。故用本标记区分两者，由展示侧决定
+ * 未来段是断开还是淡化。
+ *
  * @param bucket        时间桶标识：日期 {@code yyyy-MM-dd} 或时段起点 {@code HH:mm}
  * @param inputTokens   该桶内的输入 token 总量
  * @param outputTokens  该桶内的输出 token 总量
+ * @param future        该时段是否尚未到来；近 7 日范围恒为 {@code false}
  */
 public record UsageTimelinePoint(
         String bucket,
         long inputTokens,
-        long outputTokens) {
+        long outputTokens,
+        boolean future) {
+
+    /** 已发生时段的便捷构造，供仓储与近 7 日路径使用。 */
+    public UsageTimelinePoint(String bucket, long inputTokens, long outputTokens) {
+        this(bucket, inputTokens, outputTokens, false);
+    }
 }

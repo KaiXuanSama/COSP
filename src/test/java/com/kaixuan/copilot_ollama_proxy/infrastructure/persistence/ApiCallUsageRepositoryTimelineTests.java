@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <ul>
  *   <li><strong>NULL 语义</strong> —— 三个 token 列都允许 NULL（上游未返回 usage），
  *       求和时必须按 0 处理，否则全 NULL 分组会让 {@code SUM} 返回 NULL 而非 0；</li>
- *   <li><strong>时间窗口边界</strong> —— 小时查询用字面量比较而非 {@code substr}，
+ *   <li><strong>时间窗口边界</strong> —— 半小时查询用字面量比较而非 {@code substr}，
  *       故须验证「含起点、不含终点」确实成立。</li>
  * </ul>
  */
@@ -141,20 +141,50 @@ class ApiCallUsageRepositoryTimelineTests {
     }
 
     @Nested
-    class HourlyAggregation {
+    class HalfHourAggregation {
 
         @Test
-        void sumsTokensWithinSameHourAndLabelsWithTwoDigits() {
+        void sumsTokensWithinSameHalfHour() {
             insertAt("2026-07-28T05:10:00", 100, 10);
-            insertAt("2026-07-28T05:50:00", 200, 20);
+            insertAt("2026-07-28T05:25:00", 200, 20);
 
-            List<UsageTimelinePoint> points = repository.aggregateHourlyTokens(
+            List<UsageTimelinePoint> points = repository.aggregateHalfHourTokens(
                     "2026-07-28T05:00:00", "2026-07-29T05:00:00");
 
             assertThat(points).hasSize(1);
-            assertThat(points.get(0).bucket()).isEqualTo("05");
+            assertThat(points.get(0).bucket()).isEqualTo("05:00");
             assertThat(points.get(0).inputTokens()).isEqualTo(300);
             assertThat(points.get(0).outputTokens()).isEqualTo(30);
+        }
+
+        @Test
+        void splitsHourIntoTwoHalves() {
+            // 半小时是「以整点为中心聚合」所需的最小单元：每个整点吸收它前后各一个半小时槽，
+            // 按整小时分组就无法再拆
+            insertAt("2026-07-28T05:10:00", 100, 10);
+            insertAt("2026-07-28T05:40:00", 200, 20);
+
+            List<UsageTimelinePoint> points = repository.aggregateHalfHourTokens(
+                    "2026-07-28T05:00:00", "2026-07-29T05:00:00");
+
+            assertThat(points).hasSize(2);
+            assertThat(points).extracting(UsageTimelinePoint::bucket).containsExactly("05:00", "05:30");
+            assertThat(points.get(0).inputTokens()).isEqualTo(100);
+            assertThat(points.get(1).inputTokens()).isEqualTo(200);
+        }
+
+        @Test
+        void putsMinuteThirtyIntoSecondHalf() {
+            // 边界分钟：30 属后半小时，29 属前半小时
+            insertAt("2026-07-28T05:29:59", 1, 1);
+            insertAt("2026-07-28T05:30:00", 2, 2);
+
+            List<UsageTimelinePoint> points = repository.aggregateHalfHourTokens(
+                    "2026-07-28T05:00:00", "2026-07-29T05:00:00");
+
+            assertThat(points).extracting(UsageTimelinePoint::bucket).containsExactly("05:00", "05:30");
+            assertThat(points.get(0).inputTokens()).isEqualTo(1);
+            assertThat(points.get(1).inputTokens()).isEqualTo(2);
         }
 
         @Test
@@ -163,11 +193,11 @@ class ApiCallUsageRepositoryTimelineTests {
             insertAt("2026-07-28T23:30:00", 100, 10);
             insertAt("2026-07-29T01:30:00", 200, 20);
 
-            List<UsageTimelinePoint> points = repository.aggregateHourlyTokens(
+            List<UsageTimelinePoint> points = repository.aggregateHalfHourTokens(
                     "2026-07-28T05:00:00", "2026-07-29T05:00:00");
 
             assertThat(points).hasSize(2);
-            assertThat(points).extracting(UsageTimelinePoint::bucket).containsExactly("01", "23");
+            assertThat(points).extracting(UsageTimelinePoint::bucket).containsExactly("01:30", "23:30");
         }
 
         @Test
@@ -175,7 +205,7 @@ class ApiCallUsageRepositoryTimelineTests {
             insertAt("2026-07-28T05:00:00", 1, 1);
             insertAt("2026-07-29T05:00:00", 999, 999);
 
-            List<UsageTimelinePoint> points = repository.aggregateHourlyTokens(
+            List<UsageTimelinePoint> points = repository.aggregateHalfHourTokens(
                     "2026-07-28T05:00:00", "2026-07-29T05:00:00");
 
             assertThat(points).hasSize(1);
@@ -186,7 +216,7 @@ class ApiCallUsageRepositoryTimelineTests {
         void excludesRecordsBeforeWindowStart() {
             insertAt("2026-07-28T04:59:59", 999, 999);
 
-            List<UsageTimelinePoint> points = repository.aggregateHourlyTokens(
+            List<UsageTimelinePoint> points = repository.aggregateHalfHourTokens(
                     "2026-07-28T05:00:00", "2026-07-29T05:00:00");
 
             assertThat(points).isEmpty();
@@ -196,7 +226,7 @@ class ApiCallUsageRepositoryTimelineTests {
         void treatsNullTokensAsZero() {
             insertAt("2026-07-28T10:00:00", null, null);
 
-            List<UsageTimelinePoint> points = repository.aggregateHourlyTokens(
+            List<UsageTimelinePoint> points = repository.aggregateHalfHourTokens(
                     "2026-07-28T05:00:00", "2026-07-29T05:00:00");
 
             assertThat(points).hasSize(1);
@@ -206,7 +236,7 @@ class ApiCallUsageRepositoryTimelineTests {
 
         @Test
         void returnsEmptyListWhenNoData() {
-            assertThat(repository.aggregateHourlyTokens(
+            assertThat(repository.aggregateHalfHourTokens(
                     "2026-07-28T05:00:00", "2026-07-29T05:00:00")).isNotNull().isEmpty();
         }
     }

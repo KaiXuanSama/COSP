@@ -21,12 +21,11 @@ import { AXIS_WIDTH, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from '..
 import { useAxisScale, buildAnimatedAxisTicks } from '../usagechart/useAxisScale'
 import { anchorFromCursor } from '../usagechart/tooltipAnchor'
 import { toPolylinePoints, useTimelineSeries } from './useTimelineSeries'
-import type { BucketHours, TimelineRange, UsageTimelinePoint } from './usageline'
+import type { TimelineRange, UsageTimelinePoint } from './usageline'
 
 const props = withDefaults(defineProps<{
   points: UsageTimelinePoint[]
   range: TimelineRange
-  bucketHours: BucketHours
   /** 绘图区高度（px），不含横轴标签。 */
   height?: number
   /** 纵轴刻度栏宽度（px）。与柱状图同值，两卡片的绘图区左边界才能对齐。 */
@@ -60,10 +59,9 @@ const anchor = ref({ left: 0, top: 0, alignEnd: false, below: false })
 
 const pointsRef = computed(() => props.points)
 const rangeRef = computed(() => props.range)
-const bucketRef = computed(() => props.bucketHours)
 
-const { ceiling, axisTicks: targetTicks, series, axisLabels, dateSegments } =
-  useTimelineSeries(pointsRef, rangeRef, bucketRef)
+const { ceiling, axisTicks: targetTicks, series, axisLabels, dateSegments, drawableCount } =
+  useTimelineSeries(pointsRef, rangeRef)
 
 /**
  * 动画中的标尺。
@@ -163,13 +161,15 @@ const hoverLabel = computed(() =>
  */
 function updateHover(event: MouseEvent) {
   const plot = event.currentTarget as HTMLElement | null
-  if (!plot || !props.points.length) return
+  if (!plot || !drawableCount.value) return
 
   const rect = plot.getBoundingClientRect()
   const ratio = (event.clientX - rect.left) / rect.width
   const total = props.points.length
   const nearest = total === 1 ? 0 : Math.round(ratio * (total - 1))
-  hoverIndex.value = Math.max(0, Math.min(total - 1, nearest))
+  // 上界取「已发生的点数」而非全部点数：未来段读出来是一串 0，
+  // 那是「还没发生」而非真实用量，悬停到那里只会误导
+  hoverIndex.value = Math.max(0, Math.min(drawableCount.value - 1, nearest))
 
   // 基准取绘图区而非组件根节点：浮框是绘图区的绝对定位子元素，
   // 用根节点算会多算出一段顶部内边距，浮框整体偏下。
@@ -299,7 +299,10 @@ function formatValue(value: number): string {
             v-for="label in axisLabels"
             :key="label.key"
             class="usage-line__label"
-            :class="{ 'usage-line__label--hidden': !label.visible }"
+            :class="{
+              'usage-line__label--hidden': !label.visible,
+              'usage-line__label--future': label.future,
+            }"
             :style="{ left: `${label.x * 100}%` }"
           >
             {{ label.text }}
@@ -459,6 +462,16 @@ function formatValue(value: number): string {
 /* 隐藏而非移除：保留元素使标签位置在稀疏度变化时保持稳定 */
 .usage-line__label--hidden {
   visibility: hidden;
+}
+
+/*
+ * 未来时段的标签淡化。
+ *
+ * 保留而非移除：它们标出「今天还剩多少时间」，正是完整显示一天的意义所在。
+ * 但淡化能让「折线止于此处是因为还没发生」这件事不言自明。
+ */
+.usage-line__label--future {
+  opacity: 0.42;
 }
 
 /*

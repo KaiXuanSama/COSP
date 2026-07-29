@@ -1,13 +1,20 @@
 import { describe, expect, it } from 'vitest'
+import { ref } from 'vue'
 import {
   buildDateSegments,
   isLabelVisible,
   shortDate,
   toPolylinePoints,
+  useTimelineSeries,
   xRatioOf,
   yRatioOf,
 } from './useTimelineSeries'
-import { DAY_START_HOUR, SERIES, type UsageTimelinePoint } from './usageline'
+import {
+  DAY_START_HOUR,
+  SERIES,
+  type TimelineRange,
+  type UsageTimelinePoint,
+} from './usageline'
 
 /**
  * 折线换算逻辑的验证与锁定。
@@ -23,6 +30,16 @@ function points(...values: Array<[number, number]>): UsageTimelinePoint[] {
     bucket: `b${index}`,
     inputTokens: input,
     outputTokens: output,
+  }))
+}
+
+/** 造一批完整的今日点位：前 elapsed 个已发生，其余标记为未来。 */
+function dayPoints(total: number, elapsed: number): UsageTimelinePoint[] {
+  return Array.from({ length: total }, (_unused, index) => ({
+    bucket: `b${index}`,
+    inputTokens: index < elapsed ? 100 : 0,
+    outputTokens: index < elapsed ? 10 : 0,
+    future: index >= elapsed,
   }))
 }
 
@@ -126,27 +143,26 @@ describe('日期格式化', () => {
 })
 
 describe('横轴日期分段', () => {
-  it('午夜的位置按时间比例算，不强行对齐桶边界', () => {
-    // 从 05:00 到午夜是 19 小时，19 是质数 —— 除 1 小时档外没有颗粒度能整除它。
-    // 硬要对齐桶边界会把 00:00 画到 23:00 或 01:00 上，那才是真错位。
-    const hoursToMidnight = 24 - DAY_START_HOUR
-    expect(hoursToMidnight).toBe(19)
-    expect(Number.isInteger(hoursToMidnight / 1)).toBe(true)
-    expect(Number.isInteger(hoursToMidnight / 2)).toBe(false)
+  /** 今日范围固定 25 个点（05:00 … 04:00 05:00），午夜是第 19 个。 */
+  const DAY_POINTS = 25
+  const MIDNIGHT_INDEX = 24 - DAY_START_HOUR
+
+  it('午夜落在第 19 个点上', () => {
+    // 每小时一个点，从 05:00 数到 00:00 正好 19 步
+    expect(MIDNIGHT_INDEX).toBe(19)
   })
 
-  it('尚未跨过午夜时只有一段', () => {
-    const segments = buildDateSegments(points([1, 1], [2, 2], [3, 3]), 2)
+  it('点数不足以跨过午夜时只有一段', () => {
+    const segments = buildDateSegments(points([1, 1], [2, 2], [3, 3]))
 
     expect(segments).toHaveLength(1)
     expect(segments[0].start).toBe(0)
     expect(segments[0].width).toBe(1)
   })
 
-  it('跨过午夜后分成两段且首尾相接', () => {
+  it('完整一天分成两段且首尾相接', () => {
     const segments = buildDateSegments(
-      points(...Array.from({ length: 12 }, () => [1, 1] as [number, number])),
-      2,
+      points(...Array.from({ length: DAY_POINTS }, () => [1, 1] as [number, number])),
     )
 
     expect(segments).toHaveLength(2)
@@ -156,20 +172,17 @@ describe('横轴日期分段', () => {
     expect(segments[0].width + segments[1].width).toBeCloseTo(1)
   })
 
-  it('分界线落在午夜对应的时间比例上', () => {
-    // 2 小时颗粒度、12 个点：午夜在第 9.5 个点的位置
+  it('分界线落在午夜对应的比例位置', () => {
     const segments = buildDateSegments(
-      points(...Array.from({ length: 12 }, () => [1, 1] as [number, number])),
-      2,
+      points(...Array.from({ length: DAY_POINTS }, () => [1, 1] as [number, number])),
     )
 
-    expect(segments[0].width).toBeCloseTo(xRatioOf(9.5, 12))
+    expect(segments[0].width).toBeCloseTo(xRatioOf(MIDNIGHT_INDEX, DAY_POINTS))
   })
 
   it('两段标签为相邻的两天', () => {
     const segments = buildDateSegments(
-      points(...Array.from({ length: 12 }, () => [1, 1] as [number, number])),
-      2,
+      points(...Array.from({ length: DAY_POINTS }, () => [1, 1] as [number, number])),
     )
 
     expect(segments).toHaveLength(2)
@@ -177,17 +190,7 @@ describe('横轴日期分段', () => {
   })
 
   it('无点位时不产出分段', () => {
-    expect(buildDateSegments([], 2)).toEqual([])
-  })
-
-  it('一小时颗粒度下午夜正好落在第 19 个点', () => {
-    const segments = buildDateSegments(
-      points(...Array.from({ length: 24 }, () => [1, 1] as [number, number])),
-      1,
-    )
-
-    expect(segments).toHaveLength(2)
-    expect(segments[0].width).toBeCloseTo(xRatioOf(19, 24))
+    expect(buildDateSegments([])).toEqual([])
   })
 })
 
@@ -211,5 +214,66 @@ describe('SVG 点串生成', () => {
 
   it('无点位时返回空串', () => {
     expect(toPolylinePoints([], 100, 100)).toBe('')
+  })
+})
+
+describe('今日范围的完整一天与未来段', () => {
+  const range = ref<TimelineRange>('1d')
+
+  it('折线只画到最后一个已发生的点', () => {
+    // 未来段的 0 是「还没发生」而非「用量为零」，连过去会让折线贴底延伸到轴末，
+    // 读起来像用量已归零
+    const data = ref(dayPoints(25, 5))
+    const { series, drawableCount } = useTimelineSeries(data, range)
+
+    expect(drawableCount.value).toBe(5)
+    expect(series.value[0].points).toHaveLength(5)
+  })
+
+  it('横向位置仍按完整一天换算，横轴因此不随时间伸缩', () => {
+    // 这是「显示完整一天」的关键：已发生的第 5 个点应落在 4/24 处，
+    // 而非被拉伸到占满整个宽度
+    const data = ref(dayPoints(25, 5))
+    const { series } = useTimelineSeries(data, range)
+
+    expect(series.value[0].points[4].x).toBeCloseTo(xRatioOf(4, 25))
+  })
+
+  it('横轴标签覆盖完整一天并标出未来段', () => {
+    // 未来段的标签要保留：它们标出「今天还剩多少时间」
+    const data = ref(dayPoints(25, 5))
+    const { axisLabels } = useTimelineSeries(data, range)
+
+    expect(axisLabels.value).toHaveLength(25)
+    expect(axisLabels.value.filter((label) => label.future)).toHaveLength(20)
+    expect(axisLabels.value[4].future).toBe(false)
+    expect(axisLabels.value[5].future).toBe(true)
+  })
+
+  it('轴上限只看已发生的点', () => {
+    const data = ref(dayPoints(25, 3))
+    const { ceiling } = useTimelineSeries(data, range)
+
+    // 三个点各 100 输入 + 10 输出，总量线最大 110
+    expect(ceiling.value).toBeGreaterThanOrEqual(110)
+  })
+
+  it('全天都已发生时所有点都可绘制', () => {
+    const data = ref(dayPoints(25, 25))
+    const { series, drawableCount } = useTimelineSeries(data, range)
+
+    expect(drawableCount.value).toBe(25)
+    expect(series.value[0].points).toHaveLength(25)
+  })
+
+  it('近 7 日范围不带未来标记，全部可绘制', () => {
+    const data = ref(points([1, 1], [2, 2], [3, 3]))
+    const weekRange = ref<TimelineRange>('7d')
+    const { series, drawableCount, dateSegments } = useTimelineSeries(data, weekRange)
+
+    expect(drawableCount.value).toBe(3)
+    expect(series.value[0].points).toHaveLength(3)
+    // 日期分段只属于今日范围
+    expect(dateSegments.value).toEqual([])
   })
 })

@@ -42,7 +42,7 @@ class UsageQueryServiceTimelineStreamTests {
         usageEventPublisher = new UsageEventPublisher();
         service = new UsageQueryService(
                 mock(ApiUsageRepository.class), usageRepository, usageEventPublisher);
-        when(usageRepository.aggregateHourlyTokens(anyString(), anyString())).thenReturn(List.of());
+        when(usageRepository.aggregateHalfHourTokens(anyString(), anyString())).thenReturn(List.of());
     }
 
     /** 造一个「今天」的日点位，避免把测试钉死在某个具体日期上。 */
@@ -54,7 +54,7 @@ class UsageQueryServiceTimelineStreamTests {
     void emitsFirstFrameOnSubscribe() {
         when(usageRepository.aggregateDailyTokens(anyInt())).thenReturn(List.of(todayPoint(100, 10)));
 
-        List<UsageTimelinePoint> first = service.streamUsageTimeline("7d", 2)
+        List<UsageTimelinePoint> first = service.streamUsageTimeline("7d")
                 .blockFirst(Duration.ofSeconds(5));
 
         // 补零后固定 7 个点，今天那一点带上真实数值
@@ -71,7 +71,7 @@ class UsageQueryServiceTimelineStreamTests {
                 .thenReturn(List.of(todayPoint(200, 20)));
 
         // 信号要在首帧到达之后再发：sink 是 directBestEffort，订阅前发出的信号会被丢弃
-        List<List<UsageTimelinePoint>> frames = service.streamUsageTimeline("7d", 2)
+        List<List<UsageTimelinePoint>> frames = service.streamUsageTimeline("7d")
                 .doOnNext(points -> {
                     if (points.get(6).inputTokens() == 100) {
                         usageEventPublisher.publishUsageChanged();
@@ -92,7 +92,7 @@ class UsageQueryServiceTimelineStreamTests {
 
         // 用时间窗收尾：收到首帧后即便再发信号也不该有第二帧，
         // 因此「正常超时结束、只拿到一帧」才是预期结果
-        List<List<UsageTimelinePoint>> frames = service.streamUsageTimeline("7d", 2)
+        List<List<UsageTimelinePoint>> frames = service.streamUsageTimeline("7d")
                 .doOnNext(points -> usageEventPublisher.publishUsageChanged())
                 .take(Duration.ofMillis(600))
                 .collectList()
@@ -102,15 +102,15 @@ class UsageQueryServiceTimelineStreamTests {
     }
 
     @Test
-    void dailyRangeStreamUsesHourlyAggregation() {
-        service.streamUsageTimeline("1d", 4).blockFirst(Duration.ofSeconds(5));
+    void dailyRangeStreamUsesHalfHourAggregation() {
+        service.streamUsageTimeline("1d").blockFirst(Duration.ofSeconds(5));
 
-        verify(usageRepository).aggregateHourlyTokens(anyString(), anyString());
+        verify(usageRepository).aggregateHalfHourTokens(anyString(), anyString());
     }
 
     @Test
     void streamSharesRangeParsingWithHttpEndpoint() {
-        service.streamUsageTimeline("7d", 2).blockFirst(Duration.ofSeconds(5));
+        service.streamUsageTimeline("7d").blockFirst(Duration.ofSeconds(5));
 
         ArgumentCaptor<Integer> captor = ArgumentCaptor.forClass(Integer.class);
         verify(usageRepository).aggregateDailyTokens(captor.capture());

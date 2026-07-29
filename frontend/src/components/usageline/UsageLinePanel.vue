@@ -3,28 +3,18 @@
  * UsageLinePanel — token 用量折线图的编排层。
  *
  * <h2>职责边界</h2>
- * - 负责：时间范围与颗粒度的选择状态、状态态（加载/失败/空）的优先级、把参数变化通知上层。
- * - 不负责：请求数据（由页面层拉取后以 rows 传入，与 {@link UsageBreakdownPanel} 一致）、
+ * - 负责：时间范围的选择状态、状态态（加载/失败/空）的优先级、把范围变化通知上层。
+ * - 不负责：请求数据（由页面层拉取后以 points 传入，与 {@link UsageBreakdownPanel} 一致）、
  *   坐标换算（在 {@link useTimelineSeries}）。
- *
- * <h2>为什么颗粒度只在今日范围显示</h2>
- * 近 7 日一天一个点，"时段颗粒度"无从落地。禁用而非隐藏会留下一个永远点不动的控件，
- * 反而让人怀疑是不是坏了；隐藏则界面自己说明了它只属于另一种范围。
  */
 import { computed } from 'vue'
 import UsageLineChart from './UsageLineChart.vue'
-import {
-  BUCKET_OPTIONS,
-  type BucketHours,
-  type TimelineRange,
-  type UsageTimelinePoint,
-} from './usageline'
+import type { TimelineRange, UsageTimelinePoint } from './usageline'
 
 const props = withDefaults(
   defineProps<{
     points: UsageTimelinePoint[]
     range: TimelineRange
-    bucketHours: BucketHours
     loading?: boolean
     failed?: boolean
     emptyText?: string
@@ -42,7 +32,6 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'update:range', value: TimelineRange): void
-  (e: 'update:bucketHours', value: BucketHours): void
 }>()
 
 /** 两种范围轮换。放在编排层而非页面层，使卡片自成一个完整的交互单元。 */
@@ -50,23 +39,20 @@ function toggleRange() {
   emit('update:range', props.range === '7d' ? '1d' : '7d')
 }
 
-function selectBucket(hours: BucketHours) {
-  if (hours === props.bucketHours) return
-  emit('update:bucketHours', hours)
-}
-
 const rangeLabel = computed(() => (props.range === '7d' ? '近 7 日' : '今日时段'))
 
 /**
  * 副标题：说明纵轴含义与数据口径。
  *
- * 特别标注「5:00 起算」—— 非自然日的窗口若不说明，使用者会按 0 点去对数字。
+ * 特别标注「5:00 起算」与「以整点为中心」—— 非自然日的窗口若不说明，
+ * 使用者会按 0 点去对数字；而每点覆盖前后各半小时也需要交代，
+ * 否则会以为 07:00 只含 07:00 之后的那一小时。
  */
 const subtitle = computed(() => {
   if (props.range === '7d') {
     return '按天汇总 · 纵轴为 token 数'
   }
-  return `05:00 起算 24 小时 · ${props.bucketHours} 小时一段 · 纵轴为 token 数`
+  return '05:00 起算 24 小时 · 每点含前后半小时 · 纵轴为 token 数'
 })
 
 const hasData = computed(() => props.points.length > 0)
@@ -82,21 +68,6 @@ const hasData = computed(() => props.points.length > 0)
       </div>
 
       <div class="usage-line-panel__actions">
-        <!-- 颗粒度：仅今日范围可用，故整组隐藏而非禁用 -->
-        <div v-if="range === '1d'" class="usage-line-panel__buckets" role="group" aria-label="时段颗粒度">
-          <button
-            v-for="option in BUCKET_OPTIONS"
-            :key="option"
-            type="button"
-            class="usage-line-panel__bucket"
-            :class="{ 'usage-line-panel__bucket--active': option === bucketHours }"
-            :aria-pressed="option === bucketHours"
-            @click="selectBucket(option)"
-          >
-            {{ option }}h
-          </button>
-        </div>
-
         <button type="button" class="usage-line-panel__switch" @click="toggleRange">切换</button>
       </div>
     </div>
@@ -106,12 +77,7 @@ const hasData = computed(() => props.points.length > 0)
     <div v-else-if="failed && !hasData" class="usage-line-panel__state">{{ errorText }}</div>
     <div v-else-if="!hasData" class="usage-line-panel__state">{{ emptyText }}</div>
 
-    <UsageLineChart
-      v-else
-      :points="points"
-      :range="range"
-      :bucket-hours="bucketHours"
-    />
+    <UsageLineChart v-else :points="points" :range="range" />
   </div>
 </template>
 
@@ -155,39 +121,6 @@ const hasData = computed(() => props.points.length > 0)
   display: flex;
   align-items: center;
   gap: 10px;
-}
-
-/* 颗粒度用分段控件：三档一次点中，比循环按钮少两次无效点击 */
-.usage-line-panel__buckets {
-  display: inline-flex;
-  border: 1px solid var(--usage-line-border, #e8e5de);
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.usage-line-panel__bucket {
-  padding: 3px 10px;
-  border: none;
-  background: var(--usage-line-surface, #fff);
-  color: var(--usage-line-text-muted, #9a9590);
-  cursor: pointer;
-  font-family: var(--usage-line-font-mono, 'DM Mono', monospace);
-  font-size: 10px;
-  font-weight: 500;
-  transition: all 0.2s ease;
-
-  &:not(:last-child) {
-    border-right: 1px solid var(--usage-line-border, #e8e5de);
-  }
-
-  &:hover {
-    color: var(--usage-line-accent, #c27a3e);
-  }
-}
-
-.usage-line-panel__bucket--active {
-  background: var(--usage-line-accent-light, rgba(194, 122, 62, 0.08));
-  color: var(--usage-line-accent, #c27a3e);
 }
 
 .usage-line-panel__switch {

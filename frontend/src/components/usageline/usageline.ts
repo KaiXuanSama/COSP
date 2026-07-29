@@ -20,32 +20,29 @@ export interface UsageTimelinePoint {
   inputTokens: number
   /** 该桶内的输出 token 总量。 */
   outputTokens: number
+  /**
+   * 该时段是否尚未到来。
+   *
+   * 今日时段范围会返回完整的 24 小时，因此横轴不随时间伸缩；但未来段的 0
+   * 是「还没发生」而非「没有用量」，照常连线会让折线贴底延伸到轴末，
+   * 看起来像用量已归零。折线因此只画到最后一个已发生的点为止。
+   */
+  future?: boolean
 }
 
 /**
  * 时间范围。
  *
  * - `7d` —— 近 7 日，一天一个点；
- * - `1d` —— 今日 05:00 至次日 05:00，按 {@link BucketHours} 分桶。
+ * - `1d` —— 今日 05:00 至次日 05:00，每小时一个点（共 25 个，首尾都是 05:00）。
  */
 export type TimelineRange = '7d' | '1d'
 
 /**
- * 时段颗粒度（小时）。
+ * 今日窗口的起始小时，须与后端 `UsageQueryService.DAY_START_HOUR` 一致。
  *
- * 只允许能整除 24 的档位，这样一天恰好被分成等长的若干段、末段不会被截短
- * （3 小时档下 24/3=8 也成立，但 5 小时档会余 4 小时，最后一段长度不一致，
- * 折线的点距就不再代表相同的时间跨度）。
+ * 同时决定横轴第二行「当日 / 次日」分段线的位置。
  */
-export type BucketHours = 1 | 2 | 4
-
-/** 可选颗粒度，顺序即控件中的展示顺序。 */
-export const BUCKET_OPTIONS: BucketHours[] = [1, 2, 4]
-
-/** 默认颗粒度。2 小时下一天 12 个点，折线足够平滑又不失细节。 */
-export const DEFAULT_BUCKET_HOURS: BucketHours = 2
-
-/** 今日窗口的起始小时，须与后端 `UsageQueryService.DAY_START_HOUR` 一致。 */
 export const DAY_START_HOUR = 5
 
 /**

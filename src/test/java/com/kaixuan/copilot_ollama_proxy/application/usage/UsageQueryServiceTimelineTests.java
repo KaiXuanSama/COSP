@@ -49,15 +49,15 @@ class UsageQueryServiceTimelineTests {
         service = new UsageQueryService(
                 mock(ApiUsageRepository.class), usageRepository, new UsageEventPublisher());
         when(usageRepository.aggregateDailyTokens(anyInt())).thenReturn(List.of());
-        when(usageRepository.aggregateHourlyTokens(anyString(), anyString())).thenReturn(List.of());
+        when(usageRepository.aggregateHalfHourTokens(anyString(), anyString())).thenReturn(List.of());
     }
 
     private List<UsageTimelinePoint> weekly() {
-        return service.getUsageTimeline("7d", 2).block();
+        return service.getUsageTimeline("7d").block();
     }
 
-    private List<UsageTimelinePoint> daily(int bucketHours) {
-        return service.getUsageTimeline("1d", bucketHours).block();
+    private List<UsageTimelinePoint> daily() {
+        return service.getUsageTimeline("1d").block();
     }
 
     /** 当前时刻所属窗口的起点，与被测实现同一套 5 点起算规则。 */
@@ -67,10 +67,9 @@ class UsageQueryServiceTimelineTests {
         return anchor.atTime(5, 0);
     }
 
-    /** 当前时刻落在第几个桶（自 0 起），即最后一个应出现的点。 */
-    private static int expectedLastSlot(int bucketHours) {
-        long elapsedHours = Duration.between(expectedWindowStart(), LocalDateTime.now()).toHours();
-        return (int) (elapsedHours / bucketHours);
+    /** 当前时刻所在的整点序号（自 0 起）；它之后的点标记为尚未到来。 */
+    private static int expectedCurrentPoint() {
+        return (int) Duration.between(expectedWindowStart(), LocalDateTime.now()).toHours();
     }
 
     @Nested
@@ -123,7 +122,7 @@ class UsageQueryServiceTimelineTests {
 
         @Test
         void fallsBackToWeeklyForUnknownRange() {
-            assertThat(service.getUsageTimeline("unknown", 2).block()).hasSize(7);
+            assertThat(service.getUsageTimeline("unknown").block()).hasSize(7);
             verify(usageRepository).aggregateDailyTokens(anyInt());
         }
     }
@@ -133,11 +132,11 @@ class UsageQueryServiceTimelineTests {
 
         @Test
         void queriesWindowStartingAtFiveSpanningOneDay() {
-            daily(2);
+            daily();
 
             ArgumentCaptor<String> start = ArgumentCaptor.forClass(String.class);
             ArgumentCaptor<String> end = ArgumentCaptor.forClass(String.class);
-            verify(usageRepository).aggregateHourlyTokens(start.capture(), end.capture());
+            verify(usageRepository).aggregateHalfHourTokens(start.capture(), end.capture());
 
             LocalDateTime windowStart = expectedWindowStart();
             assertThat(start.getValue()).isEqualTo(windowStart.format(TIMESTAMP_FORMAT));
@@ -145,77 +144,85 @@ class UsageQueryServiceTimelineTests {
         }
 
         @Test
-        void truncatesAtCurrentSlotWithoutPaddingFuture() {
-            // 未来时段补零会让折线一头扎到底，读起来像用量骤降；
-            // 截断则由折线自然的结束位置表达「后面还没发生」
-            assertThat(daily(2)).hasSize(expectedLastSlot(2) + 1);
-            assertThat(daily(4)).hasSize(expectedLastSlot(4) + 1);
-        }
+        void coversFullDayWithSymmetricEnds() {
+            // 25 个点使首尾都落在 05:00，一圈闭合的语义直接可见；
+            // 若只有 24 个点，两端一个 05:00 一个 04:00，看不出这是完整一天
+            List<UsageTimelinePoint> points = daily();
 
-        @Test
-        void startsAtWindowStartLabel() {
-            assertThat(daily(2).get(0).bucket()).isEqualTo("05:00");
-        }
-
-        @Test
-        void labelsBucketWithItsStartTime() {
-            List<UsageTimelinePoint> points = daily(2);
-
-            // 2 小时颗粒度下依次为 05:00、07:00、09:00…
+            assertThat(points).hasSize(25);
             assertThat(points.get(0).bucket()).isEqualTo("05:00");
-            if (points.size() > 1) {
-                assertThat(points.get(1).bucket()).isEqualTo("07:00");
+            assertThat(points.get(24).bucket()).isEqualTo("05:00");
+        }
+
+        @Test
+        void marksPointsAfterCurrentAsFuture() {
+            // 未来段的 token 也是 0，若不加区分，折线会一路贴底延伸到轴末，
+            // 读起来像用量已归零。故用 future 标记让展示侧断开绘制。
+            List<UsageTimelinePoint> points = daily();
+            int currentPoint = expectedCurrentPoint();
+
+            assertThat(points.subList(0, currentPoint + 1))
+                    .allSatisfy(point -> assertThat(point.future()).isFalse());
+            if (currentPoint + 1 < points.size()) {
+                assertThat(points.subList(currentPoint + 1, points.size()))
+                        .allSatisfy(point -> assertThat(point.future()).isTrue());
             }
         }
 
         @Test
-        void mergesHoursFallingIntoSameBucket() {
-            // 05 与 06 点在 2 小时颗粒度下属同一桶
-            when(usageRepository.aggregateHourlyTokens(anyString(), anyString())).thenReturn(List.of(
-                    new UsageTimelinePoint("05", 100, 10),
-                    new UsageTimelinePoint("06", 200, 20)));
+        void labelsEveryHourInOrder() {
+            List<UsageTimelinePoint> points = daily();
 
-            List<UsageTimelinePoint> points = daily(2);
-
-            assertThat(points.get(0).bucket()).isEqualTo("05:00");
-            assertThat(points.get(0).inputTokens()).isEqualTo(300);
-            assertThat(points.get(0).outputTokens()).isEqualTo(30);
+            assertThat(points.get(1).bucket()).isEqualTo("06:00");
+            assertThat(points.get(19).bucket()).isEqualTo("00:00");
+            assertThat(points.get(23).bucket()).isEqualTo("04:00");
         }
 
         @Test
-        void keepsHoursSeparateAtOneHourGranularity() {
-            when(usageRepository.aggregateHourlyTokens(anyString(), anyString())).thenReturn(List.of(
-                    new UsageTimelinePoint("05", 100, 10),
-                    new UsageTimelinePoint("06", 200, 20)));
+        void centersEachPointOnTheHour() {
+            // 07:00 覆盖 06:30–07:30 —— 这正是首尾都能落在 05:00 的原因
+            when(usageRepository.aggregateHalfHourTokens(anyString(), anyString())).thenReturn(List.of(
+                    new UsageTimelinePoint("06:30", 100, 10),
+                    new UsageTimelinePoint("07:00", 200, 20)));
 
-            List<UsageTimelinePoint> points = daily(1);
+            List<UsageTimelinePoint> points = daily();
+
+            assertThat(points.get(2).bucket()).isEqualTo("07:00");
+            assertThat(points.get(2).inputTokens()).isEqualTo(300);
+            assertThat(points.get(2).outputTokens()).isEqualTo(30);
+        }
+
+        @Test
+        void firstPointCoversOnlyItsSecondHalf() {
+            // 首点没有前半小时（窗口自 05:00 起），故只覆盖 05:00–05:30
+            when(usageRepository.aggregateHalfHourTokens(anyString(), anyString())).thenReturn(List.of(
+                    new UsageTimelinePoint("05:00", 100, 10),
+                    new UsageTimelinePoint("05:30", 999, 99)));
+
+            List<UsageTimelinePoint> points = daily();
 
             assertThat(points.get(0).inputTokens()).isEqualTo(100);
-            if (points.size() > 1) {
-                assertThat(points.get(1).bucket()).isEqualTo("06:00");
-                assertThat(points.get(1).inputTokens()).isEqualTo(200);
-            }
+            // 05:30 归入第二个点（06:00 覆盖 05:30–06:30）
+            assertThat(points.get(1).inputTokens()).isEqualTo(999);
         }
 
         @Test
-        void fallsBackToDefaultForDisallowedGranularity() {
-            // 只有能整除 24 的档位才让午夜落在桶边界上，否则横轴的日期分段线会与刻度错位。
-            // 这是展示参数，非法值退回默认而非让整个卡片失败。
-            assertThat(daily(3)).hasSameSizeAs(daily(2));
-            assertThat(daily(5)).hasSameSizeAs(daily(2));
+        void lastPointCoversOnlyItsFirstHalf() {
+            // 末点没有后半小时（窗口在次日 05:00 截止），故只覆盖 04:30–05:00。
+            // 与首点的半小时相加正好补成完整一小时，总量不重不漏。
+            when(usageRepository.aggregateHalfHourTokens(anyString(), anyString()))
+                    .thenReturn(List.of(new UsageTimelinePoint("04:30", 700, 70)));
+
+            List<UsageTimelinePoint> points = daily();
+
+            assertThat(points.get(24).inputTokens()).isEqualTo(700);
         }
 
         @Test
-        void fallsBackForZeroAndNegativeGranularity() {
-            assertThat(daily(0)).hasSameSizeAs(daily(2));
-            assertThat(daily(-1)).hasSameSizeAs(daily(2));
-        }
+        void padsPointsWithZeroWhenWindowHasNoData() {
+            List<UsageTimelinePoint> points = daily();
 
-        @Test
-        void padsBucketsWithZeroWhenWindowHasNoData() {
-            List<UsageTimelinePoint> points = daily(4);
-
-            assertThat(points).isNotEmpty();
+            assertThat(points).hasSize(25);
             assertThat(points).allSatisfy(point -> {
                 assertThat(point.inputTokens()).isZero();
                 assertThat(point.outputTokens()).isZero();
@@ -223,20 +230,16 @@ class UsageQueryServiceTimelineTests {
         }
 
         @Test
-        void placesPostMidnightHoursInLaterBuckets() {
-            // 凌晨 1 点在 5 点起算的窗口里是第 20 小时，2 小时颗粒度下是第 10 个桶
-            when(usageRepository.aggregateHourlyTokens(anyString(), anyString()))
-                    .thenReturn(List.of(new UsageTimelinePoint("01", 500, 50)));
+        void placesPostMidnightHoursInLaterPoints() {
+            // 凌晨 1 点在 5 点起算的窗口里是第 20 个整点。
+            // 完整一天始终包含该点，故无需再按当前时刻分支。
+            when(usageRepository.aggregateHalfHourTokens(anyString(), anyString()))
+                    .thenReturn(List.of(new UsageTimelinePoint("01:00", 500, 50)));
 
-            List<UsageTimelinePoint> points = daily(2);
+            List<UsageTimelinePoint> points = daily();
 
-            if (expectedLastSlot(2) >= 10) {
-                assertThat(points.get(10).bucket()).isEqualTo("01:00");
-                assertThat(points.get(10).inputTokens()).isEqualTo(500);
-            } else {
-                // 当前时刻尚未走到该桶，数据被截断丢弃属预期
-                assertThat(points).allSatisfy(point -> assertThat(point.inputTokens()).isZero());
-            }
+            assertThat(points.get(20).bucket()).isEqualTo("01:00");
+            assertThat(points.get(20).inputTokens()).isEqualTo(500);
         }
     }
 }

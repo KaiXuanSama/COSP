@@ -139,18 +139,24 @@ public class ApiCallUsageRepository implements ApiCallUsageService {
      * 这一点很重要：把列包在 {@code substr(...)} 里会使条件失去 sargable 性质，
      * 无法利用索引而退化为全表扫描；本方法查询的时间窗很窄，更不该付这个代价。
      *
-     * <p>分桶键取小时的两位数字后再算桶号 —— 这是 SELECT 侧的表达式，
-     * 不影响 WHERE 的索引可用性。返回的是<strong>原始小时</strong>而非桶号，
-     * 由应用层按颗粒度归并：小时到时段的映射依赖「起始时刻」这一展示口径
-     * （见 {@code UsageQueryService} 的 5 点起算），不属于数据访问层。
+     * <h2>为什么按半小时而非整小时分组</h2>
+     * 展示侧的时间点以<strong>整点为中心</strong>聚合（{@code 07:00} 覆盖 06:30–07:30），
+     * 这样横轴首尾各占半格、两端都落在 05:00 上，读起来前后对称。
+     * 半小时是这种居中聚合所需的最小单元 —— 按整小时分组就无法再拆成两半。
+     *
+     * <p>分组键在 SELECT 侧计算，不影响 WHERE 的索引可用性。返回的是<strong>半小时槽</strong>
+     * 而非最终时间点：槽到点的映射依赖「以整点为中心」这一展示口径
+     * （见 {@code UsageQueryService}），不属于数据访问层。
      *
      * @param startInclusive 窗口起点，格式 {@code yyyy-MM-ddTHH:mm:ss}，含
      * @param endExclusive   窗口终点，同格式，不含
-     * @return 按小时升序的用量点，{@code bucket} 为两位小时数（如 {@code "05"}）；无数据时返回空列表
+     * @return 按时刻升序的用量槽，{@code bucket} 为 {@code HH:00} 或 {@code HH:30}；无数据时返回空列表
      */
-    public List<UsageTimelinePoint> aggregateHourlyTokens(String startInclusive, String endExclusive) {
+    public List<UsageTimelinePoint> aggregateHalfHourTokens(String startInclusive, String endExclusive) {
         return jdbcTemplate.query(
-                "SELECT substr(created_at, 12, 2) AS bucket, "
+                "SELECT substr(created_at, 12, 2) || ':' "
+                        + "|| CASE WHEN CAST(substr(created_at, 15, 2) AS INTEGER) >= 30 "
+                        + "THEN '30' ELSE '00' END AS bucket, "
                         + "SUM(COALESCE(prompt_tokens, 0)) AS input_tokens, "
                         + "SUM(COALESCE(completion_tokens, 0)) AS output_tokens "
                         + "FROM api_call_usage "

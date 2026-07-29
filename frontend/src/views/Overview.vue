@@ -8,12 +8,7 @@ import http from '@/api'
 import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 import type { HeatmapModeConfig } from '@/components/heatmap'
 import type { BreakdownDimension, BreakdownMetric, UsageBreakdownRow } from '@/components/usagechart'
-import {
-  DEFAULT_BUCKET_HOURS,
-  type BucketHours,
-  type TimelineRange,
-  type UsageTimelinePoint,
-} from '@/components/usageline'
+import type { TimelineRange, UsageTimelinePoint } from '@/components/usageline'
 import { useStatsStore, type StatsData } from '@/stores/stats'
 
 const statsStore = useStatsStore()
@@ -34,7 +29,6 @@ const timelinePoints = ref<UsageTimelinePoint[]>([])
 const timelineLoading = ref(false)
 const timelineFailed = ref(false)
 const timelineRange = ref<TimelineRange>('7d')
-const timelineBucketHours = ref<BucketHours>(DEFAULT_BUCKET_HOURS)
 
 /** 用量折线的 SSE 连接句柄。 */
 let timelineSource: AuthEventSource | null = null
@@ -189,12 +183,12 @@ onUnmounted(() => {
 })
 
 /**
- * 范围或颗粒度一变就重拉并重建 SSE。
+ * 范围一变就重拉并重建 SSE。
  *
- * 两个参数都写在流的 URL 里，故无法复用旧连接。先断后建而非反过来：
+ * 范围写在流的 URL 里，故无法复用旧连接。先断后建而非反过来：
  * 服务端有连接数上限，先建新的会瞬时占用两个名额。
  */
-watch([timelineRange, timelineBucketHours], () => {
+watch(timelineRange, () => {
   // 切换范围后旧点位已不同构（日期 ↔ 时刻），留着会让图先画错一帧
   timelinePoints.value = []
   disconnectTimelineStream()
@@ -339,7 +333,7 @@ async function fetchTimeline() {
 
   try {
     const response = await http.get<UsageTimelinePoint[]>('/usage-timeline', {
-      params: { range: timelineRange.value, bucket: timelineBucketHours.value },
+      params: { range: timelineRange.value },
     })
     timelinePoints.value = Array.isArray(response.data) ? response.data : []
     timelineFailed.value = false
@@ -360,9 +354,8 @@ async function fetchTimeline() {
  */
 function connectTimelineStream() {
   if (timelineSource) return
-  const query = `range=${timelineRange.value}&bucket=${timelineBucketHours.value}`
   timelineSource = createAuthEventSource({
-    path: `/usage-timeline/stream?${query}`,
+    path: `/usage-timeline/stream?range=${timelineRange.value}`,
     handlers: {
       timeline: (data) => {
         try {
@@ -492,7 +485,6 @@ function toKUnit(value: number): number {
     <n-card class="usage-line-card" :bordered="true">
       <UsageLinePanel
         v-model:range="timelineRange"
-        v-model:bucket-hours="timelineBucketHours"
         :points="timelinePoints"
         :loading="timelineLoading"
         :failed="timelineFailed"
