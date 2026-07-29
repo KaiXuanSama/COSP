@@ -19,6 +19,7 @@
 import { computed, ref, watch } from 'vue'
 import { AXIS_WIDTH, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from '../usagechart/axisTicks'
 import { useAxisScale, buildAnimatedAxisTicks } from '../usagechart/useAxisScale'
+import { anchorFromCursor } from '../usagechart/tooltipAnchor'
 import { toPolylinePoints, useTimelineSeries } from './useTimelineSeries'
 import type { BucketHours, TimelineRange, UsageTimelinePoint } from './usageline'
 
@@ -46,10 +47,16 @@ const props = withDefaults(defineProps<{
 const VIEW_WIDTH = 1000
 const VIEW_HEIGHT = 300
 
-const rootRef = ref<HTMLElement | null>(null)
-
 /** 当前悬停的点序号；null 表示未悬停。 */
 const hoverIndex = ref<number | null>(null)
+
+/**
+ * 浮框的落点与展开方向 —— 跟随光标。
+ *
+ * 不锚在数据点上：折线上下起伏，锚在点上会让浮框随光标横移而忽上忽下；
+ * 跟随光标则运动平稳，且始终在视线焦点附近。
+ */
+const anchor = ref({ left: 0, top: 0, alignEnd: false, below: false })
 
 const pointsRef = computed(() => props.points)
 const rangeRef = computed(() => props.range)
@@ -117,20 +124,6 @@ const hoverX = computed(() => {
 })
 
 /**
- * 悬停浮框的纵向落点 —— 取三条线中最高的那一点。
- *
- * 浮框向上弹出，若锚在某条固定的线上，另外两条更高的线会把它压住。
- * 锚在最高点则无论哪条线当下最大，浮框总在全部线条之上。
- */
-const hoverTopRatio = computed(() => {
-  if (hoverIndex.value === null) return 0
-  return series.value.reduce((max, item) => {
-    const point = item.points[hoverIndex.value as number]
-    return point ? Math.max(max, point.y) : max
-  }, 0)
-})
-
-/**
  * 悬停点的圆点标记。
  *
  * 参考线指出「读的是哪一列」，圆点则指出「每条线在这一列的具体高度」——
@@ -163,30 +156,7 @@ const hoverLabel = computed(() =>
 )
 
 /**
- * 浮框的水平对齐方式。
- *
- * 默认以悬停点为中心，但贴近两端时会溢出卡片，故改为单侧对齐 ——
- * 这比整体钳制位置更简单，且浮框与参考线始终保持相连。
- */
-const hoverAlign = computed(() => {
-  const x = hoverX.value
-  if (x === null) return 'center'
-  if (x < 0.16) return 'start'
-  if (x > 0.84) return 'end'
-  return 'center'
-})
-
-/**
- * 浮框在锚点的上方还是下方。
- *
- * 默认在上方（不遮挡下方的折线），但当最高点已接近轴顶时，向上会顶出绘图区、
- * 与卡片上方的元素重叠，此时翻到下方。这与柱顶读数预留 `VALUE_LABEL_SPACE`
- * 是同一类问题，只是浮框比读数高得多，单靠留白不够，必须翻转。
- */
-const hoverFlipped = computed(() => hoverTopRatio.value > 0.58)
-
-/**
- * 依鼠标横向位置定位最近的点。
+ * 依鼠标横向位置定位最近的点，并同步浮框落点。
  *
  * 折线上的点很细，要求精确命中会让 hover 极难触发；按横坐标就近吸附则
  * 只要鼠标在绘图区内横向移动，读数就连续跟随，这也是三值同显的前提。
@@ -200,6 +170,10 @@ function updateHover(event: MouseEvent) {
   const total = props.points.length
   const nearest = total === 1 ? 0 : Math.round(ratio * (total - 1))
   hoverIndex.value = Math.max(0, Math.min(total - 1, nearest))
+
+  // 基准取绘图区而非组件根节点：浮框是绘图区的绝对定位子元素，
+  // 用根节点算会多算出一段顶部内边距，浮框整体偏下。
+  anchor.value = anchorFromCursor(event, plot, { edgeMargin: 150, topMargin: 100 })
 }
 
 function clearHover() {
@@ -213,7 +187,7 @@ function formatValue(value: number): string {
 </script>
 
 <template>
-  <div ref="rootRef" class="usage-line" :style="rootStyle">
+  <div class="usage-line" :style="rootStyle">
     <div class="usage-line__body">
       <!-- 纵轴：刻度读数，与网格线对齐 -->
       <div class="usage-line__axis" aria-hidden="true">
@@ -290,18 +264,18 @@ function formatValue(value: number): string {
           />
 
           <!--
-            悬停明细浮框。三值同显，故不复用柱状图的 UsageTooltip
+            悬停明细浮框，跟随光标。三值同显，故不复用柱状图的 UsageTooltip
             （那个结构是为「占比明细」设计的），但视觉语言保持一致。
           -->
           <div
-            v-if="hoverRows.length && hoverX !== null"
+            v-if="hoverRows.length"
             class="usage-line__tooltip"
-            :class="[
-              `usage-line__tooltip--${hoverAlign}`,
-              hoverFlipped ? 'usage-line__tooltip--below' : 'usage-line__tooltip--above',
-            ]"
+            :class="{
+              'usage-line__tooltip--end': anchor.alignEnd,
+              'usage-line__tooltip--below': anchor.below,
+            }"
             aria-hidden="true"
-            :style="{ left: `${hoverX * 100}%`, bottom: `${hoverTopRatio * 100}%` }"
+            :style="{ left: `${anchor.left}px`, top: `${anchor.top}px` }"
           >
             <div class="usage-line__tooltip-head">{{ hoverLabel }}</div>
             <div v-for="row in hoverRows" :key="row.key" class="usage-line__tooltip-row">
@@ -532,17 +506,19 @@ function formatValue(value: number): string {
 }
 
 /*
- * 悬停读数浮框。
+ * 悬停读数浮框，跟随光标。
  *
  * 与柱状图的 tooltip 同一套视觉语言（深底、圆角、等宽字体），但结构不同 ——
  * 那个是为「占比明细」设计的单/双层列表，这里要并列三条线的绝对值。
  *
- * 定位锚在「三条线中最高那一点」上方：若锚在固定某条线上，更高的线会盖住浮框。
- * pointer-events 关掉，避免浮框抢走鼠标导致 hover 在边界处闪烁。
+ * 不锚在数据点上：折线上下起伏，锚在点上会让浮框随光标横移而忽上忽下；
+ * 跟随光标则运动平稳。pointer-events 关掉，避免浮框抢走鼠标造成 hover 闪烁。
  */
 .usage-line__tooltip {
   position: absolute;
   z-index: 20;
+  /* 两个方向拆成独立变量：贴边与顶格是两个互不相干的决策 */
+  transform: translate(var(--usage-line-tip-x, -50%), var(--usage-line-tip-y, calc(-100% - 14px)));
   min-width: 132px;
   padding: 7px 9px;
   border-radius: 8px;
@@ -556,39 +532,14 @@ function formatValue(value: number): string {
   white-space: nowrap;
 }
 
-/*
- * 三种水平对齐 × 两种垂直方向，用两个自定义属性拼成一个 transform。
- *
- * 拆成变量而非写六条组合规则：水平与垂直是两个独立决策（是否贴边、是否顶格），
- * 六条规则里有四条会重复同样的位移值，改一处就得同步改另外几处。
- */
-.usage-line__tooltip {
-  transform: translate(var(--usage-line-tip-x, -50%), var(--usage-line-tip-y, 12px));
-}
-
-/* 居中：以悬停点为轴 */
-.usage-line__tooltip--center {
-  --usage-line-tip-x: -50%;
-}
-
-/* 贴左：左缘对齐参考线，向右展开 */
-.usage-line__tooltip--start {
-  --usage-line-tip-x: -12px;
-}
-
-/* 贴右：右缘对齐参考线，向左展开 */
+/* 光标靠近右缘：右缘对齐光标，向左展开 */
 .usage-line__tooltip--end {
-  --usage-line-tip-x: calc(-100% + 12px);
+  --usage-line-tip-x: calc(-100% + 14px);
 }
 
-/* 在锚点上方（默认）：bottom 已定位到锚点，再整体上移自身高度加间距 */
-.usage-line__tooltip--above {
-  --usage-line-tip-y: calc(-100% - 12px);
-}
-
-/* 翻到锚点下方：最高点贴近轴顶时向上会溢出绘图区 */
+/* 光标靠近上缘：翻到光标下方 */
 .usage-line__tooltip--below {
-  --usage-line-tip-y: 12px;
+  --usage-line-tip-y: 14px;
 }
 
 .usage-line__tooltip-head {

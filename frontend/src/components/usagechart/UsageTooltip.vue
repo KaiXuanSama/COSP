@@ -16,7 +16,7 @@
  */
 import type { SegmentDetail } from './usagechart'
 
-defineProps<{
+withDefaults(defineProps<{
   visible: boolean
   /** 相对图表容器的坐标（px）。 */
   left: number
@@ -25,7 +25,18 @@ defineProps<{
   /** 标题右侧的汇总值，如「234 次 · 91.8%」。 */
   summary?: string
   detail: SegmentDetail[]
-}>()
+  /**
+   * 向左展开（右缘对齐锚点）。光标靠近容器右缘时置 true，否则浮框会溢出。
+   */
+  alignEnd?: boolean
+  /**
+   * 落在锚点下方。光标靠近容器上缘时置 true，否则向上展开会溢出。
+   */
+  below?: boolean
+}>(), {
+  alignEnd: false,
+  below: false,
+})
 
 /** 占比统一保留一位小数；极小值不显示为 0.0% 以免误解为无调用。 */
 function formatRatio(ratio: number): string {
@@ -39,6 +50,10 @@ function formatRatio(ratio: number): string {
   <div
     v-if="visible"
     class="usage-tooltip"
+    :class="{
+      'usage-tooltip--end': alignEnd,
+      'usage-tooltip--below': below,
+    }"
     aria-hidden="true"
     :style="{ left: `${left}px`, top: `${top}px` }"
   >
@@ -67,10 +82,19 @@ function formatRatio(ratio: number): string {
 </template>
 
 <style lang="scss" scoped>
+/*
+ * 跟随光标定位。
+ *
+ * left/top 由父组件给出光标的容器内坐标，本组件只负责相对该点的展开方向：
+ * 默认向右上展开（不遮挡光标下方的图形），贴近容器边缘时由修饰类翻转。
+ *
+ * 两个方向拆成独立的自定义属性，而非写四条组合规则 —— 水平与垂直是两个
+ * 互不相干的决策，写成组合会让同一个位移值重复出现在多处。
+ */
 .usage-tooltip {
   position: absolute;
   z-index: 20;
-  transform: translate(-50%, calc(-100% - 10px));
+  transform: translate(var(--usage-tooltip-x, -50%), var(--usage-tooltip-y, calc(-100% - 14px)));
   min-width: 160px;
   max-width: 280px;
   padding: 8px 10px;
@@ -84,6 +108,16 @@ function formatRatio(ratio: number): string {
   /* 纯展示：不接收鼠标事件，避免遮挡下钻点击与造成 hover 抖动 */
   pointer-events: none;
   white-space: nowrap;
+}
+
+/* 光标靠近右缘：右缘对齐光标，向左展开 */
+.usage-tooltip--end {
+  --usage-tooltip-x: calc(-100% + 14px);
+}
+
+/* 光标靠近上缘：翻到光标下方 */
+.usage-tooltip--below {
+  --usage-tooltip-y: 14px;
 }
 
 .usage-tooltip__head {

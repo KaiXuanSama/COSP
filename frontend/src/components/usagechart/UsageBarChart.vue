@@ -21,6 +21,7 @@ import { computed, ref, watch } from 'vue'
 import type { StackBar, StackSegment } from './usagechart'
 import { AXIS_WIDTH, buildAxisTicks, COLUMN_GAP, COLUMN_PAD_X, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from './axisTicks'
 import { buildAnimatedAxisTicks, useAxisScale } from './useAxisScale'
+import { anchorFromCursor } from './tooltipAnchor'
 import { useStackMorph, type MorphBar, type MorphSegment } from './useStackMorph'
 import UsageTooltip from './UsageTooltip.vue'
 
@@ -89,7 +90,16 @@ const emit = defineEmits<{
 }>()
 
 const rootRef = ref<HTMLElement | null>(null)
-const tooltip = ref({ visible: false, left: 0, top: 0, title: '', summary: '', detail: [] as StackSegment['detail'] })
+const tooltip = ref({
+  visible: false,
+  left: 0,
+  top: 0,
+  alignEnd: false,
+  below: false,
+  title: '',
+  summary: '',
+  detail: [] as StackSegment['detail'],
+})
 
 const rootStyle = computed(() => ({
   '--usagechart-plot-height': `${props.height}px`,
@@ -250,27 +260,46 @@ function barAriaLabel(bar: StackBar): string | undefined {
 }
 
 /**
- * 显示段的悬浮明细。
+ * 显示段的悬浮明细，浮框跟随光标。
  *
- * 定位取段元素中心的容器内相对坐标（与热力图一致），页面滚动时不漂移。
+ * 定位取<strong>光标</strong>的容器内相对坐标，而非段元素中心：段可能很高
+ * （占满整柱），锚在中心时浮框会离光标很远，看起来像在为别的元素服务。
+ * 用相对坐标则页面滚动、卡片位移都不会让浮框漂走。
  */
 function showSegmentTooltip(event: MouseEvent, segment: StackSegment) {
-  const target = event.currentTarget as HTMLElement | null
   const root = rootRef.value
-  if (!target || !root) return
+  if (!root) return
 
-  const rect = target.getBoundingClientRect()
-  const rootRect = root.getBoundingClientRect()
+  const anchor = anchorFromCursor(event, root)
   const ratioText = `${(segment.ratio * 100).toFixed(1)}%`
 
   tooltip.value = {
     visible: true,
-    left: rect.left - rootRect.left + rect.width / 2,
-    top: rect.top - rootRect.top,
+    left: anchor.left,
+    top: anchor.top,
+    alignEnd: anchor.alignEnd,
+    below: anchor.below,
     title: segment.label,
     summary: `${formatValue(segment.value)} ${props.unit} · ${ratioText}`,
     detail: segment.detail,
   }
+}
+
+/**
+ * 光标在段内移动时更新浮框位置。
+ *
+ * 只改坐标不重算内容：段没变，标题与明细都是同一份，重建会让浮框内容闪烁。
+ */
+function trackSegmentTooltip(event: MouseEvent) {
+  if (!tooltip.value.visible) return
+  const root = rootRef.value
+  if (!root) return
+
+  const anchor = anchorFromCursor(event, root)
+  tooltip.value.left = anchor.left
+  tooltip.value.top = anchor.top
+  tooltip.value.alignEnd = anchor.alignEnd
+  tooltip.value.below = anchor.below
 }
 
 function hideTooltip() {
@@ -426,6 +455,7 @@ watch(structureKey, () => {
               :class="{ 'usage-bar__segment--other': seg.segment.isOther }"
               :style="{ height: `${morphSegmentHeight(seg)}px` }"
               @mouseenter="seg.leaving ? null : showSegmentTooltip($event, seg.segment)"
+              @mousemove="seg.leaving ? null : trackSegmentTooltip($event)"
               @mouseleave="hideTooltip"
             />
           </div>
@@ -439,6 +469,8 @@ watch(structureKey, () => {
       :visible="tooltip.visible"
       :left="tooltip.left"
       :top="tooltip.top"
+      :align-end="tooltip.alignEnd"
+      :below="tooltip.below"
       :title="tooltip.title"
       :summary="tooltip.summary"
       :detail="tooltip.detail"
