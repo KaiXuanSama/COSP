@@ -26,6 +26,7 @@ import { AXIS_WIDTH, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from '..
 import { useAxisScale, buildAnimatedAxisTicks } from '../usagechart/useAxisScale'
 import { anchorFromCursor } from '../usagechart/tooltipAnchor'
 import { toPolylinePoints, useTimelineSeries } from './useTimelineSeries'
+import { useLineMorph, LINE_MORPH_DURATION } from './useLineMorph'
 import type { TimelineRange, UsageTimelinePoint } from './usageline'
 
 const props = withDefaults(defineProps<{
@@ -41,10 +42,18 @@ const props = withDefaults(defineProps<{
    * 与柱状图同值，使两处的「量纲变化」看起来是同一种运动。
    */
   scaleDuration?: number
+  /**
+   * 端点形变时长（ms）—— 范围切换时点移动到新位置所用的时间。
+   *
+   * 同时注入 CSS 与形变模型：CSS 负责位移过渡，JS 负责在此之后才移除退场点。
+   * 两者必须同值，否则退场点会在淡出途中被摘掉。
+   */
+  morphDuration?: number
 }>(), {
   height: 180,
   axisWidth: AXIS_WIDTH,
   scaleDuration: 420,
+  morphDuration: LINE_MORPH_DURATION,
 })
 
 /** viewBox 的逻辑尺寸。取值本身无意义，只用于把 0~1 的比例放大成整数坐标。 */
@@ -85,6 +94,17 @@ watch(targetTicks, (_next, previous) => {
   previousTicks.value = previous
 })
 
+/**
+ * 切换范围时撤掉悬停态。
+ *
+ * 序号在新旧两批之间指向的是完全不同的时刻（近 7 日的第 3 点是某一天，
+ * 今日的第 3 点是某个小时），沿用旧序号会让浮框读出一个与光标无关的值。
+ * 且点数变少时旧序号可能越界，浮框会显示一串 0。
+ */
+watch(rangeRef, () => {
+  hoverIndex.value = null
+})
+
 /** 当前要渲染的刻度：静止时用精确占比，换算中则按动画标尺实时投影。 */
 const renderTicks = computed(() => {
   if (!rescaling.value) {
@@ -107,19 +127,42 @@ const rootStyle = computed(() => ({
   '--usage-line-axis-width': `${props.axisWidth}px`,
   '--usage-line-pad-y': `${COLUMN_PAD_Y}px`,
   '--usage-line-value-space': `${VALUE_LABEL_SPACE}px`,
+  // 形变时长同时驱动 CSS 过渡与 JS 的退场清理，从一处注入避免两者漂移
+  '--usage-line-morph': `${props.morphDuration}ms`,
 }))
 
-/** 需要画成折线的系列的 SVG `points` 属性。输入与输出只在浮框里出现。 */
-const polylines = computed(() =>
-  series.value
-    .filter((item) => item.config.drawn)
-    .map((item) => ({
-      key: item.config.key,
-      color: item.config.color,
-      dash: item.config.dash,
-      points: toPolylinePoints(item.points, VIEW_WIDTH, VIEW_HEIGHT),
-    })),
+/**
+ * 唯一被绘制的系列（当前是总量）。
+ *
+ * 形变以它的点为准：只有一条线时，「点动带动线动」不必再处理多条线各自的点集。
+ */
+const drawnSeries = computed(() => series.value.find((item) => item.config.drawn))
+
+/** 形变中的端点。范围切换时按位置序号复用节点，故位移能被 CSS 过渡捕捉。 */
+const { morphPoints, lineEntering } = useLineMorph(
+  computed(() => drawnSeries.value?.points ?? []),
+  { duration: props.morphDuration },
 )
+
+/**
+ * 折线路径 —— 由端点当前位置实时重算。
+ *
+ * 这是「点动带动线动」的落点：线自身没有可过渡的属性（{@code points} 是坐标字符串），
+ * 但端点每帧的位置都由 CSS 过渡给出，把它们串起来，线自然就跟着形变。
+ *
+ * 退场点要排除：它们正滑出图外，串进路径会让线拖出一条甩尾。
+ */
+const polylines = computed(() => {
+  const drawn = drawnSeries.value
+  if (!drawn) return []
+  const alive = morphPoints.value.filter((point) => point.phase !== 'leave')
+  return [{
+    key: drawn.config.key,
+    color: drawn.config.color,
+    dash: drawn.config.dash,
+    points: toPolylinePoints(alive, VIEW_WIDTH, VIEW_HEIGHT),
+  }]
+})
 
 /** 悬停时的垂直参考线位置（占宽度的比例）。 */
 const hoverX = computed(() => {
@@ -136,20 +179,23 @@ const hoverX = computed(() => {
  *
  * 默认空心（描边取线色、内部填卡片底色），悬停那一点转为实心，
  * 于是「当前正在读哪一点」不必依赖参考线也能看清。
+ *
+ * 坐标取自形变模型而非原始序列：范围切换时点要平滑移动到新位置，
+ * 而不是直接跳过去。
  */
-const seriesDots = computed(() =>
-  series.value
-    .filter((item) => item.config.drawn)
-    .flatMap((item) =>
-      item.points.map((point, index) => ({
-        key: `${item.config.key}-${index}`,
-        color: item.config.color,
-        x: point.x,
-        y: point.y,
-        active: index === hoverIndex.value,
-      })),
-    ),
-)
+const seriesDots = computed(() => {
+  const drawn = drawnSeries.value
+  if (!drawn) return []
+  return morphPoints.value.map((point) => ({
+    key: `${drawn.config.key}-${point.slot}`,
+    color: drawn.config.color,
+    x: point.x,
+    y: point.y,
+    opacity: point.opacity,
+    // 退场点不该被标为激活：它已不属于当前数据，实心化会显得它仍可读
+    active: point.phase !== 'leave' && point.slot === hoverIndex.value,
+  }))
+})
 
 /** 悬停时段的三项数值，供浮框列出。未绘制的系列同样在列 —— 这是它们唯一的出场处。 */
 const hoverRows = computed(() => {
@@ -255,6 +301,7 @@ function formatValue(value: number): string {
               v-for="line in polylines"
               :key="line.key"
               class="usage-line__path"
+              :class="{ 'usage-line__path--entering': lineEntering }"
               :points="line.points"
               :stroke="line.color"
               :stroke-dasharray="line.dash"
@@ -276,6 +323,7 @@ function formatValue(value: number): string {
             :style="{
               left: `${dot.x * 100}%`,
               bottom: `${dot.y * 100}%`,
+              opacity: dot.opacity,
               borderColor: dot.color,
               '--usage-line-dot-fill': dot.color,
             }"
@@ -454,6 +502,19 @@ function formatValue(value: number): string {
   stroke-linecap: round;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
+  opacity: 1;
+  transition: opacity var(--usage-line-morph, 420ms) ease;
+}
+
+/*
+ * 点数增多时线要先淡入。
+ *
+ * 新增点还停在起始位置（目标位置右侧、透明），但路径已按新点集算好 ——
+ * 那一段刚延伸出去的线若以最终不透明度出现，会显得凭空多长了一截。
+ * 让它与新点同步淡入，「线是跟着点长出来的」这一因果才成立。
+ */
+.usage-line__path--entering {
+  opacity: 0.35;
 }
 
 .usage-line__labels,
@@ -609,7 +670,23 @@ function formatValue(value: number): string {
   background: var(--usage-line-surface, #fff);
   transform: translate(-50%, 50%);
   pointer-events: none;
-  transition: width 0.15s ease, height 0.15s ease, background 0.15s ease;
+  /*
+   * left / bottom / opacity 的过渡是整套折线形变的载体。
+   *
+   * 点按位置序号复用 DOM 节点，故范围切换时同一个节点的 left 从旧位置变到新位置 ——
+   * 这是一次属性变化，CSS 直接接手即可，无需手写逐帧动画。折线则每帧按端点当前
+   * 位置重算路径，于是「点动带动线动」。
+   *
+   * 尺寸与填充用更短的时长：它们表达的是 hover 反馈，须跟手；
+   * 位移表达的是范围切换，时长与柱状图形变对齐，两张图的节奏才一致。
+   */
+  transition:
+    left var(--usage-line-morph, 420ms) cubic-bezier(0.22, 0.61, 0.36, 1),
+    bottom var(--usage-line-morph, 420ms) cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity var(--usage-line-morph, 420ms) ease,
+    width 0.15s ease,
+    height 0.15s ease,
+    background 0.15s ease;
 }
 
 /*

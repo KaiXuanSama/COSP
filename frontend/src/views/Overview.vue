@@ -193,10 +193,12 @@ onUnmounted(() => {
  *
  * 范围写在流的 URL 里，故无法复用旧连接。先断后建而非反过来：
  * 服务端有连接数上限，先建新的会瞬时占用两个名额。
+ *
+ * 旧点位<strong>不清空</strong>：清空会让折线先消失、待新数据到达再凭空出现，
+ * 中间那一帧的空白是无从补救的硬切。留着旧数据则新旧两批之间是一次直接替换，
+ * 图表层至少有机会在两者之间做过渡。
  */
 watch(timelineRange, () => {
-  // 切换范围后旧点位已不同构（日期 ↔ 时刻），留着会让图先画错一帧
-  timelinePoints.value = []
   disconnectTimelineStream()
   void fetchTimeline()
   connectTimelineStream()
