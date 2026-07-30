@@ -18,8 +18,9 @@
  * 只是让图变脏。故图上只留总量表达趋势，输入与输出的绝对值由悬停浮框给出：
  * 需要看构成时精确可读，不需要时不占视觉带宽。
  *
- * <p>三者仍共用一个纵轴（总量恒等于输入加输出，同量纲），
- * 将来若某个系列值得单独画出，把 {@code SeriesConfig.drawn} 置为 true 即可。
+ * <p>三者仍共用一个纵轴（总量恒等于输入加输出，同量纲）。若将来要真的画出第二条线，
+ * 除了把 {@code SeriesConfig.drawn} 置为 true，还须把形变改成按系列各建一个
+ * {@link useSlotMorph} 实例 —— 当前实现只跟 {@code drawnSeries} 这一条线的点走。
  */
 import { computed, ref, watch } from 'vue'
 import { AXIS_WIDTH, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from '../usagechart/axisTicks'
@@ -549,7 +550,7 @@ function formatValue(value: number): string {
   color: var(--usage-line-text-muted, #9a9590);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  /* 完全透明的标签（被稀疏规则隐去）不该拦下鼠标 */
+  /* 标签行纯展示；不接收指针事件也使被稀疏规则隐去的透明标签不会拦下鼠标 */
   pointer-events: none;
 }
 
