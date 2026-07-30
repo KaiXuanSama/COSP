@@ -224,29 +224,131 @@ const axisTicks = computed(() => {
  */
 const { morphBars, morphFrom } = useStackMorph(computed(() => props.bars), heightBasis)
 
-/**
- * 段高（px）。
- *
- * 比例由形变模型给出（退场层为 0，因此会平滑收缩到消失）；
- * 再对有值的段兜一个最小高度，避免占比极小的段渲染成 0 而在图上消失。
- */
-function morphSegmentHeight(item: MorphSegment): number {
-  if (item.ratio <= 0) return 0
-  return Math.max(props.minSegmentHeight, item.ratio * props.height)
+/** 一个堆叠层的占位尺寸。 */
+interface SegmentBox {
+  /** 占位总高（px），已含下方那道分隔间隙。 */
+  height: number
+  /** 与下方邻居之间的间隙（px）—— 由下外边距实现；最底层为 0。 */
+  gap: number
 }
 
 /**
- * 整柱的实际像素高度 —— 各可见层高之和，外加层间空隙。
+ * 计算一根柱子各层的盒高。
  *
- * 必须与渲染用的同一套口径：层高对小值做了 minSegmentHeight 兜底，
- * 加上 segmentGap 的累计，实际柱顶会略高于按比例的理论值，
- * 柱顶读数要贴合真实柱顶就不能用 total / basis 另算一遍。
+ * <h2>间隙为何算在层高之内</h2>
+ * 层间空隙曾用 flex 的 {@code gap} 实现，那是<strong>额外</strong>空间，
+ * 不占任何层的高度配额，于是 N 层柱子会凭空长高 {@code (N-1) × gap}，
+ * 柱顶明显高出对应的刻度线 —— 层越多、偏差越大，纵轴也就失去了可量化读出的意义。
+ *
+ * 改为让每层自带间隙、并从自己的高度配额里扣除后，各层占位之和恒等于
+ * {@code (总量 / 轴上限) × 绘图区高}，柱顶因此严格落在刻度上。
+ *
+ * <h2>间隙归属于「上面那一层」</h2>
+ * 间隙是「本层与下方邻居的分隔」，故最底下的可见层不带间隙 —— 它要贴住基线；
+ * 最顶层也不需要上边框 —— 它上方没有邻居，加了反而让柱顶多出一段空白。
+ *
+ * 判定依据是「下方是否已有可见层」而非层序号：占比为 0 的层（含退场层）
+ * 不占视觉位置，若按序号判断，第 0 层不可见时第 1 层会被当成非底层而带上间隙，
+ * 柱底就浮起来了。
+ *
+ * <h2>兜底抬升要从最高层扣回</h2>
+ * 占比极小的层会被 {@link minSegmentHeight} 抬高，这部分同样是纯附加高度。
+ * 把抬升总量从最高的那一层扣回，柱顶才仍然对齐刻度：最高层承担几个像素的误差
+ * （百余像素上不足 3%，肉眼不可察），远好过柱顶整体飘出刻度线。
+ */
+function computeSegmentBoxes(item: MorphBar): SegmentBox[] {
+  const gap = props.segmentGap
+  const minFill = props.minSegmentHeight
+
+  /** 下方是否已出现可见层 —— 决定本层要不要带分隔间隙。 */
+  let hasVisibleBelow = false
+  /** 按比例应得的总高，即柱顶该落到的位置。 */
+  let exactTotal = 0
+  /** 因兜底抬升而多出的高度，稍后从最高层扣回。 */
+  let excess = 0
+
+  const boxes: SegmentBox[] = item.segments.map((segment) => {
+    if (segment.ratio <= 0) return { height: 0, gap: 0 }
+
+    const ownGap = hasVisibleBelow ? gap : 0
+    hasVisibleBelow = true
+
+    const exact = segment.ratio * props.height
+    // 可见填充至少 minFill，故盒高至少是它加上自带的间隙
+    const height = Math.max(minFill + ownGap, exact)
+    exactTotal += exact
+    excess += height - exact
+    return { height, gap: ownGap }
+  })
+
+  if (excess <= 0 || exactTotal <= 0) return boxes
+
+  // 从最高层扣回，且不让它跌破自己的下限（否则又会引入新的抬升）
+  let tallest = -1
+  boxes.forEach((box, index) => {
+    if (box.height > 0 && (tallest < 0 || box.height > boxes[tallest].height)) tallest = index
+  })
+  if (tallest < 0) return boxes
+
+  const floor = minFill + boxes[tallest].gap
+  boxes[tallest].height = Math.max(floor, boxes[tallest].height - excess)
+  return boxes
+}
+
+/**
+ * 各柱的层高缓存。
+ *
+ * 兜底补偿要看整柱的层，无法逐层独立算出，故按柱算一次并缓存 ——
+ * 模板里每层都要读，逐层重算会把一次 O(n) 变成 O(n²)。
+ */
+const segmentBoxes = computed(() => {
+  const map = new Map<number, SegmentBox[]>()
+  for (const item of morphBars.value) {
+    map.set(item.slot, computeSegmentBoxes(item))
+  }
+  return map
+})
+
+/** 取某柱某层的占位尺寸；缺失时按零高度处理，避免模板里出现 undefined。 */
+function boxOf(item: MorphBar, index: number): SegmentBox {
+  return segmentBoxes.value.get(item.slot)?.[index] ?? { height: 0, gap: 0 }
+}
+
+/**
+ * 一个堆叠层的内联样式。
+ *
+ * <h2>间隙为何是外边距，而不是透明下边框</h2>
+ * 边框版本要靠 {@code background-clip: padding-box} 才能让透明边框真正「透」出间隙，
+ * 由此带来两处视觉缺陷：
+ *
+ * <ul>
+ *   <li>圆角按<strong>边框盒</strong>计算，而色块被裁到内盒，其底部圆角半径变成
+ *       {@code 半径 − 边框宽}，间隙一存在，上层的底部圆角就被压平；</li>
+ *   <li>{@code background} 简写会把 {@code background-clip} 重置回 {@code border-box}，
+ *       任何只改底色的修饰类（如 other 段）都会静默失去间隙。</li>
+ * </ul>
+ *
+ * 外边距区域无法被背景绘制，故上述两点都不复存在：元素回归纯色块，圆角原生生效。
+ * 代价只是高度要自己扣一次 —— 元素高 = 占位高 − 间隙，间隙以外边距补回，
+ * 两者之和仍等于占位高，柱顶与刻度的对应关系不变。
+ */
+function segmentStyle(item: MorphBar, index: number) {
+  const box = boxOf(item, index)
+  return {
+    height: `${Math.max(0, box.height - box.gap)}px`,
+    marginBottom: `${box.gap}px`,
+  }
+}
+
+/**
+ * 整柱的实际像素高度 —— 各层占位之和。
+ *
+ * 间隙已含在占位高内，故这里不再另加 —— 若再加一份，柱顶读数就会飘在真实柱顶上方。
  */
 function morphBarHeight(item: MorphBar): number {
-  const visible = item.segments.filter((segment) => segment.ratio > 0)
-  if (!visible.length) return 0
-  const stacked = visible.reduce((sum, segment) => sum + morphSegmentHeight(segment), 0)
-  return stacked + props.segmentGap * (visible.length - 1)
+  const boxes = segmentBoxes.value.get(item.slot)
+  if (!boxes) return 0
+  return boxes.reduce((sum, box) => sum + box.height, 0)
 }
 
 function formatValue(value: number): string {
@@ -449,11 +551,11 @@ watch(structureKey, () => {
               公共底层复用节点平滑过渡，新增顶层从 0 膨胀，多余顶层收缩到 0。
             -->
             <div
-              v-for="seg in morph.segments"
+              v-for="(seg, index) in morph.segments"
               :key="seg.slot"
               class="usage-bar__segment"
               :class="{ 'usage-bar__segment--other': seg.segment.isOther }"
-              :style="{ height: `${morphSegmentHeight(seg)}px` }"
+              :style="segmentStyle(morph, index)"
               @mouseenter="seg.leaving ? null : showSegmentTooltip($event, seg.segment)"
               @mousemove="seg.leaving ? null : trackSegmentTooltip($event)"
               @mouseleave="hideTooltip"
@@ -672,6 +774,14 @@ watch(structureKey, () => {
   }
 }
 
+/*
+ * 柱体。
+ *
+ * 这里<strong>没有</strong> flex gap：层间空隙改由每层自带的下外边距实现，
+ * 且该间隙已从这一层的高度配额里扣除。flex gap 是纯额外空间，不占任何层的配额，
+ * N 层柱子会因此凭空长高 (N-1) × gap、柱顶明显高出对应刻度；
+ * 改由各层自负后，占位之和恒等于按比例应得的总高，柱顶严格落在刻度线上。
+ */
 .usage-bar__stack {
   /* 作为柱顶读数的定位上下文 */
   position: relative;
@@ -679,7 +789,6 @@ watch(structureKey, () => {
   /* 自下而上堆叠：值最大的段在最底部 */
   flex-direction: column-reverse;
   justify-content: flex-start;
-  gap: var(--usagechart-segment-gap);
   width: 100%;
   max-width: var(--usagechart-bar-width);
   height: var(--usagechart-plot-height);
@@ -706,6 +815,13 @@ watch(structureKey, () => {
   transition: bottom 0.42s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.28s ease;
 }
 
+/*
+ * 堆叠层。
+ *
+ * 元素本身就是可见色块，层间空隙是它的下外边距（走内联样式，最底层为 0）；
+ * 内联 height 已把间隙扣除，故 (height + margin) 才是这一层的占位高。
+ * 详见 segmentStyle 的说明。
+ */
 .usage-bar__segment {
   width: 100%;
   /* 圆角 + 间隙即分段依据，与热力图格子风格统一 */
@@ -714,8 +830,14 @@ watch(structureKey, () => {
   /*
    * 形变动画的实际执行者：高度由 useStackMorph 逐帧给到内联样式，
    * 这条过渡负责把每次取值变化补成连续运动（长高 / 收缩 / 归零消失）。
+   *
+   * 外边距一并过渡：某层变成 / 不再是最底层时（下方的层退场或进场），
+   * 它的间隙会在 0 与 gap 之间切换，硬切会让柱底跳一下。
    */
-  transition: height 0.42s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease;
+  transition:
+    height 0.42s cubic-bezier(0.4, 0, 0.2, 1),
+    margin-bottom 0.42s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.18s ease;
 
   &:hover {
     opacity: 0.82;
