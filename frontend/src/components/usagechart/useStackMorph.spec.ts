@@ -219,6 +219,54 @@ describe('高度换算的边界', () => {
   })
 })
 
+describe('标签文案的交叉淡化', () => {
+  it('同一格换了文案时带上旧的，两段短暂共存', () => {
+    // 柱体按位置复用 DOM 节点，标签文字因此是被就地改写的。
+    // 带上旧文案，新旧才有重叠的一瞬可供交叉淡化。
+    const previous = seats(bar('7/28', 100), bar('7/29', 80))
+    const morph = buildMorphBars([bar('gorouter', 100), bar('longcat', 80)], previous, 200)
+
+    expect(morph[0].outgoingLabel).toBe('7/28')
+    expect(morph[1].outgoingLabel).toBe('7/29')
+  })
+
+  it('文案未变则不带旧的 —— 否则未受影响的柱子也会跟着闪一下', () => {
+    // SSE 推送只改数值不改分类，此时标签不该有任何动作
+    const previous = seats(bar('a', 100), bar('b', 80))
+    const morph = buildMorphBars([bar('a', 120), bar('b', 90)], previous, 200)
+
+    expect(morph.every(item => item.outgoingLabel === null)).toBe(true)
+  })
+
+  it('新挤入的柱子没有旧文案可淡出', () => {
+    // 该位置原本空着，整柱是淡入的，标签跟着柱子一起出现即可
+    const morph = buildMorphBars([bar('a', 100), bar('b', 80)], seats(bar('a', 100)), 200)
+
+    expect(morph[1].phase).toBe('enter')
+    expect(morph[1].outgoingLabel).toBeNull()
+  })
+
+  it('退场柱不做文案交叉 —— 标签随整柱一起淡出', () => {
+    const morph = buildMorphBars([bar('a', 100)], seats(bar('a', 100), bar('b', 80)), 200)
+
+    const leaving = morph.find(item => item.phase === 'leave')!
+    expect(leaving.outgoingLabel).toBeNull()
+  })
+
+  it('锚定复用时旧文案取该位置原本的那一个', () => {
+    // 5 → 3 且点末根：第 4 号位留存，它的旧文案是 e 而非按下标算出的 c
+    const previous = seats(
+      bar('a', 100), bar('b', 90), bar('c', 80), bar('d', 70), bar('e', 60),
+    )
+    const morph = buildMorphBars(
+      [bar('x', 50), bar('y', 40), bar('z', 30)], previous, 200, true, 4,
+    )
+
+    const anchored = morph.find(item => item.slot === 4)!
+    expect(anchored.outgoingLabel).toBe('e')
+  })
+})
+
 describe('退场柱的存活时长', () => {
   it('清理延迟与 CSS 进出场动画同值', () => {
     // 退场柱由「previous 比 bars 多出来的尾部」派生，因此它在 DOM 里能活多久，

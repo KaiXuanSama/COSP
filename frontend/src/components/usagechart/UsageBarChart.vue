@@ -460,7 +460,25 @@ watch(structureKey, () => {
             />
           </div>
 
-          <div class="usage-bar__label" :title="morph.bar.fullLabel">{{ morph.bar.label }}</div>
+          <!--
+            分类标签。换文案时新旧两段短暂共存，交叉淡出淡入。
+
+            新文案的 key 取文案本身：标签所在的 DOM 节点按 slot 复用，若不换 key，
+            文字是被就地改写的，CSS 动画无从重放。换了 key 则 Vue 重建节点，
+            淡入才会真正播放。
+          -->
+          <div class="usage-bar__label" :title="morph.bar.fullLabel">
+            <span
+              v-if="morph.outgoingLabel !== null"
+              class="usage-bar__label-text usage-bar__label-text--out"
+              aria-hidden="true"
+            >{{ morph.outgoingLabel }}</span>
+            <span
+              :key="morph.bar.label"
+              class="usage-bar__label-text"
+              :class="{ 'usage-bar__label-text--in': morph.outgoingLabel !== null }"
+            >{{ morph.bar.label }}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -712,18 +730,78 @@ watch(structureKey, () => {
 /*
  * 横轴标签。一级是「M/D」日期，二 / 三级是分类名（可能很长，故截断）。
  * tabular-nums 让日期数字等宽，多列并排时对齐更整齐。
+ *
+ * 作为两段文案的定位上下文：换文案时新旧短暂共存，需要叠在同一处交叉淡化。
+ * 行高显式给出而非由内容撑开 —— 两段文字都绝对定位后容器就没有内容高度了，
+ * 不固定的话标签行会塌陷，柱状图整体高度随之抽动。
  */
 .usage-bar__label {
+  position: relative;
   width: 100%;
+  height: 1.6em;
   margin-top: 8px;
   font-family: var(--usagechart-font-mono, 'DM Mono', monospace);
-  font-size: 11px
-;
+  font-size: 11px;
   color: var(--usagechart-text-muted, #9a9590);
   font-variant-numeric: tabular-nums;
   text-align: center;
+}
+
+/*
+ * 一段文案。绝对定位使新旧两段落在同一处 —— 交叉淡化要求它们重叠，
+ * 若按文档流排布会并列成两列，容器宽度也会随之跳变。
+ */
+.usage-bar__label-text {
+  position: absolute;
+  inset: 0;
+  line-height: 1.6;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/*
+ * 被顶掉的旧文案淡出。
+ *
+ * forwards 保持终态：动画结束后它仍在 DOM 里（要等下一次形变推进配对基准
+ * 才被移除），不保持的话会在动画末尾突然弹回完全不透明。
+ */
+.usage-bar__label-text--out {
+  animation: usage-bar-label-out 0.42s ease forwards;
+  pointer-events: none;
+}
+
+/* 新文案淡入。与旧文案同时长同曲线，两者的交叉才是对称的 */
+.usage-bar__label-text--in {
+  animation: usage-bar-label-in 0.42s ease;
+}
+
+@keyframes usage-bar-label-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes usage-bar-label-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 尊重系统「减少动态效果」：文案直接替换，不播放交叉淡化 */
+@media (prefers-reduced-motion: reduce) {
+  .usage-bar__label-text--out {
+    animation-duration: 0.01s;
+  }
+
+  .usage-bar__label-text--in {
+    animation-duration: 0.01s;
+  }
 }
 </style>

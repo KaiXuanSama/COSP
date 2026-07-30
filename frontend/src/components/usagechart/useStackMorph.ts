@@ -124,6 +124,21 @@ export interface MorphBar {
   slot: number
   /** 柱子的业务数据；退场柱保留旧数据以便淡出时仍有内容。 */
   bar: StackBar
+  /**
+   * 被本柱顶掉的旧标签文案；没被顶掉时为 {@code null}。
+   *
+   * 柱体本身按位置复用 DOM，横向位移与高度变化都已是连续的，但底部标签是
+   * <strong>就地改写文字</strong>的 —— 同一个节点从「7/28」变成「gorouter」，
+   * 中间没有任何可过渡的量，观感是一次硬切。
+   *
+   * 因此把旧文案一并带出来，让它与新文案同处一格交叉淡出淡入。它的存活时长
+   * 与退场柱一致（由 {@link useStackMorph} 推进配对基准时一同移除），
+   * 故不需要额外的清理时序。
+   *
+   * 只在<strong>文案确实变了</strong>时给值：内容没变却播一次淡入淡出，
+   * 会让层级切换时未受影响的柱子也跟着闪一下。
+   */
+  outgoingLabel: string | null
   /** 堆叠层状态，自下而上。 */
   segments: MorphSegment[]
   /** 生命周期：{@code enter} 新挤入，{@code leave} 正在退出，{@code stable} 原地复用。 */
@@ -189,6 +204,9 @@ export function buildMorphBars(
     result.push({
       slot,
       bar,
+      // 同一格换了文案就带上旧的，两段文字交叉淡出淡入；文案没变则不播动画，
+      // 否则层级切换时未受影响的柱子也会跟着闪一下。
+      outgoingLabel: previousBar && previousBar.label !== bar.label ? previousBar.label : null,
       segments: entering && !settled
         // 新柱的第一帧：整柱压成单层、高度取轴中位。
         // 这一帧只为给 CSS transition 一个起点，紧接着就会被目标态替换。
@@ -209,6 +227,8 @@ export function buildMorphBars(
     result.push({
       slot,
       bar,
+      // 退场柱的标签随柱子整体淡出，无需再做文案交叉
+      outgoingLabel: null,
       segments: bar.segments.map((segment, index) => ({
         slot: index,
         segment,
