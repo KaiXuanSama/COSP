@@ -3,38 +3,45 @@ package com.kaixuan.copilot_ollama_proxy.application.usage;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
-import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownDelta;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
+import reactor.core.Disposable;
 
-import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
- * 验证与锁定：下钻用量明细的 SSE 推送流。
+ * 验证与锁定：下钻用量明细的<strong>增量帧</strong>推送流。
  *
- * <p>覆盖点：
+ * <p>这条流曾是「信号唤醒 → 重查全窗口 → 下发全量」，现已改为纯转发增量帧。
+ * 本测试锁定改造后的三条关键性质：
  * <ul>
- *   <li>订阅即推首帧，前端不必等第一次调用发生；</li>
- *   <li>调用变更信号驱动重查，实现「柱子随调用实时增长」；</li>
- *   <li>内容未变时不重复推送（避免前端无谓重绘与动画抖动）；</li>
- *   <li>天数同样钳制到 [1, 90]，与 HTTP 端点口径一致。</li>
+ *   <li>发布的帧原样到达订阅方 —— 前端据此累加，字段不能被篡改；</li>
+ *   <li>流本身<strong>不查库</strong> —— 这正是改造要省掉的开销；</li>
+ *   <li>多个订阅者（多标签页）都能收到同一帧。</li>
  * </ul>
+ *
+ * <p>「订阅即发全量快照」的责任在 controller（用 concat 把快照接在增量流前面），
+ * 不在本方法，故不在此断言。
+ *
+ * <h2>为何用 subscribe 而非 blockFirst</h2>
+ * sink 是 {@code directBestEffort}，订阅者尚无 demand 时它就丢弃帧。
+ * {@code blockFirst().doOnSubscribe(发布)} 看似可行，实则 {@code doOnSubscribe}
+ * 早于 {@code request(n)} 触发，帧会在需求登记前被丢掉，测试一路超时。
+ * 故这里显式 {@code subscribe}（订阅即请求无界），拿到 Disposable 后再发布。
  */
 class UsageQueryServiceBreakdownStreamTests {
 
-    private static final UsageBreakdownRow ROW_ONE =
-            new UsageBreakdownRow("2026-07-27", "deepseek", "chat", 1L);
-    private static final UsageBreakdownRow ROW_TWO =
-            new UsageBreakdownRow("2026-07-27", "deepseek", "chat", 2L);
+    private static final UsageBreakdownDelta DELTA = new UsageBreakdownDelta(
+            "2026-07-27", "2026-07-27T14:05:09", "deepseek", "chat", 1L, 120, 45);
 
     private ApiCallUsageRepository usageRepository;
     private UsageEventPublisher usageEventPublisher;
@@ -48,85 +55,69 @@ class UsageQueryServiceBreakdownStreamTests {
                 mock(ApiUsageRepository.class), usageRepository, usageEventPublisher);
     }
 
-    /** 订阅建立时立即下发一帧，概览页无需等到下一次调用才有柱子。 */
+    /**
+     * 发布的增量帧原样送达订阅方。
+     *
+     * <p>字段完整性是硬要求：前端靠 date 匹配柱子、靠三元组定位明细行，
+     * 任何一项被改写都会让计数落到错误的格子里。
+     */
     @Test
-    void firstFrameIsEmittedOnSubscribe() {
-        when(usageRepository.aggregateBreakdown(anyInt())).thenReturn(List.of(ROW_ONE));
+    void publishedDeltaReachesSubscriber() {
+        List<UsageBreakdownDelta> received = new ArrayList<>();
+        Disposable subscription = service.streamBreakdownDeltas().subscribe(received::add);
 
-        List<UsageBreakdownRow> first = service.streamUsageBreakdown(7)
-                .blockFirst(Duration.ofSeconds(5));
+        usageEventPublisher.publishBreakdownDelta(DELTA);
+        subscription.dispose();
 
-        assertThat(first).containsExactly(ROW_ONE);
-    }
-
-    /** 调用变更信号触发重查并推送新明细，这是「实时更新」的核心路径。 */
-    @Test
-    void usageSignalTriggersFreshFrame() {
-        // 链式 thenReturn 而非 thenReturn(a, b)：后者是可变参数重载，
-        // 以泛型 List 作实参会触发「创建泛型数组」告警
-        when(usageRepository.aggregateBreakdown(anyInt()))
-                .thenReturn(List.of(ROW_ONE))
-                .thenReturn(List.of(ROW_TWO));
-
-        // 首帧到达后再发信号，确保信号不会早于订阅建立而被 directBestEffort sink 丢弃
-        List<List<UsageBreakdownRow>> frames = service.streamUsageBreakdown(7)
-                .doOnNext(rows -> {
-                    if (rows.equals(List.of(ROW_ONE))) {
-                        usageEventPublisher.publishUsageChanged();
-                    }
-                })
-                .take(2)
-                .collectList()
-                .block(Duration.ofSeconds(5));
-
-        // 逐帧断言而非 containsExactly(List...)：后者以泛型 List 作可变参数会触发泛型数组告警
-        assertThat(frames).hasSize(2);
-        assertThat(frames.get(0)).containsExactly(ROW_ONE);
-        assertThat(frames.get(1)).containsExactly(ROW_TWO);
+        assertThat(received).containsExactly(DELTA);
     }
 
     /**
-     * 明细未变化时不推重复帧。
+     * 增量流不触碰数据库。
      *
-     * <p>很重要：不少调用不产生 usage 明细行（上游未返回 usage），
-     * 若逐帧下推会让前端柱状图无谓重绘、入场动画反复抖动。
+     * <p>这是整次改造的收益所在：旧实现每收到一次调用信号就把整个窗口
+     * （7 天 × 全部供应商 × 全部模型）重新聚合一遍，而一次调用只影响一个格子。
      */
     @Test
-    void unchangedBreakdownIsNotPushedAgain() {
-        when(usageRepository.aggregateBreakdown(anyInt())).thenReturn(List.of(ROW_ONE));
+    void deltaStreamDoesNotQueryDatabase() {
+        Disposable subscription = service.streamBreakdownDeltas().subscribe();
 
-        AtomicBoolean firstFrameSeen = new AtomicBoolean(false);
-        AtomicBoolean secondFrameSeen = new AtomicBoolean(false);
+        usageEventPublisher.publishBreakdownDelta(DELTA);
+        subscription.dispose();
 
-        // 首帧到达后立刻发一次信号；因明细内容相同，distinctUntilChanged 应吞掉第二帧。
-        // 故这里刻意只等一小段时间，用 timeout 正常收尾（收不到第二帧才是预期结果）。
-        List<List<UsageBreakdownRow>> frames = service.streamUsageBreakdown(7)
-                .doOnNext(rows -> {
-                    if (firstFrameSeen.compareAndSet(false, true)) {
-                        usageEventPublisher.publishUsageChanged();
-                    } else {
-                        secondFrameSeen.set(true);
-                    }
-                })
-                .take(Duration.ofMillis(600))
-                .collectList()
-                .block(Duration.ofSeconds(5));
-
-        assertThat(firstFrameSeen).isTrue();
-        assertThat(secondFrameSeen).as("内容未变时不应重复推送").isFalse();
-        assertThat(frames).as("整个窗口内只应有首帧").hasSize(1);
-        assertThat(frames.get(0)).containsExactly(ROW_ONE);
+        verify(usageRepository, never()).aggregateBreakdown(anyInt());
     }
 
-    /** 流式端点与 HTTP 端点共用同一套天数钳制，避免大范围查询拖垮 SQLite。 */
+    /** 多标签页同时看概览时，每个订阅者都应收到同一帧（sink 是 multicast）。 */
     @Test
-    void streamDaysAreClamped() {
-        when(usageRepository.aggregateBreakdown(anyInt())).thenReturn(List.of());
+    void deltaIsBroadcastToEverySubscriber() {
+        List<UsageBreakdownDelta> first = new CopyOnWriteArrayList<>();
+        List<UsageBreakdownDelta> second = new CopyOnWriteArrayList<>();
+        Disposable one = service.streamBreakdownDeltas().subscribe(first::add);
+        Disposable two = service.streamBreakdownDeltas().subscribe(second::add);
 
-        service.streamUsageBreakdown(9999).blockFirst(Duration.ofSeconds(5));
+        usageEventPublisher.publishBreakdownDelta(DELTA);
+        one.dispose();
+        two.dispose();
 
-        ArgumentCaptor<Integer> captor = ArgumentCaptor.forClass(Integer.class);
-        verify(usageRepository).aggregateBreakdown(captor.capture());
-        assertThat(captor.getValue()).isEqualTo(90);
+        assertThat(first).containsExactly(DELTA);
+        assertThat(second).containsExactly(DELTA);
+    }
+
+    /**
+     * 无人订阅时发布的帧被直接丢弃，不做无界缓冲 —— 这是 directBestEffort 的语义。
+     *
+     * <p>这条性质正是「订阅时必须先发一次全量快照」的原因：迟到的订阅者拿不到历史帧，
+     * 只靠增量永远补不齐基准。
+     */
+    @Test
+    void deltaPublishedWithoutSubscriberIsDropped() {
+        usageEventPublisher.publishBreakdownDelta(DELTA);
+
+        List<UsageBreakdownDelta> received = new ArrayList<>();
+        Disposable subscription = service.streamBreakdownDeltas().subscribe(received::add);
+        subscription.dispose();
+
+        assertThat(received).as("迟到的订阅者不该收到历史帧").isEmpty();
     }
 }

@@ -19,6 +19,21 @@ export interface UsageBreakdownRow {
 }
 
 /**
+ * SSE `breakdown-delta` 帧 —— 一次调用产生的那一行（与 protocol 层 UsageBreakdownDelta 对应）。
+ *
+ * 它是 {@link UsageBreakdownRow} 的超集：前四个字段完全一致，故可直接当作一行明细
+ * 累加进已有数组，不需要转换。
+ *
+ * `createdAt` 与两个 token 字段目前无人消费 —— 它们是给将来共用同一条流的 token 折线图
+ * 预留的（折线图按完整时刻定位分桶）。token 可为 null，语义是「上游未提供」而非零。
+ */
+export interface UsageBreakdownDelta extends UsageBreakdownRow {
+  createdAt: string
+  inputTokens: number | null
+  outputTokens: number | null
+}
+
+/**
  * 维度配置 —— 决定「谁是主维度、谁是次维度」。
  *
  * 主次维度互换即得另一种视图，这是整套下钻能复用同一份数据与同一套组件的关键。

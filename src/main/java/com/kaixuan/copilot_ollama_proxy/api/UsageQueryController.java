@@ -90,32 +90,52 @@ public class UsageQueryController {
     }
 
     /**
-     * 下钻柱状图明细的 SSE 推送流，让柱状图与统计卡同步实时更新。
+     * 下钻柱状图明细的 SSE 推送流 —— 一帧全量快照打底，随后只推增量。
      *
-     * <p>与 {@link #streamStats()} 由同一批调用事件驱动，因此不会出现「卡片已涨、柱子还旧」的错位。
-     * 每帧下发完整明细列表（{@code event: breakdown}），前端整体替换即可，
-     * 无需处理增量合并；帧内容未变时后端已用 {@code distinctUntilChanged} 抑制，不会空推。
+     * <p>两种数据帧用 event 名区分，前端据此选择处理方式：
+     * <ul>
+     *   <li>{@code event: breakdown} —— 完整明细列表，前端<strong>整体替换</strong>。
+     *       每次订阅（含断线重连）都只在最开始下发一次。</li>
+     *   <li>{@code event: breakdown-delta} —— 单次调用产生的那一行，前端
+     *       按 (date, providerKey, modelName) <strong>累加</strong>；
+     *       日期落在当前窗口外的帧由前端丢弃，以尊重用户所选窗口的语义。</li>
+     * </ul>
+     *
+     * <h2>为何用 concat 而非 merge</h2>
+     * 增量帧必须晚于快照到达，否则它会被随后到达的快照覆盖，那次调用就白算了。
+     * {@code concat} 保证顺序：快照这个 {@code Mono} 完成后才订阅增量流。
+     * 心跳可以并行，故仍用 {@code merge} 叠加。
+     *
+     * <p>这也是「首屏 HTTP + 建流」两步能合并成一步的原因 ——
+     * 流自己就带来了首屏数据，前端无需额外发一次 GET（那个端点仍保留，
+     * 供将来切换到不含今日的历史窗口时使用，那种窗口不需要实时流）。
      *
      * <p>本端点走认证，且同样受 {@link SseConnectionGate} 总连接数上限保护。
      *
      * @param days 回看天数，默认 7；服务层会钳制到 [1, 90]
      */
     @GetMapping(value = "/config/api/usage-breakdown/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<List<UsageBreakdownRow>>> streamUsageBreakdown(
+    public Flux<ServerSentEvent<Object>> streamUsageBreakdown(
             @RequestParam(defaultValue = "7") int days) {
         return Flux.defer(() -> {
             if (!sseConnectionGate.tryAcquire()) {
-                return Flux.<ServerSentEvent<List<UsageBreakdownRow>>>empty();
+                return Flux.<ServerSentEvent<Object>>empty();
             }
             AtomicBoolean released = new AtomicBoolean(false);
 
-            Flux<ServerSentEvent<List<UsageBreakdownRow>>> data = usageQueryService.streamUsageBreakdown(days)
-                    .map(rows -> ServerSentEvent.builder(rows).event("breakdown").build());
+            // 泛型统一为 Object：两种数据帧的载荷类型不同（明细列表 / 单行增量），
+            // 而 Flux 不协变，Flux<SSE<List<..>>> 无法当作 Flux<SSE<?>> 使用。
+            Flux<ServerSentEvent<Object>> snapshot = usageQueryService.getUsageBreakdown(days)
+                    .map(rows -> ServerSentEvent.builder((Object) rows).event("breakdown").build())
+                    .flux();
 
-            Flux<ServerSentEvent<List<UsageBreakdownRow>>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
-                    .map(tick -> ServerSentEvent.<List<UsageBreakdownRow>>builder().comment("keep-alive").build());
+            Flux<ServerSentEvent<Object>> deltas = usageQueryService.streamBreakdownDeltas()
+                    .map(delta -> ServerSentEvent.builder((Object) delta).event("breakdown-delta").build());
 
-            return Flux.merge(data, heartbeat)
+            Flux<ServerSentEvent<Object>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
+                    .map(tick -> ServerSentEvent.<Object>builder().comment("keep-alive").build());
+
+            return Flux.merge(Flux.concat(snapshot, deltas), heartbeat)
                     .doFinally(signal -> {
                         if (released.compareAndSet(false, true)) {
                             sseConnectionGate.release();

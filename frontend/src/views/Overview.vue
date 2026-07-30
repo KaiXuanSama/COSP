@@ -7,7 +7,12 @@ import UsageLinePanel from '@/components/usageline/UsageLinePanel.vue'
 import http from '@/api'
 import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 import type { HeatmapModeConfig } from '@/components/heatmap'
-import type { BreakdownDimension, BreakdownMetric, UsageBreakdownRow } from '@/components/usagechart'
+import type {
+  BreakdownDimension,
+  BreakdownMetric,
+  UsageBreakdownDelta,
+  UsageBreakdownRow,
+} from '@/components/usagechart'
 import type { TimelineRange, UsageTimelinePoint } from '@/components/usageline'
 import { useStatsStore, type StatsData } from '@/stores/stats'
 
@@ -171,9 +176,9 @@ const activeHeatmapMode = computed(() => {
 onMounted(() => {
   // 热力图历史数据首屏全量拉取一次；统计卡先 HTTP 兜底一次，随后交给 SSE 实时推送。
   void fetchHeatmap()
-  // 柱状图同样是「HTTP 首屏兜底 + SSE 接管」：先拉一次保证立刻有内容，
-  // 再建流实时刷新。三级视图仍由前端 pivot，下钻过程中不产生任何请求。
-  void fetchBreakdown()
+  // 柱状图<strong>不</strong>发首屏 HTTP：它的流自带一帧全量快照，
+  // 再拉一次只是把同一份数据取两遍，还要处理两者的到达顺序。
+  // fetchBreakdown 保留备用 —— 将来窗口切到不含今日的历史区间时，那种窗口不需要实时流。
   connectBreakdownStream()
   // 折线图同样是「HTTP 首屏兜底 + SSE 接管」
   void fetchTimeline()
@@ -271,6 +276,10 @@ async function fetchHeatmap() {
  *
  * 只请求一次最细粒度数据（日期 × 供应商 × 模型），三级视图与 hover 明细
  * 全部由前端 pivot 得出，因此下钻过程中不再发起请求。
+ *
+ * 当前概览页<strong>不调用</strong>它 —— 含今日的窗口由 SSE 的快照帧供首屏数据。
+ * 保留是为了将来的日期区间选择器：选到不含今日的历史窗口时，那份数据已经固化，
+ * 开实时流无意义，走一次 HTTP 即可。
  */
 async function fetchBreakdown() {
   if (!breakdownRows.value.length) {
@@ -295,13 +304,17 @@ async function fetchBreakdown() {
 /**
  * 建立柱状图明细的 SSE 连接，让柱子随调用实时增长。
  *
- * 每帧是完整明细列表，整体替换即可，无需增量合并；后端已用 distinctUntilChanged
- * 抑制内容未变的帧，因此这里每次赋值都代表数据真的变了。
+ * 这条流下发两种帧：
+ * - `breakdown` —— 完整明细快照，整体替换。每次订阅（含断线重连）只在最开始来一次，
+ *   它同时充当首屏数据，故不再另发 HTTP。
+ * - `breakdown-delta` —— 单次调用的那一行，累加进已有明细。
  *
- * 与统计卡由同一批调用事件驱动，两处视图不会出现「卡片已涨、柱子还旧」的错位。
+ * 快照必定先于增量到达（后端用 concat 保证），否则增量会被随后的快照覆盖。
  */
 function connectBreakdownStream() {
   if (breakdownSource) return
+  // 首屏数据改由流的快照帧来，故 loading 态也在建流时置上（而非 HTTP 请求前）。
+  if (!breakdownRows.value.length) breakdownLoading.value = true
   breakdownSource = createAuthEventSource({
     path: `/usage-breakdown/stream?days=${BREAKDOWN_DAYS}`,
     handlers: {
@@ -310,14 +323,62 @@ function connectBreakdownStream() {
           const rows = JSON.parse(data) as UsageBreakdownRow[]
           if (!Array.isArray(rows)) return
           breakdownRows.value = rows
-          // 推送成功即视为链路正常：清掉首屏 HTTP 可能留下的失败态。
           breakdownFailed.value = false
           breakdownLoading.value = false
         } catch {
           // 忽略坏帧，保留上一份明细，避免图表闪空。
         }
       },
+      'breakdown-delta': (data) => {
+        try {
+          const delta = JSON.parse(data) as UsageBreakdownDelta
+          if (!delta?.date) return
+          mergeBreakdownDelta(delta)
+        } catch {
+          // 坏帧只损失这一次计数，下次重连的快照会补齐。
+        }
+      },
     },
+    // 流既是首屏渠道又是实时渠道，失败态只能由它告知；
+    // 已有数据时不报错 —— 断线重连不应让已渲染的图表变成错误页。
+    onError: () => {
+      breakdownLoading.value = false
+      if (!breakdownRows.value.length) breakdownFailed.value = true
+    },
+  })
+}
+
+/**
+ * 把一帧增量累加进当前明细。
+ *
+ * <h2>窗口语义优先</h2>
+ * 帧的日期不在当前窗口内时<strong>直接丢弃</strong>，而不是把这一天补进去。
+ * 典型场景是跨过午夜：新数据属于「明天」，而用户此刻看的窗口并不包含明天，
+ * 擅自加一根柱子会让横轴凭空变长。刷新后窗口自然重算，新的一天就出现了。
+ *
+ * 判定依据是「这一天是否已在窗口里」而非「组合是否已存在」 ——
+ * 某供应商今天首次被调用时，它的行本来就不存在，那种情况要插入而非丢弃。
+ *
+ * 排序、「其余」合并、三级 pivot 全部由 useUsageBreakdown 的 computed 派生，
+ * 故这里只管把数字加对，不必关心展示顺序。
+ */
+function mergeBreakdownDelta(delta: UsageBreakdownDelta) {
+  const hit = breakdownRows.value.find(
+    (row) =>
+      row.date === delta.date &&
+      row.providerKey === delta.providerKey &&
+      row.modelName === delta.modelName,
+  )
+  if (hit) {
+    hit.callCount += delta.callCount
+    return
+  }
+  if (!breakdownRows.value.some((row) => row.date === delta.date)) return
+  breakdownRows.value.push({
+    date: delta.date,
+    providerKey: delta.providerKey,
+    modelName: delta.modelName,
+    callCount: delta.callCount,
   })
 }
 

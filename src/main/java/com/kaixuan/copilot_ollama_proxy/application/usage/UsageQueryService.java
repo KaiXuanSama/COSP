@@ -4,6 +4,7 @@ import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallUsageR
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.StatsSnapshot;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownDelta;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTimelinePoint;
 import org.springframework.stereotype.Service;
@@ -26,14 +27,23 @@ import java.util.Map;
  * <p>提供两条读取链路：
  * <ul>
  *   <li>{@link #getStats()} / {@link #getHeatmap(int)} / {@link #getUsageBreakdown(int)}
- *       / {@link #getUsageTimeline(String, int)} —— HTTP 首屏拉取；</li>
- *   <li>{@link #streamStats()} / {@link #streamUsageBreakdown(int)}
- *       / {@link #streamUsageTimeline(String, int)}
- *       —— SSE 增量推送，事件驱动 + 定时兜底，替代前端定时轮询。</li>
+ *       / {@link #getUsageTimeline(String)} —— HTTP 首屏拉取；</li>
+ *   <li>{@link #streamStats()} / {@link #streamBreakdownDeltas()}
+ *       / {@link #streamUsageTimeline(String)} —— SSE 推送，替代前端定时轮询。</li>
  * </ul>
  *
- * <p>各条 SSE 流共用 {@link UsageEventPublisher} 的同一批信号，因此统计卡、下钻柱状图与
- * 用量折线由同一次调用事件同时刷新，视图之间不会出现新旧错位。
+ * <h2>两种推送形态</h2>
+ * <ul>
+ *   <li><strong>全量重查</strong>（统计卡、折线图）—— 由 {@link UsageEventPublisher#changes()}
+ *       的纯信号唤醒，每次重查并下发完整快照。幂等，丢帧由下一帧或定时兜底收敛。</li>
+ *   <li><strong>增量帧</strong>（柱状图）—— 由 {@link UsageEventPublisher#deltas()} 直接转发，
+ *       不查库。省掉了「一次调用触发一次全窗口聚合」的开销，代价是不幂等，
+ *       需要订阅时先发一次全量快照作为基准。</li>
+ * </ul>
+ *
+ * <p>TODO 待合并：柱状图与折线图读的是同一张 {@code api_call_usage}，两条流可以合一。
+ * 增量帧已预留 {@code createdAt} 与 token 字段，折线图届时能自行归桶，
+ * 不必再为它单开一条流。合并后 {@code changes()} 只剩统计卡一个消费方。
  */
 @Service
 public class UsageQueryService {
@@ -114,32 +124,28 @@ public class UsageQueryService {
     }
 
     /**
-     * 下钻用量明细的 SSE 推送流，让概览柱状图与统计卡一样实时更新。
+     * 下钻用量明细的增量帧流 —— 每次调用写库成功后推一帧，前端累加进已有明细。
      *
-     * <p>触发源与 {@link #streamStats()} 完全一致（首帧 + {@link UsageEventPublisher} 调用信号
-     * + 定时兜底），因此两处视图由同一批事件驱动，不会出现「卡片已涨、柱子还旧」的错位。
+     * <p>这里<strong>不查库</strong>，只转发 {@link UsageEventPublisher#deltas()} 的帧。
+     * 早先的做法是「收到信号 → 重查整个窗口 → 下发全量」：一次调用只影响一个格子，
+     * 却要把 7 天 × 全部供应商 × 全部模型重新聚合一遍并整份传下去。改成增量后，
+     * 一次调用的开销从「一次全表聚合 + 数 KB 传输」降到「一帧几十字节」。
      *
-     * <p>复用 {@code UsageEventPublisher} 而非新增发布器是有意的：{@code api_call_usage}
-     * 由 provider 层在响应结束时写入，早于 api 层 {@code ApiUsageCollector.record} 发出的信号，
-     * 故信号到达时明细行必定已落库，不存在读到旧数据的时序问题。
+     * <h2>调用方的义务</h2>
+     * 增量帧不幂等，丢一帧就少算一次调用，因此本方法<strong>不能单独使用</strong> ——
+     * 调用方必须先下发一次 {@link #getUsageBreakdown(int)} 的全量快照作为基准，
+     * 再接上本流（见 {@code UsageQueryController.streamUsageBreakdown} 的 concat）。
+     * 断线重连时同理：重新订阅即重新走一遍「快照 + 增量」，重连间隙的遗漏由新快照补齐。
      *
-     * <p>反过来，部分信号对应的调用没有 usage（上游未返回），不会产生明细行；
-     * 这类「空转」由 {@code distinctUntilChanged} 吸收，不会推出重复帧。
+     * <h2>为何不再需要定时兜底</h2>
+     * 旧实现有 30 秒兜底重推全量，用途是覆盖丢帧。增量流里混入全量帧会让前端反复重置基准，
+     * 故已去掉；正确性改由「订阅即发快照」保证。
      *
-     * @param requestedDays 请求回看天数，超出 [1, 90] 时钳制
+     * <p>本流与窗口天数无关：帧带 {@code date}，落在窗口外的由前端丢弃 ——
+     * 这正是「窗口语义优先」的要求（跨午夜后的新数据不该挤进用户当前看的窗口）。
      */
-    public Flux<List<UsageBreakdownRow>> streamUsageBreakdown(int requestedDays) {
-        int days = clampBreakdownDays(requestedDays);
-
-        Flux<Object> triggers = Flux.merge(
-                Flux.just(new Object()),
-                usageEventPublisher.changes(),
-                Flux.interval(FALLBACK_INTERVAL));
-
-        return triggers
-                .concatMap(ignored -> Mono.fromCallable(() -> apiCallUsageRepository.aggregateBreakdown(days))
-                        .subscribeOn(Schedulers.boundedElastic()))
-                .distinctUntilChanged();
+    public Flux<UsageBreakdownDelta> streamBreakdownDeltas() {
+        return usageEventPublisher.deltas();
     }
 
     /** 钳制回看天数，防止超大范围查询拖垮 SQLite。 */
@@ -161,11 +167,14 @@ public class UsageQueryService {
     }
 
     /**
-     * token 用量时间线的 SSE 推送流。
+     * token 用量时间线的 SSE 推送流 —— 仍是「信号唤醒 + 重查全量」。
      *
-     * <p>触发源与 {@link #streamUsageBreakdown(int)} 一致，因此折线与柱状图由同一批事件驱动，
-     * 两图不会出现新旧错位。今日时段范围还额外受益于定时兜底 ——
-     * 时间流逝会让「当前所在时段」前移，即使没有新调用也需要重画时间轴。
+     * <p>定时兜底在这里不只是防丢帧：时间流逝本身会让「当前所在时段」前移，
+     * 即使没有新调用也需要重画时间轴，故它不能像柱状图那样直接去掉。
+     *
+     * <p>TODO 待合并到柱状图的增量通道（见类级说明）。折线图的分桶规则是
+     * 「以整点为中心、覆盖前后半小时」，迁移时需把这套规则搬到前端，
+     * 或让增量帧直接带上桶标识；在此之前它继续订阅 {@link UsageEventPublisher#changes()}。
      *
      * @param range {@code "1d"} 为今日时段，其余值按近 7 日处理
      */

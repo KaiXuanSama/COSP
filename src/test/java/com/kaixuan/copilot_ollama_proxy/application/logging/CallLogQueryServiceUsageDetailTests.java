@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallUsageRepository;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.LogEventPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -57,7 +58,7 @@ class CallLogQueryServiceUsageDetailTests {
 
         ApiCallLogRepository logRepository =
                 new ApiCallLogRepository(jdbcTemplate, new ObjectMapper(), new LogEventPublisher());
-        usageRepository = new ApiCallUsageRepository(jdbcTemplate);
+        usageRepository = new ApiCallUsageRepository(jdbcTemplate, new UsageEventPublisher());
         service = new CallLogQueryService(logRepository, usageRepository, new LogEventPublisher());
     }
 

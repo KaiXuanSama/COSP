@@ -1,6 +1,8 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownDelta;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -9,6 +11,8 @@ import org.sqlite.SQLiteDataSource;
 
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -21,7 +25,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>log_id 软链接可空（写孤儿行）；</li>
  *   <li>usage_raw / is_stream / ttfb_ms 正确写入；</li>
  *   <li>findByLogId 按 log_id 反查；</li>
- *   <li>写入失败（无表）只 warn 不抛。</li>
+ *   <li>写入成功后广播增量帧，字段与落库值同源；</li>
+ *   <li>写入失败（无表）只 warn 不抛，且<strong>不发</strong>增量帧。</li>
  * </ul>
  */
 class ApiCallUsageRepositoryTests {
@@ -30,6 +35,7 @@ class ApiCallUsageRepositoryTests {
     Path tempDir;
 
     private JdbcTemplate jdbcTemplate;
+    private UsageEventPublisher publisher;
     private ApiCallUsageRepository repository;
 
     @BeforeEach
@@ -37,6 +43,7 @@ class ApiCallUsageRepositoryTests {
         SQLiteDataSource dataSource = new SQLiteDataSource();
         dataSource.setUrl("jdbc:sqlite:" + tempDir.resolve("api-usage.db"));
         jdbcTemplate = new JdbcTemplate(dataSource);
+        publisher = new UsageEventPublisher();
         jdbcTemplate.execute("CREATE TABLE api_call_usage ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, log_id INTEGER, provider_key VARCHAR(30), "
                 + "model_name VARCHAR(100), is_stream INTEGER NOT NULL DEFAULT 0 CHECK (is_stream IN (0, 1)), "
@@ -46,7 +53,7 @@ class ApiCallUsageRepositoryTests {
                 + "cached_tokens INTEGER CHECK (cached_tokens IS NULL OR cached_tokens >= 0), "
                 + "ttfb_ms INTEGER CHECK (ttfb_ms IS NULL OR ttfb_ms >= 0), "
                 + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')))");
-        repository = new ApiCallUsageRepository(jdbcTemplate);
+        repository = new ApiCallUsageRepository(jdbcTemplate, publisher);
     }
 
     @Test
@@ -120,9 +127,65 @@ class ApiCallUsageRepositoryTests {
     void writeFailureOnMissingTableDoesNotThrow() {
         SQLiteDataSource brokenDs = new SQLiteDataSource();
         brokenDs.setUrl("jdbc:sqlite:" + tempDir.resolve("broken-usage.db"));
-        ApiCallUsageRepository brokenRepo = new ApiCallUsageRepository(new JdbcTemplate(brokenDs));
+        UsageEventPublisher publisher = new UsageEventPublisher();
+        ApiCallUsageRepository brokenRepo =
+                new ApiCallUsageRepository(new JdbcTemplate(brokenDs), publisher);
+
+        AtomicBoolean published = new AtomicBoolean(false);
+        publisher.deltas().subscribe(delta -> published.set(true));
 
         // 无表 → INSERT 失败；断言只 warn 不抛。
         brokenRepo.save(1L, "p", "m", true, "{}", new UsageTokens(1, 1, 1), 10);
+
+        // 且不发增量帧：帧一旦发出前端就会累加，而这次调用并未落库。
+        assertThat(published).isFalse();
+    }
+
+    /**
+     * 写入成功后广播一帧增量，字段与落库值同源。
+     *
+     * <p>{@code date} 必须等于 {@code created_at} 的前 10 位 —— 与
+     * {@code aggregateBreakdown} 的 {@code substr(created_at, 1, 10)} 同一口径，
+     * 前端才能用它精确匹配到已有的柱子。若两者口径不一致，增量会落到错误的日期上。
+     */
+    @Test
+    void successfulSavePublishesDeltaMatchingStoredRow() {
+        AtomicReference<UsageBreakdownDelta> captured = new AtomicReference<>();
+        publisher.deltas().subscribe(captured::set);
+
+        repository.save(7L, "deepseek", "chat", true, "{}", new UsageTokens(120, 45, null), 80);
+
+        UsageBreakdownDelta delta = captured.get();
+        assertThat(delta).isNotNull();
+        assertThat(delta.providerKey()).isEqualTo("deepseek");
+        assertThat(delta.modelName()).isEqualTo("chat");
+        assertThat(delta.callCount()).isEqualTo(1L);
+        assertThat(delta.inputTokens()).isEqualTo(120);
+        assertThat(delta.outputTokens()).isEqualTo(45);
+
+        Map<String, Object> row = repository.findByLogId(7L);
+        assertThat(row).isNotNull();
+        String storedCreatedAt = (String) row.get("created_at");
+        assertThat(delta.createdAt()).isEqualTo(storedCreatedAt);
+        assertThat(delta.date()).isEqualTo(storedCreatedAt.substring(0, 10));
+    }
+
+    /**
+     * token 缺失时帧里也是 null，不被压成 0。
+     *
+     * <p>折线图将来要消费这两个字段，null（上游未提供）与 0（真实零值）的区分
+     * 必须一路保留到传输层。
+     */
+    @Test
+    void deltaKeepsNullTokensAsNull() {
+        AtomicReference<UsageBreakdownDelta> captured = new AtomicReference<>();
+        publisher.deltas().subscribe(captured::set);
+
+        repository.save(8L, "p", "m", false, null, null, null);
+
+        UsageBreakdownDelta delta = captured.get();
+        assertThat(delta).isNotNull();
+        assertThat(delta.inputTokens()).isNull();
+        assertThat(delta.outputTokens()).isNull();
     }
 }

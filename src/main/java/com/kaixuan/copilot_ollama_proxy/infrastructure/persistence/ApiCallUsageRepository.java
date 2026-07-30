@@ -2,6 +2,8 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownDelta;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTimelinePoint;
 import org.slf4j.Logger;
@@ -9,6 +11,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
 
@@ -26,30 +30,70 @@ public class ApiCallUsageRepository implements ApiCallUsageService {
 
     private static final Logger log = LoggerFactory.getLogger(ApiCallUsageRepository.class);
 
-    private final JdbcTemplate jdbcTemplate;
+    /** 与 {@code api_call_usage.created_at} 的列默认值完全一致的格式。 */
+    private static final DateTimeFormatter TIMESTAMP_FORMAT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
 
-    public ApiCallUsageRepository(JdbcTemplate jdbcTemplate) {
+    private final JdbcTemplate jdbcTemplate;
+    private final UsageEventPublisher usageEventPublisher;
+
+    public ApiCallUsageRepository(JdbcTemplate jdbcTemplate, UsageEventPublisher usageEventPublisher) {
         this.jdbcTemplate = jdbcTemplate;
+        this.usageEventPublisher = usageEventPublisher;
     }
 
     /**
-     * 保存一条 token 用量记录。
+     * 保存一条 token 用量记录，并把这一行作为增量帧广播出去。
      *
      * <p>沿用日志写入的"只 warn 不抛"容错策略：写入失败仅记录警告，绝不影响主调用链。
+     * 增量帧在 {@code update} 返回后才发出，故失败时不会推出并未落库的数据。
+     *
+     * <h2>created_at 为何由应用赋值</h2>
+     * 该列有 {@code strftime(...,'localtime')} 默认值，本可交给 SQLite 生成。
+     * 但增量帧必须带上时刻（前端据日期匹配柱子，将来折线图还要据完整时刻定位分桶），
+     * 若由 DB 生成，应用只能事后再取一次 {@code now()} —— 两个值来自不同时钟，
+     * 跨午夜的瞬间会出现「帧说今天、库里记昨天」的偏差。显式写入让两者同源。
+     * 列默认值保留不动，仍为其他写入路径与历史数据兜底。
      */
     @Override
     public void save(Long logId, String providerKey, String modelName, boolean stream,
                      String usageRaw, UsageTokens tokens, Integer ttfbMs) {
+        UsageTokens safe = tokens == null ? UsageTokens.EMPTY : tokens;
+        String createdAt = LocalDateTime.now().format(TIMESTAMP_FORMAT);
         try {
-            UsageTokens safe = tokens == null ? UsageTokens.EMPTY : tokens;
             jdbcTemplate.update(
                     "INSERT INTO api_call_usage (log_id, provider_key, model_name, is_stream, usage_raw, "
-                            + "prompt_tokens, completion_tokens, cached_tokens, ttfb_ms) "
-                            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            + "prompt_tokens, completion_tokens, cached_tokens, ttfb_ms, created_at) "
+                            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     logId, providerKey, modelName, stream ? 1 : 0, usageRaw,
-                    safe.promptTokens(), safe.completionTokens(), safe.cachedTokens(), ttfbMs);
+                    safe.promptTokens(), safe.completionTokens(), safe.cachedTokens(), ttfbMs, createdAt);
         } catch (Exception e) {
             log.warn("保存 API 调用 token 用量失败: {}", e.getMessage());
+            return;
+        }
+        publishDelta(createdAt, providerKey, modelName, safe);
+    }
+
+    /**
+     * 广播一条用量明细增量帧，供概览柱状图即时长高。
+     *
+     * <p>日期取 {@code created_at} 的前 10 位 —— 与 {@code aggregateBreakdown} 的
+     * {@code substr(created_at, 1, 10)} 同一口径，前端才能用它精确匹配到已有的柱子。
+     *
+     * <p>推送失败同样只 warn：图表少涨一格，下次刷新即自愈，不值得影响主调用链。
+     */
+    private void publishDelta(String createdAt, String providerKey, String modelName, UsageTokens tokens) {
+        try {
+            usageEventPublisher.publishBreakdownDelta(new UsageBreakdownDelta(
+                    createdAt.substring(0, 10),
+                    createdAt,
+                    providerKey,
+                    modelName,
+                    1L,
+                    tokens.promptTokens(),
+                    tokens.completionTokens()));
+        } catch (Exception e) {
+            log.warn("发布用量明细增量帧失败: {}", e.getMessage());
         }
     }
 

@@ -30,6 +30,12 @@ public class ApiUsageCollector {
      * <p>写库成功后发出一次统计变更信号，供 SSE 推送流即时刷新概览页；
      * 写库失败不发信号，避免推送与实际持久化状态不一致。
      *
+     * <h2>TODO 信号通道即将收窄</h2>
+     * 这里发的是无载荷信号，订阅方收到后重查全量。它曾同时驱动统计卡、柱状图与折线图三条流；
+     * 柱状图已改为由 {@code api_call_usage} 写入侧的增量帧驱动（那才是它真正的数据源），
+     * 折线图待迁移。全部迁完后本信号只服务统计卡 ——
+     * 而统计卡读的 {@code api_usage_daily} 恰好就是本方法写的表，届时信号与数据源终于一致。
+     *
      * @param inputTokens  输入 token 数
      * @param outputTokens 输出 token 数
      */

@@ -29,6 +29,15 @@ export interface AuthEventSourceOptions {
   handlers: SseHandlers
   /** 断线重连间隔（毫秒），默认 3000。 */
   reconnectDelay?: number
+  /**
+   * 连接失败回调 —— 每次即将重连前触发一次。
+   *
+   * 对「首屏数据也由流下发」的视图是必需的：没有 HTTP 请求可供 catch，
+   * 失败态只能由这里告知。401 不触发（那会跳登录，不是可重试的失败）。
+   *
+   * 会被重复调用（每轮重连各一次），调用方应做幂等处理。
+   */
+  onError?: () => void
 }
 
 /** 带认证的 SSE 连接句柄。 */
@@ -43,7 +52,7 @@ const DEFAULT_RECONNECT_DELAY = 3000
  * 建立一条带认证的 SSE 连接。立即发起，返回可关闭的句柄。
  */
 export function createAuthEventSource(options: AuthEventSourceOptions): AuthEventSource {
-  const { path, handlers, reconnectDelay = DEFAULT_RECONNECT_DELAY } = options
+  const { path, handlers, reconnectDelay = DEFAULT_RECONNECT_DELAY, onError } = options
   const url = `${http.defaults.baseURL ?? ''}${path}`
 
   let abortController: AbortController | null = null
@@ -52,6 +61,7 @@ export function createAuthEventSource(options: AuthEventSourceOptions): AuthEven
 
   function scheduleReconnect() {
     if (closed || reconnectTimer) return
+    onError?.()
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null
       if (!closed) void connect()

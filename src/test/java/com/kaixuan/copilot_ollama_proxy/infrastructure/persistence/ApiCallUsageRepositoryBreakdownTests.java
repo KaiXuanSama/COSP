@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,7 +43,7 @@ class ApiCallUsageRepositoryBreakdownTests {
                 + "is_stream INTEGER NOT NULL DEFAULT 0, usage_raw TEXT, prompt_tokens INTEGER, "
                 + "completion_tokens INTEGER, cached_tokens INTEGER, ttfb_ms INTEGER, "
                 + "created_at TEXT NOT NULL)");
-        repository = new ApiCallUsageRepository(jdbcTemplate);
+        repository = new ApiCallUsageRepository(jdbcTemplate, new UsageEventPublisher());
     }
 
     /** 按"今天减 offset 天"插入一行，时间部分固定，只关心日期分组。 */
