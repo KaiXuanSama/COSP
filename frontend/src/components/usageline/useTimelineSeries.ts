@@ -4,8 +4,8 @@ import {
   DAY_START_HOUR,
   SERIES,
   type AxisDateSegment,
+  type AxisLabel,
   type RenderedSeries,
-  type TimelineRange,
   type UsageTimelinePoint,
 } from './usageline'
 
@@ -29,13 +29,15 @@ const SINGLE_POINT_X = 0.5
 /**
  * 计算折线序列与横轴标签。
  *
+ * <h2>为什么形态只看数据、不看当前范围</h2>
+ * 切换范围时 {@code range} 立即变，而 {@code points} 要等请求回来才变 ——
+ * 中间那几帧会用「今日」的格式器去渲染日期桶，标签闪出 `2026-07-24` 这样的原始值。
+ * 桶标识自身已经带着形态（`yyyy-MM-dd` 与 `HH:mm` 长度不同），据它判断则两者
+ * 永远同步，desync 这一类问题从根上消失。
+ *
  * @param points 后端返回的点位（已补零，未来段带 `future` 标记）
- * @param range 当前时间范围，决定横轴标签的形态
  */
-export function useTimelineSeries(
-  points: Ref<UsageTimelinePoint[]>,
-  range: Ref<TimelineRange>,
-) {
+export function useTimelineSeries(points: Ref<UsageTimelinePoint[]>) {
   /**
    * 轴上限 —— 取三条线中的最大值再向上取整。
    *
@@ -77,27 +79,29 @@ export function useTimelineSeries(
   /**
    * 横轴第一行的时刻 / 日期标签。
    *
-   * 近 7 日直接用 `M/D`；今日时段用桶标签本身（已是 `HH:mm`），
-   * 点数多时隔位显示以免挤在一起。未来时段的标签照常显示但淡化 ——
-   * 它们标出「今天还剩多少时间」，这正是完整显示一天的意义。
+   * 日期桶换算成 `M/D`，时刻桶已是 `HH:mm` 故原样取用 —— 形态由桶自己决定，
+   * 见本 composable 的类注释。
    *
-   * key 取<strong>位置序号</strong>而非桶标签：今日范围首尾同为 `05:00`（一圈闭合），
-   * 按标签作 key 会重复，Vue 随即报警并可能复用错节点。位置本就是标签的身份 ——
-   * 第 N 个标签标的是第 N 个点。
+   * 稀疏与未来时段都折进 {@code opacity}，而非交给组件用类名切换：标签与端点共用
+   * 一套形变模型，不透明度是被逐帧插值的量，用类名会让它在滑动途中突然跳变。
+   * 隐去的标签仍留在序列里 —— 它占的那个位置是形变配对的依据，抽掉会让后面的
+   * 标签整体错位一格。
    */
-  const axisLabels = computed(() =>
+  const axisLabels = computed<AxisLabel[]>(() =>
     points.value.map((point, index) => ({
-      key: index,
-      text: range.value === '1d' ? point.bucket : shortDate(point.bucket),
       x: xRatioOf(index, points.value.length),
-      visible: isLabelVisible(index, points.value.length),
-      future: point.future === true,
+      y: 0,
+      opacity: labelOpacityOf(
+        isLabelVisible(index, points.value.length),
+        point.future === true,
+      ),
+      text: bucketLabel(point.bucket),
     })),
   )
 
-  /** 横轴第二行的日期分段，仅今日时段范围有。 */
+  /** 横轴第二行的日期分段，仅时刻桶（今日范围）才有跨夜问题。 */
   const dateSegments = computed<AxisDateSegment[]>(() =>
-    range.value === '1d' ? buildDateSegments(points.value) : [],
+    isClockBucket(points.value[0]?.bucket) ? buildDateSegments(points.value) : [],
   )
 
   /**
@@ -134,6 +138,23 @@ export function shortDate(date: string): string {
 }
 
 /**
+ * 桶标识是否为时刻（`HH:mm`）而非日期（`yyyy-MM-dd`）。
+ *
+ * 据桶自身判断形态，而非据当前范围 —— 范围立即变、数据要等请求回来，
+ * 两者不同步的那几帧会用错格式器，标签闪出 `2026-07-24` 这样的原始值。
+ *
+ * @param bucket 后端返回的桶标识；缺省视为日期
+ */
+export function isClockBucket(bucket: string | undefined): boolean {
+  return bucket !== undefined && bucket.includes(':')
+}
+
+/** 桶标识 → 横轴标签文字。时刻桶原样取用，日期桶缩成 `M/D`。 */
+export function bucketLabel(bucket: string): string {
+  return isClockBucket(bucket) ? bucket : shortDate(bucket)
+}
+
+/**
  * 决定某个标签是否显示。
  *
  * 卡片宽度有限，12 个以上的时刻标签会互相挤压。隔位显示既保住可读性，
@@ -148,6 +169,28 @@ export function isLabelVisible(index: number, total: number): boolean {
   // 每多出一倍点数就再稀疏一档，标签间距因此大致恒定
   const stride = Math.max(1, Math.ceil(total / 12))
   return index % stride === 0
+}
+
+/**
+ * 未来时段标签的不透明度。
+ *
+ * 保留而非隐去：它们标出「今天还剩多少时间」，正是完整显示一天的意义所在。
+ * 但淡化能让「折线止于此处是因为还没发生」这件事不言自明。
+ */
+export const FUTURE_LABEL_OPACITY = 0.42
+
+/**
+ * 标签的目标不透明度。
+ *
+ * 把「稀疏隐去」与「未来淡化」两种状态归到同一个量上，使它们都能被形变模型逐帧插值。
+ * 隐去取 0 而非移除元素 —— 位置是形变配对的依据，抽掉会让后面的标签错位一格。
+ *
+ * @param visible 稀疏规则是否让这一格显示
+ * @param future 该时段是否尚未到来
+ */
+export function labelOpacityOf(visible: boolean, future: boolean): number {
+  if (!visible) return 0
+  return future ? FUTURE_LABEL_OPACITY : 1
 }
 
 /**

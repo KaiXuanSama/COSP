@@ -26,8 +26,8 @@ import { AXIS_WIDTH, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from '..
 import { useAxisScale, buildAnimatedAxisTicks } from '../usagechart/useAxisScale'
 import { anchorFromCursor } from '../usagechart/tooltipAnchor'
 import { toPolylinePoints, useTimelineSeries } from './useTimelineSeries'
-import { useLineMorph, LINE_MORPH_DURATION } from './useLineMorph'
-import type { TimelineRange, UsageTimelinePoint } from './usageline'
+import { useSlotMorph, SLOT_MORPH_DURATION } from './useSlotMorph'
+import type { AxisLabel, SeriesPoint, TimelineRange, UsageTimelinePoint } from './usageline'
 
 const props = withDefaults(defineProps<{
   points: UsageTimelinePoint[]
@@ -43,17 +43,17 @@ const props = withDefaults(defineProps<{
    */
   scaleDuration?: number
   /**
-   * 端点形变时长（ms）—— 范围切换时点移动到新位置所用的时间。
+   * 形变时长（ms）—— 范围切换时端点与横轴标签移动到新位置所用的时间。
    *
-   * 位移由形变模型逐帧插值，不经 CSS 过渡，故此值只需与柱状图的节奏对齐，
-   * 无须与任何样式常量保持同步。
+   * 两者共用一个值：它们标的是同一批时刻，分开走会让标签与自己对应的点脱节。
+   * 位移由形变模型逐帧插值，不经 CSS 过渡，故此值无须与任何样式常量保持同步。
    */
   morphDuration?: number
 }>(), {
   height: 180,
   axisWidth: AXIS_WIDTH,
   scaleDuration: 420,
-  morphDuration: LINE_MORPH_DURATION,
+  morphDuration: SLOT_MORPH_DURATION,
 })
 
 /** viewBox 的逻辑尺寸。取值本身无意义，只用于把 0~1 的比例放大成整数坐标。 */
@@ -74,8 +74,12 @@ const anchor = ref({ left: 0, top: 0, alignEnd: false, below: false })
 const pointsRef = computed(() => props.points)
 const rangeRef = computed(() => props.range)
 
+/*
+ * 图表形态一律由数据自己决定，不看 range —— 切换时 range 立即变、数据要等请求回来，
+ * 中间那几帧会用错格式器，横轴闪出原始日期串。range 只用于「该撤掉悬停态了」这一件事。
+ */
 const { ceiling, axisTicks: targetTicks, series, axisLabels, dateSegments, drawableCount } =
-  useTimelineSeries(pointsRef, rangeRef)
+  useTimelineSeries(pointsRef)
 
 /**
  * 动画中的标尺。
@@ -142,9 +146,24 @@ const drawnSeries = computed(() => series.value.find((item) => item.config.drawn
  * 位移由模型逐帧算出而非交给 CSS：CSS 过渡的中间值只存在于合成器内部，
  * JS 读不到，线便只能按终点重算而当帧跳到位，观感是「线闪现、点随后追上」。
  */
-const { morphPoints } = useLineMorph(
+const { morphItems: morphPoints } = useSlotMorph<SeriesPoint>(
   computed(() => drawnSeries.value?.points ?? []),
   { duration: props.morphDuration },
+)
+
+/**
+ * 形变中的横轴标签 —— 与端点共用同一套模型、同一条曲线、同一个时长。
+ *
+ * 标签标的就是端点所在的时刻，两者必须同步滑动；各自实现必然在节奏上漂移，
+ * 结果是标签与自己对应的点脱节。
+ *
+ * 这里给出 {@code identity}：同一格里文字变了就是换了个东西（最左侧从 `7/24`
+ * 变成 `05:00`），旧的淡出、新的淡入，两者一起滑向新坐标。端点不需要这层判断 ——
+ * 一个点长什么样与它代表哪个时刻无关，直接滑过去最自然。
+ */
+const { morphItems: morphLabels } = useSlotMorph<AxisLabel>(
+  computed(() => axisLabels.value),
+  { duration: props.morphDuration, identity: (label) => label.text },
 )
 
 /**
@@ -163,7 +182,7 @@ const polylines = computed(() => {
     key: drawn.config.key,
     color: drawn.config.color,
     dash: drawn.config.dash,
-    points: toPolylinePoints(morphPoints.value, VIEW_WIDTH, VIEW_HEIGHT),
+    points: toPolylinePoints(morphPoints.value.map((item) => ({ x: item.x, y: item.y })), VIEW_WIDTH, VIEW_HEIGHT),
   }]
 })
 
@@ -190,7 +209,7 @@ const seriesDots = computed(() => {
   const drawn = drawnSeries.value
   if (!drawn) return []
   return morphPoints.value.map((point) => ({
-    key: `${drawn.config.key}-${point.slot}`,
+    key: point.key,
     color: drawn.config.color,
     x: point.x,
     y: point.y,
@@ -361,19 +380,20 @@ function formatValue(value: number): string {
           </div>
         </div>
 
-        <!-- 横轴第一行：时刻或日期 -->
+        <!--
+          横轴第一行：时刻或日期。
+
+          与端点共用形变模型，故切换范围时标签跟着刻度一起滑动、淡入淡出。
+          不透明度来自模型（稀疏与未来淡化都折进了它），不再用类名硬切。
+        -->
         <div class="usage-line__labels" aria-hidden="true">
           <span
-            v-for="label in axisLabels"
+            v-for="label in morphLabels"
             :key="label.key"
             class="usage-line__label"
-            :class="{
-              'usage-line__label--hidden': !label.visible,
-              'usage-line__label--future': label.future,
-            }"
-            :style="{ left: `${label.x * 100}%` }"
+            :style="{ left: `${label.x * 100}%`, opacity: label.opacity }"
           >
-            {{ label.text }}
+            {{ label.data.text }}
           </span>
         </div>
 
@@ -516,6 +536,10 @@ function formatValue(value: number): string {
   margin-top: 6px;
 }
 
+/*
+ * 标签位置与不透明度由形变模型逐帧写入，故这里没有 transition ——
+ * 加过渡会与逐帧插值叠加，让标签滞后于自己对应的端点。
+ */
 .usage-line__label {
   position: absolute;
   transform: translateX(-50%);
@@ -525,21 +549,8 @@ function formatValue(value: number): string {
   color: var(--usage-line-text-muted, #9a9590);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-}
-
-/* 隐藏而非移除：保留元素使标签位置在稀疏度变化时保持稳定 */
-.usage-line__label--hidden {
-  visibility: hidden;
-}
-
-/*
- * 未来时段的标签淡化。
- *
- * 保留而非移除：它们标出「今天还剩多少时间」，正是完整显示一天的意义所在。
- * 但淡化能让「折线止于此处是因为还没发生」这件事不言自明。
- */
-.usage-line__label--future {
-  opacity: 0.42;
+  /* 完全透明的标签（被稀疏规则隐去）不该拦下鼠标 */
+  pointer-events: none;
 }
 
 /*

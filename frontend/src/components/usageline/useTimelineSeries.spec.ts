@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { ref } from 'vue'
 import {
   buildDateSegments,
+  FUTURE_LABEL_OPACITY,
   isLabelVisible,
+  labelOpacityOf,
   shortDate,
   toPolylinePoints,
   useTimelineSeries,
@@ -12,7 +14,6 @@ import {
 import {
   DAY_START_HOUR,
   SERIES,
-  type TimelineRange,
   type UsageTimelinePoint,
 } from './usageline'
 
@@ -33,10 +34,19 @@ function points(...values: Array<[number, number]>): UsageTimelinePoint[] {
   }))
 }
 
-/** 造一批完整的今日点位：前 elapsed 个已发生，其余标记为未来。 */
+/** 造一批日期桶点位（近 7 日范围的形态）。 */
+function datePoints(...dates: string[]): UsageTimelinePoint[] {
+  return dates.map((bucket) => ({ bucket, inputTokens: 100, outputTokens: 10 }))
+}
+
+/**
+ * 造一批完整的今日点位：前 elapsed 个已发生，其余标记为未来。
+ *
+ * 桶用真实的 `HH:mm` 自 05:00 起算 —— 标签形态由桶自身决定，占位串测不到这条。
+ */
 function dayPoints(total: number, elapsed: number): UsageTimelinePoint[] {
   return Array.from({ length: total }, (_unused, index) => ({
-    bucket: `b${index}`,
+    bucket: `${String((DAY_START_HOUR + index) % 24).padStart(2, '0')}:00`,
     inputTokens: index < elapsed ? 100 : 0,
     outputTokens: index < elapsed ? 10 : 0,
     future: index >= elapsed,
@@ -138,6 +148,24 @@ describe('横轴标签稀疏度', () => {
   })
 })
 
+describe('横轴标签的不透明度', () => {
+  it('隐去取 0 而非移除元素', () => {
+    // 位置是形变配对的依据，抽掉元素会让后面的标签整体错位一格
+    expect(labelOpacityOf(false, false)).toBe(0)
+    expect(labelOpacityOf(false, true)).toBe(0)
+  })
+
+  it('未来时段淡化但仍可读', () => {
+    expect(labelOpacityOf(true, true)).toBe(FUTURE_LABEL_OPACITY)
+    expect(FUTURE_LABEL_OPACITY).toBeGreaterThan(0)
+    expect(FUTURE_LABEL_OPACITY).toBeLessThan(1)
+  })
+
+  it('已发生的显示位完全不透明', () => {
+    expect(labelOpacityOf(true, false)).toBe(1)
+  })
+})
+
 describe('日期格式化', () => {
   it('去掉年份与前导零', () => {
     expect(shortDate('2026-07-06')).toBe('7/6')
@@ -225,13 +253,11 @@ describe('SVG 点串生成', () => {
 })
 
 describe('今日范围的完整一天与未来段', () => {
-  const range = ref<TimelineRange>('1d')
-
   it('折线只画到最后一个已发生的点', () => {
     // 未来段的 0 是「还没发生」而非「用量为零」，连过去会让折线贴底延伸到轴末，
     // 读起来像用量已归零
     const data = ref(dayPoints(25, 5))
-    const { series, drawableCount } = useTimelineSeries(data, range)
+    const { series, drawableCount } = useTimelineSeries(data)
 
     expect(drawableCount.value).toBe(5)
     expect(series.value[0].points).toHaveLength(5)
@@ -241,37 +267,42 @@ describe('今日范围的完整一天与未来段', () => {
     // 这是「显示完整一天」的关键：已发生的第 5 个点应落在 4/24 处，
     // 而非被拉伸到占满整个宽度
     const data = ref(dayPoints(25, 5))
-    const { series } = useTimelineSeries(data, range)
+    const { series } = useTimelineSeries(data)
 
     expect(series.value[0].points[4].x).toBeCloseTo(xRatioOf(4, 25))
   })
 
-  it('横轴标签覆盖完整一天并标出未来段', () => {
-    // 未来段的标签要保留：它们标出「今天还剩多少时间」
+  it('横轴标签覆盖完整一天，未来段淡化而非移除', () => {
+    // 未来段的标签要保留：它们标出「今天还剩多少时间」；
+    // 被稀疏规则隐去的也留在序列里 —— 位置是形变配对的依据，抽掉会让后面错位一格
     const data = ref(dayPoints(25, 5))
-    const { axisLabels } = useTimelineSeries(data, range)
+    const { axisLabels } = useTimelineSeries(data)
 
     expect(axisLabels.value).toHaveLength(25)
-    expect(axisLabels.value.filter((label) => label.future)).toHaveLength(20)
-    expect(axisLabels.value[4].future).toBe(false)
-    expect(axisLabels.value[5].future).toBe(true)
+    // 第 0 格已发生且是显示位，第 6 格是未来的显示位（stride = 3）
+    expect(axisLabels.value[0].opacity).toBe(1)
+    expect(axisLabels.value[6].opacity).toBe(FUTURE_LABEL_OPACITY)
   })
 
-  it('标签 key 唯一 —— 今日范围首尾同为 05:00，按标签作 key 会重复', () => {
-    const data = ref([
-      { bucket: '05:00', inputTokens: 1, outputTokens: 1 },
-      { bucket: '06:00', inputTokens: 1, outputTokens: 1 },
-      { bucket: '05:00', inputTokens: 1, outputTokens: 1 },
-    ])
-    const { axisLabels } = useTimelineSeries(data, range)
+  it('标签排在单独一行，纵向位置恒为 0', () => {
+    // 形变模型不区分二维 / 一维位置，少一个维度就得为标签另开一套换算
+    const data = ref(dayPoints(25, 5))
+    const { axisLabels } = useTimelineSeries(data)
 
-    const keys = axisLabels.value.map((label) => label.key)
-    expect(new Set(keys).size).toBe(keys.length)
+    expect(axisLabels.value.every((label) => label.y === 0)).toBe(true)
+  })
+
+  it('时刻桶原样取用，横轴显示 HH:mm', () => {
+    const data = ref(dayPoints(25, 25))
+    const { axisLabels } = useTimelineSeries(data)
+
+    expect(axisLabels.value[0].text).toBe('05:00')
+    expect(axisLabels.value[24].text).toBe('05:00')
   })
 
   it('轴上限只看已发生的点', () => {
     const data = ref(dayPoints(25, 3))
-    const { ceiling } = useTimelineSeries(data, range)
+    const { ceiling } = useTimelineSeries(data)
 
     // 三个点各 100 输入 + 10 输出，总量线最大 110
     expect(ceiling.value).toBeGreaterThanOrEqual(110)
@@ -279,20 +310,33 @@ describe('今日范围的完整一天与未来段', () => {
 
   it('全天都已发生时所有点都可绘制', () => {
     const data = ref(dayPoints(25, 25))
-    const { series, drawableCount } = useTimelineSeries(data, range)
+    const { series, drawableCount } = useTimelineSeries(data)
 
     expect(drawableCount.value).toBe(25)
     expect(series.value[0].points).toHaveLength(25)
   })
 
-  it('近 7 日范围不带未来标记，全部可绘制', () => {
-    const data = ref(points([1, 1], [2, 2], [3, 3]))
-    const weekRange = ref<TimelineRange>('7d')
-    const { series, drawableCount, dateSegments } = useTimelineSeries(data, weekRange)
+  it('时刻桶才有日期分段 —— 跨夜只在今日范围里出现', () => {
+    const clock = ref(dayPoints(25, 25))
+    expect(useTimelineSeries(clock).dateSegments.value).toHaveLength(2)
+  })
+})
 
+describe('形态由桶自身决定而非当前范围', () => {
+  it('日期桶缩成 M/D 且不产出日期分段', () => {
+    // 切换范围时 range 立即变、数据要等请求回来，据 range 判断会让中间那几帧
+    // 用错格式器，横轴闪出 2026-07-24 这样的原始值
+    const data = ref(datePoints('2026-07-24', '2026-07-25', '2026-07-26'))
+    const { axisLabels, dateSegments, drawableCount } = useTimelineSeries(data)
+
+    expect(axisLabels.value.map((label) => label.text)).toEqual(['7/24', '7/25', '7/26'])
+    expect(dateSegments.value).toEqual([])
     expect(drawableCount.value).toBe(3)
-    expect(series.value[0].points).toHaveLength(3)
-    // 日期分段只属于今日范围
+  })
+
+  it('空数据不产出日期分段', () => {
+    const { dateSegments } = useTimelineSeries(ref([]))
+
     expect(dateSegments.value).toEqual([])
   })
 })
