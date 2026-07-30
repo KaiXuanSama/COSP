@@ -45,8 +45,8 @@ const props = withDefaults(defineProps<{
   /**
    * 端点形变时长（ms）—— 范围切换时点移动到新位置所用的时间。
    *
-   * 同时注入 CSS 与形变模型：CSS 负责位移过渡，JS 负责在此之后才移除退场点。
-   * 两者必须同值，否则退场点会在淡出途中被摘掉。
+   * 位移由形变模型逐帧插值，不经 CSS 过渡，故此值只需与柱状图的节奏对齐，
+   * 无须与任何样式常量保持同步。
    */
   morphDuration?: number
 }>(), {
@@ -127,8 +127,6 @@ const rootStyle = computed(() => ({
   '--usage-line-axis-width': `${props.axisWidth}px`,
   '--usage-line-pad-y': `${COLUMN_PAD_Y}px`,
   '--usage-line-value-space': `${VALUE_LABEL_SPACE}px`,
-  // 形变时长同时驱动 CSS 过渡与 JS 的退场清理，从一处注入避免两者漂移
-  '--usage-line-morph': `${props.morphDuration}ms`,
 }))
 
 /**
@@ -138,8 +136,13 @@ const rootStyle = computed(() => ({
  */
 const drawnSeries = computed(() => series.value.find((item) => item.config.drawn))
 
-/** 形变中的端点。范围切换时按位置序号复用节点，故位移能被 CSS 过渡捕捉。 */
-const { morphPoints, lineEntering } = useLineMorph(
+/**
+ * 形变中的端点 —— 线与点共同的唯一数据来源。
+ *
+ * 位移由模型逐帧算出而非交给 CSS：CSS 过渡的中间值只存在于合成器内部，
+ * JS 读不到，线便只能按终点重算而当帧跳到位，观感是「线闪现、点随后追上」。
+ */
+const { morphPoints } = useLineMorph(
   computed(() => drawnSeries.value?.points ?? []),
   { duration: props.morphDuration },
 )
@@ -148,19 +151,19 @@ const { morphPoints, lineEntering } = useLineMorph(
  * 折线路径 —— 由端点当前位置实时重算。
  *
  * 这是「点动带动线动」的落点：线自身没有可过渡的属性（{@code points} 是坐标字符串），
- * 但端点每帧的位置都由 CSS 过渡给出，把它们串起来，线自然就跟着形变。
+ * 但端点每帧的位置都是本组件算出来的数，把它们串起来，线与点必然同步。
  *
- * 退场点要排除：它们正滑出图外，串进路径会让线拖出一条甩尾。
+ * 退场点<strong>要串进路径</strong>：它们正收拢到新的线端，那一段线因此被拽短到消失。
+ * 若把它们排除，线会当帧截断 —— 点在慢慢收回、线却已经短了。
  */
 const polylines = computed(() => {
   const drawn = drawnSeries.value
   if (!drawn) return []
-  const alive = morphPoints.value.filter((point) => point.phase !== 'leave')
   return [{
     key: drawn.config.key,
     color: drawn.config.color,
     dash: drawn.config.dash,
-    points: toPolylinePoints(alive, VIEW_WIDTH, VIEW_HEIGHT),
+    points: toPolylinePoints(morphPoints.value, VIEW_WIDTH, VIEW_HEIGHT),
   }]
 })
 
@@ -301,7 +304,6 @@ function formatValue(value: number): string {
               v-for="line in polylines"
               :key="line.key"
               class="usage-line__path"
-              :class="{ 'usage-line__path--entering': lineEntering }"
               :points="line.points"
               :stroke="line.color"
               :stroke-dasharray="line.dash"
@@ -495,6 +497,9 @@ function formatValue(value: number): string {
 /*
  * vector-effect 让线宽不随 viewBox 的非等比拉伸而变形 ——
  * preserveAspectRatio="none" 会横向拉伸坐标系，不加这条线会被压成扁带。
+ *
+ * 这里没有任何 transition：路径每帧由端点当前坐标重算，形变本身已是逐帧的。
+ * 加过渡反而会让线滞后于点。
  */
 .usage-line__path {
   fill: none;
@@ -502,19 +507,6 @@ function formatValue(value: number): string {
   stroke-linecap: round;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
-  opacity: 1;
-  transition: opacity var(--usage-line-morph, 420ms) ease;
-}
-
-/*
- * 点数增多时线要先淡入。
- *
- * 新增点还停在起始位置（目标位置右侧、透明），但路径已按新点集算好 ——
- * 那一段刚延伸出去的线若以最终不透明度出现，会显得凭空多长了一截。
- * 让它与新点同步淡入，「线是跟着点长出来的」这一因果才成立。
- */
-.usage-line__path--entering {
-  opacity: 0.35;
 }
 
 .usage-line__labels,
@@ -671,19 +663,15 @@ function formatValue(value: number): string {
   transform: translate(-50%, 50%);
   pointer-events: none;
   /*
-   * left / bottom / opacity 的过渡是整套折线形变的载体。
+   * 位移与淡入淡出<strong>不</strong>走 CSS 过渡 —— 它们由形变模型逐帧写入。
    *
-   * 点按位置序号复用 DOM 节点，故范围切换时同一个节点的 left 从旧位置变到新位置 ——
-   * 这是一次属性变化，CSS 直接接手即可，无需手写逐帧动画。折线则每帧按端点当前
-   * 位置重算路径，于是「点动带动线动」。
+   * 折线读的是同一批坐标，若位移交给 CSS，中间值只存在于合成器内部、JS 读不到，
+   * 线就只能按终点重算而当帧跳到位，点却还在慢慢滑。
    *
-   * 尺寸与填充用更短的时长：它们表达的是 hover 反馈，须跟手；
-   * 位移表达的是范围切换，时长与柱状图形变对齐，两张图的节奏才一致。
+   * 这里只留 hover 反馈的过渡：尺寸与填充表达的是「指到了哪一点」，须跟手，
+   * 且与形变互不干扰。
    */
   transition:
-    left var(--usage-line-morph, 420ms) cubic-bezier(0.22, 0.61, 0.36, 1),
-    bottom var(--usage-line-morph, 420ms) cubic-bezier(0.22, 0.61, 0.36, 1),
-    opacity var(--usage-line-morph, 420ms) ease,
     width 0.15s ease,
     height 0.15s ease,
     background 0.15s ease;

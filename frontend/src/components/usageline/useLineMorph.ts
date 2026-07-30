@@ -1,53 +1,50 @@
-import { computed, getCurrentScope, onScopeDispose, shallowRef, watch, type Ref } from 'vue'
+import { getCurrentScope, onScopeDispose, shallowRef, watch, type Ref } from 'vue'
+import { cubicBezier, prefersReducedMotion } from '../usagechart/useAxisScale'
 import type { SeriesPoint } from './usageline'
 
 /**
  * 折线端点的形变模型 —— 点数变化时的复用、进场与退场。
  *
- * <h2>为什么由「点动」带动「线动」</h2>
- * 折线的视觉主体是线，但线本身无法插值：{@code polyline} 的 {@code points} 是一个
- * 坐标字符串，7 个点与 25 个点的字符串长度都不同，CSS 无从在两者之间过渡。
+ * <h2>为什么插值在 JS 而不交给 CSS</h2>
+ * 折线的视觉主体是线，但线本身无法过渡：{@code polyline} 的 {@code points} 是一个
+ * 坐标字符串，7 个点与 25 个点的字符串长度都不同，CSS 无从在两者之间插值。
+ * 因此线只能每帧按端点当前位置重算 —— 而「端点当前位置」必须是一个 JS 能读到的数。
  *
- * 端点则不同 —— 每个点是独立的 DOM 节点，位置由 {@code left} / {@code bottom}
- * 百分比给出，都是可过渡的属性。于是把动画的主体交给点：
- * 点各自平滑移动到新位置，线每帧按当前点集重算路径，自然就跟着形变。
- * 这比直接补间路径简单得多，也不必处理点数不等时的重采样。
+ * 若把端点位移交给 CSS（{@code left} / {@code bottom} 的 transition），这个数就只存在
+ * 于合成器内部：JS 侧拿到的始终是终点值，线会当帧跳到位、点却还在慢慢滑，
+ * 观感就是「线闪现一下、点随后才追上」。
+ *
+ * 故位移改由本模块逐帧算出：线与点读的是<strong>同一批数值</strong>，
+ * 两者同步是构造出来的，不依赖 JS 缓动曲线与 CSS 曲线是否恰好对得上。
+ *
+ * <h2>为什么线要从尾端生长而非凭空多出一段</h2>
+ * 新增点若从自己的目标位置附近淡入，连向它的那一段线会在第一帧就整段出现 ——
+ * 淡入的是点，线却是硬切。改为让新增点从<strong>上一批的末点</strong>出发，
+ * 线便是从原有尾端一路抽出来的；点数减少时对称地收回到新的末点。
+ * 「线是跟着点走的」这一因果因此在两个方向上都成立。
  *
  * <h2>与柱状图形变模型的异同</h2>
  * 复用规则完全一致 —— 按<strong>位置序号</strong>配对而非业务身份：
  * 切换范围时点的身份被整批替换（日期 → 时刻），按身份配对找不到任何留存元素，
  * 只能退化成整批淡出淡入。按位置配对则第 N 个点永远接着上一批的第 N 个点演化。
  *
- * 差异在于位移的实现。柱状图的横向位置由 flex 分配，位置跳变时没有任何属性值
- * 在变化，故需把 {@code flex-grow} 权重变成可过渡的属性、让位移成为宽度变化的
- * 副作用。折线的点直接用 {@code left} 定位，位移本就是一次属性变化，
- * CSS 过渡可以直接接手，无需这层间接。
- *
- * <h2>为何在数据层而非 DOM 层解决</h2>
- * 形变的本质是「同一个 DOM 节点的样式值连续变化」，因此关键在于让 Vue 认为
- * 新旧两批点是同一批节点 —— 即渲染 key 必须取位置序号。本模块产出的
- * {@link MorphPoint.slot} 就是这个 key。
+ * 差异在于谁来插值。柱体的高度与宽度都是 CSS 能过渡的属性，交给 CSS 最省事；
+ * 折线多了「线必须读到中间值」这一条约束，只能自己算。
  */
 
-/**
- * 进出场动画时长（ms），须与 CSS 里端点的过渡时长一致。
- *
- * 退场点要在 DOM 里存活满这段时间才能移除：它是「上一批比当前批多出来的尾部」
- * 派生出来的，一旦提前推进配对基准，正在淡出的元素就被摘掉，动画无从播放。
- */
+/** 进出场动画时长（ms）。位移由 JS 逐帧驱动，故无需与任何 CSS 过渡对齐。 */
 export const LINE_MORPH_DURATION = 420
 
 /**
- * 进场点的起始横向偏移（占绘图区宽度的比例）。
+ * 位移缓动 —— 与柱状图形变、纵轴换算同一条曲线。
  *
- * 新增点从目标位置右侧一段距离淡入，观感是「从右侧滑进来」而非凭空出现。
- * 取值不宜大：过大时新点会从图外很远处飞入，与「留存点小幅调整」的运动性质割裂。
+ * 三处动效常同时发生（切换范围既改点数也改轴上限），曲线不同会让它们各走各的节奏。
  */
-export const ENTER_X_OFFSET = 0.08
+export const LINE_MORPH_EASING = cubicBezier(0.22, 0.61, 0.36, 1)
 
 /** {@link useLineMorph} 的可调参数。 */
 export interface LineMorphOptions {
-  /** 进出场时长（ms），需与 CSS 过渡同值。 */
+  /** 进出场时长（ms）。 */
   duration?: number
 }
 
@@ -56,116 +53,143 @@ export interface MorphPoint {
   /**
    * 点在折线中的位置序号（自左向右，从 0 起）。
    *
-   * 作为渲染 key —— 同序号的点跨批次复用同一 DOM 节点，
-   * 其位置变化才能被 CSS transition 捕捉为平滑移动。
+   * 作为渲染 key —— 同序号的点跨批次复用同一 DOM 节点，位置才是连续变化的。
    */
   slot: number
   /** 横向位置占绘图区宽度的比例。 */
   x: number
   /** 纵向位置占绘图区高度的比例，自下而上。 */
   y: number
-  /** 原始数值，供浮框显示。 */
+  /** 原始数值，供浮框显示。取目标值 —— 插值出来的中间读数没有意义。 */
   value: number
-  /** 生命周期：{@code enter} 新滑入，{@code leave} 正在退出，{@code stable} 原地移动。 */
+  /** 生命周期：{@code enter} 新生长出来，{@code leave} 正在收回，{@code stable} 原地移动。 */
   phase: 'stable' | 'enter' | 'leave'
-  /** 不透明度。进场起始帧与退场终态为 0，使滑入滑出伴随淡入淡出。 */
+  /** 不透明度。进场自 0 起、退场终于 0，使生长与收回伴随淡入淡出。 */
   opacity: number
 }
 
 /**
- * 上一批端点及其占用的位置。
+ * 某一帧的端点位置，作为下一次配对与插值的起点。
  *
  * 必须把 slot 与坐标一起记住，不能事后由下标推算 —— slot 就是渲染 key，
  * 一旦重排，同一批点会改去复用别的 DOM 节点。
+ *
+ * 也必须记住 {@code opacity}：形变途中再次切换时，一个正在淡出的位置可能被新点接手，
+ * 若不从当前不透明度续上，它会突然实体化。
  */
-export interface LineMorphSnapshot {
+export interface LineMorphFrame {
   slot: number
-  point: SeriesPoint
+  x: number
+  y: number
+  value: number
+  opacity: number
 }
 
 /**
- * 计算一批端点的形变状态。
+ * 算出某一帧的端点状态。
  *
- * @param points 目标端点（当前范围的数据）
- * @param previous 上一批端点及其占位；首次渲染传空数组
- * @param settled 是否已进入目标态。为 {@code false} 时新增点仍停在起始位置
- *   （目标位置右侧、透明），供第一帧渲染用；下一帧传 {@code true} 才驱动它滑到目标。
- *   留存点不受此参数影响 —— 它们的起点就是自己上一刻的位置，本就连续。
+ * 纯函数，不读时间也不碰 DOM —— 形变的全部规则都在这里，可逐条单测。
+ *
+ * @param from 起始帧（上一次变化发生时端点的实际位置）；首次渲染传空数组
+ * @param to 目标端点
+ * @param eased 已缓动的进度，0 为起始态、1 为目标态
  */
-export function buildMorphPoints(
-  points: SeriesPoint[],
-  previous: LineMorphSnapshot[],
-  settled = true,
+export function buildMorphFrame(
+  from: LineMorphFrame[],
+  to: SeriesPoint[],
+  eased: number,
 ): MorphPoint[] {
-  const previousBySlot = new Map(previous.map((item) => [item.slot, item.point]))
-  const result: MorphPoint[] = []
+  const t = clamp01(eased)
+  const fromBySlot = new Map(from.map((frame) => [frame.slot, frame]))
 
-  points.forEach((point, slot) => {
-    // 该位置在旧批里没有点，说明是新滑进来的
-    const entering = !previousBySlot.has(slot)
-    const pending = entering && !settled
-    result.push({
+  /**
+   * 新增点的出发处 —— 上一批的末点。
+   *
+   * 线因此是从原有尾端抽出来的，而不是在新位置凭空多出一段。
+   * 首次渲染没有上一批，新增点就地淡入，不做位移（无处可出发）。
+   */
+  const tail = from.length ? from[from.length - 1] : null
+
+  const alive: MorphPoint[] = to.map((point, slot) => {
+    const source = fromBySlot.get(slot)
+    if (source) {
+      return {
+        slot,
+        x: lerp(source.x, point.x, t),
+        y: lerp(source.y, point.y, t),
+        value: point.value,
+        phase: 'stable',
+        opacity: lerp(source.opacity, 1, t),
+      }
+    }
+    // 该位置在起始帧里没有点，说明是新生长出来的
+    const origin = tail ?? { x: point.x, y: point.y }
+    return {
       slot,
-      // 起始帧停在目标位置右侧：给 CSS 过渡一个起点，下一帧才滑到位。
-      // 纵向不偏移 —— 让点沿水平方向进入，运动方向单一更易读。
-      x: pending ? Math.min(1, point.x + ENTER_X_OFFSET) : point.x,
-      y: point.y,
+      x: lerp(origin.x, point.x, t),
+      y: lerp(origin.y, point.y, t),
       value: point.value,
-      phase: entering ? 'enter' : 'stable',
-      opacity: pending ? 0 : 1,
-    })
+      phase: 'enter',
+      opacity: t,
+    }
   })
 
-  // 旧批多出来的尾部点向右滑出并淡出；保留旧坐标作为过渡起点
-  for (let slot = points.length; slot < previous.length; slot += 1) {
-    const stale = previousBySlot.get(slot)
+  /**
+   * 退场点的归处 —— 新一批的末点。
+   *
+   * 与进场对称：多余的尾部收回到新的线端，线是被拽短的而非截断的。
+   * 新一批为空时就地淡出（无处可去）。
+   */
+  const sink = to.length ? to[to.length - 1] : null
+
+  const leaving: MorphPoint[] = []
+  for (let slot = to.length; slot < from.length; slot += 1) {
+    const stale = fromBySlot.get(slot)
     if (!stale) continue
-    result.push({
+    const destination = sink ?? { x: stale.x, y: stale.y }
+    leaving.push({
       slot,
-      // 终态在原位右侧：位移与淡出同时发生，观感是「被推出图外」
-      x: Math.min(1, stale.x + ENTER_X_OFFSET),
-      y: stale.y,
+      x: lerp(stale.x, destination.x, t),
+      y: lerp(stale.y, destination.y, t),
       value: stale.value,
       phase: 'leave',
-      opacity: 0,
+      opacity: lerp(stale.opacity, 0, t),
     })
   }
 
   // 按位置升序输出：渲染顺序必须与 slot 一致，否则 Vue 会为对不上的 key
   // 移动 DOM 节点，正在过渡的点会被整体搬走，观感是一次硬跳。
-  return result.sort((a, b) => a.slot - b.slot)
+  return [...alive, ...leaving]
 }
 
-/**
- * 结算一批端点的占位，作为下一次配对的基准。
- *
- * 只收留存点：退场点的位置本次已让出，不应再占用名额。
- *
- * @param points 本批端点
- */
-export function snapshotOfPoints(points: SeriesPoint[]): LineMorphSnapshot[] {
-  return points.map((point, slot) => ({ slot, point }))
+/** 把一批端点铺成「依次占用 0 起的位置、完全显影」的帧，用作动画终态。 */
+export function framesOfPoints(points: SeriesPoint[]): LineMorphFrame[] {
+  return points.map((point, slot) => ({
+    slot,
+    x: point.x,
+    y: point.y,
+    value: point.value,
+    opacity: 1,
+  }))
 }
 
-/**
- * 判断新一批里是否存在「凭空出现」的点。
- *
- * 只有它们需要两帧提交 —— 留存点在 DOM 里已有前一刻的位置，直接改值就能被
- * CSS 过渡捕捉；而全新节点若起止值同帧写入会被合并，表现为「一出现就在终点」。
- *
- * @param points 新一批端点
- * @param previous 上一批端点及其占位
- */
-export function hasEnteringPoint(points: SeriesPoint[], previous: LineMorphSnapshot[]): boolean {
-  return points.length > previous.length
+/** 把当前帧的端点状态收成下一次插值的起点。 */
+export function framesOfMorph(points: MorphPoint[]): LineMorphFrame[] {
+  return points.map((point) => ({
+    slot: point.slot,
+    x: point.x,
+    y: point.y,
+    value: point.value,
+    opacity: point.opacity,
+  }))
 }
 
 /**
  * 把端点数据接成随范围切换连续形变的状态流。
  *
- * 记忆不在 computed 内部写入：computed 可能因依赖变化被重复求值，
- * 若在其中改写记忆，第二次求值就会拿「刚写进去的新值」当旧值，配对随之失真。
- * 它也不能在数据变化的当帧写入 —— 那会让退场态与起始态来不及渲染。
+ * <h2>为什么起点取「当前实际位置」而非「上一个目标」</h2>
+ * 形变途中再次切换范围是常见操作。若从上一个目标起算，点会先跳回那个还没到达的
+ * 位置再重新出发；从当前实际位置续上，则中途打断也是一条连续轨迹。
  *
  * @param points 当前范围的端点坐标
  * @param options 时长
@@ -173,103 +197,97 @@ export function hasEnteringPoint(points: SeriesPoint[], previous: LineMorphSnaps
 export function useLineMorph(points: Ref<SeriesPoint[]>, options: LineMorphOptions = {}) {
   const duration = options.duration ?? LINE_MORPH_DURATION
 
-  /** 上一批端点及其占位，用于按位置配对。 */
-  const previous = shallowRef<LineMorphSnapshot[]>([])
+  /** 当前帧的端点状态 —— 线与点共同的唯一数据来源。 */
+  const morphPoints = shallowRef<MorphPoint[]>([])
 
-  /**
-   * 新增点是否已被推向目标态。
-   *
-   * 新点在 DOM 里没有前一刻的位置可延续，若起止值写在同一帧，浏览器会把两者
-   * 合并成「一开始就在终点」，CSS transition 无从播放。故拆成两帧：
-   * 先渲染起始态（右侧、透明）、下一帧再切到目标态。
-   */
-  const settled = shallowRef(true)
+  /** 本次形变的起始帧与目标，逐帧插值的两端。 */
+  let from: LineMorphFrame[] = []
+  let target: SeriesPoint[] = []
 
-  /**
-   * 折线是否正在等待新增点落位。
-   *
-   * 点数增多时线要跟着淡入：新点尚未到位时线已按新点集重算过路径，
-   * 若直接以最终不透明度出现，那一段延伸出去的线会显得突然。
-   */
-  const lineEntering = computed(() => !settled.value)
+  let frame: number | null = null
+  let startedAt = 0
 
-  /** 待执行的落位任务，切换过快时用于取消上一次，避免起始态被提前抹掉。 */
-  let settleFrame: number | null = null
+  /** 收尾：目标态即下一次的起始帧，退场点随之从列表消失。 */
+  function finish(): void {
+    from = framesOfPoints(target)
+    morphPoints.value = buildMorphFrame(from, target, 1)
+  }
 
-  /** 待执行的退场清理任务，切换过快时用于取消上一次。 */
-  let retireTimer: number | null = null
-
-  const morphPoints = computed(() =>
-    buildMorphPoints(points.value, previous.value, settled.value),
-  )
-
-  /*
-   * 关键时序：起始态与退场清理必须分开调度，两者的正确时机不同。
-   *
-   * `morphPoints` 以 previous 为配对基准，退场点正是「previous 比 points 多出来的
-   * 尾部」派生出来的。因此 previous 一旦推进，那些点当场从列表里消失 ——
-   * 提前推进等于把正在淡出的元素直接从 DOM 摘掉，观感就是硬切。
-   */
   watch(points, (next) => {
-    settled.value = !hasEnteringPoint(next, previous.value)
-    scheduleSettle()
-    scheduleRetire(snapshotOfPoints(next))
-  }, { flush: 'post' })
+    // 起点取当前实际位置，中途打断也能续上一条连续轨迹
+    from = framesOfMorph(morphPoints.value)
+    target = next
+    stop()
 
-  /** 下一帧放开起始位置，让新增点滑向目标。 */
-  function scheduleSettle(): void {
-    cancelSettle()
-    if (typeof requestAnimationFrame !== 'function') {
-      settled.value = true
+    if (!animatable()) {
+      finish()
       return
     }
-    // 双帧：第一帧确保起始位置已提交到合成器，第二帧再改值才会产生过渡
-    settleFrame = requestAnimationFrame(() => {
-      settleFrame = requestAnimationFrame(() => {
-        settleFrame = null
-        settled.value = true
-      })
-    })
+
+    startedAt = now()
+    morphPoints.value = buildMorphFrame(from, target, 0)
+    schedule()
+  }, { immediate: true, flush: 'post' })
+
+  function step(): void {
+    frame = null
+    const elapsed = (now() - startedAt) / duration
+    if (elapsed >= 1) {
+      finish()
+      return
+    }
+    morphPoints.value = buildMorphFrame(from, target, LINE_MORPH_EASING(elapsed))
+    schedule()
+  }
+
+  function schedule(): void {
+    if (frame !== null) return
+    frame = requestAnimationFrame(step)
+  }
+
+  function stop(): void {
+    if (frame !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(frame)
+    }
+    frame = null
   }
 
   /**
-   * 动画结束后推进配对基准，退场点随之从列表移除。
+   * 本次变化是否值得播放动画。
    *
-   * 必须等满一个 {@link duration}：退场点由「旧批多出来的尾部」派生，
-   * 提前推进等于把正在淡出的元素直接摘掉。
+   * 首帧（起始帧为空）直接落位：没有「从哪里来」，播放出来只是整批淡入。
+   * 其余不可动画的情形与纵轴换算一致 —— 减少动效偏好、无 rAF 的环境（SSR / 单测）。
    */
-  function scheduleRetire(next: LineMorphSnapshot[]): void {
-    cancelRetire()
-    if (typeof window === 'undefined') {
-      previous.value = next
-      return
-    }
-    retireTimer = window.setTimeout(() => {
-      retireTimer = null
-      previous.value = next
-    }, duration)
+  function animatable(): boolean {
+    if (!from.length) return false
+    if (prefersReducedMotion()) return false
+    return typeof requestAnimationFrame === 'function' && duration > 0
   }
 
-  function cancelSettle(): void {
-    if (settleFrame !== null && typeof cancelAnimationFrame === 'function') {
-      cancelAnimationFrame(settleFrame)
-    }
-    settleFrame = null
-  }
+  if (getCurrentScope()) onScopeDispose(stop)
 
-  function cancelRetire(): void {
-    if (retireTimer !== null && typeof window !== 'undefined') {
-      window.clearTimeout(retireTimer)
-    }
-    retireTimer = null
-  }
+  return { morphPoints }
+}
 
-  if (getCurrentScope()) {
-    onScopeDispose(() => {
-      cancelSettle()
-      cancelRetire()
-    })
-  }
+/**
+ * 线性插值。
+ *
+ * 两端做精确返回，不走乘加 —— 浮点残差会让终态落在 0.8999999999999999 这类值上，
+ * 而终态即下一次形变的起点，误差会逐次累积。
+ */
+function lerp(from: number, to: number, t: number): number {
+  if (t <= 0) return from
+  if (t >= 1) return to
+  return from + (to - from) * t
+}
 
-  return { morphPoints, lineEntering }
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value))
+}
+
+/** 单调时钟，优先用 performance.now 以免系统时间调整影响进度。 */
+function now(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
 }

@@ -80,10 +80,14 @@ export function useTimelineSeries(
    * 近 7 日直接用 `M/D`；今日时段用桶标签本身（已是 `HH:mm`），
    * 点数多时隔位显示以免挤在一起。未来时段的标签照常显示但淡化 ——
    * 它们标出「今天还剩多少时间」，这正是完整显示一天的意义。
+   *
+   * key 取<strong>位置序号</strong>而非桶标签：今日范围首尾同为 `05:00`（一圈闭合），
+   * 按标签作 key 会重复，Vue 随即报警并可能复用错节点。位置本就是标签的身份 ——
+   * 第 N 个标签标的是第 N 个点。
    */
   const axisLabels = computed(() =>
     points.value.map((point, index) => ({
-      key: point.bucket,
+      key: index,
       text: range.value === '1d' ? point.bucket : shortDate(point.bucket),
       x: xRatioOf(index, points.value.length),
       visible: isLabelVisible(index, points.value.length),

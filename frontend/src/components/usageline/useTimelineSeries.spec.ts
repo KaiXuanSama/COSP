@@ -257,6 +257,18 @@ describe('今日范围的完整一天与未来段', () => {
     expect(axisLabels.value[5].future).toBe(true)
   })
 
+  it('标签 key 唯一 —— 今日范围首尾同为 05:00，按标签作 key 会重复', () => {
+    const data = ref([
+      { bucket: '05:00', inputTokens: 1, outputTokens: 1 },
+      { bucket: '06:00', inputTokens: 1, outputTokens: 1 },
+      { bucket: '05:00', inputTokens: 1, outputTokens: 1 },
+    ])
+    const { axisLabels } = useTimelineSeries(data, range)
+
+    const keys = axisLabels.value.map((label) => label.key)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
   it('轴上限只看已发生的点', () => {
     const data = ref(dayPoints(25, 3))
     const { ceiling } = useTimelineSeries(data, range)

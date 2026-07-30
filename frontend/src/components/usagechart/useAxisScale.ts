@@ -309,8 +309,11 @@ function hasAnimationFrame(): boolean {
  *
  * 无 window 或不支持 matchMedia 时一律视为「不需要减少动效」，
  * 使本模块在非浏览器环境下也能安全求值而不抛错。
+ *
+ * 导出供折线形变复用 —— 两处动效常同时发生，判定必须同源，
+ * 否则会出现「轴落位了、点还在动」这种半播半停的状态。
  */
-function prefersReducedMotion(): boolean {
+export function prefersReducedMotion(): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
