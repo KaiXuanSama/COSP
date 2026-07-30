@@ -64,6 +64,16 @@ public class UsageQueryService {
 
     private static final int HOURS_PER_DAY = 24;
 
+    private static final int MINUTES_PER_HOUR = 60;
+
+    /**
+     * 点位覆盖区间的半径（分钟）。
+     *
+     * <p>点以整点为中心聚合，故第 N 个点覆盖 {@code [N 时 − 30 分, N 时 + 30 分)} ——
+     * 它在整点前半小时就已开始收数据，这半小时也正是判断「该点是否已开始」的偏移量。
+     */
+    private static final int POINT_RADIUS_MINUTES = 30;
+
     /** 与 {@code api_call_usage.created_at} 完全一致的格式，用于拼时间窗边界。 */
     private static final DateTimeFormatter TIMESTAMP_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
@@ -245,7 +255,7 @@ public class UsageQueryService {
         }
 
         /** 当前时刻所在的整点序号 —— 它之后的点尚未发生。 */
-        int currentPoint = (int) Duration.between(windowStart, now).toHours();
+        int currentPoint = resolveCurrentPoint(windowStart, now);
 
         // 25 个点：05:00 到次日 05:00，首尾同为 05:00 使一圈闭合
         List<UsageTimelinePoint> full = new ArrayList<>(HOURS_PER_DAY + 1);
@@ -262,6 +272,29 @@ public class UsageQueryService {
                     index > currentPoint));
         }
         return full;
+    }
+
+    /**
+     * 确定「最后一个已开始」的点位序号。
+     *
+     * <h2>为什么不是简单的整点差</h2>
+     * 点以整点为中心聚合，第 N 个点覆盖 {@code [N 时 − 30 分, N 时 + 30 分)}。
+     * 因此它在整点<strong>前半小时</strong>就已开始收数据 ——
+     * 11:45 的调用属于 12:00 那个点，11:50 时该点已经有值了。
+     *
+     * <p>若按整点差算（{@code Duration.toHours()}），11:50 得出的是 11:00 那个点，
+     * 12:00 会被标成尚未到来，前端随即把它从折线上剪掉：刚刚发生的调用凭空消失，
+     * 直到 12:00 整才突然出现。故把当前时刻先前移半小时再取整点差，
+     * 判断口径与聚合口径才一致。
+     *
+     * @param windowStart 窗口起点（当日 05:00 或前一日 05:00）
+     * @param now         当前时刻
+     * @return 最后一个已开始的点位序号，钳制在 {@code [0, 24]} 内
+     */
+    static int resolveCurrentPoint(LocalDateTime windowStart, LocalDateTime now) {
+        long elapsed = Duration.between(windowStart, now).toMinutes() + POINT_RADIUS_MINUTES;
+        int index = (int) (elapsed / MINUTES_PER_HOUR);
+        return Math.max(0, Math.min(HOURS_PER_DAY, index));
     }
 
     /**

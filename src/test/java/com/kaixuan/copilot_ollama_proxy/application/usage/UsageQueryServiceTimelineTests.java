@@ -67,9 +67,15 @@ class UsageQueryServiceTimelineTests {
         return anchor.atTime(5, 0);
     }
 
-    /** 当前时刻所在的整点序号（自 0 起）；它之后的点标记为尚未到来。 */
+    /**
+     * 最后一个已开始的点位序号（自 0 起）；它之后的点标记为尚未到来。
+     *
+     * <p>点以整点为中心聚合，故在整点前半小时就已开始收数据 ——
+     * 判断口径必须与聚合口径一致，否则刚发生的调用会被当成「尚未到来」剪掉。
+     */
     private static int expectedCurrentPoint() {
-        return (int) Duration.between(expectedWindowStart(), LocalDateTime.now()).toHours();
+        long elapsed = Duration.between(expectedWindowStart(), LocalDateTime.now()).toMinutes() + 30;
+        return (int) Math.max(0, Math.min(24, elapsed / 60));
     }
 
     @Nested
@@ -240,6 +246,55 @@ class UsageQueryServiceTimelineTests {
 
             assertThat(points.get(20).bucket()).isEqualTo("01:00");
             assertThat(points.get(20).inputTokens()).isEqualTo(500);
+        }
+    }
+
+    /**
+     * 「已开始」的判定边界。
+     *
+     * <p>点以整点为中心聚合，故它在整点前半小时就已开始收数据。判定口径若退化成
+     * 整点差，11:45 的调用会被归入 12:00 那个点、而 12:00 又被标成尚未到来，
+     * 前端随即剪掉：刚发生的调用凭空消失，直到 12:00 整才突然出现。
+     *
+     * <p>这里直接对换算函数断言，不经过仓储 —— 现实时刻无法在测试里推移。
+     */
+    @Nested
+    class CurrentPointBoundary {
+
+        private static final LocalDateTime WINDOW_START = LocalDate.of(2026, 7, 30).atTime(5, 0);
+
+        @Test
+        void includesPointWhoseFirstHalfHasStarted() {
+            // 11:45 属于 12:00 那个点（覆盖 11:30–12:30），故 11:50 时它必须已开始。
+            // 12:00 是窗口第 7 个点（05:00 起算）
+            assertThat(UsageQueryService.resolveCurrentPoint(
+                    WINDOW_START, WINDOW_START.withHour(11).withMinute(50))).isEqualTo(7);
+        }
+
+        @Test
+        void advancesExactlyAtHalfPast() {
+            // 11:29 尚未进入 12:00 的覆盖区间，11:30 起才算开始
+            assertThat(UsageQueryService.resolveCurrentPoint(
+                    WINDOW_START, WINDOW_START.withHour(11).withMinute(29))).isEqualTo(6);
+            assertThat(UsageQueryService.resolveCurrentPoint(
+                    WINDOW_START, WINDOW_START.withHour(11).withMinute(30))).isEqualTo(7);
+        }
+
+        @Test
+        void startsAtFirstPointWithinTheOpeningHalfHour() {
+            // 窗口刚开始的半小时内只有首点已开始，不能溢出到 06:00
+            assertThat(UsageQueryService.resolveCurrentPoint(WINDOW_START, WINDOW_START)).isZero();
+            assertThat(UsageQueryService.resolveCurrentPoint(
+                    WINDOW_START, WINDOW_START.plusMinutes(29))).isZero();
+        }
+
+        @Test
+        void clampsAtLastPoint()  {
+            // 次日 04:30 起末点（05:00）已开始；再往后不得越过 24
+            assertThat(UsageQueryService.resolveCurrentPoint(
+                    WINDOW_START, WINDOW_START.plusHours(23).plusMinutes(30))).isEqualTo(24);
+            assertThat(UsageQueryService.resolveCurrentPoint(
+                    WINDOW_START, WINDOW_START.plusHours(30))).isEqualTo(24);
         }
     }
 }
