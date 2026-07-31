@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.api;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageQueryService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.SseConnectionGate;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.StatsSnapshot;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownPage;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageHourlyPoint;
 import org.springframework.http.MediaType;
@@ -90,6 +91,33 @@ public class UsageQueryController {
     @GetMapping("/config/api/usage-breakdown")
     public Mono<List<UsageBreakdownRow>> usageBreakdown(@RequestParam(defaultValue = "7") int days) {
         return usageQueryService.getUsageBreakdown(days);
+    }
+
+    /**
+     * 可滑动窗口的用量明细分页 —— 概览翻看历史区间的入口。
+     *
+     * <p>窗口由宽度与向过去的偏移两个参数确定，故 {@code 1-7}、{@code 2-8} 这类
+     * 滑动区间都能表达；{@code offset = 0} 时右端为今天。约束为
+     * {@code size ∈ [7, 15]}、{@code offset ∈ [0, 15 - size]}，
+     * 即窗口整体必须落在「最近 15 天」内。
+     *
+     * <p>越界参数<strong>钳制而非报错</strong>，因此响应体回带实际生效的窗口边界、
+     * 翻页可用性与 {@code includesToday}。前端据 {@code startDate}/{@code endDate}
+     * 补零横轴，据 {@code hasNewer}/{@code hasOlder} 决定翻页按钮禁用态，
+     * 据 {@code includesToday} 决定是否需要接上 SSE 增量流 ——
+     * 不含今天的窗口数据已固化，一次拉取即为终态。
+     *
+     * <p>与 {@link #usageBreakdown} 并存而非替换：那个端点仍是图表流首帧的
+     * HTTP 等价物，语义是「最近 N 天」，窗口右端固定。
+     *
+     * @param size   窗口宽度（天），默认 7
+     * @param offset 向过去偏移的天数，默认 0（右端为今天）
+     */
+    @GetMapping("/config/api/usage-breakdown/page")
+    public Mono<UsageBreakdownPage> usageBreakdownPage(
+            @RequestParam(defaultValue = "7") int size,
+            @RequestParam(defaultValue = "0") int offset) {
+        return usageQueryService.getUsageBreakdownPage(size, offset);
     }
 
     /**

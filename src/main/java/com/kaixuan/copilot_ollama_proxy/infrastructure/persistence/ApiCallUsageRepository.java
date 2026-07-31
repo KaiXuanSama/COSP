@@ -170,6 +170,46 @@ public class ApiCallUsageRepository implements ApiCallUsageService {
     }
 
     /**
+     * 按 日期 × 供应商 × 模型 聚合<strong>任意闭区间</strong>内的调用次数与 token 用量。
+     *
+     * <p>与 {@link #aggregateBreakdown(int)} 的唯一差别是窗口的表达方式：那个方法只能说
+     * 「最近 N 天」，右端永远钉在今天；本方法接受显式起止日期，因此支持向过去滑动的窗口
+     * （{@code 1-7}、{@code 2-8} 这类区间）。聚合口径、排序、{@code COALESCE} 兜底
+     * 与 sargable 写法全部一致，理由见那个方法的说明。
+     *
+     * <p>参数是<strong>日期</strong>而非完整时刻：本视图按日历日分组，窗口边界天然落在
+     * 午夜。内部拼成 {@code T00:00:00} 与列格式对齐，并把结束日的次日作为右开边界 ——
+     * 即 {@code [start 00:00:00, endExclusive 00:00:00)}。
+     *
+     * <p>由调用方而非本层计算日期：起止边界依赖「今天是哪天」与钳制规则，
+     * 那属于用例决策；数据访问层只负责按给定区间取数。
+     *
+     * @param startInclusive 起始日期（含），格式 {@code yyyy-MM-dd}
+     * @param endExclusive   结束边界（不含），格式 {@code yyyy-MM-dd}；
+     *                       欲包含 {@code 07-30} 当天则传 {@code 07-31}
+     * @return 明细行，日期升序、同日内次数降序；无数据时返回空列表
+     */
+    public List<UsageBreakdownRow> aggregateBreakdownBetween(String startInclusive, String endExclusive) {
+        return jdbcTemplate.query(
+                "SELECT substr(created_at, 1, 10) AS usage_date, provider_key, model_name, "
+                        + "COUNT(*) AS call_count, "
+                        + "SUM(COALESCE(prompt_tokens, 0)) AS input_tokens, "
+                        + "SUM(COALESCE(completion_tokens, 0)) AS output_tokens "
+                        + "FROM api_call_usage "
+                        + "WHERE created_at >= ? AND created_at < ? "
+                        + "GROUP BY usage_date, provider_key, model_name "
+                        + "ORDER BY usage_date ASC, call_count DESC",
+                (rs, rowNum) -> new UsageBreakdownRow(
+                        rs.getString("usage_date"),
+                        rs.getString("provider_key"),
+                        rs.getString("model_name"),
+                        rs.getLong("call_count"),
+                        rs.getLong("input_tokens"),
+                        rs.getLong("output_tokens")),
+                startInclusive + "T00:00:00", endExclusive + "T00:00:00");
+    }
+
+    /**
      * 按<strong>整点</strong>聚合指定时间窗内的 token 用量，供折线图「今日时段」视图使用。
      *
      * <h2>整点以中心方式聚合</h2>
