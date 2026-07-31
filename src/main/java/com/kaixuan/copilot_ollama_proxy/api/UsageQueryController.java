@@ -7,6 +7,7 @@ import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownPage;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageDailyPage;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageHourlyPoint;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageHourlySeries;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -152,6 +153,40 @@ public class UsageQueryController {
     @GetMapping("/config/api/usage-hourly")
     public Mono<List<UsageHourlyPoint>> usageHourly() {
         return usageQueryService.getHourlyTokens();
+    }
+
+    /**
+     * 指定某一天的时段 token 用量 —— 「今日时段」折线翻看某一天的入口。
+     *
+     * <p><strong>没有分页也没有窗口滑动</strong>：这个视图一次只看一天，请求参数就是
+     * 那一天本身，没有「宽度」这个自由度。硬套 {@code size} + {@code offset}
+     * 只会多出一个恒等于 1 的宽度参数。
+     *
+     * <h2>一天不是 0 点到 0 点</h2>
+     * 窗口是 {@code [date 05:00, date+1 05:00)}。跨夜编码是常态，按自然日切分会把
+     * 一次连续工作截成两段；凌晨 5 点基本落在活动最低谷，以它为界曲线才完整。
+     * 因此 {@code date} 是窗口的<strong>锚定日</strong>，不等于窗口内所有点位的日期 ——
+     * 次日 00:00 至 05:00 的点位属于 {@code date + 1}，这也是每个点位的
+     * {@code bucket} 必须带完整日期的原因。
+     *
+     * <p>聚合完全在后端完成：{@code points} 恒为 25 个（首尾同为 05:00，
+     * 因为点以整点为中心聚合），无数据的时段已补零。
+     *
+     * <h2>参数收敛</h2>
+     * 不合法的日期一律收敛而非报 400，与两个分页端点的钳制策略一致：
+     * 缺省 / 格式错误回落到当前窗口的锚定日（凌晨 5 点前算前一天），
+     * 晚于今天收敛到今天，早于可回看范围（15 天）收敛到最早那天。
+     * 故响应体回带实际生效的日期与窗口边界。
+     *
+     * <p>{@code isCurrentWindow} 为 true 时该窗口仍在变化，调用方需接上 SSE 增量流；
+     * 为 false 时数据已固化，一次拉取即为终态。
+     *
+     * @param date 目标日期，格式 {@code yyyy-MM-dd}；缺省为当前窗口所属的那一天
+     */
+    @GetMapping("/config/api/usage-hourly/series")
+    public Mono<UsageHourlySeries> usageHourlySeries(
+            @RequestParam(required = false) String date) {
+        return usageQueryService.getHourlySeries(date);
     }
 
     /**

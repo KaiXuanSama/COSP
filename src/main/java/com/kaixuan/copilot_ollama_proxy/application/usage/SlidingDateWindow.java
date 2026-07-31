@@ -78,6 +78,17 @@ public record SlidingDateWindow(LocalDate start, LocalDate end, int size, int of
     }
 
     /**
+     * 可回看到的最早日期 —— 池子的左端。
+     *
+     * <p>由 {@link #MAX_SIZE} 直接导出（{@code today - (MAX_SIZE - 1)}），不另设常量。
+     * 供「今日时段」这类不分页但仍需限定可查范围的视图复用：概览的翻页只能滑到这一天，
+     * 若时段视图能查到更早的日期，就会出现「柱状图翻不到、时段图却查得出」的不一致。
+     */
+    public static LocalDate earliestReachable(LocalDate today) {
+        return today.minusDays(MAX_SIZE - 1L);
+    }
+
+    /**
      * 窗口是否包含今天。
      *
      * <p>含今天时数据仍在变化，调用方需接上 SSE 增量流；不含今天时数据已固化，

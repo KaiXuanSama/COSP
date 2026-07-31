@@ -181,4 +181,28 @@ class SlidingDateWindowTests {
             assertThat(span).as("size=%d", size).isEqualTo(size);
         }
     }
+
+    // ---------- 可回看深度 ----------
+
+    /**
+     * 最早可达日期与「窗口滑到极限时的起点」是同一天。
+     *
+     * <p>{@code earliestReachable} 供不分页的时段视图复用其下界。若两者不一致，
+     * 就会出现「柱状图翻不到、时段图却查得出」的不一致。此项把两个导出方式绑在一起。
+     */
+    @Test
+    void earliestReachableMatchesFullySlidWindowStart() {
+        assertThat(SlidingDateWindow.earliestReachable(TODAY)).isEqualTo(window(7, 8).start());
+        assertThat(SlidingDateWindow.earliestReachable(TODAY)).isEqualTo(window(15, 0).start());
+        assertThat(SlidingDateWindow.earliestReachable(TODAY)).isEqualTo(LocalDate.of(2026, 7, 17));
+    }
+
+    /** 可回看深度恰为 MAX_SIZE 天（含今天）。 */
+    @Test
+    void lookbackDepthEqualsMaxSize() {
+        long depth = java.time.temporal.ChronoUnit.DAYS.between(
+                SlidingDateWindow.earliestReachable(TODAY), TODAY) + 1;
+
+        assertThat(depth).isEqualTo(SlidingDateWindow.MAX_SIZE);
+    }
 }

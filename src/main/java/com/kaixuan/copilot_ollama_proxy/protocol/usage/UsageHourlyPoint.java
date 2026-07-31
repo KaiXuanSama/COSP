@@ -42,4 +42,14 @@ public record UsageHourlyPoint(
         String bucket,
         long inputTokens,
         long outputTokens) {
+
+    /**
+     * 构造某个整点的空点位，用于补齐窗口内无数据的时段。
+     *
+     * <p>只有 {@link UsageHourlySeries} 会用到 —— 图表流首帧仍只下发有数据的整点，
+     * 补零在前端完成。两种做法并存的理由见 {@code UsageQueryService.getHourlySeries}。
+     */
+    public static UsageHourlyPoint empty(String bucket) {
+        return new UsageHourlyPoint(bucket, 0L, 0L);
+    }
 }

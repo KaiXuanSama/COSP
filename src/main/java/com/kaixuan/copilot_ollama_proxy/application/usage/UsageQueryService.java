@@ -9,6 +9,7 @@ import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageDailyPage;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageDailyPoint;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageHourlyPoint;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageHourlySeries;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageRecordDelta;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -19,6 +20,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -81,6 +83,18 @@ public class UsageQueryService {
     private static final int DAY_START_HOUR = 5;
 
     private static final int HOURS_PER_DAY = 24;
+
+    /**
+     * 时段视图的点位数 —— 25 而非 24。
+     *
+     * <p>点以整点为<strong>中心</strong>聚合，首尾都落在 05:00 上，各只覆盖半小时
+     * （首点 {@code [05:00, 05:30)}、末点 {@code [04:30, 05:00)}），两者相加恰好一小时，
+     * 总量不重不漏。因此 24 小时窗口装得下 25 个点位，这不是差一错误。
+     *
+     * <p>选整点为中心而非整点起始，是为了让横轴首尾对称、「一天是完整一圈」的语义
+     * 直接可见；若按整点起始，标签会是 05:00 到 04:00，看不出这是闭合的一圈。
+     */
+    private static final int HOURLY_POINT_COUNT = 25;
 
     /** 与 {@code api_call_usage.created_at} 完全一致的格式，用于拼时间窗边界。 */
     private static final DateTimeFormatter TIMESTAMP_FORMAT =
@@ -275,6 +289,111 @@ public class UsageQueryService {
                     windowStart.format(TIMESTAMP_FORMAT),
                     windowStart.plusHours(HOURS_PER_DAY).format(TIMESTAMP_FORMAT));
         }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 查询<strong>指定某一天</strong>的时段 token 用量，已补齐 25 个点位。
+     *
+     * <p>窗口是 {@code [date 05:00, date+1 05:00)} —— 5 点分界的理由见
+     * {@link #DAY_START_HOUR}。注意 {@code date} 是窗口的<strong>锚定日</strong>，
+     * 不等于窗口内所有点位的日期：次日 00:00 至 05:00 的点位属于 {@code date + 1}。
+     *
+     * <h2>为什么没有分页与窗口滑动</h2>
+     * 这个视图一次只看一天，请求参数就是那一天本身，没有「宽度」这个自由度。
+     * 与柱状图 / 「近 N 日」折线的 {@code size} + {@code offset} 是不同的问题形状。
+     *
+     * <h2>日期的收敛规则</h2>
+     * 不合法的日期一律收敛而非抛 400，与两个分页端点的钳制策略一致：
+     * <ul>
+     *   <li>为空、格式错误 → 当前窗口的锚定日（凌晨 5 点前算前一天）；</li>
+     *   <li>晚于今天 → 收敛到今天（未来没有数据）；</li>
+     *   <li>早于可回看范围 → 收敛到 {@link SlidingDateWindow#earliestReachable}，
+     *       与概览翻页能滑到的最早一天对齐。若这里能查到更早的日期，
+     *       就会出现「柱状图翻不到、时段图却查得出」的不一致。</li>
+     * </ul>
+     * 因此响应体回带<strong>实际生效</strong>的日期与窗口边界。
+     *
+     * <h2>与 getHourlyTokens 的关系</h2>
+     * 那个方法是图表流首帧的一部分，只查「当前那一天」且<strong>不补零</strong>
+     * （补零留给前端）。本方法补零，理由同 {@link #getUsageDailyPage} ——
+     * 25 个点位完全由窗口边界决定，没有展示层的自由度。
+     * 两者并存：流首帧维持既有契约不动，本端点服务于「翻看某一天」。
+     *
+     * @param requestedDate 请求日期，格式 {@code yyyy-MM-dd}；可为 null 或空
+     */
+    public Mono<UsageHourlySeries> getHourlySeries(String requestedDate) {
+        return Mono.fromCallable(() -> buildHourlySeries(LocalDateTime.now(), requestedDate))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 组装指定一天的时段用量序列，并补齐窗口内每个整点。
+     *
+     * <p>可见性放宽到包级并显式接受 {@code now}，使窗口边界、收敛结果与
+     * {@code isCurrentWindow} 能被测试在固定时刻下断言 ——
+     * 否则这些断言会随运行时刻变化而失效（尤其凌晨 5 点前后行为不同）。
+     *
+     * @param now           当前时刻，用于默认日期、上界收敛与当前窗口判定
+     * @param requestedDate 请求日期串，可为 null / 空 / 格式错误
+     */
+    UsageHourlySeries buildHourlySeries(LocalDateTime now, String requestedDate) {
+        LocalDate anchor = resolveHourlyAnchorDate(now, requestedDate);
+        LocalDateTime windowStart = anchor.atTime(DAY_START_HOUR, 0);
+
+        // 末点位与查询右开边界恰好是同一时刻（次日 05:00），这不是巧合：
+        // 末点位居中聚合，覆盖 [04:30, 05:00)，而 05:00 整起的数据属于下一轮窗口的首点。
+        // 因此 24 小时窗口装得下 25 个点位而总量不重不漏。
+        LocalDateTime windowEnd = windowStart.plusHours(HOURS_PER_DAY);
+
+        Map<String, UsageHourlyPoint> byBucket = new LinkedHashMap<>();
+        for (UsageHourlyPoint point : apiCallUsageRepository.aggregateHourlyTokens(
+                windowStart.format(TIMESTAMP_FORMAT), windowEnd.format(TIMESTAMP_FORMAT))) {
+            byBucket.put(point.bucket(), point);
+        }
+
+        List<UsageHourlyPoint> points = new ArrayList<>(HOURLY_POINT_COUNT);
+        for (int i = 0; i < HOURLY_POINT_COUNT; i++) {
+            String bucket = windowStart.plusHours(i).format(TIMESTAMP_FORMAT);
+            points.add(byBucket.getOrDefault(bucket, UsageHourlyPoint.empty(bucket)));
+        }
+
+        return new UsageHourlySeries(
+                anchor.format(DATE_FORMAT),
+                windowStart.format(TIMESTAMP_FORMAT),
+                windowEnd.format(TIMESTAMP_FORMAT),
+                anchor.equals(resolveHourlyWindowStart(now).toLocalDate()),
+                points);
+    }
+
+    /**
+     * 解析并收敛时段视图的锚定日。
+     *
+     * <p>解析失败不报错而是回落到当前窗口 —— 这是展示型查询，畸形参数几乎只来自
+     * 手工试探或前端状态漂移，静默给出一份可渲染的数据比抛 400 更符合预期。
+     *
+     * <p>可见性放宽到包级，供测试直接验证收敛边界。
+     *
+     * @param now           当前时刻
+     * @param requestedDate 请求日期串，可为 null / 空 / 格式错误
+     */
+    static LocalDate resolveHourlyAnchorDate(LocalDateTime now, String requestedDate) {
+        LocalDate fallback = resolveHourlyWindowStart(now).toLocalDate();
+        if (requestedDate == null || requestedDate.isBlank()) {
+            return fallback;
+        }
+        LocalDate parsed;
+        try {
+            parsed = LocalDate.parse(requestedDate.trim(), DATE_FORMAT);
+        } catch (DateTimeParseException e) {
+            return fallback;
+        }
+
+        LocalDate today = now.toLocalDate();
+        if (parsed.isAfter(today)) {
+            return today;
+        }
+        LocalDate earliest = SlidingDateWindow.earliestReachable(today);
+        return parsed.isBefore(earliest) ? earliest : parsed;
     }
 
     /**
