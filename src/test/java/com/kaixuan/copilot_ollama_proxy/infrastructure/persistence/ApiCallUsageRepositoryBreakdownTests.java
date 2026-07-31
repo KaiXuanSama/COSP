@@ -14,11 +14,15 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 阶段一验证与锁定：下钻柱状图的聚合查询。
+ * 验证与锁定：按日期聚合的用量明细查询。
+ *
+ * <p>这一份聚合同时服务两个视图 —— 堆叠柱状图取调用次数，
+ * 「近 7 日」折线取 token 并按日期求和，故两类字段都需覆盖。
  *
  * <p>覆盖：
  * <ul>
  *   <li>按 日期 × 供应商 × 模型 正确分组计数；</li>
+ *   <li>token 按同一分组求和，且 NULL 按 0 处理（否则 SUM 返回 null，前端算出 NaN）；</li>
  *   <li>日期窗口按本地时区起算，窗口外的旧数据被排除；</li>
  *   <li>同一天同一供应商的多个模型各自成行（hover 明细的数据基础）；</li>
  *   <li>失败调用不写用量行，故聚合天然只统计有用量的成功调用；</li>
@@ -46,12 +50,70 @@ class ApiCallUsageRepositoryBreakdownTests {
         repository = new ApiCallUsageRepository(jdbcTemplate, new UsageEventPublisher());
     }
 
-    /** 按"今天减 offset 天"插入一行，时间部分固定，只关心日期分组。 */
+    /** 按"今天减 offset 天"插入一行，时间部分固定，只关心日期分组。token 留 NULL。 */
     private void insertAt(int daysAgo, String providerKey, String modelName) {
         jdbcTemplate.update(
                 "INSERT INTO api_call_usage (provider_key, model_name, is_stream, created_at) "
                         + "VALUES (?, ?, 1, date('now', 'localtime', ?) || 'T12:30:00')",
                 providerKey, modelName, "-" + daysAgo + " days");
+    }
+
+    /** 同上，但带明确的 token 值，用于验证求和。 */
+    private void insertWithTokens(int daysAgo, String providerKey, String modelName,
+                                 Integer promptTokens, Integer completionTokens) {
+        jdbcTemplate.update(
+                "INSERT INTO api_call_usage (provider_key, model_name, is_stream, "
+                        + "prompt_tokens, completion_tokens, created_at) "
+                        + "VALUES (?, ?, 1, ?, ?, date('now', 'localtime', ?) || 'T12:30:00')",
+                providerKey, modelName, promptTokens, completionTokens, "-" + daysAgo + " days");
+    }
+
+    /**
+     * token 在同一分组内求和 —— 这是「近 7 日」折线的数据基础。
+     */
+    @Test
+    void sumsTokensWithinSameGroup() {
+        insertWithTokens(0, "deepseek", "chat", 100, 20);
+        insertWithTokens(0, "deepseek", "chat", 250, 30);
+
+        List<UsageBreakdownRow> rows = repository.aggregateBreakdown(7);
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).callCount()).isEqualTo(2);
+        assertThat(rows.get(0).inputTokens()).isEqualTo(350L);
+        assertThat(rows.get(0).outputTokens()).isEqualTo(50L);
+    }
+
+    /**
+     * 全为 NULL 的分组求和得 0，而非 null。
+     *
+     * <p>若不用 COALESCE，SUM 会返回 NULL，序列化后前端拿到 null 并在算术中变成 NaN ——
+     * 整条折线会消失，且没有任何报错。语义上 NULL ≠ 0，但在「求和」这一步按 0 处理是正确的。
+     */
+    @Test
+    void nullTokensAggregateToZeroNotNull() {
+        insertAt(0, "deepseek", "chat");
+
+        List<UsageBreakdownRow> rows = repository.aggregateBreakdown(7);
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).callCount()).isEqualTo(1);
+        assertThat(rows.get(0).inputTokens()).isZero();
+        assertThat(rows.get(0).outputTokens()).isZero();
+    }
+
+    /** NULL 与有值混在同一分组时，NULL 按 0 计入，不吞掉整个求和结果。 */
+    @Test
+    void mixedNullAndValuedTokensSumOnlyValued() {
+        insertAt(0, "deepseek", "chat");
+        insertWithTokens(0, "deepseek", "chat", 100, 20);
+
+        List<UsageBreakdownRow> rows = repository.aggregateBreakdown(7);
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).callCount()).isEqualTo(2);
+        assertThat(rows.get(0).inputTokens()).isEqualTo(100L);
+        assertThat(rows.get(0).outputTokens()).isEqualTo(20L);
     }
 
     @Test

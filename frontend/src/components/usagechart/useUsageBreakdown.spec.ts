@@ -28,8 +28,14 @@ const callCountMetric: BreakdownMetric = {
   valueOf: row => row.callCount,
 }
 
+/**
+ * 造一行明细。
+ *
+ * token 取次数的固定倍数：本文件只验 pivot 与「其余」合并（指标是调用次数），
+ * token 仅为满足类型，取确定值以免掩盖将来接入 token 指标时的问题。
+ */
 function row(date: string, providerKey: string, modelName: string, callCount: number): UsageBreakdownRow {
-  return { date, providerKey, modelName, callCount }
+  return { date, providerKey, modelName, callCount, inputTokens: callCount * 100, outputTokens: callCount * 10 }
 }
 
 function setup(rows: UsageBreakdownRow[], dimension: BreakdownDimension = providerFirst) {

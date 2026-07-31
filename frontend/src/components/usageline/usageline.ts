@@ -7,15 +7,29 @@
  * 属于图表语法错误。两者表达的问题也不同：折线看趋势（涨还是跌），
  * 柱状图看构成（谁占多少），故各自成图、各用一套契约。
  *
- * <h2>与后端的对应</h2>
- * {@link UsageTimelinePoint} 与 protocol 层的同名 record 字段一一对应，
- * 前端不做字段映射。总量不在其中 —— 它恒等于输入加输出，由 {@link SERIES} 现算。
+ * <h2>数据从哪来</h2>
+ * 点位<strong>不再由后端算好</strong>：三张图表共用一条 SSE，后端只下发足够细的
+ * 聚合数据与单条增量，归桶策略在 `@/features/usage-series`。本文件的
+ * {@link UsageTimelinePoint} 是那层归约的产物（{@code HourlyPoint} / {@code DailyPoint}
+ * 都能直接充当），只服务渲染。总量不在其中 —— 它恒等于输入加输出，由 {@link SERIES} 现算。
  */
 
-/** 后端 `/config/api/usage-timeline` 返回的一个点。 */
+/** 折线图消费的一个点位，由 `@/features/usage-series` 归约得出。 */
 export interface UsageTimelinePoint {
-  /** 时间桶标识：近 7 日为 `yyyy-MM-dd`，今日时段为起始时刻 `HH:mm`。 */
+  /**
+   * 时间桶标识：近 7 日为 `yyyy-MM-dd`，今日时段为完整时间戳
+   * `yyyy-MM-ddTHH:mm:ss`。
+   *
+   * 今日窗口跨午夜，故时刻桶必须带日期 —— 只给 `HH:mm` 则 `01:00` 分不清属于
+   * 当天还是次日。展示用的短标签见 {@link label}。
+   */
   bucket: string
+  /**
+   * 展示用标签，缺省时由 {@link bucketLabel} 从 {@link bucket} 推导。
+   *
+   * 时刻桶的桶键是完整时间戳，直接显示会撑爆横轴，故由归约层给出 `HH:mm`。
+   */
+  label?: string
   /** 该桶内的输入 token 总量。 */
   inputTokens: number
   /** 该桶内的输出 token 总量。 */
@@ -23,7 +37,7 @@ export interface UsageTimelinePoint {
   /**
    * 该时段是否尚未到来。
    *
-   * 今日时段范围会返回完整的 24 小时，因此横轴不随时间伸缩；但未来段的 0
+   * 今日时段范围恒为完整的 24 小时，因此横轴不随时间伸缩；但未来段的 0
    * 是「还没发生」而非「没有用量」，照常连线会让折线贴底延伸到轴末，
    * 看起来像用量已归零。折线因此只画到最后一个已发生的点为止。
    */
@@ -39,11 +53,13 @@ export interface UsageTimelinePoint {
 export type TimelineRange = '7d' | '1d'
 
 /**
- * 今日窗口的起始小时，须与后端 `UsageQueryService.DAY_START_HOUR` 一致。
+ * 今日窗口的起始小时。
  *
- * 同时决定横轴第二行「当日 / 次日」分段线的位置。
+ * 从归约层重导出而非另立一份 —— 归桶与展示必须用同一个值，各定义一份会在
+ * 不一致时表现为「数据按 5 点切、分界线画在别处」，且无编译错误。
+ * 这里只用于横轴第二行「当日 / 次日」分段线的位置。
  */
-export const DAY_START_HOUR = 5
+export { DAY_START_HOUR } from '@/features/usage-series'
 
 /**
  * 一个数据系列的配置。

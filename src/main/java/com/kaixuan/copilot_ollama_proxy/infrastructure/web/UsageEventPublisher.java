@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.web;
 
-import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownDelta;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageRecordDelta;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
@@ -13,11 +13,12 @@ import reactor.core.publisher.Sinks;
  *   <tr><th>通道</th><th>载荷</th><th>发布点</th><th>消费方</th></tr>
  *   <tr>
  *     <td>{@link #changes()}</td><td>无（纯信号）</td>
- *     <td>{@link ApiUsageCollector#record}</td><td>统计卡流、折线图流</td>
+ *     <td>{@link ApiUsageCollector#record}</td><td>统计卡流</td>
  *   </tr>
  *   <tr>
- *     <td>{@link #deltas()}</td><td>{@link UsageBreakdownDelta}</td>
- *     <td>{@code ApiCallUsageRepository.save} 写库成功后</td><td>柱状图流</td>
+ *     <td>{@link #deltas()}</td><td>{@link UsageRecordDelta}</td>
+ *     <td>{@code ApiCallUsageRepository.save} 写库成功后</td>
+ *     <td>图表流（柱状图 + 两个折线图）</td>
  *   </tr>
  * </table>
  *
@@ -26,6 +27,9 @@ import reactor.core.publisher.Sinks;
  * {@code deltas()} 的发布点写 {@code api_call_usage}。此前只有一条通道，
  * 于是柱状图（读 {@code api_call_usage}）是被<strong>另一张表</strong>的写入信号唤醒的 ——
  * 两次写入恰好发生在同一次调用里，才让它看上去正常。拆开后，每条流由自己数据源的写入驱动。
+ *
+ * <p>三个图表（柱状图、近 7 日折线、今日时段折线）共用 {@code deltas()} 一条通道：
+ * 帧是「一次调用」这个事实，不预设分桶方式，故各视图能按自己的窗口口径分别归桶或丢弃。
  *
  * <h2>两种载荷形态的取舍</h2>
  * <ul>
@@ -47,44 +51,39 @@ public class UsageEventPublisher {
 
     private final Sinks.Many<Object> sink = Sinks.many().multicast().directBestEffort();
 
-    private final Sinks.Many<UsageBreakdownDelta> deltaSink = Sinks.many().multicast().directBestEffort();
+    private final Sinks.Many<UsageRecordDelta> deltaSink = Sinks.many().multicast().directBestEffort();
 
     /**
      * 发布一次统计变更信号（写库成功后调用）。
      *
-     * <p>TODO 即将废弃：本信号是无载荷的「去重查一遍」触发器，目前仍被统计卡流与折线图流使用。
-     * 折线图流迁移到 {@link #deltas()} 后（增量帧已预留 createdAt 与 token 字段），
-     * 这里只剩统计卡流一个消费方；届时可考虑把统计卡也并入增量通道，或让它自己发信号。
+     * <p>本信号是无载荷的「去重查一遍」触发器，现在只剩统计卡流一个消费方 ——
+     * 而统计卡读的 {@code api_usage_daily} 恰好就是发布点所写的表，信号与数据源一致。
      */
     public void publishUsageChanged() {
         sink.tryEmitNext(SIGNAL);
     }
 
-    /**
-     * 订阅统计变更信号流。
-     *
-     * <p>TODO 即将废弃，理由见 {@link #publishUsageChanged()}。
-     */
+    /** 订阅统计变更信号流（统计卡流专用）。 */
     public Flux<Object> changes() {
         return sink.asFlux();
     }
 
     /**
-     * 发布一条用量明细增量帧（{@code api_call_usage} 写库成功后调用）。
+     * 发布一条用量记录增量帧（{@code api_call_usage} 写库成功后调用）。
      *
      * <p>务必只在写入确实成功后调用：帧一旦发出，前端就会把它累加进图表，
      * 而没有后续的全量重查来纠正 —— 这正是增量方案与纯信号方案的取舍所在。
      */
-    public void publishBreakdownDelta(UsageBreakdownDelta delta) {
+    public void publishRecordDelta(UsageRecordDelta delta) {
         deltaSink.tryEmitNext(delta);
     }
 
     /**
-     * 订阅用量明细增量帧流。
+     * 订阅用量记录增量帧流。
      *
      * <p>订阅方须自行保证基准正确：先取一次全量快照，再接增量。
      */
-    public Flux<UsageBreakdownDelta> deltas() {
+    public Flux<UsageRecordDelta> deltas() {
         return deltaSink.asFlux();
     }
 }

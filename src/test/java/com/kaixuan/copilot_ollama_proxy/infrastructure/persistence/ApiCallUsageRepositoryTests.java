@@ -2,7 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
-import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownDelta;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageRecordDelta;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -142,50 +142,62 @@ class ApiCallUsageRepositoryTests {
     }
 
     /**
-     * 写入成功后广播一帧增量，字段与落库值同源。
+     * 写入成功后广播一帧增量，{@code createdAt} 与落库值<strong>同源</strong>。
      *
-     * <p>{@code date} 必须等于 {@code created_at} 的前 10 位 —— 与
-     * {@code aggregateBreakdown} 的 {@code substr(created_at, 1, 10)} 同一口径，
-     * 前端才能用它精确匹配到已有的柱子。若两者口径不一致，增量会落到错误的日期上。
+     * <p>同源是硬要求：前端要用它算出日期去匹配柱子，而柱状图的日期来自
+     * {@code aggregateBreakdown} 的 {@code substr(created_at, 1, 10)}。
+     * 若帧里的时刻由应用二次取 {@code now()} 生成，跨午夜的瞬间两者会来自不同时钟，
+     * 出现「帧说今天、库里记昨天」的偏差，增量就落到错误的日期上。
+     *
+     * <p>顺带锁定「帧不带派生日期字段」这一设计：日期是 createdAt 的前 10 位，
+     * 由消费侧现算，不存在两个字段不一致的可能。
      */
     @Test
     void successfulSavePublishesDeltaMatchingStoredRow() {
-        AtomicReference<UsageBreakdownDelta> captured = new AtomicReference<>();
+        AtomicReference<UsageRecordDelta> captured = new AtomicReference<>();
         publisher.deltas().subscribe(captured::set);
 
         repository.save(7L, "deepseek", "chat", true, "{}", new UsageTokens(120, 45, null), 80);
 
-        UsageBreakdownDelta delta = captured.get();
+        UsageRecordDelta delta = captured.get();
         assertThat(delta).isNotNull();
         assertThat(delta.providerKey()).isEqualTo("deepseek");
         assertThat(delta.modelName()).isEqualTo("chat");
-        assertThat(delta.callCount()).isEqualTo(1L);
-        assertThat(delta.inputTokens()).isEqualTo(120);
-        assertThat(delta.outputTokens()).isEqualTo(45);
+        assertThat(delta.inputTokens()).isEqualTo(120L);
+        assertThat(delta.outputTokens()).isEqualTo(45L);
 
         Map<String, Object> row = repository.findByLogId(7L);
         assertThat(row).isNotNull();
         String storedCreatedAt = (String) row.get("created_at");
         assertThat(delta.createdAt()).isEqualTo(storedCreatedAt);
-        assertThat(delta.date()).isEqualTo(storedCreatedAt.substring(0, 10));
+
+        // 与柱状图聚合同一口径：消费侧取前 10 位即得到可匹配的日期。
+        assertThat(delta.createdAt().substring(0, 10)).isEqualTo(storedCreatedAt.substring(0, 10));
     }
 
     /**
-     * token 缺失时帧里也是 null，不被压成 0。
+     * token 为 null 的防御路径：帧里按 0 下发，而<strong>库里仍是 null</strong>。
      *
-     * <p>折线图将来要消费这两个字段，null（上游未提供）与 0（真实零值）的区分
-     * 必须一路保留到传输层。
+     * <p>两侧口径不同是刻意的。库保留 null（上游未提供）与 0（真实零值）的区分，
+     * 供日志详情页与将来的口径审计使用；而帧只在落库成功后发出，
+     * 上游未返回 usage 时根本走不到写入 —— null 在这条路径上不该出现。
+     * 真正的兜底是「落库成功才推帧」这条规则，不是在传输层保留一个不会出现的状态。
      */
     @Test
-    void deltaKeepsNullTokensAsNull() {
-        AtomicReference<UsageBreakdownDelta> captured = new AtomicReference<>();
+    void deltaFallsBackToZeroWhileRowKeepsNull() {
+        AtomicReference<UsageRecordDelta> captured = new AtomicReference<>();
         publisher.deltas().subscribe(captured::set);
 
         repository.save(8L, "p", "m", false, null, null, null);
 
-        UsageBreakdownDelta delta = captured.get();
+        UsageRecordDelta delta = captured.get();
         assertThat(delta).isNotNull();
-        assertThat(delta.inputTokens()).isNull();
-        assertThat(delta.outputTokens()).isNull();
+        assertThat(delta.inputTokens()).isZero();
+        assertThat(delta.outputTokens()).isZero();
+
+        Map<String, Object> row = repository.findByLogId(8L);
+        assertThat(row).isNotNull();
+        assertThat(row.get("prompt_tokens")).as("库里保留 null 语义").isNull();
+        assertThat(row.get("completion_tokens")).isNull();
     }
 }

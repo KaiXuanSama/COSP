@@ -3,9 +3,9 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
-import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownDelta;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
-import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTimelinePoint;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageHourlyPoint;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageRecordDelta;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -75,25 +75,29 @@ public class ApiCallUsageRepository implements ApiCallUsageService {
     }
 
     /**
-     * 广播一条用量明细增量帧，供概览柱状图即时长高。
+     * 广播一条用量记录增量帧，供概览的柱状图与两个折线视图同步更新。
      *
-     * <p>日期取 {@code created_at} 的前 10 位 —— 与 {@code aggregateBreakdown} 的
-     * {@code substr(created_at, 1, 10)} 同一口径，前端才能用它精确匹配到已有的柱子。
+     * <p>帧原样携带落库那一行，不做任何聚合 —— 三个视图的窗口口径互不相同
+     * （柱状图与近 7 日按日历日，今日时段按 05:00 分界），归桶与丢弃都由消费侧决定。
+     * {@code createdAt} 与落库值同源，故前端算出的日期必然等于
+     * {@code aggregateBreakdown} 的 {@code substr(created_at, 1, 10)}。
+     *
+     * <p>token 用 {@code longValue} 而非可空包装：本方法只在落库成功后被调用，
+     * 而上游未返回 usage 时根本不会走到写入，故 null 不出现在这条路径上。
+     * {@link UsageTokens} 的可空字段在此按 0 处理仅为防御，不代表业务上允许 null。
      *
      * <p>推送失败同样只 warn：图表少涨一格，下次刷新即自愈，不值得影响主调用链。
      */
     private void publishDelta(String createdAt, String providerKey, String modelName, UsageTokens tokens) {
         try {
-            usageEventPublisher.publishBreakdownDelta(new UsageBreakdownDelta(
-                    createdAt.substring(0, 10),
+            usageEventPublisher.publishRecordDelta(new UsageRecordDelta(
                     createdAt,
                     providerKey,
                     modelName,
-                    1L,
-                    tokens.promptTokens(),
-                    tokens.completionTokens()));
+                    tokens.promptTokens() == null ? 0L : tokens.promptTokens(),
+                    tokens.completionTokens() == null ? 0L : tokens.completionTokens()));
         } catch (Exception e) {
-            log.warn("发布用量明细增量帧失败: {}", e.getMessage());
+            log.warn("发布用量记录增量帧失败: {}", e.getMessage());
         }
     }
 
@@ -110,17 +114,37 @@ public class ApiCallUsageRepository implements ApiCallUsageService {
     }
 
     /**
-     * 按 日期 × 供应商 × 模型 聚合最近若干天的调用次数。
+     * 按 日期 × 供应商 × 模型 聚合最近若干天的调用次数与 token 用量。
      *
-     * <p>这是概览下钻柱状图的唯一数据来源：只在最细粒度聚合一次，
-     * 三级视图与 hover 明细都由前端从同一份结果 pivot 得出。
+     * <p>这是图表流首帧的第一部分，同时支撑两个视图：堆叠柱状图取调用次数并按
+     * 供应商 / 模型 pivot 出三级下钻，「近 7 日」折线取 token 并按日期求和。
+     * 折线因此不需要单独的日级聚合 —— 日期与 token 都已在同一份明细里。
      *
      * <p>{@code created_at} 存储格式为 {@code %Y-%m-%dT%H:%M:%S}（本地时区），
      * 故取前 10 位即日期部分；按天窗口用 {@code date('now','localtime')} 起算，
      * 与写入侧的本地时区口径一致。
      *
+     * <p>{@code COALESCE} 是必需的：token 列允许 NULL（上游未提供），
+     * 若不兜底，全为 NULL 的分组会让 {@code SUM} 返回 NULL，序列化后前端拿到 null
+     * 并在算术中变成 NaN。语义上 NULL ≠ 0，但在「求和」这一步按 0 处理是正确的。
+     *
      * <p>结果按 日期升序、次数降序 返回：日期升序便于前端直接按时间轴渲染，
      * 次数降序让"更忙的组合"先出现（前端仍会按各自维度重新排序，此处仅为稳定输出）。
+     *
+     * <h2>WHERE 为何用字面量比较而非 substr</h2>
+     * 把列包在 {@code substr(...)} 里会使条件失去 sargable 性质，无法利用索引而退化为
+     * 全表扫描。改用 {@code created_at >= date(...) || 'T00:00:00'} 后，条件直接作用于列，
+     * 可命中 {@code idx_api_call_usage_created}（V8.4 迁移新增）。
+     *
+     * <p>拼上 {@code T00:00:00} 而非直接与日期串比较：{@code created_at} 是
+     * {@code yyyy-MM-ddTHH:mm:ss}，而 {@code '2026-07-25' < '2026-07-25T00:00:00'}
+     * 在字典序下成立，故只写日期串同样能取到当天全部行 —— 但补全成同格式的边界值
+     * 使意图明确，也避免将来格式变化时出现难以察觉的偏差。
+     *
+     * <p>分组键仍在 SELECT 侧用 {@code substr} 计算，那不影响 WHERE 的索引可用性。
+     * 需要注意索引只能省掉「扫描无关历史行」这一步：{@code GROUP BY} 仍要遍历命中的行，
+     * 且分组键是表达式而非索引列，SQLite 会建临时 B-tree 排序。窗口放开到数十天时，
+     * 聚合本身会成为新的瓶颈，那时才需要服务端 top-N。
      *
      * @param days 回看天数（含今天），调用方应先做范围钳制
      * @return 明细行；无数据时返回空列表
@@ -128,86 +152,63 @@ public class ApiCallUsageRepository implements ApiCallUsageService {
     public List<UsageBreakdownRow> aggregateBreakdown(int days) {
         return jdbcTemplate.query(
                 "SELECT substr(created_at, 1, 10) AS usage_date, provider_key, model_name, "
-                        + "COUNT(*) AS call_count "
+                        + "COUNT(*) AS call_count, "
+                        + "SUM(COALESCE(prompt_tokens, 0)) AS input_tokens, "
+                        + "SUM(COALESCE(completion_tokens, 0)) AS output_tokens "
                         + "FROM api_call_usage "
-                        + "WHERE substr(created_at, 1, 10) >= date('now', 'localtime', ?) "
+                        + "WHERE created_at >= date('now', 'localtime', ?) || 'T00:00:00' "
                         + "GROUP BY usage_date, provider_key, model_name "
                         + "ORDER BY usage_date ASC, call_count DESC",
                 (rs, rowNum) -> new UsageBreakdownRow(
                         rs.getString("usage_date"),
                         rs.getString("provider_key"),
                         rs.getString("model_name"),
-                        rs.getLong("call_count")),
-                "-" + (days - 1) + " days");
-    }
-
-    /**
-     * 按天聚合最近若干天的 token 用量，供折线图的「近 7 日」范围使用。
-     *
-     * <p>与 {@link #aggregateBreakdown(int)} 同源同窗口，因此折线与柱状图的口径一致，
-     * 两图可以互相印证。这里不带供应商 / 模型维度 —— 折线表达的是总量趋势，
-     * 构成分解由柱状图负责。
-     *
-     * <p>{@code COALESCE} 是必需的：三个 token 列都允许 NULL（上游未提供 usage 时），
-     * 若不兜底，全为 NULL 的分组会让 {@code SUM} 返回 NULL，序列化后前端拿到 null
-     * 并在算术中变成 NaN。语义上 NULL ≠ 0，但在「求和」这一步按 0 处理是正确的。
-     *
-     * <p>只返回<strong>有数据的日期</strong>；缺失日期的补零由应用层完成，
-     * 因为「时间轴该有多长」是展示口径，不属于数据访问层的职责。
-     *
-     * @param days 回看天数（含今天），调用方应先做范围钳制
-     * @return 按日期升序的用量点；无数据时返回空列表
-     */
-    public List<UsageTimelinePoint> aggregateDailyTokens(int days) {
-        return jdbcTemplate.query(
-                "SELECT substr(created_at, 1, 10) AS bucket, "
-                        + "SUM(COALESCE(prompt_tokens, 0)) AS input_tokens, "
-                        + "SUM(COALESCE(completion_tokens, 0)) AS output_tokens "
-                        + "FROM api_call_usage "
-                        + "WHERE substr(created_at, 1, 10) >= date('now', 'localtime', ?) "
-                        + "GROUP BY bucket "
-                        + "ORDER BY bucket ASC",
-                (rs, rowNum) -> new UsageTimelinePoint(
-                        rs.getString("bucket"),
+                        rs.getLong("call_count"),
                         rs.getLong("input_tokens"),
                         rs.getLong("output_tokens")),
                 "-" + (days - 1) + " days");
     }
 
     /**
-     * 按小时聚合指定时间窗内的 token 用量，供折线图的「今日时段」范围使用。
+     * 按<strong>整点</strong>聚合指定时间窗内的 token 用量，供折线图「今日时段」视图使用。
+     *
+     * <h2>整点以中心方式聚合</h2>
+     * {@code 14:00} 这个点覆盖 {@code [13:30, 14:30)}，等价于「把时刻四舍五入到最近的整点」，
+     * 实现上即 {@code created_at + 30 分钟} 后截断到整点：
+     * {@code 13:45 + 30min = 14:15 → 14:00}、{@code 14:30 + 30min = 15:00 → 15:00}。
+     * 窗口首尾因此各只覆盖半小时，两者相加恰好一小时，总量不重不漏 ——
+     * 这是窗口边界与居中聚合共同作用的自然结果，无需特例。
+     *
+     * <p>之所以在 SQL 里完成这步而不是下发更细的槽：整点是展示所需的最终粒度，
+     * 一个 24 小时窗口最多 25 行，上界固定。若下发半小时槽或逐条记录，
+     * 消费侧仍要再聚合一次，而行数上界翻倍甚至无界。
      *
      * <h2>为什么用字面量比较而非 substr</h2>
      * {@code created_at} 是 {@code %Y-%m-%dT%H:%M:%S} 定长本地时间字符串，
      * 其<strong>字典序与时间序一致</strong>，故可直接用 {@code >=} / {@code <} 比较。
-     * 这一点很重要：把列包在 {@code substr(...)} 里会使条件失去 sargable 性质，
-     * 无法利用索引而退化为全表扫描；本方法查询的时间窗很窄，更不该付这个代价。
+     * 把列包在 {@code substr(...)} 里会使条件失去 sargable 性质，退化为全表扫描。
      *
-     * <h2>为什么按半小时而非整小时分组</h2>
-     * 展示侧的时间点以<strong>整点为中心</strong>聚合（{@code 07:00} 覆盖 06:30–07:30），
-     * 这样横轴首尾各占半格、两端都落在 05:00 上，读起来前后对称。
-     * 半小时是这种居中聚合所需的最小单元 —— 按整小时分组就无法再拆成两半。
+     * <p>该条件可命中 {@code idx_api_call_usage_created}（V8.4 迁移新增的 {@code created_at}
+     * 前导索引）。既有的 {@code (provider_key, created_at DESC)} 在此用不上 ——
+     * 本查询没有 {@code provider_key} 等值条件，复合索引的前导列不匹配。
      *
-     * <p>分组键在 SELECT 侧计算，不影响 WHERE 的索引可用性。返回的是<strong>半小时槽</strong>
-     * 而非最终时间点：槽到点的映射依赖「以整点为中心」这一展示口径
-     * （见 {@code UsageQueryService}），不属于数据访问层。
+     * <p>分组键在 SELECT 侧计算，不影响 WHERE 的索引可用性。只返回<strong>有数据的整点</strong>，
+     * 补零由应用层完成 —— 「时间轴该有多长」是展示口径，不属于数据访问层。
      *
      * @param startInclusive 窗口起点，格式 {@code yyyy-MM-ddTHH:mm:ss}，含
      * @param endExclusive   窗口终点，同格式，不含
-     * @return 按时刻升序的用量槽，{@code bucket} 为 {@code HH:00} 或 {@code HH:30}；无数据时返回空列表
+     * @return 按时刻升序的整点用量；{@code bucket} 为完整时间戳；无数据时返回空列表
      */
-    public List<UsageTimelinePoint> aggregateHalfHourTokens(String startInclusive, String endExclusive) {
+    public List<UsageHourlyPoint> aggregateHourlyTokens(String startInclusive, String endExclusive) {
         return jdbcTemplate.query(
-                "SELECT substr(created_at, 12, 2) || ':' "
-                        + "|| CASE WHEN CAST(substr(created_at, 15, 2) AS INTEGER) >= 30 "
-                        + "THEN '30' ELSE '00' END AS bucket, "
+                "SELECT strftime('%Y-%m-%dT%H:00:00', created_at, '+30 minutes') AS bucket, "
                         + "SUM(COALESCE(prompt_tokens, 0)) AS input_tokens, "
                         + "SUM(COALESCE(completion_tokens, 0)) AS output_tokens "
                         + "FROM api_call_usage "
                         + "WHERE created_at >= ? AND created_at < ? "
                         + "GROUP BY bucket "
                         + "ORDER BY bucket ASC",
-                (rs, rowNum) -> new UsageTimelinePoint(
+                (rs, rowNum) -> new UsageHourlyPoint(
                         rs.getString("bucket"),
                         rs.getLong("input_tokens"),
                         rs.getLong("output_tokens")),

@@ -70,8 +70,8 @@ class UsageQueryServiceBreakdownTests {
     @Test
     void repositoryRowsAreReturnedUnmodified() {
         List<UsageBreakdownRow> rows = List.of(
-                new UsageBreakdownRow("2026-07-26", "deepseek", "chat", 12L),
-                new UsageBreakdownRow("2026-07-26", "zhipu", "glm", 3L));
+                new UsageBreakdownRow("2026-07-26", "deepseek", "chat", 12L, 1200L, 340L),
+                new UsageBreakdownRow("2026-07-26", "zhipu", "glm", 3L, 300L, 90L));
         when(usageRepository.aggregateBreakdown(anyInt())).thenReturn(rows);
 
         List<UsageBreakdownRow> result = service.getUsageBreakdown(7).block();

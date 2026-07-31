@@ -1,7 +1,6 @@
 import { computed, type Ref } from 'vue'
 import { buildAxisTicks } from '../usagechart/axisTicks'
 import {
-  DAY_START_HOUR,
   SERIES,
   type AxisDateSegment,
   type AxisLabel,
@@ -10,10 +9,10 @@ import {
 } from './usageline'
 
 /**
- * 把后端点位换算成可直接绘制的三条折线与两行横轴标签。
+ * 把归约后的点位换算成可直接绘制的折线与两行横轴标签。
  *
  * <h2>为什么在数据层做换算</h2>
- * SVG 折线需要的是坐标序列，而后端给的是数值序列。这层换算涉及轴上限取整、
+ * SVG 折线需要的是坐标序列，而上游给的是数值序列。这层换算涉及轴上限取整、
  * 空数据兜底、跨夜日期归属等一堆边界，全都是纯计算 —— 放在组件里会让模板
  * 难以测试，抽到这里则每条规则都能单测覆盖。
  *
@@ -95,7 +94,7 @@ export function useTimelineSeries(points: Ref<UsageTimelinePoint[]>) {
         isLabelVisible(index, points.value.length),
         point.future === true,
       ),
-      text: bucketLabel(point.bucket),
+      text: point.label ?? bucketLabel(point.bucket),
     })),
   )
 
@@ -138,20 +137,27 @@ export function shortDate(date: string): string {
 }
 
 /**
- * 桶标识是否为时刻（`HH:mm`）而非日期（`yyyy-MM-dd`）。
+ * 桶标识是否为时刻桶（完整时间戳）而非日期桶（`yyyy-MM-dd`）。
  *
- * 据桶自身判断形态，而非据当前范围 —— 范围立即变、数据要等请求回来，
- * 两者不同步的那几帧会用错格式器，标签闪出 `2026-07-24` 这样的原始值。
+ * 据桶自身判断形态，而非据当前范围 —— 范围立即变、数据要等归约完成，
+ * 两者不同步的那几帧会用错格式器，标签闪出原始值。
  *
- * @param bucket 后端返回的桶标识；缺省视为日期
+ * 时刻桶是 `yyyy-MM-ddTHH:mm:ss`，日期桶是 `yyyy-MM-dd`，故以 `T` 分隔符为准。
+ *
+ * @param bucket 桶标识；缺省视为日期
  */
 export function isClockBucket(bucket: string | undefined): boolean {
-  return bucket !== undefined && bucket.includes(':')
+  return bucket !== undefined && bucket.includes('T')
 }
 
-/** 桶标识 → 横轴标签文字。时刻桶原样取用，日期桶缩成 `M/D`。 */
+/**
+ * 桶标识 → 横轴标签文字。
+ *
+ * 时刻桶取时间部分的 `HH:mm`（桶键含日期，整串显示会撑爆横轴），
+ * 日期桶缩成 `M/D`。归约层已给出 `label` 时优先用它，此函数是缺省兜底。
+ */
 export function bucketLabel(bucket: string): string {
-  return isClockBucket(bucket) ? bucket : shortDate(bucket)
+  return isClockBucket(bucket) ? bucket.slice(11, 16) : shortDate(bucket)
 }
 
 /**
@@ -200,38 +206,44 @@ export function labelOpacityOf(visible: boolean, future: boolean): number {
  * 今日窗口从 05:00 跨到次日 05:00，单看时刻行无法判断 02:00 属于哪一天。
  * 补一行日期后，跨夜语义在视觉上不言自明。
  *
- * <h2>分界线落在午夜对应的比例位置</h2>
- * 每小时一个点、共 25 个点（05:00 … 04:00 05:00），午夜落在下标 19 的点上
- * （自 05:00 数起的第 20 个）。日期行是标签而非刻度，因此分界线只需落在时间轴上
- * 正确的<strong>比例</strong>位置，无须与某条刻度线严格重合。
+ * <h2>日期取自桶键，而非当前时刻</h2>
+ * 桶键是完整时间戳，日期直接读得出来。这比 `new Date()` 可靠 ——
+ * 窗口在建流时算定、此后冻结，若用当前时刻推断，跨过午夜后第一段会被标成
+ * 「明天」，而它实际代表的仍是建流那天。
  *
- * @param points 完整一天的点位
+ * <h2>分界线落在午夜对应的比例位置</h2>
+ * 日期行是标签而非刻度，因此分界线只需落在时间轴上正确的<strong>比例</strong>位置，
+ * 无须与某条刻度线严格重合。
+ *
+ * @param points 完整一天的点位（时刻桶）
  */
 export function buildDateSegments(points: UsageTimelinePoint[]): AxisDateSegment[] {
   if (!points.length) return []
 
   const total = points.length
-  const today = new Date()
+  const firstDate = datePartOf(points[0].bucket)
 
-  /** 午夜距窗口起点的小时数：05:00 → 24:00 共 19 小时，每小时一点故即为点序号。 */
-  const midnightIndex = 24 - DAY_START_HOUR
-
-  // 尚未跨过午夜：整条轴都属同一天，一段即可
-  if (midnightIndex >= total - 1) {
-    return [{ label: monthDay(today), start: 0, width: 1 }]
+  // 首个与自己不同日的点即跨夜处；找不到说明整条轴同属一天
+  const midnightIndex = points.findIndex((point) => datePartOf(point.bucket) !== firstDate)
+  if (midnightIndex <= 0 || midnightIndex > total - 1) {
+    return [{ label: monthDay(firstDate), start: 0, width: 1 }]
   }
 
   const boundary = xRatioOf(midnightIndex, total)
-  const tomorrow = new Date(today.getTime() + 86_400_000)
   return [
-    { label: monthDay(today), start: 0, width: boundary },
-    { label: monthDay(tomorrow), start: boundary, width: 1 - boundary },
+    { label: monthDay(firstDate), start: 0, width: boundary },
+    { label: monthDay(datePartOf(points[midnightIndex].bucket)), start: boundary, width: 1 - boundary },
   ]
 }
 
-/** `Date` → `M/D`。 */
-function monthDay(date: Date): string {
-  return `${date.getMonth() + 1}/${date.getDate()}`
+/** 桶键的日期部分。 */
+function datePartOf(bucket: string): string {
+  return bucket.slice(0, 10)
+}
+
+/** `yyyy-MM-dd` → `M/D`。 */
+function monthDay(date: string): string {
+  return shortDate(date)
 }
 
 /**

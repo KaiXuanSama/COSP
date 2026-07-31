@@ -153,6 +153,11 @@ CREATE INDEX IF NOT EXISTS idx_api_call_usage_provider_created
     ON api_call_usage(provider_key, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_api_call_usage_log
     ON api_call_usage(log_id);
+-- 纯 created_at 前导索引：概览的两条聚合查询只按时间范围过滤，没有 provider_key 等值条件，
+-- 因此用不上上面那个复合索引（前导列不匹配）。升序而非 DESC：两条查询都是 >= start 的
+-- 范围扫描，与升序同向；DESC 只对「取最近 N 条」有利，那是 provider_created 的场景。
+CREATE INDEX IF NOT EXISTS idx_api_call_usage_created
+    ON api_call_usage(created_at);
 
 -- ==================== Schema 版本表 ====================
 
