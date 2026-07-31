@@ -481,6 +481,12 @@ export function useStackMorph(
    * 于是本回调只登记「这一批要不要走起始态」，两件后续工作各归其位：
    *   下一帧      —— 放开起始高度，凭空出现的柱与层开始调整（scheduleSettle）；
    *   动画结束后  —— 推进 previous，退场柱此时才被移除（scheduleRetire）。
+   *
+   * `immediate` 是必需的：图表组件由 `v-if` 控制，数据未到时渲染的是加载态，
+   * 组件要等数据到齐才创建 —— 那一刻 `bars` 已是最终值，此后不再变化，
+   * 非 immediate 的 watch 永远不会为这批数据触发，`previous` 就一直空着。
+   * 后果是紧接着的第一次层级切换找不到任何可配对的旧柱，锚点也无从生效，
+   * 形变退化为整批重新入场；第二次起才正常。故挂载即结算一次首批占位。
    */
   watch(bars, (next) => {
     // 需要起始态的只有「凭空出现的东西」：新挤进来的柱子、以及某根柱新长出的顶层。
@@ -491,7 +497,7 @@ export function useStackMorph(
     // 快照取「本次实际渲染出的占位」而非裸数据：占位是这批柱子的 DOM 身份，
     // 必须与数据一同留存，详见 scheduleRetire。
     scheduleRetire(snapshotOf(next, previous.value, anchor.value))
-  }, { flush: 'post' })
+  }, { flush: 'post', immediate: true })
 
   /**
    * 下一帧放开起始高度，让凭空出现的柱与层调整到目标值。
