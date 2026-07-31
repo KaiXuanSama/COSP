@@ -131,6 +131,7 @@ class SchemaMigrationRunnerTests {
                 .doesNotContain("api_key", "active_api_key_index", "custom_transforms", "api_format");
         assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
         assertThat(tableExists(jdbcTemplate, "api_call_usage")).isTrue();
+        assertThat(indexExists(jdbcTemplate, "idx_api_call_usage_created")).isTrue();
     }
 
     @Test
@@ -262,6 +263,68 @@ class SchemaMigrationRunnerTests {
                 assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
                 assertThat(indexExists(jdbcTemplate, "idx_reasoning_cache_created_at")).isFalse();
         }
+
+    /**
+     * V8.3 库升到 V8.4 时补出 created_at 前导索引，且不动表结构与数据。
+     *
+     * V8.3 已有的两个索引都无法服务纯时间范围扫描（provider_created 的前导列是
+     * provider_key，log 索引与时间无关），故这里同时断言三个索引并存 ——
+     * 新索引是补充而非替换，按供应商取最近记录仍要走原索引。
+     */
+    @Test
+    void v83DatabaseAddsUsageCreatedAtIndexDuringV84Migration() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createCurrentSchema(jdbcTemplate);
+        createV83UsageTable(jdbcTemplate);
+        jdbcTemplate.execute("CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
+                + "version REAL NOT NULL, description TEXT NOT NULL, applied_at TEXT)");
+        jdbcTemplate.update("INSERT INTO schema_version (id, version, description) VALUES (1, 8.3, 'V8.3')");
+        jdbcTemplate.update("INSERT INTO api_call_usage (provider_key, model_name, is_stream, "
+                + "prompt_tokens, completion_tokens, created_at) "
+                + "VALUES ('deepseek', 'chat', 1, 120, 45, '2026-07-30T14:23:07')");
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        runner.run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+        assertThat(indexExists(jdbcTemplate, "idx_api_call_usage_created")).isTrue();
+        // 新索引是补充而非替换：按供应商取最近记录仍需原索引
+        assertThat(indexExists(jdbcTemplate, "idx_api_call_usage_provider_created")).isTrue();
+        assertThat(indexExists(jdbcTemplate, "idx_api_call_usage_log")).isTrue();
+        // 纯加索引迁移：既有行与列一个不动
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM api_call_usage", Integer.class)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT created_at FROM api_call_usage WHERE provider_key = 'deepseek'", String.class))
+                .isEqualTo("2026-07-30T14:23:07");
+        assertThat(columnNames(jdbcTemplate, "api_call_usage")).contains(
+                "id", "log_id", "provider_key", "model_name", "is_stream", "usage_raw",
+                "prompt_tokens", "completion_tokens", "cached_tokens", "ttfb_ms", "created_at");
+    }
+
+    /**
+     * 索引建在 created_at 上，故按时间范围过滤的查询能用上它。
+     *
+     * 直接断言执行计划：索引存在但查询用不上是这次迁移要解决的原问题
+     * （V8.3 的 provider_created 索引就是那种情况），只断言索引存在测不出区别。
+     */
+    @Test
+    void usageCreatedAtIndexServesTimeRangeScan() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        new ResourceDatabasePopulator(new ClassPathResource("schema.sql"))
+                .execute(jdbcTemplate.getDataSource());
+
+        // EXPLAIN QUERY PLAN 返回 (id, parent, notused, detail) 四列，计划描述在 detail
+        String plan = jdbcTemplate.queryForList(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM api_call_usage "
+                        + "WHERE created_at >= ? AND created_at < ?",
+                "2026-07-25T00:00:00", "2026-08-01T00:00:00").stream()
+                .map(row -> String.valueOf(row.get("detail")))
+                .reduce("", (left, right) -> left + " | " + right);
+
+        assertThat(plan).contains("idx_api_call_usage_created");
+    }
 
     @Test
     void historicalV5MigrationDoesNotOverwriteExistingRequestTransformConfiguration() {
@@ -397,6 +460,25 @@ class SchemaMigrationRunnerTests {
                                 + "base_url TEXT NOT NULL DEFAULT '', updated_at TEXT)");
         }
 
+        /**
+         * 建出 V8.3 时的 api_call_usage —— 表与两个索引，但<strong>没有</strong>
+         * created_at 前导索引，那正是 V8.4 要补的。
+         */
+        private void createV83UsageTable(JdbcTemplate jdbcTemplate) {
+                jdbcTemplate.execute("CREATE TABLE api_call_usage ("
+                                + "id INTEGER PRIMARY KEY AUTOINCREMENT, log_id INTEGER, provider_key VARCHAR(30), "
+                                + "model_name VARCHAR(100), is_stream INTEGER NOT NULL DEFAULT 0 CHECK (is_stream IN (0, 1)), "
+                                + "usage_raw TEXT, "
+                                + "prompt_tokens INTEGER CHECK (prompt_tokens IS NULL OR prompt_tokens >= 0), "
+                                + "completion_tokens INTEGER CHECK (completion_tokens IS NULL OR completion_tokens >= 0), "
+                                + "cached_tokens INTEGER CHECK (cached_tokens IS NULL OR cached_tokens >= 0), "
+                                + "ttfb_ms INTEGER CHECK (ttfb_ms IS NULL OR ttfb_ms >= 0), "
+                                + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')))");
+                jdbcTemplate.execute("CREATE INDEX idx_api_call_usage_provider_created "
+                                + "ON api_call_usage(provider_key, created_at DESC)");
+                jdbcTemplate.execute("CREATE INDEX idx_api_call_usage_log ON api_call_usage(log_id)");
+        }
+
         private void createCurrentProviderAssociations(JdbcTemplate jdbcTemplate) {
                 jdbcTemplate.execute("CREATE TABLE provider_model (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL)");
                 jdbcTemplate.execute("CREATE TABLE provider_api_key (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL)");
@@ -449,9 +531,12 @@ class SchemaMigrationRunnerTests {
                 if (version >= 8.1) {
                         assertThat(columnNames(jdbcTemplate, "provider_config")).doesNotContain("api_format");
                 }
-                if (version >= SchemaMigrationRunner.currentSchemaVersion()) {
+                if (version >= 8.3) {
                         assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
                         assertThat(tableExists(jdbcTemplate, "api_call_usage")).isTrue();
+                }
+                if (version >= SchemaMigrationRunner.currentSchemaVersion()) {
+                        assertThat(indexExists(jdbcTemplate, "idx_api_call_usage_created")).isTrue();
                 }
         }
 }

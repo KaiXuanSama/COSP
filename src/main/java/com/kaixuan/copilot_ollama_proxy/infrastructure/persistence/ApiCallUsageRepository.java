@@ -131,11 +131,20 @@ public class ApiCallUsageRepository implements ApiCallUsageService {
      * <p>结果按 日期升序、次数降序 返回：日期升序便于前端直接按时间轴渲染，
      * 次数降序让"更忙的组合"先出现（前端仍会按各自维度重新排序，此处仅为稳定输出）。
      *
-     * <p>TODO 待优化：{@code WHERE} 把列包在 {@code substr(...)} 里，条件不 sargable，
-     * 实际是全表扫描。改成与 {@link #aggregateHourlyTokens} 一致的字面量比较可恢复
-     * 索引可用性，但仍需为 {@code api_call_usage} 补一个 {@code created_at} 前导索引
-     * （现有索引是 {@code (provider_key, created_at DESC)} 与 {@code (log_id)}，都命不中）。
-     * 当前窗口固定 7 天、数据量小，放开到任意长区间时应一并处理。
+     * <h2>WHERE 为何用字面量比较而非 substr</h2>
+     * 把列包在 {@code substr(...)} 里会使条件失去 sargable 性质，无法利用索引而退化为
+     * 全表扫描。改用 {@code created_at >= date(...) || 'T00:00:00'} 后，条件直接作用于列，
+     * 可命中 {@code idx_api_call_usage_created}（V8.4 迁移新增）。
+     *
+     * <p>拼上 {@code T00:00:00} 而非直接与日期串比较：{@code created_at} 是
+     * {@code yyyy-MM-ddTHH:mm:ss}，而 {@code '2026-07-25' < '2026-07-25T00:00:00'}
+     * 在字典序下成立，故只写日期串同样能取到当天全部行 —— 但补全成同格式的边界值
+     * 使意图明确，也避免将来格式变化时出现难以察觉的偏差。
+     *
+     * <p>分组键仍在 SELECT 侧用 {@code substr} 计算，那不影响 WHERE 的索引可用性。
+     * 需要注意索引只能省掉「扫描无关历史行」这一步：{@code GROUP BY} 仍要遍历命中的行，
+     * 且分组键是表达式而非索引列，SQLite 会建临时 B-tree 排序。窗口放开到数十天时，
+     * 聚合本身会成为新的瓶颈，那时才需要服务端 top-N。
      *
      * @param days 回看天数（含今天），调用方应先做范围钳制
      * @return 明细行；无数据时返回空列表
@@ -147,7 +156,7 @@ public class ApiCallUsageRepository implements ApiCallUsageService {
                         + "SUM(COALESCE(prompt_tokens, 0)) AS input_tokens, "
                         + "SUM(COALESCE(completion_tokens, 0)) AS output_tokens "
                         + "FROM api_call_usage "
-                        + "WHERE substr(created_at, 1, 10) >= date('now', 'localtime', ?) "
+                        + "WHERE created_at >= date('now', 'localtime', ?) || 'T00:00:00' "
                         + "GROUP BY usage_date, provider_key, model_name "
                         + "ORDER BY usage_date ASC, call_count DESC",
                 (rs, rowNum) -> new UsageBreakdownRow(
@@ -179,10 +188,9 @@ public class ApiCallUsageRepository implements ApiCallUsageService {
      * 其<strong>字典序与时间序一致</strong>，故可直接用 {@code >=} / {@code <} 比较。
      * 把列包在 {@code substr(...)} 里会使条件失去 sargable 性质，退化为全表扫描。
      *
-     * <p>TODO 索引待补：本方法的 WHERE 已写成 sargable 形式，但 {@code api_call_usage}
-     * 现有索引为 {@code (provider_key, created_at DESC)} 与 {@code (log_id)}，
-     * 都无法命中纯 {@code created_at} 范围扫描，优化实际未生效。窗口很窄时无感，
-     * 放开到任意长区间前应补一个 {@code created_at} 前导索引（schema 迁移）。
+     * <p>该条件可命中 {@code idx_api_call_usage_created}（V8.4 迁移新增的 {@code created_at}
+     * 前导索引）。既有的 {@code (provider_key, created_at DESC)} 在此用不上 ——
+     * 本查询没有 {@code provider_key} 等值条件，复合索引的前导列不匹配。
      *
      * <p>分组键在 SELECT 侧计算，不影响 WHERE 的索引可用性。只返回<strong>有数据的整点</strong>，
      * 补零由应用层完成 —— 「时间轴该有多长」是展示口径，不属于数据访问层。
