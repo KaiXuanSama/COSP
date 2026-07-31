@@ -325,7 +325,8 @@ function boxOf(item: MorphBar, index: number): SegmentBox {
  *   <li>圆角按<strong>边框盒</strong>计算，而色块被裁到内盒，其底部圆角半径变成
  *       {@code 半径 − 边框宽}，间隙一存在，上层的底部圆角就被压平；</li>
  *   <li>{@code background} 简写会把 {@code background-clip} 重置回 {@code border-box}，
- *       任何只改底色的修饰类（如 other 段）都会静默失去间隙。</li>
+ *       任何只改底色的修饰类（如 other 段）都会静默失去间隙 ——
+ *       而底色恰恰需要能被覆写，因为层的「其余」身份会随层级切换变动。</li>
  * </ul>
  *
  * 外边距区域无法被背景绘制，故上述两点都不复存在：元素回归纯色块，圆角原生生效。
@@ -549,12 +550,19 @@ watch(structureKey, () => {
             <!--
               堆叠层同样按位置序号渲染，底部对齐：
               公共底层复用节点平滑过渡，新增顶层从 0 膨胀，多余顶层收缩到 0。
+
+              ratio 为 0 的层额外淡出：只靠高度归零的话，层是「被压扁」而非「消失」，
+              最后几像素会显得生硬。进场层首帧的 ratio 同样是 0，故这一个判断
+              同时给出了淡入的起点。
             -->
             <div
               v-for="(seg, index) in morph.segments"
               :key="seg.slot"
               class="usage-bar__segment"
-              :class="{ 'usage-bar__segment--other': seg.segment.isOther }"
+              :class="{
+                'usage-bar__segment--other': seg.segment.isOther,
+                'usage-bar__segment--hidden': seg.ratio <= 0,
+              }"
               :style="segmentStyle(morph, index)"
               @mouseenter="seg.leaving ? null : showSegmentTooltip($event, seg.segment)"
               @mousemove="seg.leaving ? null : trackSegmentTooltip($event)"
@@ -826,27 +834,63 @@ watch(structureKey, () => {
   width: 100%;
   /* 圆角 + 间隙即分段依据，与热力图格子风格统一 */
   border-radius: 4px;
-  background: var(--usagechart-accent, #c27a3e);
+  /*
+   * 用 background-color 而非 background 简写：只有前者可过渡。
+   * 层的「其余」身份会随层级切换变动（原本独立的成员被并入 other，
+   * 或反过来被拆出来），底色跟着变，硬切会在形变途中闪一下。
+   */
+  background-color: var(--usagechart-accent, #c27a3e);
   /*
    * 形变动画的实际执行者：高度由 useStackMorph 逐帧给到内联样式，
    * 这条过渡负责把每次取值变化补成连续运动（长高 / 收缩 / 归零消失）。
    *
    * 外边距一并过渡：某层变成 / 不再是最底层时（下方的层退场或进场），
    * 它的间隙会在 0 与 gap 之间切换，硬切会让柱底跳一下。
+   *
+   * 不透明度与高度同时长同曲线：层的进出场是「一边收缩一边淡出」的单一动作，
+   * 两者若快慢不一，会先看到色块淡没、再看到空白被压掉（或反过来）。
+   * hover 的变暗则另有一条更快的过渡，见下。
+   *
+   * 底色同样纳入：见上方 background-color 的说明。
    */
   transition:
     height 0.42s cubic-bezier(0.4, 0, 0.2, 1),
     margin-bottom 0.42s cubic-bezier(0.4, 0, 0.2, 1),
-    opacity 0.18s ease;
+    background-color 0.42s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.42s cubic-bezier(0.4, 0, 0.2, 1);
 
   &:hover {
     opacity: 0.82;
+    /*
+     * 悬停反馈要跟手，不能沿用形变那条 0.42s。只改 opacity 这一条 ——
+     * 写成 transition-duration 会把高度与外边距一并提速，
+     * 悬停恰好落在某层形变途中时，柱子会突然加速。
+     */
+    transition: opacity 0.18s ease;
   }
 }
 
-/* other 段：同色但降低不透明度，暗示「其余」而非某个具体成员 */
+/*
+ * 高度归零的层 —— 退场层，以及进场层的起始帧。
+ *
+ * 只把高度收到 0 的话，层是被「压扁」的：最后几像素里圆角与色块仍清晰可见，
+ * 忽然就没了。叠一层淡出后，收缩与消退同步完成，观感与整根柱子的退场一致。
+ *
+ * 进场层首帧的 ratio 同样为 0，故这一条自动成为淡入的起点，无需另写规则。
+ */
+.usage-bar__segment--hidden {
+  opacity: 0;
+}
+
+/*
+ * other 段：同色但降低不透明度，暗示「其余」而非某个具体成员。
+ *
+ * 用 background-color 与基类保持同一属性，两者才能在层的身份变化时相互过渡 ——
+ * 若这里写 background 简写、基类写 background-color，浏览器视作两个不同属性，
+ * 过渡不会发生。
+ */
 .usage-bar__segment--other {
-  background: var(--usagechart-accent-muted, rgba(194, 122, 62, 0.42));
+  background-color: var(--usagechart-accent-muted, rgba(194, 122, 62, 0.42));
 }
 
 /*
