@@ -2,11 +2,13 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NCard, NNumberAnimation } from 'naive-ui'
 import ActivityHeatmap from '@/components/heatmap/ActivityHeatmap.vue'
+import DiscreteRangeSlider from '@/components/rangeslider/DiscreteRangeSlider.vue'
 import UsageBreakdownPanel from '@/components/usagechart/UsageBreakdownPanel.vue'
 import UsageLinePanel from '@/components/usageline/UsageLinePanel.vue'
 import http from '@/api'
 import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 import type { HeatmapModeConfig } from '@/components/heatmap'
+import type { RangeSelection } from '@/components/rangeslider'
 import type { BreakdownDimension, BreakdownMetric } from '@/components/usagechart'
 import type { TimelineRange, UsageTimelinePoint } from '@/components/usageline'
 import {
@@ -99,6 +101,15 @@ interface HeatmapDay {
 }
 
 const HEATMAP_DAYS = 360
+
+/**
+ * 日期范围选择器的可回看深度（天）—— 与后端 `SlidingDateWindow.MAX_SIZE` 一致。
+ *
+ * 后端把窗口整体限制在「最近 15 天」这个池子里，宽度上限同样是 15
+ * （一个常量兼两职，故约束收敛为 `size + offset <= 15`）。前端刻度数必须等于它，
+ * 否则用户能拖到后端会静默钳回来的位置 —— 那种不一致表现为「拖了没反应」。
+ */
+const DATE_RANGE_POOL_DAYS = 15
 
 /**
  * 维度配置：以供应商为主维度、模型为次维度。
@@ -226,6 +237,50 @@ const timelinePoints = computed<UsageTimelinePoint[]>(() => {
   }
   return buildDailyPoints(breakdownRows.value, breakdownWindow.value)
 })
+
+/**
+ * 日期范围选择器的可选刻度 —— 最近 {@link DATE_RANGE_POOL_DAYS} 天，升序。
+ *
+ * <p><strong>当前仅为样式落位</strong>：拖动只更新本组件的状态，不驱动任何图表、
+ * 也不发请求。接线要等三个分页端点（`/usage-breakdown/page`、`/usage-daily/page`、
+ * `/usage-hourly/series`）在前端接上之后再做。
+ *
+ * <p>刻度文案隔位给：15 个日期全标会挤成一团。首尾必标，中间每两格标一个 ——
+ * 用户需要的是「大概在哪一段」，精确日期由下方的窗口摘要给出。
+ */
+const dateRangeTicks = computed(() => {
+  const dates = windowDates(now.value, DATE_RANGE_POOL_DAYS)
+  const lastIndex = dates.length - 1
+  return dates.map((date, index) => ({
+    key: date,
+    // 首尾与每隔两格标注；`M/D` 而非完整日期，横向才放得下
+    label:
+      index === 0 || index === lastIndex || index % 3 === 0
+        ? `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`
+        : undefined,
+  }))
+})
+
+/**
+ * 当前选中的日期窗口，闭区间下标。
+ *
+ * 初值是「最靠右的 7 天」，与后端 `size=7, offset=0` 的默认窗口一致 ——
+ * 那个窗口的右端是今天，对应下标池的末尾。
+ */
+const dateRange = ref<RangeSelection>({
+  start: DATE_RANGE_POOL_DAYS - BREAKDOWN_DAYS,
+  end: DATE_RANGE_POOL_DAYS - 1,
+})
+
+/** 把选择读成人话，供无障碍与摘要文案复用。 */
+function describeDateRange(selection: RangeSelection): string {
+  const ticks = dateRangeTicks.value
+  const from = ticks[selection.start]?.key ?? ''
+  const to = ticks[selection.end]?.key ?? ''
+  return `${from} 至 ${to}，共 ${selection.end - selection.start + 1} 天`
+}
+
+const dateRangeText = computed(() => describeDateRange(dateRange.value))
 
 
 onMounted(() => {
@@ -575,6 +630,30 @@ function toKUnit(value: number): number {
           </div>
         </template>
       </UsageBreakdownPanel>
+
+      <!--
+        日期范围选择器。
+
+        当前<strong>只是样式落位</strong>：拖动改变的只有本组件的选择状态，
+        柱状图仍按流下发的固定 7 天窗口渲染。接线要等三个分页端点在前端接上。
+
+        放在柱状图下方而非卡片 header：它控制的是横轴范围，紧贴横轴才让
+        「拖它 → 轴变」这层因果关系一眼可见；放到标题行则与视图切换按钮抢位置。
+      -->
+      <div class="breakdown-range">
+        <DiscreteRangeSlider
+          v-model="dateRange"
+          :ticks="dateRangeTicks"
+          :min-span="BREAKDOWN_DAYS"
+          :max-span="DATE_RANGE_POOL_DAYS"
+          aria-label="日期范围"
+          :format-value-text="describeDateRange"
+        />
+        <div class="breakdown-range-meta">
+          <span class="breakdown-range-text">{{ dateRangeText }}</span>
+          <span class="breakdown-range-hint">拖动端点调整跨度，拖动色块整体平移</span>
+        </div>
+      </div>
     </n-card>
 
     <!--
@@ -781,6 +860,45 @@ function toKUnit(value: number): number {
     color: $accent;
     background: $accent-light;
   }
+}
+
+/*
+  日期范围选择器所在的一条。
+
+  上边框把它与柱状图分开：两者是「控件」与「被控对象」的关系，
+  一条细线足以表明这不是图表的一部分，又不至于像另开一张卡那样割裂。
+ */
+.breakdown-range {
+  margin-top: $space-md;
+  padding-top: $space-md;
+  border-top: 1px solid $border-light;
+}
+
+/*
+  窗口摘要与操作提示。
+
+  摘要给出精确日期 —— 刻度只隔位标注，光看滑块读不出确切区间。
+  提示文案说明三种手势，因为「色块本身可拖」在视觉上没有明显线索。
+ */
+.breakdown-range-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: $space-md;
+  margin-top: $space-sm;
+}
+
+.breakdown-range-text {
+  font-family: $font-mono;
+  font-size: 11px;
+  font-weight: 500;
+  color: $text-body;
+}
+
+.breakdown-range-hint {
+  font-family: $font-mono;
+  font-size: 10px;
+  color: $text-muted;
 }
 
 .heatmap-header {
