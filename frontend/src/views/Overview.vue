@@ -259,6 +259,16 @@ function formatDateRangeEdge(tick: { key: string }): string {
 }
 
 /**
+ * 可达区间的左界下标 —— 暂时为 0（全部可达），等接线后由后端的可查范围决定。
+ *
+ * <p>`api_call_usage` 最早记录之前的日期无从查询，那些位置该标为<strong>不可达</strong>
+ * （灰点）而不是从刻度里删掉 —— 删掉会让用户以为轴就这么长，看不出「更早的数据不可查」
+ * 这个事实。「可达 / 不可达」与「有没有数据」是两件事：可达位置即使当天没有调用，
+ * 也照常可选并显示为空。
+ */
+const dateRangeMinIndex = ref(0)
+
+/**
  * 当前选中的日期窗口，闭区间下标。
  *
  * 初值是「最靠右的 7 天」，与后端 `size=7, offset=0` 的默认窗口一致 ——
@@ -643,6 +653,7 @@ function toKUnit(value: number): number {
           :ticks="dateRangeTicks"
           :min-span="BREAKDOWN_DAYS"
           :max-span="DATE_RANGE_POOL_DAYS"
+          :min-index="dateRangeMinIndex"
           aria-label="日期范围"
           :format-value-text="describeDateRange"
           :format-edge-label="formatDateRangeEdge"

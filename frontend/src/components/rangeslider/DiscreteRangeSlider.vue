@@ -25,7 +25,9 @@
  */
 import { computed, onScopeDispose, ref, watch } from 'vue'
 import {
+  isReachable,
   normalizeSelection,
+  reachableSpan,
   resolveBounds,
   selectionEquals,
   spanOf,
@@ -54,8 +56,18 @@ const props = withDefaults(
     modelValue: RangeSelection
     /** 跨度下限（含），默认 1。 */
     minSpan?: number
-    /** 跨度上限（含），默认不限（等于刻度数）。 */
+    /** 跨度上限（含），默认不限（等于可达区间宽度）。 */
     maxSpan?: number
+    /**
+     * 可达区间的左界下标（含），默认 0 —— 这个下标<strong>之前</strong>的位置不可达。
+     *
+     * <p>它<strong>不改变刻度数量</strong>：左侧的点照样画出来，只是渲染成不可达色，
+     * 且选择块与手柄不能退到这条线以外。「可达 / 不可达」与「有没有数据」是两件事 ——
+     * 可达位置即使没有数据也照常显示为空，不可达位置即使有数据也不能选。
+     */
+    minIndex?: number
+    /** 可达区间的右界下标（含），默认末位。语义与 {@link minIndex} 镜像。 */
+    maxIndex?: number
     /** 禁用全部交互。 */
     disabled?: boolean
     /**
@@ -92,6 +104,8 @@ const props = withDefaults(
   {
     minSpan: 1,
     maxSpan: undefined,
+    minIndex: undefined,
+    maxIndex: undefined,
     disabled: false,
     labelMode: 'edges',
     trackHeight: 34,
@@ -122,21 +136,36 @@ const emit = defineEmits<{
  */
 const railRef = ref<HTMLElement | null>(null)
 
-const bounds = computed(() => resolveBounds(props.ticks.length, props.minSpan, props.maxSpan))
+const bounds = computed(() =>
+  resolveBounds(props.ticks.length, {
+    minSpan: props.minSpan,
+    maxSpan: props.maxSpan,
+    minIndex: props.minIndex,
+    maxIndex: props.maxIndex,
+  }),
+)
 
 /**
  * 净化后的当前选择。
  *
  * <p>始终经 {@link normalizeSelection} 过一遍而非直接用 `props.modelValue`：
- * 刻度数量变化后旧选择可能越界（窗口从 15 格缩到 7 格），
- * 直接参与百分比计算会把范围块画到轨道外面。
+ * 刻度数量或可达区间变化后旧选择可能越界（窗口从 15 格缩到 7 格、
+ * 或后端返回的可查范围收窄），直接参与百分比计算会把范围块画到轨道外面
+ * 或落进不可达区。
  */
 const selection = computed(() => normalizeSelection(props.modelValue, bounds.value))
 
 const span = computed(() => spanOf(selection.value))
 
-/** 交互是否可用。只有一个刻度时无从选择，等同禁用。 */
-const interactive = computed(() => !props.disabled && bounds.value.count > 1)
+/**
+ * 交互是否可用。
+ *
+ * <p>可达区间宽度恰等于跨度下限时，唯一合法的选择只有一个，拖动毫无意义 ——
+ * 与只有一个刻度同理，一并按禁用处理，光标与配色都给出提示。
+ */
+const interactive = computed(
+  () => !props.disabled && bounds.value.count > 1 && reachableSpan(bounds.value) > bounds.value.minSpan,
+)
 
 const { dragging, start, move, end, handleKey } = useRangeDrag({
   trackRef: railRef,
@@ -184,6 +213,16 @@ function tickStyle(index: number) {
 /** 某个刻度是否落在选中区间内 —— 决定点的高亮态。 */
 function isSelected(index: number): boolean {
   return index >= selection.value.start && index <= selection.value.end
+}
+
+/**
+ * 某个刻度是否可达 —— 决定点的明暗。
+ *
+ * <p>可达用深色、不可达用灰色。刻度数量不因此改变：不可达的点照样画出来，
+ * 它标出「这个位置存在但不能选」，与「这个位置没有数据」是两件不同的事。
+ */
+function isTickReachable(index: number): boolean {
+  return isReachable(index, bounds.value)
 }
 
 /** 某个刻度是否是区间端点 —— 端点的点被手柄盖住，需要更强的对比。 */
@@ -362,12 +401,18 @@ function onKeydown(target: 'start' | 'end' | 'range', event: KeyboardEvent) {
         相对 padding 盒计算，加 padding 并不会让点位内缩。
       -->
       <div ref="railRef" class="rangeslider__rail">
-        <!-- 离散点：均匀分布、垂直居中 -->
+        <!--
+          离散点：均匀分布、垂直居中。
+
+          不可达的点仍然画出来 —— 它标出「这个位置存在但不能选」，
+          与「这个位置没有数据」是两件不同的事。可达用深色、不可达用灰色。
+        -->
         <span
           v-for="(tick, index) in props.ticks"
           :key="tick.key"
           class="rangeslider__dot"
           :class="{
+            'rangeslider__dot--reachable': isTickReachable(index),
             'rangeslider__dot--selected': isSelected(index),
             'rangeslider__dot--edge': isEdge(index),
           }"
@@ -382,6 +427,16 @@ function onKeydown(target: 'start' | 'end' | 'range', event: KeyboardEvent) {
           aria-valuetext 描述的正是它。两个端点各自也是 slider，
           三者都能被 Tab 到并用方向键操作 —— 键盘语义与鼠标手势一一对应。
         -->
+        <!--
+          范围块。整块可拖，两端各有一个手柄。
+
+          role="slider" 落在整块上：它的语义是「当前选中的范围」，
+          aria-valuetext 描述的正是它。两个端点各自也是 slider，
+          三者都能被 Tab 到并用方向键操作 —— 键盘语义与鼠标手势一一对应。
+
+          aria-valuemin / max 报的是<strong>可达</strong>区间而非刻度全域：
+          屏幕阅读器据此告知「还能往哪走」，报全域会让不可达区听起来是能到的。
+        -->
         <div
           class="rangeslider__range"
           :class="{ 'rangeslider__range--dragging': dragging === 'range' }"
@@ -389,8 +444,8 @@ function onKeydown(target: 'start' | 'end' | 'range', event: KeyboardEvent) {
           role="slider"
           :tabindex="interactive ? 0 : -1"
           :aria-label="props.ariaLabel"
-          :aria-valuemin="0"
-          :aria-valuemax="Math.max(0, bounds.count - 1)"
+          :aria-valuemin="bounds.minIndex"
+          :aria-valuemax="bounds.maxIndex"
           :aria-valuenow="selection.start"
           :aria-valuetext="valueText"
           :aria-disabled="!interactive || undefined"
@@ -410,8 +465,8 @@ function onKeydown(target: 'start' | 'end' | 'range', event: KeyboardEvent) {
             :disabled="!interactive"
             role="slider"
             aria-label="起始位置"
-            :aria-valuemin="0"
-            :aria-valuemax="Math.max(0, bounds.count - 1)"
+            :aria-valuemin="bounds.minIndex"
+            :aria-valuemax="bounds.maxIndex"
             :aria-valuenow="selection.start"
             :aria-valuetext="valueText"
             @pointerdown.stop="onPointerDown('start', $event)"
@@ -425,8 +480,8 @@ function onKeydown(target: 'start' | 'end' | 'range', event: KeyboardEvent) {
             :disabled="!interactive"
             role="slider"
             aria-label="结束位置"
-            :aria-valuemin="0"
-            :aria-valuemax="Math.max(0, bounds.count - 1)"
+            :aria-valuemin="bounds.minIndex"
+            :aria-valuemax="bounds.maxIndex"
             :aria-valuenow="selection.end"
             :aria-valuetext="valueText"
             @pointerdown.stop="onPointerDown('end', $event)"
@@ -609,19 +664,69 @@ $slide-duration: 0.16s;
  *
  * translate(-50%, -50%) 让点以自身中心对齐百分比位置 —— 少了这个位移，
  * 点的左上角会落在位置上，整排点集体右偏半个直径。
+ *
+ * <h2>基态是不可达（空心环），可达由修饰类填实</h2>
+ * 这样反过来写是因为默认情形（没给 minIndex / maxIndex）下全部刻度都可达，
+ * 修饰类会挂满所有点 —— 让「需要被注意的少数」由基态承担更容易读错，
+ * 而基态是空心时，缺少修饰类的位置一眼就是被禁的那一段。
+ *
+ * <h2>为什么改用形状而非颜色区分</h2>
+ * 点只有 5~6px，两种颜色合成到槽底之后亮度相近，隔几个像素就分不出色相，
+ * 必须左右对比相邻两点才读得出边界。空心与实心是<strong>形状</strong>差异，
+ * 在这个尺寸下比任何配色都可辨 —— 而且不引入第二种色相，
+ * 「散落的暖色斑点」那种突兀感也一并消失。
+ *
+ * 空心比实心视觉重量更轻，恰好对应「不可用」；这个对应关系无需图例即可读出。
+ *
+ * <h2>为什么用 box-shadow 画环而不是 border</h2>
+ * border 会把盒子撑大（`box-sizing: border-box` 下则挤占内容区），
+ * 空心与实心两态的<strong>外径</strong>就不一致，切换时点会胀缩一下。
+ * 内嵌 box-shadow 画在盒子内部，不参与布局，两态外径严格相同。
  */
 .rangeslider__dot {
   position: absolute;
   top: 50%;
   z-index: 1;
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: $text-muted;
+  /* 空心：透明填充 + 一圈内描边 */
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(154, 149, 144, 0.75);
   transform: translate(-50%, -50%);
   transition:
     background-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease,
     opacity 0.2s ease;
+}
+
+/*
+ * 可达位置的点：实心，且比空心环<strong>略小</strong>。
+ *
+ * 与不可达的空心环形成形状对比。颜色统一用中性灰 —— 暖色留给范围块与手柄，
+ * 那才是「当前选择」；刻度点只标位置，不该与选择争夺注意力。
+ *
+ * <h2>为什么实心要缩小</h2>
+ * 同样外径下实心的视觉重量明显大于空心环（环只有一圈描边着色，内部透光），
+ * 两者并排时实心点会显得胀出来。缩到 0.8 倍后两种点的「墨量」大致相当，
+ * 一整排看过去粗细均匀，而形状差异仍然一眼可辨。
+ *
+ * <h2>为什么用 scale 而非改 width / height</h2>
+ * 盒子尺寸不变，`translate(-50%, -50%)` 的参照就不变，圆心严格钉在刻度上；
+ * 改尺寸则要重新推算居中偏移。scale 也走合成器，过渡更平滑。
+ *
+ * 覆写 transform 必须把居中位移一并写出 —— 只写 scale 会丢掉 translate，
+ * 整排点集体右偏半个直径。
+ *
+ * 注意这与「有没有数据」无关 —— 可达位置即使没有数据也是实心，
+ * 空数据由图表那边表达，不由滑块表达。
+ */
+.rangeslider__dot--reachable {
+  background: rgba(154, 149, 144, 0.85);
+  /* 环与填充同色，实心点因此没有描边痕迹 */
+  box-shadow: inset 0 0 0 1px rgba(154, 149, 144, 0.85);
+  transform: translate(-50%, -50%) scale(0.8);
 }
 
 /* 落在选中区间内的点：被范围块盖住，压暗以免透出杂色 */
@@ -632,9 +737,17 @@ $slide-duration: 0.16s;
 /*
  * 端点处的点。手柄圆心正好在这里，故改成亮色，
  * 形成「手柄咬住了这个点」的印象。
+ *
+ * box-shadow 一并覆写：否则实心亮点外面还留着一圈灰环，
+ * 在手柄的暖色底上会显出一道脏边。
+ *
+ * transform 也要覆写回原尺寸：端点必然可达，会吃到 --reachable 的 scale(0.8)，
+ * 而这两个点被手柄完全盖住，缩小毫无意义 —— 恢复满尺寸让它填满手柄内圈。
  */
 .rangeslider__dot--edge {
   background: $text-light;
+  box-shadow: none;
+  transform: translate(-50%, -50%);
   opacity: 0.85;
 }
 

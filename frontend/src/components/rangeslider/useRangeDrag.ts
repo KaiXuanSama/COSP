@@ -65,6 +65,11 @@ export function useRangeDrag(options: UseRangeDragOptions) {
    *
    * <p>用轨道宽度而非可视宽度：两者在有滚动条或 transform 时会不同，
    * 而 `getBoundingClientRect` 给出的是变换后的实际几何，与指针坐标同一坐标系。
+   *
+   * <p>这里<strong>不钳到可达区间</strong>：它给出的是「指针指着哪个刻度」这个
+   * 客观事实，收敛由 `moveStart` / `moveEnd` / `slideTo` 各自按手势语义完成。
+   * 若在此提前钳制，整块平移的抓取偏移（{@link DragState.grabOffset}）会算错 ——
+   * 那个偏移是按下时指针与区间起点的真实差值，被钳过就不再是真实差值了。
    */
   function indexAt(clientX: number): number {
     const track = options.trackRef.value
@@ -156,13 +161,14 @@ export function useRangeDrag(options: UseRangeDragOptions) {
         if (target === 'end') return apply(moveEnd(selection, selection.end + step, bounds))
         return apply(slideTo(selection, selection.start + step, bounds))
       case 'Home':
-        if (target === 'start') return apply(moveStart(selection, 0, bounds))
-        if (target === 'end') return apply(moveEnd(selection, 0, bounds))
-        return apply(slideTo(selection, 0, bounds))
+        if (target === 'start') return apply(moveStart(selection, bounds.minIndex, bounds))
+        if (target === 'end') return apply(moveEnd(selection, bounds.minIndex, bounds))
+        return apply(slideTo(selection, bounds.minIndex, bounds))
       case 'End':
-        if (target === 'start') return apply(moveStart(selection, bounds.count - 1, bounds))
-        if (target === 'end') return apply(moveEnd(selection, bounds.count - 1, bounds))
-        return apply(slideTo(selection, bounds.count - spanOf(selection), bounds))
+        if (target === 'start') return apply(moveStart(selection, bounds.maxIndex, bounds))
+        if (target === 'end') return apply(moveEnd(selection, bounds.maxIndex, bounds))
+        // 整块靠右：起点退到「右界减去跨度」，块的右端才正好压在可达右界上。
+        return apply(slideTo(selection, bounds.maxIndex - spanOf(selection) + 1, bounds))
       default:
         return false
     }

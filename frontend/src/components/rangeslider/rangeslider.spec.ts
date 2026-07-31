@@ -8,10 +8,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   clampIndex,
+  clampReachable,
   indexFromRatio,
+  isReachable,
   moveEnd,
   moveStart,
   normalizeSelection,
+  reachableSpan,
   resolveBounds,
   selectionEquals,
   shiftBy,
@@ -20,8 +23,14 @@ import {
   tickRatio,
 } from './rangeslider'
 
-/** 15 个刻度、跨度限定 7~15 —— 概览窗口的实际配置。 */
-const B = resolveBounds(15, 7, 15)
+/** 15 个刻度、跨度限定 7~15、全域可达 —— 概览窗口的实际配置。 */
+const B = resolveBounds(15, { minSpan: 7, maxSpan: 15 })
+
+/** 同上但左侧 4 格不可达（可达区间为下标 4~14，宽度 11）。 */
+const LEFT_BLOCKED = resolveBounds(15, { minSpan: 7, maxSpan: 15, minIndex: 4 })
+
+/** 同上但右侧 3 格不可达（可达区间为下标 0~11，宽度 12）。 */
+const RIGHT_BLOCKED = resolveBounds(15, { minSpan: 7, maxSpan: 15, maxIndex: 11 })
 
 describe('clampIndex', () => {
   it('收敛到 [0, count-1]', () => {
@@ -47,26 +56,113 @@ describe('clampIndex', () => {
 })
 
 describe('resolveBounds', () => {
-  it('缺省时跨度不受限', () => {
-    expect(resolveBounds(10)).toEqual({ count: 10, minSpan: 1, maxSpan: 10 })
+  it('缺省时跨度不受限、全域可达', () => {
+    expect(resolveBounds(10)).toEqual({
+      count: 10, minSpan: 1, maxSpan: 10, minIndex: 0, maxIndex: 9,
+    })
   })
 
   /**
-   * 上限先与下限比较、再与总数比较。
+   * 上限先与下限比较、再与可达宽度比较。
    *
    * 顺序颠倒会得到 maxSpan < minSpan，此后所有约束判断相互矛盾且不报错。
    */
   it('上限低于下限时被抬到下限', () => {
-    expect(resolveBounds(20, 10, 3)).toEqual({ count: 20, minSpan: 10, maxSpan: 10 })
+    expect(resolveBounds(20, { minSpan: 10, maxSpan: 3 })).toMatchObject({
+      minSpan: 10, maxSpan: 10,
+    })
   })
 
   it('下限与上限都不超过刻度总数', () => {
-    expect(resolveBounds(5, 9, 99)).toEqual({ count: 5, minSpan: 5, maxSpan: 5 })
+    expect(resolveBounds(5, { minSpan: 9, maxSpan: 99 })).toMatchObject({
+      count: 5, minSpan: 5, maxSpan: 5,
+    })
   })
 
   it('总数至少为 1，跨度至少为 1', () => {
-    expect(resolveBounds(0, 0, 0)).toEqual({ count: 1, minSpan: 1, maxSpan: 1 })
-    expect(resolveBounds(-5)).toEqual({ count: 1, minSpan: 1, maxSpan: 1 })
+    expect(resolveBounds(0, { minSpan: 0, maxSpan: 0 })).toEqual({
+      count: 1, minSpan: 1, maxSpan: 1, minIndex: 0, maxIndex: 0,
+    })
+    expect(resolveBounds(-5)).toEqual({
+      count: 1, minSpan: 1, maxSpan: 1, minIndex: 0, maxIndex: 0,
+    })
+  })
+
+  // ---------- 可达区间 ----------
+
+  it('可达区间原样保留，刻度总数不变', () => {
+    expect(resolveBounds(15, { minIndex: 4, maxIndex: 11 })).toMatchObject({
+      count: 15, minIndex: 4, maxIndex: 11,
+    })
+  })
+
+  it('可达边界被钳到刻度范围内', () => {
+    expect(resolveBounds(15, { minIndex: -9, maxIndex: 99 })).toMatchObject({
+      minIndex: 0, maxIndex: 14,
+    })
+  })
+
+  it('倒置的可达边界被交换', () => {
+    expect(resolveBounds(15, { minIndex: 11, maxIndex: 4 })).toMatchObject({
+      minIndex: 4, maxIndex: 11,
+    })
+  })
+
+  it('非有限值按全域处理', () => {
+    expect(resolveBounds(15, { minIndex: Number.NaN, maxIndex: Number.NaN })).toMatchObject({
+      minIndex: 0, maxIndex: 14,
+    })
+  })
+
+  /**
+   * 跨度上限收敛到<strong>可达宽度</strong>而非刻度总数。
+   *
+   * 15 格里只有 5 格可达时，maxSpan 不能是 15 —— 那意味着允许一个装不下的区间。
+   */
+  it('跨度上限不超过可达宽度', () => {
+    expect(resolveBounds(15, { maxSpan: 15, minIndex: 10 })).toMatchObject({
+      minSpan: 1, maxSpan: 5,
+    })
+  })
+
+  /**
+   * 跨度下限同样收敛到可达宽度。
+   *
+   * 否则会得到「至少要选 7 格，但只有 5 格可选」这种无解配置，
+   * 而所有约束判断都不会报错，只会让选择在两个矛盾条件间反复被纠正。
+   */
+  it('跨度下限不超过可达宽度', () => {
+    expect(resolveBounds(15, { minSpan: 7, minIndex: 10 })).toMatchObject({
+      minSpan: 5, maxSpan: 5,
+    })
+  })
+})
+
+describe('reachableSpan / isReachable', () => {
+  it('可达宽度含两端', () => {
+    expect(reachableSpan(B)).toBe(15)
+    expect(reachableSpan(LEFT_BLOCKED)).toBe(11)
+    expect(reachableSpan(RIGHT_BLOCKED)).toBe(12)
+  })
+
+  it('可达判定是闭区间', () => {
+    expect(isReachable(3, LEFT_BLOCKED)).toBe(false)
+    expect(isReachable(4, LEFT_BLOCKED)).toBe(true)
+    expect(isReachable(14, LEFT_BLOCKED)).toBe(true)
+    expect(isReachable(11, RIGHT_BLOCKED)).toBe(true)
+    expect(isReachable(12, RIGHT_BLOCKED)).toBe(false)
+  })
+})
+
+describe('clampReachable', () => {
+  it('收敛到可达区间而非刻度全域', () => {
+    expect(clampReachable(0, LEFT_BLOCKED)).toBe(4)
+    expect(clampReachable(9, LEFT_BLOCKED)).toBe(9)
+    expect(clampReachable(99, RIGHT_BLOCKED)).toBe(11)
+  })
+
+  it('非有限值落到左界', () => {
+    expect(clampReachable(Number.NaN, LEFT_BLOCKED)).toBe(4)
   })
 })
 
@@ -131,7 +227,7 @@ describe('normalizeSelection', () => {
   })
 
   it('跨度超限时从右侧收', () => {
-    const tight = resolveBounds(15, 7, 10)
+    const tight = resolveBounds(15, { minSpan: 7, maxSpan: 10 })
     expect(normalizeSelection({ start: 0, end: 14 }, tight)).toEqual({ start: 0, end: 9 })
   })
 
@@ -140,8 +236,29 @@ describe('normalizeSelection', () => {
    * （窗口从 15 格切到 7 格），直接参与百分比计算会把范围块画到轨道外。
    */
   it('刻度变少后旧选择被收敛进新范围', () => {
-    const small = resolveBounds(7, 7, 7)
+    const small = resolveBounds(7, { minSpan: 7, maxSpan: 7 })
     expect(normalizeSelection({ start: 8, end: 14 }, small)).toEqual({ start: 0, end: 6 })
+  })
+
+  // ---------- 可达区间 ----------
+
+  /**
+   * 落在不可达区的旧选择被推进可达区。
+   *
+   * 这是可达区间收窄时的实际场景（后端返回的可查范围变了），
+   * 不收敛的话范围块会停在灰色区里，看起来像禁用规则没生效。
+   */
+  it('起点落在左侧禁区时被推进可达区', () => {
+    expect(normalizeSelection({ start: 0, end: 6 }, LEFT_BLOCKED)).toEqual({ start: 4, end: 10 })
+  })
+
+  it('终点落在右侧禁区时被拉回可达区', () => {
+    expect(normalizeSelection({ start: 8, end: 14 }, RIGHT_BLOCKED)).toEqual({ start: 5, end: 11 })
+  })
+
+  /** 整个区间都在禁区外时同样落进可达区，且跨度补足到下限。 */
+  it('整个区间在禁区外时落进可达区', () => {
+    expect(normalizeSelection({ start: 0, end: 2 }, LEFT_BLOCKED)).toEqual({ start: 4, end: 10 })
   })
 })
 
@@ -169,13 +286,23 @@ describe('moveStart', () => {
   })
 
   it('触及跨度上限时顶住', () => {
-    const tight = resolveBounds(15, 7, 10)
+    const tight = resolveBounds(15, { minSpan: 7, maxSpan: 10 })
     // end=12、maxSpan=10 ⇒ start 最小只能到 3
     expect(moveStart({ start: 3, end: 12 }, 0, tight)).toEqual({ start: 3, end: 12 })
   })
 
   it('不会越出左边界', () => {
     expect(moveStart({ start: 5, end: 14 }, -9, B).start).toBe(0)
+  })
+
+  /**
+   * 触及可达左界时顶住，右端不动。
+   *
+   * 这是本功能最核心的一条：左手柄拖进禁区应当无效，而不是把整个区间拽过去。
+   */
+  it('触及可达左界时顶住', () => {
+    expect(moveStart({ start: 6, end: 14 }, 0, LEFT_BLOCKED)).toEqual({ start: 4, end: 14 })
+    expect(moveStart({ start: 6, end: 14 }, -99, LEFT_BLOCKED)).toEqual({ start: 4, end: 14 })
   })
 })
 
@@ -190,13 +317,19 @@ describe('moveEnd', () => {
   })
 
   it('触及跨度上限时顶住', () => {
-    const tight = resolveBounds(15, 7, 10)
+    const tight = resolveBounds(15, { minSpan: 7, maxSpan: 10 })
     // start=2、maxSpan=10 ⇒ end 最大只能到 11
     expect(moveEnd({ start: 2, end: 8 }, 14, tight)).toEqual({ start: 2, end: 11 })
   })
 
   it('不会越出右边界', () => {
     expect(moveEnd({ start: 0, end: 6 }, 99, B).end).toBe(14)
+  })
+
+  /** 触及可达右界时顶住，左端不动。与 moveStart 镜像。 */
+  it('触及可达右界时顶住', () => {
+    expect(moveEnd({ start: 2, end: 9 }, 14, RIGHT_BLOCKED)).toEqual({ start: 2, end: 11 })
+    expect(moveEnd({ start: 2, end: 9 }, 99, RIGHT_BLOCKED)).toEqual({ start: 2, end: 11 })
   })
 })
 
@@ -226,6 +359,38 @@ describe('slideTo', () => {
   it('跨度铺满全轨时无处可移', () => {
     expect(slideTo({ start: 0, end: 14 }, 5, B)).toEqual({ start: 0, end: 14 })
   })
+
+  // ---------- 可达区间 ----------
+
+  /**
+   * 撞到可达左界时停住，跨度不变。
+   *
+   * 这是本功能的第三条核心行为：整块拖进禁区应当停在边界，
+   * 而不是被压窄（压窄就成了「拖到头之后块变短了」）。
+   */
+  it('撞到可达左界时停住且跨度不变', () => {
+    const result = slideTo({ start: 8, end: 14 }, 0, LEFT_BLOCKED)
+    expect(result).toEqual({ start: 4, end: 10 })
+    expect(spanOf(result)).toBe(7)
+  })
+
+  /**
+   * 撞到可达右界时停住 —— 起点上界是 `maxIndex - span + 1`，
+   * 使块的<strong>右端</strong>正好压在可达右界上。
+   * 若沿用 `count - span`，块的右端会伸进禁区。
+   */
+  it('撞到可达右界时右端正好压在界上', () => {
+    const result = slideTo({ start: 0, end: 6 }, 99, RIGHT_BLOCKED)
+    expect(result).toEqual({ start: 5, end: 11 })
+    expect(spanOf(result)).toBe(7)
+  })
+
+  /** 可达宽度恰等于跨度时只有一个合法位置。 */
+  it('可达宽度等于跨度时无处可移', () => {
+    const exact = resolveBounds(15, { minSpan: 7, maxSpan: 7, minIndex: 4, maxIndex: 10 })
+    expect(slideTo({ start: 4, end: 10 }, 0, exact)).toEqual({ start: 4, end: 10 })
+    expect(slideTo({ start: 4, end: 10 }, 99, exact)).toEqual({ start: 4, end: 10 })
+  })
 })
 
 describe('shiftBy', () => {
@@ -252,32 +417,68 @@ describe('不变量', () => {
    *
    * 这一条比逐个用例更有价值：它挡住的是「某条分支忘了钳制」这类遗漏，
    * 而那种遗漏通常只在特定起点上才暴露。
+   *
+   * 三种可达配置一起跑：全域、左侧禁、右侧禁。加了可达区间之后，
+   * 「结果必须落在 [minIndex, maxIndex] 内」成了新的必查项 ——
+   * 只断言落在 [0, count-1] 内会让禁区越界悄悄通过。
    */
-  it('三种操作在所有起点与目标下都产出合法区间', () => {
-    for (let start = 0; start < 15; start += 1) {
-      for (let target = -3; target <= 17; target += 1) {
-        const base = normalizeSelection({ start, end: start + 6 }, B)
-        for (const next of [
-          moveStart(base, target, B),
-          moveEnd(base, target, B),
-          slideTo(base, target, B),
-        ]) {
-          expect(next.start).toBeGreaterThanOrEqual(0)
-          expect(next.end).toBeLessThanOrEqual(14)
-          expect(next.start).toBeLessThanOrEqual(next.end)
-          expect(spanOf(next)).toBeGreaterThanOrEqual(B.minSpan)
-          expect(spanOf(next)).toBeLessThanOrEqual(B.maxSpan)
+  it('三种操作在所有起点、目标与可达配置下都产出合法区间', () => {
+    for (const bounds of [B, LEFT_BLOCKED, RIGHT_BLOCKED]) {
+      for (let start = 0; start < 15; start += 1) {
+        for (let target = -3; target <= 17; target += 1) {
+          const base = normalizeSelection({ start, end: start + 6 }, bounds)
+          for (const next of [
+            moveStart(base, target, bounds),
+            moveEnd(base, target, bounds),
+            slideTo(base, target, bounds),
+          ]) {
+            expect(next.start).toBeGreaterThanOrEqual(bounds.minIndex)
+            expect(next.end).toBeLessThanOrEqual(bounds.maxIndex)
+            expect(next.start).toBeLessThanOrEqual(next.end)
+            expect(spanOf(next)).toBeGreaterThanOrEqual(bounds.minSpan)
+            expect(spanOf(next)).toBeLessThanOrEqual(bounds.maxSpan)
+          }
         }
       }
     }
   })
 
   /** 平移永不改变跨度 —— 单独立一条，因为它是三种手势里唯一的宽度不变量。 */
-  it('平移在任何目标下都保持跨度', () => {
-    for (const span of [7, 10, 15]) {
-      const base = normalizeSelection({ start: 0, end: span - 1 }, B)
+  it('平移在任何目标与可达配置下都保持跨度', () => {
+    for (const bounds of [B, LEFT_BLOCKED, RIGHT_BLOCKED]) {
+      for (const span of [7, 10, 11]) {
+        if (span > reachableSpan(bounds)) continue
+        const base = normalizeSelection(
+          { start: bounds.minIndex, end: bounds.minIndex + span - 1 },
+          bounds,
+        )
+        for (let target = -5; target <= 20; target += 1) {
+          expect(spanOf(slideTo(base, target, bounds))).toBe(spanOf(base))
+        }
+      }
+    }
+  })
+
+  /**
+   * 禁区永不被触及 —— 把「可达」这个语义本身立成一条不变量。
+   *
+   * 上一条已隐含此意，但那是按 bounds 字段断言；这一条改用 `isReachable`
+   * 逐个下标校验，两者若因某次重构而分叉（比如 clampReachable 改错了边界含义），
+   * 会在这里暴露。
+   */
+  it('任何操作结果的两端都是可达位置', () => {
+    for (const bounds of [LEFT_BLOCKED, RIGHT_BLOCKED]) {
       for (let target = -5; target <= 20; target += 1) {
-        expect(spanOf(slideTo(base, target, B))).toBe(span)
+        const base = normalizeSelection({ start: 0, end: 6 }, bounds)
+        for (const next of [
+          moveStart(base, target, bounds),
+          moveEnd(base, target, bounds),
+          slideTo(base, target, bounds),
+          shiftBy(base, target, bounds),
+        ]) {
+          expect(isReachable(next.start, bounds)).toBe(true)
+          expect(isReachable(next.end, bounds)).toBe(true)
+        }
       }
     }
   })
