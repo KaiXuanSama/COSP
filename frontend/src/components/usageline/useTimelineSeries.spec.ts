@@ -39,18 +39,27 @@ function datePoints(...dates: string[]): UsageTimelinePoint[] {
   return dates.map((bucket) => ({ bucket, inputTokens: 100, outputTokens: 10 }))
 }
 
-/**
- * 造一批完整的今日点位：前 elapsed 个已发生，其余标记为未来。
+/** 造一批完整的今日点位：前 elapsed 个已发生，其余标记为未来。
  *
- * 桶用真实的 `HH:mm` 自 05:00 起算 —— 标签形态由桶自身决定，占位串测不到这条。
+ * 桶用真实的<strong>完整时间戳</strong>自 2026-07-27 05:00 起算 ——
+ * 今日窗口跨午夜，桶键必须带日期，否则 `01:00` 分不清属于哪一天。
+ * `label` 由归约层给出，此处一并模拟。
  */
 function dayPoints(total: number, elapsed: number): UsageTimelinePoint[] {
-  return Array.from({ length: total }, (_unused, index) => ({
-    bucket: `${String((DAY_START_HOUR + index) % 24).padStart(2, '0')}:00`,
-    inputTokens: index < elapsed ? 100 : 0,
-    outputTokens: index < elapsed ? 10 : 0,
-    future: index >= elapsed,
-  }))
+  const windowStart = new Date(2026, 6, 27, DAY_START_HOUR, 0, 0)
+  return Array.from({ length: total }, (_unused, index) => {
+    const at = new Date(windowStart.getTime() + index * 3_600_000)
+    const pad = (value: number) => String(value).padStart(2, '0')
+    return {
+      bucket:
+        `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}` +
+        `T${pad(at.getHours())}:00:00`,
+      label: `${pad(at.getHours())}:00`,
+      inputTokens: index < elapsed ? 100 : 0,
+      outputTokens: index < elapsed ? 10 : 0,
+      future: index >= elapsed,
+    }
+  })
 }
 
 describe('横向位置换算', () => {
@@ -187,8 +196,8 @@ describe('横轴日期分段', () => {
     expect(MIDNIGHT_INDEX).toBe(19)
   })
 
-  it('点数不足以跨过午夜时只有一段', () => {
-    const segments = buildDateSegments(points([1, 1], [2, 2], [3, 3]))
+  it('尚未跨过午夜时只有一段', () => {
+    const segments = buildDateSegments(dayPoints(3, 3))
 
     expect(segments).toHaveLength(1)
     expect(segments[0].start).toBe(0)
@@ -196,9 +205,7 @@ describe('横轴日期分段', () => {
   })
 
   it('完整一天分成两段且首尾相接', () => {
-    const segments = buildDateSegments(
-      points(...Array.from({ length: DAY_POINTS }, () => [1, 1] as [number, number])),
-    )
+    const segments = buildDateSegments(dayPoints(DAY_POINTS, DAY_POINTS))
 
     expect(segments).toHaveLength(2)
     expect(segments[0].start).toBe(0)
@@ -208,20 +215,23 @@ describe('横轴日期分段', () => {
   })
 
   it('分界线落在午夜对应的比例位置', () => {
-    const segments = buildDateSegments(
-      points(...Array.from({ length: DAY_POINTS }, () => [1, 1] as [number, number])),
-    )
+    const segments = buildDateSegments(dayPoints(DAY_POINTS, DAY_POINTS))
 
     expect(segments[0].width).toBeCloseTo(xRatioOf(MIDNIGHT_INDEX, DAY_POINTS))
   })
 
-  it('两段标签为相邻的两天', () => {
-    const segments = buildDateSegments(
-      points(...Array.from({ length: DAY_POINTS }, () => [1, 1] as [number, number])),
-    )
+  /**
+   * 标签取自桶键而非当前时刻。
+   *
+   * 窗口冻结后，若用 `new Date()` 推断日期，跨过午夜再看这张图会把第一段标成
+   * 「明天」，而它代表的仍是建流那天。桶键自带日期，不受时钟影响。
+   */
+  it('两段标签取自桶键的日期，且为相邻两天', () => {
+    const segments = buildDateSegments(dayPoints(DAY_POINTS, DAY_POINTS))
 
     expect(segments).toHaveLength(2)
-    expect(segments[0].label).not.toBe(segments[1].label)
+    expect(segments[0].label).toBe('7/27')
+    expect(segments[1].label).toBe('7/28')
   })
 
   it('无点位时不产出分段', () => {
@@ -292,12 +302,22 @@ describe('今日范围的完整一天与未来段', () => {
     expect(axisLabels.value.every((label) => label.y === 0)).toBe(true)
   })
 
-  it('时刻桶原样取用，横轴显示 HH:mm', () => {
+  it('时刻桶显示 HH:mm，首尾同为 05:00 使一圈闭合', () => {
     const data = ref(dayPoints(25, 25))
     const { axisLabels } = useTimelineSeries(data)
 
     expect(axisLabels.value[0].text).toBe('05:00')
     expect(axisLabels.value[24].text).toBe('05:00')
+  })
+
+  /** 归约层未给 label 时，从完整时间戳桶键截出 HH:mm 兜底。 */
+  it('缺少 label 时从桶键截出时刻', () => {
+    const data = ref(
+      dayPoints(3, 3).map((point) => ({ ...point, label: undefined })),
+    )
+    const { axisLabels } = useTimelineSeries(data)
+
+    expect(axisLabels.value.map((item) => item.text)).toEqual(['05:00', '06:00', '07:00'])
   })
 
   it('轴上限只看已发生的点', () => {

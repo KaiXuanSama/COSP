@@ -7,13 +7,23 @@ import UsageLinePanel from '@/components/usageline/UsageLinePanel.vue'
 import http from '@/api'
 import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 import type { HeatmapModeConfig } from '@/components/heatmap'
-import type {
-  BreakdownDimension,
-  BreakdownMetric,
-  UsageBreakdownDelta,
-  UsageBreakdownRow,
-} from '@/components/usagechart'
+import type { BreakdownDimension, BreakdownMetric } from '@/components/usagechart'
 import type { TimelineRange, UsageTimelinePoint } from '@/components/usageline'
+import {
+  BREAKDOWN_DAYS,
+  buildDailyPoints,
+  buildHourlyPoints,
+  collectHourlySnapshot,
+  mergeBreakdownDelta,
+  mergeHourlyDelta,
+  nextFutureBoundary,
+  resolveWindowStart,
+  windowDates,
+  type TokenTotals,
+  type UsageBreakdownRow,
+  type UsageHourlyPoint,
+  type UsageRecordDelta,
+} from '@/features/usage-series'
 import { useStatsStore, type StatsData } from '@/stores/stats'
 
 const statsStore = useStatsStore()
@@ -23,16 +33,28 @@ const heatmapData = ref<HeatmapDay[]>([])
 const heatmapLoading = ref(false)
 const heatmapFailed = ref(false)
 
+/**
+ * 明细行 —— 柱状图与「近 7 日」折线共用。
+ *
+ * 由 `breakdown` 快照帧整体替换，随后被 `usage-delta` 增量原地累加。
+ */
 const breakdownRows = ref<UsageBreakdownRow[]>([])
-const breakdownLoading = ref(false)
-const breakdownFailed = ref(false)
 
-/** 下钻明细的 SSE 连接句柄。非响应式，仅用于生命周期管理。 */
-let breakdownSource: AuthEventSource | null = null
+/** 整点桶 → token 累计量，供「今日时段」折线归约成 25 个点位。 */
+const hourlyTotals = ref<Map<string, TokenTotals>>(new Map())
 
-const timelinePoints = ref<UsageTimelinePoint[]>([])
-const timelineLoading = ref(false)
-const timelineFailed = ref(false)
+/**
+ * 图表数据的加载 / 失败态 —— 三张图共用一条流，故共用一组状态。
+ *
+ * 首屏数据由流的快照帧下发，没有 HTTP 请求可供 catch，失败态只能由
+ * {@link createAuthEventSource} 的 onError 告知。
+ */
+const chartsLoading = ref(false)
+const chartsFailed = ref(false)
+
+/** 图表流的连接句柄。非响应式，仅用于生命周期管理。 */
+let usageSource: AuthEventSource | null = null
+
 /**
  * 折线图默认展示今日时段。
  *
@@ -41,8 +63,30 @@ const timelineFailed = ref(false)
  */
 const timelineRange = ref<TimelineRange>('1d')
 
-/** 用量折线的 SSE 连接句柄。 */
-let timelineSource: AuthEventSource | null = null
+/**
+ * 两个视图的窗口，在挂载时算定后<strong>冻结</strong>。
+ *
+ * 冻结是刻意的：跨过午夜（或 5 点）后的新数据属于下一轮，不该挤进用户此刻
+ * 看的窗口 —— 那会让横轴凭空变长。刷新后窗口自然重算，新的一轮才出现。
+ *
+ * 两个窗口的口径<strong>不同</strong>：柱状图与近 7 日按自然日，今日时段按 5 点分界。
+ * 因此同一条增量帧可能被一个视图接受、被另一个丢弃（明天凌晨 2 点的调用即是），
+ * 两者各自过滤，不共用判定。
+ */
+const breakdownWindow = ref<string[]>([])
+const hourlyWindowStart = ref<Date>(new Date())
+
+/**
+ * 驱动「尚未到来」推进的当前时刻。
+ *
+ * 只在跨过每个半点时更新一次 —— 点位以整点为中心、覆盖前后各半小时，
+ * 故已发生点位的集合恰好只在 `HH:30` 变化。这不是把周期放宽的近似，
+ * 而是精确命中唯一会让图变化的时刻；中间任何时刻重绘都是纯浪费。
+ */
+const now = ref<Date>(new Date())
+
+/** 半点推进的定时器句柄。 */
+let futureTimer: ReturnType<typeof setTimeout> | null = null
 
 // 记录刷新前的旧值，作为动画起点
 const prev = ref({ total: 0, today: 0, input: 0, output: 0 })
@@ -55,9 +99,6 @@ interface HeatmapDay {
 }
 
 const HEATMAP_DAYS = 360
-
-/** 下钻柱状图回看天数。第一版固定 7 天，后续版本再开放切换。 */
-const BREAKDOWN_DAYS = 7
 
 /**
  * 维度配置：以供应商为主维度、模型为次维度。
@@ -173,41 +214,77 @@ const activeHeatmapMode = computed(() => {
   return heatmapModes.find((mode) => mode.key === heatmapMode.value) ?? heatmapModes[0]
 })
 
+/**
+ * 折线图的点位 —— 两种范围都由同一份流数据派生。
+ *
+ * 这是纯 computed：增量帧只需改动 `breakdownRows` 或 `hourlyTotals`，
+ * 点位、补零、`future` 标记全部自动重算，切换范围也不必重新请求。
+ */
+const timelinePoints = computed<UsageTimelinePoint[]>(() => {
+  if (timelineRange.value === '1d') {
+    return buildHourlyPoints(hourlyTotals.value, hourlyWindowStart.value, now.value)
+  }
+  return buildDailyPoints(breakdownRows.value, breakdownWindow.value)
+})
+
+
 onMounted(() => {
   // 热力图历史数据首屏全量拉取一次；统计卡先 HTTP 兜底一次，随后交给 SSE 实时推送。
   void fetchHeatmap()
-  // 柱状图<strong>不</strong>发首屏 HTTP：它的流自带一帧全量快照，
+  // 三张图表都不发首屏 HTTP：流自带两帧全量快照，
   // 再拉一次只是把同一份数据取两遍，还要处理两者的到达顺序。
-  // fetchBreakdown 保留备用 —— 将来窗口切到不含今日的历史区间时，那种窗口不需要实时流。
-  connectBreakdownStream()
-  // 折线图同样是「HTTP 首屏兜底 + SSE 接管」
-  void fetchTimeline()
-  connectTimelineStream()
+  // fetchBreakdown / fetchHourly 保留备用 —— 将来窗口切到不含今日的历史区间时，
+  // 那种数据已经固化，开实时流无意义。
+  resetWindows()
+  connectUsageStream()
+  scheduleFutureTick()
   void statsStore.fetchStats()
   statsStore.connectStream()
 })
 
 onUnmounted(() => {
   statsStore.disconnectStream()
-  disconnectBreakdownStream()
-  disconnectTimelineStream()
+  disconnectUsageStream()
+  clearFutureTick()
 })
 
 /**
- * 范围一变就重拉并重建 SSE。
+ * 重算两个视图的窗口，并清空已有数据。
  *
- * 范围写在流的 URL 里，故无法复用旧连接。先断后建而非反过来：
- * 服务端有连接数上限，先建新的会瞬时占用两个名额。
- *
- * 旧点位<strong>不清空</strong>：清空会让折线先消失、待新数据到达再凭空出现，
- * 中间那一帧的空白是无从补救的硬切。留着旧数据则新旧两批之间是一次直接替换，
- * 图表层至少有机会在两者之间做过渡。
+ * 只在挂载时调用 —— 窗口此后冻结，跨天由刷新处理。
  */
-watch(timelineRange, () => {
-  disconnectTimelineStream()
-  void fetchTimeline()
-  connectTimelineStream()
-})
+function resetWindows() {
+  const current = new Date()
+  now.value = current
+  breakdownWindow.value = windowDates(current, BREAKDOWN_DAYS)
+  hourlyWindowStart.value = resolveWindowStart(current)
+}
+
+/**
+ * 在下一个半点唤醒，推进「尚未到来」的判定。
+ *
+ * 点位以整点为中心、覆盖前后各半小时，故已发生点位的集合只在时钟跨过 `HH:30`
+ * 时变化。定时器因此对准那一刻，而非按固定周期轮询 —— 后者一小时里有 119 次是白跑的。
+ *
+ * 递归重排而非 `setInterval`：`setTimeout` 的实际唤醒时刻会有漂移，
+ * 每次都重新计算到下一个半点的间隔可避免误差累积。
+ */
+function scheduleFutureTick() {
+  clearFutureTick()
+  const current = new Date()
+  const delay = nextFutureBoundary(current).getTime() - current.getTime()
+  futureTimer = setTimeout(() => {
+    now.value = new Date()
+    scheduleFutureTick()
+  }, delay)
+}
+
+function clearFutureTick() {
+  if (futureTimer !== null) {
+    clearTimeout(futureTimer)
+    futureTimer = null
+  }
+}
 
 // SSE 每次推送新快照时：驱动数字动画（记录旧值作为起点），并把“今日”单格同步进热力图。
 watch(
@@ -272,7 +349,7 @@ async function fetchHeatmap() {
 }
 
 /**
- * 拉取下钻柱状图的用量明细。
+ * 拉取按日期聚合的用量明细。
  *
  * 只请求一次最细粒度数据（日期 × 供应商 × 模型），三级视图与 hover 明细
  * 全部由前端 pivot 得出，因此下钻过程中不再发起请求。
@@ -283,7 +360,7 @@ async function fetchHeatmap() {
  */
 async function fetchBreakdown() {
   if (!breakdownRows.value.length) {
-    breakdownLoading.value = true
+    chartsLoading.value = true
   }
 
   try {
@@ -291,49 +368,77 @@ async function fetchBreakdown() {
       params: { days: BREAKDOWN_DAYS },
     })
     breakdownRows.value = Array.isArray(response.data) ? response.data : []
-    breakdownFailed.value = false
+    chartsFailed.value = false
   } catch {
     if (!breakdownRows.value.length) {
-      breakdownFailed.value = true
+      chartsFailed.value = true
     }
   } finally {
-    breakdownLoading.value = false
+    chartsLoading.value = false
   }
 }
 
 /**
- * 建立柱状图明细的 SSE 连接，让柱子随调用实时增长。
- *
- * 这条流下发两种帧：
- * - `breakdown` —— 完整明细快照，整体替换。每次订阅（含断线重连）只在最开始来一次，
- *   它同时充当首屏数据，故不再另发 HTTP。
- * - `breakdown-delta` —— 单次调用的那一行，累加进已有明细。
- *
- * 快照必定先于增量到达（后端用 concat 保证），否则增量会被随后的快照覆盖。
+ * 拉取今日时段的整点用量。与 {@link fetchBreakdown} 同为历史区间预留，当前不调用。
  */
-function connectBreakdownStream() {
-  if (breakdownSource) return
+async function fetchHourly() {
+  try {
+    const response = await http.get<UsageHourlyPoint[]>('/usage-hourly')
+    const points = Array.isArray(response.data) ? response.data : []
+    hourlyTotals.value = collectHourlySnapshot(points, hourlyWindowStart.value)
+    chartsFailed.value = false
+  } catch {
+    if (!hourlyTotals.value.size) {
+      chartsFailed.value = true
+    }
+  }
+}
+
+/**
+ * 建立图表流的 SSE 连接 —— 三张图表共用这一条。
+ *
+ * 下发三种帧：
+ * - `breakdown` —— 按日期聚合的完整明细，整体替换。喂柱状图与「近 7 日」折线。
+ * - `hourly` —— 今日时段的整点用量，整体替换。喂「今日时段」折线。
+ * - `usage-delta` —— 单条用量记录，按各视图口径累加。
+ *
+ * 两帧快照必定先于增量到达（后端用 concat 保证），否则增量会被随后的快照覆盖。
+ * 断线重连自然重走一遍快照，重连间隙的遗漏由此补齐。
+ */
+function connectUsageStream() {
+  if (usageSource) return
   // 首屏数据改由流的快照帧来，故 loading 态也在建流时置上（而非 HTTP 请求前）。
-  if (!breakdownRows.value.length) breakdownLoading.value = true
-  breakdownSource = createAuthEventSource({
-    path: `/usage-breakdown/stream?days=${BREAKDOWN_DAYS}`,
+  if (!breakdownRows.value.length) chartsLoading.value = true
+  usageSource = createAuthEventSource({
+    path: `/usage/stream?days=${BREAKDOWN_DAYS}`,
     handlers: {
       breakdown: (data) => {
         try {
           const rows = JSON.parse(data) as UsageBreakdownRow[]
           if (!Array.isArray(rows)) return
           breakdownRows.value = rows
-          breakdownFailed.value = false
-          breakdownLoading.value = false
+          chartsFailed.value = false
+          chartsLoading.value = false
         } catch {
           // 忽略坏帧，保留上一份明细，避免图表闪空。
         }
       },
-      'breakdown-delta': (data) => {
+      hourly: (data) => {
         try {
-          const delta = JSON.parse(data) as UsageBreakdownDelta
-          if (!delta?.date) return
-          mergeBreakdownDelta(delta)
+          const points = JSON.parse(data) as UsageHourlyPoint[]
+          if (!Array.isArray(points)) return
+          hourlyTotals.value = collectHourlySnapshot(points, hourlyWindowStart.value)
+          chartsFailed.value = false
+          chartsLoading.value = false
+        } catch {
+          // 同上，保留上一份桶表。
+        }
+      },
+      'usage-delta': (data) => {
+        try {
+          const delta = JSON.parse(data) as UsageRecordDelta
+          if (!delta?.createdAt) return
+          applyUsageDelta(delta)
         } catch {
           // 坏帧只损失这一次计数，下次重连的快照会补齐。
         }
@@ -342,111 +447,37 @@ function connectBreakdownStream() {
     // 流既是首屏渠道又是实时渠道，失败态只能由它告知；
     // 已有数据时不报错 —— 断线重连不应让已渲染的图表变成错误页。
     onError: () => {
-      breakdownLoading.value = false
-      if (!breakdownRows.value.length) breakdownFailed.value = true
+      chartsLoading.value = false
+      if (!breakdownRows.value.length) chartsFailed.value = true
     },
   })
 }
 
 /**
- * 把一帧增量累加进当前明细。
+ * 把一帧增量分发给两个视图。
  *
- * <h2>窗口语义优先</h2>
- * 帧的日期不在当前窗口内时<strong>直接丢弃</strong>，而不是把这一天补进去。
- * 典型场景是跨过午夜：新数据属于「明天」，而用户此刻看的窗口并不包含明天，
- * 擅自加一根柱子会让横轴凭空变长。刷新后窗口自然重算，新的一天就出现了。
+ * <h2>两个窗口各自判定</h2>
+ * 柱状图与「近 7 日」按自然日，「今日时段」按 5 点分界。同一帧可能被一个接受、
+ * 被另一个丢弃 —— 明天凌晨 02:00 的调用不在柱状图冻结的 7 个日历日里，
+ * 却仍落在今日时段窗口内，两边都是对的。故这里调两个独立的合并函数，
+ * 不共用一个「是否在窗口内」的判定。
  *
- * 判定依据是「这一天是否已在窗口里」而非「组合是否已存在」 ——
- * 某供应商今天首次被调用时，它的行本来就不存在，那种情况要插入而非丢弃。
- *
- * 排序、「其余」合并、三级 pivot 全部由 useUsageBreakdown 的 computed 派生，
- * 故这里只管把数字加对，不必关心展示顺序。
+ * 排序、「其余」合并、三级 pivot、补零与 `future` 标记全部由 computed 派生，
+ * 故这里只管把数字加对。
  */
-function mergeBreakdownDelta(delta: UsageBreakdownDelta) {
-  const hit = breakdownRows.value.find(
-    (row) =>
-      row.date === delta.date &&
-      row.providerKey === delta.providerKey &&
-      row.modelName === delta.modelName,
-  )
-  if (hit) {
-    hit.callCount += delta.callCount
-    return
-  }
-  if (!breakdownRows.value.some((row) => row.date === delta.date)) return
-  breakdownRows.value.push({
-    date: delta.date,
-    providerKey: delta.providerKey,
-    modelName: delta.modelName,
-    callCount: delta.callCount,
-  })
-}
-
-/** 断开柱状图 SSE 连接（离开概览页时调用）。 */
-function disconnectBreakdownStream() {
-  if (breakdownSource) {
-    breakdownSource.close()
-    breakdownSource = null
+function applyUsageDelta(delta: UsageRecordDelta) {
+  mergeBreakdownDelta(breakdownRows.value, delta, breakdownWindow.value)
+  if (mergeHourlyDelta(hourlyTotals.value, delta, hourlyWindowStart.value)) {
+    // Map 的原地修改不触发响应式，换一个引用让 computed 重算。
+    hourlyTotals.value = new Map(hourlyTotals.value)
   }
 }
 
-/**
- * 拉取 token 用量时间线。
- *
- * 补零与「不补未来」都由后端完成，前端拿到的点位可直接按序绘制。
- */
-async function fetchTimeline() {
-  if (!timelinePoints.value.length) {
-    timelineLoading.value = true
-  }
-
-  try {
-    const response = await http.get<UsageTimelinePoint[]>('/usage-timeline', {
-      params: { range: timelineRange.value },
-    })
-    timelinePoints.value = Array.isArray(response.data) ? response.data : []
-    timelineFailed.value = false
-  } catch {
-    if (!timelinePoints.value.length) {
-      timelineFailed.value = true
-    }
-  } finally {
-    timelineLoading.value = false
-  }
-}
-
-/**
- * 建立折线图的 SSE 连接。
- *
- * 与统计卡、柱状图由同一批调用事件驱动，三处视图同步刷新。今日时段范围另有一层收益：
- * 后端的定时兜底会随时间推进「当前所在时段」，即使没有新调用，时间轴也会向前延伸。
- */
-function connectTimelineStream() {
-  if (timelineSource) return
-  timelineSource = createAuthEventSource({
-    path: `/usage-timeline/stream?range=${timelineRange.value}`,
-    handlers: {
-      timeline: (data) => {
-        try {
-          const points = JSON.parse(data) as UsageTimelinePoint[]
-          if (!Array.isArray(points)) return
-          timelinePoints.value = points
-          // 推送成功即视为链路正常：清掉首屏 HTTP 可能留下的失败态。
-          timelineFailed.value = false
-          timelineLoading.value = false
-        } catch {
-          // 忽略坏帧，保留上一份点位，避免折线闪空。
-        }
-      },
-    },
-  })
-}
-
-/** 断开折线图 SSE 连接。 */
-function disconnectTimelineStream() {
-  if (timelineSource) {
-    timelineSource.close()
-    timelineSource = null
+/** 断开图表流（离开概览页时调用）。 */
+function disconnectUsageStream() {
+  if (usageSource) {
+    usageSource.close()
+    usageSource = null
   }
 }
 
@@ -536,7 +567,7 @@ function toKUnit(value: number): number {
         与副标题并列，样式沿用热力图卡片的「当前项 + 切换」范式。
       -->
       <UsageBreakdownPanel :rows="breakdownRows" :dimension="activeBreakdownDimension" :metric="callCountMetric"
-        :days="BREAKDOWN_DAYS" :loading="breakdownLoading" :failed="breakdownFailed">
+        :days="BREAKDOWN_DAYS" :loading="chartsLoading" :failed="chartsFailed">
         <template #actions>
           <div class="breakdown-mode-switch">
             <span class="breakdown-mode-label">{{ activeBreakdownDimension.primaryTerm }}视图</span>
@@ -555,8 +586,8 @@ function toKUnit(value: number): number {
       <UsageLinePanel
         v-model:range="timelineRange"
         :points="timelinePoints"
-        :loading="timelineLoading"
-        :failed="timelineFailed"
+        :loading="chartsLoading"
+        :failed="chartsFailed"
       />
     </n-card>
 
