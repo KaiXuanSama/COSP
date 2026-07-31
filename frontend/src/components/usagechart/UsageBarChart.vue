@@ -841,6 +841,19 @@ watch(structureKey, () => {
    */
   background-color: var(--usagechart-accent, #c27a3e);
   /*
+   * hover 变暗的载体，起始为恒等值。
+   *
+   * 用 filter 而非 opacity 是为了把「悬停反馈」与「进出场淡入淡出」分到两个属性上 ——
+   * 前者要跟手（0.18s），后者要与高度同步（0.42s），而同一个属性不可能有两种时长。
+   * 若两者共用 opacity，hover 规则就不得不改 transition 声明，那正是这处曾经的 bug：
+   * 写 transition-duration 会把高度一并提速，写 transition 简写则把高度过渡整个替换掉，
+   * 悬停期间点击下钻，那一层的形变就成了硬切。
+   *
+   * 显式写 opacity(1) 而不留 filter: none：从 none 过渡到函数列表虽然规范上按恒等值
+   * 插值，但两端写成同一个函数列表更稳，也与「过渡两端必须是同一属性」的道理一致。
+   */
+  filter: opacity(1);
+  /*
    * 形变动画的实际执行者：高度由 useStackMorph 逐帧给到内联样式，
    * 这条过渡负责把每次取值变化补成连续运动（长高 / 收缩 / 归零消失）。
    *
@@ -849,24 +862,29 @@ watch(structureKey, () => {
    *
    * 不透明度与高度同时长同曲线：层的进出场是「一边收缩一边淡出」的单一动作，
    * 两者若快慢不一，会先看到色块淡没、再看到空白被压掉（或反过来）。
-   * hover 的变暗则另有一条更快的过渡，见下。
    *
    * 底色同样纳入：见上方 background-color 的说明。
+   *
+   * filter 是唯一一条走短时长的 —— 它只承担 hover 反馈，见下。
+   * 全部属性都列在这一条声明里，hover 时无需再覆写 transition。
    */
   transition:
     height 0.42s cubic-bezier(0.4, 0, 0.2, 1),
     margin-bottom 0.42s cubic-bezier(0.4, 0, 0.2, 1),
     background-color 0.42s cubic-bezier(0.4, 0, 0.2, 1),
-    opacity 0.42s cubic-bezier(0.4, 0, 0.2, 1);
+    opacity 0.42s cubic-bezier(0.4, 0, 0.2, 1),
+    filter 0.18s ease;
 
   &:hover {
-    opacity: 0.82;
     /*
-     * 悬停反馈要跟手，不能沿用形变那条 0.42s。只改 opacity 这一条 ——
-     * 写成 transition-duration 会把高度与外边距一并提速，
-     * 悬停恰好落在某层形变途中时，柱子会突然加速。
+     * 只改 filter 这一个属性，绝不碰 transition ——
+     * 悬停期间高度、外边距、底色的过渡必须原样保留，
+     * 否则鼠标停在某层上触发下钻时，那一层会跳变而其余层正常形变。
+     *
+     * 与元素自身的 opacity 相乘：悬停一个正在退场的层得到 0 × 0.82，仍是不可见，
+     * 不会把已淡出的层重新拽回来。
      */
-    transition: opacity 0.18s ease;
+    filter: opacity(0.82);
   }
 }
 
