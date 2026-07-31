@@ -4,6 +4,7 @@ import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageDailyPoint;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageHourlyPoint;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageRecordDelta;
 import org.slf4j.Logger;
@@ -203,6 +204,41 @@ public class ApiCallUsageRepository implements ApiCallUsageService {
                         rs.getString("usage_date"),
                         rs.getString("provider_key"),
                         rs.getString("model_name"),
+                        rs.getLong("call_count"),
+                        rs.getLong("input_tokens"),
+                        rs.getLong("output_tokens")),
+                startInclusive + "T00:00:00", endExclusive + "T00:00:00");
+    }
+
+    /**
+     * 按<strong>日期</strong>聚合任意闭区间内的调用次数与 token 用量，供「近 N 日」折线使用。
+     *
+     * <p>与 {@link #aggregateBreakdownBetween} 同窗口、同数据源，只是分组维度更粗 ——
+     * 这里不保留供应商与模型。折线的横轴就是日期，拿到更细的维度也只会被再求和一次，
+     * 而行数上界会从「天数」膨胀成「天数 × 供应商 × 模型」。
+     *
+     * <p>只返回<strong>有数据的日期</strong>，补零由应用层按窗口边界完成 ——
+     * 那需要知道窗口有多长，而数据访问层只看得到命中的行。
+     *
+     * <p>WHERE 的 sargable 写法、{@code COALESCE} 的必要性与右开边界的约定
+     * 均同 {@link #aggregateBreakdownBetween}，理由见那里。
+     *
+     * @param startInclusive 起始日期（含），格式 {@code yyyy-MM-dd}
+     * @param endExclusive   结束边界（不含），格式 {@code yyyy-MM-dd}
+     * @return 按日期升序的用量；无数据时返回空列表
+     */
+    public List<UsageDailyPoint> aggregateDailyTokens(String startInclusive, String endExclusive) {
+        return jdbcTemplate.query(
+                "SELECT substr(created_at, 1, 10) AS usage_date, "
+                        + "COUNT(*) AS call_count, "
+                        + "SUM(COALESCE(prompt_tokens, 0)) AS input_tokens, "
+                        + "SUM(COALESCE(completion_tokens, 0)) AS output_tokens "
+                        + "FROM api_call_usage "
+                        + "WHERE created_at >= ? AND created_at < ? "
+                        + "GROUP BY usage_date "
+                        + "ORDER BY usage_date ASC",
+                (rs, rowNum) -> new UsageDailyPoint(
+                        rs.getString("usage_date"),
                         rs.getLong("call_count"),
                         rs.getLong("input_tokens"),
                         rs.getLong("output_tokens")),

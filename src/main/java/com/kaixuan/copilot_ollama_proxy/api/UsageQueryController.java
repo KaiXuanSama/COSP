@@ -5,6 +5,7 @@ import com.kaixuan.copilot_ollama_proxy.infrastructure.web.SseConnectionGate;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.StatsSnapshot;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownPage;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageDailyPage;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageHourlyPoint;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
@@ -118,6 +119,28 @@ public class UsageQueryController {
             @RequestParam(defaultValue = "7") int size,
             @RequestParam(defaultValue = "0") int offset) {
         return usageQueryService.getUsageBreakdownPage(size, offset);
+    }
+
+    /**
+     * 可滑动窗口的按日 token 用量 —— 「近 N 日」折线翻看历史区间的入口。
+     *
+     * <p>窗口参数与约束、越界钳制行为、响应体的窗口元信息均与
+     * {@link #usageBreakdownPage} 完全一致，两者共用同一份窗口解析逻辑。
+     * 因此同样的 {@code size}/{@code offset} 在两个端点上必然落到同一区间，
+     * 前端可以用一份翻页状态同时驱动柱状图与折线。
+     *
+     * <p>与柱状图端点的差别只在数据形状：这里按日期分组（丢掉供应商与模型），
+     * 且 {@code points} <strong>已按窗口补零</strong>，长度恒等于 {@code size} ——
+     * 折线按点位等距绘制，跳过空日会让横轴不再是等距时间轴。
+     *
+     * @param size   窗口宽度（天），默认 7
+     * @param offset 向过去偏移的天数，默认 0（右端为今天）
+     */
+    @GetMapping("/config/api/usage-daily/page")
+    public Mono<UsageDailyPage> usageDailyPage(
+            @RequestParam(defaultValue = "7") int size,
+            @RequestParam(defaultValue = "0") int offset) {
+        return usageQueryService.getUsageDailyPage(size, offset);
     }
 
     /**

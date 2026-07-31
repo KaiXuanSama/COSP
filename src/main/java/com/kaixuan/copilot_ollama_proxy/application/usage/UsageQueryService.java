@@ -6,6 +6,8 @@ import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.StatsSnapshot;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownPage;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageDailyPage;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageDailyPoint;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageHourlyPoint;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageRecordDelta;
 import org.springframework.stereotype.Service;
@@ -65,27 +67,6 @@ public class UsageQueryService {
     /** 下钻柱状图的回看天数上下限。第一版固定 7 天，保留范围钳制以便后续开放切换。 */
     private static final int MIN_BREAKDOWN_DAYS = 1;
     private static final int MAX_BREAKDOWN_DAYS = 90;
-
-    /**
-     * 可滑动窗口的宽度下限 —— 7 天。
-     *
-     * <p>概览的横轴需要足够长才看得出趋势，短于一周的窗口在视觉上只是几根孤立的柱子。
-     * 这也是既有默认视图的宽度，保持一致可以让「不带参数」与「带默认参数」表现相同。
-     */
-    private static final int MIN_WINDOW_SIZE = 7;
-
-    /**
-     * 可滑动窗口的宽度上限，同时也是<strong>最大可回看深度</strong> —— 15 天。
-     *
-     * <p>一个常量承担两个职责是有意为之：窗口只能在「最近 15 天」这个池子里滑动，
-     * 于是宽度取满 15 时窗口恰好只有一个合法位置（{@code offset = 0}），
-     * 宽度与偏移的约束自然收敛为 {@code size + offset <= 15}，不需要第三个常量。
-     *
-     * <p>15 天也是 SQLite 端的成本护栏：{@code GROUP BY} 的分组键是表达式，
-     * 命中行数随窗口线性增长且要建临时 B-tree 排序。放开到数十天时聚合本身会成为瓶颈，
-     * 那时才需要服务端 top-N。
-     */
-    private static final int MAX_WINDOW_SIZE = 15;
 
     /**
      * 今日窗口的起始小时 —— 5 点，而非 0 点。
@@ -195,26 +176,85 @@ public class UsageQueryService {
      * @param requestedOffset 请求偏移
      */
     UsageBreakdownPage buildBreakdownPage(LocalDate today, int requestedSize, int requestedOffset) {
-        int size = clampWindowSize(requestedSize);
-        int offset = clampWindowOffset(requestedOffset, size);
+        SlidingDateWindow window = SlidingDateWindow.resolve(today, requestedSize, requestedOffset);
 
-        // 窗口是闭区间 [start, end]：end 为「今天减去偏移」，start 再往前退 size-1 天。
-        LocalDate end = today.minusDays(offset);
-        LocalDate start = end.minusDays(size - 1L);
-
-        // 仓储侧右边界是开区间，故传 end 的次日。
         List<UsageBreakdownRow> rows = apiCallUsageRepository.aggregateBreakdownBetween(
-                start.format(DATE_FORMAT), end.plusDays(1).format(DATE_FORMAT));
+                window.startText(), window.exclusiveEndText());
 
         return new UsageBreakdownPage(
-                start.format(DATE_FORMAT),
-                end.format(DATE_FORMAT),
-                size,
-                offset,
-                offset == 0,
-                offset > 0,
-                size + offset < MAX_WINDOW_SIZE,
+                window.startText(),
+                window.endText(),
+                window.size(),
+                window.offset(),
+                window.includesToday(),
+                window.hasNewer(),
+                window.hasOlder(),
                 rows);
+    }
+
+    /**
+     * 查询<strong>可滑动窗口</strong>内按日聚合的 token 用量 —— 「近 N 日」折线翻看历史区间的入口。
+     *
+     * <p>窗口规则与 {@link #getUsageBreakdownPage} 完全一致，且共用
+     * {@link SlidingDateWindow#resolve} 这一份钳制逻辑：同样的 {@code size}/{@code offset}
+     * 在两个端点上必然落到同一区间，前端可用一份翻页状态同时驱动柱状图与折线。
+     * 若两处各写一遍钳制，改上限时漏掉一处不会有编译错误，只会让两张图落到不同区间，
+     * 而它们看起来仍然都能正常渲染。
+     *
+     * <h2>为何独立于柱状图端点</h2>
+     * 概览页同时展示两张图时，前端只取一份明细自行按日归约即可（现状即如此），
+     * 这个端点是给「只要折线」的场景用的：分组维度更粗，行数上界从
+     * {@code 天数 × 供应商 × 模型} 降到<strong>天数</strong>，且客户端不必再聚合一遍。
+     *
+     * <p>返回的 {@code points} <strong>已按窗口补零</strong>，长度恒等于 {@code size}。
+     * 这一点与柱状图端点相反（那里的 {@code rows} 只含有数据的组合）——
+     * 折线按点位等距绘制，跳过空日会让横轴不再是等距时间轴，而这个补零完全由窗口边界
+     * 决定，没有展示层的自由度可言，放在后端更合适。
+     *
+     * @param requestedSize   请求窗口宽度（天），超出 {@code [7, 15]} 时钳制
+     * @param requestedOffset 请求向过去偏移的天数，超出 {@code [0, 15 - size]} 时钳制
+     */
+    public Mono<UsageDailyPage> getUsageDailyPage(int requestedSize, int requestedOffset) {
+        return Mono.fromCallable(() -> buildDailyPage(
+                        LocalDate.now(), requestedSize, requestedOffset))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 组装按日 token 用量的滑动窗口分页结果，并把窗口内缺失的日期补零。
+     *
+     * <p>可见性放宽到包级并显式接受 {@code today}，理由同 {@link #buildBreakdownPage}。
+     *
+     * @param today           作为窗口右端基准的当天日期
+     * @param requestedSize   请求窗口宽度
+     * @param requestedOffset 请求偏移
+     */
+    UsageDailyPage buildDailyPage(LocalDate today, int requestedSize, int requestedOffset) {
+        SlidingDateWindow window = SlidingDateWindow.resolve(today, requestedSize, requestedOffset);
+
+        // 先按日期建索引再遍历窗口，而不是对每一天都去扫一遍结果列表 ——
+        // 后者是 O(size × 命中行数)，虽然规模小，但也让「补零」这层逻辑更难读。
+        Map<String, UsageDailyPoint> byDate = new LinkedHashMap<>();
+        for (UsageDailyPoint point : apiCallUsageRepository.aggregateDailyTokens(
+                window.startText(), window.exclusiveEndText())) {
+            byDate.put(point.date(), point);
+        }
+
+        List<UsageDailyPoint> points = new ArrayList<>(window.size());
+        for (int i = 0; i < window.size(); i++) {
+            String date = window.start().plusDays(i).format(DATE_FORMAT);
+            points.add(byDate.getOrDefault(date, UsageDailyPoint.empty(date)));
+        }
+
+        return new UsageDailyPage(
+                window.startText(),
+                window.endText(),
+                window.size(),
+                window.offset(),
+                window.includesToday(),
+                window.hasNewer(),
+                window.hasOlder(),
+                points);
     }
 
     /**
@@ -270,27 +310,6 @@ public class UsageQueryService {
     /** 钳制回看天数，防止超大范围查询拖垮 SQLite。 */
     private static int clampBreakdownDays(int requestedDays) {
         return Math.max(MIN_BREAKDOWN_DAYS, Math.min(MAX_BREAKDOWN_DAYS, requestedDays));
-    }
-
-    /**
-     * 钳制滑动窗口宽度到 {@code [7, 15]}。
-     *
-     * <p>可见性放宽到包级，供测试直接验证边界。
-     */
-    static int clampWindowSize(int requestedSize) {
-        return Math.max(MIN_WINDOW_SIZE, Math.min(MAX_WINDOW_SIZE, requestedSize));
-    }
-
-    /**
-     * 钳制滑动窗口偏移到 {@code [0, 15 - size]}。
-     *
-     * <p>上界依赖宽度，故必须在宽度钳制之后调用；传入未钳制的宽度会算出错误的上界。
-     * 负偏移意味着窗口伸向未来，那里不会有数据，一律收敛到 0（右端为今天）。
-     *
-     * @param size 已钳制的窗口宽度
-     */
-    static int clampWindowOffset(int requestedOffset, int size) {
-        return Math.max(0, Math.min(MAX_WINDOW_SIZE - size, requestedOffset));
     }
 
     /**
