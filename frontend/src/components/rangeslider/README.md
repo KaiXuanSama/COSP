@@ -7,7 +7,8 @@
 │  · · · · · ·  ●━━━━━━━━━━━━━━━━●  · ·  │
 │  ↑ 离散点      ↑ 手柄  ↑ 范围块         │
 └────────────────────────────────────────┘
-     7/17        7/20        7/23   7/31
+                7/26            8/1
+                ↑ 端点文案随手柄移动（默认）
 ```
 
 ## 适用场景
@@ -50,12 +51,27 @@ import { DiscreteRangeSlider, type RangeSelection } from '@/components/rangeslid
 | `minSpan` | `number` | `1` | | 跨度下限（含）。拖到此处顶住 |
 | `maxSpan` | `number` | `undefined` → 刻度数 | | 跨度上限（含） |
 | `disabled` | `boolean` | `false` | | 禁用全部交互（含键盘） |
-| `showLabels` | `boolean` | `true` | | 是否渲染刻度文案行。关掉后只剩槽本身 |
+| `labelMode` | `RangeSliderLabelMode` | `'edges'` | | 刻度文案的显示方式，见下表 |
 | `trackHeight` | `number` | `34` | | 槽高度（px）。范围块与手柄尺寸都由它派生 |
 | `ariaLabel` | `string` | `'范围选择'` | | 落在整块手柄上的无障碍标签 |
 | `formatValueText` | `(s: RangeSelection) => string` | `undefined` | | 把选择读成人话，用于 `aria-valuetext`。缺省是「3 至 9，共 7 项」这类下标描述 |
+| `formatEdgeLabel` | `(tick, index, edge) => string` | `undefined` | | 端点文案格式化器，仅 `edges` 模式生效。缺省取 `tick.label ?? tick.key` |
 
 `ticks` 只有一项时组件等同禁用（无从选择）。
+
+### labelMode
+
+| 取值 | 行为 | 适用 |
+|---|---|---|
+| `'edges'`（默认） | 只在两个手柄下方显示当前端点的文案，随手柄一起移动 | 横轴上永远只有两个数字，是「当前选了哪一段」最直接的读法，且刻度再多也不会拥挤 |
+| `'all'` | 显示每个刻度自带的 `label`（未给 label 的位置留空） | 需要看清整条轴的刻度体系时。调用方要自己隔位标注，否则会挤成一团 |
+| `'none'` | 不渲染文案行 | 控件只剩槽本身 |
+
+三种模式共用同一个文案行盒子与同一套内缩，**切换模式时控件高度不变**（`none` 除外）。
+
+`edges` 模式下跨度小于 2 格时终点文案会淡出 —— 两段文字会重叠成一团，而跨度本身已由手柄间距直观表达。判定按刻度间距而非像素：文案宽度渲染前不可知，测量要等一帧、期间会以重叠状态闪现一下。
+
+**`formatEdgeLabel` 与 `tick.label` 的分工**：`label` 是为 `all` 模式设计的，通常只给隔位标注的少数刻度，端点落在未标注的位置上就没有文案可显示。所以 `edges` 模式下应当单独给 `formatEdgeLabel`。它收到 `(tick, index, edge)` 三个参数，`edge` 是 `'start' | 'end'` —— 两端需要不同措辞时用得上（如「自 / 至」）。
 
 ## Events
 
@@ -81,7 +97,7 @@ import { DiscreteRangeSlider, type RangeSelection } from '@/components/rangeslid
 ```ts
 interface RangeSliderTick {
   key: string       // 稳定标识，用于 v-for 的 key，不参与选择逻辑
-  label?: string    // 刻度文案。只给需要标注的位置，其余留空以免横向拥挤
+  label?: string    // 刻度文案。仅 labelMode='all' 时使用；只给需要标注的位置
 }
 
 interface RangeSelection {
@@ -94,6 +110,8 @@ interface RangeBounds {
   minSpan: number
   maxSpan: number
 }
+
+type RangeSliderLabelMode = 'edges' | 'all' | 'none'
 ```
 
 ## 交互
@@ -133,20 +151,22 @@ interface RangeBounds {
 ```vue
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { DiscreteRangeSlider, type RangeSelection } from '@/components/rangeslider'
+import { DiscreteRangeSlider, type RangeSelection, type RangeSliderTick } from '@/components/rangeslider'
 
 const POOL = 15
 const MIN_SPAN = 7
 
-const ticks = computed(() =>
-  dates.value.map((date, i) => ({
-    key: date,
-    // 隔位标注：15 个日期全标会挤成一团
-    label: i === 0 || i === dates.value.length - 1 || i % 3 === 0 ? shortDate(date) : undefined,
-  })),
+// edges 模式不需要 label，文案由 formatEdgeLabel 给出
+const ticks = computed<RangeSliderTick[]>(() =>
+  dates.value.map((date) => ({ key: date })),
 )
 
 const selection = ref<RangeSelection>({ start: POOL - MIN_SPAN, end: POOL - 1 })
+
+/** 端点文案：M/D */
+function formatEdge(tick: RangeSliderTick) {
+  return `${Number(tick.key.slice(5, 7))}/${Number(tick.key.slice(8, 10))}`
+}
 
 function describe(s: RangeSelection) {
   return `${ticks.value[s.start]?.key} 至 ${ticks.value[s.end]?.key}，共 ${s.end - s.start + 1} 天`
@@ -166,9 +186,22 @@ function onChange(s: RangeSelection) {
     :max-span="POOL"
     aria-label="日期范围"
     :format-value-text="describe"
+    :format-edge-label="formatEdge"
     @change="onChange"
   />
 </template>
+```
+
+若改用 `labelMode="all"`，则要给 `ticks` 补上隔位标注的 `label`：
+
+```ts
+const ticks = computed<RangeSliderTick[]>(() =>
+  dates.value.map((date, i) => ({
+    key: date,
+    // 15 个日期全标会挤成一团：首尾必标，中间每三格一个
+    label: i === 0 || i === dates.value.length - 1 || i % 3 === 0 ? shortDate(date) : undefined,
+  })),
+)
 ```
 
 **与后端窗口参数的换算**（`ticks` 升序、末位为今天时）：
@@ -211,6 +244,8 @@ offset = (count - 1) - end
 
 **端点手柄的 `pointerdown` 必须 `.stop`。** 不阻止冒泡的话会同时触发整块的 `pointerdown`，后者把 target 改成 `'range'`，拖端点就变成了拖整块。
 
-**`--dragging` 状态里不要动 `transition`。** 若确需改动，必须把三条属性全列出来重申：只写 `transition-duration` 会把 `box-shadow` 一并提速，写 `transition: left 0s, width 0s` 这种简写会替换整条声明、`box-shadow` 的过渡彻底消失。后者正是柱状图 hover 那个 bug 的成因。
+**`--dragging` 状态里不要动 `transition`。** 若确需改动，必须把三条属性全列出来重申：只写 `transition-duration` 会把 `box-shadow` 一并提速，写 `transition: left 0s, width 0s` 这种简写会替换整条声明、`box-shadow` 的过渡彻底消失。后者正是柱状图 hover 那个 bug 的成因。端点文案的 `--sliding` 状态同理，那里把 `opacity` 与 `color` 一并重申了。
+
+**端点文案在拖动时撤掉位置过渡。** 不这么做的话，范围块在 `$slide-duration` 里滑动而文案另起一条同长的过渡，两者起点不同步，看起来像文案在追手柄。块、手柄、文案是同一个动作的三个部分，必须共用同一条时间线。
 
 **`tickRatio` 的分母是 `count - 1`。** 比例描述的是**点**的位置，n 个点之间有 n-1 段间隔。用 `count` 会让最后一个点落在 `(n-1)/n` 处，右端凭空空出一格 —— 且偏差随刻度增多而变小，很容易被当成渲染误差。

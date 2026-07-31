@@ -31,6 +31,18 @@ export interface RangeSelection {
   end: number
 }
 
+/**
+ * 刻度文案的显示方式。
+ *
+ * - `edges` —— 只在两个手柄下方显示当前端点的文案，随手柄一起移动。
+ *   默认值：横轴上永远只有两个数字，是「当前选了哪一段」最直接的读法，
+ *   且刻度再多也不会拥挤。
+ * - `all` —— 显示每个刻度自带的 `label`（未给 label 的位置留空）。
+ *   适合需要看清整条轴的刻度体系时，代价是调用方要自己隔位标注。
+ * - `none` —— 不渲染文案行，控件只剩槽本身。
+ */
+export type RangeSliderLabelMode = 'edges' | 'all' | 'none'
+
 /** 选择的合法范围。三个字段都已净化，可直接参与算术。 */
 export interface RangeBounds {
   /** 刻度总数。 */

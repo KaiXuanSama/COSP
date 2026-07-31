@@ -245,21 +245,18 @@ const timelinePoints = computed<UsageTimelinePoint[]>(() => {
  * 也不发请求。接线要等三个分页端点（`/usage-breakdown/page`、`/usage-daily/page`、
  * `/usage-hourly/series`）在前端接上之后再做。
  *
- * <p>刻度文案隔位给：15 个日期全标会挤成一团。首尾必标，中间每两格标一个 ——
- * 用户需要的是「大概在哪一段」，精确日期由下方的窗口摘要给出。
+ * <p>不给 `label` —— 滑块用默认的 `edges` 模式，只在两个手柄下方显示端点日期，
+ * 文案由 {@link formatDateRangeEdge} 单独给出。`label` 是给 `all` 模式用的，
+ * 那种模式需要隔位标注才不至于挤成一团。
  */
-const dateRangeTicks = computed(() => {
-  const dates = windowDates(now.value, DATE_RANGE_POOL_DAYS)
-  const lastIndex = dates.length - 1
-  return dates.map((date, index) => ({
-    key: date,
-    // 首尾与每隔两格标注；`M/D` 而非完整日期，横向才放得下
-    label:
-      index === 0 || index === lastIndex || index % 3 === 0
-        ? `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`
-        : undefined,
-  }))
-})
+const dateRangeTicks = computed(() =>
+  windowDates(now.value, DATE_RANGE_POOL_DAYS).map((date) => ({ key: date })),
+)
+
+/** 端点日期文案：`M/D`，横向才放得下。 */
+function formatDateRangeEdge(tick: { key: string }): string {
+  return `${Number(tick.key.slice(5, 7))}/${Number(tick.key.slice(8, 10))}`
+}
 
 /**
  * 当前选中的日期窗口，闭区间下标。
@@ -648,6 +645,7 @@ function toKUnit(value: number): number {
           :max-span="DATE_RANGE_POOL_DAYS"
           aria-label="日期范围"
           :format-value-text="describeDateRange"
+          :format-edge-label="formatDateRangeEdge"
         />
         <div class="breakdown-range-meta">
           <span class="breakdown-range-text">{{ dateRangeText }}</span>
