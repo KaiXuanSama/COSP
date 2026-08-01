@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 import { NCard, NNumberAnimation } from 'naive-ui'
 import ActivityHeatmap from '@/components/heatmap/ActivityHeatmap.vue'
 import DiscreteRangeSlider from '@/components/rangeslider/DiscreteRangeSlider.vue'
@@ -30,6 +30,7 @@ import {
   buildHourlyPoints,
   collectHourlySeriesResponse,
   collectHourlySnapshot,
+  dayOffsetBetween,
   hourlyWindowStartOf,
   isClockAligned,
   liveAnchorDate,
@@ -37,12 +38,17 @@ import {
   mergeBreakdownDelta,
   mergeHourlyDelta,
   nextFutureBoundary,
+  parseLocalDay,
   resolveSelectableAxis,
   resolveWindowStart,
   selectHourlyTotals,
   windowDates,
+  windowDatesBetween,
+  windowKeyOf,
+  windowParamsOf,
   type HourlyHistoryCache,
   type TokenTotals,
+  type UsageBreakdownPage,
   type UsageBreakdownRow,
   type UsageDateRangeMeta,
   type UsageHourlyPoint,
@@ -60,9 +66,13 @@ const heatmapLoading = ref(false)
 const heatmapFailed = ref(false)
 
 /**
- * 明细行 —— 柱状图与「近 7 日」折线共用。
+ * 按日明细 —— 柱状图与「近 N 日」折线共用的<strong>实时栈</strong>。
  *
- * 由 `breakdown` 快照帧整体替换，随后被 `usage-delta` 增量原地累加。
+ * <p>只由 SSE 喂养（`breakdown` 快照帧整体替换、`usage-delta` 增量累加），
+ * <strong>永远不被 HTTP 触碰</strong>。这是双栈的一半，与 {@link hourlyTotals}
+ * 同理：若切回实时窗口时重新 HTTP 拉一遍，请求与增量帧的到达顺序不可控，
+ * 会静默多算或少算。另一半是 {@link breakdownHistory}，分流见
+ * {@link readDisplayWindow}。
  */
 const breakdownRows = ref<UsageBreakdownRow[]>([])
 
@@ -110,7 +120,7 @@ const timelineRange = ref<TimelineRange>('1d')
  * 冻结是刻意的：跨过午夜（或 5 点）后的新数据属于下一轮，不该挤进用户此刻
  * 看的窗口 —— 那会让横轴凭空变长。刷新后窗口自然重算，新的一轮才出现。
  *
- * 两个窗口的口径<strong>不同</strong>：柱状图与近 7 日按自然日，今日时段按 5 点分界。
+ * 两个窗口的口径<strong>不同</strong>：柱状图与近 N 日按自然日，今日时段按 5 点分界。
  * 因此同一条增量帧可能被一个视图接受、被另一个丢弃（明天凌晨 2 点的调用即是），
  * 两者各自过滤，不共用判定。
  */
@@ -289,15 +299,11 @@ const activeHeatmapMode = computed(() => {
 /**
  * 折线图的点位。
  *
- * <p>「近 N 日」仍由流数据派生（未接线）；「今日时段」则按
- * <strong>显示日</strong>（而非选中日）从双栈中取出对应桶表，再归约成 25 个点位。
+ * <p>「近 N 日」按<strong>显示窗口</strong>（而非选中窗口）取明细并归约 ——
+ * 与今日时段同一套「显示滞后」逻辑，避免滑到未加载的区间时先清零再长回来。
+ * 「今日时段」则按显示日从双栈中取出对应桶表，再归约成 25 个点位。
  *
- * <p>用显示日是为了避开「滑到未加载的日期就先清零」：滑动是连续动作，
- * 一路上每个点都闪一次白，而「没数据」与「未加载」在折线上长得一模一样。
- *
- * <p>窗口起点同样用显示日的 05:00 —— 横轴与数据必须同源，
- * 否则加载途中会出现「轴已经是新的一天、数据还是旧那天」的错位。
- * `future` 标记仍按真实时刻算，故历史日期不会有任何点被判成未来
+ * <p>`future` 标记仍按真实时刻算，故历史日期不会有任何点被判成未来
  * （那一天早已过完），这是自然结果而非特例。
  */
 const timelinePoints = computed<UsageTimelinePoint[]>(() => {
@@ -308,7 +314,7 @@ const timelinePoints = computed<UsageTimelinePoint[]>(() => {
       now.value,
     )
   }
-  return buildDailyPoints(breakdownRows.value, breakdownWindow.value)
+  return buildDailyPoints(timelineDisplay.value.rows, timelineDisplay.value.dates)
 })
 
 /**
@@ -494,6 +500,24 @@ function describeDateRange(selection: RangeSelection): string {
 const dateRangeText = computed(() => describeDateRange(dateRange.value))
 
 /**
+ * 柱状图选择器下方的操作提示。
+ *
+ * <p>显示窗口滞后于选中窗口时说明一下：图表还是上一个区间，不说明就看不出
+ * 与选择器不同步。实时窗口无需特别说明 —— 数据来自 SSE，与选择器始终一致。
+ */
+const dateRangeHint = computed(() => {
+  if (dateLoader.pending.value) {
+    const target = describeWindowKey(dateSelectedKey.value)
+    const shown = describeWindowKey(dateLoader.displayKey.value)
+    if (dateLoader.loadingKey.value === dateSelectedKey.value) {
+      return `正在加载 ${target}，图表仍为 ${shown}`
+    }
+    return `停留片刻即加载 ${target}`
+  }
+  return '拖动端点调整跨度，拖动色块整体平移；两侧按钮单击移一天、双击翻一页'
+})
+
+/**
  * 折线图下方那个选择器的窗口状态 —— 与柱状图那个<strong>各自独立</strong>。
  *
  * <p>两者服务不同的图表，用户可能想让柱状图停在某一段而折线图看另一段，
@@ -551,6 +575,19 @@ const timelineWindow = ref<PagedWindowState>({
  * 于是 7 天区间会退化成它的<strong>起点</strong>那一天。这与「今日时段该看最近一天」
  * 的直觉相反，故先把期望区间对齐到右端再交给它。
  *
+ * <h2>单点 → 区间时池也要贴回右端</h2>
+ * 单点形态的池位置边界与区间形态<strong>不同</strong>：凌晨 5 点前
+ * `reachableEnd = -1`，单点形态的 `poolStartMax` 随之变成 `-15`，
+ * 挂载时初始 `poolStart = -14` 超出上界被钳到 `-15` —— 池右端只到 `-1`，
+ * 池里不包含绝对 0（今天）。这个位置在单点形态下是贴右端的、完全正确；
+ * 但切到区间形态后 `poolStartMax` 回到 `-14`，而 `-15` 仍落在新边界内，
+ * 于是池<strong>不会</strong>自动移回来 —— 结果就是「近 7 日」看不到今天，
+ * 块显示成 07-26~08-01 而非 07-27~08-02，还毫无迹象。
+ *
+ * <p>故切到区间形态时把池右端贴回硬墙（`poolStart = poolStartMax`）：
+ * 区间视图语义就是「最近 N 天」，右端本就该是今天。只在<strong>单点 → 区间</strong>
+ * 这个方向做 —— 用户翻页停留在历史区间后切换形态，不该被强行拉回右端。
+ *
  * <h2>为什么必须 immediate</h2>
  * `timelineRange` 的初值就是 `'1d'`（单点形态），也就是说组件<strong>一挂载</strong>
  * 就该是单点。非 immediate 的 watch 要等 config 第一次<strong>变化</strong>才触发，
@@ -562,11 +599,14 @@ const timelineWindow = ref<PagedWindowState>({
  */
 watch(
   timelineAxisConfig,
-  (config) => {
+  (config, previousConfig) => {
     const previous = timelineWindow.value
+    const wasSingle = previousConfig ? previousConfig.maxSpan === 1 : false
     const anchored = config.maxSpan === 1
       ? { ...previous, desiredStart: previous.desiredEnd }
-      : previous
+      : wasSingle
+        ? { ...previous, poolStart: config.poolStartMax }
+        : previous
     timelineWindow.value = normalizePagedWindow(anchored, config)
   },
   { immediate: true },
@@ -723,19 +763,23 @@ const hourlyFailed = computed(
 )
 
 /**
- * 停留触发器 —— 在某个离散点上停留 {@link HOURLY_DWELL_MS} 后才发请求。
+ * 停留触发器 —— 在某个离散点上停留 {@link SELECTOR_DWELL_MS} 后才发请求。
+ *
+ * <p>今日时段（单点）与区间窗口（柱状图 / 近 N 日折线）<strong>共用</strong>这个延迟：
+ * 都是「拖动经过若干离散点，只为最终停下的那个点加载」的同一种手势，
+ * 分开调只会让两个场景的手感不一致。
  *
  * <h2>为什么不是节流也不是「松手才发」</h2>
  * 节流按固定速率放行，快速划过的点会各自触发一次请求，而那些点用户根本没停留。
- * 「松手才发」则让拖动过程中什么都看不到 —— 而单点滑动的价值恰恰在于
+ * 「松手才发」则让拖动过程中什么都看不到 —— 而滑动的价值恰恰在于
  * 逐点扫过去、边滑边看。
  *
  * <p>停留触发（debounce）两者兼得：每次换点都重置计时，快速划过 10 个点只产生
  * 1 次请求；在某点停住足够久就自动加载，不必松手。
  */
-const HOURLY_DWELL_MS = 350
+const SELECTOR_DWELL_MS = 350
 
-const hourlyDwell = createDwellTrigger<string>(HOURLY_DWELL_MS, (date) => {
+const hourlyDwell = createDwellTrigger<string>(SELECTOR_DWELL_MS, (date) => {
   void fetchHourlySeries(date)
 })
 
@@ -820,6 +864,202 @@ async function fetchHourlySeries(date: string) {
   }
 }
 
+/* ---------- 区间窗口（柱状图 + 近 N 日折线） ---------- */
+
+/**
+ * 历史窗口的明细行缓存 —— 双栈的另一半，只由 HTTP 喂养。
+ *
+ * <p>与今日时段的 {@link hourlyHistory} 同理：不含今天的窗口数据已固化，
+ * 缓存永不失效，来回滑动时同一窗口只请求一次。实时窗口（最近 N 天）由 SSE
+ * 的 {@link breakdownRows} 维护，<strong>不进这里</strong> —— 它一直在变，
+ * 缓存一份影子副本只会让「今天的数字停在某个时刻不再涨」。
+ * 分流见 {@link readDisplayWindow}。
+ */
+const breakdownHistory = ref<Map<string, UsageBreakdownRow[]>>(new Map())
+
+/** 实时窗口的 key —— SSE 快照对应的那几天（`breakdownWindow` 首尾）。 */
+const breakdownLiveKey = computed(() => {
+  const dates = breakdownWindow.value
+  return dates.length >= 2 ? windowKeyOf(dates[0], dates[dates.length - 1]) : ''
+})
+
+/**
+ * 区间窗口的双栈分流点 —— 由显示窗口 key 取出「该渲染的日期序列 + 明细行」。
+ *
+ * <p>实时 key → SSE 的 `breakdownRows`（快照 + 已累加的增量），历史 key →
+ * 缓存里对应窗口的行。历史行按显示窗口<strong>过滤</strong>：后端会把请求的
+ * `size` 钳到 `[7, 15]`（前端临时为 5 天时会被放宽），rows 可能多出两天，
+ * 而柱状图的横轴完全由 rows 的日期派生，不滤掉会多画两根柱。
+ *
+ * <p>key 为 null（未就绪）时回退到实时窗口 —— 那是「什么都不知道」时的
+ * 唯一合理默认。
+ */
+function readDisplayWindow(key: string | null): { dates: string[]; rows: UsageBreakdownRow[] } {
+  if (!key || key === breakdownLiveKey.value) {
+    return { dates: breakdownWindow.value, rows: breakdownRows.value }
+  }
+  const [start, end] = key.split('~')
+  const dates = windowDatesBetween(start, end)
+  const wanted = new Set(dates)
+  return {
+    dates,
+    rows: (breakdownHistory.value.get(key) ?? []).filter((row) => wanted.has(row.date)),
+  }
+}
+
+/** {@link createRangeLoader} 的产物。 */
+interface RangeLoader {
+  /** 显示窗口的 key —— 滞后于选中窗口，见 {@link createRangeLoader}。 */
+  displayKey: Ref<string | null>
+  /** 选中窗口是否缺数据（非实时且缓存未命中）。 */
+  missing: Ref<boolean>
+  /** 正在加载的窗口 key，null 表示空闲。 */
+  loadingKey: Ref<string | null>
+  /** 选中窗口与显示窗口不一致 —— 图表还停在上一份数据上。 */
+  pending: Ref<boolean>
+  /** 停留触发器，卸载时需 cancel。 */
+  dwell: ReturnType<typeof createDwellTrigger<string>>
+}
+
+/**
+ * 为一张「按区间展示」的图建一个窗口加载器。
+ *
+ * <p>与今日时段的「显示日滞后于选中日」是同一套模式，抽成工厂是为了
+ * 让柱状图与近 N 日折线共用这份逻辑 —— 它们数据同源（breakdown 明细），
+ * 只是各自维护自己的选中 / 显示窗口。
+ *
+ * <p>推进规则：数据就绪（实时或缓存命中）就<strong>立即</strong>把显示窗口
+ * 跟上选中窗口 —— 滑回看过的区间是瞬时的，不必等停留计时；只有真正缺数据时
+ * 显示窗口才停在原处，等 dwell 触发请求、响应写进缓存后自动补上。
+ *
+ * @param selectedKey 选中窗口 key 的读取函数。单点形态下应返回 null（不参与）
+ * @param fetch       加载一个窗口（写 {@link breakdownHistory}）
+ */
+function createRangeLoader(options: {
+  selectedKey: () => string | null
+  fetch: (key: string) => Promise<void>
+}): RangeLoader {
+  const displayKey = ref<string | null>(null)
+  const loadingKey = ref<string | null>(null)
+
+  const missing = computed(() => {
+    const key = options.selectedKey()
+    if (!key || key === breakdownLiveKey.value) return false
+    return !breakdownHistory.value.has(key)
+  })
+
+  const pending = computed(() => options.selectedKey() !== displayKey.value)
+
+  const dwell = createDwellTrigger<string>(SELECTOR_DWELL_MS, (key) => {
+    loadingKey.value = key
+    void options.fetch(key).finally(() => {
+      if (loadingKey.value === key) loadingKey.value = null
+    })
+  })
+
+  watch(
+    [options.selectedKey, missing],
+    ([key, miss]) => {
+      if (!key) return
+      if (!miss) {
+        // 已有数据可显示，取消待发的请求 —— 用户可能是滑回了已缓存的那个窗口。
+        dwell.cancel()
+        displayKey.value = key
+        return
+      }
+      if (loadingKey.value === key) return
+      dwell.schedule(key)
+    },
+    { immediate: true },
+  )
+
+  return { displayKey, missing, loadingKey, pending, dwell }
+}
+
+/** 柱状图选择器的选中窗口 key。 */
+const dateSelectedKey = computed(() => {
+  const ticks = dateRangeTicks.value
+  const sel = dateRange.value
+  const from = ticks[sel.start]?.key
+  const to = ticks[sel.end]?.key
+  return from && to ? windowKeyOf(from, to) : null
+})
+
+/** 折线图选择器的选中窗口 key —— 单点形态（今日时段）不参与区间加载。 */
+const timelineSelectedKey = computed(() => {
+  if (timelineSinglePoint.value) return null
+  const ticks = timelineTicks.value
+  const sel = timelineSelection.value
+  const from = ticks[sel.start]?.key
+  const to = ticks[sel.end]?.key
+  return from && to ? windowKeyOf(from, to) : null
+})
+
+/**
+ * 拉取一个历史窗口的明细。
+ *
+ * <h2>绝不用于实时窗口</h2>
+ * 入口处挡掉实时 key：那份数据在 SSE 里连续累加，HTTP 拉一遍会与增量帧抢状态。
+ *
+ * <h2>缓存键用选中窗口而非响应窗口</h2>
+ * 后端会钳制 `size`/`offset`，响应里的窗口可能比选中的宽。若按响应窗口缓存，
+ * 用户下一次选到原窗口时仍会未命中；按选中窗口缓存则命中，多余的行在读取时
+ * 已被 {@link readDisplayWindow} 滤掉（钳制只会放大窗口，故请求窗口 ⊆ 响应窗口，
+ * 过滤后数据完整）。
+ *
+ * <h2>含今天的窗口也照常缓存</h2>
+ * 用户拖动手柄从实时窗口出发时，只能<strong>扩大</strong>窗口（起点前移、右端
+ * 顶住今天），得到的必然是一批「包含今天但 ≠ 实时 key」的窗口。若像早先那样把
+ * `includesToday` 的响应整份丢弃，这些窗口就永远加载不出来 —— 表现为
+ * 「拖手柄没反应、hint 一直停在加载中」，而拖动整块（右端离开今天）却正常。
+ *
+ * <p>这些窗口是用户<strong>主动选择</strong>的，缓存其快照即可显示。代价是
+ * SSE 增量只落默认实时栈（{@link breakdownRows}），该窗口的数字停在拉取时刻 ——
+ * 与今日时段滑到历史日期一致；把窗口拖回默认实时窗口即恢复实时。
+ */
+async function fetchBreakdownWindow(key: string) {
+  if (key === breakdownLiveKey.value) return
+  if (breakdownHistory.value.has(key)) return
+
+  const [start, end] = key.split('~')
+  const startIdx = dayOffsetBetween(now.value, parseLocalDay(start) ?? now.value)
+  const endIdx = dayOffsetBetween(now.value, parseLocalDay(end) ?? now.value)
+  const { size, offset } = windowParamsOf(startIdx, endIdx)
+
+  const response = await http.get<UsageBreakdownPage>('/usage-breakdown/page', {
+    params: { size, offset },
+  })
+  const page = response.data
+  if (!page || !Array.isArray(page.rows)) return
+
+  const next = new Map(breakdownHistory.value)
+  next.set(key, page.rows)
+  breakdownHistory.value = next
+}
+
+const dateLoader = createRangeLoader({
+  selectedKey: () => dateSelectedKey.value,
+  fetch: fetchBreakdownWindow,
+})
+
+const timelineLoader = createRangeLoader({
+  selectedKey: () => timelineSelectedKey.value,
+  fetch: fetchBreakdownWindow,
+})
+
+/** 柱状图该渲染的窗口（显示窗口，滞后于选中）。 */
+const dateDisplay = computed(() => readDisplayWindow(dateLoader.displayKey.value))
+
+/** 近 N 日折线该渲染的窗口。 */
+const timelineDisplay = computed(() => readDisplayWindow(timelineLoader.displayKey.value))
+
+/** `start~end` → `M/D 至 M/D`，供提示行使用。 */
+function describeWindowKey(key: string | null): string {
+  if (!key) return ''
+  const [start, end] = key.split('~')
+  return `${formatMonthDay(start)} 至 ${formatMonthDay(end)}`
+}
+
 /**
  * 折线图选择器的摘要文案。
  *
@@ -846,6 +1086,14 @@ const timelineRangeText = computed(() => {
  */
 const timelineRangeHint = computed(() => {
   if (!timelineSinglePoint.value) {
+    if (timelineLoader.pending.value) {
+      const target = describeWindowKey(timelineSelectedKey.value)
+      const shown = describeWindowKey(timelineLoader.displayKey.value)
+      if (timelineLoader.loadingKey.value === timelineSelectedKey.value) {
+        return `正在加载 ${target}，图表仍为 ${shown}`
+      }
+      return `停留片刻即加载 ${target}`
+    }
     return '拖动端点调整跨度，拖动色块整体平移；两侧按钮单击移一天、双击翻一页'
   }
   if (hourlyPending.value) {
@@ -913,6 +1161,8 @@ onUnmounted(() => {
   clearFutureTick()
   // 未触发的停留计时必须取消：回调会写响应式状态，组件卸载后写入即内存泄漏。
   hourlyDwell.cancel()
+  dateLoader.dwell.cancel()
+  timelineLoader.dwell.cancel()
 })
 
 /**
@@ -1099,7 +1349,7 @@ async function fetchHourly() {
  * 建立图表流的 SSE 连接 —— 三张图表共用这一条。
  *
  * 下发三种帧：
- * - `breakdown` —— 按日期聚合的完整明细，整体替换。喂柱状图与「近 7 日」折线。
+ * - `breakdown` —— 按日期聚合的完整明细，整体替换。喂柱状图与「近 N 日」折线。
  * - `hourly` —— 今日时段的整点用量，整体替换。喂「今日时段」折线。
  * - `usage-delta` —— 单条用量记录，按各视图口径累加。
  *
@@ -1158,7 +1408,7 @@ function connectUsageStream() {
  * 把一帧增量分发给两个视图。
  *
  * <h2>两个窗口各自判定</h2>
- * 柱状图与「近 7 日」按自然日，「今日时段」按 5 点分界。同一帧可能被一个接受、
+ * 柱状图与「近 N 日」按自然日，「今日时段」按 5 点分界。同一帧可能被一个接受、
  * 被另一个丢弃 —— 明天凌晨 02:00 的调用不在柱状图冻结的 7 个日历日里，
  * 却仍落在今日时段窗口内，两边都是对的。故这里调两个独立的合并函数，
  * 不共用一个「是否在窗口内」的判定。
@@ -1267,8 +1517,8 @@ function toKUnit(value: number): number {
         再加一行标题就成了双标题。故通过具名插槽塞进面包屑那一行，
         与副标题并列，样式沿用热力图卡片的「当前项 + 切换」范式。
       -->
-      <UsageBreakdownPanel :rows="breakdownRows" :dimension="activeBreakdownDimension" :metric="callCountMetric"
-        :days="BREAKDOWN_DAYS" :loading="chartsLoading" :failed="chartsFailed">
+      <UsageBreakdownPanel :rows="dateDisplay.rows" :dimension="activeBreakdownDimension" :metric="callCountMetric"
+        :days="dateDisplay.dates.length" :loading="chartsLoading" :failed="chartsFailed">
         <template #actions>
           <div class="breakdown-mode-switch">
             <span class="breakdown-mode-label">{{ activeBreakdownDimension.primaryTerm }}视图</span>
@@ -1278,12 +1528,14 @@ function toKUnit(value: number): number {
       </UsageBreakdownPanel>
 
       <!--
-        日期范围选择器。
+        日期范围选择器 —— 柱状图的数据窗口。
 
-        已接线的只有<strong>可达区间</strong>（`/config/api/usage-date-range`）：
-        早于最早记录日期的刻度渲染成不可达空心点，且可选天数不足 7 天时
-        区间块的跨度下限随之收缩。拖动与翻页仍<strong>不驱动图表数据</strong> ——
-        柱状图按流下发的固定 7 天窗口渲染，那要等三个分页端点接上。
+        已接线：拖动 / 翻页切换窗口，实时窗口（含今天）读 SSE 明细，
+        历史窗口走 `/usage-breakdown/page` 并按窗口永久缓存；显示窗口
+        滞后于选中窗口，加载途中图表保持上一份数据不清零。
+
+        可达区间（`/usage-date-range`）也已接线：早于最早记录日期的刻度
+        渲染成不可达空心点，可选天数不足时跨度下限随之收缩。
 
         放在柱状图下方而非卡片 header：它控制的是横轴范围，紧贴横轴才让
         「拖它 → 轴变」这层因果关系一眼可见；放到标题行则与视图切换按钮抢位置。
@@ -1309,7 +1561,7 @@ function toKUnit(value: number): number {
         />
         <div class="breakdown-range-meta">
           <span class="breakdown-range-text">{{ dateRangeText }}</span>
-          <span class="breakdown-range-hint">拖动端点调整跨度，拖动色块整体平移；两侧按钮单击移一天、双击翻一页</span>
+          <span class="breakdown-range-hint">{{ dateRangeHint }}</span>
         </div>
       </div>
     </n-card>
@@ -1337,9 +1589,10 @@ function toKUnit(value: number): number {
         折线图的日期选择器。形态随上方的范围切换按钮联动 ——
         「今日时段」是单点（看某一天的时段分布），「近 N 日」是区间。
 
-        单点形态<strong>已接线</strong>：滑到哪一天就看那一天的时段曲线。
-        实时窗口读 SSE 累加的那份数据（不发请求），历史日期走 HTTP 并永久缓存。
-        区间形态（近 N 日）仍未接线。
+        <strong>已接线</strong>：单点形态滑到哪一天就看那一天的时段曲线
+        （实时窗口读 SSE、历史日期走 HTTP 并永久缓存）；
+        区间形态切换窗口时复用柱状图那份历史缓存 —— 两者数据同源
+        （breakdown 明细），只是各自维护选中 / 显示窗口。
 
         与柱状图那个各自独立：两者服务不同图表，用户可能想让它们停在不同区间。
         但可达区间是<strong>共用</strong>的（`selectableAxis`）——

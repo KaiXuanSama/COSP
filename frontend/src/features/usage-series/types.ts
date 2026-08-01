@@ -1,12 +1,12 @@
 /**
  * 图表流（`/config/api/usage/stream`）的三种帧。
  *
- * 三张图表（堆叠柱状图、近 7 日折线、今日时段折线）共用这一条流：
+ * 三张图表（堆叠柱状图、近 N 日折线、今日时段折线）共用这一条流：
  * 两帧全量快照打底，随后每次调用推一帧增量。
  *
  * | 帧 | event | 消费方 |
  * |---|---|---|
- * | 明细快照 | `breakdown` | 柱状图 + 近 7 日折线 |
+ * | 明细快照 | `breakdown` | 柱状图 + 近 N 日折线 |
  * | 整点快照 | `hourly` | 今日时段折线 |
  * | 单条增量 | `usage-delta` | 三者 |
  *
@@ -20,7 +20,7 @@
 /**
  * 明细快照的一行 —— 与后端 `UsageBreakdownRow` 一一对应。
  *
- * 带 token 是为了让近 7 日折线复用这份数据：它按 `date` 求和即可，
+ * 带 token 是为了让近 N 日折线复用这份数据：它按 `date` 求和即可，
  * 不必为它单独下发一帧。
  */
 export interface UsageBreakdownRow {
@@ -70,4 +70,32 @@ export interface UsageRecordDelta {
 export interface TokenTotals {
   inputTokens: number
   outputTokens: number
+}
+
+/**
+ * `GET /config/api/usage-breakdown/page` 的响应体 —— 与后端 `UsageBreakdownPage` 一一对应。
+ *
+ * <p>历史窗口的数据载体：不含今天时数据已固化，一次拉取即为终态，可缓存。
+ *
+ * <p>注意 `rows` 只含有数据的日期组合，<strong>不补零</strong> —— 补零由展示层
+ * 按显示窗口完成（柱状图缺日不画柱、折线按窗口补零）。且后端会钳制 `size`/`offset`，
+ * 实际窗口可能与请求参数不同，故回带 `startDate`/`endDate`。
+ */
+export interface UsageBreakdownPage {
+  /** 实际生效的窗口起始日期（含），`yyyy-MM-dd`。 */
+  startDate: string
+  /** 实际生效的窗口结束日期（含），`yyyy-MM-dd`。 */
+  endDate: string
+  /** 实际窗口宽度（天），已钳制。 */
+  size: number
+  /** 实际向过去偏移的天数，已钳制。 */
+  offset: number
+  /** 窗口是否包含今天。为 true 时该由 SSE 实时栈负责，不应进历史缓存。 */
+  includesToday: boolean
+  /** 是否还能往「更近」的方向滑。 */
+  hasNewer: boolean
+  /** 是否还能往「更早」的方向滑。 */
+  hasOlder: boolean
+  /** 窗口内按 日期 × 供应商 × 模型 聚合的明细行。 */
+  rows: UsageBreakdownRow[]
 }

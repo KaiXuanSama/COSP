@@ -34,7 +34,7 @@ function points(...values: Array<[number, number]>): UsageTimelinePoint[] {
   }))
 }
 
-/** 造一批日期桶点位（近 7 日范围的形态）。 */
+/** 造一批日期桶点位（近 N 日范围的形态）。 */
 function datePoints(...dates: string[]): UsageTimelinePoint[] {
   return dates.map((bucket) => ({ bucket, inputTokens: 100, outputTokens: 10 }))
 }

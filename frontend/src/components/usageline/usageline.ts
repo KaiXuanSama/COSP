@@ -17,7 +17,7 @@
 /** 折线图消费的一个点位，由 `@/features/usage-series` 归约得出。 */
 export interface UsageTimelinePoint {
   /**
-   * 时间桶标识：近 7 日为 `yyyy-MM-dd`，今日时段为完整时间戳
+   * 时间桶标识：近 N 日为 `yyyy-MM-dd`，今日时段为完整时间戳
    * `yyyy-MM-ddTHH:mm:ss`。
    *
    * 今日窗口跨午夜，故时刻桶必须带日期 —— 只给 `HH:mm` 则 `01:00` 分不清属于

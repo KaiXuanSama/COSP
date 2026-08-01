@@ -104,7 +104,7 @@ import type { TimelineRange, UsageTimelinePoint } from '@/components/usageline'
 
 ```ts
 interface UsageTimelinePoint {
-  bucket: string        // 近 7 日为 yyyy-MM-dd；今日时段为完整时间戳 yyyy-MM-ddTHH:mm:ss
+  bucket: string        // 近 N 日为 yyyy-MM-dd；今日时段为完整时间戳 yyyy-MM-ddTHH:mm:ss
   label?: string        // 展示用短标签，缺省由 bucket 推导
   inputTokens: number
   outputTokens: number

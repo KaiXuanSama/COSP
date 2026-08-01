@@ -13,7 +13,7 @@
 /**
  * 明细行 —— 从 `@/features/usage-series` 引入并重导出。
  *
- * 该类型同时服务柱状图与「近 7 日」折线（后者按 `date` 求 token），
+ * 该类型同时服务柱状图与「近 N 日」折线（后者按 `date` 求 token），
  * 故定义在共用的归约层而非本文件。这里重导出以保持本模块的类型入口完整。
  */
 import type { UsageBreakdownRow } from '@/features/usage-series'

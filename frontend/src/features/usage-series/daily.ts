@@ -1,5 +1,5 @@
 /**
- * 「近 7 日」折线与堆叠柱状图共用的按日归约。
+ * 「近 N 日」折线与堆叠柱状图共用的按日归约。
  *
  * 两者读同一份明细快照（`event: breakdown`）：柱状图按 (日期, 供应商, 模型) 取次数，
  * 折线按日期求 token。因此不必为折线单独下发一帧。
@@ -10,10 +10,10 @@
  * 例如明天凌晨 02:00 的调用，对本模块属于「窗口外的新一天」应丢弃，
  * 对今日时段却仍在当前窗口内应接受。故两处各有独立的窗口过滤，不共用判定函数。
  */
-import { DAY_MS, datePartOf, formatLocalDate, truncateToDay } from './localTime'
+import { DAY_MS, datePartOf, formatLocalDate, parseLocalDay, truncateToDay } from './localTime'
 import type { TokenTotals, UsageBreakdownRow, UsageRecordDelta } from './types'
 
-/** 柱状图与近 7 日折线的回看天数。 */
+/** 柱状图与近 N 日折线的默认回看天数。 */
 export const BREAKDOWN_DAYS = 7
 
 /** 折线图消费的一个日期点位。 */
@@ -37,6 +37,53 @@ export function windowDates(now: Date, days: number = BREAKDOWN_DAYS): string[] 
     dates.push(formatLocalDate(new Date(today.getTime() - offset * DAY_MS)))
   }
   return dates
+}
+
+/**
+ * 由两个端点日期生成升序日期序列（含两端）。
+ *
+ * <p>供历史窗口的展示轴使用 —— 实时窗口用 {@link windowDates}，
+ * 历史窗口只知道起止两天，需要逐日展开。日期串非法时返回空数组，
+ * 调用方拿到空数组应回退到实时窗口。
+ */
+export function windowDatesBetween(start: string, end: string): string[] {
+  const cursor = parseLocalDay(start)
+  const last = parseLocalDay(end)
+  if (!cursor || !last || cursor.getTime() > last.getTime()) return []
+
+  const dates: string[] = []
+  const at = cursor.getTime()
+  const until = last.getTime()
+  for (let t = at; t <= until; t += DAY_MS) {
+    dates.push(formatLocalDate(new Date(t)))
+  }
+  return dates
+}
+
+/**
+ * 窗口的统一标识 —— `start~end`。
+ *
+ * <p>历史缓存、实时判定、显示滞后全都用它作键。含端点的日期串天然唯一，
+ * 同一窗口无论宽度怎么表达（`size`/`offset` 或起止日期）都收敛到同一个键。
+ */
+export function windowKeyOf(start: string, end: string): string {
+  return `${start}~${end}`
+}
+
+/**
+ * 由绝对索引（今天为 0、往前为负）换算成后端分页参数。
+ *
+ * <p>与后端 `SlidingDateWindow` 的口径一致：`offset = 0` 时窗口右端为今天，
+ * 宽度为两端索引之差加一。前端选择器工作在绝对索引轴上，落到 HTTP 前
+ * 必须经这里换一次。
+ *
+ * @param startIdx 窗口左端的绝对索引
+ * @param endIdx   窗口右端的绝对索引（≤ 0）
+ */
+export function windowParamsOf(startIdx: number, endIdx: number): { size: number; offset: number } {
+  // 写成 `0 - endIdx` 而非 `-endIdx`：后者在 endIdx 为 0 时得到 `-0`，
+  // `Object.is(-0, 0)` 为 false，会让 `toEqual` 失配。
+  return { size: endIdx - startIdx + 1, offset: 0 - endIdx }
 }
 
 /**

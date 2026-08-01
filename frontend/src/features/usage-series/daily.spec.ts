@@ -4,11 +4,14 @@ import {
   buildDailyPoints,
   mergeBreakdownDelta,
   windowDates,
+  windowDatesBetween,
+  windowKeyOf,
+  windowParamsOf,
 } from './daily'
 import type { UsageBreakdownRow, UsageRecordDelta } from './types'
 
 /**
- * 按日归约的验证与锁定 —— 柱状图与「近 7 日」折线共用这一份。
+ * 按日归约的验证与锁定 —— 柱状图与「近 N 日」折线共用这一份。
  *
  * 重点是窗口语义：这里的「今天」是自然日，与今日时段折线的 5 点分界<strong>不同</strong>，
  * 同一条增量帧在两处可能得到相反的判定，两者都对。
@@ -58,6 +61,54 @@ describe('窗口日期序列', () => {
     const dates = windowDates(new Date(2026, 6, 27, 2, 0), 7)
 
     expect(dates[6]).toBe('2026-07-27')
+  })
+})
+
+describe('windowDatesBetween', () => {
+  it('展开两端之间的每一天', () => {
+    expect(windowDatesBetween('2026-07-28', '2026-08-01')).toEqual([
+      '2026-07-28',
+      '2026-07-29',
+      '2026-07-30',
+      '2026-07-31',
+      '2026-08-01',
+    ])
+  })
+
+  it('两端相同只返回一天', () => {
+    expect(windowDatesBetween('2026-07-28', '2026-07-28')).toEqual(['2026-07-28'])
+  })
+
+  it('起止倒置返回空数组', () => {
+    expect(windowDatesBetween('2026-08-01', '2026-07-28')).toEqual([])
+  })
+
+  it('畸形日期返回空数组', () => {
+    expect(windowDatesBetween('not-a-date', '2026-07-28')).toEqual([])
+    expect(windowDatesBetween('2026-02-31', '2026-07-28')).toEqual([])
+  })
+})
+
+describe('windowKeyOf', () => {
+  it('起止日期拼成唯一标识', () => {
+    expect(windowKeyOf('2026-07-28', '2026-08-01')).toBe('2026-07-28~2026-08-01')
+  })
+})
+
+describe('windowParamsOf', () => {
+  /** 窗口右端贴今天（绝对索引 0）→ offset 为 0，宽度即跨度。 */
+  it('右端贴今天时 offset 为 0', () => {
+    expect(windowParamsOf(-4, 0)).toEqual({ size: 5, offset: 0 })
+  })
+
+  /** 7/20~7/24（今天是 8/1，绝对索引 −12~−8）→ size=5, offset=8。 */
+  it('历史窗口换算成向过去的偏移', () => {
+    expect(windowParamsOf(-12, -8)).toEqual({ size: 5, offset: 8 })
+  })
+
+  /** 单天窗口。 */
+  it('单天窗口 size 为 1', () => {
+    expect(windowParamsOf(-3, -3)).toEqual({ size: 1, offset: 3 })
   })
 })
 
