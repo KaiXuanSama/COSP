@@ -489,33 +489,18 @@ function onDateRangePage(payload: { direction: -1 | 1; step: 'single' | 'page' }
 const canDatePagePrev = computed(() => canPagePrev(dateWindow.value, dateAxisConfig.value))
 const canDatePageNext = computed(() => canPageNext(dateWindow.value, dateAxisConfig.value))
 
-/** 把选择读成人话，供无障碍与摘要文案复用。 */
+/**
+ * 把选择读成人话 —— 供滑块的 `formatValueText` 使用（无障碍 `aria-valuetext`）。
+ *
+ * <p>视觉上不再有摘要行（见模板里的说明），但屏幕阅读器仍需要一句完整描述 ——
+ * 光报索引号读不出「选的是哪几天」。
+ */
 function describeDateRange(selection: RangeSelection): string {
   const ticks = dateRangeTicks.value
   const from = ticks[selection.start]?.key ?? ''
   const to = ticks[selection.end]?.key ?? ''
   return `${from} 至 ${to}，共 ${selection.end - selection.start + 1} 天`
 }
-
-const dateRangeText = computed(() => describeDateRange(dateRange.value))
-
-/**
- * 柱状图选择器下方的操作提示。
- *
- * <p>显示窗口滞后于选中窗口时说明一下：图表还是上一个区间，不说明就看不出
- * 与选择器不同步。实时窗口无需特别说明 —— 数据来自 SSE，与选择器始终一致。
- */
-const dateRangeHint = computed(() => {
-  if (dateLoader.pending.value) {
-    const target = describeWindowKey(dateSelectedKey.value)
-    const shown = describeWindowKey(dateLoader.displayKey.value)
-    if (dateLoader.loadingKey.value === dateSelectedKey.value) {
-      return `正在加载 ${target}，图表仍为 ${shown}`
-    }
-    return `停留片刻即加载 ${target}`
-  }
-  return '拖动端点调整跨度，拖动色块整体平移；两侧按钮单击移一天、双击翻一页'
-})
 
 /**
  * 折线图下方那个选择器的窗口状态 —— 与柱状图那个<strong>各自独立</strong>。
@@ -674,8 +659,9 @@ const hourlyLiveDate = computed(() => liveAnchorDate(now.value))
  * 无法靠观察区分。
  *
  * <p>故显示日<strong>滞后</strong>于选中日：只在新数据就绪的那一刻才跟上，
- * 之前一直保持上一份可用数据。代价是加载途中图与选择器不同步，
- * 这由提示行显式说明（{@link timelineRangeHint}），比闪空更诚实。
+ * 之前一直保持上一份可用数据。代价是加载途中图与选择器短暂不同步 ——
+ * 相比每滑一格都闪一次空白，这是更小的代价（停留触发只需几百毫秒，
+ * 且缓存命中时是瞬时的）。
  *
  * <h2>为什么存日期而不是快照</h2>
  * 存一份 totals 快照会让实时窗口<strong>冻住</strong> —— SSE 继续往实时栈里累加，
@@ -735,7 +721,7 @@ const hourlyPending = computed(() => hourlySelectedDate.value !== hourlyDisplayD
  */
 const hourlyLoadingDate = ref<string | null>(null)
 
-/** 加载失败的日期集合。只用于文案，不阻止重试。 */
+/** 加载失败的日期集合。用于失败态判定，不阻止重试（挪动选择器即重试）。 */
 const hourlyFailedDates = ref<Set<string>>(new Set())
 
 /**
@@ -745,8 +731,8 @@ const hourlyFailedDates = ref<Set<string>>(new Set())
  * 通常只出现在首屏（此时选中日就是实时锚定日，实时栈还没收到快照帧）。
  *
  * <p>滑动到未加载的日期时<strong>不</strong>置加载态：显示日仍停在上一份数据上，
- * 图表照常渲染，加载中的状态由提示行说明。若置为 true，图表会被占位文字整块替掉，
- * 滑动一路上就闪一路 —— 那正是要避免的。
+ * 图表照常渲染。若置为 true，图表会被占位文字整块替掉，滑动一路上就闪一路 ——
+ * 那正是要避免的。
  */
 const hourlyLoading = computed(
   () => hourlyLoadingDate.value !== null && hourlyDisplay.value.missing,
@@ -756,7 +742,7 @@ const hourlyLoading = computed(
  * 时段视图的失败态。
  *
  * <p>同样要求「没有旧数据可显示」：某一天加载失败时若已有上一天的图，
- * 保留它并靠提示行说明失败，比把整块换成错误文字更有用。
+ * 保留它比把整块换成错误文字更有用 —— 那一天的数据本就与这一次失败无关。
  */
 const hourlyFailed = computed(
   () => hourlyFailedDates.value.has(hourlySelectedDate.value) && hourlyDisplay.value.missing,
@@ -1053,66 +1039,20 @@ const dateDisplay = computed(() => readDisplayWindow(dateLoader.displayKey.value
 /** 近 N 日折线该渲染的窗口。 */
 const timelineDisplay = computed(() => readDisplayWindow(timelineLoader.displayKey.value))
 
-/** `start~end` → `M/D 至 M/D`，供提示行使用。 */
-function describeWindowKey(key: string | null): string {
-  if (!key) return ''
-  const [start, end] = key.split('~')
-  return `${formatMonthDay(start)} 至 ${formatMonthDay(end)}`
-}
-
 /**
- * 折线图选择器的摘要文案。
+ * 折线图选择器的选择描述 —— 供滑块的 `formatValueText` 使用（无障碍）。
  *
  * <p>单点形态下只给一个日期 —— 缺省的「X 至 X，共 1 天」在单点场景下是废话。
+ *
+ * <p>视觉上不再有摘要行，但屏幕阅读器仍需要这一句：光报索引号读不出选了哪天。
  */
-const timelineRangeText = computed(() => {
-  const selection = timelineSelection.value
+function describeTimelineRange(selection: RangeSelection): string {
   const ticks = timelineTicks.value
   const from = ticks[selection.start]?.key ?? ''
   if (timelineSinglePoint.value) return from
   const to = ticks[selection.end]?.key ?? ''
   return `${from} 至 ${to}，共 ${selection.end - selection.start + 1} 天`
-})
-
-/**
- * 选择器下方的操作提示。
- *
- * <p>单点形态下额外说明两个状态：
- * <ul>
- *   <li><strong>等待中</strong> —— 图表还是上一天的，不说明就看不出与选择器不同步；</li>
- *   <li><strong>实时</strong> —— 数据来自 SSE 而非 HTTP，数字会自己涨，
- *       不说明看起来像页面在偷偷刷新。</li>
- * </ul>
- */
-const timelineRangeHint = computed(() => {
-  if (!timelineSinglePoint.value) {
-    if (timelineLoader.pending.value) {
-      const target = describeWindowKey(timelineSelectedKey.value)
-      const shown = describeWindowKey(timelineLoader.displayKey.value)
-      if (timelineLoader.loadingKey.value === timelineSelectedKey.value) {
-        return `正在加载 ${target}，图表仍为 ${shown}`
-      }
-      return `停留片刻即加载 ${target}`
-    }
-    return '拖动端点调整跨度，拖动色块整体平移；两侧按钮单击移一天、双击翻一页'
-  }
-  if (hourlyPending.value) {
-    const target = formatMonthDay(hourlySelectedDate.value)
-    const shown = formatMonthDay(hourlyDisplayDate.value)
-    // 失败态优先：图表仍是旧那天，不说明的话看起来像「一直在加载」。
-    // 请求已结束故不会自动重试，挪一下选择器即可再试。
-    if (hourlyFailedDates.value.has(hourlySelectedDate.value)) {
-      return `${target} 加载失败，图表仍为 ${shown}；挪动圆点可重试`
-    }
-    return hourlyLoadingDate.value === hourlySelectedDate.value
-      ? `正在加载 ${target}，图表仍为 ${shown}`
-      : `停留片刻即加载 ${target}`
-  }
-  const base = '拖动圆点选择日期，停留即加载'
-  return hourlyDisplay.value.live
-    ? `${base}；当前为实时窗口，新调用会自动累计`
-    : `${base}；两侧按钮单击移一天`
-})
+}
 
 /**
  * 折线图卡片的标题称呼。
@@ -1121,7 +1061,7 @@ const timelineRangeHint = computed(() => {
  * 那个标题是错的，而图照样能画。故实时窗口写「今日时段」，历史日期写 `M/D`。
  *
  * <p>去掉年份：可选范围只有最近十几天，年份永远是当前年（或跳年那两天的上一年），
- * 写出来只是占位。完整日期仍在选择器下方的摘要里。
+ * 写出来只是占位。完整日期可从手柄下方的 `M/D` 标签与滑块的 `aria-valuetext` 读出。
  *
  * <p>标题跟<strong>显示日</strong>而非选中日：标题描述的是图表里画的那一天，
  * 加载途中提前换成新日期就成了误标。
@@ -1539,6 +1479,11 @@ function toKUnit(value: number): number {
 
         放在柱状图下方而非卡片 header：它控制的是横轴范围，紧贴横轴才让
         「拖它 → 轴变」这层因果关系一眼可见；放到标题行则与视图切换按钮抢位置。
+
+        下方<strong>不再有摘要与提示行</strong>：选中区间已由手柄下方的 `M/D`
+        标签给出，横轴本身也在变，再加一行文字只是重复。加载途中的滞后状态
+        同样不再文字说明 —— 图表在数据到达后自动更新，中间保持上一份不清零。
+        无障碍描述改由滑块的 `formatValueText`（`aria-valuetext`）承担。
       -->
       <div class="breakdown-range">
         <DiscreteRangeSlider
@@ -1559,10 +1504,6 @@ function toKUnit(value: number): number {
           @update:model-value="onDateRangeUpdate"
           @page="onDateRangePage"
         />
-        <div class="breakdown-range-meta">
-          <span class="breakdown-range-text">{{ dateRangeText }}</span>
-          <span class="breakdown-range-hint">{{ dateRangeHint }}</span>
-        </div>
       </div>
     </n-card>
 
@@ -1612,14 +1553,11 @@ function toKUnit(value: number): number {
           page-prev-label="向前翻（单击一天，双击一页）"
           page-next-label="向后翻（单击一天，双击一页）"
           :aria-label="timelineSinglePoint ? '日期' : '日期范围'"
+          :format-value-text="describeTimelineRange"
           :format-edge-label="formatDateRangeEdge"
           @update:model-value="onTimelineRangeUpdate"
           @page="onTimelineRangePage"
         />
-        <div class="breakdown-range-meta">
-          <span class="breakdown-range-text">{{ timelineRangeText }}</span>
-          <span class="breakdown-range-hint">{{ timelineRangeHint }}</span>
-        </div>
       </div>
     </n-card>
 
@@ -1825,33 +1763,6 @@ function toKUnit(value: number): number {
   margin-top: $space-md;
   padding-top: $space-md;
   border-top: 1px solid $border-light;
-}
-
-/*
-  窗口摘要与操作提示。
-
-  摘要给出精确日期 —— 刻度只隔位标注，光看滑块读不出确切区间。
-  提示文案说明三种手势，因为「色块本身可拖」在视觉上没有明显线索。
- */
-.breakdown-range-meta {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: $space-md;
-  margin-top: $space-sm;
-}
-
-.breakdown-range-text {
-  font-family: $font-mono;
-  font-size: 11px;
-  font-weight: 500;
-  color: $text-body;
-}
-
-.breakdown-range-hint {
-  font-family: $font-mono;
-  font-size: 10px;
-  color: $text-muted;
 }
 
 .heatmap-header {

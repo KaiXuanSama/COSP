@@ -50,10 +50,19 @@ function toggleRange() {
  *
  * <p>只覆写称呼而非整个标题：「... token 用量」这部分是卡片的固定语义，
  * 放开它只会让调用方反复拼同一串后缀。
+ *
+ * <h2>天数取自 points 而非写死</h2>
+ * 区间形态的跨度可由日期选择器改变（拖手柄能拖出 6 天或 9 天），
+ * 写死「近 7 日」会与图上的柱数不符 —— 而这种不符没有任何报错，
+ * 只是标题在撒谎。`points` 是实际渲染的那一批点位，用它派生必然同步。
+ *
+ * <p>`points` 为空（加载中 / 空态）时退回「近期」：那时图表区本就是占位文字，
+ * 而「近 0 日」是明显的错话。
  */
 const rangeLabel = computed(() => {
   if (props.label) return props.label
-  return props.range === '7d' ? '近 7 日' : '今日时段'
+  if (props.range !== '7d') return '今日时段'
+  return props.points.length > 0 ? `近 ${props.points.length} 日` : '近期'
 })
 
 /**
