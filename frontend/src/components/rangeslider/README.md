@@ -429,6 +429,8 @@ offset = (count - 1) - end
 
 翻页时 `modelValue` 必须由 `pagedWindow` 的状态派生，不能直接用 `v-model` —— 池一平移，同一个局部索引就指向了另一个绝对位置。
 
+> 软墙位置（`reachableStart`）需要一个真实数据源，否则写死的常量会让用户拖到查不到数据的区间。概览的做法见 `features/usage-series/dateRange.ts`：它把 `GET /config/api/usage-date-range` 的日期下界换算成绝对索引，并在可选天数不足时收缩 `minSpan`。注意上界**不**读后端的 `latestDate` —— 今天没有调用不等于今天不可选。
+
 ```vue
 <script setup lang="ts">
 import {
@@ -473,8 +475,8 @@ function onPage({ direction, step }: { direction: -1 | 1; step: 'single' | 'page
   <DiscreteRangeSlider
     :model-value="selection"
     :ticks="ticks"
-    :min-span="7"
-    :max-span="15"
+    :min-span="config.minSpan"
+    :max-span="config.maxSpan"
     :min-index="reachable.minIndex"
     :max-index="reachable.maxIndex"
     pageable
@@ -484,6 +486,16 @@ function onPage({ direction, step }: { direction: -1 | 1; step: 'single' | 'page
     @page="onPage"
   />
 </template>
+```
+
+跨度约束传 `config.minSpan` / `config.maxSpan` 而非字面量：`resolvePagedConfig` 会把它们钳到 `min(可达宽度, 池宽)`，而调用方也可能主动收缩（可选天数不足 7 天时）。写死字面量会让 config 变了 prop 没变 —— 单点形态因此切不过去，实测踩过。
+
+同理，config 变化后必须把窗口收敛一次，否则期望区间可能落在新软墙之外；组件会自行钳制显示，但下一次翻页的基准仍是那个越界的旧值。
+
+```ts
+watch(config, (next) => {
+  window.value = normalizePagedWindow(window.value, next)
+}, { immediate: true })   // ← 初值本身就是要被收敛的对象，且 config 可能永不变化
 ```
 
 ## 样式微调

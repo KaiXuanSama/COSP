@@ -29,13 +29,16 @@ import {
   buildDailyPoints,
   buildHourlyPoints,
   collectHourlySnapshot,
+  isClockAligned,
   mergeBreakdownDelta,
   mergeHourlyDelta,
   nextFutureBoundary,
+  resolveSelectableAxis,
   resolveWindowStart,
   windowDates,
   type TokenTotals,
   type UsageBreakdownRow,
+  type UsageDateRangeMeta,
   type UsageHourlyPoint,
   type UsageRecordDelta,
 } from '@/features/usage-series'
@@ -125,17 +128,26 @@ const HEATMAP_DAYS = 360
 const DATE_RANGE_POOL_DAYS = 15
 
 /**
- * 最早可查日期距今天的天数 —— 软墙的位置。
+ * 后端给出的用量日期范围 —— 选择器软墙的唯一数据源。
  *
- * <p>暂设为 29（即「今天往前 29 天」，共 30 天可查），仅为演示翻页与触底。
- * 接线后应由后端给出 `api_call_usage` 的最早记录日期：那之前的位置该标为
- * <strong>不可达</strong>（空心点）而不是从刻度里删掉 —— 删掉会让用户以为轴就这么长，
- * 看不出「更早的数据不可查」这个事实。
- *
- * <p>「可达 / 不可达」与「有没有数据」是两件事：可达位置即使当天没有调用，
- * 也照常可选并显示为空。
+ * <p>null 表示尚未加载或加载失败，此时 {@link resolveSelectableAxis} 放开整个池。
  */
-const EARLIEST_QUERYABLE_OFFSET = 29
+const usageDateRange = ref<UsageDateRangeMeta | null>(null)
+
+/**
+ * 由后端范围换算出的轴约束（软墙位置与跨度下限）。
+ *
+ * <p>两个选择器共用这一份 —— 「往前能拖到哪一天」是数据事实，不因图表而异；
+ * 至于各自停在哪一段，那才是两个选择器独立的部分。
+ *
+ * <p>依赖 {@link now} 是必要的：跨过午夜后原点前移一天，软墙的相对位置随之改变。
+ */
+const selectableAxis = computed(() =>
+  resolveSelectableAxis(usageDateRange.value, now.value, {
+    preferredSpan: BREAKDOWN_DAYS,
+    poolDays: DATE_RANGE_POOL_DAYS,
+  }),
+)
 
 /**
  * 维度配置：以供应商为主维度、模型为次维度。
@@ -272,7 +284,8 @@ const timelinePoints = computed<UsageTimelinePoint[]>(() => {
  * `0`（明天及之后还没发生），式子最简洁。
  *
  * <p><strong>当前仍是样式落位</strong>：翻页与拖动只改本组件状态，不驱动图表、
- * 不发请求。接线要等三个分页端点在前端接上。
+ * 不发请求。接线要等三个分页端点在前端接上 —— 已接上的只有软墙位置
+ * （`/config/api/usage-date-range`）。
  */
 /**
  * 日期选择器是否处于单点形态。
@@ -283,44 +296,71 @@ const timelinePoints = computed<UsageTimelinePoint[]>(() => {
  */
 const dateSinglePoint = ref(false)
 
-const dateAxisConfig = computed(() =>
-  resolvePagedConfig({
+/**
+ * 两个选择器共用的轴配置工厂。
+ *
+ * <p>软墙与跨度下限都来自 {@link selectableAxis}，只有「是否单点」因图表而异。
+ * 抽成函数是为了让两处的差异只剩那一个参数 —— 各写一遍时，
+ * 将来改软墙来源漏掉一处不会有编译错误，只会让两个选择器的可达区间悄悄分叉。
+ *
+ * @param singlePoint 是否为单点形态
+ */
+function buildAxisConfig(singlePoint: boolean) {
+  const axis = selectableAxis.value
+  return resolvePagedConfig({
     poolSize: DATE_RANGE_POOL_DAYS,
-    minSpan: dateSinglePoint.value ? 1 : BREAKDOWN_DAYS,
-    maxSpan: dateSinglePoint.value ? 1 : DATE_RANGE_POOL_DAYS,
-    // 软墙：数据从这里开始。暂设为「今天往前 29 天」以便观察翻页触底，
-    // 接线后应由后端的最早记录日期决定。
-    reachableStart: -EARLIEST_QUERYABLE_OFFSET,
+    // 单点形态跨度恒为 1；区间形态用 axis.minSpan —— 正常是 7，
+    // 但后端只有不足 7 天数据时它会收缩为实际可选天数。
+    minSpan: singlePoint ? 1 : axis.minSpan,
+    maxSpan: singlePoint ? 1 : DATE_RANGE_POOL_DAYS,
+    // 软墙：可选的最早一天，由后端的最早记录日期与回看深度共同决定。
+    // 更早的刻度仍会渲染，只是标成不可达（空心点）—— 删掉它们会让用户
+    // 以为轴就这么长，看不出「更早的数据查不了」这个事实。
+    reachableStart: axis.reachableStart,
     // 硬墙：今天。明天及之后还没发生，池不该越过它露出一片未来的灰点。
+    // 刻意<strong>不</strong>用后端的 latestDate —— 今天没有调用不等于今天不可选，
+    // 它随时可能产生第一条记录，且是默认视图的右端。
     reachableEnd: 0,
-  }),
-)
+  })
+}
+
+const dateAxisConfig = computed(() => buildAxisConfig(dateSinglePoint.value))
 
 /**
  * 窗口状态（绝对索引）。
  *
  * <p>初值是「池贴着今天、期望区间为最近 7 天」，与后端 `size=7, offset=0` 一致。
+ * 它按<strong>未加载</strong>时的宽松轴（整个池可达）建立，随后由
+ * {@link dateAxisConfig} 的 watch 收敛到实际约束下。
  *
  * <p>状态里<strong>没有块</strong>：块是「期望区间 ∩ 可用区间」的派生结果。
  * 翻页只移动池，期望区间原样不动 —— 于是「选中的日期」在翻页时尽量保持，
  * 而块在池中的相对位置随之改变。这与「块跟着池一起平移」正好相反，
  * 后者会让选中的日期随翻页而改变。
  */
-const dateWindow = ref<PagedWindowState>(
-  normalizePagedWindow(
-    {
-      poolStart: -(DATE_RANGE_POOL_DAYS - 1),
-      desiredStart: -(BREAKDOWN_DAYS - 1),
-      desiredEnd: 0,
-    },
-    resolvePagedConfig({
-      poolSize: DATE_RANGE_POOL_DAYS,
-      minSpan: BREAKDOWN_DAYS,
-      maxSpan: DATE_RANGE_POOL_DAYS,
-      reachableStart: -EARLIEST_QUERYABLE_OFFSET,
-      reachableEnd: 0,
-    }),
-  ),
+const dateWindow = ref<PagedWindowState>({
+  poolStart: -(DATE_RANGE_POOL_DAYS - 1),
+  desiredStart: -(BREAKDOWN_DAYS - 1),
+  desiredEnd: 0,
+})
+
+/**
+ * 轴约束变化后把窗口收敛到新约束下。
+ *
+ * <p>触发时机有两个：日期范围响应到达（软墙从池左端收窄到实际位置），
+ * 以及跨过午夜（原点前移）。不收敛的话期望区间可能落在软墙之外，
+ * 组件会自行钳制显示，但下一次翻页的基准仍是那个越界的旧值 ——
+ * 状态与显示随即脱节。
+ *
+ * <p>`immediate` 是必需的：初值就是要被收敛的对象，而轴可能永不变化
+ * （请求失败时 `usageDateRange` 一直是 null）。与折线图那个 watch 同理。
+ */
+watch(
+  dateAxisConfig,
+  (config) => {
+    dateWindow.value = normalizePagedWindow(dateWindow.value, config)
+  },
+  { immediate: true },
 )
 
 /**
@@ -418,40 +458,22 @@ const dateRangeText = computed(() => describeDateRange(dateRange.value))
  */
 const timelineSinglePoint = computed(() => timelineRange.value === '1d')
 
-const timelineAxisConfig = computed(() =>
-  resolvePagedConfig({
-    poolSize: DATE_RANGE_POOL_DAYS,
-    minSpan: timelineSinglePoint.value ? 1 : BREAKDOWN_DAYS,
-    maxSpan: timelineSinglePoint.value ? 1 : DATE_RANGE_POOL_DAYS,
-    reachableStart: -EARLIEST_QUERYABLE_OFFSET,
-    reachableEnd: 0,
-  }),
-)
+const timelineAxisConfig = computed(() => buildAxisConfig(timelineSinglePoint.value))
 
 /**
  * 折线图选择器的窗口状态。
  *
- * <p>初值与柱状图那个一致（池贴着今天、期望区间为最近 7 天）。
- * 切到单点形态时期望区间会被 `normalizePagedWindow` 收成一天 ——
- * 收在<strong>右端</strong>（`desiredEnd` 不动、`desiredStart` 跟上来），
+ * <p>初值与柱状图那个一致（池贴着今天、期望区间为最近 7 天），同样按未加载时的
+ * 宽松轴建立，由下面的 watch 收敛。切到单点形态时期望区间会被
+ * `normalizePagedWindow` 收成一天 —— 收在<strong>右端</strong>
+ * （`desiredEnd` 不动、`desiredStart` 跟上来），
  * 因为「今日时段」关心的是最近那一天而非区间的起点。
  */
-const timelineWindow = ref<PagedWindowState>(
-  normalizePagedWindow(
-    {
-      poolStart: -(DATE_RANGE_POOL_DAYS - 1),
-      desiredStart: -(BREAKDOWN_DAYS - 1),
-      desiredEnd: 0,
-    },
-    resolvePagedConfig({
-      poolSize: DATE_RANGE_POOL_DAYS,
-      minSpan: BREAKDOWN_DAYS,
-      maxSpan: DATE_RANGE_POOL_DAYS,
-      reachableStart: -EARLIEST_QUERYABLE_OFFSET,
-      reachableEnd: 0,
-    }),
-  ),
-)
+const timelineWindow = ref<PagedWindowState>({
+  poolStart: -(DATE_RANGE_POOL_DAYS - 1),
+  desiredStart: -(BREAKDOWN_DAYS - 1),
+  desiredEnd: 0,
+})
 
 /**
  * 形态切换后把窗口收敛到新约束下。
@@ -540,6 +562,9 @@ const timelineRangeText = computed(() => {
 onMounted(() => {
   // 热力图历史数据首屏全量拉取一次；统计卡先 HTTP 兜底一次，随后交给 SSE 实时推送。
   void fetchHeatmap()
+  // 日期选择器的软墙位置。不阻塞其余请求 —— 未加载时选择器放开整个池，
+  // 响应到达后收窄，比先塌成一个点再展开要平顺。
+  void fetchUsageDateRange()
   // 三张图表都不发首屏 HTTP：流自带两帧全量快照，
   // 再拉一次只是把同一份数据取两遍，还要处理两者的到达顺序。
   // fetchBreakdown / fetchHourly 保留备用 —— 将来窗口切到不含今日的历史区间时，
@@ -636,6 +661,40 @@ function syncTodayHeatmapCell(snapshot: StatsData) {
     heatmapData.value = heatmapData.value.map((day, i) => (i === index ? cell : day))
   } else {
     heatmapData.value = [...heatmapData.value, cell]
+  }
+}
+
+/**
+ * 拉取用量记录的日期范围 —— 日期选择器软墙的唯一数据源。
+ *
+ * <h2>失败不设错误态</h2>
+ * 这是<strong>元信息</strong>而非图表数据：拿不到只意味着软墙位置未知，
+ * 此时放开整个池（{@link resolveSelectableAxis} 的行为），用户仍能拖动，
+ * 拖到没数据的日期只是看到空图。为它加一个错误横幅会把「一个附属请求失败」
+ * 说成「概览坏了」。
+ *
+ * <h2>只在挂载时拉一次</h2>
+ * 边界只会随「今天推进」和「第一条记录产生」而变，两者都不频繁；
+ * 前者由 {@link now} 的半点推进吸收（软墙是相对位置，原点一动它自动重算），
+ * 后者只影响空库那一次。跨天后的精确边界由刷新页面得到。
+ */
+async function fetchUsageDateRange() {
+  try {
+    const response = await http.get<UsageDateRangeMeta>('/usage-date-range')
+    const meta = response.data
+    // 后端保证 earliestSelectable 非空；缺字段说明代理或版本不匹配，按未加载处理。
+    if (!meta || typeof meta.earliestSelectable !== 'string') return
+    usageDateRange.value = meta
+    if (!isClockAligned(meta, new Date())) {
+      // 两端「今天」不一致时整条时间轴会整体错位一天，而图表照样能画 ——
+      // 每根柱子都贴错日期却毫无迹象。这类问题只能靠显式告警暴露。
+      console.warn(
+        `[overview] 服务端与浏览器的「今天」不一致：服务端 ${meta.today}，` +
+          '日期轴可能整体错位一天。请检查两端时区与系统时钟。',
+      )
+    }
+  } catch {
+    // 保持 null —— 选择器放开整个池，见上面的说明。
   }
 }
 
@@ -888,8 +947,10 @@ function toKUnit(value: number): number {
       <!--
         日期范围选择器。
 
-        当前<strong>只是样式落位</strong>：拖动改变的只有本组件的选择状态，
-        柱状图仍按流下发的固定 7 天窗口渲染。接线要等三个分页端点在前端接上。
+        已接线的只有<strong>可达区间</strong>（`/config/api/usage-date-range`）：
+        早于最早记录日期的刻度渲染成不可达空心点，且可选天数不足 7 天时
+        区间块的跨度下限随之收缩。拖动与翻页仍<strong>不驱动图表数据</strong> ——
+        柱状图按流下发的固定 7 天窗口渲染，那要等三个分页端点接上。
 
         放在柱状图下方而非卡片 header：它控制的是横轴范围，紧贴横轴才让
         「拖它 → 轴变」这层因果关系一眼可见；放到标题行则与视图切换按钮抢位置。
@@ -938,7 +999,10 @@ function toKUnit(value: number): number {
         「今日时段」是单点（看某一天的时段分布），「近 N 日」是区间。
 
         与柱状图那个各自独立：两者服务不同图表，用户可能想让它们停在不同区间。
-        当前<strong>仅为形态联动演示</strong>，不驱动折线图数据。
+        但可达区间是<strong>共用</strong>的（`selectableAxis`）——
+        「往前能拖到哪一天」是数据事实，不因图表而异。
+
+        除可达区间外仍<strong>不驱动折线图数据</strong>。
       -->
       <div class="breakdown-range">
         <DiscreteRangeSlider
