@@ -411,6 +411,77 @@ describe('selectionEquals', () => {
   })
 })
 
+/**
+ * 单点形态 —— `minSpan = maxSpan = 1`，选择退化成「一个位置」。
+ *
+ * <p>组件在这个配置下不渲染端点手柄（`moveStart` / `moveEnd` 被两条约束夹死，
+ * 任何目标都会被拒回原值），整块拖动走 `slideTo`。这组用例锁住模型层的行为：
+ * 「端点动不了」是<strong>正确</strong>的，「整块能动」也是正确的，
+ * 两者一起决定了渲染层必须去掉手柄。
+ */
+describe('单点形态', () => {
+  const S = resolveBounds(15, { minSpan: 1, maxSpan: 1 })
+  const SR = resolveBounds(15, { minSpan: 1, maxSpan: 1, minIndex: 4, maxIndex: 11 })
+
+  it('跨度恒为 1', () => {
+    expect(S.minSpan).toBe(1)
+    expect(S.maxSpan).toBe(1)
+  })
+
+  it('超宽的选择被收成单点', () => {
+    expect(normalizeSelection({ start: 5, end: 9 }, S)).toEqual({ start: 5, end: 5 })
+  })
+
+  /**
+   * 端点<strong>动不了</strong> —— 这不是 bug，是两条约束的必然结果。
+   *
+   * `minSpan = maxSpan = 1` 时 `moveStart` 的上下界都等于 `end`，
+   * 任何目标都被夹回原位。渲染层据此不渲染手柄，否则用户会遇到一个死区。
+   */
+  it('端点无法移动', () => {
+    expect(moveStart({ start: 5, end: 5 }, 2, S)).toEqual({ start: 5, end: 5 })
+    expect(moveStart({ start: 5, end: 5 }, 9, S)).toEqual({ start: 5, end: 5 })
+    expect(moveEnd({ start: 5, end: 5 }, 9, S)).toEqual({ start: 5, end: 5 })
+    expect(moveEnd({ start: 5, end: 5 }, 2, S)).toEqual({ start: 5, end: 5 })
+  })
+
+  /** 整块平移正常 —— 这是单点形态下唯一有效的手势。 */
+  it('整块平移把点移到目标', () => {
+    expect(slideTo({ start: 5, end: 5 }, 9, S)).toEqual({ start: 9, end: 9 })
+    expect(slideTo({ start: 5, end: 5 }, 0, S)).toEqual({ start: 0, end: 0 })
+  })
+
+  it('整块平移撞界停住', () => {
+    expect(slideTo({ start: 5, end: 5 }, 99, S)).toEqual({ start: 14, end: 14 })
+    expect(slideTo({ start: 5, end: 5 }, -99, S)).toEqual({ start: 0, end: 0 })
+  })
+
+  /** 键盘步进（走 shiftBy → slideTo）同样有效。 */
+  it('按步数平移有效', () => {
+    expect(shiftBy({ start: 5, end: 5 }, 3, S)).toEqual({ start: 8, end: 8 })
+    expect(shiftBy({ start: 5, end: 5 }, -5, S)).toEqual({ start: 0, end: 0 })
+  })
+
+  // ---------- 与可达区间的配合 ----------
+
+  it('可达区间同样约束单点', () => {
+    expect(slideTo({ start: 6, end: 6 }, 99, SR)).toEqual({ start: 11, end: 11 })
+    expect(slideTo({ start: 6, end: 6 }, 0, SR)).toEqual({ start: 4, end: 4 })
+  })
+
+  it('落在禁区的单点被推回可达区', () => {
+    expect(normalizeSelection({ start: 0, end: 0 }, SR)).toEqual({ start: 4, end: 4 })
+    expect(normalizeSelection({ start: 14, end: 14 }, SR)).toEqual({ start: 11, end: 11 })
+  })
+
+  /** 单点在可达区间内可自由移动到任一可达位置。 */
+  it('可达区间内每个位置都能到达', () => {
+    for (let target = SR.minIndex; target <= SR.maxIndex; target += 1) {
+      expect(slideTo({ start: 6, end: 6 }, target, SR)).toEqual({ start: target, end: target })
+    }
+  })
+})
+
 describe('不变量', () => {
   /**
    * 任何操作的结果都必须满足边界约束。

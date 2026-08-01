@@ -220,6 +220,23 @@ const span = computed(() => spanOf(selection.value))
  */
 const interactive = computed(() => !props.disabled && bounds.value.count > 1)
 
+/**
+ * 单点形态 —— 跨度被锁死为 1，选择退化成「一个位置」而非「一段区间」。
+ *
+ * <p>由 `maxSpan === 1` <strong>自动</strong>判定，不另设 prop：跨度上限为 1
+ * 已经完整表达了这个语义，再加一个开关只会多出「两者不一致时听谁的」这种问题。
+ *
+ * <h2>此形态下不渲染端点手柄</h2>
+ * `minSpan` 与 `maxSpan` 同时为 1 时，两条约束把端点死死夹住 ——
+ * `moveStart` / `moveEnd` 的任何目标都会违反跨度限制，返回原值。
+ * 手柄因此完全拖不动，而单点时块只有 `2 × CAP_RADIUS` 宽、两个手柄几乎盖满它，
+ * 用户很难点到中间那条能拖的缝，实际表现就是「基本拖不动」。
+ *
+ * <p>去掉手柄后整块都是拖动区，走 `slideTo`（那条在单点下工作正常），
+ * 键盘也只有块这一个焦点，语义干净。
+ */
+const singlePoint = computed(() => bounds.value.maxSpan === 1)
+
 const { dragging, start, move, end, handleKey } = useRangeDrag({
   trackRef: railRef,
   bounds: () => bounds.value,
@@ -405,6 +422,9 @@ onScopeDispose(() => {
  * <p>阈值按<strong>刻度间距</strong>而非像素判断：文案宽度渲染前不可知，
  * 测量要等一帧、期间会以重叠状态闪现一下。用「相隔几格」近似，代价是
  * 阈值需按文案大致宽度设定（当前按 `M/D` 这类短文案取 2 格）。
+ *
+ * <p>单点形态自然落进这个判定（跨度 1 < 2），于是只显示一个日期 ——
+ * 那正是单点该有的样子，不需要为它另写规则。
  */
 const edgeLabelsCollide = computed(() => selection.value.end - selection.value.start < 2)
 
@@ -583,7 +603,10 @@ onScopeDispose(clearPageClickTimer)
           -->
           <div
             class="rangeslider__range"
-            :class="{ 'rangeslider__range--dragging': dragging === 'range' }"
+            :class="{
+              'rangeslider__range--dragging': dragging === 'range',
+              'rangeslider__range--single': singlePoint,
+            }"
             :style="rangeStyle"
             role="slider"
             :tabindex="interactive ? 0 : -1"
@@ -597,40 +620,47 @@ onScopeDispose(clearPageClickTimer)
             @keydown="onKeydown('range', $event)"
           >
             <!--
-              端点手柄。stop 修饰符是必需的：不阻止冒泡的话，按在端点上会同时
+              端点手柄。单点形态下不渲染 —— 那时两条跨度约束把端点死死夹住，
+              moveStart / moveEnd 的任何目标都会被拒回原值，手柄纯粹是个死区；
+              而单点时块只有 2×CAP_RADIUS 宽、两个手柄几乎盖满它，
+              用户反而点不到中间那条能拖的缝。去掉后整块都是拖动区。
+
+              stop 修饰符是必需的：不阻止冒泡的话，按在端点上会同时
               触发整块的 pointerdown，后者随即把 target 改成 'range'，
               于是拖端点变成了拖整块。
             -->
-            <button
-              type="button"
-              class="rangeslider__handle rangeslider__handle--start"
-              :class="{ 'rangeslider__handle--dragging': dragging === 'start' }"
-              :tabindex="interactive ? 0 : -1"
-              :disabled="!interactive"
-              role="slider"
-              aria-label="起始位置"
-              :aria-valuemin="bounds.minIndex"
-              :aria-valuemax="bounds.maxIndex"
-              :aria-valuenow="selection.start"
-              :aria-valuetext="valueText"
-              @pointerdown.stop="onPointerDown('start', $event)"
-              @keydown.stop="onKeydown('start', $event)"
-            />
-            <button
-              type="button"
-              class="rangeslider__handle rangeslider__handle--end"
-              :class="{ 'rangeslider__handle--dragging': dragging === 'end' }"
-              :tabindex="interactive ? 0 : -1"
-              :disabled="!interactive"
-              role="slider"
-              aria-label="结束位置"
-              :aria-valuemin="bounds.minIndex"
-              :aria-valuemax="bounds.maxIndex"
-              :aria-valuenow="selection.end"
-              :aria-valuetext="valueText"
-              @pointerdown.stop="onPointerDown('end', $event)"
-              @keydown.stop="onKeydown('end', $event)"
-            />
+            <template v-if="!singlePoint">
+              <button
+                type="button"
+                class="rangeslider__handle rangeslider__handle--start"
+                :class="{ 'rangeslider__handle--dragging': dragging === 'start' }"
+                :tabindex="interactive ? 0 : -1"
+                :disabled="!interactive"
+                role="slider"
+                aria-label="起始位置"
+                :aria-valuemin="bounds.minIndex"
+                :aria-valuemax="bounds.maxIndex"
+                :aria-valuenow="selection.start"
+                :aria-valuetext="valueText"
+                @pointerdown.stop="onPointerDown('start', $event)"
+                @keydown.stop="onKeydown('start', $event)"
+              />
+              <button
+                type="button"
+                class="rangeslider__handle rangeslider__handle--end"
+                :class="{ 'rangeslider__handle--dragging': dragging === 'end' }"
+                :tabindex="interactive ? 0 : -1"
+                :disabled="!interactive"
+                role="slider"
+                aria-label="结束位置"
+                :aria-valuemin="bounds.minIndex"
+                :aria-valuemax="bounds.maxIndex"
+                :aria-valuenow="selection.end"
+                :aria-valuetext="valueText"
+                @pointerdown.stop="onPointerDown('end', $event)"
+                @keydown.stop="onKeydown('end', $event)"
+              />
+            </template>
           </div>
         </div>
       </div>
@@ -1047,6 +1077,57 @@ $pager-gap: 6px;
 }
 
 /*
+ * 单点形态：把胶囊换成一个正圆的「选中点」。
+ *
+ * <h2>为什么用伪元素画圆，而不直接改块的尺寸</h2>
+ * 块的宽度由 script 固定为 `2 × CAP_RADIUS`（端头外扩的结果），高度却跟着轨高走，
+ * 两者不相等 —— 直接给它 `border-radius: 50%` 得到的是椭圆。
+ * 若改宽度，`left: calc(X% - 14px)` 那条居中式子就得跟着改，
+ * JS 与 CSS 的几何契约随即断开。
+ *
+ * <p>故保持外框不动（它是<strong>拖动热区</strong>，28px 宽对触屏友好），
+ * 用 `::before` 在其中心画一个与端点手柄同尺寸的圆。视觉上与区间形态的手柄一致 ——
+ * 在单点形态下它<strong>就是</strong>那个手柄，只是手柄本身已不渲染。
+ */
+.rangeslider__range--single {
+  /* 外框只剩热区职责：底色与阴影都交给 ::before */
+  background: none;
+  box-shadow: none;
+  cursor: ew-resize;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: calc(var(--rangeslider-track-height) - 12px);
+    height: calc(var(--rangeslider-track-height) - 12px);
+    border: 2px solid rgba(255, 255, 255, 0.92);
+    border-radius: 50%;
+    background: $accent;
+    box-shadow: 0 1px 4px rgba(26, 25, 23, 0.22);
+    transform: translate(-50%, -50%);
+    transition:
+      transform 0.16s ease,
+      box-shadow 0.16s ease;
+  }
+
+  /*
+   * hover 与拖动的反馈都作用在 ::before 上。
+   * 覆写 transform 时必须重申居中位移 —— 只写 scale 会丢掉 translate，
+   * 圆会跑到外框的右下角去。这与端点手柄那两条规则是同一个坑。
+   */
+  &:hover::before {
+    transform: translate(-50%, -50%) scale(1.08);
+  }
+
+  &.rangeslider__range--dragging::before {
+    transform: translate(-50%, -50%) scale(1.14);
+    box-shadow: 0 2px 10px rgba(26, 25, 23, 0.28);
+  }
+}
+
+/*
  * 端点手柄。
  *
  * 圆心落在端点那个离散点上（横向锚点见下方两条规则），
@@ -1054,6 +1135,8 @@ $pager-gap: 6px;
  *
  * 尺寸取轨高减去上下余量，做成正圆。它比离散点大很多 ——
  * 这是要用手指或鼠标精确抓住的目标，视觉上的点只是位置指示。
+ *
+ * <p>单点形态下不渲染（见模板）—— 那时块自身就充当手柄。
  */
 .rangeslider__handle {
   position: absolute;

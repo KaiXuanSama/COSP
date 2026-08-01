@@ -530,6 +530,69 @@ describe('withManualSelection', () => {
   })
 })
 
+/**
+ * 单点形态下的翻页。
+ *
+ * <p>`minSpan = maxSpan = 1` 时块只占一格，池的可移动范围因此比区间形态更宽 ——
+ * `poolStartMin = reachableStart + 1 - poolSize`，即池左端可以退到「软墙左侧
+ * poolSize−1 格」处，那时可用区间恰好只剩软墙那一格。
+ */
+describe('单点形态的翻页', () => {
+  const SCFG = resolvePagedConfig({
+    poolSize: 15,
+    minSpan: 1,
+    maxSpan: 1,
+    reachableStart: 17,
+    reachableEnd: 32,
+  })
+
+  /** 池 18~32、点落在 7/25。 */
+  const SPOINT: PagedWindowState = { poolStart: 18, desiredStart: 25, desiredEnd: 25 }
+
+  it('池的可移动范围随跨度下限放宽', () => {
+    // 17 + 1 - 15 = 3
+    expect(SCFG.poolStartMin).toBe(3)
+    expect(SCFG.poolStartMax).toBe(18)
+  })
+
+  it('块恒为一格', () => {
+    expect(resolveBlock(SPOINT, SCFG)).toEqual({ start: 25, end: 25 })
+    expect(blockSpanOf(SPOINT, SCFG)).toBe(1)
+  })
+
+  /** 翻页时点<strong>留在原来的日期上</strong>，只有相对位置改变。 */
+  it('翻页时点不动、局部索引右移', () => {
+    expect(toLocalSelection(SPOINT, SCFG)).toEqual({ start: 7, end: 7 })
+
+    const shifted = shiftPagedWindow(SPOINT, -5, SCFG)
+    expect(resolveBlock(shifted, SCFG)).toEqual({ start: 25, end: 25 })
+    expect(toLocalSelection(shifted, SCFG)).toEqual({ start: 12, end: 12 })
+  })
+
+  /** 点被池右端追上后跟着走。 */
+  it('池右端追上点后点跟着走', () => {
+    // 池左移 8 格：池 10~24，点 25 已不可见 ⇒ 贴到 hi=24
+    const shifted = shiftPagedWindow(SPOINT, -8, SCFG)
+    expect(resolveBlock(shifted, SCFG)).toEqual({ start: 24, end: 24 })
+    // 期望仍是 25，翻回来即可复原
+    expect([shifted.desiredStart, shifted.desiredEnd]).toEqual([25, 25])
+    const back = shiftPagedWindow(shifted, 8, SCFG)
+    expect(resolveBlock(back, SCFG)).toEqual({ start: 25, end: 25 })
+  })
+
+  it('手动选择刷新期望位置', () => {
+    const next = withManualSelection(SPOINT, { start: 3, end: 3 }, SCFG)
+    expect([next.desiredStart, next.desiredEnd]).toEqual([21, 21])
+  })
+
+  it('翻到底后点顶在软墙上', () => {
+    let state = SPOINT
+    while (canPagePrev(state, SCFG)) state = shiftPagedWindow(state, -1, SCFG)
+    expect(state.poolStart).toBe(3)
+    expect(resolveBlock(state, SCFG)).toEqual({ start: 17, end: 17 })
+  })
+})
+
 describe('不变量', () => {
   /**
    * 任意位移序列后状态都合法。
