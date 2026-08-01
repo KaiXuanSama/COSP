@@ -620,47 +620,70 @@ onScopeDispose(clearPageClickTimer)
             @keydown="onKeydown('range', $event)"
           >
             <!--
-              端点手柄。单点形态下不渲染 —— 那时两条跨度约束把端点死死夹住，
-              moveStart / moveEnd 的任何目标都会被拒回原值，手柄纯粹是个死区；
-              而单点时块只有 2×CAP_RADIUS 宽、两个手柄几乎盖满它，
-              用户反而点不到中间那条能拖的缝。去掉后整块都是拖动区。
+              端点手柄。单点形态下<strong>仍留在 DOM 里</strong>，只是淡出并交出
+              指针事件（见 --hidden）—— 用 v-if 摘掉的话没有退场帧，
+              切换时手柄会凭空消失，而块还在慢慢收缩，观感是「先没了再变形」。
+
+              单点时它们本就是死区：两条跨度约束把端点夹死，
+              moveStart / moveEnd 的任何目标都会被拒回原值。故 disabled 与
+              tabindex 都要跟着关掉，键盘 Tab 不该停在一个不起作用的按钮上。
 
               stop 修饰符是必需的：不阻止冒泡的话，按在端点上会同时
               触发整块的 pointerdown，后者随即把 target 改成 'range'，
               于是拖端点变成了拖整块。
             -->
-            <template v-if="!singlePoint">
-              <button
-                type="button"
-                class="rangeslider__handle rangeslider__handle--start"
-                :class="{ 'rangeslider__handle--dragging': dragging === 'start' }"
-                :tabindex="interactive ? 0 : -1"
-                :disabled="!interactive"
-                role="slider"
-                aria-label="起始位置"
-                :aria-valuemin="bounds.minIndex"
-                :aria-valuemax="bounds.maxIndex"
-                :aria-valuenow="selection.start"
-                :aria-valuetext="valueText"
-                @pointerdown.stop="onPointerDown('start', $event)"
-                @keydown.stop="onKeydown('start', $event)"
-              />
-              <button
-                type="button"
-                class="rangeslider__handle rangeslider__handle--end"
-                :class="{ 'rangeslider__handle--dragging': dragging === 'end' }"
-                :tabindex="interactive ? 0 : -1"
-                :disabled="!interactive"
-                role="slider"
-                aria-label="结束位置"
-                :aria-valuemin="bounds.minIndex"
-                :aria-valuemax="bounds.maxIndex"
-                :aria-valuenow="selection.end"
-                :aria-valuetext="valueText"
-                @pointerdown.stop="onPointerDown('end', $event)"
-                @keydown.stop="onKeydown('end', $event)"
-              />
-            </template>
+            <button
+              type="button"
+              class="rangeslider__handle rangeslider__handle--start"
+              :class="{
+                'rangeslider__handle--dragging': dragging === 'start',
+                'rangeslider__handle--hidden': singlePoint,
+              }"
+              :tabindex="interactive && !singlePoint ? 0 : -1"
+              :disabled="!interactive || singlePoint"
+              :aria-hidden="singlePoint || undefined"
+              role="slider"
+              aria-label="起始位置"
+              :aria-valuemin="bounds.minIndex"
+              :aria-valuemax="bounds.maxIndex"
+              :aria-valuenow="selection.start"
+              :aria-valuetext="valueText"
+              @pointerdown.stop="onPointerDown('start', $event)"
+              @keydown.stop="onKeydown('start', $event)"
+            />
+            <button
+              type="button"
+              class="rangeslider__handle rangeslider__handle--end"
+              :class="{
+                'rangeslider__handle--dragging': dragging === 'end',
+                'rangeslider__handle--hidden': singlePoint,
+              }"
+              :tabindex="interactive && !singlePoint ? 0 : -1"
+              :disabled="!interactive || singlePoint"
+              :aria-hidden="singlePoint || undefined"
+              role="slider"
+              aria-label="结束位置"
+              :aria-valuemin="bounds.minIndex"
+              :aria-valuemax="bounds.maxIndex"
+              :aria-valuenow="selection.end"
+              :aria-valuetext="valueText"
+              @pointerdown.stop="onPointerDown('end', $event)"
+              @keydown.stop="onKeydown('end', $event)"
+            />
+
+            <!--
+              单点形态的圆。<strong>常驻渲染</strong>，靠 opacity + scale 显隐 ——
+              早先用 ::before 的 content 从 none 变 ""，元素凭空出现、
+              没有起始帧可供过渡，切换时圆是硬闪出来的。
+
+              放在块内部而非用伪元素，是为了让它能与手柄共用同一套淡入淡出时长，
+              两者的交叉才对称（手柄淡出的同时圆淡入）。
+            -->
+            <span
+              class="rangeslider__point"
+              :class="{ 'rangeslider__point--visible': singlePoint }"
+              aria-hidden="true"
+            />
           </div>
         </div>
       </div>
@@ -800,6 +823,20 @@ $rail-inset: $cap-radius + $edge-gap;
  * 运动方式就成了两套，那比略微滞后更违和。
  */
 $slide-duration: 0.16s;
+
+/*
+ * 单点 ↔ 区间形态切换的过渡时长。
+ *
+ * 与 $slide-duration 取同值，因为这两件事在切换那一刻<strong>同时发生</strong>：
+ * 块的宽度收缩到一个点位（走 $slide-duration），胶囊底色淡出、手柄淡出、
+ * 圆点淡入（走本值）。四者若快慢不一，就会看到「底色先没了、空框还在缩」
+ * 这类分解动作。
+ *
+ * <p>之所以另起一个变量而不直接复用：两者的语义不同 ——
+ * 一个是「位置变化」的跟手程度，一个是「形态变化」的柔和程度。
+ * 将来若要让形态切换更从容一些（比如 0.24s），改这一个即可，不影响拖动手感。
+ */
+$morph-duration: 0.16s;
 
 /*
  * 翻页按钮的宽度与它到轨道的间距。
@@ -1041,17 +1078,35 @@ $pager-gap: 6px;
   bottom: 3px;
   z-index: 2;
   border-radius: 999px;
-  background: linear-gradient(
-    180deg,
-    rgba(194, 122, 62, 0.92) 0%,
-    rgba(194, 122, 62, 0.76) 100%
-  );
   box-shadow: 0 1px 4px rgba(26, 25, 23, 0.14);
   cursor: grab;
   transition:
     left $slide-duration cubic-bezier(0.4, 0, 0.2, 1),
     width $slide-duration cubic-bezier(0.4, 0, 0.2, 1),
-    box-shadow 0.18s ease;
+    box-shadow $morph-duration ease;
+
+  /*
+   * 胶囊的底色画在伪元素上而非块自身。
+   *
+   * 单点形态要让这层渐变<strong>淡出</strong>，而 `background` 是复合简写、
+   * 渐变与 `none` 之间无法插值 —— 直接覆写只会在第 0 帧硬切。
+   * 挪到 ::before 后就能用 opacity 过渡（opacity 是可插值的独立属性）。
+   *
+   * 圆角继承自块，故不必重复声明；inset: 0 让它与块严格同尺寸，
+   * 宽度过渡由块驱动，这层跟着走。
+   */
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(
+      180deg,
+      rgba(194, 122, 62, 0.92) 0%,
+      rgba(194, 122, 62, 0.76) 100%
+    );
+    transition: opacity $morph-duration ease;
+  }
 
   &:focus-visible {
     outline: 2px solid $accent;
@@ -1077,54 +1132,73 @@ $pager-gap: 6px;
 }
 
 /*
- * 单点形态：把胶囊换成一个正圆的「选中点」。
+ * 单点形态：胶囊淡出、圆点淡入，块的宽度同时收到一个点位。
  *
- * <h2>为什么用伪元素画圆，而不直接改块的尺寸</h2>
- * 块的宽度由 script 固定为 `2 × CAP_RADIUS`（端头外扩的结果），高度却跟着轨高走，
- * 两者不相等 —— 直接给它 `border-radius: 50%` 得到的是椭圆。
- * 若改宽度，`left: calc(X% - 14px)` 那条居中式子就得跟着改，
- * JS 与 CSS 的几何契约随即断开。
+ * <h2>三件事必须同时长同曲线</h2>
+ * 块的宽度收缩（$slide-duration）、胶囊底色淡出、手柄淡出、圆点淡入 ——
+ * 四者若快慢不一，就会看到「底色先没了、空框还在缩」这类分解动作。
+ * 故统一用 $morph-duration，且它与 $slide-duration 取同值。
  *
- * <p>故保持外框不动（它是<strong>拖动热区</strong>，28px 宽对触屏友好），
- * 用 `::before` 在其中心画一个与端点手柄同尺寸的圆。视觉上与区间形态的手柄一致 ——
- * 在单点形态下它<strong>就是</strong>那个手柄，只是手柄本身已不渲染。
+ * <h2>为什么圆点是独立元素而非 ::before</h2>
+ * ::before 已被胶囊底色占用（那层要能淡出，见基类）。更重要的是
+ * `content` 从 none 变 "" 时元素凭空出现，没有起始帧可供过渡 ——
+ * 早先正是这么写的，切换时圆是硬闪出来的。
+ *
+ * <p>外框保持 `2 × CAP_RADIUS` 宽不变，它是<strong>拖动热区</strong>，
+ * 28px 对触屏友好；圆只是画在它中心的视觉元素。改外框尺寸会让
+ * `left: calc(X% - 14px)` 那条居中式子失配，JS 与 CSS 的几何契约随即断开。
  */
 .rangeslider__range--single {
-  /* 外框只剩热区职责：底色与阴影都交给 ::before */
-  background: none;
   box-shadow: none;
   cursor: ew-resize;
 
+  /* 胶囊底色淡出 */
   &::before {
-    content: '';
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: calc(var(--rangeslider-track-height) - 12px);
-    height: calc(var(--rangeslider-track-height) - 12px);
-    border: 2px solid rgba(255, 255, 255, 0.92);
-    border-radius: 50%;
-    background: $accent;
-    box-shadow: 0 1px 4px rgba(26, 25, 23, 0.22);
-    transform: translate(-50%, -50%);
-    transition:
-      transform 0.16s ease,
-      box-shadow 0.16s ease;
+    opacity: 0;
   }
+}
 
-  /*
-   * hover 与拖动的反馈都作用在 ::before 上。
-   * 覆写 transform 时必须重申居中位移 —— 只写 scale 会丢掉 translate，
-   * 圆会跑到外框的右下角去。这与端点手柄那两条规则是同一个坑。
-   */
-  &:hover::before {
-    transform: translate(-50%, -50%) scale(1.08);
-  }
+/*
+ * 单点形态的圆。常驻渲染，靠 opacity + scale 显隐。
+ *
+ * 与端点手柄同尺寸同样式 —— 在单点形态下它<strong>就是</strong>那个手柄，
+ * 视觉上两者应当无缝接替：手柄淡出的同时它淡入，两端各占同一个位置。
+ *
+ * 起始 scale 略小于 1，淡入时带一点「长出来」的感觉，与手柄的淡出形成呼应；
+ * 若都用纯 opacity，交叉那一刻会有半透明重叠的浑浊感。
+ */
+.rangeslider__point {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: calc(var(--rangeslider-track-height) - 12px);
+  height: calc(var(--rangeslider-track-height) - 12px);
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  border-radius: 50%;
+  background: $accent;
+  box-shadow: 0 1px 4px rgba(26, 25, 23, 0.22);
+  opacity: 0;
+  /* 覆写 transform 时必须重申居中位移，只写 scale 会让圆跑到右下角 */
+  transform: translate(-50%, -50%) scale(0.6);
+  pointer-events: none;
+  transition:
+    opacity $morph-duration ease,
+    transform $morph-duration cubic-bezier(0.4, 0, 0.2, 1);
+}
 
-  &.rangeslider__range--dragging::before {
-    transform: translate(-50%, -50%) scale(1.14);
-    box-shadow: 0 2px 10px rgba(26, 25, 23, 0.28);
-  }
+.rangeslider__point--visible {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+/* 拖动单点时放大，与手柄的拖动反馈一致 */
+.rangeslider__range--single.rangeslider__range--dragging .rangeslider__point--visible {
+  transform: translate(-50%, -50%) scale(1.14);
+  box-shadow: 0 2px 10px rgba(26, 25, 23, 0.28);
+}
+
+.rangeslider__range--single:hover .rangeslider__point--visible {
+  transform: translate(-50%, -50%) scale(1.08);
 }
 
 /*
@@ -1136,7 +1210,8 @@ $pager-gap: 6px;
  * 尺寸取轨高减去上下余量，做成正圆。它比离散点大很多 ——
  * 这是要用手指或鼠标精确抓住的目标，视觉上的点只是位置指示。
  *
- * <p>单点形态下不渲染（见模板）—— 那时块自身就充当手柄。
+ * <p>单点形态下淡出并交出指针事件（见 --hidden），但<strong>仍留在 DOM 里</strong> ——
+ * 用 v-if 摘掉的话没有退场帧，切换时手柄会凭空消失。
  */
 .rangeslider__handle {
   position: absolute;
@@ -1151,7 +1226,8 @@ $pager-gap: 6px;
   cursor: ew-resize;
   transition:
     transform 0.16s ease,
-    box-shadow 0.16s ease;
+    box-shadow 0.16s ease,
+    opacity $morph-duration ease;
 
   &:focus-visible {
     outline: 2px solid $accent;
@@ -1161,6 +1237,21 @@ $pager-gap: 6px;
   &:disabled {
     cursor: not-allowed;
   }
+}
+
+/*
+ * 单点形态下的手柄：淡出并让开指针。
+ *
+ * pointer-events 必须关掉 —— 完全透明的元素照样会拦截点击，
+ * 不关的话单点形态下用户点到的是两个看不见的手柄而非可拖的块。
+ *
+ * 缩放到 0.6 与圆点的入场尺寸对称：手柄缩小淡出、圆点放大淡入，
+ * 交叉那一刻两者的视觉重量此消彼长，不会有半透明重叠的浑浊感。
+ * transform 必须重申各自的居中位移，见下方两条锚点规则的说明。
+ */
+.rangeslider__handle--hidden {
+  opacity: 0;
+  pointer-events: none;
 }
 
 /*
@@ -1205,11 +1296,18 @@ $pager-gap: 6px;
 }
 
 /*
- * 刻度文案行。
- *
- * 左右内缩与内层轨一致，故标签的百分比定位与点共用同一坐标系；
- * 高度固定，避免有无标签时整个控件高度跳动。
+ * 单点形态下手柄缩小淡出。写在最后以胜过 hover / dragging ——
+ * 那两个状态在切换途中可能仍挂着（鼠标正停在块上），
+ * 若被它们覆盖，手柄会一边淡出一边放大，与圆点的入场撞在一起。
  */
+.rangeslider__handle--start.rangeslider__handle--hidden {
+  transform: translate(-50%, -50%) scale(0.6);
+}
+
+.rangeslider__handle--end.rangeslider__handle--hidden {
+  transform: translate(50%, -50%) scale(0.6);
+}
+
 /*
  * 刻度文案行。
  *
@@ -1336,6 +1434,8 @@ $pager-gap: 6px;
 /* 尊重系统「减少动态效果」 */
 @media (prefers-reduced-motion: reduce) {
   .rangeslider__range,
+  .rangeslider__range::before,
+  .rangeslider__point,
   .rangeslider__handle,
   .rangeslider__dot,
   .rangeslider__label {

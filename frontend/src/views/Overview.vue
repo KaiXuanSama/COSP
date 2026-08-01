@@ -274,11 +274,20 @@ const timelinePoints = computed<UsageTimelinePoint[]>(() => {
  * <p><strong>当前仍是样式落位</strong>：翻页与拖动只改本组件状态，不驱动图表、
  * 不发请求。接线要等三个分页端点在前端接上。
  */
+/**
+ * 日期选择器是否处于单点形态。
+ *
+ * <p>接线后应由折线图的范围切换驱动：「今日时段」看的是某<strong>一天</strong>
+ * 的时段分布，选择器该退化成单点；「近 N 日」看的是一段区间，选择器是区间形态。
+ * 组件靠 `maxSpan === 1` 自动切换形态并播放交叉淡化，故这里只需给出跨度约束。
+ */
+const dateSinglePoint = ref(false)
+
 const dateAxisConfig = computed(() =>
   resolvePagedConfig({
     poolSize: DATE_RANGE_POOL_DAYS,
-    minSpan: BREAKDOWN_DAYS,
-    maxSpan: DATE_RANGE_POOL_DAYS,
+    minSpan: dateSinglePoint.value ? 1 : BREAKDOWN_DAYS,
+    maxSpan: dateSinglePoint.value ? 1 : DATE_RANGE_POOL_DAYS,
     // 软墙：数据从这里开始。暂设为「今天往前 29 天」以便观察翻页触底，
     // 接线后应由后端的最早记录日期决定。
     reachableStart: -EARLIEST_QUERYABLE_OFFSET,
@@ -394,6 +403,138 @@ function describeDateRange(selection: RangeSelection): string {
 }
 
 const dateRangeText = computed(() => describeDateRange(dateRange.value))
+
+/**
+ * 折线图下方那个选择器的窗口状态 —— 与柱状图那个<strong>各自独立</strong>。
+ *
+ * <p>两者服务不同的图表，用户可能想让柱状图停在某一段而折线图看另一段，
+ * 共用一份状态会让两个视图互相牵制。接线后若确认「一份状态驱动全部图表」
+ * 更符合预期，再合并即可 —— 现在保持独立是更小的假设。
+ *
+ * <p><strong>形态随折线图的范围切换联动</strong>：
+ * 「今日时段」看的是某一天的时段分布，选择器退化为单点；
+ * 「近 N 日」看的是一段区间，选择器是区间形态。
+ * 组件靠 `maxSpan === 1` 自动切形态并播放交叉淡化。
+ */
+const timelineSinglePoint = computed(() => timelineRange.value === '1d')
+
+const timelineAxisConfig = computed(() =>
+  resolvePagedConfig({
+    poolSize: DATE_RANGE_POOL_DAYS,
+    minSpan: timelineSinglePoint.value ? 1 : BREAKDOWN_DAYS,
+    maxSpan: timelineSinglePoint.value ? 1 : DATE_RANGE_POOL_DAYS,
+    reachableStart: -EARLIEST_QUERYABLE_OFFSET,
+    reachableEnd: 0,
+  }),
+)
+
+/**
+ * 折线图选择器的窗口状态。
+ *
+ * <p>初值与柱状图那个一致（池贴着今天、期望区间为最近 7 天）。
+ * 切到单点形态时期望区间会被 `normalizePagedWindow` 收成一天 ——
+ * 收在<strong>右端</strong>（`desiredEnd` 不动、`desiredStart` 跟上来），
+ * 因为「今日时段」关心的是最近那一天而非区间的起点。
+ */
+const timelineWindow = ref<PagedWindowState>(
+  normalizePagedWindow(
+    {
+      poolStart: -(DATE_RANGE_POOL_DAYS - 1),
+      desiredStart: -(BREAKDOWN_DAYS - 1),
+      desiredEnd: 0,
+    },
+    resolvePagedConfig({
+      poolSize: DATE_RANGE_POOL_DAYS,
+      minSpan: BREAKDOWN_DAYS,
+      maxSpan: DATE_RANGE_POOL_DAYS,
+      reachableStart: -EARLIEST_QUERYABLE_OFFSET,
+      reachableEnd: 0,
+    }),
+  ),
+)
+
+/**
+ * 形态切换后把窗口收敛到新约束下。
+ *
+ * <p>必须显式做这一步：`resolvePagedConfig` 变了，但 `timelineWindow` 里的
+ * 期望区间还是旧的（比如 7 天），而单点形态只允许 1 天。
+ * 不收敛的话组件会拿到一个超宽的 `modelValue`，虽然它自己会钳制，
+ * 但下一次翻页的基准仍是那个旧值 —— 状态与显示随即脱节。
+ *
+ * <p>收敛方向：`normalizePagedWindow` 在跨度超上限时<strong>从右侧收</strong>，
+ * 于是 7 天区间会退化成它的<strong>起点</strong>那一天。这与「今日时段该看最近一天」
+ * 的直觉相反，故先把期望区间对齐到右端再交给它。
+ *
+ * <h2>为什么必须 immediate</h2>
+ * `timelineRange` 的初值就是 `'1d'`（单点形态），也就是说组件<strong>一挂载</strong>
+ * 就该是单点。非 immediate 的 watch 要等 config 第一次<strong>变化</strong>才触发，
+ * 而它此后可能永远不变（用户不切范围）—— 那样初始窗口就一直是那份 7 天的旧值，
+ * 显示出来是「区间的起点那一天」而非今天。
+ *
+ * <p>这与柱状图 `useStackMorph` 那个 watch 缺 `immediate` 的 bug 是同一类：
+ * 「初始值已经是目标状态」时，只监听变化的 watch 永远不会为它跑一次。
+ */
+watch(
+  timelineAxisConfig,
+  (config) => {
+    const previous = timelineWindow.value
+    const anchored = config.maxSpan === 1
+      ? { ...previous, desiredStart: previous.desiredEnd }
+      : previous
+    timelineWindow.value = normalizePagedWindow(anchored, config)
+  },
+  { immediate: true },
+)
+
+const timelineTicks = computed(() => {
+  const ticks: RangeSliderTick[] = []
+  for (let i = 0; i < DATE_RANGE_POOL_DAYS; i += 1) {
+    ticks.push({ key: dateAtOffset(timelineWindow.value.poolStart + i) })
+  }
+  return ticks
+})
+
+const timelineSelection = computed(() =>
+  toLocalSelection(timelineWindow.value, timelineAxisConfig.value),
+)
+
+const timelineReachable = computed(() =>
+  toLocalReachable(timelineWindow.value, timelineAxisConfig.value),
+)
+
+function onTimelineRangeUpdate(next: RangeSelection) {
+  timelineWindow.value = withManualSelection(timelineWindow.value, next, timelineAxisConfig.value)
+}
+
+function onTimelineRangePage(payload: { direction: -1 | 1; step: 'single' | 'page' }) {
+  const config = timelineAxisConfig.value
+  const delta =
+    payload.step === 'single'
+      ? payload.direction
+      : pendingPageDelta(timelineWindow.value, payload.direction, config)
+  timelineWindow.value = shiftPagedWindow(timelineWindow.value, delta, config)
+}
+
+const canTimelinePagePrev = computed(() =>
+  canPagePrev(timelineWindow.value, timelineAxisConfig.value),
+)
+const canTimelinePageNext = computed(() =>
+  canPageNext(timelineWindow.value, timelineAxisConfig.value),
+)
+
+/**
+ * 折线图选择器的摘要文案。
+ *
+ * <p>单点形态下只给一个日期 —— 缺省的「X 至 X，共 1 天」在单点场景下是废话。
+ */
+const timelineRangeText = computed(() => {
+  const selection = timelineSelection.value
+  const ticks = timelineTicks.value
+  const from = ticks[selection.start]?.key ?? ''
+  if (timelineSinglePoint.value) return from
+  const to = ticks[selection.end]?.key ?? ''
+  return `${from} 至 ${to}，共 ${selection.end - selection.start + 1} 天`
+})
 
 
 onMounted(() => {
@@ -757,8 +898,8 @@ function toKUnit(value: number): number {
         <DiscreteRangeSlider
           :model-value="dateRange"
           :ticks="dateRangeTicks"
-          :min-span="BREAKDOWN_DAYS"
-          :max-span="DATE_RANGE_POOL_DAYS"
+          :min-span="dateAxisConfig.minSpan"
+          :max-span="dateAxisConfig.maxSpan"
           :min-index="dateReachable.minIndex"
           :max-index="dateReachable.maxIndex"
           pageable
@@ -791,6 +932,39 @@ function toKUnit(value: number): number {
         :loading="chartsLoading"
         :failed="chartsFailed"
       />
+
+      <!--
+        折线图的日期选择器。形态随上方的范围切换按钮联动 ——
+        「今日时段」是单点（看某一天的时段分布），「近 N 日」是区间。
+
+        与柱状图那个各自独立：两者服务不同图表，用户可能想让它们停在不同区间。
+        当前<strong>仅为形态联动演示</strong>，不驱动折线图数据。
+      -->
+      <div class="breakdown-range">
+        <DiscreteRangeSlider
+          :model-value="timelineSelection"
+          :ticks="timelineTicks"
+          :min-span="timelineAxisConfig.minSpan"
+          :max-span="timelineAxisConfig.maxSpan"
+          :min-index="timelineReachable.minIndex"
+          :max-index="timelineReachable.maxIndex"
+          pageable
+          :can-page-prev="canTimelinePagePrev"
+          :can-page-next="canTimelinePageNext"
+          page-prev-label="向前翻（单击一天，双击一页）"
+          page-next-label="向后翻（单击一天，双击一页）"
+          :aria-label="timelineSinglePoint ? '日期' : '日期范围'"
+          :format-edge-label="formatDateRangeEdge"
+          @update:model-value="onTimelineRangeUpdate"
+          @page="onTimelineRangePage"
+        />
+        <div class="breakdown-range-meta">
+          <span class="breakdown-range-text">{{ timelineRangeText }}</span>
+          <span class="breakdown-range-hint">
+            {{ timelineSinglePoint ? '拖动圆点选择日期；两侧按钮单击移一天、双击翻一页' : '拖动端点调整跨度，拖动色块整体平移' }}
+          </span>
+        </div>
+      </div>
     </n-card>
 
     <n-card title="关于本服务" class="info-card" :bordered="true">
