@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
+import com.kaixuan.copilot_ollama_proxy.application.usage.UsageDateBounds;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
@@ -243,6 +244,54 @@ public class ApiCallUsageRepository implements ApiCallUsageService {
                         rs.getLong("input_tokens"),
                         rs.getLong("output_tokens")),
                 startInclusive + "T00:00:00", endExclusive + "T00:00:00");
+    }
+
+    /**
+     * 取用量记录在时间轴上的两个端点 —— 概览日期选择器可达区间的数据来源。
+     *
+     * <h2>一条 SQL 取两端而非两条</h2>
+     * {@code MIN} / {@code MAX} 写在同一个 {@code SELECT} 里只扫一遍，且两端来自
+     * <strong>同一个快照</strong>。分成两次查询时，中间若插入了新记录，
+     * 会得到一对来自不同时刻的边界 —— 这在正常运行下几乎必然发生（写入是持续的）。
+     *
+     * <h2>为何是 substr 而不是 date()</h2>
+     * 这里要的正是「存储字符串的前 10 位」，与其他聚合查询的分组键口径逐字符一致。
+     * 用 {@code date(created_at)} 会引入 SQLite 的日期解析，格式若有偏差它会静默返回 null，
+     * 而边界为 null 会被当成「表为空」—— 选择器随即退化为只有今天可选，且没有任何报错。
+     *
+     * <p>{@code MIN(created_at)} 与 {@code MIN(substr(created_at, 1, 10))} 在这里等价，
+     * 因为存储格式定长且字典序与时间序一致；取 substr 后再求 MIN 只是省掉一次外层截断。
+     *
+     * <h2>没有 WHERE，也不需要索引</h2>
+     * 本查询刻意不加时间条件：它要回答的就是「全部数据的边界在哪」，加了条件就变成了
+     * 「某区间内的边界」，那个值恒等于区间本身，毫无信息量。
+     *
+     * <p>无条件的 {@code MIN}/{@code MAX} 在 SQLite 上不会退化为全表扫描 ——
+     * {@code idx_api_call_usage_created}（V8.4）是 {@code created_at} 前导索引，
+     * 优化器可直接取索引的首尾项。
+     *
+     * <h2>空表返回 EMPTY 而非抛异常</h2>
+     * 聚合查询在空表上返回<strong>一行两个 NULL</strong>，不是零行，故 {@code queryForObject}
+     * 不会抛 {@code EmptyResultDataAccessException}，而是把 null 交给映射函数。
+     * 全新部署首次打开概览就是这个情况，属于正常状态。
+     *
+     * @return 记录边界；表为空时返回 {@link UsageDateBounds#EMPTY}（两端均为 null）
+     */
+    public UsageDateBounds findDateBounds() {
+        UsageDateBounds bounds = jdbcTemplate.queryForObject(
+                "SELECT MIN(substr(created_at, 1, 10)) AS earliest, "
+                        + "MAX(substr(created_at, 1, 10)) AS latest "
+                        + "FROM api_call_usage",
+                (rs, rowNum) -> {
+                    String earliest = rs.getString("earliest");
+                    String latest = rs.getString("latest");
+                    // 两端要么都有要么都没有；只有一端非空说明 SQL 被改坏了，
+                    // 与其让半个区间流到上层，不如统一按空表处理。
+                    return earliest == null || latest == null
+                            ? UsageDateBounds.EMPTY
+                            : new UsageDateBounds(earliest, latest);
+                });
+        return bounds == null ? UsageDateBounds.EMPTY : bounds;
     }
 
     /**

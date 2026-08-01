@@ -8,6 +8,7 @@ import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownPage;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageDailyPage;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageDailyPoint;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageDateRange;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageHourlyPoint;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageHourlySeries;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageRecordDelta;
@@ -269,6 +270,100 @@ public class UsageQueryService {
                 window.hasNewer(),
                 window.hasOlder(),
                 points);
+    }
+
+    /**
+     * 查询用量记录的日期上下限与可选范围 —— 概览日期选择器可达区间的唯一数据源。
+     *
+     * <p>在此之前选择器的下界是前端写死的常量，于是空库也会显示一整片可选日期，
+     * 而每一天点进去都是空图。这个判断必须由后端给出，因为它同时取决于
+     * 库里有什么与后端愿意查多久，前端两者都不知道。
+     *
+     * <h2>返回两组字段而非一组</h2>
+     * {@code earliestDate}/{@code latestDate} 是数据事实，
+     * {@code earliestSelectable}/{@code latestSelectable} 是可选范围，两者会不一致：
+     * 库里存着 60 天数据，但分页端点只接受最近 {@value SlidingDateWindow#MAX_SIZE} 天内的窗口，
+     * 此时下界由后者决定。只下发前者会让选择器放开到查不动的区间；
+     * 只下发后者则无法区分「没有更早的数据」与「更早的数据查不了」。
+     *
+     * <h2>为何按上下限而非日期集合</h2>
+     * 中间断档刻意被忽略 —— {@code 07-28} 与 {@code 07-30} 有数据而 {@code 07-29} 没有时，
+     * 范围仍是 {@code 07-28} 到 {@code 07-30}。空日是确定的零，画成零柱即可；
+     * 若把可选点限制成实际有数据的那几天，选择器的离散点会变成不连续的一串，
+     * 横轴不再是等距时间轴，「隔了几天」这个信息反而丢了。
+     */
+    public Mono<UsageDateRange> getUsageDateRange() {
+        return Mono.fromCallable(() -> buildDateRange(LocalDate.now()))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 组装日期范围响应：把数据边界与后端回看深度合成可选范围。
+     *
+     * <h2>两端的推导规则不对称</h2>
+     * <ul>
+     *   <li>下界取<strong>交集</strong>：{@code max(earliest, earliestReachable(today))} ——
+     *       数据下界与回看深度两个限制都要满足。</li>
+     *   <li>上界<strong>恒为今天</strong>，不取 {@code latest}：今天是默认视图，且随时可能
+     *       产生第一条记录。若因今天尚无调用就把它标成不可达，页面一打开就处在一个
+     *       「不可选」的位置上，而下一次调用又会让它突然变得可选。</li>
+     * </ul>
+     *
+     * <p>另有一个反直觉的情形：数据下界可能<strong>晚于</strong>今天。测试库里塞了未来日期，
+     * 或系统时钟被回调时都会出现。此时 {@code max} 会把下界推到今天之后，
+     * 使可选区间反向。故最后再钳一次不超过今天 —— 反向区间会让前端的
+     * 「可达点」集合为空，选择器整体变成不可操作，且没有任何报错。
+     *
+     * <p>表为空时两端同时收敛到今天，选择器退化为只有今天一个可选点，
+     * 这正确表达了「没有历史可翻」。
+     *
+     * <p>可见性放宽到包级并显式接受 {@code today}，使可选范围能被测试在固定「今天」下断言 ——
+     * 否则这些断言会随运行日期变化而失效。
+     *
+     * @param today 服务端本地时钟的今天
+     */
+    UsageDateRange buildDateRange(LocalDate today) {
+        UsageDateBounds bounds = apiCallUsageRepository.findDateBounds();
+        LocalDate earliestReachable = SlidingDateWindow.earliestReachable(today);
+
+        LocalDate earliestSelectable = earliestReachable;
+        if (bounds.hasData()) {
+            LocalDate earliest = parseDateOrNull(bounds.earliest());
+            if (earliest != null && earliest.isAfter(earliestReachable)) {
+                earliestSelectable = earliest;
+            }
+        } else {
+            // 无数据时不放开整个回看池：没有任何一天点进去有内容，
+            // 把可选点收缩到今天一个，比给出 15 个空日更诚实。
+            earliestSelectable = today;
+        }
+        // 数据下界晚于今天（测试数据或时钟回拨）时区间会反向，钳回今天。
+        if (earliestSelectable.isAfter(today)) {
+            earliestSelectable = today;
+        }
+
+        return new UsageDateRange(
+                bounds.earliest(),
+                bounds.latest(),
+                today.format(DATE_FORMAT),
+                bounds.hasData(),
+                earliestSelectable.format(DATE_FORMAT),
+                today.format(DATE_FORMAT));
+    }
+
+    /**
+     * 宽容解析日期串，失败返回 null。
+     *
+     * <p>边界值来自 {@code substr(created_at, 1, 10)}，正常情况必然是合法日期。
+     * 但历史数据或其他写入路径可能留下格式不符的 {@code created_at}，
+     * 此时宁可当作「没有可用下界」回落到回看深度，也不要让一条脏数据把整个概览打成 500。
+     */
+    private static LocalDate parseDateOrNull(String text) {
+        try {
+            return LocalDate.parse(text, DATE_FORMAT);
+        } catch (DateTimeParseException e) {
+            return null;
+        }
     }
 
     /**

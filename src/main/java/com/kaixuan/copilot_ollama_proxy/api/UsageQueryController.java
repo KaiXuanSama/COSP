@@ -6,6 +6,7 @@ import com.kaixuan.copilot_ollama_proxy.protocol.usage.StatsSnapshot;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownPage;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageDailyPage;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageDateRange;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageHourlyPoint;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageHourlySeries;
 import org.springframework.http.MediaType;
@@ -142,6 +143,28 @@ public class UsageQueryController {
             @RequestParam(defaultValue = "7") int size,
             @RequestParam(defaultValue = "0") int offset) {
         return usageQueryService.getUsageDailyPage(size, offset);
+    }
+
+    /**
+     * 用量记录的日期上下限与可选范围 —— 概览日期选择器可达区间的数据源。
+     *
+     * <p>无参数：这是一次性的元信息查询，回答「往前能拖到哪一天」。
+     * 在此之前该下界是前端写死的常量，于是空库也会显示一整片可选日期，
+     * 而每一天点进去都是空图。
+     *
+     * <p>响应体分两组字段：{@code earliestDate}/{@code latestDate} 是数据事实
+     * （空库时为 null），{@code earliestSelectable}/{@code latestSelectable} 是
+     * 可直接喂给选择器的可选范围（永不为 null）。两者会不一致 —— 库里存着更久的数据时，
+     * 下界由分页端点的回看深度决定。另回带 {@code today}，前端据它换算日期与偏移，
+     * 避免用浏览器时钟导致整条时间轴错位一天。
+     *
+     * <p>中间断档刻意忽略：{@code 07-28} 与 {@code 07-30} 有数据而 {@code 07-29} 没有时，
+     * 范围仍是 {@code 07-28} 到 {@code 07-30}。空日画成零柱即可，
+     * 若把可选点限制成实际有数据的那几天，横轴就不再是等距时间轴。
+     */
+    @GetMapping("/config/api/usage-date-range")
+    public Mono<UsageDateRange> usageDateRange() {
+        return usageQueryService.getUsageDateRange();
     }
 
     /**
