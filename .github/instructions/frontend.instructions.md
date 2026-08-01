@@ -7,6 +7,8 @@ description: "COSP 管理后台前端约定。Use when: 修改 frontend/ 下的 
 
 Vue 3 + TypeScript + Pinia + Naive UI + SCSS，构建工具 Vite。无 ESLint / Prettier，唯一质量关卡是 `npm run build` 中的 `vue-tsc -b`（`strict: true`）。
 
+`tsconfig.json` 只做项目引用聚合，实际配置在两个子项目里：`tsconfig.app.json` 管 `src/**`（浏览器侧，**刻意不含 Node 类型**，防止误用 `process` / `__dirname` 后仍通过检查），`tsconfig.node.json` 管 `vite.config.ts`（含 `@types/node`）。新增构建期脚本要加进 `tsconfig.node.json` 的 `include`，否则不受类型检查覆盖。
+
 ## 构建与测试
 
 ```bash
@@ -18,7 +20,8 @@ npm run build           # vue-tsc -b && vite build
 - **`npm run build` 的 `outDir` 是 `../src/main/resources/static` 且 `emptyOutDir: true`**：构建会清空并覆写 Spring Boot 静态资源目录。
 - `./mvnw test` 通过 `frontend-maven-plugin` 在 `generate-resources` 阶段自带一次前端构建（Node v22.14.0）。
 - Vitest 复用 `vite.config.ts`，没有独立配置文件。测试文件与被测源文件同目录，命名 `*.spec.ts`。
-- dev server 在 5173，代理 `/config/api`、`/auth`、`/login` 到 `http://localhost:11434`。
+- dev server 在 5173，**只代理 `/config/api` 与 `/auth`** 到 `http://localhost:11434`。登录接口是 `POST /auth/login`，已被 `/auth` 覆盖。
+- **绝不要把 `/login` 或其它前端路由加入代理**：它们必须由 Vite 的 history fallback 返回 dev 版 index.html。一旦代理到后端，浏览器拿到的是 `src/main/resources/static/` 里的构建产物（引用带 hash 的 `/assets/*.js`），dev server 上不存在这些文件 → 404 → 整页白屏。
 
 ## 目录职责
 
@@ -39,6 +42,8 @@ npm run build           # vue-tsc -b && vite build
 - 需要 SSE 时用 `@/api/authEventSource` 的 `createAuthEventSource`，原生 `EventSource` 无法带 Authorization 头。
 - DTO 接口从对应 store 导出（如 `stores/providers.ts` 的 `Provider`、`ProviderModel`），不要在 `api/` 下另建类型层。
 - Token 存 `localStorage['cosp_token']`，只用 `auth` 工具对象读写。
+- 401 后的登录跳转统一调 `api/index.ts` 导出的 `redirectToLogin()`（axios 拦截器与 SSE 共用），它会带上 `?redirect=` 供登录后回跳；组件内部能拿到 router 时用 `router.replace({ name: 'login', query: { redirect: route.fullPath } })`。
+- 路由表末尾有 catch-all 指向 `views/NotFound.vue`。后端把所有非 API 的浏览器请求都回退成 index.html，拼错的地址会进入前端路由 —— 删了这条就会渲染成空白页。
 
 ## 主题
 
