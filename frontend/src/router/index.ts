@@ -6,6 +6,7 @@ import Settings from '@/views/Settings.vue'
 import Preferences from '@/views/Preferences.vue'
 import Account from '@/views/Account.vue'
 import CallLog from '@/views/CallLog.vue'
+import NotFound from '@/views/NotFound.vue'
 import { auth } from '@/api'
 
 const routes = [
@@ -78,6 +79,13 @@ const routes = [
       },
     ],
   },
+  {
+    // 兜底 404。后端把所有非 API 的浏览器请求都回退成 index.html，
+    // 拼错的地址会走到前端路由，没有这条 catch-all 就会渲染成空白页。
+    path: '/:pathMatch(.*)*',
+    name: 'not-found',
+    component: NotFound,
+  },
 ]
 
 const router = createRouter({
@@ -85,17 +93,15 @@ const router = createRouter({
   routes,
 })
 
-// 路由守卫：检查本地 JWT token，无 token 时跳转登录页
+// 路由守卫：检查本地 JWT token，无 token 时跳登录页并记下原地址供登录后回跳。
+// 注意这里只看 token 是否存在、不解析 exp —— 过期 token 仍会放行，
+// 由页面内首个请求的 401 触发 api 拦截器兜底跳转。
 router.beforeEach((to, from, next) => {
-  if (to.meta.requiresAuth) {
-    if (auth.isAuthenticated()) {
-      next()
-    } else {
-      next('/login?unauthorized=true')
-    }
-  } else {
+  if (!to.meta.requiresAuth || auth.isAuthenticated()) {
     next()
+    return
   }
+  next({ name: 'login', query: { unauthorized: 'true', redirect: to.fullPath } })
 })
 
 export default router

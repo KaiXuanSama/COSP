@@ -6,6 +6,19 @@ function shouldSkipAuthRedirect(error: any) {
  return Boolean((error?.config as any)?.skipAuthRedirect)
 }
 
+/**
+ * 清除 token 并整页跳转到登录页，带上当前地址供登录后回跳。
+ *
+ * 供 axios 拦截器与 SSE 客户端共用：两者都在 Vue 路由之外，拿不到 router 实例，
+ * 只能整页跳转。已在登录页时不再跳，避免把 redirect 覆写成 /login 自身。
+ */
+export function redirectToLogin() {
+  localStorage.removeItem(TOKEN_KEY)
+  if (window.location.pathname.startsWith('/login')) return
+  const redirect = encodeURIComponent(window.location.pathname + window.location.search)
+  window.location.href = `/login?unauthorized=true&redirect=${redirect}`
+}
+
 const http = axios.create({
   baseURL: '/config/api',
   timeout: 10000,
@@ -25,11 +38,7 @@ http.interceptors.response.use(
   (res) => res,
   (error) => {
  if (error.response?.status ===401 && !shouldSkipAuthRedirect(error)) {
-      localStorage.removeItem(TOKEN_KEY)
-      // 避免在登录页重复跳转
-      if (!window.location.pathname.startsWith('/login')) {
-        window.location.href = '/login?unauthorized=true'
-      }
+      redirectToLogin()
     }
     return Promise.reject(error)
   },

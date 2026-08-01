@@ -20,6 +20,22 @@ onMounted(() => {
   if (route.query.login === 'error') message.error('用户名或密码错误。')
 })
 
+/**
+ * 登录成功后的目标地址。
+ *
+ * 取 ?redirect= 里记录的原地址，让「浏览受保护页面时掉线」的用户登录后回到原处。
+ * 只接受站内绝对路径：外部 URL 或协议相对地址（//evil.com）会被丢弃，
+ * 否则构成开放重定向漏洞。同时排除 /login 自身，避免登录后又回到登录页。
+ */
+function resolveRedirect(): string {
+  const raw = route.query.redirect
+  const target = Array.isArray(raw) ? raw[0] : raw
+  if (typeof target !== 'string') return '/overview'
+  if (!target.startsWith('/') || target.startsWith('//')) return '/overview'
+  if (target.startsWith('/login')) return '/overview'
+  return target
+}
+
 async function handleSubmit() {
   loading.value = true
   try {
@@ -34,7 +50,7 @@ async function handleSubmit() {
     if (res.ok) {
       const data = await res.json()
       auth.setToken(data.token)
-      router.push('/overview')
+      router.replace(resolveRedirect())
     } else {
       message.error('用户名或密码错误。')
     }

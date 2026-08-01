@@ -43,7 +43,7 @@ async function fetchUsername() {
       username.value = data.username
     } else if (res.status === 401) {
       auth.clearToken()
-      router.push('/login?unauthorized=true')
+      router.replace({ name: 'login', query: { unauthorized: 'true', redirect: route.fullPath } })
     }
   } catch {
     // 网络错误时保持当前显示

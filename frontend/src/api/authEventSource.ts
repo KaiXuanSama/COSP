@@ -1,4 +1,4 @@
-import http, { auth } from '@/api'
+import http, { auth, redirectToLogin } from '@/api'
 
 /**
  * 带认证的 SSE 客户端。
@@ -86,10 +86,7 @@ export function createAuthEventSource(options: AuthEventSourceOptions): AuthEven
       if (response.status === 401) {
         // 认证失效：停止重连，清除 token 并跳登录（对齐 axios 拦截器语义）。
         closed = true
-        auth.clearToken()
-        if (!window.location.pathname.startsWith('/login')) {
-          window.location.href = '/login?unauthorized=true'
-        }
+        redirectToLogin()
         return
       }
       if (!response.ok || !response.body) {
