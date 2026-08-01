@@ -15,6 +15,7 @@ const props = withDefaults(
   defineProps<{
     points: UsageTimelinePoint[]
     range: TimelineRange
+    label?: string
     loading?: boolean
     failed?: boolean
     emptyText?: string
@@ -22,6 +23,7 @@ const props = withDefaults(
     errorText?: string
   }>(),
   {
+    label: undefined,
     loading: false,
     failed: false,
     emptyText: '暂无用量数据',
@@ -39,7 +41,20 @@ function toggleRange() {
   emit('update:range', props.range === '7d' ? '1d' : '7d')
 }
 
-const rangeLabel = computed(() => (props.range === '7d' ? '近 7 日' : '今日时段'))
+/**
+ * 标题里的范围称呼。
+ *
+ * <p>缺省由 {@link props.range} 派生，但允许页面层用 {@link props.label} 覆写 ——
+ * 时段视图接上日期选择器后，看的可能是历史某一天，此时写「今日时段」是错的。
+ * 而「那一天是哪天」只有页面层知道（选择器状态在那里），故不能在本组件内派生。
+ *
+ * <p>只覆写称呼而非整个标题：「... token 用量」这部分是卡片的固定语义，
+ * 放开它只会让调用方反复拼同一串后缀。
+ */
+const rangeLabel = computed(() => {
+  if (props.label) return props.label
+  return props.range === '7d' ? '近 7 日' : '今日时段'
+})
 
 /**
  * 副标题：说明纵轴含义与数据口径。

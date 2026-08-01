@@ -7,5 +7,6 @@
 export * from './types'
 export * from './localTime'
 export * from './hourly'
+export * from './hourlyDay'
 export * from './daily'
 export * from './dateRange'

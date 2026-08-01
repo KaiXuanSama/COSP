@@ -49,6 +49,7 @@ import type { TimelineRange, UsageTimelinePoint } from '@/components/usageline'
 |---|---|---|---|---|
 | `points` | `UsageTimelinePoint[]` | — | ✓ | 页面层拉取后传入；组件不请求数据 |
 | `range` | `TimelineRange` | — | ✓ | 当前范围，`v-model:range` 的读端 |
+| `label` | `string` | — | | 覆写标题里的范围称呼，缺省由 `range` 派生 |
 | `loading` | `boolean` | `false` | | |
 | `failed` | `boolean` | `false` | | |
 | `emptyText` | `string` | `'暂无用量数据'` | | |
@@ -73,6 +74,8 @@ import type { TimelineRange, UsageTimelinePoint } from '@/components/usageline'
 |---|---|---|
 | `7d` | 近 7 日 token 用量 | 按天汇总 · 纵轴为 token 数 |
 | `1d` | 今日时段 token 用量 | 05:00 起算 24 小时 · 每点含前后半小时 · 纵轴为 token 数 |
+
+标题里的称呼可用 `label` 覆写（副标题不可）。时段视图接上日期选择器后看的可能是历史某一天，此时「今日时段」是错的，而「那一天是哪天」只有页面层知道。只放开称呼而非整个标题 —— `... token 用量` 是卡片的固定语义，放开它只会让调用方反复拼同一串后缀。
 
 副标题特意标出「05:00 起算」与「每点含前后半小时」—— 非自然日的窗口若不说明，使用者会按 0 点去对数字，也会以为 `07:00` 只含 07:00 之后那一小时。
 

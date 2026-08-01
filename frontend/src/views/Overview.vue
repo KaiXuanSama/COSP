@@ -28,20 +28,28 @@ import {
   BREAKDOWN_DAYS,
   buildDailyPoints,
   buildHourlyPoints,
+  collectHourlySeriesResponse,
   collectHourlySnapshot,
+  hourlyWindowStartOf,
   isClockAligned,
+  liveAnchorDate,
+  liveAnchorOffset,
   mergeBreakdownDelta,
   mergeHourlyDelta,
   nextFutureBoundary,
   resolveSelectableAxis,
   resolveWindowStart,
+  selectHourlyTotals,
   windowDates,
+  type HourlyHistoryCache,
   type TokenTotals,
   type UsageBreakdownRow,
   type UsageDateRangeMeta,
   type UsageHourlyPoint,
+  type UsageHourlySeriesResponse,
   type UsageRecordDelta,
 } from '@/features/usage-series'
+import { createDwellTrigger } from '@/utils/dwell'
 import { useStatsStore, type StatsData } from '@/stores/stats'
 
 const statsStore = useStatsStore()
@@ -58,8 +66,23 @@ const heatmapFailed = ref(false)
  */
 const breakdownRows = ref<UsageBreakdownRow[]>([])
 
-/** 整点桶 → token 累计量，供「今日时段」折线归约成 25 个点位。 */
+/**
+ * 整点桶 → token 累计量 —— <strong>实时栈</strong>。
+ *
+ * <p>只由 SSE 喂养（`hourly` 快照帧打底、`usage-delta` 增量累加），
+ * <strong>永远不被 HTTP 触碰</strong>。这是双栈的一半，理由见
+ * `features/usage-series/hourlyDay.ts` 的模块说明：若切回今天时重新 HTTP 拉一遍，
+ * 请求与增量帧的到达顺序不可控，会静默多算或少算。
+ */
 const hourlyTotals = ref<Map<string, TokenTotals>>(new Map())
+
+/**
+ * 历史日期的桶表缓存 —— 双栈的另一半，只由 HTTP 喂养。
+ *
+ * <p>不含当前时刻的窗口数据已固化，故缓存永不失效，来回滑动时同一天只请求一次。
+ * 实时窗口不进这里 —— 它一直在变，缓存它等于把它冻住。
+ */
+const hourlyHistory = ref<HourlyHistoryCache>(new Map())
 
 /**
  * 图表数据的加载 / 失败态 —— 三张图共用一条流，故共用一组状态。
@@ -264,14 +287,26 @@ const activeHeatmapMode = computed(() => {
 })
 
 /**
- * 折线图的点位 —— 两种范围都由同一份流数据派生。
+ * 折线图的点位。
  *
- * 这是纯 computed：增量帧只需改动 `breakdownRows` 或 `hourlyTotals`，
- * 点位、补零、`future` 标记全部自动重算，切换范围也不必重新请求。
+ * <p>「近 N 日」仍由流数据派生（未接线）；「今日时段」则按
+ * <strong>显示日</strong>（而非选中日）从双栈中取出对应桶表，再归约成 25 个点位。
+ *
+ * <p>用显示日是为了避开「滑到未加载的日期就先清零」：滑动是连续动作，
+ * 一路上每个点都闪一次白，而「没数据」与「未加载」在折线上长得一模一样。
+ *
+ * <p>窗口起点同样用显示日的 05:00 —— 横轴与数据必须同源，
+ * 否则加载途中会出现「轴已经是新的一天、数据还是旧那天」的错位。
+ * `future` 标记仍按真实时刻算，故历史日期不会有任何点被判成未来
+ * （那一天早已过完），这是自然结果而非特例。
  */
 const timelinePoints = computed<UsageTimelinePoint[]>(() => {
   if (timelineRange.value === '1d') {
-    return buildHourlyPoints(hourlyTotals.value, hourlyWindowStart.value, now.value)
+    return buildHourlyPoints(
+      hourlyDisplay.value.totals,
+      hourlyDisplayWindowStart.value,
+      now.value,
+    )
   }
   return buildDailyPoints(breakdownRows.value, breakdownWindow.value)
 })
@@ -299,13 +334,14 @@ const dateSinglePoint = ref(false)
 /**
  * 两个选择器共用的轴配置工厂。
  *
- * <p>软墙与跨度下限都来自 {@link selectableAxis}，只有「是否单点」因图表而异。
- * 抽成函数是为了让两处的差异只剩那一个参数 —— 各写一遍时，
+ * <p>软墙与跨度下限都来自 {@link selectableAxis}，只有「是否单点」与硬墙位置
+ * 因图表而异。抽成函数是为了让差异只剩这两个参数 —— 各写一遍时，
  * 将来改软墙来源漏掉一处不会有编译错误，只会让两个选择器的可达区间悄悄分叉。
  *
- * @param singlePoint 是否为单点形态
+ * @param singlePoint  是否为单点形态
+ * @param reachableEnd 硬墙位置（绝对索引），默认 0 即今天
  */
-function buildAxisConfig(singlePoint: boolean) {
+function buildAxisConfig(singlePoint: boolean, reachableEnd = 0) {
   const axis = selectableAxis.value
   return resolvePagedConfig({
     poolSize: DATE_RANGE_POOL_DAYS,
@@ -317,10 +353,13 @@ function buildAxisConfig(singlePoint: boolean) {
     // 更早的刻度仍会渲染，只是标成不可达（空心点）—— 删掉它们会让用户
     // 以为轴就这么长，看不出「更早的数据查不了」这个事实。
     reachableStart: axis.reachableStart,
-    // 硬墙：今天。明天及之后还没发生，池不该越过它露出一片未来的灰点。
+    // 硬墙：默认今天。明天及之后还没发生，池不该越过它露出一片未来的灰点。
     // 刻意<strong>不</strong>用后端的 latestDate —— 今天没有调用不等于今天不可选，
     // 它随时可能产生第一条记录，且是默认视图的右端。
-    reachableEnd: 0,
+    //
+    // 时段视图会传入实时窗口的锚定日：凌晨 5 点前那一轮锚在昨天，
+    // 此时「今天」的窗口整段都在未来，选它只会得到一张全零的图。
+    reachableEnd,
   })
 }
 
@@ -393,9 +432,19 @@ const dateRangeTicks = computed(() => {
   return ticks
 })
 
+/**
+ * 日期串 → `M/D`。
+ *
+ * <p>去掉年份与前导零：可选范围只有最近十几天，年份永远是当前年，写出来只是占位；
+ * 前导零在横向排布里也只是加宽。需要完整日期的地方（选择器下方的摘要）另行给出。
+ */
+function formatMonthDay(date: string): string {
+  return `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`
+}
+
 /** 端点日期文案：`M/D`，横向才放得下。 */
 function formatDateRangeEdge(tick: { key: string }): string {
-  return `${Number(tick.key.slice(5, 7))}/${Number(tick.key.slice(8, 10))}`
+  return formatMonthDay(tick.key)
 }
 
 /** 块在池内的局部下标 —— 滑块的 `modelValue`。由期望区间与可用区间派生。 */
@@ -458,7 +507,22 @@ const dateRangeText = computed(() => describeDateRange(dateRange.value))
  */
 const timelineSinglePoint = computed(() => timelineRange.value === '1d')
 
-const timelineAxisConfig = computed(() => buildAxisConfig(timelineSinglePoint.value))
+/**
+ * 时段视图「最新可看的那一天」相对今天的偏移 —— 0 或 −1。
+ *
+ * <p>一天从 05:00 起算，故凌晨 5 点前那一轮锚定在昨天。此时「今天」对应的窗口
+ * `[今天 05:00, 明天 05:00)` 整段都在未来，选它只会得到一张全零的图，
+ * 故它该是不可达的。
+ *
+ * <p>只在单点形态下生效：区间形态（近 N 日）按日历日聚合，今天有意义。
+ */
+const timelineReachableEnd = computed(() =>
+  timelineSinglePoint.value ? liveAnchorOffset(now.value) : 0,
+)
+
+const timelineAxisConfig = computed(() =>
+  buildAxisConfig(timelineSinglePoint.value, timelineReachableEnd.value),
+)
 
 /**
  * 折线图选择器的窗口状态。
@@ -544,6 +608,218 @@ const canTimelinePageNext = computed(() =>
   canPageNext(timelineWindow.value, timelineAxisConfig.value),
 )
 
+/* ---------- 「今日时段」按日期回看 ---------- */
+
+/**
+ * 选中的锚定日 —— 时段视图的数据键。
+ *
+ * <p>取选择的<strong>右端</strong>：单点形态下两端相同，而切换形态的那一两帧里
+ * 期望区间可能还是 7 天宽，取右端得到的是「最近那一天」，与形态收敛的方向一致。
+ */
+const hourlySelectedDate = computed(() => {
+  const ticks = timelineTicks.value
+  return ticks[timelineSelection.value.end]?.key ?? liveAnchorDate(now.value)
+})
+
+/** 实时窗口的锚定日 —— 双栈的分流依据。凌晨 5 点前是昨天。 */
+const hourlyLiveDate = computed(() => liveAnchorDate(now.value))
+
+/**
+ * <strong>当前正在显示</strong>的锚定日 —— 与 {@link hourlySelectedDate} 分离。
+ *
+ * <h2>为什么不直接渲染选中日</h2>
+ * 那样滑到一个尚未加载的日期时，图表会先整片归零、等响应到达才长回来。
+ * 而滑动是连续动作，一路上每个点都要闪一次白 —— 读起来像「这几天都没有用量」，
+ * 而实情是「还没加载」。两者在折线上长得一模一样（都是贴底的直线），
+ * 无法靠观察区分。
+ *
+ * <p>故显示日<strong>滞后</strong>于选中日：只在新数据就绪的那一刻才跟上，
+ * 之前一直保持上一份可用数据。代价是加载途中图与选择器不同步，
+ * 这由提示行显式说明（{@link timelineRangeHint}），比闪空更诚实。
+ *
+ * <h2>为什么存日期而不是快照</h2>
+ * 存一份 totals 快照会让实时窗口<strong>冻住</strong> —— SSE 继续往实时栈里累加，
+ * 而画面停在快照那一刻。只存日期，渲染时再经 {@link selectHourlyTotals} 取表，
+ * 实时窗口的响应式链路就完整保留了。
+ */
+const hourlyDisplayDate = ref<string>(liveAnchorDate(new Date()))
+
+/**
+ * 选中日的窗口起点 `date 05:00` —— 折线横轴的基准。
+ *
+ * <p>用<strong>显示日</strong>而非选中日：横轴与折线必须同源，否则加载途中会出现
+ * 「轴已经是新的一天、数据还是旧那天」的错位，而图照样能画。
+ *
+ * <p>与冻结的 {@link hourlyWindowStart} 也不同：那个是<strong>实时</strong>窗口的起点，
+ * 只用于过滤 SSE 帧（窗口冻结的语义在那里）。三者在显示实时窗口时相等。
+ */
+const hourlyDisplayWindowStart = computed(
+  () => hourlyWindowStartOf(hourlyDisplayDate.value) ?? hourlyWindowStart.value,
+)
+
+/**
+ * 从双栈中取出<strong>选中日</strong>的桶表 —— 用于判断该不该加载。
+ *
+ * <p>选中日等于实时锚定日 → 读实时栈，<strong>不发任何请求</strong>；
+ * 否则读历史缓存，未命中则 `missing` 为 true，由下面的停留触发去加载。
+ *
+ * <p>注意这不是渲染源，渲染走 {@link hourlyDisplay}。
+ */
+const hourlyReadResult = computed(() =>
+  selectHourlyTotals(
+    hourlySelectedDate.value,
+    hourlyLiveDate.value,
+    hourlyTotals.value,
+    hourlyHistory.value,
+  ),
+)
+
+/** 渲染源 —— 显示日对应的桶表。 */
+const hourlyDisplay = computed(() =>
+  selectHourlyTotals(
+    hourlyDisplayDate.value,
+    hourlyLiveDate.value,
+    hourlyTotals.value,
+    hourlyHistory.value,
+  ),
+)
+
+/** 显示日是否落后于选中日 —— 即「正在等新数据」。 */
+const hourlyPending = computed(() => hourlySelectedDate.value !== hourlyDisplayDate.value)
+
+/**
+ * 正在加载的历史日期。null 表示没有进行中的请求。
+ *
+ * <p>存日期而非布尔量，使「响应回来时选中日已经变了」这种情况可判定 ——
+ * 那份数据仍要进缓存（下次滑回去就有了），但不该影响当前的加载态。
+ */
+const hourlyLoadingDate = ref<string | null>(null)
+
+/** 加载失败的日期集合。只用于文案，不阻止重试。 */
+const hourlyFailedDates = ref<Set<string>>(new Set())
+
+/**
+ * 时段视图的加载态。
+ *
+ * <p>只在<strong>连一份旧数据都没有</strong>时为真 —— 那才是真正的空屏。
+ * 通常只出现在首屏（此时选中日就是实时锚定日，实时栈还没收到快照帧）。
+ *
+ * <p>滑动到未加载的日期时<strong>不</strong>置加载态：显示日仍停在上一份数据上，
+ * 图表照常渲染，加载中的状态由提示行说明。若置为 true，图表会被占位文字整块替掉，
+ * 滑动一路上就闪一路 —— 那正是要避免的。
+ */
+const hourlyLoading = computed(
+  () => hourlyLoadingDate.value !== null && hourlyDisplay.value.missing,
+)
+
+/**
+ * 时段视图的失败态。
+ *
+ * <p>同样要求「没有旧数据可显示」：某一天加载失败时若已有上一天的图，
+ * 保留它并靠提示行说明失败，比把整块换成错误文字更有用。
+ */
+const hourlyFailed = computed(
+  () => hourlyFailedDates.value.has(hourlySelectedDate.value) && hourlyDisplay.value.missing,
+)
+
+/**
+ * 停留触发器 —— 在某个离散点上停留 {@link HOURLY_DWELL_MS} 后才发请求。
+ *
+ * <h2>为什么不是节流也不是「松手才发」</h2>
+ * 节流按固定速率放行，快速划过的点会各自触发一次请求，而那些点用户根本没停留。
+ * 「松手才发」则让拖动过程中什么都看不到 —— 而单点滑动的价值恰恰在于
+ * 逐点扫过去、边滑边看。
+ *
+ * <p>停留触发（debounce）两者兼得：每次换点都重置计时，快速划过 10 个点只产生
+ * 1 次请求；在某点停住足够久就自动加载，不必松手。
+ */
+const HOURLY_DWELL_MS = 350
+
+const hourlyDwell = createDwellTrigger<string>(HOURLY_DWELL_MS, (date) => {
+  void fetchHourlySeries(date)
+})
+
+/**
+ * 选中日变化时决定是否加载，并在数据就绪时推进显示日。
+ *
+ * <h2>显示日的推进时机</h2>
+ * 数据就绪（`!missing`）就立刻跟上 —— 缓存命中与实时窗口都属于这一类，
+ * 故滑回已看过的日期是<strong>瞬时</strong>的，不必等停留计时。
+ * 只有真正缺数据时显示日才停在原处，等响应到达。
+ *
+ * <p>这也是「响应到达后自动补上」的实现：响应写进缓存 → `missing` 变 false →
+ * 本 watch 再跑一次 → 显示日跟上。不需要在请求回调里手工同步，
+ * 那种写法会漏掉「响应期间用户又滑走了」的情形。
+ *
+ * <p>`immediate` 是必需的：挂载时选中日就已确定（默认为实时锚定日），
+ * 那一帧若不判断，用户不动选择器就永远不会加载 —— 而默认那天恰好是实时栈，
+ * 现在看起来正常，将来改默认值就会静默失效。
+ */
+watch(
+  [hourlySelectedDate, () => hourlyReadResult.value.missing],
+  ([date, missing]) => {
+    if (!missing) {
+      // 已有数据可显示，取消待发的请求 —— 用户可能是滑回了已缓存的那天。
+      hourlyDwell.cancel()
+      hourlyDisplayDate.value = date
+      return
+    }
+    if (hourlyLoadingDate.value === date) return
+    hourlyDwell.schedule(date)
+  },
+  { immediate: true },
+)
+
+/**
+ * 拉取某一天的时段用量。
+ *
+ * <h2>绝不用于实时窗口</h2>
+ * 入口处挡掉实时锚定日：那份数据在实时栈里连续累加，HTTP 拉一遍会与增量帧
+ * 抢同一份状态，多算或少算取决于到达顺序。这个判断是双栈的最后一道防线 ——
+ * 上面的 watch 已经不会为实时日排队，但直接调用本函数的路径将来可能出现。
+ *
+ * <h2>缓存键用响应里的日期</h2>
+ * 请求越界或畸形时后端会<strong>收敛</strong>日期，此时数据属于另一天。
+ * 按请求参数缓存会把 A 天的数据存到 B 天名下，而图照样能画。
+ *
+ * <p>若收敛后的结果正好是实时窗口（`isCurrentWindow`），则整份丢弃 ——
+ * 那一天该由实时栈负责，进缓存只会制造一份永不更新的影子副本。
+ */
+async function fetchHourlySeries(date: string) {
+  if (date === hourlyLiveDate.value) return
+  if (hourlyHistory.value.has(date)) return
+
+  hourlyLoadingDate.value = date
+  try {
+    const response = await http.get<UsageHourlySeriesResponse>('/usage-hourly/series', {
+      params: { date },
+    })
+    const series = response.data
+    if (!series?.windowStart) throw new Error('malformed series')
+
+    if (!series.isCurrentWindow) {
+      const totals = collectHourlySeriesResponse(series)
+      // 换引用而非原地 set：Map 的原地修改不触发响应式。
+      const next = new Map(hourlyHistory.value)
+      next.set(series.date, totals)
+      hourlyHistory.value = next
+    }
+
+    if (hourlyFailedDates.value.has(date)) {
+      const next = new Set(hourlyFailedDates.value)
+      next.delete(date)
+      hourlyFailedDates.value = next
+    }
+  } catch {
+    const next = new Set(hourlyFailedDates.value)
+    next.add(date)
+    hourlyFailedDates.value = next
+  } finally {
+    // 只在自己仍是「当前请求」时清除 —— 期间可能已经发起了另一天的请求。
+    if (hourlyLoadingDate.value === date) hourlyLoadingDate.value = null
+  }
+}
+
 /**
  * 折线图选择器的摘要文案。
  *
@@ -556,6 +832,61 @@ const timelineRangeText = computed(() => {
   if (timelineSinglePoint.value) return from
   const to = ticks[selection.end]?.key ?? ''
   return `${from} 至 ${to}，共 ${selection.end - selection.start + 1} 天`
+})
+
+/**
+ * 选择器下方的操作提示。
+ *
+ * <p>单点形态下额外说明两个状态：
+ * <ul>
+ *   <li><strong>等待中</strong> —— 图表还是上一天的，不说明就看不出与选择器不同步；</li>
+ *   <li><strong>实时</strong> —— 数据来自 SSE 而非 HTTP，数字会自己涨，
+ *       不说明看起来像页面在偷偷刷新。</li>
+ * </ul>
+ */
+const timelineRangeHint = computed(() => {
+  if (!timelineSinglePoint.value) {
+    return '拖动端点调整跨度，拖动色块整体平移；两侧按钮单击移一天、双击翻一页'
+  }
+  if (hourlyPending.value) {
+    const target = formatMonthDay(hourlySelectedDate.value)
+    const shown = formatMonthDay(hourlyDisplayDate.value)
+    // 失败态优先：图表仍是旧那天，不说明的话看起来像「一直在加载」。
+    // 请求已结束故不会自动重试，挪一下选择器即可再试。
+    if (hourlyFailedDates.value.has(hourlySelectedDate.value)) {
+      return `${target} 加载失败，图表仍为 ${shown}；挪动圆点可重试`
+    }
+    return hourlyLoadingDate.value === hourlySelectedDate.value
+      ? `正在加载 ${target}，图表仍为 ${shown}`
+      : `停留片刻即加载 ${target}`
+  }
+  const base = '拖动圆点选择日期，停留即加载'
+  return hourlyDisplay.value.live
+    ? `${base}；当前为实时窗口，新调用会自动累计`
+    : `${base}；两侧按钮单击移一天`
+})
+
+/**
+ * 折线图卡片的标题称呼。
+ *
+ * <p>时段视图接上日期选择器后「今日时段」不再总是对的 —— 选到 7 月 28 日时
+ * 那个标题是错的，而图照样能画。故实时窗口写「今日时段」，历史日期写 `M/D`。
+ *
+ * <p>去掉年份：可选范围只有最近十几天，年份永远是当前年（或跳年那两天的上一年），
+ * 写出来只是占位。完整日期仍在选择器下方的摘要里。
+ *
+ * <p>标题跟<strong>显示日</strong>而非选中日：标题描述的是图表里画的那一天，
+ * 加载途中提前换成新日期就成了误标。
+ *
+ * <p>凌晨 5 点前的实时窗口锚在昨天，此时「今日时段」指的是昨天那一轮 ——
+ * 这正是 5 点分界的语义，标题保持「今日时段」是对的。
+ *
+ * <p>区间形态返回 undefined，让组件用自己的缺省称呼。
+ */
+const timelinePanelLabel = computed(() => {
+  if (!timelineSinglePoint.value) return undefined
+  if (hourlyDisplay.value.live) return '今日时段'
+  return `${formatMonthDay(hourlyDisplayDate.value)} 时段`
 })
 
 
@@ -580,6 +911,8 @@ onUnmounted(() => {
   statsStore.disconnectStream()
   disconnectUsageStream()
   clearFutureTick()
+  // 未触发的停留计时必须取消：回调会写响应式状态，组件卸载后写入即内存泄漏。
+  hourlyDwell.cancel()
 })
 
 /**
@@ -987,22 +1320,30 @@ function toKUnit(value: number): number {
       两者回答的问题也不同 —— 折线看趋势，柱状图看构成。
     -->
     <n-card class="usage-line-card" :bordered="true">
+      <!--
+        状态态按范围分开：「今日时段」有自己的 HTTP 请求（按日期回看），
+        而「近 N 日」仍走 SSE 快照。用同一组状态会让一边的失败显示到另一边。
+      -->
       <UsageLinePanel
         v-model:range="timelineRange"
         :points="timelinePoints"
-        :loading="chartsLoading"
-        :failed="chartsFailed"
+        :label="timelinePanelLabel"
+        :loading="timelineSinglePoint ? hourlyLoading : chartsLoading"
+        :failed="timelineSinglePoint ? hourlyFailed : chartsFailed"
+        :empty-text="timelineSinglePoint ? '这一天没有调用记录' : '暂无用量数据'"
       />
 
       <!--
         折线图的日期选择器。形态随上方的范围切换按钮联动 ——
         「今日时段」是单点（看某一天的时段分布），「近 N 日」是区间。
 
+        单点形态<strong>已接线</strong>：滑到哪一天就看那一天的时段曲线。
+        实时窗口读 SSE 累加的那份数据（不发请求），历史日期走 HTTP 并永久缓存。
+        区间形态（近 N 日）仍未接线。
+
         与柱状图那个各自独立：两者服务不同图表，用户可能想让它们停在不同区间。
         但可达区间是<strong>共用</strong>的（`selectableAxis`）——
         「往前能拖到哪一天」是数据事实，不因图表而异。
-
-        除可达区间外仍<strong>不驱动折线图数据</strong>。
       -->
       <div class="breakdown-range">
         <DiscreteRangeSlider
@@ -1024,9 +1365,7 @@ function toKUnit(value: number): number {
         />
         <div class="breakdown-range-meta">
           <span class="breakdown-range-text">{{ timelineRangeText }}</span>
-          <span class="breakdown-range-hint">
-            {{ timelineSinglePoint ? '拖动圆点选择日期；两侧按钮单击移一天、双击翻一页' : '拖动端点调整跨度，拖动色块整体平移' }}
-          </span>
+          <span class="breakdown-range-hint">{{ timelineRangeHint }}</span>
         </div>
       </div>
     </n-card>

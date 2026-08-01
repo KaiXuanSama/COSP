@@ -25,7 +25,7 @@
  * （「数据不够 7 天时就按实际天数算」），而那个钳制是**防御**；
  * 依赖防御来实现决策，改防御的人不会知道自己动了业务语义。
  */
-import { DAY_MS, formatLocalDate, truncateToDay } from './localTime'
+import { DAY_MS, formatLocalDate, parseLocalDay, truncateToDay } from './localTime'
 
 /** `GET /config/api/usage-date-range` 的响应体 —— 与后端 `UsageDateRange` 一一对应。 */
 export interface UsageDateRangeMeta {
@@ -72,34 +72,13 @@ export interface SelectableAxisOptions {
   poolDays: number
 }
 
-/** 严格解析 `yyyy-MM-dd` 为本地零点。格式不符返回 null。 */
-function parseLocalDay(text: string | null | undefined): Date | null {
-  if (typeof text !== 'string') return null
-  const matched = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text.trim())
-  if (!matched) return null
-  const year = Number(matched[1])
-  const month = Number(matched[2])
-  const day = Number(matched[3])
-  const parsed = new Date(year, month - 1, day)
-  // 校验回读：`2026-02-31` 会被 Date 滚到 3 月 3 日，正则拦不住这种越界。
-  if (
-    parsed.getFullYear() !== year ||
-    parsed.getMonth() !== month - 1 ||
-    parsed.getDate() !== day
-  ) {
-    return null
-  }
-  return parsed
-}
-
 /**
  * 两个日期相差多少天 —— `target` 在 `origin` 之后为正。
  *
  * <p>先各自截断到零点再相减，故不受时刻影响。用 {@link DAY_MS} 相除后取整
  * 而非按日历逐日累加：夏令时切换那天只有 23 或 25 小时，`Math.round`
  * 足以吸收这 ±1 小时的偏差。
- */
-export function dayOffsetBetween(origin: Date, target: Date): number {
+ */export function dayOffsetBetween(origin: Date, target: Date): number {
   const from = truncateToDay(origin).getTime()
   const to = truncateToDay(target).getTime()
   return Math.round((to - from) / DAY_MS)

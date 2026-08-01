@@ -55,6 +55,35 @@ export function datePartOf(timestamp: string): string {
   return timestamp.slice(0, 10)
 }
 
+/**
+ * 严格解析 `yyyy-MM-dd` 为本地零点。格式不符或日历越界返回 null。
+ *
+ * <h2>为何不直接 `new Date(text)`</h2>
+ * 那个写法对纯日期串按 <strong>UTC</strong> 解析（与带时刻的串相反），
+ * 东八区下 `2026-07-28` 会得到本地 08:00，而西半球会退到前一天。
+ *
+ * <h2>为何要回读校验</h2>
+ * `new Date(2026, 1, 31)` 会静默滚到 3 月 3 日，正则拦不住这种越界值。
+ * 那种偏差不会报错，只会让日期轴或查询窗口静默错位几天。
+ */
+export function parseLocalDay(text: string | null | undefined): Date | null {
+  if (typeof text !== 'string') return null
+  const matched = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text.trim())
+  if (!matched) return null
+  const year = Number(matched[1])
+  const month = Number(matched[2])
+  const day = Number(matched[3])
+  const parsed = new Date(year, month - 1, day)
+  if (
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return null
+  }
+  return parsed
+}
+
 /** 取该时刻所在整点（分秒归零）。 */
 export function truncateToHour(date: Date): Date {
   const result = new Date(date)
