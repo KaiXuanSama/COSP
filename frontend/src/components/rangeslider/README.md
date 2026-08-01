@@ -3,13 +3,15 @@
 在一排等距的离散位置上选择一个**闭区间**，支持跨度上下限与整块平移。
 
 ```
-┌─ 背景槽（胶囊）────────────────────────┐
-│  ○ ○ ○ • • •  ●━━━━━━━━━━━━━━━━●  • •  │
-│  ↑ 不可达(空心) ↑ 手柄  ↑ 范围块         │
-└────────────────────────────────────────┘
-                7/26            8/1
-                ↑ 端点文案随手柄移动（默认）
+      ┌─ 背景槽（胶囊）────────────────────────┐
+ [<]  │  ○ ○ ○ • • •  ●━━━━━━━━━━━━━━━━●  • •  │  [>]
+      │  ↑ 不可达(空心) ↑ 手柄  ↑ 范围块         │
+      └────────────────────────────────────────┘
+                     7/26            8/1
+                     ↑ 端点文案随手柄移动（默认）
 ```
+
+两侧的 `[<]` `[>]` 是可选的翻页按钮 —— 单击移一格、双击翻一页，用于让刻度序列在一条更长的轴上滑动。
 
 ## 适用场景
 
@@ -32,8 +34,10 @@
 |---|---|
 | `DiscreteRangeSlider.vue` | 渲染与样式 |
 | `rangeslider.ts` | 纯选择模型（无 Vue、无 DOM），可单测 |
+| `pagedWindow.ts` | 翻页模型：无界轴上的池 + 块，纯函数 |
 | `useRangeDrag.ts` | 拖动手势与键盘操作 |
-| `rangeslider.spec.ts` | 37 项 |
+| `rangeslider.spec.ts` | 56 项 |
+| `pagedWindow.spec.ts` | 47 项 |
 | `index.ts` | barrel（组件与全部类型、函数） |
 
 ```ts
@@ -58,8 +62,16 @@ import { DiscreteRangeSlider, type RangeSelection } from '@/components/rangeslid
 | `ariaLabel` | `string` | `'范围选择'` | | 落在整块手柄上的无障碍标签 |
 | `formatValueText` | `(s: RangeSelection) => string` | `undefined` | | 把选择读成人话，用于 `aria-valuetext`。缺省是「3 至 9，共 7 项」这类下标描述 |
 | `formatEdgeLabel` | `(tick, index, edge) => string` | `undefined` | | 端点文案格式化器，仅 `edges` 模式生效。缺省取 `tick.label ?? tick.key` |
+| `pageable` | `boolean` | `false` | | 是否在两侧显示翻页按钮 |
+| `canPagePrev` | `boolean` | `true` | | 能否向左（更早）翻。为 false 时按钮禁用 |
+| `canPageNext` | `boolean` | `true` | | 能否向右（更近）翻 |
+| `pagePrevLabel` | `string` | `'向前翻'` | | 左翻按钮的无障碍标签 |
+| `pageNextLabel` | `string` | `'向后翻'` | | 右翻按钮的无障碍标签 |
+| `doubleClickDelay` | `number` | `260` | | 双击判定窗口（ms）。**单击不等这个窗口** |
 
-`ticks` 只有一项时组件等同禁用（无从选择）。可达宽度恰等于 `minSpan` 时同样按禁用处理 —— 唯一合法的选择只有一个，拖动毫无意义。
+`ticks` 只有一项时组件等同禁用（无从选择）。
+
+**「无处可拖」不会置灰。** 可达宽度恰等于 `minSpan` 时唯一合法的选择只有一个，拖动不会有任何效果 —— 但控件仍保持正常外观。那种状态是暂时的（翻页一格可用空间就回来了），置灰会让人以为控件坏了，而实际上翻页按钮正是下一步该点的。拖不动本身已由物理限制表达，不需要再叠一层视觉提示。
 
 ### 可达区间
 
@@ -106,8 +118,9 @@ import { DiscreteRangeSlider, type RangeSelection } from '@/components/rangeslid
 |---|---|---|
 | `update:modelValue` | `RangeSelection` | 选择变化即触发。拖动途中**连续触发数十次** |
 | `change` | `RangeSelection` | 一次拖动松手时、或一次键盘操作后，各触发一次 |
+| `page` | `{ direction: -1 \| 1; step: 'single' \| 'page' }` | 点击翻页按钮。见下方「翻页」 |
 
-**这两个事件的分工是使用时最需要注意的一点。** 拿 `update:modelValue` 去发请求，一次拖动会打出几十个请求；副作用应挂在 `change` 上，`update:modelValue` 只负责让 UI 跟手。
+**前两个事件的分工是使用时最需要注意的一点。** 拿 `update:modelValue` 去发请求，一次拖动会打出几十个请求；副作用应挂在 `change` 上，`update:modelValue` 只负责让 UI 跟手。
 
 ## Slots
 
@@ -158,6 +171,128 @@ type RangeSliderLabelMode = 'edges' | 'all' | 'none'
 三个 `role="slider"` 的 `aria-valuemin` / `aria-valuemax` 报的是**可达区间**而非刻度全域 —— 屏幕阅读器据此告知「还能往哪走」，报全域会让不可达区听起来是能到的。
 
 支持鼠标、触屏、手写笔。用 Pointer Events + `setPointerCapture`，拖出轨道外甚至移出窗口后再松手不会「粘住」。
+
+## 翻页
+
+`pageable` 打开后两侧出现 `<` / `>` 按钮：**单击移一格，双击翻一页**（一页 = 当前刻度数）。
+
+用途是让刻度序列成为一条**更长的轴上的切片** —— 比如可查范围有 90 天，但一次只显示 15 天。
+
+### 组件不实现翻页算式
+
+`page` 事件只报告意图：
+
+```ts
+{ direction: -1 | 1, step: 'single' | 'page' }
+```
+
+平移多少格、撞到哪堵墙、块要不要被挤压，全部由调用方决定。这样切分是因为翻页必然改变 `ticks` 的内容，而那是调用方的数据；组件若自己算，就得反过来要求调用方按它的规则提供数据。
+
+`pagedWindow.ts` 提供了一套现成的模型，见下节。
+
+### 单击不等双击判定窗口
+
+第一击**立即**发 `step: 'single'`；若在 `doubleClickDelay`（默认 260ms）内来了第二击，再补发一次 `step: 'page'`。
+
+调用方需把后者理解为「在**已走一格**的基础上补齐到整页」，而不是「再走一整页」——用 `pendingPageDelta` 算出剩余位移即可。
+
+这样做是为了让高频的单格操作没有迟滞。若反过来先等 260ms 再决定，每次单击都会有明显停顿。位移天然可叠加，使这个技巧成立。
+
+方向不同视为两次独立的单击（先点左再点右显然不是「双击左」）；连续三击按「双击 + 新的单击」处理。
+
+## pagedWindow — 翻页模型
+
+绝对索引空间上的纯函数集合。日期 ↔ 绝对索引的换算留给调用方，本模块只认整数。
+
+### 翻页只移动池，不移动选择
+
+这是整个模型的立足点。用户选定的是**一段日期**，翻页换的是「看得见的窗口」，不是「选中的日期」。故翻页后块应仍落在同样的日期上，只是它在池中的相对位置变了。
+
+由此得到一个简化：**块不必单独存**，它是「期望区间 ∩ 可用区间」的派生结果。
+
+```ts
+interface PagedWindowState {
+  poolStart: number      // 池左端
+  desiredStart: number   // 用户最后一次主动选定的区间
+  desiredEnd: number
+}
+```
+
+`resolveBlock(state, config)` 求出实际的块。「被挤压」与「挤压解除后恢复」都是这一个式子的自然结果，不需要额外分支 —— 池左移使可用区间的右端变小、交集变窄，块看起来被压；池右移则交集重新展开，块自动长回去。
+
+若把块也存进状态，每次翻页后都得手工同步，而那个同步逻辑正是最容易与期望区间失配的地方。
+
+### 三层索引
+
+| 层 | 取值 | 谁用 |
+|---|---|---|
+| 绝对索引 | 整数，可负、无上界 | `pagedWindow` 的全部运算 |
+| 池内局部索引 | `0 ~ poolSize-1` | 滑块的 `modelValue` / `minIndex` / `maxIndex` |
+| 业务值 | 日期、版本号… | 调用方，本模块完全不知道 |
+
+**池一平移，同一个局部索引就指向另一个绝对位置。** 若把块存成局部索引，翻页后它会「粘」在原来那几个格子上、选中的日期随之改变。故状态一律用绝对索引，只在最后一步用 `toLocalSelection` / `toLocalReachable` 换成局部索引。
+
+### 两侧的墙不对称
+
+| 墙 | 配置 | 语义 | 行为 |
+|---|---|---|---|
+| 左（软） | `reachableStart` | 数据从这天开始 | 池**可以**越过它（露出不可达点），块不能越过 |
+| 右（硬） | `reachableEnd` | 明天及之后还没发生 | 池**不能**越过它 |
+
+这个不对称是刻意的。露出一片未来的灰点没有意义，而露出「更早但无数据」的灰点是有意义的 —— 它标出轴还有多长。
+
+### 最大程度保留
+
+块是「期望区间 ∩ 可用区间」，**不做主动扩张**：期望 15 天而只有 13 天可见时就显示 13 天，硬扩到 15 会把用户没选的日期也框进来。
+
+唯一的例外是跨度下限 —— 交集窄于 `minSpan` 时必须扩张（那是硬约束），方向是先向右、右侧到底再向左，与 `rangeslider.normalizeSelection` 同策略。
+
+跨页同理**不是**「跳 poolSize 格再钳制」，而是「池能走多远走多远」。
+
+### 可翻格数与块的位置无关
+
+池位置的上下界是配置里的常量：
+
+```
+poolStartMax = reachableEnd - poolSize + 1          // 池右端压在硬墙上
+poolStartMin = reachableStart + minSpan - poolSize   // 可用区间窄到 minSpan
+```
+
+`poolStartMin` 由「块至少要有 `minSpan` 格可用空间」推出，不是另设的一道墙。
+
+于是 `canPagePrev` 就是「池左端尚未触及 `poolStartMin`」。**块处于最小跨度并不意味着不能再翻** —— 只要块还没贴住池右端，池就能继续左移、让更多不可达点进入视野。
+
+### 往返可逆
+
+期望区间只在手动调整时写入（`withManualSelection`），翻页只读不写。于是左翻到底再右翻回来能完整复原：
+
+```
+起点     pool 18–32  block 18–32  desired 18–32
+左翻 9   pool  9–23  block 17–23  desired 18–32   ← 触底，块被裁到 7 天
+右翻 9   pool 18–32  block 18–32  desired 18–32   ← 复原
+```
+
+右翻途中跨度是逐格恢复的（`7,8,9,…,15`），不会在最后一步突变。
+
+若翻页也写期望区间，块被挤压一次期望就永久变窄了，往返便不可逆。这是 `withManualSelection` 与 `shiftPagedWindow` 必须分开的原因。
+
+### API
+
+| 函数 | 用途 |
+|---|---|
+| `resolvePagedConfig(config)` | 净化配置，算出可达宽度与池位置边界 |
+| `resolveBlock(state, config)` | **派生块位置** —— 期望 ∩ 可用 |
+| `availableRangeOf(state, config)` | 当前可用区间（池 ∩ 可达） |
+| `normalizePagedWindow(state, config)` | 收敛池位置与期望区间 |
+| `shiftPagedWindow(state, delta, config)` | 平移池，自带最大保留 |
+| `pagePagedWindow(state, direction, config)` | 翻一整页 |
+| `pendingPageDelta(state, direction, config)` | 双击补位：还需再走多少格 |
+| `pageBounds(state, config)` | 两个方向的有效位移边界 |
+| `canPagePrev` / `canPageNext(state, config)` | 按钮禁用态 |
+| `toLocalSelection(state, config)` | 块 → 池内局部索引 |
+| `toLocalReachable(state, config)` | 可达区间 → 池内局部索引（可能越界，滑块自行钳制） |
+| `withManualSelection(state, local, config)` | 手动调整后写回，**刷新期望区间** |
+| `poolEndOf` / `blockSpanOf` / `desiredSpanOf` | 派生读取 |
 
 ## 纯函数
 
@@ -248,6 +383,67 @@ size   = end - start + 1
 offset = (count - 1) - end
 ```
 
+### 带翻页
+
+翻页时 `modelValue` 必须由 `pagedWindow` 的状态派生，不能直接用 `v-model` —— 池一平移，同一个局部索引就指向了另一个绝对位置。
+
+```vue
+<script setup lang="ts">
+import {
+  DiscreteRangeSlider,
+  canPageNext, canPagePrev, pendingPageDelta, resolvePagedConfig,
+  shiftPagedWindow, toLocalReachable, toLocalSelection, withManualSelection,
+  type PagedWindowState, type RangeSelection,
+} from '@/components/rangeslider'
+
+// 绝对轴以「今天」为 0，往前为负 —— 右侧硬墙恰好是 0，式子最简洁
+const config = computed(() => resolvePagedConfig({
+  poolSize: 15,
+  minSpan: 7,
+  maxSpan: 15,
+  reachableStart: -earliestOffset.value,   // 软墙：数据从这里开始
+  reachableEnd: 0,                          // 硬墙：今天
+}))
+
+const window = ref<PagedWindowState>({
+  poolStart: -14, desiredStart: -6, desiredEnd: 0,
+})
+
+const ticks = computed(() =>
+  Array.from({ length: 15 }, (_, i) => ({ key: dateAtOffset(window.value.poolStart + i) })),
+)
+const selection = computed(() => toLocalSelection(window.value, config.value))
+const reachable = computed(() => toLocalReachable(window.value, config.value))
+
+// 手动调整走 withManualSelection —— 它会刷新期望区间
+function onUpdate(next: RangeSelection) {
+  window.value = withManualSelection(window.value, next, config.value)
+}
+
+// 'page' 是「已走一格后补齐到整页」，故用 pendingPageDelta
+function onPage({ direction, step }: { direction: -1 | 1; step: 'single' | 'page' }) {
+  const delta = step === 'single' ? direction : pendingPageDelta(window.value, direction, config.value)
+  window.value = shiftPagedWindow(window.value, delta, config.value)
+}
+</script>
+
+<template>
+  <DiscreteRangeSlider
+    :model-value="selection"
+    :ticks="ticks"
+    :min-span="7"
+    :max-span="15"
+    :min-index="reachable.minIndex"
+    :max-index="reachable.maxIndex"
+    pageable
+    :can-page-prev="canPagePrev(window, config)"
+    :can-page-next="canPageNext(window, config)"
+    @update:model-value="onUpdate"
+    @page="onPage"
+  />
+</template>
+```
+
 ## 样式微调
 
 都在 `<style>` 块顶部。
@@ -258,6 +454,7 @@ offset = (count - 1) - end
 | `$slide-duration` | `0.16s` | 位移过渡时长，即跟手程度。三种手势与键盘共用 |
 | `$cap-radius` | `14px` | 几何量：范围块向端点离散点外侧伸出的距离。与 script 里的 `CAP_RADIUS` **必须同步改两处** |
 | `$rail-inset` | 派生 | `$cap-radius + $edge-gap`，内层轨的两侧内缩 |
+| `$pager-size` / `$pager-gap` | `20px` / `6px` | 翻页按钮尺寸与它到轨道的间距。两者之和须与 script 里的 `PAGER_OFFSET` 一致 |
 
 改 `trackHeight` prop 时手柄尺寸自动跟随（`trackHeight - 12`），但 `$cap-radius` 不会 —— 它应约等于范围块高度的一半（`(trackHeight - 6) / 2`），端头才是正半圆。改完槽高若发现端头不圆，需一并调整。
 
@@ -291,8 +488,26 @@ offset = (count - 1) - end
 
 **端点手柄的 `pointerdown` 必须 `.stop`。** 不阻止冒泡的话会同时触发整块的 `pointerdown`，后者把 target 改成 `'range'`，拖端点就变成了拖整块。
 
-**`--dragging` 状态里不要动 `transition`。** 若确需改动，必须把三条属性全列出来重申：只写 `transition-duration` 会把 `box-shadow` 一并提速，写 `transition: left 0s, width 0s` 这种简写会替换整条声明、`box-shadow` 的过渡彻底消失。后者正是柱状图 hover 那个 bug 的成因。端点文案的 `--sliding` 状态同理，那里把 `opacity` 与 `color` 一并重申了。
+**`--dragging` 状态里不要动 `transition`。** 若确需改动，必须把三条属性全列出来重申：只写 `transition-duration` 会把 `box-shadow` 一并提速，写 `transition: left 0s, width 0s` 这种简写会替换整条声明、`box-shadow` 的过渡彻底消失。后者正是柱状图 hover 那个 bug 的成因。
 
-**端点文案在拖动时撤掉位置过渡。** 不这么做的话，范围块在 `$slide-duration` 里滑动而文案另起一条同长的过渡，两者起点不同步，看起来像文案在追手柄。块、手柄、文案是同一个动作的三个部分，必须共用同一条时间线。
+**翻页按钮禁用时保留在原位。** 不用 `visibility: hidden` 或移除元素 —— 那会让轨道宽度在到达边界时突然变化，整排离散点跟着横移一下。禁用只是「暂时不能点」，不是「不存在」。
+
+**禁用是方向性的，不是整体性的。** 翻到轴的一端时只让对应那个按钮变灰，控件其余部分保持正常。早先的实现在「可达宽度恰等于 `minSpan`」时把整个控件置灰（`opacity: 0.55` + `not-allowed`），观感是「这东西坏了」—— 而那一刻另一个方向的翻页按钮明明可用。`interactive` 因此只由 `disabled` prop 与「刻度是否多于一个」决定，不掺入任何「此刻拖不动」的判断。
+
+**刻度文案行不在按钮所在的 flex 行里。** 放进去会被按钮挤掉左右内缩，标签就与离散点对不齐。故它用外边距自行让出按钮的位置，由 `--rangeslider-pager-offset` 给出（有按钮时 26px，无按钮时 0）。这也是 `PAGER_OFFSET` 与 `$pager-size + $pager-gap` 必须一致的原因 —— 两处不一致会让整排标签相对离散点偏移一段。
+
+**翻页按钮的图标用 SVG 而非字符 `<` / `>`。** 字符的视觉重心随字体变化，跨平台会歪；SVG 的 path 坐标是确定的。图标加了 `pointer-events: none`，避免 `click` 的 target 落在 path 上。
+
+**端点文案与范围块共用同一条位置过渡。** 手柄的位置本身就是由范围块的 `left` / `width` 过渡驱动的，所以文案也必须走同样的时长与曲线；给文案单独撤掉过渡会让它瞬移到目标刻度而手柄还在滑行。键盘操作看起来正常只是因为一次按键只走一格、瞬移距离小到看不出 —— 这个坑修过一次。
+
+**拖动期间不做文案交叉淡化。** 交叉淡化解决的是「一次**离散**的变化太生硬」，但快速拖动时文案变化是一条连续的流：跨格间隔可能只有几十毫秒，而淡化要 220ms，于是同时有五六段文案各自在淡化途中，文字全程没有一刻完全不透明 —— 观感是持续发白。缩短时长治不了根（只要淡化时长大于跨格间隔就会重叠），按时间阈值判定也不好（同一手势里时而柔化时而硬切更没规律）。拖动时用户看的是手柄位置而非在读数字，硬切反而更清楚。
+
+**翻页只移动池，不移动选择。** 用户选定的是一段日期，翻页换的是「看得见的窗口」。若让块跟着池一起平移，块在池中的相对位置不变、而选中的日期随之改变 —— 观感是「拖着选择一起走」，与「换个窗口看同一段」正好相反。这个 bug 修过一次，症状是「点 `<` 之后离散点范围变了、块还在原来那几个格子上」。
+
+**块是派生量，不存进状态。** 状态只有池位置与期望区间三个数，块由 `resolveBlock` 现算。若把块也存起来，每次翻页后都得手工同步 —— 而那个同步逻辑正是最容易与期望区间失配的地方。「被挤压」与「挤压解除后恢复」也因此不需要任何分支，它们是同一个交集式子在不同可用区间下的结果。
+
+**可翻格数与块的位置无关。** 池位置的上下界是配置里的常量（`poolStartMin` / `poolStartMax`），不依赖 `blockEnd`。早先的实现让下界跟着块算，于是「块被压到最小跨度」被误判成「不能再翻」—— 而池明明还能左移、让更多不可达点进入视野。判断按钮禁用态时只看池，不看块。
+
+**期望区间只在手动调整时写入。** 翻页若也写它，块被挤压一次期望就永久变窄了，「左翻到底再右翻回来」便回不到起点。这是 `withManualSelection` 与 `shiftPagedWindow` 必须分开的原因。
 
 **`tickRatio` 的分母是 `count - 1`。** 比例描述的是**点**的位置，n 个点之间有 n-1 段间隔。用 `count` 会让最后一个点落在 `(n-1)/n` 处，右端凭空空出一格 —— 且偏差随刻度增多而变小，很容易被当成渲染误差。

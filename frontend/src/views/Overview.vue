@@ -8,7 +8,20 @@ import UsageLinePanel from '@/components/usageline/UsageLinePanel.vue'
 import http from '@/api'
 import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 import type { HeatmapModeConfig } from '@/components/heatmap'
-import type { RangeSelection } from '@/components/rangeslider'
+import {
+  canPageNext,
+  canPagePrev,
+  normalizePagedWindow,
+  pendingPageDelta,
+  resolvePagedConfig,
+  shiftPagedWindow,
+  toLocalReachable,
+  toLocalSelection,
+  withManualSelection,
+  type PagedWindowState,
+  type RangeSelection,
+  type RangeSliderTick,
+} from '@/components/rangeslider'
 import type { BreakdownDimension, BreakdownMetric } from '@/components/usagechart'
 import type { TimelineRange, UsageTimelinePoint } from '@/components/usageline'
 import {
@@ -110,6 +123,19 @@ const HEATMAP_DAYS = 360
  * 否则用户能拖到后端会静默钳回来的位置 —— 那种不一致表现为「拖了没反应」。
  */
 const DATE_RANGE_POOL_DAYS = 15
+
+/**
+ * 最早可查日期距今天的天数 —— 软墙的位置。
+ *
+ * <p>暂设为 29（即「今天往前 29 天」，共 30 天可查），仅为演示翻页与触底。
+ * 接线后应由后端给出 `api_call_usage` 的最早记录日期：那之前的位置该标为
+ * <strong>不可达</strong>（空心点）而不是从刻度里删掉 —— 删掉会让用户以为轴就这么长，
+ * 看不出「更早的数据不可查」这个事实。
+ *
+ * <p>「可达 / 不可达」与「有没有数据」是两件事：可达位置即使当天没有调用，
+ * 也照常可选并显示为空。
+ */
+const EARLIEST_QUERYABLE_OFFSET = 29
 
 /**
  * 维度配置：以供应商为主维度、模型为次维度。
@@ -239,45 +265,125 @@ const timelinePoints = computed<UsageTimelinePoint[]>(() => {
 })
 
 /**
- * 日期范围选择器的可选刻度 —— 最近 {@link DATE_RANGE_POOL_DAYS} 天，升序。
+ * 日期范围选择器的绝对轴 —— 以「今天」为 0，往前为负。
  *
- * <p><strong>当前仅为样式落位</strong>：拖动只更新本组件的状态，不驱动任何图表、
- * 也不发请求。接线要等三个分页端点（`/usage-breakdown/page`、`/usage-daily/page`、
- * `/usage-hourly/series`）在前端接上之后再做。
+ * <p>翻页让可见的 15 天池在这条无界轴上平移，故池的位置不能用「距今天几天」
+ * 这种相对量表达，必须有一个固定原点。选今天作原点是因为右侧硬墙恰好是
+ * `0`（明天及之后还没发生），式子最简洁。
  *
- * <p>不给 `label` —— 滑块用默认的 `edges` 模式，只在两个手柄下方显示端点日期，
+ * <p><strong>当前仍是样式落位</strong>：翻页与拖动只改本组件状态，不驱动图表、
+ * 不发请求。接线要等三个分页端点在前端接上。
+ */
+const dateAxisConfig = computed(() =>
+  resolvePagedConfig({
+    poolSize: DATE_RANGE_POOL_DAYS,
+    minSpan: BREAKDOWN_DAYS,
+    maxSpan: DATE_RANGE_POOL_DAYS,
+    // 软墙：数据从这里开始。暂设为「今天往前 29 天」以便观察翻页触底，
+    // 接线后应由后端的最早记录日期决定。
+    reachableStart: -EARLIEST_QUERYABLE_OFFSET,
+    // 硬墙：今天。明天及之后还没发生，池不该越过它露出一片未来的灰点。
+    reachableEnd: 0,
+  }),
+)
+
+/**
+ * 窗口状态（绝对索引）。
+ *
+ * <p>初值是「池贴着今天、期望区间为最近 7 天」，与后端 `size=7, offset=0` 一致。
+ *
+ * <p>状态里<strong>没有块</strong>：块是「期望区间 ∩ 可用区间」的派生结果。
+ * 翻页只移动池，期望区间原样不动 —— 于是「选中的日期」在翻页时尽量保持，
+ * 而块在池中的相对位置随之改变。这与「块跟着池一起平移」正好相反，
+ * 后者会让选中的日期随翻页而改变。
+ */
+const dateWindow = ref<PagedWindowState>(
+  normalizePagedWindow(
+    {
+      poolStart: -(DATE_RANGE_POOL_DAYS - 1),
+      desiredStart: -(BREAKDOWN_DAYS - 1),
+      desiredEnd: 0,
+    },
+    resolvePagedConfig({
+      poolSize: DATE_RANGE_POOL_DAYS,
+      minSpan: BREAKDOWN_DAYS,
+      maxSpan: DATE_RANGE_POOL_DAYS,
+      reachableStart: -EARLIEST_QUERYABLE_OFFSET,
+      reachableEnd: 0,
+    }),
+  ),
+)
+
+/**
+ * 绝对索引 → 日期串。
+ *
+ * <p>0 是今天，−1 是昨天。用 {@link DAY_MS} 做算术而非 `setDate`，
+ * 与 `features/usage-series/localTime` 的做法一致。
+ */
+function dateAtOffset(offset: number): string {
+  const day = new Date(now.value)
+  day.setHours(0, 0, 0, 0)
+  day.setDate(day.getDate() + offset)
+  const month = `${day.getMonth() + 1}`.padStart(2, '0')
+  const date = `${day.getDate()}`.padStart(2, '0')
+  return `${day.getFullYear()}-${month}-${date}`
+}
+
+/**
+ * 池内的刻度 —— 由池位置从绝对轴上切出来。
+ *
+ * <p>不给 `label`：滑块用默认的 `edges` 模式，只在两个手柄下方显示端点日期，
  * 文案由 {@link formatDateRangeEdge} 单独给出。`label` 是给 `all` 模式用的，
  * 那种模式需要隔位标注才不至于挤成一团。
  */
-const dateRangeTicks = computed(() =>
-  windowDates(now.value, DATE_RANGE_POOL_DAYS).map((date) => ({ key: date })),
-)
+const dateRangeTicks = computed(() => {
+  const ticks: RangeSliderTick[] = []
+  for (let i = 0; i < DATE_RANGE_POOL_DAYS; i += 1) {
+    ticks.push({ key: dateAtOffset(dateWindow.value.poolStart + i) })
+  }
+  return ticks
+})
 
 /** 端点日期文案：`M/D`，横向才放得下。 */
 function formatDateRangeEdge(tick: { key: string }): string {
   return `${Number(tick.key.slice(5, 7))}/${Number(tick.key.slice(8, 10))}`
 }
 
-/**
- * 可达区间的左界下标 —— 暂时为 0（全部可达），等接线后由后端的可查范围决定。
- *
- * <p>`api_call_usage` 最早记录之前的日期无从查询，那些位置该标为<strong>不可达</strong>
- * （灰点）而不是从刻度里删掉 —— 删掉会让用户以为轴就这么长，看不出「更早的数据不可查」
- * 这个事实。「可达 / 不可达」与「有没有数据」是两件事：可达位置即使当天没有调用，
- * 也照常可选并显示为空。
- */
-const dateRangeMinIndex = ref(0)
+/** 块在池内的局部下标 —— 滑块的 `modelValue`。由期望区间与可用区间派生。 */
+const dateRange = computed(() => toLocalSelection(dateWindow.value, dateAxisConfig.value))
+
+/** 可达区间的局部下标。可能越界，滑块会自行钳制。 */
+const dateReachable = computed(() => toLocalReachable(dateWindow.value, dateAxisConfig.value))
 
 /**
- * 当前选中的日期窗口，闭区间下标。
+ * 手动拖动 / 键盘操作后写回。
  *
- * 初值是「最靠右的 7 天」，与后端 `size=7, offset=0` 的默认窗口一致 ——
- * 那个窗口的右端是今天，对应下标池的末尾。
+ * <p>走 {@link withManualSelection} 而非直接赋值 —— 它会把局部下标换成绝对索引
+ * 并刷新<strong>期望区间</strong>，那是期望区间唯一的写入点。翻页绝不能走这里，
+ * 否则块被挤压一次期望就永久变窄了，往返便不可逆。
  */
-const dateRange = ref<RangeSelection>({
-  start: DATE_RANGE_POOL_DAYS - BREAKDOWN_DAYS,
-  end: DATE_RANGE_POOL_DAYS - 1,
-})
+function onDateRangeUpdate(next: RangeSelection) {
+  dateWindow.value = withManualSelection(dateWindow.value, next, dateAxisConfig.value)
+}
+
+/**
+ * 翻页。
+ *
+ * <p>`single` 走一格，`page` 补齐到整页 —— 后者是在<strong>已走一格之后</strong>
+ * 补上剩余位移（组件的单击不等双击判定窗口，见它的 `page` 事件说明），
+ * 故用 {@link pendingPageDelta} 而非直接翻一页。位移可叠加使这个技巧成立。
+ */
+function onDateRangePage(payload: { direction: -1 | 1; step: 'single' | 'page' }) {
+  const config = dateAxisConfig.value
+  const delta =
+    payload.step === 'single'
+      ? payload.direction
+      : pendingPageDelta(dateWindow.value, payload.direction, config)
+  dateWindow.value = shiftPagedWindow(dateWindow.value, delta, config)
+}
+
+const canDatePagePrev = computed(() => canPagePrev(dateWindow.value, dateAxisConfig.value))
+const canDatePageNext = computed(() => canPageNext(dateWindow.value, dateAxisConfig.value))
 
 /** 把选择读成人话，供无障碍与摘要文案复用。 */
 function describeDateRange(selection: RangeSelection): string {
@@ -649,18 +755,26 @@ function toKUnit(value: number): number {
       -->
       <div class="breakdown-range">
         <DiscreteRangeSlider
-          v-model="dateRange"
+          :model-value="dateRange"
           :ticks="dateRangeTicks"
           :min-span="BREAKDOWN_DAYS"
           :max-span="DATE_RANGE_POOL_DAYS"
-          :min-index="dateRangeMinIndex"
+          :min-index="dateReachable.minIndex"
+          :max-index="dateReachable.maxIndex"
+          pageable
+          :can-page-prev="canDatePagePrev"
+          :can-page-next="canDatePageNext"
+          page-prev-label="向前翻（单击一天，双击一页）"
+          page-next-label="向后翻（单击一天，双击一页）"
           aria-label="日期范围"
           :format-value-text="describeDateRange"
           :format-edge-label="formatDateRangeEdge"
+          @update:model-value="onDateRangeUpdate"
+          @page="onDateRangePage"
         />
         <div class="breakdown-range-meta">
           <span class="breakdown-range-text">{{ dateRangeText }}</span>
-          <span class="breakdown-range-hint">拖动端点调整跨度，拖动色块整体平移</span>
+          <span class="breakdown-range-hint">拖动端点调整跨度，拖动色块整体平移；两侧按钮单击移一天、双击翻一页</span>
         </div>
       </div>
     </n-card>

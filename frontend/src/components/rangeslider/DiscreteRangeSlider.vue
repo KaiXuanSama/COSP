@@ -27,7 +27,6 @@ import { computed, onScopeDispose, ref, watch } from 'vue'
 import {
   isReachable,
   normalizeSelection,
-  reachableSpan,
   resolveBounds,
   selectionEquals,
   spanOf,
@@ -100,6 +99,33 @@ const props = withDefaults(
      * @param edge 这是起点还是终点 —— 两端需要不同措辞时用得上（如「自 / 至」）
      */
     formatEdgeLabel?: (tick: RangeSliderTick, index: number, edge: 'start' | 'end') => string
+    /**
+     * 是否在两侧显示翻页按钮。
+     *
+     * <p>翻页的语义是「刻度序列本身是一条无界轴上的切片，让这个切片平移」。
+     * 组件<strong>不实现</strong>翻页算式 —— 它只渲染按钮、区分单击与双击，
+     * 然后 emit 意图；平移多少格、撞到哪堵墙、块要不要被挤压，
+     * 全部由调用方决定（`./pagedWindow` 提供了一套现成的模型）。
+     *
+     * <p>这样切分是因为翻页必然改变 `ticks` 的内容，而那是调用方的数据。
+     * 组件若自己算，就得反过来要求调用方按它的规则提供数据。
+     */
+    pageable?: boolean
+    /** 能否向左（更早）翻。为 false 时按钮禁用。 */
+    canPagePrev?: boolean
+    /** 能否向右（更近）翻。为 false 时按钮禁用。 */
+    canPageNext?: boolean
+    /** 左翻按钮的无障碍标签。 */
+    pagePrevLabel?: string
+    /** 右翻按钮的无障碍标签。 */
+    pageNextLabel?: string
+    /**
+     * 双击判定窗口（ms）。
+     *
+     * <p>见 {@link pagePrevLabel} 附近的注释：单击<strong>不等</strong>这个窗口，
+     * 它只用来决定「第二次点击算不算双击」。
+     */
+    doubleClickDelay?: number
   }>(),
   {
     minSpan: 1,
@@ -112,6 +138,12 @@ const props = withDefaults(
     ariaLabel: '范围选择',
     formatValueText: undefined,
     formatEdgeLabel: undefined,
+    pageable: false,
+    canPagePrev: true,
+    canPageNext: true,
+    pagePrevLabel: '向前翻',
+    pageNextLabel: '向后翻',
+    doubleClickDelay: 260,
   },
 )
 
@@ -124,6 +156,22 @@ const emit = defineEmits<{
    * 拿它去发请求会让一次拖动打出几十个请求。本事件只在松手时发一次。
    */
   (e: 'change', value: RangeSelection): void
+  /**
+   * 请求翻页。
+   *
+   * <p>组件只报告意图，不做任何位移计算 —— `direction` 是方向
+   * （`-1` 更早 / `+1` 更近），`step` 是「一格」还是「一页」。
+   * 调用方据此决定实际平移多少格，并换出新的 `ticks` 与 `modelValue`。
+   *
+   * <h2>双击不延迟单击</h2>
+   * 第一次点击<strong>立即</strong>发 `step: 'single'`；若在
+   * {@link doubleClickDelay} 内来了第二次点击，再补发一次 `step: 'page'`。
+   * 调用方需把后者理解为「在已走一格的基础上补齐到整页」而非「再走一整页」。
+   *
+   * <p>这样做是为了让高频的单格操作没有迟滞。代价是调用方要处理两帧状态，
+   * 但位移天然可叠加（见 `pagedWindow.pendingPageDelta`），并不复杂。
+   */
+  (e: 'page', payload: { direction: -1 | 1; step: 'single' | 'page' }): void
 }>()
 
 /**
@@ -158,14 +206,19 @@ const selection = computed(() => normalizeSelection(props.modelValue, bounds.val
 const span = computed(() => spanOf(selection.value))
 
 /**
- * 交互是否可用。
+ * 交互是否可用 —— 只由 {@link props.disabled} 与「刻度是否多于一个」决定。
  *
- * <p>可达区间宽度恰等于跨度下限时，唯一合法的选择只有一个，拖动毫无意义 ——
- * 与只有一个刻度同理，一并按禁用处理，光标与配色都给出提示。
+ * <h2>为什么不把「可达区间恰等于跨度下限」也算作禁用</h2>
+ * 那种情形下唯一合法的选择确实只有一个，拖动不会有任何效果。但它是
+ * <strong>暂时</strong>的 —— 翻页一格可用空间就回来了。把整个控件置灰意味着
+ * 「这东西现在不能用」，而实际上翻页按钮仍然可用、用户下一步正该点它。
+ *
+ * <p>反过来看：拖不动本身已由物理限制表达（块顶在两端不动），不需要再叠一层
+ * 视觉提示。置灰只会让人以为控件坏了。故这类「无处可拖」的状态一律不置灰，
+ * 只让 `<` / `>` 各自按自己的边界显示禁用（那两个按钮的禁用是<strong>方向性</strong>的，
+ * 不是整体性的）。
  */
-const interactive = computed(
-  () => !props.disabled && bounds.value.count > 1 && reachableSpan(bounds.value) > bounds.value.minSpan,
-)
+const interactive = computed(() => !props.disabled && bounds.value.count > 1)
 
 const { dragging, start, move, end, handleKey } = useRangeDrag({
   trackRef: railRef,
@@ -177,8 +230,18 @@ const { dragging, start, move, end, handleKey } = useRangeDrag({
   },
 })
 
+/**
+ * 翻页按钮占掉的横向空间（按钮宽 + 与轨道的间距），须与 SCSS 里的
+ * `$pager-size + $pager-gap` 一致。
+ *
+ * <p>刻度文案行不在按钮所在的 flex 行里（放进去会被按钮挤掉左右内缩、
+ * 标签与离散点对不齐），故它要自行让出这段距离。
+ */
+const PAGER_OFFSET = 26
+
 const rootStyle = computed(() => ({
   '--rangeslider-track-height': `${props.trackHeight}px`,
+  '--rangeslider-pager-offset': props.pageable ? `${PAGER_OFFSET}px` : '0px',
 }))
 
 /**
@@ -373,6 +436,63 @@ function onKeydown(target: 'start' | 'end' | 'range', event: KeyboardEvent) {
   // 每次各算一次 —— 与拖动不同，这里没有「途中」概念。
   emit('change', selection.value)
 }
+
+/* ---------- 翻页 ---------- */
+
+/**
+ * 上一次点击的方向与时刻，用于双击判定。
+ *
+ * <p>只保留一次记录：连续三击按「双击 + 新的单击」处理。再往上叠语义会变得含糊，
+ * 而用户真正需要的是「快速多翻几页」—— 那用连续双击表达即可。
+ */
+let lastPageClick: { direction: -1 | 1; at: number } | null = null
+let pageClickTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearPageClickTimer() {
+  if (pageClickTimer !== null) {
+    clearTimeout(pageClickTimer)
+    pageClickTimer = null
+  }
+}
+
+/**
+ * 处理一次翻页按钮点击。
+ *
+ * <h2>单击不等判定窗口</h2>
+ * 第一击<strong>立即</strong>发 `single`，第二击在窗口内到达时补发 `page`。
+ * 若反过来先等 260ms 再决定，高频的单格操作就会有明显迟滞。
+ *
+ * <p>方向不同视为两次独立的单击 —— 先点左再点右显然不是「双击左」。
+ */
+function onPageClick(direction: -1 | 1) {
+  if (props.disabled) return
+  if (direction < 0 ? !props.canPagePrev : !props.canPageNext) return
+
+  const now = Date.now()
+  const isDouble =
+    lastPageClick !== null &&
+    lastPageClick.direction === direction &&
+    now - lastPageClick.at <= props.doubleClickDelay
+
+  if (isDouble) {
+    lastPageClick = null
+    clearPageClickTimer()
+    emit('page', { direction, step: 'page' })
+    return
+  }
+
+  lastPageClick = { direction, at: now }
+  clearPageClickTimer()
+  // 到点后清空记录，使下一次点击重新算作第一击。
+  pageClickTimer = setTimeout(() => {
+    lastPageClick = null
+    pageClickTimer = null
+  }, props.doubleClickDelay)
+
+  emit('page', { direction, step: 'single' })
+}
+
+onScopeDispose(clearPageClickTimer)
 </script>
 
 <template>
@@ -382,113 +502,153 @@ function onKeydown(target: 'start' | 'end' | 'range', event: KeyboardEvent) {
     :style="rootStyle"
   >
     <!--
-      轨道即背景槽：`(===)` 的那个胶囊，同时承接拖动过程中的指针事件。
+      主体一行：翻页按钮 + 轨道。
 
-      pointermove / pointerup 挂在这里而非各手柄上：指针捕获会把事件送回
-      按下时的那个元素，而端点手柄很窄，拖动时指针早已离开它 ——
-      挂在共同祖先上，无论捕获是否生效事件都能到达。
+      按钮放进组件而非交给外层包装，是因为它们要与轨道<strong>等高垂直居中</strong>，
+      外层包装得反过来伸进这里找参照；而且禁用态与整体 disabled 联动，
+      拆出去就得把两份状态同步。
+
+      刻度文案行在这一行之外 —— 它要与轨道的内层轨严格同宽同位，
+      若也放进 flex 行里，按钮的宽度会挤掉它的左右内缩，标签就与点对不齐了。
+      故用 padding 在外层留出按钮的位置，见 .rangeslider__labels。
     -->
-    <div
-      class="rangeslider__track"
-      @pointermove="onPointerMove"
-      @pointerup="onPointerUp"
-      @pointercancel="onPointerUp"
-    >
+    <div class="rangeslider__main">
       <!--
-        内层轨：离散点与范围块的定位参照，两侧比背景槽各内缩一个端头半径。
-
-        必须是独立元素而不能靠给轨道加 padding —— 绝对定位的百分比偏移
-        相对 padding 盒计算，加 padding 并不会让点位内缩。
+        左翻按钮。dblclick 不用监听 —— 双击由 onPageClick 自己按时间差判定，
+        原生 dblclick 会在两次 click 之后才触发，等于又多等一轮。
       -->
-      <div ref="railRef" class="rangeslider__rail">
+      <button
+        v-if="props.pageable"
+        type="button"
+        class="rangeslider__pager rangeslider__pager--prev"
+        :disabled="props.disabled || !props.canPagePrev"
+        :aria-label="props.pagePrevLabel"
+        @click="onPageClick(-1)"
+      >
+        <!-- 用 SVG 而非字符「<」：字符的视觉重心与字体相关，跨平台会歪 -->
+        <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+          <path d="M8 2 L4 6 L8 10" fill="none" stroke="currentColor" stroke-width="1.6"
+            stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+
+      <!--
+        轨道即背景槽：`(===)` 的那个胶囊，同时承接拖动过程中的指针事件。
+
+        pointermove / pointerup 挂在这里而非各手柄上：指针捕获会把事件送回
+        按下时的那个元素，而端点手柄很窄，拖动时指针早已离开它 ——
+        挂在共同祖先上，无论捕获是否生效事件都能到达。
+      -->
+      <div
+        class="rangeslider__track"
+        @pointermove="onPointerMove"
+        @pointerup="onPointerUp"
+        @pointercancel="onPointerUp"
+      >
         <!--
-          离散点：均匀分布、垂直居中。
+          内层轨：离散点与范围块的定位参照，两侧比背景槽各内缩一个端头半径。
 
-          不可达的点仍然画出来 —— 它标出「这个位置存在但不能选」，
-          与「这个位置没有数据」是两件不同的事。可达用深色、不可达用灰色。
+          必须是独立元素而不能靠给轨道加 padding —— 绝对定位的百分比偏移
+          相对 padding 盒计算，加 padding 并不会让点位内缩。
         -->
-        <span
-          v-for="(tick, index) in props.ticks"
-          :key="tick.key"
-          class="rangeslider__dot"
-          :class="{
-            'rangeslider__dot--reachable': isTickReachable(index),
-            'rangeslider__dot--selected': isSelected(index),
-            'rangeslider__dot--edge': isEdge(index),
-          }"
-          :style="tickStyle(index)"
-          aria-hidden="true"
-        />
-
-        <!--
-          范围块。整块可拖，两端各有一个手柄。
-
-          role="slider" 落在整块上：它的语义是「当前选中的范围」，
-          aria-valuetext 描述的正是它。两个端点各自也是 slider，
-          三者都能被 Tab 到并用方向键操作 —— 键盘语义与鼠标手势一一对应。
-        -->
-        <!--
-          范围块。整块可拖，两端各有一个手柄。
-
-          role="slider" 落在整块上：它的语义是「当前选中的范围」，
-          aria-valuetext 描述的正是它。两个端点各自也是 slider，
-          三者都能被 Tab 到并用方向键操作 —— 键盘语义与鼠标手势一一对应。
-
-          aria-valuemin / max 报的是<strong>可达</strong>区间而非刻度全域：
-          屏幕阅读器据此告知「还能往哪走」，报全域会让不可达区听起来是能到的。
-        -->
-        <div
-          class="rangeslider__range"
-          :class="{ 'rangeslider__range--dragging': dragging === 'range' }"
-          :style="rangeStyle"
-          role="slider"
-          :tabindex="interactive ? 0 : -1"
-          :aria-label="props.ariaLabel"
-          :aria-valuemin="bounds.minIndex"
-          :aria-valuemax="bounds.maxIndex"
-          :aria-valuenow="selection.start"
-          :aria-valuetext="valueText"
-          :aria-disabled="!interactive || undefined"
-          @pointerdown="onPointerDown('range', $event)"
-          @keydown="onKeydown('range', $event)"
-        >
+        <div ref="railRef" class="rangeslider__rail">
           <!--
-            端点手柄。stop 修饰符是必需的：不阻止冒泡的话，按在端点上会同时
-            触发整块的 pointerdown，后者随即把 target 改成 'range'，
-            于是拖端点变成了拖整块。
+            离散点：均匀分布、垂直居中。
+
+            不可达的点仍然画出来 —— 它标出「这个位置存在但不能选」，
+            与「这个位置没有数据」是两件不同的事。可达为实心、不可达为空心环。
           -->
-          <button
-            type="button"
-            class="rangeslider__handle rangeslider__handle--start"
-            :class="{ 'rangeslider__handle--dragging': dragging === 'start' }"
-            :tabindex="interactive ? 0 : -1"
-            :disabled="!interactive"
+          <span
+            v-for="(tick, index) in props.ticks"
+            :key="tick.key"
+            class="rangeslider__dot"
+            :class="{
+              'rangeslider__dot--reachable': isTickReachable(index),
+              'rangeslider__dot--selected': isSelected(index),
+              'rangeslider__dot--edge': isEdge(index),
+            }"
+            :style="tickStyle(index)"
+            aria-hidden="true"
+          />
+
+          <!--
+            范围块。整块可拖，两端各有一个手柄。
+
+            role="slider" 落在整块上：它的语义是「当前选中的范围」，
+            aria-valuetext 描述的正是它。两个端点各自也是 slider，
+            三者都能被 Tab 到并用方向键操作 —— 键盘语义与鼠标手势一一对应。
+
+            aria-valuemin / max 报的是<strong>可达</strong>区间而非刻度全域：
+            屏幕阅读器据此告知「还能往哪走」，报全域会让不可达区听起来是能到的。
+          -->
+          <div
+            class="rangeslider__range"
+            :class="{ 'rangeslider__range--dragging': dragging === 'range' }"
+            :style="rangeStyle"
             role="slider"
-            aria-label="起始位置"
+            :tabindex="interactive ? 0 : -1"
+            :aria-label="props.ariaLabel"
             :aria-valuemin="bounds.minIndex"
             :aria-valuemax="bounds.maxIndex"
             :aria-valuenow="selection.start"
             :aria-valuetext="valueText"
-            @pointerdown.stop="onPointerDown('start', $event)"
-            @keydown.stop="onKeydown('start', $event)"
-          />
-          <button
-            type="button"
-            class="rangeslider__handle rangeslider__handle--end"
-            :class="{ 'rangeslider__handle--dragging': dragging === 'end' }"
-            :tabindex="interactive ? 0 : -1"
-            :disabled="!interactive"
-            role="slider"
-            aria-label="结束位置"
-            :aria-valuemin="bounds.minIndex"
-            :aria-valuemax="bounds.maxIndex"
-            :aria-valuenow="selection.end"
-            :aria-valuetext="valueText"
-            @pointerdown.stop="onPointerDown('end', $event)"
-            @keydown.stop="onKeydown('end', $event)"
-          />
+            :aria-disabled="!interactive || undefined"
+            @pointerdown="onPointerDown('range', $event)"
+            @keydown="onKeydown('range', $event)"
+          >
+            <!--
+              端点手柄。stop 修饰符是必需的：不阻止冒泡的话，按在端点上会同时
+              触发整块的 pointerdown，后者随即把 target 改成 'range'，
+              于是拖端点变成了拖整块。
+            -->
+            <button
+              type="button"
+              class="rangeslider__handle rangeslider__handle--start"
+              :class="{ 'rangeslider__handle--dragging': dragging === 'start' }"
+              :tabindex="interactive ? 0 : -1"
+              :disabled="!interactive"
+              role="slider"
+              aria-label="起始位置"
+              :aria-valuemin="bounds.minIndex"
+              :aria-valuemax="bounds.maxIndex"
+              :aria-valuenow="selection.start"
+              :aria-valuetext="valueText"
+              @pointerdown.stop="onPointerDown('start', $event)"
+              @keydown.stop="onKeydown('start', $event)"
+            />
+            <button
+              type="button"
+              class="rangeslider__handle rangeslider__handle--end"
+              :class="{ 'rangeslider__handle--dragging': dragging === 'end' }"
+              :tabindex="interactive ? 0 : -1"
+              :disabled="!interactive"
+              role="slider"
+              aria-label="结束位置"
+              :aria-valuemin="bounds.minIndex"
+              :aria-valuemax="bounds.maxIndex"
+              :aria-valuenow="selection.end"
+              :aria-valuetext="valueText"
+              @pointerdown.stop="onPointerDown('end', $event)"
+              @keydown.stop="onKeydown('end', $event)"
+            />
+          </div>
         </div>
       </div>
+
+      <!-- 右翻按钮，与左侧镜像 -->
+      <button
+        v-if="props.pageable"
+        type="button"
+        class="rangeslider__pager rangeslider__pager--next"
+        :disabled="props.disabled || !props.canPageNext"
+        :aria-label="props.pageNextLabel"
+        @click="onPageClick(1)"
+      >
+        <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+          <path d="M4 2 L8 6 L4 10" fill="none" stroke="currentColor" stroke-width="1.6"
+            stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
     </div>
 
     <!--
@@ -611,6 +771,16 @@ $rail-inset: $cap-radius + $edge-gap;
  */
 $slide-duration: 0.16s;
 
+/*
+ * 翻页按钮的宽度与它到轨道的间距。
+ *
+ * 刻度文案行要与内层轨严格同宽同位，故它需要知道左侧被按钮占掉多少 ——
+ * 两者相加即 .rangeslider__labels 的额外内缩量。写成变量而非各处硬编码，
+ * 是因为改按钮尺寸时若漏改文案行，标签就会与离散点整体错开一段。
+ */
+$pager-size: 20px;
+$pager-gap: 6px;
+
 .rangeslider {
   width: 100%;
   user-select: none;
@@ -619,6 +789,75 @@ $slide-duration: 0.16s;
 .rangeslider--disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+/*
+ * 主体一行：翻页按钮 + 轨道。
+ *
+ * 轨道 flex: 1 吃掉剩余宽度；按钮固定尺寸不参与收缩（flex-shrink: 0），
+ * 否则容器变窄时按钮先被压扁、点击目标随之消失。
+ */
+.rangeslider__main {
+  display: flex;
+  align-items: center;
+  gap: $pager-gap;
+}
+
+/*
+ * 翻页按钮。
+ *
+ * 与轨道垂直居中而非等高：等高会让它变成一根长条，视觉上与胶囊槽争体量。
+ * 正方形加圆角、尺寸约为槽高的六成，读起来是「附属控件」。
+ *
+ * 单击 / 双击的区分在 JS 里按时间差判定，这里不需要任何配合 ——
+ * 但要注意别给按钮加 `user-select` 之外的手势拦截，否则双击会选中周围文字。
+ */
+.rangeslider__pager {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: $pager-size;
+  height: $pager-size;
+  padding: 0;
+  border: 1px solid rgba(194, 122, 62, 0.24);
+  border-radius: 6px;
+  background: $surface;
+  color: $accent;
+  cursor: pointer;
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease,
+    opacity 0.16s ease;
+
+  svg {
+    width: 12px;
+    height: 12px;
+    /* 图标不吃指针事件，避免 click 的 target 落在 path 上 */
+    pointer-events: none;
+  }
+
+  &:hover:not(:disabled) {
+    background: $accent-light;
+    border-color: $accent;
+  }
+
+  &:focus-visible {
+    outline: 2px solid $accent;
+    outline-offset: 2px;
+  }
+
+  /*
+   * 禁用：压低对比但<strong>保留在原位</strong>。
+   *
+   * 不用 visibility: hidden 或移除元素 —— 那会让轨道宽度在到达边界时突然变化，
+   * 整排离散点跟着横移一下。禁用态只是「暂时不能点」，不是「不存在」。
+   */
+  &:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
 }
 
 /*
@@ -633,6 +872,9 @@ $slide-duration: 0.16s;
  */
 .rangeslider__track {
   position: relative;
+  /* 吃掉按钮之外的剩余宽度；min-width: 0 允许它在窄容器里正常收缩 */
+  flex: 1 1 auto;
+  min-width: 0;
   height: var(--rangeslider-track-height);
   border-radius: 999px;
   background: $accent-light;
@@ -885,12 +1127,22 @@ $slide-duration: 0.16s;
  * 左右内缩与内层轨一致，故标签的百分比定位与点共用同一坐标系；
  * 高度固定，避免有无标签时整个控件高度跳动。
  */
+/*
+ * 刻度文案行。
+ *
+ * 左右内缩与内层轨一致，故标签的百分比定位与点共用同一坐标系；
+ * 高度固定，避免有无标签时整个控件高度跳动。
+ *
+ * 它<strong>不在</strong> .rangeslider__main 那个 flex 行里 —— 放进去会被按钮
+ * 挤掉左右内缩，标签就与离散点对不齐。故用外边距自行让出按钮的位置，
+ * 由 --rangeslider-pager-offset 给出（有按钮时为按钮宽 + 间距，无按钮时为 0）。
+ */
 .rangeslider__labels {
   position: relative;
   height: 18px;
   margin-top: 6px;
-  margin-right: $rail-inset;
-  margin-left: $rail-inset;
+  margin-right: calc(#{$rail-inset} + var(--rangeslider-pager-offset, 0px));
+  margin-left: calc(#{$rail-inset} + var(--rangeslider-pager-offset, 0px));
 }
 
 .rangeslider__label {
