@@ -11,6 +11,7 @@ import {
   clampReachable,
   indexFromRatio,
   isReachable,
+  jumpTo,
   moveEnd,
   moveStart,
   normalizeSelection,
@@ -408,6 +409,150 @@ describe('selectionEquals', () => {
   it('逐字段比较', () => {
     expect(selectionEquals({ start: 1, end: 2 }, { start: 1, end: 2 })).toBe(true)
     expect(selectionEquals({ start: 1, end: 2 }, { start: 1, end: 3 })).toBe(false)
+  })
+})
+
+/**
+ * 点击跳转 —— 把<strong>更近的那个手柄</strong>移到被点的刻度上。
+ *
+ * <p>这组用例锁住三件事，每一件都是「不写测试就会被顺手改错」的判断：
+ * <ul>
+ *   <li>块外点击移哪个手柄（左侧移左、右侧移右）；</li>
+ *   <li>块内点击按距离选手柄，且撞上 `minSpan` 时<strong>尽可能靠近</strong>
+ *       而非拒绝整个操作 —— 后者会让块贴近下限时点击完全失效；</li>
+ *   <li>正中点归<strong>左</strong>手柄（右端不动）。这是刻意的对称性破除，
+ *       改成归右不会报错，只会让「锚定最近日期」这个语义悄悄反过来。</li>
+ * </ul>
+ */
+describe('jumpTo', () => {
+  /** 可达 0~10、跨度 7~15、当前选 1~9（宽 9）—— 对应「7/1~7/11 里选 7/2~7/10」。 */
+  const J = resolveBounds(11, { minSpan: 7, maxSpan: 15 })
+  const CURRENT = { start: 1, end: 9 }
+
+  describe('块外点击', () => {
+    it('点左侧：移左手柄，右端不动', () => {
+      expect(jumpTo(CURRENT, 0, J)).toEqual({ start: 0, end: 9 })
+    })
+
+    it('点右侧：移右手柄，左端不动', () => {
+      expect(jumpTo(CURRENT, 10, J)).toEqual({ start: 1, end: 10 })
+    })
+
+    /** 越界目标先被钳进可达区，再按块外规则处理。 */
+    it('越界目标收敛到可达边界', () => {
+      expect(jumpTo(CURRENT, -5, J)).toEqual({ start: 0, end: 9 })
+      expect(jumpTo(CURRENT, 99, J)).toEqual({ start: 1, end: 10 })
+    })
+
+    /** 目标落在不可达区时收敛到可达界，而非移到灰点上。 */
+    it('不可达目标收敛到可达界', () => {
+      // 可达 4~14，当前 6~12；点下标 1（不可达）→ 收敛到 4
+      expect(jumpTo({ start: 6, end: 12 }, 1, LEFT_BLOCKED)).toEqual({ start: 4, end: 12 })
+    })
+  })
+
+  /**
+   * 块内点击 —— 这是用户提出的核心场景，逐点验证。
+   *
+   * 当前 1~9（宽 9）、`minSpan = 7`，故左手柄最远只能到 3（`[3, 9]` 宽 7）。
+   */
+  describe('块内点击 · 靠左侧', () => {
+    it('宽度仍大于下限时正常移动', () => {
+      // [2, 9] 宽 8 > 7
+      expect(jumpTo(CURRENT, 2, J)).toEqual({ start: 2, end: 9 })
+    })
+
+    it('宽度正好等于下限时允许移动', () => {
+      // [3, 9] 宽 7 == minSpan
+      expect(jumpTo(CURRENT, 3, J)).toEqual({ start: 3, end: 9 })
+    })
+
+    /**
+     * 会突破下限时「尽可能靠近」—— 左手柄只到 3，不是原地不动。
+     *
+     * <p>这是本函数最容易写错的一处：直接拒绝会让块贴近下限时点击完全失效，
+     * 而用户看到的是「点了没反应」。
+     */
+    it('会突破下限时停在能到的最远处', () => {
+      // 点 4 本应得 [4, 9] 宽 6 < 7，故停在 3
+      expect(jumpTo(CURRENT, 4, J)).toEqual({ start: 3, end: 9 })
+    })
+
+    /** 已在落点上时返回等价选择，调用方据此跳过多余的 emit。 */
+    it('落点与当前相同时选择不变', () => {
+      expect(jumpTo({ start: 3, end: 9 }, 4, J)).toEqual({ start: 3, end: 9 })
+    })
+  })
+
+  describe('块内点击 · 靠右侧', () => {
+    it('宽度仍大于下限时正常移动', () => {
+      // 当前 1~9，点 8 → [1, 8] 宽 8
+      expect(jumpTo(CURRENT, 8, J)).toEqual({ start: 1, end: 8 })
+    })
+
+    it('宽度正好等于下限时允许移动', () => {
+      // [1, 7] 宽 7
+      expect(jumpTo(CURRENT, 7, J)).toEqual({ start: 1, end: 7 })
+    })
+
+    it('会突破下限时停在能到的最远处', () => {
+      // 当前 1~9 宽 9，中点是 5；点 6 靠右 → [1, 6] 宽 6 < 7，故停在 7
+      expect(jumpTo(CURRENT, 6, J)).toEqual({ start: 1, end: 7 })
+    })
+  })
+
+  /**
+   * 正中点归左手柄 —— 右端不动。
+   *
+   * <p>跨度 9（奇数）时中点是 `start + 4 = 5`，到两端各 4 格。
+   * 归左即锚定右端；日期轴上右端是「更近的日期」，是这类视图更有意义的锚点。
+   *
+   * <p>若改成归右，这个断言会变成 `{ start: 1, end: 5 }` —— 差异明显，
+   * 不会被静默改掉。
+   */
+  it('正中点归左手柄（右端不动）', () => {
+    // 中点 5：[5, 9] 宽 5 < 7 ⇒ 左手柄尽可能靠近，停在 3
+    expect(jumpTo(CURRENT, 5, J)).toEqual({ start: 3, end: 9 })
+  })
+
+  /**
+   * 跨度足够宽时正中点的归属才看得清楚。
+   *
+   * <p>可达 0~14、`minSpan = 3`、当前 2~12（宽 11，中点 7）：
+   * 归左得 `[7, 12]`，归右会得 `[2, 7]`。
+   */
+  it('宽块的正中点：左手柄跳到中点，右端不动', () => {
+    const wide = resolveBounds(15, { minSpan: 3, maxSpan: 15 })
+    expect(jumpTo({ start: 2, end: 12 }, 7, wide)).toEqual({ start: 7, end: 12 })
+  })
+
+  /** 点在端点上时该手柄原地不动，选择不变。 */
+  it('点在端点上时选择不变', () => {
+    expect(jumpTo(CURRENT, 1, J)).toEqual(CURRENT)
+    expect(jumpTo(CURRENT, 9, J)).toEqual(CURRENT)
+  })
+
+  /**
+   * 撞上 `maxSpan` 时同样顺着 `moveStart` / `moveEnd` 的约束顶住。
+   *
+   * <p>当前配置里 `maxSpan == 刻度数` 所以碰不到，但那是配置的巧合而非保证 ——
+   * 这条锁住「跨度上限也生效」，免得将来收紧上限时点击能拖出超宽区间。
+   */
+  it('撞上跨度上限时顶住', () => {
+    const capped = resolveBounds(15, { minSpan: 3, maxSpan: 6 })
+    // 当前 8~13（宽 6，已达上限），点 2 → 左手柄最远只能到 8
+    expect(jumpTo({ start: 8, end: 13 }, 2, capped)).toEqual({ start: 8, end: 13 })
+  })
+
+  /**
+   * 单点配置下点击不产生位移。
+   *
+   * <p>模型层如此，渲染层也据此关掉点击跳转（`clickToJumpActive`）——
+   * 两条约束把端点夹死，任何目标都会被拒回原值。
+   */
+  it('单点配置下选择不变', () => {
+    const S = resolveBounds(15, { minSpan: 1, maxSpan: 1 })
+    expect(jumpTo({ start: 5, end: 5 }, 9, S)).toEqual({ start: 5, end: 5 })
   })
 })
 

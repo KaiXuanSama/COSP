@@ -256,6 +256,54 @@ export function shiftBy(selection: RangeSelection, delta: number, bounds: RangeB
   return slideTo(current, current.start + delta, bounds)
 }
 
+/**
+ * 点击某个刻度 —— 把<strong>更近的那个手柄</strong>移到它上面。
+ *
+ * <p>这是「快速跳转」：与拖动相比省掉了瞄准手柄的那一步，点哪儿哪个手柄就过去。
+ * 跨度因此会变，故它是缩放而非平移 —— 落点由 {@link moveStart} / {@link moveEnd}
+ * 计算，两条跨度约束与拖动端点时完全一致，不另写一套。
+ *
+ * <h2>三种情形</h2>
+ * <ul>
+ *   <li><strong>目标在块左侧</strong> —— 移左手柄（右端不动，块变宽）；</li>
+ *   <li><strong>目标在块右侧</strong> —— 移右手柄；</li>
+ *   <li><strong>目标在块内部</strong> —— 移<strong>更近</strong>的那个手柄（块变窄）。</li>
+ * </ul>
+ *
+ * <h2>受 minSpan 限制时「尽可能靠近」</h2>
+ * 块内点击会压缩跨度，撞上 `minSpan` 后手柄停在能到的最远处而非拒绝整个操作。
+ * 例如可达 7/1~7/11、当前选 7/2~7/10、`minSpan = 7`：点 7/3 得 `[3, 10]` 宽 8，
+ * 合法；点 7/4 得宽 7，正好触底；点 7/5 本应得宽 6，故左手柄只到 7/4。
+ * 于是块贴近下限时相邻几个点会落到同一处 —— 手柄停住本身就是这条约束的表达，
+ * 不额外提示（与「无处可拖时不置灰整个控件」是同一个判断）。
+ *
+ * <h2>正中点归左手柄</h2>
+ * 跨度为奇数且正好点中正中间那格时两侧等距。此时移<strong>左</strong>手柄，
+ * 即右端不动 —— 日期轴上右端是「更近的日期」，是这类视图更有意义的锚点；
+ * 反过来锚定左端、让右端往回缩，读起来像在主动丢弃最新数据。
+ *
+ * <p>刻意<strong>不</strong>做「双手柄同时向中点收束」：那样被点击的位置并不是
+ * 任何手柄的落点（受 minSpan 限制两个手柄会停在它两侧），点击的含义就从
+ * 「把手柄移到这里」变成了「以这里为中心压到最小宽度」—— 那是另一个功能，
+ * 不该由「恰好点中正中间」触发，也无法撤销回原跨度。
+ *
+ * @param target 目标刻度下标。越界或落在不可达区时按 {@link clampReachable} 收敛
+ */
+export function jumpTo(selection: RangeSelection, target: number, bounds: RangeBounds): RangeSelection {
+  const current = normalizeSelection(selection, bounds)
+  const index = clampReachable(target, bounds)
+
+  if (index < current.start) return moveStart(current, index, bounds)
+  if (index > current.end) return moveEnd(current, index, bounds)
+
+  // 块内：比较到两端的距离。`<=` 使正中点落到左手柄，见上文。
+  const toStart = index - current.start
+  const toEnd = current.end - index
+  return toStart <= toEnd
+    ? moveStart(current, index, bounds)
+    : moveEnd(current, index, bounds)
+}
+
 /** 两个选择是否等价。用于避免拖动途中重复 emit 同一个值。 */
 export function selectionEquals(a: RangeSelection, b: RangeSelection): boolean {
   return a.start === b.start && a.end === b.end

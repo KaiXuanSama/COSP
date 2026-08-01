@@ -26,6 +26,7 @@
 import { computed, onScopeDispose, ref, watch } from 'vue'
 import {
   isReachable,
+  jumpTo,
   normalizeSelection,
   resolveBounds,
   selectionEquals,
@@ -126,6 +127,17 @@ const props = withDefaults(
      * 它只用来决定「第二次点击算不算双击」。
      */
     doubleClickDelay?: number
+    /**
+     * 是否允许「点击刻度快速跳转」。
+     *
+     * <p>开启后单击轨道上任一可达位置，<strong>更近的那个手柄</strong>会移到它上面 ——
+     * 省掉瞄准手柄那一步。落点算式见 `rangeslider.jumpTo`，
+     * 跨度约束与拖动端点时完全一致。
+     *
+     * <p>单点形态下无效：那时只有一个位置可选，「哪个手柄更近」无从谈起，
+     * 而整块拖动已经能到任意点。
+     */
+    clickToJump?: boolean
   }>(),
   {
     minSpan: 1,
@@ -144,6 +156,7 @@ const props = withDefaults(
     pagePrevLabel: '向前翻',
     pageNextLabel: '向后翻',
     doubleClickDelay: 260,
+    clickToJump: false,
   },
 )
 
@@ -237,6 +250,16 @@ const interactive = computed(() => !props.disabled && bounds.value.count > 1)
  */
 const singlePoint = computed(() => bounds.value.maxSpan === 1)
 
+/**
+ * 点击跳转是否真的生效 —— 供样式与事件处理共用一个判定。
+ *
+ * <p>单点形态下关闭：那时只有一个位置可选，「哪个手柄更近」无从谈起，
+ * 而整块拖动已经能到任意点。
+ */
+const clickToJumpActive = computed(
+  () => props.clickToJump && interactive.value && !singlePoint.value,
+)
+
 const { dragging, start, move, end, handleKey } = useRangeDrag({
   trackRef: railRef,
   bounds: () => bounds.value,
@@ -244,6 +267,22 @@ const { dragging, start, move, end, handleKey } = useRangeDrag({
   onChange: (next) => {
     if (selectionEquals(next, selection.value)) return
     emit('update:modelValue', next)
+  },
+  /**
+   * 点击轨道上的某个刻度 —— 把更近的那个手柄移过去。
+   *
+   * <p>单点形态下不响应：那时「哪个手柄更近」无从谈起，而整块拖动已能到任意点。
+   *
+   * <p>落点与当前选择相同时静默返回，不发多余的 change ——
+   * 块贴近 `minSpan` 时相邻几个点会钳到同一处，重复点击不该反复触发副作用。
+   */
+  onTickClick: (index) => {
+    if (!clickToJumpActive.value) return
+    const next = jumpTo(selection.value, index, bounds.value)
+    if (selectionEquals(next, selection.value)) return
+    emit('update:modelValue', next)
+    // 点击是一次完整操作（没有「途中」），故立即补 change 让调用方触发副作用。
+    emit('change', next)
   },
 })
 
@@ -428,11 +467,25 @@ onScopeDispose(() => {
  */
 const edgeLabelsCollide = computed(() => selection.value.end - selection.value.start < 2)
 
-function onPointerDown(target: 'start' | 'end' | 'range', event: PointerEvent) {
+function onPointerDown(target: 'start' | 'end' | 'range' | 'rail', event: PointerEvent) {
   if (!interactive.value) return
   // 阻止默认行为：拖动期间浏览器可能发起文本选中或原生拖拽，两者都会打断手势。
   event.preventDefault()
   start(target, event)
+}
+
+/**
+ * 按在轨道空白处（块之外）。
+ *
+ * <p>只在开启 {@link props.clickToJump} 时接管 —— 否则轨道空白应保持惰性，
+ * 免得把「误触背景」变成一次选择变化。
+ *
+ * <p>`target` 用 `'rail'` 而非 `'range'`：后者会让块跟着指针平移，
+ * 而用户按的是轨道，预期是「点这个位置」，不是「抓着块走」。
+ */
+function onRailPointerDown(event: PointerEvent) {
+  if (!clickToJumpActive.value) return
+  onPointerDown('rail', event)
 }
 
 function onPointerMove(event: PointerEvent) {
@@ -570,8 +623,17 @@ onScopeDispose(clearPageClickTimer)
 
           必须是独立元素而不能靠给轨道加 padding —— 绝对定位的百分比偏移
           相对 padding 盒计算，加 padding 并不会让点位内缩。
+
+          pointerdown 挂在这里以承接「点击块之外的刻度」：块与手柄会各自
+          stopPropagation 之外的处理（它们有自己的 pointerdown），
+          故落到这里的必然是块外的空白。
         -->
-        <div ref="railRef" class="rangeslider__rail">
+        <div
+          ref="railRef"
+          class="rangeslider__rail"
+          :class="{ 'rangeslider__rail--clickable': clickToJumpActive }"
+          @pointerdown="onRailPointerDown"
+        >
           <!--
             离散点：均匀分布、垂直居中。
 
@@ -600,6 +662,10 @@ onScopeDispose(clearPageClickTimer)
 
             aria-valuemin / max 报的是<strong>可达</strong>区间而非刻度全域：
             屏幕阅读器据此告知「还能往哪走」，报全域会让不可达区听起来是能到的。
+
+            pointerdown 加 stop：块是内层轨的子元素，不阻止冒泡的话按在块上会
+            再触发一次轨道的 pointerdown，把 target 从 'range' 改写成 'rail' ——
+            于是拖动整块变成了「按在轨道上」，块不再跟随指针。
           -->
           <div
             class="rangeslider__range"
@@ -616,7 +682,7 @@ onScopeDispose(clearPageClickTimer)
             :aria-valuenow="selection.start"
             :aria-valuetext="valueText"
             :aria-disabled="!interactive || undefined"
-            @pointerdown="onPointerDown('range', $event)"
+            @pointerdown.stop="onPointerDown('range', $event)"
             @keydown="onKeydown('range', $event)"
           >
             <!--
@@ -966,6 +1032,16 @@ $pager-gap: 6px;
   right: $rail-inset;
   bottom: 0;
   left: $rail-inset;
+}
+
+/*
+ * 开启点击跳转时，轨道空白处也是可点的目标。
+ *
+ * 光标改成 pointer 是唯一的可发现性线索 —— 空白处没有任何视觉元素提示它可点，
+ * 而给它加边框或底色会与「凹槽」的语义打架。
+ */
+.rangeslider__rail--clickable {
+  cursor: pointer;
 }
 
 /*

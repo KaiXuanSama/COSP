@@ -1498,6 +1498,7 @@ function toKUnit(value: number): number {
           :can-page-next="canDatePageNext"
           page-prev-label="向前翻（单击一天，双击一页）"
           page-next-label="向后翻（单击一天，双击一页）"
+          click-to-jump
           aria-label="日期范围"
           :format-value-text="describeDateRange"
           :format-edge-label="formatDateRangeEdge"
@@ -1552,6 +1553,7 @@ function toKUnit(value: number): number {
           :can-page-next="canTimelinePageNext"
           page-prev-label="向前翻（单击一天，双击一页）"
           page-next-label="向后翻（单击一天，双击一页）"
+          click-to-jump
           :aria-label="timelineSinglePoint ? '日期' : '日期范围'"
           :format-value-text="describeTimelineRange"
           :format-edge-label="formatDateRangeEdge"

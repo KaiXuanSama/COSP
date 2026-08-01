@@ -36,7 +36,7 @@
 | `rangeslider.ts` | 纯选择模型（无 Vue、无 DOM），可单测 |
 | `pagedWindow.ts` | 翻页模型：无界轴上的池 + 块，纯函数 |
 | `useRangeDrag.ts` | 拖动手势与键盘操作 |
-| `rangeslider.spec.ts` | 66 项 |
+| `rangeslider.spec.ts` | 81 项 |
 | `pagedWindow.spec.ts` | 53 项 |
 | `index.ts` | barrel（组件与全部类型、函数） |
 
@@ -68,10 +68,32 @@ import { DiscreteRangeSlider, type RangeSelection } from '@/components/rangeslid
 | `pagePrevLabel` | `string` | `'向前翻'` | | 左翻按钮的无障碍标签 |
 | `pageNextLabel` | `string` | `'向后翻'` | | 右翻按钮的无障碍标签 |
 | `doubleClickDelay` | `number` | `260` | | 双击判定窗口（ms）。**单击不等这个窗口** |
+| `clickToJump` | `boolean` | `false` | | 是否允许点击刻度快速跳转，见下节 |
 
 `ticks` 只有一项时组件等同禁用（无从选择）。
 
 **「无处可拖」不会置灰。** 可达宽度恰等于 `minSpan` 时唯一合法的选择只有一个，拖动不会有任何效果 —— 但控件仍保持正常外观。那种状态是暂时的（翻页一格可用空间就回来了），置灰会让人以为控件坏了，而实际上翻页按钮正是下一步该点的。拖不动本身已由物理限制表达，不需要再叠一层视觉提示。
+
+### 点击跳转（`clickToJump`）
+
+开启后单击轨道上任一位置，**更近的那个手柄**会移过去 —— 省掉瞄准手柄那一步。落点由 `jumpTo` 计算，跨度约束与拖动端点时完全一致。
+
+| 点击位置 | 行为 |
+|---|---|
+| 块左侧 | 移左手柄（右端不动，块变宽） |
+| 块右侧 | 移右手柄（左端不动，块变宽） |
+| 块内部 | 移**更近**的那个手柄（块变窄） |
+| 正中间（跨度为奇数时） | 移**左**手柄 |
+
+**块内点击撞上 `minSpan` 时「尽可能靠近」而非拒绝。** 可达 7/1~7/11、当前选 7/2~7/10、`minSpan = 7`：点 7/3 得宽 8 合法，点 7/4 得宽 7 正好触底，点 7/5 本应得宽 6 —— 此时左手柄停在 7/4。于是块贴近下限时相邻几个点会落到同一处，第二次点击完全不动。**这不加提示**：手柄停住本身就是约束的表达，与「无处可拖时不置灰」是同一个判断。
+
+**正中点归左而非双向收束。** 后者会让被点击的位置不是任何手柄的落点（受 `minSpan` 限制两个手柄停在它两侧），点击的含义从「把手柄移到这里」变成「以这里为中心压到最小宽度」—— 那是另一个功能，不该由「恰好点中中间」触发，也无法撤销回原跨度。归左即锚定右端；日期轴上右端是「更近的日期」，是这类视图更有意义的锚点。
+
+**点击与拖动的区分靠位移阈值**（`useRangeDrag` 里的 `CLICK_SLOP_PX = 4`），取手势中偏离起点的**最大**距离 —— 拖出去再拖回来算拖动，若只看终点位移那种手势会被误判成点击、松手时手柄又跳一次。不用时间阈值：长按不动再松手，用户预期仍是「点了这里」。
+
+单点形态下自动关闭：那时只有一个位置可选，「哪个手柄更近」无从谈起，而整块拖动已能到任意点。
+
+开启后轨道空白处的光标变成 `pointer` —— 那是唯一的可发现性线索，空白处没有视觉元素提示它可点，而加边框或底色会与「凹槽」的语义打架。
 
 ### 单点模式
 
@@ -94,7 +116,7 @@ import { DiscreteRangeSlider, type RangeSelection } from '@/components/rangeslid
 | | 区间形态 | 单点形态 |
 |---|---|---|
 | 范围块 | 胶囊，两端各有手柄 | 一个圆点，**无手柄** |
-| 有效手势 | 拖手柄改跨度、拖块平移 | 只有拖动（跨度固定） |
+| 有效手势 | 拖手柄改跨度、拖块平移、点击跳转 | 只有拖动（跨度固定，点击跳转自动关闭） |
 | 键盘焦点 | 块 + 两个手柄 | 只有块 |
 | 端点文案 | 两个日期 | 一个日期（碰撞检测自然生效） |
 
@@ -159,10 +181,12 @@ import { DiscreteRangeSlider, type RangeSelection } from '@/components/rangeslid
 | 名称 | 载荷 | 触发时机 |
 |---|---|---|
 | `update:modelValue` | `RangeSelection` | 选择变化即触发。拖动途中**连续触发数十次** |
-| `change` | `RangeSelection` | 一次拖动松手时、或一次键盘操作后，各触发一次 |
+| `change` | `RangeSelection` | 一次拖动松手时、一次键盘操作后、或一次点击跳转后，各触发一次 |
 | `page` | `{ direction: -1 \| 1; step: 'single' \| 'page' }` | 点击翻页按钮。见下方「翻页」 |
 
 **前两个事件的分工是使用时最需要注意的一点。** 拿 `update:modelValue` 去发请求，一次拖动会打出几十个请求；副作用应挂在 `change` 上，`update:modelValue` 只负责让 UI 跟手。
+
+点击跳转会**同时**发这两个事件（点击是一次完整操作，没有「途中」）。落点与当前选择相同时两个都不发 —— 块贴近 `minSpan` 时相邻几个点会钳到同一处，重复点击不该反复触发副作用。
 
 ## Slots
 
@@ -205,6 +229,7 @@ type RangeSliderLabelMode = 'edges' | 'all' | 'none'
 | 拖左手柄 | 右端固定，改变跨度。触及 `minSpan` / `maxSpan` / `minIndex` 时**顶住**。单点形态下无此手柄 |
 | 拖右手柄 | 镜像。单点形态下无此手柄 |
 | 拖范围块 | 整块平移，**跨度不变**。撞边界只停住、不压缩 |
+| 单击轨道（需 `clickToJump`） | 更近的那个手柄移到该位置。见「点击跳转」 |
 | Tab | 依次聚焦范围块、左手柄、右手柄（三者都是 `role="slider"`） |
 | ← → | 语义随焦点而变：在手柄上移动该端点，在块上整块平移 |
 | Shift + ← → | 步长 5 |
@@ -348,6 +373,7 @@ poolStartMin = reachableStart + minSpan - poolSize   // 可用区间窄到 minSp
 | `slideTo(selection, targetStart, bounds)` | 整块平移，跨度不变 |
 | `shiftBy(selection, delta, bounds)` | 按步数平移 |
 | `moveStart` / `moveEnd(selection, target, bounds)` | 移动单个端点 |
+| `jumpTo(selection, target, bounds)` | 点击跳转：把更近的那个手柄移到目标（正中点归左） |
 | `tickRatio(index, count)` / `indexFromRatio(ratio, count)` | 下标 ↔ 位置比例，互逆 |
 | `clampIndex(index, count)` | 收敛到刻度全域 `[0, count-1]` |
 | `clampReachable(index, bounds)` | 收敛到**可达区间**。所有位移操作走这一条 |
