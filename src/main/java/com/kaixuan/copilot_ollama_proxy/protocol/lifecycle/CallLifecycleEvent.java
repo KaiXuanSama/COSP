@@ -51,4 +51,16 @@ public record CallLifecycleEvent(
     public static CallLifecycleEvent retrying(String requestId, String model, boolean stream, int attempt) {
         return new CallLifecycleEvent(requestId, CallPhase.RETRYING, model, stream, 0, attempt, System.currentTimeMillis());
     }
+
+    /**
+     * 复制一个替换了模型名的事件，其余字段保持不变。
+     *
+     * <p>供 {@code CallLifecyclePublisher} 统一展示名：provider 层只知道<strong>剥掉供应商
+     * 前缀后的上游模型名</strong>（它要用这个名字请求上游、写日志），而展示名应当是客户端
+     * 原始请求名。前者不能反推出后者 —— {@code providerKey} 的大小写未必与客户端所写一致，
+     * 且无前缀路由时本就不该补前缀。故展示名以调用的首个事件为准，由发布器统一改写。
+     */
+    public CallLifecycleEvent withModel(String model) {
+        return new CallLifecycleEvent(requestId, phase, model, stream, chunkCount, attempt, timestamp);
+    }
 }

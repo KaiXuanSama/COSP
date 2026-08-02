@@ -35,6 +35,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * 本类额外维护一份 {@code requestId -> 最新事件} 的 {@link #inFlight} map：非终态事件写入/更新，
  * 终态事件（COMPLETED/FAILED/CANCELED/ABORTED）移除。SSE 连接建立时先 {@link #snapshot} 补发，
  * 使新订阅者立即看到所有进行中的调用（包括卡死的，从而可被取消）。
+ *
+ * <p>该 map 还兼作<strong>模型展示名的基准</strong>：事件从控制器与 provider 层两处发出，
+ * 模型名口径不同，故 {@link #publish} 统一改写为首个事件所用的名字，见 {@code withDisplayModel}。
  */
 @Component
 public class CallLifecyclePublisher implements CallLifecycleNotifier {
@@ -47,12 +50,35 @@ public class CallLifecyclePublisher implements CallLifecycleNotifier {
     /** 发布一个生命周期事件，并同步维护进行中调用快照。 */
     @Override
     public void publish(CallLifecycleEvent event) {
-        if (isTerminal(event.phase())) {
-            inFlight.remove(event.requestId());
+        CallLifecycleEvent normalized = withDisplayModel(event);
+        if (isTerminal(normalized.phase())) {
+            inFlight.remove(normalized.requestId());
         } else {
-            inFlight.put(event.requestId(), event);
+            inFlight.put(normalized.requestId(), normalized);
         }
-        sink.tryEmitNext(event);
+        sink.tryEmitNext(normalized);
+    }
+
+    /**
+     * 把事件的模型名统一为该调用<strong>首个事件</strong>所用的展示名。
+     *
+     * <p>事件从两处发出，模型名口径不同：控制器发的是客户端原始请求名（含
+     * {@code [provider-key]} 前缀），provider 层发的是<strong>剥掉前缀后的上游模型名</strong>
+     * —— 它要用这个名字请求上游、写日志，那是它唯一持有的形式。于是同一次调用的 Toast
+     * 会在 CONNECTED / RETRYING 到达时把标题从「[foo] bar」跳成「bar」，前缀凭空消失。
+     *
+     * <p>不在 provider 层补前缀是有意为之：{@code providerKey} 的大小写未必与客户端所写一致，
+     * 而无前缀路由时本就不该补。首个事件（RECEIVED，由控制器同步发出）才持有客户端的原文，
+     * 故以它为准，在这唯一的出口处统一改写。
+     *
+     * <p>首个事件本身（inFlight 尚无记录）保留自己的模型名，成为该调用的展示名基准。
+     */
+    private CallLifecycleEvent withDisplayModel(CallLifecycleEvent event) {
+        CallLifecycleEvent first = inFlight.get(event.requestId());
+        if (first == null || first.model() == null || first.model().equals(event.model())) {
+            return event;
+        }
+        return event.withModel(first.model());
     }
 
     /** 订阅实时生命周期事件流。 */
