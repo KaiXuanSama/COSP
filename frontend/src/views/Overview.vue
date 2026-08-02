@@ -91,6 +91,9 @@ const hourlyTotals = ref<Map<string, TokenTotals>>(new Map())
  *
  * <p>不含当前时刻的窗口数据已固化，故缓存永不失效，来回滑动时同一天只请求一次。
  * 实时窗口不进这里 —— 它一直在变，缓存它等于把它冻住。
+ *
+ * <p>本视图一次只看一天、没有跨度这个自由度，故不存在
+ * {@link applyUsageDelta} 里记的那种「含今日却走历史栈」的窗口。
  */
 const hourlyHistory = ref<HourlyHistoryCache>(new Map())
 
@@ -860,6 +863,9 @@ async function fetchHourlySeries(date: string) {
  * 的 {@link breakdownRows} 维护，<strong>不进这里</strong> —— 它一直在变，
  * 缓存一份影子副本只会让「今天的数字停在某个时刻不再涨」。
  * 分流见 {@link readDisplayWindow}。
+ *
+ * <p>「已固化」这个前提对<strong>右端是今天但跨度非默认值</strong>的窗口不成立，
+ * 已知边界与暂不修的理由见 {@link applyUsageDelta}。
  */
 const breakdownHistory = ref<Map<string, UsageBreakdownRow[]>>(new Map())
 
@@ -874,8 +880,8 @@ const breakdownLiveKey = computed(() => {
  *
  * <p>实时 key → SSE 的 `breakdownRows`（快照 + 已累加的增量），历史 key →
  * 缓存里对应窗口的行。历史行按显示窗口<strong>过滤</strong>：后端会把请求的
- * `size` 钳到 `[7, 15]`（前端临时为 5 天时会被放宽），rows 可能多出两天，
- * 而柱状图的横轴完全由 rows 的日期派生，不滤掉会多画两根柱。
+ * `size` 钳到 `[7, 15]`，请求跨度小于 7 天时 rows 会多出几天，而柱状图的横轴
+ * 完全由 rows 的日期派生，不滤掉会多画柱子。
  *
  * <p>key 为 null（未就绪）时回退到实时窗口 —— 那是「什么都不知道」时的
  * 唯一合理默认。
@@ -1355,6 +1361,18 @@ function connectUsageStream() {
  *
  * 排序、「其余」合并、三级 pivot、补零与 `future` 标记全部由 computed 派生，
  * 故这里只管把数字加对。
+ *
+ * <h2>已知边界：只喂实时栈</h2>
+ * 增量只累加进 {@link breakdownRows} / {@link hourlyTotals} 两个实时栈，
+ * <strong>不碰历史缓存</strong>。绝大多数历史窗口全在过去、数据已固化，这样是对的；
+ * 唯一的漏洞是<strong>右端仍是今天但跨度不等于默认值</strong>的窗口（拖手柄把 7 天
+ * 扩成 10 天，key 与 {@link breakdownLiveKey} 不等，于是走历史栈）—— 这类窗口
+ * 显示期间进来的新调用不会反映到画面上，直到重新请求或切回实时窗口。
+ *
+ * <p>TODO 暂不修，收益极低：要撞上它得在看宽窗口的同时正好有新调用进来，而刷新一次
+ * 即可恢复正确。若将来确认影响体验，方案是给含今日的历史 key 也跑一遍合并
+ * （{@code mergeBreakdownDelta} 接受任意日期序列，无需新逻辑），代价是双栈的分界从
+ * 「实时 vs 历史」变成「含今日 vs 不含今日」，{@link readDisplayWindow} 要跟着改。
  */
 function applyUsageDelta(delta: UsageRecordDelta) {
   mergeBreakdownDelta(breakdownRows.value, delta, breakdownWindow.value)
