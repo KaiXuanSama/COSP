@@ -545,14 +545,33 @@ describe('jumpTo', () => {
   })
 
   /**
-   * 单点配置下点击不产生位移。
+   * 单点配置下 {@link jumpTo} 返回原值。
    *
-   * <p>模型层如此，渲染层也据此关掉点击跳转（`clickToJumpActive`）——
-   * 两条约束把端点夹死，任何目标都会被拒回原值。
+   * <p>两条约束把端点夹死，任何目标都会被拒回原值。因此单点形态的点击跳转
+   * <strong>不走</strong> `jumpTo`，改走 {@link slideTo}（整点平移，见下方用例）——
+   * 渲染层据此分流。这条锁住「jumpTo 在单点下确实是空操作」这个前提。
    */
-  it('单点配置下选择不变', () => {
+  it('单点配置下 jumpTo 选择不变', () => {
     const S = resolveBounds(15, { minSpan: 1, maxSpan: 1 })
     expect(jumpTo({ start: 5, end: 5 }, 9, S)).toEqual({ start: 5, end: 5 })
+  })
+
+  /**
+   * 单点形态的快速跳转靠 {@link slideTo}：整点挪到目标，指哪儿打哪儿。
+   *
+   * <p>宽度为 1 的块平移后落点即目标，无需距离计算 —— 这正是单点比区间简单之处。
+   */
+  it('单点配置下 slideTo 整点挪到目标', () => {
+    const S = resolveBounds(15, { minSpan: 1, maxSpan: 1 })
+    expect(slideTo({ start: 5, end: 5 }, 9, S)).toEqual({ start: 9, end: 9 })
+    expect(slideTo({ start: 5, end: 5 }, 0, S)).toEqual({ start: 0, end: 0 })
+  })
+
+  /** 单点跳转越界 / 落进不可达区时收敛到可达界。 */
+  it('单点配置下 slideTo 收敛越界与不可达目标', () => {
+    const S = resolveBounds(15, { minSpan: 1, maxSpan: 1, minIndex: 3, maxIndex: 11 })
+    expect(slideTo({ start: 5, end: 5 }, 99, S)).toEqual({ start: 11, end: 11 })
+    expect(slideTo({ start: 5, end: 5 }, 0, S)).toEqual({ start: 3, end: 3 })
   })
 })
 

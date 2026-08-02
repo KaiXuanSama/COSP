@@ -30,6 +30,7 @@ import {
   normalizeSelection,
   resolveBounds,
   selectionEquals,
+  slideTo,
   spanOf,
   tickRatio,
   type RangeSelection,
@@ -130,12 +131,12 @@ const props = withDefaults(
     /**
      * 是否允许「点击刻度快速跳转」。
      *
-     * <p>开启后单击轨道上任一可达位置，<strong>更近的那个手柄</strong>会移到它上面 ——
-     * 省掉瞄准手柄那一步。落点算式见 `rangeslider.jumpTo`，
-     * 跨度约束与拖动端点时完全一致。
-     *
-     * <p>单点形态下无效：那时只有一个位置可选，「哪个手柄更近」无从谈起，
-     * 而整块拖动已经能到任意点。
+     * <p>开启后单击轨道上任一可达位置即跳过去，省掉瞄准手柄那一步：
+     * <ul>
+     *   <li><strong>区间形态</strong>：更近的那个手柄移到点击位置，
+     *       落点算式见 `rangeslider.jumpTo`，跨度约束与拖动端点时一致；</li>
+     *   <li><strong>单点形态</strong>：整点直接挪过去，指哪儿打哪儿。</li>
+     * </ul>
      */
     clickToJump?: boolean
   }>(),
@@ -251,13 +252,14 @@ const interactive = computed(() => !props.disabled && bounds.value.count > 1)
 const singlePoint = computed(() => bounds.value.maxSpan === 1)
 
 /**
- * 点击跳转是否真的生效 —— 供样式与事件处理共用一个判定。
+ * 点击跳转是否生效 —— 供样式与事件处理共用一个判定。
  *
- * <p>单点形态下关闭：那时只有一个位置可选，「哪个手柄更近」无从谈起，
- * 而整块拖动已经能到任意点。
+ * <p>区间与单点两种形态<strong>都</strong>支持，只是落点算式不同（见 {@link onTickClick}）：
+ * 区间形态移更近的手柄，单点形态整点挪过去。故这里只排除 `disabled`
+ * 与「只有一个刻度」（无处可点）。
  */
 const clickToJumpActive = computed(
-  () => props.clickToJump && interactive.value && !singlePoint.value,
+  () => props.clickToJump && interactive.value,
 )
 
 const { dragging, start, move, end, handleKey } = useRangeDrag({
@@ -269,16 +271,24 @@ const { dragging, start, move, end, handleKey } = useRangeDrag({
     emit('update:modelValue', next)
   },
   /**
-   * 点击轨道上的某个刻度 —— 把更近的那个手柄移过去。
+   * 点击轨道上的某个刻度 —— 快速跳转到那里。
    *
-   * <p>单点形态下不响应：那时「哪个手柄更近」无从谈起，而整块拖动已能到任意点。
+   * <ul>
+   *   <li><strong>区间形态</strong>：把更近的那个手柄移过去（{@link jumpTo}，
+   *       含 minSpan「尽可能靠近」的钳制）；</li>
+   *   <li><strong>单点形态</strong>：整点直接挪到目标，指哪儿打哪儿。
+   *       此时没有「跨度」也没有「更近的手柄」，{@link slideTo} 就是原样平移
+   *       一个宽度为 1 的块 —— 落点即目标，无需 {@link jumpTo} 的距离计算。</li>
+   * </ul>
    *
    * <p>落点与当前选择相同时静默返回，不发多余的 change ——
-   * 块贴近 `minSpan` 时相邻几个点会钳到同一处，重复点击不该反复触发副作用。
+   * 区间形态贴近 `minSpan` 时相邻几个点会钳到同一处，重复点击不该反复触发副作用。
    */
   onTickClick: (index) => {
     if (!clickToJumpActive.value) return
-    const next = jumpTo(selection.value, index, bounds.value)
+    const next = singlePoint.value
+      ? slideTo(selection.value, index, bounds.value)
+      : jumpTo(selection.value, index, bounds.value)
     if (selectionEquals(next, selection.value)) return
     emit('update:modelValue', next)
     // 点击是一次完整操作（没有「途中」），故立即补 change 让调用方触发副作用。
