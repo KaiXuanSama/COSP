@@ -396,13 +396,26 @@ export function assignSlots(
  *
  * <h2>做法：找出使身份重合最多的整体位移</h2>
  * 每个「新柱 i 的身份 == 旧柱在 slot s 的身份」都投票给位移 {@code δ = s - i}。
- * 取票数最多的 δ，新柱 i 即落在 {@code i + δ}。于是身份相同的柱子必然复用
- * 同一个 DOM 节点，没被覆盖的旧位置退场、没有旧柱的新位置进场，
- * 而两者的左右方位由 δ 自然决定 —— 不需要再判断「这次是往左还是往右」。
+ * 取票数最多的 δ。
  *
- * <p>slot 因此<strong>可以为负</strong>。它只是渲染 key 与排序依据，
- * 负值毫无妨碍；而强行归一化会让同一批柱子的 key 凭空改变，
- * 反倒把留存柱推去复用别的节点。
+ * <p>落位分两种：
+ * <ul>
+ *   <li><strong>匹配柱</strong>（身份在旧批里找得到）—— 直接用它匹配的<strong>旧 slot</strong>。
+ *       这是幂等性的关键：同一批数据重算时（退场清理）每根柱子落回原位，
+ *       不会被推去复用别的 DOM 节点。</li>
+ *   <li><strong>进场柱</strong>（身份是新的）—— 用 {@code i + δ} 落在整体位移后的位置。</li>
+ * </ul>
+ * 于是身份相同的柱子必然复用同一节点，没被覆盖的旧位置退场、新位置进场，
+ * 左右方位由 δ 自然决定 —— 不需要再判断「这次往左还是往右」。
+ *
+ * <h2>为什么匹配柱不能也用 i + δ</h2>
+ * {@code i + δ} 内在假设「新批占位从 0 连续排列」。窗口滑动时旧批确实连续，
+ * 两种算法结果相同；但<strong>下钻锚定</strong>会留下不连续占位（如 {@code [0, 1, 4]}），
+ * 此时对全匹配的重算，{@code i + δ} 会把 slot 4 压回 2 —— 那正是刚淡出完毕的
+ * 退场柱所在的节点，留存柱被塞进去随即抽一下。用旧 slot 则原样保持，重算幂等。
+ *
+ * <p>slot 因此<strong>可以为负、可以不连续</strong>。它只是渲染 key 与排序依据；
+ * 强行归一化会让同一批柱子的 key 凭空改变，反倒把留存柱推去复用别的节点。
  *
  * <h2>为什么平票时取 |δ| 最小的</h2>
  * 刻度身份在一批内唯一，故正常情况下票数最多的 δ 是唯一的。平票只出现在
@@ -411,8 +424,11 @@ export function assignSlots(
  *
  * @param keys 新一批柱子的身份，顺序即从左到右
  * @param previous 旧批柱子及其占位
- * @returns 长度与 {@code keys} 相同的升序 slot 序列；两批身份毫无重合时返回
- *   {@code null}，交由调用方回退到位置对齐
+ * @returns 长度与 {@code keys} 相同的<strong>严格升序</strong> slot 序列；
+ *   两批身份毫无重合、或落位结果非严格升序时返回 {@code null}，
+ *   交由调用方回退到位置对齐。失序回退是必要的兜底：匹配柱用旧 slot、
+ *   进场柱用 {@code i + δ}，两者在不连续占位叠加进场时可能交错，
+ *   而失序会让 Vue 重排正在过渡的节点。
  */
 export function alignSlotsByIdentity(
   keys: string[],
@@ -426,7 +442,7 @@ export function alignSlotsByIdentity(
     if (!slotByKey.has(item.bar.key)) slotByKey.set(item.bar.key, item.slot)
   }
 
-  /** 位移量 → 票数。 */
+  /** 位移量 → 票数。仅用于给进场柱定位，匹配柱直接沿用旧 slot。 */
   const votes = new Map<number, number>()
   keys.forEach((key, index) => {
     const slot = slotByKey.get(key)
@@ -445,7 +461,17 @@ export function alignSlotsByIdentity(
     }
   }
 
-  return keys.map((_, index) => index + best)
+  // 匹配柱用旧 slot（幂等、原地复用），进场柱按整体位移落位。
+  const result = keys.map((key, index) => {
+    const slot = slotByKey.get(key)
+    return slot !== undefined ? slot : index + best
+  })
+
+  // 落位必须严格升序，否则 Vue 会重排正在过渡的节点。不满足则交由调用方回退。
+  for (let i = 1; i < result.length; i += 1) {
+    if (result[i] <= result[i - 1]) return null
+  }
+  return result
 }
 
 /**

@@ -567,7 +567,39 @@ describe('alignSlotsByIdentity', () => {
       { slot: 0, bar: bar('a', 1) },
       { slot: 4, bar: bar('e', 5) },
     ]
-    // 新批 [e, f]：e 在旧 slot 4，δ = 4 - 0 = 4
+    // 新批 [e, f]：e 匹配旧 slot 4（沿用），f 是进场柱按 δ=4 落在 5
     expect(alignSlotsByIdentity(['e', 'f'], previous)).toEqual([4, 5])
+  })
+
+  /**
+   * 全匹配的重算必须<strong>幂等</strong> —— 这是本轮修复的核心。
+   *
+   * 下钻锚定后留下不连续占位（如 {@code [0, 1, 4]}）。退场清理会用同一批数据
+   * 重算一次，此时每根柱子的身份都还在旧批里。匹配柱沿用旧 slot，故结果原样返回；
+   * 若改用 {@code i + δ}（δ=0），slot 4 会被压回 2 —— 那正是刚淡出完毕的退场柱
+   * 所在的节点，留存柱被塞进去随即抽一下，正是用户看到的收尾抽搐。
+   */
+  it('不连续占位全匹配时原样返回，不压缩', () => {
+    const previous: MorphSnapshot[] = [
+      { slot: 0, bar: bar('a', 1) },
+      { slot: 1, bar: bar('b', 2) },
+      { slot: 4, bar: bar('e', 5) },
+    ]
+    // 三根柱身份全在旧批里，各自沿用旧 slot —— 不连续也保持
+    expect(alignSlotsByIdentity(['a', 'b', 'e'], previous)).toEqual([0, 1, 4])
+  })
+
+  /**
+   * 匹配柱沿用旧 slot 后若与进场柱交错导致失序，返回 null 交由回退。
+   *
+   * 失序会让 Vue 重排正在过渡的节点，反而制造硬跳；此时位置对齐是更安全的选择。
+   */
+  it('落位失序时返回 null', () => {
+    const previous: MorphSnapshot[] = [
+      { slot: 0, bar: bar('a', 1) },
+      { slot: 5, bar: bar('f', 6) },
+    ]
+    // 新批 [f, a]：f 沿用旧 slot 5、a 沿用旧 slot 0 —— 结果 [5, 0] 失序
+    expect(alignSlotsByIdentity(['f', 'a'], previous)).toBeNull()
   })
 })
