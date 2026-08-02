@@ -763,7 +763,7 @@ const hourlyFailed = computed(
  * <p>停留触发（debounce）两者兼得：每次换点都重置计时，快速划过 10 个点只产生
  * 1 次请求；在某点停住足够久就自动加载，不必松手。
  */
-const SELECTOR_DWELL_MS = 350
+const SELECTOR_DWELL_MS = 100
 
 const hourlyDwell = createDwellTrigger<string>(SELECTOR_DWELL_MS, (date) => {
   void fetchHourlySeries(date)
