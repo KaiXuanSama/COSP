@@ -23,7 +23,7 @@ const http = require('http');
 const PORT = Number(process.env.MOCK_PORT || 8081);
 /** hang-first-byte 卡住首字的时长（毫秒）。默认 10 分钟。 */
 const HANG_FIRST_BYTE_MS = 10 * 60 * 1000;
-/** stall-recover 中途停滞时长（毫秒）。需 > COSP 的 30s STALLED 阈值，以触发 STALLED 警告后再恢复。 */
+/** stall-recover 中途停滞时长（毫秒）。 */
 const STALL_RECOVER_MS = 35 * 1000;
 /** stall-recover / stall-forever 停滞前先吐的 chunk 数。 */
 const STALL_AFTER_CHUNKS = 5;
@@ -31,7 +31,7 @@ const STALL_AFTER_CHUNKS = 5;
 const NORMAL_CHUNK_INTERVAL_MS = 80;
 /** normal 流的 chunk 数。 */
 const NORMAL_CHUNK_COUNT = 30;
-/** slow-steady 的 chunk 间隔（毫秒）。需 < 30s，验证不会误判 STALLED。 */
+/** slow-steady 的 chunk 间隔（毫秒）。 */
 const SLOW_STEADY_INTERVAL_MS = 3 * 1000;
 /** slow-steady 的 chunk 数。 */
 const SLOW_STEADY_CHUNK_COUNT = 8;
@@ -45,13 +45,13 @@ const RETRY_RESET_MS = 30 * 1000;
 const MODELS = [
   { id: 'normal', desc: '正常流式，完整 chunk + [DONE] + 关连接' },
   { id: 'hang-first-byte', desc: 'CONNECTED 后卡住不吐首字（默认 10 分钟）' },
-  { id: 'stall-recover', desc: '吐若干 chunk 后停滞 35s（触发 STALLED），再继续到结束' },
-  { id: 'stall-forever', desc: '吐若干 chunk 后永久停滞（触发 STALLED，等待用户手动断连）' },
+  { id: 'stall-recover', desc: '吐若干 chunk 后停滞 35s，再继续到结束' },
+  { id: 'stall-forever', desc: '吐若干 chunk 后永久停滞（等待用户右键断连）' },
   { id: 'done-no-close', desc: '发完内容 + [DONE]，但保持 TCP 不关闭' },
   { id: 'no-done-close', desc: '发完内容后直接关连接，不发 [DONE]' },
   { id: 'error-500', desc: '返回 500（COSP 应重试）' },
   { id: 'error-401', desc: '返回 401（COSP 应快速失败不重试）' },
-  { id: 'slow-steady', desc: '每 3s 一个 chunk，持续较久（验证不误判 STALLED）' },
+  { id: 'slow-steady', desc: '每 3s 一个 chunk，持续较久' },
   { id: 'retry-then-succeed', desc: '前 2 次请求返回 500，第 3 次正常回复 chunk + [DONE]（验证 COSP 重试中成功）' },
 ];
 
@@ -294,7 +294,7 @@ function noDoneClose(res, id, model) {
   }, NORMAL_CHUNK_INTERVAL_MS);
 }
 
-/** slow-steady：稳定每 3s 一个 chunk，持续较久，chunk 间隔 < 5s 不应触发 STALLED。 */
+/** slow-steady：稳定每 3s 一个 chunk，持续较久。 */
 function slowSteady(res, id, model) {
   writeSseHead(res);
   res.write(roleFrame(id, model));
