@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Palette Lab — 最远点采样配色生成</title>
+<style>
+  body {
+    font-family: system-ui, sans-serif;
+    max-width: 1100px;
+    margin: 32px auto;
+    padding: 0 16px;
+    color: #333;
+    background: #f5f3ee;
+  }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .hint { color: #888; font-size: 13px; margin-bottom: 20px; }
+  .controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  label { font-size: 13px; color: #555; }
+  input[type="number"] { width: 70px; padding: 6px; }
+  input[type="range"] { width: 130px; vertical-align: middle; }
+  button {
+    padding: 6px 16px;
+    cursor: pointer;
+    background: #c27a3e;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  button:hover { background: #a86834; }
+  .stats {
+    font-size: 12px;
+    color: #666;
+    margin: 12px 0;
+    font-family: monospace;
+  }
+  /* 连续色带：最直观的相邻区分度检验 */
+  .strip { display: flex; height: 48px; margin-bottom: 4px; border-radius: 4px; overflow: hidden; }
+  .strip div { flex: 1; }
+  /* 模拟堆叠柱状图：薄色块下的真实可读性 */
+  .bars { display: flex; gap: 6px; height: 130px; align-items: flex-end; margin-bottom: 20px; }
+  .bar { flex: 1; display: flex; flex-direction: column-reverse; border-radius: 3px 3px 0 0; overflow: hidden; }
+  .bar div { width: 100%; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; background: #fff; }
+  th, td { border: 1px solid #e0ddd6; padding: 6px 10px; text-align: left; }
+  th { background: #efece5; font-weight: 600; }
+  .swatch { width: 60px; height: 26px; border-radius: 3px; border: 1px solid rgba(0,0,0,.1); }
+  code { font-family: monospace; }
+  .warn { color: #b84a4a; }
+</style>
+</head>
+<body>
+
+<h1>Palette Lab</h1>
+<p class="hint">
+  OKLCh 空间 + 贪心最远点采样（Glasbey 思路）。f(n) → n 个尽可能不同的颜色。
+  亮度/彩度可调，用于贴合项目暖色调；生成结果按"前 N 个即最优 N 色组合"排序。
+</p>
+
+<div class="controls">
+  <label>数量 <input type="number" id="count" value="30" min="1" max="200"></label>
+  <label>亮度 L <input type="range" id="lmin" min="30" max="90" value="55"> – <input type="range" id="lmax" min="30" max="90" value="72"></label>
+  <label>彩度 C <input type="range" id="cmin" min="2" max="30" value="9"> – <input type="range" id="cmax" min="2" max="30" value="18"></label>
+  <label>排列
+    <select id="sort">
+      <option value="gen">生成顺序（前 N 最优）</option>
+      <option value="hue">色相顺序（彩虹）</option>
+      <option value="hue-l">色相 + 亮度</option>
+    </select>
+  </label>
+  <button id="gen">生成</button>
+</div>
+<div class="stats" id="range-echo"></div>
+
+<div class="stats" id="stats"></div>
+<div class="strip" id="strip"></div>
+<div class="bars" id="bars"></div>
+<table>
+  <thead><tr><th>#</th><th>生成序</th><th>色块</th><th>Hex</th><th>OKLCh</th><th>最近邻距离</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<p class="hint">按当前排列的 hex 序列（可直接复制）：</p>
+<div class="hexout" id="hexout"></div>
+
+<script>
+// ── OKLab / OKLCh 转换（Ottosson 2020）──────────────────────
+// 感知均匀空间：欧氏距离即感知差异，无需 CIEDE2000 那套加权。
+
+function srgbToLinear(c) {
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)
+}
+function linearToSrgb(c) {
+  return c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055
+}
+
+function oklchToSrgb(L, C, hDeg) {
+  const h = hDeg * Math.PI / 180
+  const a = C * Math.cos(h), b = C * Math.sin(h)
+  // OKLab → LMS'
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * b
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * b
+  const s_ = L - 0.0894841775 * a - 1.2914855480 * b
+  const l = l_ ** 3, m = m_ ** 3, s = s_ ** 3
+  // LMS → linear sRGB
+  const r = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+  const g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
+  const bl = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+  return [linearToSrgb(r), linearToSrgb(g), linearToSrgb(bl)]
+}
+
+function srgbToOklab(r, g, b) {
+  const R = srgbToLinear(r), G = srgbToLinear(g), B = srgbToLinear(b)
+  const l = Math.cbrt(0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B)
+  const m = Math.cbrt(0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B)
+  const s = Math.cbrt(0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B)
+  return [
+    0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+  ]
+}
+
+/** 是否落在 sRGB 色域内（留一点容差，避免边界抖动）。 */
+function inGamut(rgb) {
+  return rgb.every(v => v >= -0.001 && v <= 1.001)
+}
+
+function toHex(rgb) {
+  return '#' + rgb.map(v => {
+    const n = Math.round(Math.max(0, Math.min(1, v)) * 255)
+    return n.toString(16).padStart(2, '0')
+  }).join('')
+}
+
+/** OKLab 欧氏距离，×100 便于与 ΔE 量级对照。 */
+function dist(a, b) {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) * 100
+}
+
+// ── 贪心最远点采样 ─────────────────────────────────────────
+// 每步从候选池挑"到已选集合最小距离最大"的颜色。
+// 增量稳定：前 n 个不受后续追加影响，故天然满足"前 N 个即最优 N 色组合"。
+
+function buildCandidates(lRange, cRange) {
+  const out = []
+  // 网格穷举而非随机采样，结果可复现（Glasbey 用的也是穷举）
+  for (let h = 0; h < 360; h += 1.5) {
+    for (let L = lRange[0]; L <= lRange[1]; L += 0.02) {
+      for (let C = cRange[0]; C <= cRange[1]; C += 0.01) {
+        const rgb = oklchToSrgb(L, C, h)
+        if (!inGamut(rgb)) continue
+        out.push({ L, C, h, rgb, lab: srgbToOklab(...rgb) })
+      }
+    }
+  }
+  return out
+}
+
+function generate(n, lRange, cRange) {
+  const cands = buildCandidates(lRange, cRange)
+  if (!cands.length) return []
+
+  const picked = []
+  // 种子取项目主色 #c27a3e 的最近候选，让整套配色以它为锚
+  const anchor = srgbToOklab(0xc2 / 255, 0x7a / 255, 0x3e / 255)
+  let seed = 0, seedD = Infinity
+  cands.forEach((c, i) => {
+    const d = dist(c.lab, anchor)
+    if (d < seedD) { seedD = d; seed = i }
+  })
+  picked.push(cands[seed])
+
+  // 维护每个候选到已选集合的最小距离，增量更新（避免每步重算全量）
+  const minD = cands.map(c => dist(c.lab, cands[seed].lab))
+
+  while (picked.length < n) {
+    let best = -1, bestD = -1
+    for (let i = 0; i < cands.length; i++) {
+      if (minD[i] > bestD) { bestD = minD[i]; best = i }
+    }
+    if (best < 0) break
+    picked.push(cands[best])
+    const chosen = cands[best].lab
+    for (let i = 0; i < cands.length; i++) {
+      const d = dist(cands[i].lab, chosen)
+      if (d < minD[i]) minD[i] = d
+    }
+  }
+  return picked
+}
+
+// ── 渲染 ──────────────────────────────────────────────────
+
+function render() {
+  const n = Math.max(1, Math.min(200, +document.getElementById('count').value || 30))
+  const lRange = [
+    +document.getElementById('lmin').value / 100,
+    +document.getElementById('lmax').value / 100,
+  ].sort((a, b) => a - b)
+  const cRange = [
+    +document.getElementById('cmin').value / 100,
+    +document.getElementById('cmax').value / 100,
+  ].sort((a, b) => a - b)
+
+  document.getElementById('range-echo').textContent =
+    `L ${lRange[0].toFixed(2)}–${lRange[1].toFixed(2)}   C ${cRange[0].toFixed(2)}–${cRange[1].toFixed(2)}`
+
+  const t0 = performance.now()
+  const generated = generate(n, lRange, cRange)
+  const ms = (performance.now() - t0).toFixed(0)
+
+  // 排列仅影响展示，不影响生成：贪心采样的"前 N 个即最优 N 色"性质依赖生成顺序，
+  // 故排序在副本上进行，并保留每色的原始序号（genIndex）。
+  const sortMode = document.getElementById('sort').value
+  const palette = generated.map((p, i) => ({ ...p, genIndex: i }))
+  if (sortMode === 'hue') {
+    // OKLCh 的 h 就是 0–360° 色相环角度，按它排序即彩虹顺序
+    palette.sort((a, b) => a.h - b.h)
+  } else if (sortMode === 'hue-l') {
+    // 同色相区内再按亮度分层，相近色相不会因明暗交错而显得跳动
+    palette.sort((a, b) => (Math.round(a.h / 30) - Math.round(b.h / 30)) || (a.L - b.L) || (a.h - b.h))
+  }
+
+  // 每色到其它色的最近邻距离；全局最小值即该套配色的区分度下限
+  const nearest = palette.map((p, i) => {
+    let m = Infinity
+    palette.forEach((q, j) => { if (i !== j) m = Math.min(m, dist(p.lab, q.lab)) })
+    return m
+  })
+  const globalMin = palette.length > 1 ? Math.min(...nearest) : 0
+
+  document.getElementById('stats').textContent =
+    `生成 ${palette.length} 色 / ${ms}ms   最小成对距离 ${globalMin.toFixed(2)}   ` +
+    `（参考：>10 一眼可辨，5–10 需比对，<5 易混）`
+
+  document.getElementById('strip').innerHTML =
+    palette.map(p => `<div style="background:${toHex(p.rgb)}"></div>`).join('')
+
+  // 模拟堆叠柱：每根柱随机取若干色叠起来，检验薄色块下的可读性
+  const bars = []
+  for (let b = 0; b < 7; b++) {
+    const segs = palette.slice(0, Math.min(palette.length, 6))
+      .map(p => `<div style="background:${toHex(p.rgb)};height:${8 + Math.random() * 22}px"></div>`)
+      .join('')
+    bars.push(`<div class="bar">${segs}</div>`)
+  }
+  document.getElementById('bars').innerHTML = bars.join('')
+
+  document.getElementById('rows').innerHTML = palette.map((p, i) => {
+    const hex = toHex(p.rgb)
+    const warn = nearest[i] < 5 ? ' class="warn"' : ''
+    return `<tr>
+      <td>${i + 1}</td>
+      <td><code>#${p.genIndex + 1}</code></td>
+      <td><div class="swatch" style="background:${hex}"></div></td>
+      <td><code>${hex}</code></td>
+      <td><code>L ${p.L.toFixed(2)} C ${p.C.toFixed(2)} H ${p.h.toFixed(0)}°</code></td>
+      <td${warn}><code>${nearest[i].toFixed(2)}</code></td>
+    </tr>`
+  }).join('')
+
+  // 便于直接复制：按当前排列输出 hex 序列
+  document.getElementById('hexout').textContent =
+    palette.map(p => toHex(p.rgb)).join(', ')
+}
+
+document.getElementById('gen').addEventListener('click', render)
+// 换排列方式无需重新生成，但 render 会复用同参数重跑，结果一致（穷举可复现）
+document.getElementById('sort').addEventListener('change', render)
+render()
+</script>
+
+</body>
+</html>

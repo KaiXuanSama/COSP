@@ -1,11 +1,12 @@
 package com.kaixuan.copilot_ollama_proxy.api.openai;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
+import com.kaixuan.copilot_ollama_proxy.application.usage.UsageParser;
+import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
@@ -608,16 +609,9 @@ public class OpenAiController {
      * @param openAiJson 非流式响应的 JSON 字符串，包含 usage 字段
      */
     private void recordUsage(String openAiJson) {
-        try {
-            JsonNode root = objectMapper.readTree(openAiJson);
-            JsonNode usage = root.path("usage");
-            if (usage.isObject()) {
-                int inputTokens = usage.path("prompt_tokens").asInt(0);
-                int outputTokens = usage.path("completion_tokens").asInt(0);
-                apiUsageCollector.record(inputTokens, outputTokens);
-            }
-        } catch (Exception e) {
-            log.warn("非流式响应 usage 提取失败: {}", e.getMessage());
+        UsageTokens tokens = UsageParser.parseFromJson(objectMapper, openAiJson);
+        if (!tokens.isEmpty()) {
+            apiUsageCollector.record(tokens.promptOrZero(), tokens.completionOrZero());
         }
     }
 
@@ -629,15 +623,11 @@ public class OpenAiController {
      * @param outputTokens 输出 token 累加器
      */
     private void accumulateStreamUsage(String chunk, AtomicInteger inputTokens, AtomicInteger outputTokens) {
-        try {
-            JsonNode root = objectMapper.readTree(chunk);
-            JsonNode usage = root.path("usage");
-            if (usage.isObject()) {
-                inputTokens.set(usage.path("prompt_tokens").asInt(0));
-                outputTokens.set(usage.path("completion_tokens").asInt(0));
-            }
-        } catch (Exception e) {
-            // 流式 chunk 可能不是合法 JSON（如 [DONE]），忽略
+        UsageTokens tokens = UsageParser.parseFromJson(objectMapper, chunk);
+        // 流式 usage 通常只出现在尾 chunk；有则覆盖累加器（缺失记 0，保持既有日聚合行为）。
+        if (!tokens.isEmpty()) {
+            inputTokens.set(tokens.promptOrZero());
+            outputTokens.set(tokens.completionOrZero());
         }
     }
 

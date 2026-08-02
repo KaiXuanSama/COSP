@@ -27,8 +27,9 @@ public interface ApiCallLogService {
      * @param statusCode      HTTP 状态码
      * @param responseBody    响应体
      * @param durationMs      调用耗时（毫秒）
+     * @return 新插入日志行的自增 id；写入失败时返回 null（不抛异常）
      */
-    void saveNonStream(String providerKey, String modelName,
+    Long saveNonStream(String providerKey, String modelName,
                        Map<String, String> requestHeaders, Map<String, Object> requestBody,
                        Map<String, String> responseHeaders, int statusCode, String responseBody, long durationMs);
 
@@ -43,8 +44,9 @@ public interface ApiCallLogService {
      * @param statusCode      HTTP 状态码
      * @param chunks          流式响应分片列表
      * @param durationMs      调用耗时（毫秒）
+     * @return 新插入日志行的自增 id；写入失败时返回 null（不抛异常）
      */
-    void saveStream(String providerKey, String modelName,
+    Long saveStream(String providerKey, String modelName,
                     Map<String, String> requestHeaders, Map<String, Object> requestBody,
                     Map<String, String> responseHeaders, int statusCode, List<String> chunks, long durationMs);
 
@@ -63,8 +65,9 @@ public interface ApiCallLogService {
      * @param errorCode       错误状态码
      * @param errorBody       错误响应体
      * @param durationMs      调用耗时（毫秒）
+     * @return 新插入日志行的自增 id；写入失败时返回 null（不抛异常）
      */
-    void saveStreamWithError(String providerKey, String modelName,
+    Long saveStreamWithError(String providerKey, String modelName,
                              Map<String, String> requestHeaders, Map<String, Object> requestBody,
                              Map<String, String> responseHeaders, int statusCode, List<String> chunks,
                              Map<String, String> errorHeaders, int errorCode, String errorBody, long durationMs);

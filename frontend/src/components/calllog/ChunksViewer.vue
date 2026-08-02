@@ -6,7 +6,7 @@
  * - 块显示: 每个 chunk 以卡片形式逐条展示
  * - 规整显示: 将 chunks 聚合为对话片段（思考过程 / 工具调用 / 正文回复）
  */
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { NModal, NRadioGroup, NRadio, NScrollbar, NTooltip, useMessage } from 'naive-ui'
 import { marked } from 'marked'
 import JsonNode from './JsonNode.vue'
@@ -22,6 +22,54 @@ const emit = defineEmits<{
 }>()
 
 const displayMode = ref<'block' | 'clean'>('clean')
+
+/**
+ * 块显示模式的分批渲染。
+ *
+ * chunks 数据已全量在前端，卡顿只来自一次性渲染过多卡片（每块还带一棵 JsonNode 树）。
+ * 故仅限制渲染数量：首批 25 条，点"展示更多"再追加一批，直到全部渲染完。
+ */
+const BLOCK_PAGE_SIZE = 25
+
+/** 当前已渲染的块数量。 */
+const visibleBlockCount = ref(BLOCK_PAGE_SIZE)
+
+/**
+ * 当前应渲染的块（含预解析结果）。
+ *
+ * 解析在此处一次完成并缓存，避免模板中 v-if 判断与传值各调一次 parseChunk
+ * 导致每次重渲染都重复解析 JSON。
+ */
+const visibleBlocks = computed(() =>
+  props.chunks.slice(0, visibleBlockCount.value).map((chunk, index) => {
+    const { isJson, parsed } = parseChunk(chunk)
+    return { chunk, index, isJson, parsed }
+  }),
+)
+
+/** 是否还有未渲染的块。 */
+const hasMoreBlocks = computed(() => visibleBlockCount.value < props.chunks.length)
+
+/** 追加渲染下一批块。 */
+function showMoreBlocks() {
+  visibleBlockCount.value = Math.min(
+    visibleBlockCount.value + BLOCK_PAGE_SIZE,
+    props.chunks.length,
+  )
+}
+
+/**
+ * 重置渲染进度。
+ *
+ * 换一条日志（chunks 变化）或重新打开模态框时都要复位，
+ * 否则会残留上次展开的数量，等于没有分批效果。
+ */
+watch(
+  () => [props.show, props.chunks] as const,
+  () => {
+    visibleBlockCount.value = BLOCK_PAGE_SIZE
+  },
+)
 
 const message = useMessage()
 
@@ -191,35 +239,51 @@ function parseChunk(chunk: string): { parsed: unknown; isJson: boolean } {
       </n-radio-group>
     </template>
 
-    <!-- 块显示模式 -->
+    <!-- 块显示模式：分批渲染，避免 chunk 过多时一次性渲染造成卡顿 -->
     <div v-if="displayMode === 'block'" class="chunks-block">
       <n-scrollbar style="max-height: 65vh">
-        <div v-for="(chunk, index) in chunks" :key="index" class="chunk-item">
+        <div v-for="block in visibleBlocks" :key="block.index" class="chunk-item">
           <div class="chunk-header">
-            <span class="chunk-index">#{{ index + 1 }}</span>
-            <n-tooltip :show="copiedKeys.has(`block-${index}`)" placement="bottom" :duration="0">
+            <span class="chunk-index">#{{ block.index + 1 }}</span>
+            <n-tooltip :show="copiedKeys.has(`block-${block.index}`)" placement="bottom" :duration="0">
               <template #trigger>
                 <button
                   class="copy-btn"
                   type="button"
                   aria-label="复制此 chunk 内容"
-                  @click="copyBlockChunk(chunk, index)()"
+                  @click="copyBlockChunk(block.chunk, block.index)()"
                 >
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
                     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                   </svg>
-                  <span class="copy-btn-label">{{ copiedKeys.has(`block-${index}`) ? '已复制' : '复制' }}</span>
+                  <span class="copy-btn-label">{{ copiedKeys.has(`block-${block.index}`) ? '已复制' : '复制' }}</span>
                 </button>
               </template>
-              {{ copiedKeys.has(`block-${index}`) ? '已复制到剪贴板' : '复制此 chunk 的原始 JSON' }}
+              {{ copiedKeys.has(`block-${block.index}`) ? '已复制到剪贴板' : '复制此 chunk 的原始 JSON' }}
             </n-tooltip>
           </div>
           <div class="chunk-content">
-            <JsonNode v-if="parseChunk(chunk).isJson" :value="parseChunk(chunk).parsed" :depth="0" />
-            <pre v-else class="chunk-raw">{{ chunk }}</pre>
+            <JsonNode v-if="block.isJson" :value="block.parsed" :depth="0" />
+            <pre v-else class="chunk-raw">{{ block.chunk }}</pre>
           </div>
+        </div>
+
+        <!-- 渲染进度：还有未渲染的块时可继续追加，全部渲染完则提示到底 -->
+        <div class="chunks-load-more">
+          <div
+            v-if="hasMoreBlocks"
+            class="chunks-load-more-btn"
+            role="button"
+            tabindex="0"
+            @click="showMoreBlocks"
+            @keydown.enter.prevent="showMoreBlocks"
+            @keydown.space.prevent="showMoreBlocks"
+          >
+            展示更多（{{ visibleBlocks.length }} / {{ chunks.length }}）
+          </div>
+          <div v-else class="chunks-load-more-end">到底了（共 {{ chunks.length }} 块）</div>
         </div>
       </n-scrollbar>
     </div>
@@ -308,6 +372,43 @@ function parseChunk(chunk: string): { parsed: unknown; isJson: boolean } {
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   font-size: 12px;
   color: $text-muted;
+}
+
+/* 分批渲染的底部控件：与调用列表的"更多 / 到底了"保持一致的视觉语言 */
+.chunks-load-more {
+  display: flex;
+  justify-content: center;
+  padding: $space-sm 0 2px;
+}
+
+.chunks-load-more-btn {
+  font-family: $font-body;
+  font-size: 13px;
+  color: $accent;
+  cursor: pointer;
+  padding: $space-xs $space-md;
+  border: 1px solid $accent-mid;
+  border-radius: $radius;
+  transition: all 0.2s ease;
+  user-select: none;
+
+  &:hover {
+    background: $accent-light;
+    border-color: $accent;
+  }
+
+  &:focus-visible {
+    outline: 2px solid $accent;
+    outline-offset: 2px;
+  }
+}
+
+.chunks-load-more-end {
+  font-family: $font-body;
+  font-size: 13px;
+  color: $text-muted;
+  padding: $space-xs $space-md;
+  user-select: none;
 }
 
 .copy-btn {

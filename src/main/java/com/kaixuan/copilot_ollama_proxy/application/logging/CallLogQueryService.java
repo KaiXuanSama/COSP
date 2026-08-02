@@ -1,12 +1,14 @@
 package com.kaixuan.copilot_ollama_proxy.application.logging;
 
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.LogEventPublisher;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 
@@ -24,10 +26,14 @@ import java.util.Optional;
 public class CallLogQueryService {
 
     private final ApiCallLogRepository apiCallLogRepository;
+    private final ApiCallUsageRepository apiCallUsageRepository;
     private final LogEventPublisher logEventPublisher;
 
-    public CallLogQueryService(ApiCallLogRepository apiCallLogRepository, LogEventPublisher logEventPublisher) {
+    public CallLogQueryService(ApiCallLogRepository apiCallLogRepository,
+                               ApiCallUsageRepository apiCallUsageRepository,
+                               LogEventPublisher logEventPublisher) {
         this.apiCallLogRepository = apiCallLogRepository;
+        this.apiCallUsageRepository = apiCallUsageRepository;
         this.logEventPublisher = logEventPublisher;
     }
 
@@ -36,8 +42,32 @@ public class CallLogQueryService {
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
+    /**
+     * 查询单条日志详情，并附带该次调用的 token 用量。
+     *
+     * <p>返回结构在 {@code api_call_log} 全列之上多一个 {@code usage} 字段：
+     * <ul>
+     *   <li>查到用量行 —— 为 {@code api_call_usage} 的完整行（含 {@code usage_raw} 原始 JSON）；</li>
+     *   <li>{@code null} —— 未查询到用量。含三种情形：V8.3 之前产生的旧日志（迁移期）、
+     *       失败调用（不写用量行）、上游未返回 usage 的调用。</li>
+     * </ul>
+     *
+     * <p>用量表永不裁剪、日志表按条数裁剪，因此"日志 → 用量"是可查方向；
+     * 反向的孤儿用量（日志已被裁剪）不在详情页场景内。
+     *
+     * <p>两次阻塞 JDBC 查询在同一个 {@code fromCallable} 内完成，整体桥接到
+     * {@code boundedElastic}，符合 WebFlux 下的阻塞调用约定。
+     */
     public Mono<Optional<Map<String, Object>>> findLog(long id) {
-        return Mono.fromCallable(() -> Optional.ofNullable(apiCallLogRepository.findLogById(id)))
+        return Mono.fromCallable(() -> {
+                    Map<String, Object> logRow = apiCallLogRepository.findLogById(id);
+                    if (logRow == null) {
+                        return Optional.<Map<String, Object>>empty();
+                    }
+                    Map<String, Object> detail = new LinkedHashMap<>(logRow);
+                    detail.put("usage", apiCallUsageRepository.findByLogId(id));
+                    return Optional.of(detail);
+                })
                 .subscribeOn(Schedulers.boundedElastic());
     }
 

@@ -1,0 +1,25 @@
+{
+  // 构建期脚本（vite.config.ts）的类型配置 —— 运行在 Node 里，需要 @types/node
+  // 才能识别 'path' 模块与 __dirname。
+  // 这些文件原先不在任何 tsconfig 的 include 中，导致 vue-tsc -b 从不检查它们，
+  // 错误只在编辑器里出现而构建照样通过。单独建一个项目把它们纳入检查范围。
+  "compilerOptions": {
+    "composite": true,
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["vite.config.ts"]
+}

@@ -5,7 +5,10 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfi
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
+import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
+import com.kaixuan.copilot_ollama_proxy.application.usage.UsageParser;
+import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import org.slf4j.Logger;
@@ -69,6 +72,9 @@ public abstract class AbstractUpstreamChatService {
     /** API 调用日志写入服务，由子类 Spring Bean 通过 setter 注入。 */
     private ApiCallLogService apiCallLog;
 
+    /** API 调用 token 用量写入服务，由 Spring 可选注入；写入独立于日志的 api_call_usage 表。 */
+    private ApiCallUsageService apiCallUsage;
+
     /** 调用生命周期事件通知器，由 Spring 可选注入；用于发出 CONNECTED / RETRYING 等 provider 层观测点。 */
     private CallLifecycleNotifier lifecycleNotifier;
 
@@ -83,6 +89,11 @@ public abstract class AbstractUpstreamChatService {
     @Autowired(required = false)
     public void setApiCallLog(ApiCallLogService apiCallLog) {
         this.apiCallLog = apiCallLog;
+    }
+
+    @Autowired(required = false)
+    public void setApiCallUsage(ApiCallUsageService apiCallUsage) {
+        this.apiCallUsage = apiCallUsage;
     }
 
     @Autowired(required = false)
@@ -150,8 +161,10 @@ public abstract class AbstractUpstreamChatService {
                     publishLifecycle(CallLifecycleEvent.of(requestId, CallPhase.CONNECTED, modelName, false));
                     Map<String, String> respHeaders = new LinkedHashMap<>();
                     entity.getHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
-                    saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, respHeaders,
+                    Long logId = saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, respHeaders,
                             entity.getStatusCode().value(), entity.getBody(), attemptStart.get());
+                    // 成功往返：从响应体提取 usage 写入独立用量表（非流式无首字概念，ttfb 传 null）。
+                    saveUsageIfPresent(logId, providerKey, modelName, false, entity.getBody(), null);
                 })
                 // 失败往返：每次失败（含被 retry 吞掉的中间失败）都各自落一条（在 retry 上游）。
                 .doOnError(e -> {
@@ -200,10 +213,18 @@ public abstract class AbstractUpstreamChatService {
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
         StringBuilder reasoningBuffer = new StringBuilder();
         AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
+        // 首字响应时长：上游首个 chunk 到达时记 now - attemptStart；-1 表示尚未测得。
+        // 语义为"首 chunk"而非"首正文"，故纯思考、纯工具调用等无正文响应同样能测得。
+        // 每次往返（defer 重订阅）在起点重置，使 ttfb 反映最终成功往返的首字延迟（语义2）。
+        AtomicLong ttfbMs = new AtomicLong(-1);
+        // 本次往返的 usage 原始 JSON：从上游原始 chunk 提取，成功收尾写用量表。往返起点清空。
+        AtomicReference<String> usageRaw = new AtomicReference<>(null);
         return Flux.defer(() -> {
                     // 本次往返起点：重置计时与 chunk 收集，使每条日志只反映该次往返（不跨重试累加）。
                     attemptStart.set(System.currentTimeMillis());
                     logChunks.clear();
+                    ttfbMs.set(-1);
+                    usageRaw.set(null);
                     return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, true)
                             .post().uri(chatCompletionsUri()).bodyValue(requestBody)
                             .exchangeToFlux(response -> {
@@ -241,7 +262,21 @@ public abstract class AbstractUpstreamChatService {
                 })
                 // 重试挂在落库下游：中间失败已在上游各自记录，此处仅负责重订阅。
                 .retryWhen(buildRetrySpec("chatCompletionStream", provider, requestId, model, true)).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
-                .doOnNext(raw -> log.debug("{} 上游原始: {}", provider.providerKey(), raw)).concatMap(chunk -> {
+                .doOnNext(raw -> {
+                    log.debug("{} 上游原始: {}", provider.providerKey(), raw);
+                    // 首字打点：上游首个 chunk 到达即记时长（语义为"首 chunk"，不区分其载荷形态）。
+                    // 打在最上游的原始 chunk 处，因此纯思考（仅 reasoning_content）、纯工具调用
+                    // （仅 tool_calls）等无正文响应同样能测得首字，不依赖 contentEmitted。
+                    // 每次往返（defer 重订阅）已在起点重置，故反映最终成功往返的首字延迟。
+                    if (ttfbMs.get() < 0) {
+                        ttfbMs.set(System.currentTimeMillis() - attemptStart.get());
+                    }
+                    // 从上游原始 chunk 提取 usage 原始 JSON（通常在尾 chunk）；有则记录供成功收尾落库。
+                    String rawUsage = UsageParser.extractUsageRawJson(objectMapper, raw);
+                    if (rawUsage != null) {
+                        usageRaw.set(rawUsage);
+                    }
+                }).concatMap(chunk -> {
                     String normalizedChunk = normalizeUpstreamChunk(chunk, contentEmitted, reasoningBuffer, chunkId);
                     if (isTerminalChunk(normalizedChunk)) {
                         // 仅当 contentEmitted=false 且 reasoningBuffer 非空时触发 reasoning fallback
@@ -265,8 +300,12 @@ public abstract class AbstractUpstreamChatService {
                         if (statusCode == 0 && logChunks.isEmpty()) {
                             statusCode = -1;
                         }
-                        saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
+                        Long logId = saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
                                 capturedRespHeaders.get(), statusCode, logChunks, attemptStart.get());
+                        // 写入时序 A（串联）：仅成功且有 usage 时写用量表；log_id 拿不到则降级为孤儿行。
+                        long ttfb = ttfbMs.get();
+                        saveUsage(logId, providerKey, modelName, true, usageRaw.get(),
+                                ttfb < 0 ? null : (int) ttfb);
                     }
                 });
     }
@@ -341,33 +380,76 @@ public abstract class AbstractUpstreamChatService {
 
     /**
      * 保存非流式调用日志。
+     *
+     * @return 新插入日志行的自增 id；日志未启用或写入失败时返回 null
      */
-    private void saveNonStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, String responseBody, long startTime) {
-        if (apiCallLog == null) return;
+    private Long saveNonStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, String responseBody, long startTime) {
+        if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLog.saveNonStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, responseBody, duration);
+        return apiCallLog.saveNonStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, responseBody, duration);
     }
 
     /**
      * 保存流式调用日志。
+     *
+     * @return 新插入日志行的自增 id；日志未启用或写入失败时返回 null
      */
-    private void saveStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, List<String> chunks, long startTime) {
-        if (apiCallLog == null) return;
+    private Long saveStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, List<String> chunks, long startTime) {
+        if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLog.saveStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, chunks, duration);
+        return apiCallLog.saveStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, chunks, duration);
     }
 
     /**
      * 保存流式调用日志（含错误信息）。
      * 当流式响应过程中发生错误且重试耗尽时，将错误响应体保存到非流式响应列。
      */
-    private void saveStreamLogWithError(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody,
+    private Long saveStreamLogWithError(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody,
                                         Map<String, String> respHeaders, int statusCode, List<String> chunks,
                                         Map<String, String> errorHeaders, int errorCode, String errorBody, long startTime) {
-        if (apiCallLog == null) return;
+        if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        apiCallLog.saveStreamWithError(providerKey, modelName, reqHeaders, requestBody,
+        return apiCallLog.saveStreamWithError(providerKey, modelName, reqHeaders, requestBody,
                 respHeaders, statusCode, chunks, errorHeaders, errorCode, errorBody, duration);
+    }
+
+    /**
+     * 从完整响应体提取 usage 并写入用量表（非流式用）。
+     *
+     * <p>写入时序 A（串联）：仅当响应体含合法 usage 对象时写一行；无 usage 则不写（方案 a）。
+     * usageRaw 从响应体提取的 usage 对象原始 JSON（零损失兜底），token 经共用解析器按存在性提取。
+     * {@code logId} 为软链接：拿到则关联，拿不到（日志写入失败）传 null 写孤儿行。
+     *
+     * @param logId    api_call_log 自增 id；可为 null
+     * @param stream   是否流式
+     * @param fullBody 完整响应体 JSON
+     * @param ttfbMs   首字响应时长；非流式传 null
+     */
+    private void saveUsageIfPresent(Long logId, String providerKey, String modelName, boolean stream,
+                                    String fullBody, Integer ttfbMs) {
+        if (apiCallUsage == null) return;
+        String usageRaw = UsageParser.extractUsageRawJson(objectMapper, fullBody);
+        if (usageRaw == null) return; // 无 usage：不写（方案 a）
+        UsageTokens tokens = UsageParser.parseUsageObject(objectMapper, usageRaw);
+        apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw, tokens, ttfbMs);
+    }
+
+    /**
+     * 用已提取的 usage 原始 JSON 写入用量表（流式用）。
+     *
+     * <p>流式链路已在原始 chunk 阶段提取好 usage 对象 JSON（{@code usageRaw}）。
+     * 写入时序 A：仅当 usageRaw 非 null 时写一行；无 usage 不写（方案 a）。
+     *
+     * @param logId    api_call_log 自增 id；可为 null（软链接，拿不到写孤儿行）
+     * @param usageRaw 已提取的 usage 对象原始 JSON；null 表示本次往返无 usage
+     * @param ttfbMs   首字响应时长；未测得传 null
+     */
+    private void saveUsage(Long logId, String providerKey, String modelName, boolean stream,
+                           String usageRaw, Integer ttfbMs) {
+        if (apiCallUsage == null) return;
+        if (usageRaw == null) return; // 无 usage：不写（方案 a）
+        UsageTokens tokens = UsageParser.parseUsageObject(objectMapper, usageRaw);
+        apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw, tokens, ttfbMs);
     }
 
     /**

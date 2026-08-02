@@ -6,7 +6,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -25,7 +24,6 @@ import org.springframework.security.web.server.SecurityWebFilterChain;
 import org.springframework.security.web.server.authentication.AuthenticationWebFilter;
 import org.springframework.security.web.server.context.NoOpServerSecurityContextRepository;
 import org.springframework.security.web.server.util.matcher.ServerWebExchangeMatchers;
-import org.springframework.web.server.WebFilter;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
@@ -41,6 +39,9 @@ import java.util.List;
  * 用户存储仍复用阻塞式的 JdbcUserDetailsManager（供 AdminPageController 做用户 CRUD），
  * 但通过 ReactiveUserDetailsService 适配器桥接到响应式 Security，
  * 阻塞查询统一调度到 boundedElastic 线程，避免阻塞 event-loop。
+ *
+ * 前端 SPA 路由（/login、/overview 等）的 index.html 回退不在这里，
+ * 统一由 {@link SpaRoutingConfig} 负责 —— 那里持有唯一的路由清单。
  */
 @Configuration
 @EnableWebFluxSecurity
@@ -55,7 +56,8 @@ public class SecurityConfig {
      */
     @Bean
     public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http, JwtService jwtService) {
-        // securityMatcher 只覆盖 API 路径；SPA 路由由 spaRouteFallback WebFilter 重写到 /index.html
+        // securityMatcher 只覆盖 API 路径；其余 SPA 路由由 SpaRoutingConfig 统一返回 index.html，
+        // 不经过本过滤链（前端页面本身不含机密，鉴权由页面内的 /config/api/** 请求各自把关）。
         http
                 .securityMatcher(ServerWebExchangeMatchers.pathMatchers(
                         "/config/**", "/auth/**", "/login", "/logout"))
@@ -112,27 +114,6 @@ public class SecurityConfig {
         });
 
         return filter;
-    }
-
-    /**
-     * Fallback WebFilter：捕获 Security 过滤链未处理的请求（如刷新 SPA 路由触发 404）。
-     * 对于 SPA 内部路由（/overview, /settings, /account, /call-log），无论是否认证，
-     * 都直接返回 index.html，由前端路由守卫在客户端判断本地 token 决定是否跳登录。
-     *
-     * @return WebFilter
-     */
-    @Bean
-    @Order(-200) // 在 Security 之前执行
-    public WebFilter spaRouteFallback() {
-        return (exchange, chain) -> {
-            String path = exchange.getRequest().getPath().value();
-            // SPA 内部路由：直接转发到 index.html
-            if (path.equals("/overview") || path.equals("/settings") || path.equals("/preferences") || path.equals("/account") || path.equals("/call-log")) {
-                return chain.filter(exchange.mutate().request(
-                        exchange.getRequest().mutate().path("/index.html").build()).build());
-            }
-            return chain.filter(exchange);
-        };
     }
 
     /**

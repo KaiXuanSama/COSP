@@ -1,3 +1,6 @@
 node_modules/
 dist/
 node/
+
+# TypeScript 增量构建缓存（vue-tsc -b 的产物，随每次类型检查改变）
+*.tsbuildinfo

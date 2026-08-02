@@ -1,0 +1,55 @@
+package com.kaixuan.copilot_ollama_proxy.protocol.usage;
+
+/**
+ * 今日时段 token 用量的一个整点 —— 折线图「今日时段」视图的首帧数据单元。
+ *
+ * <p>与 {@link UsageBreakdownRow} 一起构成图表流的两帧全量快照：前者按日期聚合，
+ * 支撑堆叠柱状图与「近 7 日」折线；本 record 按整点聚合，支撑「今日时段」折线。
+ * 两者都只描述<strong>已经发生</strong>的用量，之后的变化由增量帧驱动。
+ *
+ * <h2>整点的聚合口径</h2>
+ * 点以整点为<strong>中心</strong>聚合：{@code 14:00} 这个点覆盖 {@code [13:30, 14:30)}。
+ * 等价的表述是「把每条记录的时刻四舍五入到最近的整点」，实现上即
+ * {@code created_at + 30 分钟} 后截断到整点。窗口首尾的 05:00 因此各只覆盖半小时
+ * （首点 {@code [05:00, 05:30)}、末点 {@code [04:30, 05:00)}），两者相加恰好一小时，
+ * 总量不重不漏 —— 这不是特例处理，而是窗口边界与居中聚合共同作用的自然结果。
+ *
+ * <p>之所以选整点为中心而非整点起始：横轴首尾都落在 05:00 上，前后对称，
+ * 「一天是完整一圈」这个语义直接可见。
+ *
+ * <h2>为什么 bucket 是完整时间戳</h2>
+ * 窗口跨午夜（05:00 至次日 05:00），若只给 {@code HH:mm}，{@code 01:00} 就分不清
+ * 属于当天还是次日 —— 消费侧必须靠「序号为负则加一天」之类的补偿来还原，
+ * 而那种补偿依赖于「窗口从几点开始」这一展示口径。带上日期后歧义消失，
+ * 前端按时间戳直接定位点位，无需知道窗口起点是 5 点。
+ *
+ * <h2>为什么不返回总量与「尚未到来」标记</h2>
+ * 总量恒等于输入加输出，由展示侧现算，不占传输字段也不给「三者不一致」留可能。
+ * 「尚未到来」则是随时钟移动的展示状态，而本帧是一份数据快照 ——
+ * 把它写进数据里，帧一发出就开始过时。该判定由前端按当前时刻自行推导。
+ *
+ * <h2>口径</h2>
+ * 数据来自 {@code api_call_usage}，只含成功且上游返回了 usage 的调用，
+ * 故总量略低于统计卡（取自 {@code api_usage_daily} 的全量口径）。
+ * 库中 token 列允许 NULL（表示上游未提供，区别于真实的 0），聚合时按 0 处理，
+ * 故本 DTO 字段不可空。
+ *
+ * @param bucket       整点时刻，格式 {@code yyyy-MM-dd'T'HH:mm:ss}
+ * @param inputTokens  该整点覆盖区间内的输入 token 总量
+ * @param outputTokens 该整点覆盖区间内的输出 token 总量
+ */
+public record UsageHourlyPoint(
+        String bucket,
+        long inputTokens,
+        long outputTokens) {
+
+    /**
+     * 构造某个整点的空点位，用于补齐窗口内无数据的时段。
+     *
+     * <p>只有 {@link UsageHourlySeries} 会用到 —— 图表流首帧仍只下发有数据的整点，
+     * 补零在前端完成。两种做法并存的理由见 {@code UsageQueryService.getHourlySeries}。
+     */
+    public static UsageHourlyPoint empty(String bucket) {
+        return new UsageHourlyPoint(bucket, 0L, 0L);
+    }
+}

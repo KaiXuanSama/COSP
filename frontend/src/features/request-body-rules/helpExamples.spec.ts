@@ -45,8 +45,8 @@ describe('规则帮助实时示例', () => {
     expect(result.output.messages[2]).toEqual({ role: 'tool', content: 'already compatible' })
   })
 
-  it('MiMo 示例只转换图片 tool 消息并保留 image_url', () => {
-    const example = RULE_HELP_EXAMPLES.find((item) => item.key === 'mimo')!
+  it('图片工具消息兼容示例只转换图片 tool 消息并保留 image_url', () => {
+    const example = RULE_HELP_EXAMPLES.find((item) => item.key === 'image-tool-compatibility')!
     const result = transform(example.input, example.rules) as {
       output: { messages: Array<Record<string, any>> }
     }

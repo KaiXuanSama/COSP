@@ -1,0 +1,714 @@
+<script setup lang="ts">
+/**
+ * UsageLineChart — token 用量折线图。
+ *
+ * <h2>职责边界</h2>
+ * 只负责把已换算好的坐标画成线，不请求数据、不感知时间范围的业务含义。
+ * 分桶、补零、跨夜日期归属等规则全在 {@link useTimelineSeries} 里，
+ * 因此这里没有任何需要单测的分支。
+ *
+ * <h2>为什么用 SVG 而非 CSS</h2>
+ * 折线是连续路径，CSS 只能拼接线段并逐段旋转，接缝处会有明显的锯齿与断口。
+ * SVG 的 `polyline` 天然支持连接处圆滑（`stroke-linejoin`），且坐标用
+ * `viewBox` 归一化后完全不必关心容器实际像素尺寸。
+ *
+ * <h2>为什么只画一条线</h2>
+ * 输入 token 占总量的绝大部分，输出则贴着横轴 —— 三条线画出来是
+ * 「总量与输入几乎重合、输出压成一条直线」，两条附加线都读不出独立走势，
+ * 只是让图变脏。故图上只留总量表达趋势，输入与输出的绝对值由悬停浮框给出：
+ * 需要看构成时精确可读，不需要时不占视觉带宽。
+ *
+ * <p>三者仍共用一个纵轴（总量恒等于输入加输出，同量纲）。若将来要真的画出第二条线，
+ * 除了把 {@code SeriesConfig.drawn} 置为 true，还须把形变改成按系列各建一个
+ * {@link useSlotMorph} 实例 —— 当前实现只跟 {@code drawnSeries} 这一条线的点走。
+ */
+import { computed, ref, watch } from 'vue'
+import { AXIS_WIDTH, COLUMN_PAD_Y, formatTickValue, VALUE_LABEL_SPACE } from '../usagechart/axisTicks'
+import { useAxisScale, buildAnimatedAxisTicks } from '../usagechart/useAxisScale'
+import { anchorFromCursor } from '../usagechart/tooltipAnchor'
+import { toPolylinePoints, useTimelineSeries } from './useTimelineSeries'
+import { useSlotMorph, SLOT_MORPH_DURATION } from './useSlotMorph'
+import type { AxisLabel, SeriesPoint, TimelineRange, UsageTimelinePoint } from './usageline'
+
+const props = withDefaults(defineProps<{
+  points: UsageTimelinePoint[]
+  range: TimelineRange
+  /** 绘图区高度（px），不含横轴标签。 */
+  height?: number
+  /** 纵轴刻度栏宽度（px）。与柱状图同值，两卡片的绘图区左边界才能对齐。 */
+  axisWidth?: number
+  /**
+   * 纵轴标尺换算的动画时长（ms）。
+   *
+   * 与柱状图同值，使两处的「量纲变化」看起来是同一种运动。
+   */
+  scaleDuration?: number
+  /**
+   * 形变时长（ms）—— 范围切换时端点与横轴标签移动到新位置所用的时间。
+   *
+   * 两者共用一个值：它们标的是同一批时刻，分开走会让标签与自己对应的点脱节。
+   * 位移由形变模型逐帧插值，不经 CSS 过渡，故此值无须与任何样式常量保持同步。
+   */
+  morphDuration?: number
+}>(), {
+  height: 180,
+  axisWidth: AXIS_WIDTH,
+  scaleDuration: 420,
+  morphDuration: SLOT_MORPH_DURATION,
+})
+
+/** viewBox 的逻辑尺寸。取值本身无意义，只用于把 0~1 的比例放大成整数坐标。 */
+const VIEW_WIDTH = 1000
+const VIEW_HEIGHT = 300
+
+/** 当前悬停的点序号；null 表示未悬停。 */
+const hoverIndex = ref<number | null>(null)
+
+/**
+ * 浮框的落点与展开方向 —— 跟随光标。
+ *
+ * 不锚在数据点上：折线上下起伏，锚在点上会让浮框随光标横移而忽上忽下；
+ * 跟随光标则运动平稳，且始终在视线焦点附近。
+ */
+const anchor = ref({ left: 0, top: 0, alignEnd: false, below: false })
+
+const pointsRef = computed(() => props.points)
+const rangeRef = computed(() => props.range)
+
+/*
+ * 图表形态一律由数据自己决定，不看 range —— 切换时 range 立即变、数据要等请求回来，
+ * 中间那几帧会用错格式器，横轴闪出原始日期串。range 只用于「该撤掉悬停态了」这一件事。
+ */
+const { ceiling, axisTicks: targetTicks, series, axisLabels, dateSegments, drawableCount } =
+  useTimelineSeries(pointsRef)
+
+/**
+ * 动画中的标尺。
+ *
+ * 切换时间范围时轴上限会剧变（一天的累计 vs 单个时段的量），若刻度硬切，
+ * 使用者察觉不到量纲已变，会把新旧两屏的线高直接比较而误读趋势。
+ * 与柱状图复用同一个 composable：刻度在纵轴上真实地聚拢或散开。
+ */
+const targetCeiling = computed(() => ceiling.value)
+const { displayScale, rescaling, progress } = useAxisScale(targetCeiling, {
+  duration: props.scaleDuration,
+})
+
+const previousTicks = ref(targetTicks.value)
+watch(targetTicks, (_next, previous) => {
+  previousTicks.value = previous
+})
+
+/**
+ * 切换范围时撤掉悬停态。
+ *
+ * 序号在新旧两批之间指向的是完全不同的时刻（近 N 日的第 3 点是某一天，
+ * 今日的第 3 点是某个小时），沿用旧序号会让浮框读出一个与光标无关的值。
+ * 且点数变少时旧序号可能越界，浮框会显示一串 0。
+ */
+watch(rangeRef, () => {
+  hoverIndex.value = null
+})
+
+/** 当前要渲染的刻度：静止时用精确占比，换算中则按动画标尺实时投影。 */
+const renderTicks = computed(() => {
+  if (!rescaling.value) {
+    return targetTicks.value.map((tick, index) => ({
+      ...tick,
+      key: `static-${index}`,
+      opacity: 1,
+    }))
+  }
+  return buildAnimatedAxisTicks(
+    previousTicks.value,
+    targetTicks.value,
+    progress.value,
+    displayScale.value,
+  )
+})
+
+const rootStyle = computed(() => ({
+  '--usage-line-plot-height': `${props.height}px`,
+  '--usage-line-axis-width': `${props.axisWidth}px`,
+  '--usage-line-pad-y': `${COLUMN_PAD_Y}px`,
+  '--usage-line-value-space': `${VALUE_LABEL_SPACE}px`,
+}))
+
+/**
+ * 唯一被绘制的系列（当前是总量）。
+ *
+ * 形变以它的点为准：只有一条线时，「点动带动线动」不必再处理多条线各自的点集。
+ */
+const drawnSeries = computed(() => series.value.find((item) => item.config.drawn))
+
+/**
+ * 形变中的端点 —— 线与点共同的唯一数据来源。
+ *
+ * 位移由模型逐帧算出而非交给 CSS：CSS 过渡的中间值只存在于合成器内部，
+ * JS 读不到，线便只能按终点重算而当帧跳到位，观感是「线闪现、点随后追上」。
+ *
+ * <p>{@code identity} 取桶键（时刻 / 日期）：窗口滑动时两批点大量同名、
+ * 只是整体错开几格，据此对齐才能得出「整条线平移、一端移出、另一端补入」。
+ * 不给的话滑动一格会被算成「每个位置的读数各自跳变」—— 线的形状变了，
+ * 但看不出窗口动过。
+ *
+ * <p>{@code crossFade} <strong>不开</strong>：对齐失败时（近 N 日 ↔ 今日时段）
+ * 交叉淡化会让被顶掉的旧点也串进折线路径，凭空多出一整段线。
+ * 点本身长得一样，直接滑过去即可。
+ */
+const { morphItems: morphPoints } = useSlotMorph<SeriesPoint>(
+  computed(() => drawnSeries.value?.points ?? []),
+  { duration: props.morphDuration, identity: (point) => point.bucket },
+)
+
+/**
+ * 形变中的横轴标签 —— 与端点共用同一套模型、同一条曲线、同一个时长。
+ *
+ * 标签标的就是端点所在的时刻，两者必须同步滑动；各自实现必然在节奏上漂移，
+ * 结果是标签与自己对应的点脱节。
+ *
+ * <p>{@code identity} 取文字：与端点同理，窗口滑动时同名标签据此对齐并横向移动。
+ *
+ * <p>这里<strong>开</strong> {@code crossFade}：对齐失败时（最左那一格从 `7/24`
+ * 变成 `05:00`）位置没动但内容全换了，直接改写文字是一次硬切。
+ * 标签不参与折线路径，故不存在端点那个问题。
+ */
+const { morphItems: morphLabels } = useSlotMorph<AxisLabel>(
+  computed(() => axisLabels.value),
+  { duration: props.morphDuration, identity: (label) => label.text, crossFade: true },
+)
+
+/**
+ * 折线路径 —— 由端点当前位置实时重算。
+ *
+ * 这是「点动带动线动」的落点：线自身没有可过渡的属性（{@code points} 是坐标字符串），
+ * 但端点每帧的位置都是本组件算出来的数，把它们串起来，线与点必然同步。
+ *
+ * 退场点<strong>要串进路径</strong>：它们正收拢到新的线端，那一段线因此被拽短到消失。
+ * 若把它们排除，线会当帧截断 —— 点在慢慢收回、线却已经短了。
+ */
+const polylines = computed(() => {
+  const drawn = drawnSeries.value
+  if (!drawn) return []
+  return [{
+    key: drawn.config.key,
+    color: drawn.config.color,
+    dash: drawn.config.dash,
+    points: toPolylinePoints(morphPoints.value.map((item) => ({ x: item.x, y: item.y })), VIEW_WIDTH, VIEW_HEIGHT),
+  }]
+})
+
+/** 悬停时的垂直参考线位置（占宽度的比例）。 */
+const hoverX = computed(() => {
+  if (hoverIndex.value === null) return null
+  const first = series.value[0]
+  return first?.points[hoverIndex.value]?.x ?? null
+})
+
+/**
+ * 折线上的数据端点。
+ *
+ * 显式画出端点是为了让「哪里是一个采样点」可见 —— 只有折线时，
+ * 平缓段落里根本看不出中间有几个点，也就无从判断相邻两点跨了多久。
+ *
+ * 默认空心（描边取线色、内部填卡片底色），悬停那一点转为实心，
+ * 于是「当前正在读哪一点」不必依赖参考线也能看清。
+ *
+ * 坐标取自形变模型而非原始序列：范围切换时点要平滑移动到新位置，
+ * 而不是直接跳过去。
+ */
+const seriesDots = computed(() => {
+  const drawn = drawnSeries.value
+  if (!drawn) return []
+  return morphPoints.value.map((point) => ({
+    key: point.key,
+    color: drawn.config.color,
+    x: point.x,
+    y: point.y,
+    opacity: point.opacity,
+    // 退场点不该被标为激活：它已不属于当前数据，实心化会显得它仍可读
+    active: point.phase !== 'leave' && point.slot === hoverIndex.value,
+  }))
+})
+
+/** 悬停时段的三项数值，供浮框列出。未绘制的系列同样在列 —— 这是它们唯一的出场处。 */
+const hoverRows = computed(() => {
+  if (hoverIndex.value === null) return []
+  return series.value.map((item) => ({
+    key: item.config.key,
+    label: item.config.label,
+    color: item.config.color,
+    dash: item.config.dash,
+    value: item.points[hoverIndex.value as number]?.value ?? 0,
+  }))
+})
+
+const hoverLabel = computed(() =>
+  hoverIndex.value === null ? '' : props.points[hoverIndex.value]?.bucket ?? '',
+)
+
+/**
+ * 依鼠标横向位置定位最近的点，并同步浮框落点。
+ *
+ * 折线上的点很细，要求精确命中会让 hover 极难触发；按横坐标就近吸附则
+ * 只要鼠标在绘图区内横向移动，读数就连续跟随，这也是三值同显的前提。
+ */
+function updateHover(event: MouseEvent) {
+  const plot = event.currentTarget as HTMLElement | null
+  if (!plot || !drawableCount.value) return
+
+  const rect = plot.getBoundingClientRect()
+  const ratio = (event.clientX - rect.left) / rect.width
+  const total = props.points.length
+  const nearest = total === 1 ? 0 : Math.round(ratio * (total - 1))
+  // 上界取「已发生的点数」而非全部点数：未来段读出来是一串 0，
+  // 那是「还没发生」而非真实用量，悬停到那里只会误导
+  hoverIndex.value = Math.max(0, Math.min(drawableCount.value - 1, nearest))
+
+  // 基准取绘图区而非组件根节点：浮框是绘图区的绝对定位子元素，
+  // 用根节点算会多算出一段顶部内边距，浮框整体偏下。
+  anchor.value = anchorFromCursor(event, plot, { edgeMargin: 150, topMargin: 100 })
+}
+
+function clearHover() {
+  hoverIndex.value = null
+}
+
+/** 大数用千分位；token 量级动辄数万，不分组几乎无法读。 */
+function formatValue(value: number): string {
+  return value.toLocaleString('zh-CN')
+}
+</script>
+
+<template>
+  <div class="usage-line" :style="rootStyle">
+    <div class="usage-line__body">
+      <!-- 纵轴：刻度读数，与网格线对齐 -->
+      <div class="usage-line__axis" aria-hidden="true">
+        <span
+          v-for="tick in renderTicks"
+          :key="'axis-' + tick.key"
+          class="usage-line__tick"
+          :style="{ bottom: `${tick.ratio * 100}%`, opacity: tick.opacity }"
+        >
+          {{ formatTickValue(Math.round(tick.value)) }}
+        </span>
+      </div>
+
+      <div class="usage-line__main">
+        <div
+          class="usage-line__plot"
+          @mousemove="updateHover"
+          @mouseleave="clearHover"
+        >
+          <!-- 网格线，置于折线之下 -->
+          <div class="usage-line__grid" aria-hidden="true">
+            <span
+              v-for="tick in renderTicks"
+              :key="'grid-' + tick.key"
+              class="usage-line__gridline"
+              :class="{ 'usage-line__gridline--base': tick.value === 0 }"
+              :style="{ bottom: `${tick.ratio * 100}%`, opacity: tick.opacity }"
+            />
+          </div>
+
+          <!-- 悬停参考线：贯穿绘图区，标出正在读的是哪个时段 -->
+          <span
+            v-if="hoverX !== null"
+            class="usage-line__cursor"
+            aria-hidden="true"
+            :style="{ left: `${hoverX * 100}%` }"
+          />
+
+          <!--
+            折线层。viewBox 把 0~1 的比例放大成整数坐标，
+            preserveAspectRatio="none" 让它随容器自由拉伸 ——
+            线宽用 vector-effect 保持不变，否则横向拉伸会把线压扁。
+          -->
+          <svg
+            class="usage-line__svg"
+            :viewBox="`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <polyline
+              v-for="line in polylines"
+              :key="line.key"
+              class="usage-line__path"
+              :points="line.points"
+              :stroke="line.color"
+              :stroke-dasharray="line.dash"
+            />
+          </svg>
+
+          <!--
+            数据端点。用 div 而非 SVG 圆：viewBox 被非等比拉伸，
+            画在里面的圆会跟着变成椭圆。
+
+            默认空心、悬停那一点转实心，故「当前读的是哪一点」有独立于参考线的提示。
+          -->
+          <span
+            v-for="dot in seriesDots"
+            :key="'dot-' + dot.key"
+            class="usage-line__dot"
+            :class="{ 'usage-line__dot--active': dot.active }"
+            aria-hidden="true"
+            :style="{
+              left: `${dot.x * 100}%`,
+              bottom: `${dot.y * 100}%`,
+              opacity: dot.opacity,
+              borderColor: dot.color,
+              '--usage-line-dot-fill': dot.color,
+            }"
+          />
+
+          <!--
+            悬停明细浮框，跟随光标。图上只有总量一条线，输入与输出的绝对值全靠这里给出，
+            故它不是可选的补充说明，而是构成信息的唯一出口。
+          -->
+          <div
+            v-if="hoverRows.length"
+            class="usage-line__tooltip"
+            :class="{
+              'usage-line__tooltip--end': anchor.alignEnd,
+              'usage-line__tooltip--below': anchor.below,
+            }"
+            aria-hidden="true"
+            :style="{ left: `${anchor.left}px`, top: `${anchor.top}px` }"
+          >
+            <div class="usage-line__tooltip-head">{{ hoverLabel }}</div>
+            <div v-for="row in hoverRows" :key="row.key" class="usage-line__tooltip-row">
+              <svg class="usage-line__tooltip-mark" viewBox="0 0 14 8" aria-hidden="true">
+                <line
+                  x1="0" y1="4" x2="14" y2="4"
+                  :stroke="row.color"
+                  :stroke-dasharray="row.dash"
+                  stroke-width="2"
+                />
+              </svg>
+              <span class="usage-line__tooltip-label">{{ row.label }}</span>
+              <span class="usage-line__tooltip-value">{{ formatValue(row.value) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!--
+          横轴第一行：时刻或日期。
+
+          与端点共用形变模型，故切换范围时标签跟着刻度一起滑动、淡入淡出。
+          不透明度来自模型（稀疏与未来淡化都折进了它），不再用类名硬切。
+        -->
+        <div class="usage-line__labels" aria-hidden="true">
+          <span
+            v-for="label in morphLabels"
+            :key="label.key"
+            class="usage-line__label"
+            :style="{ left: `${label.x * 100}%`, opacity: label.opacity }"
+          >
+            {{ label.data.text }}
+          </span>
+        </div>
+
+        <!--
+          横轴第二行：日期分段，仅今日时段范围有。
+          行高恒定保留，避免切换范围时卡片高度跳动。
+        -->
+        <div class="usage-line__dates" aria-hidden="true">
+          <span
+            v-for="segment in dateSegments"
+            :key="segment.label"
+            class="usage-line__date"
+            :style="{ left: `${segment.start * 100}%`, width: `${segment.width * 100}%` }"
+          >
+            {{ segment.label }}
+          </span>
+
+          <!--
+            分段之间的短竖线。
+            两个日期文字之间若只有空白，读起来像两个并列标签；
+            加一道分隔线，「各自管辖一段区间」的意思才明确。
+          -->
+          <span
+            v-for="segment in dateSegments.slice(1)"
+            :key="'divider-' + segment.label"
+            class="usage-line__date-divider"
+            :style="{ left: `${segment.start * 100}%` }"
+          />
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style lang="scss" scoped>
+.usage-line {
+  position: relative;
+  width: 100%;
+}
+
+/*
+ * 轴区与绘图区并排。padding-top 与柱状图取同一常量，
+ * 使两张卡片的绘图区上边界处于同一水平线。
+ */
+.usage-line__body {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding-top: var(--usage-line-value-space);
+}
+
+.usage-line__axis {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--usage-line-axis-width, 36px);
+  height: var(--usage-line-plot-height);
+  margin-top: var(--usage-line-pad-y);
+}
+
+.usage-line__tick {
+  position: absolute;
+  right: 0;
+  /* 上移半个行高，使读数中线压在刻度线上 */
+  transform: translateY(50%);
+  font-family: var(--usage-line-font-mono, 'DM Mono', monospace);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--usage-line-text-muted, #9a9590);
+  white-space: nowrap;
+}
+
+.usage-line__main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.usage-line__plot {
+  position: relative;
+  height: var(--usage-line-plot-height);
+  margin-top: var(--usage-line-pad-y);
+}
+
+.usage-line__grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.usage-line__gridline {
+  position: absolute;
+  right: 0;
+  left: 0;
+  border-top: 1px dashed var(--usage-line-gridline, rgba(154, 149, 144, 0.22));
+}
+
+/* 基线（0 刻度）用实线，作为折线的落脚参考 */
+.usage-line__gridline--base {
+  border-top-style: solid;
+  border-top-color: var(--usage-line-gridline-base, rgba(154, 149, 144, 0.4));
+}
+
+/* 悬停参考线：细实线，比网格线略重以便与之区分 */
+.usage-line__cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--usage-line-accent-mid, rgba(194, 122, 62, 0.35));
+  pointer-events: none;
+}
+
+.usage-line__svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/*
+ * vector-effect 让线宽不随 viewBox 的非等比拉伸而变形 ——
+ * preserveAspectRatio="none" 会横向拉伸坐标系，不加这条线会被压成扁带。
+ *
+ * 这里没有任何 transition：路径每帧由端点当前坐标重算，形变本身已是逐帧的。
+ * 加过渡反而会让线滞后于点。
+ */
+.usage-line__path {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.usage-line__labels,
+.usage-line__dates {
+  position: relative;
+  height: 18px;
+  margin-top: 6px;
+}
+
+/*
+ * 标签位置与不透明度由形变模型逐帧写入，故这里没有 transition ——
+ * 加过渡会与逐帧插值叠加，让标签滞后于自己对应的端点。
+ */
+.usage-line__label {
+  position: absolute;
+  transform: translateX(-50%);
+  font-family: var(--usage-line-font-mono, 'DM Mono', monospace);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--usage-line-text-muted, #9a9590);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  /* 标签行纯展示；不接收指针事件也使被稀疏规则隐去的透明标签不会拦下鼠标 */
+  pointer-events: none;
+}
+
+/*
+ * 日期分段：整段居中显示，明确"这一段时刻属于哪一天"。
+ * 即使当前范围没有分段，本行仍占位，避免切换时卡片高度跳动。
+ */
+.usage-line__dates {
+  height: 16px;
+  margin-top: 2px;
+}
+
+.usage-line__date {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--usage-line-font-mono, 'DM Mono', monospace);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--usage-line-text-muted, #9a9590);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+/*
+ * 分段之间的短竖线 —— 标出两个日期各自管辖的区间边界。
+ *
+ * 只在段与段之间出现（首段左侧不画），因此渲染时从第二段起遍历。
+ * 高度取满行、颜色比日期文字更淡：它是分隔符而非内容，不该抢注意力。
+ */
+.usage-line__date-divider {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 1px;
+  background: var(--usage-line-text-muted, #9a9590);
+  opacity: 0.32;
+}
+
+/*
+ * 悬停读数浮框，跟随光标。
+ *
+ * 与柱状图的 tooltip 同一套视觉语言（深底、圆角、等宽字体），但结构不同 ——
+ * 那个是为「占比明细」设计的单/双层列表，这里要并列三条线的绝对值。
+ *
+ * 不锚在数据点上：折线上下起伏，锚在点上会让浮框随光标横移而忽上忽下；
+ * 跟随光标则运动平稳。pointer-events 关掉，避免浮框抢走鼠标造成 hover 闪烁。
+ */
+.usage-line__tooltip {
+  position: absolute;
+  z-index: 20;
+  /* 两个方向拆成独立变量：贴边与顶格是两个互不相干的决策 */
+  transform: translate(var(--usage-line-tip-x, -50%), var(--usage-line-tip-y, calc(-100% - 14px)));
+  min-width: 132px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--usage-line-tooltip-bg, #1a1917);
+  color: var(--usage-line-tooltip-text, #f5f3ee);
+  font-family: var(--usage-line-font-mono, 'DM Mono', monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* 光标靠近右缘：右缘对齐光标，向左展开 */
+.usage-line__tooltip--end {
+  --usage-line-tip-x: calc(-100% + 14px);
+}
+
+/* 光标靠近上缘：翻到光标下方 */
+.usage-line__tooltip--below {
+  --usage-line-tip-y: 14px;
+}
+
+.usage-line__tooltip-head {
+  padding-bottom: 4px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid rgba(245, 243, 238, 0.18);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-line__tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.usage-line__tooltip-mark {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 8px;
+}
+
+/* 标签占满中间空隙，把数值推到右端对齐，三行的数字因此上下成列 */
+.usage-line__tooltip-label {
+  flex: 1;
+  opacity: 0.72;
+}
+
+.usage-line__tooltip-value {
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * 数据端点。用 div 而非 SVG 圆：viewBox 被 preserveAspectRatio="none"
+ * 非等比拉伸，画在其中的圆会变成椭圆。
+ *
+ * 空心（填卡片底色）使端点在折线密集处仍能与线身区分；
+ * 描边色走内联样式，从系列配置取，故与线色永远一致。
+ */
+.usage-line__dot {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid;
+  border-radius: 50%;
+  background: var(--usage-line-surface, #fff);
+  transform: translate(-50%, 50%);
+  pointer-events: none;
+  /*
+   * 位移与淡入淡出<strong>不</strong>走 CSS 过渡 —— 它们由形变模型逐帧写入。
+   *
+   * 折线读的是同一批坐标，若位移交给 CSS，中间值只存在于合成器内部、JS 读不到，
+   * 线就只能按终点重算而当帧跳到位，点却还在慢慢滑。
+   *
+   * 这里只留 hover 反馈的过渡：尺寸与填充表达的是「指到了哪一点」，须跟手，
+   * 且与形变互不干扰。
+   */
+  transition:
+    width 0.15s ease,
+    height 0.15s ease,
+    background 0.15s ease;
+}
+
+/*
+ * 悬停中的端点转为实心并略微放大。
+ *
+ * 填充色取线色本身（由内联样式注入），与空心态形成明确对比 ——
+ * 只靠尺寸变化在 6px 量级上几乎看不出来。
+ */
+.usage-line__dot--active {
+  width: 8px;
+  height: 8px;
+  background: var(--usage-line-dot-fill, var(--usage-line-accent, #c27a3e));
+}
+</style>

@@ -32,7 +32,9 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final double V7_1_VERSION = 7.1;
     private static final double V8_VERSION = 8.0;
     private static final double V8_1_VERSION = 8.1;
-    private static final double CURRENT_SCHEMA_VERSION = 8.2;
+    private static final double V8_2_VERSION = 8.2;
+    private static final double V8_3_VERSION = 8.3;
+    private static final double CURRENT_SCHEMA_VERSION = 8.4;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -130,7 +132,10 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                 new MigrationStep(V7_1_VERSION, "新增供应商完整显示名", this::migrateDisplayNameToV71),
                 new MigrationStep(V8_VERSION, "统一供应商实现并移除 custom- 前缀", this::migrateToV8UnifiedProviders),
                 new MigrationStep(V8_1_VERSION, "移除固定的 API 格式字段", this::migrateToV81RemoveApiFormat),
-                new MigrationStep(CURRENT_SCHEMA_VERSION, "移除思考链缓存", this::migrateToV82RemoveReasoningCache));
+                new MigrationStep(V8_2_VERSION, "移除思考链缓存", this::migrateToV82RemoveReasoningCache),
+                new MigrationStep(V8_3_VERSION, "新增 token 用量表", this::migrateToV83AddUsageTable),
+                new MigrationStep(CURRENT_SCHEMA_VERSION, "新增用量时间范围查询索引",
+                        this::migrateToV84AddUsageCreatedAtIndex));
     }
 
     private List<MigrationStep> baselineMigrations() {
@@ -159,7 +164,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
             resultSet -> resultSet.next() ? resultSet.getDouble("version") : null);
         return version != null && version >= CURRENT_SCHEMA_VERSION
             && columnExists("provider_config", "display_name") && !columnExists("provider_config", "api_format")
-            && !hasLegacyProviderConfigColumns() && !tableExists("reasoning_cache");
+            && !hasLegacyProviderConfigColumns() && !tableExists("reasoning_cache")
+            && tableExists("api_call_usage") && indexExists("idx_api_call_usage_created");
     }
 
     /**
@@ -172,7 +178,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         + "ON CONFLICT(id) DO UPDATE SET version = excluded.version, "
                         + "description = excluded.description, "
                         + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
-                    CURRENT_SCHEMA_VERSION, "V8.2 架构基线：统一供应商实现并移除思考链缓存"));
+                    CURRENT_SCHEMA_VERSION, "V8.4 架构基线：统一供应商实现、token 用量表与时间范围查询索引"));
         log.info("[SchemaMigration] 已建立 V{} 架构基线", CURRENT_SCHEMA_VERSION);
     }
 
@@ -471,7 +477,56 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         jdbcTemplate.execute("DROP TABLE IF EXISTS reasoning_cache");
         jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
                 + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
-            CURRENT_SCHEMA_VERSION, "V8.2 增量迁移：移除思考链缓存");
+            V8_2_VERSION, "V8.2 增量迁移：移除思考链缓存");
+    }
+
+    /**
+     * V8.3：新增独立的 token 用量表 api_call_usage。
+     *
+     * 纯加表迁移（不改任何现有表），最低风险 DDL。token 记录独立于会被裁剪的 api_call_log
+     * 存活，作为长期统计与概览可视化的稳定数据源；log_id 为软链接（无 FK 约束）。
+     */
+    private void migrateToV83AddUsageTable() {
+        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS api_call_usage ("
+                + "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                + "log_id INTEGER, "
+                + "provider_key VARCHAR(30), "
+                + "model_name VARCHAR(100), "
+                + "is_stream INTEGER NOT NULL DEFAULT 0 CHECK (is_stream IN (0, 1)), "
+                + "usage_raw TEXT, "
+                + "prompt_tokens INTEGER CHECK (prompt_tokens IS NULL OR prompt_tokens >= 0), "
+                + "completion_tokens INTEGER CHECK (completion_tokens IS NULL OR completion_tokens >= 0), "
+                + "cached_tokens INTEGER CHECK (cached_tokens IS NULL OR cached_tokens >= 0), "
+                + "ttfb_ms INTEGER CHECK (ttfb_ms IS NULL OR ttfb_ms >= 0), "
+                + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')))");
+        jdbcTemplate.execute("CREATE INDEX IF NOT EXISTS idx_api_call_usage_provider_created "
+                + "ON api_call_usage(provider_key, created_at DESC)");
+        jdbcTemplate.execute("CREATE INDEX IF NOT EXISTS idx_api_call_usage_log "
+                + "ON api_call_usage(log_id)");
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+            V8_3_VERSION, "V8.3 增量迁移：新增 token 用量表");
+    }
+
+    /**
+     * V8.4：为 api_call_usage 补 created_at 前导索引。
+     *
+     * 纯加索引迁移，不改表结构、不动数据，因此不影响任何查询结果 —— 只影响执行计划。
+     *
+     * 概览的两条聚合查询都按时间范围过滤 created_at，而 V8.3 建的两个索引
+     * （provider_key + created_at、log_id）都无法服务纯时间范围扫描：前者的前导列是
+     * provider_key，查询没有该等值条件时用不上。api_call_usage 永久保留、只增不减，
+     * 全表扫描的代价与表总量成正比而与查询窗口无关，故行数增长后必然成为瓶颈。
+     *
+     * 索引按 created_at 升序：两条查询都是 {@code >= start}（其一还有 {@code < end}）的
+     * 范围扫描，升序与之同向；DESC 只对「取最近 N 条」有利，那是 provider_created 索引的场景。
+     */
+    private void migrateToV84AddUsageCreatedAtIndex() {
+        jdbcTemplate.execute("CREATE INDEX IF NOT EXISTS idx_api_call_usage_created "
+                + "ON api_call_usage(created_at)");
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+            CURRENT_SCHEMA_VERSION, "V8.4 增量迁移：新增用量时间范围查询索引");
     }
 
             private void deleteProviderConfiguration(int providerId) {
@@ -516,6 +571,12 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
         return jdbcTemplate.queryForList("PRAGMA table_info(" + table + ")").stream()
                 .anyMatch(row -> column.equals(row.get("name")));
+    }
+
+    private boolean indexExists(String index) {
+        Integer count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", Integer.class, index);
+        return count != null && count > 0;
     }
 
     private void createProviderRequestTransformTable() {

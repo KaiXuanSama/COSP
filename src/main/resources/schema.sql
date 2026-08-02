@@ -127,6 +127,38 @@ CREATE INDEX IF NOT EXISTS idx_api_call_log_created_id
 CREATE INDEX IF NOT EXISTS idx_api_call_log_provider_created_id
     ON api_call_log(provider_key, created_at DESC, id DESC);
 
+-- ==================== API 调用 token 用量表 ====================
+-- 独立于 api_call_log 记录每次成功调用的 token 用量与首字响应时长。
+-- 因 api_call_log 会按条数裁剪（含完整 chunks，易膨胀），token 记录必须独立存活，
+-- 作为长期用量统计与概览可视化的稳定数据源。
+-- log_id 为软链接（无 FK 约束，允许悬空）：日志在时可跳详情看 chunk，日志裁剪后成孤儿亦无妨。
+-- 表自给自足：冗余 provider_key / model_name / created_at，不依赖日志行存活即可解读。
+-- token 列允许 NULL：null = 上游未提供该字段；0 = 上游报告了但值为零（区分对缓存命中率至关重要）。
+
+CREATE TABLE IF NOT EXISTS api_call_usage (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    log_id            INTEGER,                        -- 软链接 → api_call_log.id，无 FK，允许悬空
+    provider_key      VARCHAR(30),                    -- 冗余副本，日志删除后仍可解读
+    model_name        VARCHAR(100),                   -- 冗余副本
+    is_stream         INTEGER      NOT NULL DEFAULT 0 CHECK (is_stream IN (0, 1)), -- 是否流式
+    usage_raw         TEXT,                           -- 上游 usage 对象原始 JSON，零损失兜底
+    prompt_tokens     INTEGER CHECK (prompt_tokens IS NULL OR prompt_tokens >= 0),         -- 输入；缺失为 NULL
+    completion_tokens INTEGER CHECK (completion_tokens IS NULL OR completion_tokens >= 0), -- 输出；缺失为 NULL
+    cached_tokens     INTEGER CHECK (cached_tokens IS NULL OR cached_tokens >= 0),         -- 缓存命中；按存在性优先级链取，全缺失 NULL
+    ttfb_ms           INTEGER CHECK (ttfb_ms IS NULL OR ttfb_ms >= 0),                     -- 首字响应时长（毫秒）；非流式为 NULL
+    created_at        TEXT      NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_call_usage_provider_created
+    ON api_call_usage(provider_key, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_api_call_usage_log
+    ON api_call_usage(log_id);
+-- 纯 created_at 前导索引：概览的两条聚合查询只按时间范围过滤，没有 provider_key 等值条件，
+-- 因此用不上上面那个复合索引（前导列不匹配）。升序而非 DESC：两条查询都是 >= start 的
+-- 范围扫描，与升序同向；DESC 只对「取最近 N 条」有利，那是 provider_created 的场景。
+CREATE INDEX IF NOT EXISTS idx_api_call_usage_created
+    ON api_call_usage(created_at);
+
 -- ==================== Schema 版本表 ====================
 
 CREATE TABLE IF NOT EXISTS schema_version (
