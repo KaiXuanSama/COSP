@@ -5,6 +5,7 @@ import {
   buildMorphBars,
   ENTER_HEIGHT_RATIO,
   MORPH_DURATION,
+  pruneSnapshot,
   snapshotOf,
   type MorphSnapshot,
 } from './useStackMorph'
@@ -543,41 +544,66 @@ describe('alignSlotsByIdentity', () => {
     expect(alignSlotsByIdentity(['a'], [])).toBeNull()
   })
 
-  it('取票数最多的位移量', () => {
-    // 旧批 a,b,c,d 在 slot 0..3；新批 b,c,d,e 中三个身份指向 δ=+1
+  it('匹配柱沿用旧 slot，右侧进场柱顺推', () => {
+    // 旧批 a,b,c,d 在 slot 0..3；新批 b,c,d 各自沿用旧 slot，e 顺推到 4
     const previous = seats(bar('a', 1), bar('b', 2), bar('c', 3), bar('d', 4))
     expect(alignSlotsByIdentity(['b', 'c', 'd', 'e'], previous)).toEqual([1, 2, 3, 4])
   })
 
   /**
-   * 平票时取 |δ| 最小的。
+   * 左侧进场柱从第一个匹配项向左回填，故新柱落在留存柱左边。
    *
-   * 刻度身份在一批内唯一，故正常情况下最高票是唯一的；平票只出现在重合极少的
-   * 边缘情形，此时位移越小、留存柱的横向移动越少，更接近「几乎没变」这个事实。
+   * 这就是「窗口左移时新柱从左侧挤入」的实现 —— 不需要显式判断方向。
    */
-  it('平票时取位移绝对值更小的', () => {
-    // 旧批只有 b 在 slot 1；新批 [b, x] 让 δ=+1 得一票，[x, b] 让 δ=0 得一票
-    const previous: MorphSnapshot[] = [{ slot: 1, bar: bar('b', 2) }]
-    expect(alignSlotsByIdentity(['x', 'b'], previous)).toEqual([0, 1])
+  it('左侧进场柱向左回填，可为负 slot', () => {
+    const previous = seats(bar('b', 2), bar('c', 3))
+    // 新批 [a, b, c]：b 匹配 slot 0，a 回填到 -1
+    expect(alignSlotsByIdentity(['a', 'b', 'c'], previous)).toEqual([-1, 0, 1])
   })
 
-  /** 不连续占位（锚定复用的产物）同样适用 —— 位移是相对旧 slot 算的。 */
-  it('旧批占位不连续时仍按旧 slot 算位移', () => {
+  /**
+   * 基准左端已是负 slot 时仍能继续左推 —— 连续快速左滑的场景。
+   *
+   * <p>早先按「整体位移 δ」给进场柱定位：基准是 {@code [-1..5]}、新批再左移一格时，
+   * 匹配项贡献 δ = 0，进场柱算到 {@code 0 + 0 = 0} —— 那个位置已被占用，
+   * 落位碰撞导致失序、整体回退到位置对齐，于是每根柱都换一个 DOM 节点，形变尽失。
+   * 就近顺推则总落在紧邻匹配项的空位上。
+   */
+  it('基准含负 slot 时继续左推不碰撞', () => {
+    const previous: MorphSnapshot[] = [
+      { slot: -1, bar: bar('7/26', 1) },
+      { slot: 0, bar: bar('7/27', 2) },
+      { slot: 1, bar: bar('7/28', 3) },
+    ]
+    // 新批 [7/25, 7/26, 7/27]：7/26 匹配 -1、7/27 匹配 0，7/25 回填到 -2
+    expect(alignSlotsByIdentity(['7/25', '7/26', '7/27'], previous)).toEqual([-2, -1, 0])
+  })
+
+  /** 只有一根匹配柱时，两侧进场柱都以它为锚顺推。 */
+  it('单个匹配项时两侧都以它为锚', () => {
+    const previous: MorphSnapshot[] = [{ slot: 3, bar: bar('b', 2) }]
+    expect(alignSlotsByIdentity(['a', 'b', 'c'], previous)).toEqual([2, 3, 4])
+  })
+
+  /**
+   * 不连续占位（下钻锚定的产物）—— 匹配柱沿用旧 slot，进场柱紧跟其后。
+   */
+  it('旧批占位不连续时匹配柱沿用旧 slot', () => {
     const previous: MorphSnapshot[] = [
       { slot: 0, bar: bar('a', 1) },
       { slot: 4, bar: bar('e', 5) },
     ]
-    // 新批 [e, f]：e 匹配旧 slot 4（沿用），f 是进场柱按 δ=4 落在 5
+    // 新批 [e, f]：e 匹配旧 slot 4（沿用），f 顺推到 5
     expect(alignSlotsByIdentity(['e', 'f'], previous)).toEqual([4, 5])
   })
 
   /**
-   * 全匹配的重算必须<strong>幂等</strong> —— 这是本轮修复的核心。
+   * 全匹配的重算必须<strong>幂等</strong>。
    *
    * 下钻锚定后留下不连续占位（如 {@code [0, 1, 4]}）。退场清理会用同一批数据
    * 重算一次，此时每根柱子的身份都还在旧批里。匹配柱沿用旧 slot，故结果原样返回；
-   * 若改用 {@code i + δ}（δ=0），slot 4 会被压回 2 —— 那正是刚淡出完毕的退场柱
-   * 所在的节点，留存柱被塞进去随即抽一下，正是用户看到的收尾抽搐。
+   * 若按整体位移重算（δ=0）会把 slot 4 压回 2 —— 那正是刚淡出完毕的退场柱
+   * 所在的节点，留存柱被塞进去随即抽一下。
    */
   it('不连续占位全匹配时原样返回，不压缩', () => {
     const previous: MorphSnapshot[] = [
@@ -585,21 +611,128 @@ describe('alignSlotsByIdentity', () => {
       { slot: 1, bar: bar('b', 2) },
       { slot: 4, bar: bar('e', 5) },
     ]
-    // 三根柱身份全在旧批里，各自沿用旧 slot —— 不连续也保持
     expect(alignSlotsByIdentity(['a', 'b', 'e'], previous)).toEqual([0, 1, 4])
   })
 
   /**
-   * 匹配柱沿用旧 slot 后若与进场柱交错导致失序，返回 null 交由回退。
+   * 匹配项自身失序时返回 null 交由回退。
    *
    * 失序会让 Vue 重排正在过渡的节点，反而制造硬跳；此时位置对齐是更安全的选择。
+   * 正常路径不会走到这里（数据顺序稳定），这是排序规则若变动时的兜底。
    */
-  it('落位失序时返回 null', () => {
+  it('匹配项失序时返回 null', () => {
     const previous: MorphSnapshot[] = [
       { slot: 0, bar: bar('a', 1) },
       { slot: 5, bar: bar('f', 6) },
     ]
     // 新批 [f, a]：f 沿用旧 slot 5、a 沿用旧 slot 0 —— 结果 [5, 0] 失序
     expect(alignSlotsByIdentity(['f', 'a'], previous)).toBeNull()
+  })
+})
+
+/**
+ * 配对基准的结算 —— 快速连续切换时不丢动画的关键。
+ *
+ * <p>{@link buildMorphBars} 的柱子集合完全派生于「当前数据 ∪ 基准」。因此基准里
+ * 少记了什么，屏幕上就会有柱子凭空消失：
+ * <ul>
+ *   <li>只记留存柱 → 正在退场的柱子在下一批数据到来时被摘掉；</li>
+ *   <li>基准迟迟不推进 → 进场柱一直被算作 enter，同样在下一批时无人认领。</li>
+ * </ul>
+ * 这组用例锁住「两类占位都记、退场条目按各自时刻过期」这个契约。
+ */
+describe('基准结算：留存与退场都记，退场按时刻过期', () => {
+  it('留存柱不带时刻，未被占用的旧位置记为退场', () => {
+    const previous = seats(bar('a', 1), bar('b', 2), bar('c', 3))
+    // 新批 [a, b]：c 所在的 slot 2 无人占用 → 退场条目
+    const snapshot = snapshotOf([bar('a', 1), bar('b', 2)], previous, null, 1000)
+
+    expect(snapshot.map(item => item.slot)).toEqual([0, 1, 2])
+    expect(snapshot.slice(0, 2).every(item => item.leavingSince === undefined)).toBe(true)
+    expect(snapshot[2].leavingSince).toBe(1000)
+    // 退场条目保留旧数据，淡出期间仍显示原内容
+    expect(snapshot[2].bar.key).toBe('c')
+  })
+
+  /**
+   * 已在退场中的条目沿用原时刻，不被反复延期。
+   *
+   * 否则连续切换时一根柱子会在屏幕上以近零宽度赖着不走。
+   */
+  it('已退场条目沿用原时刻', () => {
+    const previous: MorphSnapshot[] = [
+      { slot: 0, bar: bar('a', 1) },
+      { slot: 1, bar: bar('b', 2), leavingSince: 500 },
+    ]
+    const snapshot = snapshotOf([bar('a', 1)], previous, null, 1000)
+
+    expect(snapshot[1].leavingSince).toBe(500)
+  })
+
+  /**
+   * 退场条目被回归的同名柱复用 —— 这正是「左滑再右滑」的场景。
+   *
+   * 8/2 上一步在退场，紧接着右滑它又回来了：因为退场条目还在基准里，
+   * 它匹配到原 slot、从当前的近零宽度平滑长回，而不是凭空重新入场。
+   */
+  it('回归的同名柱复用退场条目的位置', () => {
+    const previous: MorphSnapshot[] = [
+      { slot: 0, bar: bar('7/27', 1) },
+      { slot: 1, bar: bar('7/28', 2) },
+      { slot: 2, bar: bar('8/2', 3), leavingSince: 500 },
+    ]
+    const morph = buildMorphBars(
+      [bar('7/27', 1), bar('7/28', 2), bar('8/2', 3)],
+      previous,
+      100,
+    )
+
+    // 三根柱全部复用，没有任何进出场
+    expect(morph.map(item => item.slot)).toEqual([0, 1, 2])
+    expect(morph.map(item => item.phase)).toEqual(['stable', 'stable', 'stable'])
+  })
+
+  it('新进场柱在基准里不带时刻', () => {
+    const previous = seats(bar('b', 2))
+    // 新批 [a, b]：a 是进场柱，回填到 slot -1
+    const snapshot = snapshotOf([bar('a', 1), bar('b', 2)], previous, null, 1000)
+
+    expect(snapshot.map(item => item.slot)).toEqual([-1, 0])
+    expect(snapshot.every(item => item.leavingSince === undefined)).toBe(true)
+  })
+})
+
+describe('pruneSnapshot', () => {
+  it('留存条目一律保留', () => {
+    const snapshot = seats(bar('a', 1), bar('b', 2))
+    expect(pruneSnapshot(snapshot, 99999, 420)).toHaveLength(2)
+  })
+
+  it('未满时长的退场条目保留', () => {
+    const snapshot: MorphSnapshot[] = [{ slot: 0, bar: bar('a', 1), leavingSince: 1000 }]
+    // 1000 + 419 < 1420
+    expect(pruneSnapshot(snapshot, 1419, 420)).toHaveLength(1)
+  })
+
+  it('满时长的退场条目被移除', () => {
+    const snapshot: MorphSnapshot[] = [{ slot: 0, bar: bar('a', 1), leavingSince: 1000 }]
+    expect(pruneSnapshot(snapshot, 1420, 420)).toHaveLength(0)
+  })
+
+  /**
+   * 不同时刻起步的退场条目各自过期 —— 单个全局定时器做不到这一点。
+   *
+   * 快速切换时先起步的那批若被延后清理，会在屏幕上以近零宽度赖着；
+   * 后起步的若被提前清理，淡出被截断。
+   */
+  it('不同时刻起步的退场条目按各自时长过期', () => {
+    const snapshot: MorphSnapshot[] = [
+      { slot: 0, bar: bar('a', 1) },
+      { slot: 1, bar: bar('b', 2), leavingSince: 1000 },
+      { slot: 2, bar: bar('c', 3), leavingSince: 1300 },
+    ]
+    // now=1500：b 已满 420（1000+420=1420 ≤ 1500）被移除，c 未满（1300+420=1720）保留
+    const pruned = pruneSnapshot(snapshot, 1500, 420)
+    expect(pruned.map(item => item.slot)).toEqual([0, 2])
   })
 })

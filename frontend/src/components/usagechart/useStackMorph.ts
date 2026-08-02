@@ -174,7 +174,7 @@ export interface MorphBar {
 }
 
 /**
- * 上一批柱子及其占用的位置。
+ * 上一批柱子及其占用的位置 —— 配对的基准。
  *
  * 必须把 slot 与数据一起记住，不能事后由下标推算：锚定复用会留下不连续的
  * 占用（如 4 → 2 点第 3 根，留存 0 与 2），按下标重排会让同一批柱子换到
@@ -183,6 +183,47 @@ export interface MorphBar {
 export interface MorphSnapshot {
   slot: number
   bar: StackBar
+  /**
+   * 该位置开始退场的时刻（{@code performance.now()} 读数）；留存柱为 {@code undefined}。
+   *
+   * <h2>为什么退场柱也要留在基准里</h2>
+   * {@link buildMorphBars} 产出的柱子集合完全派生于「当前数据 ∪ 基准」。
+   * 若基准只记留存柱，那么<strong>仅因为退场而存在于屏幕上</strong>的那些柱子，
+   * 在下一批数据到来时会凭空从集合里消失 —— Vue 直接摘掉 DOM 节点，没有退场帧。
+   *
+   * <p>这正是快速连续滑动时「上一步的归零动画硬消失」的来源：左滑后 8/2 正在退场、
+   * 7/26 刚进场；紧接着右滑，新一批身份与基准全匹配、不产生任何退场条目，
+   * 于是 slot −1 上那根 7/26 无人认领，当场消失。
+   *
+   * <p>把退场条目一并留下，它们在下一次配对里仍是「可见的旧位置」：
+   * 要么继续退场（无人占用），要么被回归的同名柱复用节点、从当前的近零宽度长回。
+   *
+   * <h2>为什么按条目各自计时而非全局定时器</h2>
+   * 快速切换时不同批次的退场柱起始时刻不同。单个定时器只能表达「最后一次切换的
+   * 动画何时结束」，先起步的那批会被延后清理、后起步的会被提前清理。
+   * 逐条记录时刻后，过期判断是纯函数（见 {@link pruneSnapshot}），与切换节奏无关。
+   */
+  leavingSince?: number
+}
+
+/**
+ * 剔除已播完退场动画的条目。
+ *
+ * <p>留存条目一律保留（它们是当前的占位事实）；退场条目只在超过 {@code duration}
+ * 后移除 —— 提前移除等于把正在淡出的元素从 DOM 摘掉，那正是硬切的来源。
+ *
+ * @param snapshot 待清理的基准
+ * @param now 当前时刻（{@code performance.now()} 读数）
+ * @param duration 退场动画时长（ms）
+ */
+export function pruneSnapshot(
+  snapshot: MorphSnapshot[],
+  now: number,
+  duration: number,
+): MorphSnapshot[] {
+  return snapshot.filter(
+    item => item.leavingSince === undefined || now - item.leavingSince < duration,
+  )
 }
 
 /**
@@ -394,41 +435,35 @@ export function assignSlots(
  * 而 {@link assignSlots} 只会在右端追加位置，新柱于是从右侧挤进来 ——
  * 与「左边多了一天」的事实相反。
  *
- * <h2>做法：找出使身份重合最多的整体位移</h2>
- * 每个「新柱 i 的身份 == 旧柱在 slot s 的身份」都投票给位移 {@code δ = s - i}。
- * 取票数最多的 δ。
+ * <h2>做法：以匹配项为锚，向两侧顺推</h2>
+ * 身份能在旧批里找到的柱子直接沿用它匹配的<strong>旧 slot</strong>；找不到的
+ * （进场柱）则从<strong>最近的匹配项</strong>顺推一格。于是身份相同的柱子必然复用
+ * 同一个 DOM 节点，没被覆盖的旧位置退场、新位置进场，
+ * 而两者的左右方位由匹配关系自然决定 —— 不需要再判断「这次往左还是往右」。
  *
- * <p>落位分两种：
+ * <h2>为什么不用「整体位移量」</h2>
+ * 早先的做法是投票选出使重合最多的位移 δ，进场柱落在 {@code i + δ}。
+ * 它有两个失效场景：
  * <ul>
- *   <li><strong>匹配柱</strong>（身份在旧批里找得到）—— 直接用它匹配的<strong>旧 slot</strong>。
- *       这是幂等性的关键：同一批数据重算时（退场清理）每根柱子落回原位，
- *       不会被推去复用别的 DOM 节点。</li>
- *   <li><strong>进场柱</strong>（身份是新的）—— 用 {@code i + δ} 落在整体位移后的位置。</li>
+ *   <li><strong>不连续占位</strong>（下钻锚定的产物，如 {@code [0, 1, 4]}）——
+ *       对同一批数据重算时 δ = 0，slot 4 会被压回 2，那正是刚淡出完毕的退场柱
+ *       所在的节点，留存柱被塞进去随即抽一下；</li>
+ *   <li><strong>基准左端已是负 slot</strong>（连续左滑的产物）—— 再左滑一格时，
+ *       新进场柱按 δ 会算到已被占用的位置上，落位碰撞导致失序、整体回退到位置对齐，
+ *       于是每根柱子都换一个 DOM 节点，形变效果尽失。</li>
  * </ul>
- * 于是身份相同的柱子必然复用同一节点，没被覆盖的旧位置退场、新位置进场，
- * 左右方位由 δ 自然决定 —— 不需要再判断「这次往左还是往右」。
- *
- * <h2>为什么匹配柱不能也用 i + δ</h2>
- * {@code i + δ} 内在假设「新批占位从 0 连续排列」。窗口滑动时旧批确实连续，
- * 两种算法结果相同；但<strong>下钻锚定</strong>会留下不连续占位（如 {@code [0, 1, 4]}），
- * 此时对全匹配的重算，{@code i + δ} 会把 slot 4 压回 2 —— 那正是刚淡出完毕的
- * 退场柱所在的节点，留存柱被塞进去随即抽一下。用旧 slot 则原样保持，重算幂等。
+ * 沿用旧 slot + 就近顺推同时解决两者：重算幂等，进场柱总落在紧邻匹配项的空位上。
  *
  * <p>slot 因此<strong>可以为负、可以不连续</strong>。它只是渲染 key 与排序依据；
  * 强行归一化会让同一批柱子的 key 凭空改变，反倒把留存柱推去复用别的节点。
  *
- * <h2>为什么平票时取 |δ| 最小的</h2>
- * 刻度身份在一批内唯一，故正常情况下票数最多的 δ 是唯一的。平票只出现在
- * 重合极少的边缘情形（如只剩一根柱子对得上两个位置），此时位移越小、
- * 留存柱的横向移动越少，更接近「几乎没变」这个事实。
- *
  * @param keys 新一批柱子的身份，顺序即从左到右
  * @param previous 旧批柱子及其占位
  * @returns 长度与 {@code keys} 相同的<strong>严格升序</strong> slot 序列；
- *   两批身份毫无重合、或落位结果非严格升序时返回 {@code null}，
- *   交由调用方回退到位置对齐。失序回退是必要的兜底：匹配柱用旧 slot、
- *   进场柱用 {@code i + δ}，两者在不连续占位叠加进场时可能交错，
- *   而失序会让 Vue 重排正在过渡的节点。
+ *   两批身份毫无重合、或匹配项本身失序时返回 {@code null}，
+ *   交由调用方回退到位置对齐。失序回退是必要的兜底 ——
+ *   数据顺序若与旧批不一致（理论上不会，但排序规则可能变），
+ *   非升序会让 Vue 重排正在过渡的节点，反而制造硬跳。
  */
 export function alignSlotsByIdentity(
   keys: string[],
@@ -442,30 +477,23 @@ export function alignSlotsByIdentity(
     if (!slotByKey.has(item.bar.key)) slotByKey.set(item.bar.key, item.slot)
   }
 
-  /** 位移量 → 票数。仅用于给进场柱定位，匹配柱直接沿用旧 slot。 */
-  const votes = new Map<number, number>()
-  keys.forEach((key, index) => {
-    const slot = slotByKey.get(key)
-    if (slot === undefined) return
-    const delta = slot - index
-    votes.set(delta, (votes.get(delta) ?? 0) + 1)
-  })
-  if (votes.size === 0) return null
+  /** 各柱匹配到的旧 slot；{@code null} 表示这是一根进场柱。 */
+  const matched = keys.map(key => slotByKey.get(key) ?? null)
+  const firstMatch = matched.findIndex(slot => slot !== null)
+  // 毫无重合：没有锚可依，交由位置对齐处理
+  if (firstMatch === -1) return null
 
-  let best = 0
-  let bestVotes = -1
-  for (const [delta, count] of votes) {
-    if (count > bestVotes || (count === bestVotes && Math.abs(delta) < Math.abs(best))) {
-      best = delta
-      bestVotes = count
-    }
+  const result: number[] = new Array(keys.length)
+
+  // 从第一个匹配项向右：匹配的沿用旧 slot，进场的紧跟上一根之后
+  result[firstMatch] = matched[firstMatch] as number
+  for (let i = firstMatch + 1; i < keys.length; i += 1) {
+    result[i] = matched[i] !== null ? (matched[i] as number) : result[i - 1] + 1
   }
-
-  // 匹配柱用旧 slot（幂等、原地复用），进场柱按整体位移落位。
-  const result = keys.map((key, index) => {
-    const slot = slotByKey.get(key)
-    return slot !== undefined ? slot : index + best
-  })
+  // 再从第一个匹配项向左回填：左侧的进场柱依次前推，故新柱出现在左端
+  for (let i = firstMatch - 1; i >= 0; i -= 1) {
+    result[i] = result[i + 1] - 1
+  }
 
   // 落位必须严格升序，否则 Vue 会重排正在过渡的节点。不满足则交由调用方回退。
   for (let i = 1; i < result.length; i += 1) {
@@ -523,19 +551,36 @@ export function resolveSlots(
  * 而非「柱子及其占位」，下一次分配就会按数量重新从 0 排列，
  * 同一批数据的 slot 凭空改变，留存柱因此被塞进别的 DOM 节点。
  *
- * 只收留存柱：退场柱的位置本次已让出，不应再占用名额。
+ * <h2>退场条目一并收进来</h2>
+ * 「没被本批占用的旧位置」正在播退场动画，它们必须留在基准里，否则下一批数据
+ * 到来时会凭空消失（详见 {@link MorphSnapshot.leavingSince}）。标记上退场起始
+ * 时刻，由 {@link pruneSnapshot} 按各自时长过期。
+ *
+ * <p>已在退场中的条目<strong>沿用原时刻</strong>：连续切换时它不该被反复延期，
+ * 否则一根柱子会在屏幕上以近零宽度赖着不走。
  *
  * @param bars 本批柱子
  * @param previous 本次配对所用的基准
  * @param anchor 本次配对所用的锚点
+ * @param now 当前时刻，用于标记本次新产生的退场条目
  */
 export function snapshotOf(
   bars: StackBar[],
   previous: MorphSnapshot[],
   anchor: number | null,
+  now = 0,
 ): MorphSnapshot[] {
   const slots = resolveSlots(bars, previous, anchor)
-  return bars.map((bar, index) => ({ slot: slots[index], bar }))
+  const taken = new Set(slots)
+  const alive: MorphSnapshot[] = bars.map((bar, index) => ({ slot: slots[index], bar }))
+
+  const leaving = previous
+    .filter(item => !taken.has(item.slot))
+    // 已在退场中的沿用原时刻，本次新退场的记为 now
+    .map(item => ({ ...item, leavingSince: item.leavingSince ?? now }))
+
+  // 按 slot 升序：基准本身不参与渲染，但有序便于调试对照
+  return [...alive, ...leaving].sort((a, b) => a.slot - b.slot)
 }
 
 function hasNewcomer(bars: StackBar[], previous: MorphSnapshot[], anchor: number | null): boolean {
@@ -609,15 +654,20 @@ export function useStackMorph(
   )
 
   /*
-   * 关键时序：起始态与退场清理必须分开调度，因为它们的正确时机根本不同。
+   * 关键时序：推进基准与清理退场必须分开，因为它们的正确时机根本不同。
    *
-   * `morphBars` 以 previous 为配对基准，退场柱正是「previous 比 bars 多出来的
-   * 尾部」派生出来的。因此 previous 一旦推进，那些柱子当场从列表里消失 ——
-   * 提前推进等于把正在淡出的元素直接从 DOM 摘掉，观感就是硬切。
+   * `morphBars` 的柱子集合完全派生于「bars ∪ previous」。于是：
+   *   - previous 若<strong>不</strong>及时推进，进场柱会一直被算作 enter，
+   *     下一批数据到来时它无人认领、凭空消失（快速连续滑动时的硬切来源）；
+   *   - previous 若<strong>只记留存柱</strong>，正在退场的柱子同样凭空消失。
    *
-   * 于是本回调只登记「这一批要不要走起始态」，两件后续工作各归其位：
-   *   下一帧      —— 放开起始高度，凭空出现的柱与层开始调整（scheduleSettle）；
-   *   动画结束后  —— 推进 previous，退场柱此时才被移除（scheduleRetire）。
+   * 解法是让基准同时记住两类占位（见 {@link MorphSnapshot.leavingSince}），
+   * 并把两件事各归其位：
+   *   第 2 帧      —— 起始态放开 + 推进基准（scheduleSettle）；
+   *   各自满时长后 —— 逐条剔除已播完的退场条目（scheduleRetire）。
+   *
+   * 第 2 帧推进是安全的：那一刻进场柱的起始帧（宽 0、透明）已提交到合成器，
+   * 把它转成 stable 只是换个 phase 名字，weight 仍由同一条 CSS 过渡驱动。
    *
    * `immediate` 是必需的：图表组件由 `v-if` 控制，数据未到时渲染的是加载态，
    * 组件要等数据到齐才创建 —— 那一刻 `bars` 已是最终值，此后不再变化，
@@ -630,23 +680,31 @@ export function useStackMorph(
     // 复用柱与退场层的起点都已存在于 DOM 中，直接改值即可由 CSS 过渡接手。
     // 基准取 previous 而非 watch 的旧值 —— previous 才是本次配对真正用的那一批。
     settled.value = !hasNewcomer(next, previous.value, anchor.value)
-    scheduleSettle()
-    // 快照取「本次实际渲染出的占位」而非裸数据：占位是这批柱子的 DOM 身份，
-    // 必须与数据一同留存，详见 scheduleRetire。
-    scheduleRetire(snapshotOf(next, previous.value, anchor.value))
+    // 快照取「本次实际渲染出的占位」而非裸数据：占位是这批柱子的 DOM 身份。
+    // 退场条目一并收进来并打上时刻，故它们在后续批次里仍是可见的旧位置。
+    scheduleSettle(snapshotOf(next, previous.value, anchor.value, now()))
+    scheduleRetire()
   }, { flush: 'post', immediate: true })
 
   /**
-   * 下一帧放开起始高度，让凭空出现的柱与层调整到目标值。
+   * 第 2 帧放开起始高度并推进配对基准。
    *
-   * 只管起始态，不动 {@link previous} —— 后者一旦推进，退场柱当场从列表里消失，
-   * 动画就没机会播。两件事的正确时机本就不同：起始态是「下一帧」，
-   * 退场清理是「动画结束后」，故分由两个调度承担。
+   * <h2>为什么两件事同帧做</h2>
+   * 起始态的意义是「给 CSS 过渡一个起点」，那个起点在第 1 帧已提交到合成器；
+   * 第 2 帧改值即触发过渡。此时把基准一并推进，进场柱从 enter 变成 stable ——
+   * 但它的 weight 目标值不变（都是 {@link FULL_WEIGHT}），过渡照常跑完。
+   *
+   * <p>推进得<strong>不能更晚</strong>：只要基准还是陈旧的那一批，进场柱就一直
+   * 依赖「当前数据」才存在于集合里，下一批数据一到它就无人认领。这正是
+   * 快速连续滑动时上一步动画硬消失的根因。
+   *
+   * @param snapshot 本批渲染出的占位快照（含退场条目）
    */
-  function scheduleSettle(): void {
+  function scheduleSettle(snapshot: MorphSnapshot[]): void {
     cancelSettle()
     if (typeof requestAnimationFrame !== 'function') {
       settled.value = true
+      advance(snapshot)
       return
     }
     // 双帧：第一帧确保起始高度已提交到合成器，第二帧再改值才会产生过渡
@@ -654,35 +712,45 @@ export function useStackMorph(
       settleFrame = requestAnimationFrame(() => {
         settleFrame = null
         settled.value = true
+        advance(snapshot)
       })
     })
   }
 
   /**
-   * 动画结束后推进配对基准，退场柱随之从列表移除。
+   * 推进配对基准，并让锚点失效。
    *
-   * 必须等满一个 {@link duration}：退场柱是由「没被选中的旧位置」派生的，
-   * 提前推进等于把正在淡出的元素直接从 DOM 摘掉 —— 那正是硬切的来源。
-   *
-   * 存进去的是<strong>占位快照</strong>而非裸数据。清理只该移除退场柱，
-   * 不该让留存柱换位：若只记数据、下一轮再按数量重排 slot，那么锚定复用留下的
-   * 不连续占位（如留存 0 与 2）会被压回 0 与 1，留存柱因此被塞进刚淡出完毕的
-   * 那具节点（宽 0、透明），随即又得过渡回正常尺寸 —— 表现就是动画收尾时
-   * 突兀地抽一下。带上占位，这次推进对留存柱就是完全无感的。
-   *
-   * @param next 本次渲染出的占位快照，清理时成为下一轮的配对基准
+   * <p>锚点只描述「这一次变化的来源」，随基准一起失效。这要求
+   * {@link resolveSlots} 对同一批数据在有无锚点时给出<strong>同样</strong>的 slot，
+   * 否则推进本身就会让留存柱换节点 —— 那是 `alignSlotsByIdentity` 的幂等性
+   * 所保证的（匹配柱一律沿用旧 slot）。
    */
-  function scheduleRetire(next: MorphSnapshot[]): void {
+  function advance(snapshot: MorphSnapshot[]): void {
+    previous.value = snapshot
+    anchor.value = null
+  }
+
+  /**
+   * 逐条剔除已播完退场动画的条目。
+   *
+   * <h2>为什么不用「一次切换一个定时器」</h2>
+   * 快速切换时不同批次的退场柱起始时刻不同。单个定时器只能表达「最后一次切换的
+   * 动画何时结束」：先起步的那批被延后清理（在屏幕上以近零宽度赖着），
+   * 后起步的被提前清理（淡出被截断）。
+   *
+   * <p>改为每次数据变化都排一次「一个时长之后再筛一遍」，判断交给纯函数
+   * {@link pruneSnapshot} 按各条目自己的时刻做 —— 与切换节奏无关。
+   * 若筛完仍有退场条目在场（更晚起步的那批），继续排下一轮。
+   */
+  function scheduleRetire(): void {
     cancelRetire()
-    if (typeof window === 'undefined') {
-      previous.value = next
-      return
-    }
+    if (typeof window === 'undefined') return
     retireTimer = window.setTimeout(() => {
       retireTimer = null
-      previous.value = next
-      // 锚点随配对基准一起失效：它只描述「这一次变化的来源」
-      anchor.value = null
+      const pruned = pruneSnapshot(previous.value, now(), duration)
+      if (pruned.length !== previous.value.length) previous.value = pruned
+      // 仍有退场条目未到期（更晚起步的批次），继续排一轮
+      if (pruned.some(item => item.leavingSince !== undefined)) scheduleRetire()
     }, duration)
   }
 
@@ -721,4 +789,15 @@ export function useStackMorph(
   }
 
   return { morphBars, morphFrom }
+}
+
+/**
+ * 单调时钟 —— 优先 {@code performance.now()}，避免系统时间调整影响退场计时。
+ *
+ * 与 `useSlotMorph` 里的同名函数一致；两处都只用于「过了多久」这类差值运算。
+ */
+function now(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
 }
