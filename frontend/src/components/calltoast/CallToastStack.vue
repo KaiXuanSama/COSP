@@ -6,14 +6,25 @@
  * 每次流经代理的 Copilot 调用对应一个 Toast，按 requestId 分组，
  * 随后端推送的阶段事件（RECEIVED → CONNECTED → CHUNK → COMPLETED/FAILED）实时更新文案，
  * 终态后短暂停留再向右淡出。不同调用的状态天然隔离（每条 Reactor 订阅链一个 requestId）。
+ *
+ * 主动断连通过右键上下文菜单触发，始终可用——后端取消端点不看任何「超时」标志，
+ * 故前端也不需要计时器或 canCancel 字段。
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useCallLifecycleStore, type CallToast, type CallPhase } from '@/stores/callLifecycle'
 
 const store = useCallLifecycleStore()
 
 // 越新的调用排在最上面，与 SSE 到达顺序相反。
 const orderedToasts = computed(() => [...store.toasts].slice().reverse())
+
+/** 当前打开的右键菜单目标（null 表示无菜单）。 */
+const menuTarget = ref<CallToast | null>(null)
+/** 菜单的定位坐标。 */
+const menuX = ref(0)
+const menuY = ref(0)
+/** 断连请求是否在途（菜单项 loading 态，防重复）。 */
+const canceling = ref(false)
 
 /** 各阶段的展示文案。流式与非流式在 CHUNK/COMPLETED 上略有差异。 */
 function phaseText(toast: CallToast): string {
@@ -26,8 +37,6 @@ function phaseText(toast: CallToast): string {
       return `已产生 chunk：${toast.chunkCount}`
     case 'RETRYING':
       return `上游异常，正在重试（第 ${toast.attempt} 次）`
-    case 'STALLED':
-      return `上游响应停滞，已产生 chunk：${toast.chunkCount}`
     case 'COMPLETED':
       return toast.stream ? `响应完成，总 chunk 数：${toast.chunkCount}` : '响应完成'
     case 'FAILED':
@@ -52,8 +61,6 @@ function phaseClass(phase: CallPhase): string {
       return 'is-chunk'
     case 'RETRYING':
       return 'is-retrying'
-    case 'STALLED':
-      return 'is-stalled'
     case 'COMPLETED':
       return 'is-completed'
     case 'FAILED':
@@ -67,14 +74,38 @@ function phaseClass(phase: CallPhase): string {
   }
 }
 
-/** 等待中的状态（未连接、等待首字、重试中、停滞）显示脉冲动画，提示"正在进行/等待恢复"。 */
+/** 等待中的状态（未连接、等待首字、重试中）显示脉冲动画，提示"正在进行"。 */
 function isPulsing(phase: CallPhase): boolean {
-  return phase === 'RECEIVED' || phase === 'CONNECTED' || phase === 'RETRYING' || phase === 'STALLED'
+  return phase === 'RECEIVED' || phase === 'CONNECTED' || phase === 'RETRYING'
 }
 
-/** 点击取消按钮：委托 store 向后端发取消请求。 */
-function onCancel(toast: CallToast) {
-  void store.cancelCall(toast.requestId)
+/** 是否为终态（已结束的调用不允许断连）。 */
+function isTerminal(phase: CallPhase): boolean {
+  return phase === 'COMPLETED' || phase === 'FAILED' || phase === 'CANCELED' || phase === 'ABORTED'
+}
+
+/** 右键 Toast：打开上下文菜单。终态调用不弹菜单（断连无意义）。 */
+function onContextMenu(event: MouseEvent, toast: CallToast) {
+  if (isTerminal(toast.phase)) return
+  event.preventDefault()
+  menuTarget.value = toast
+  canceling.value = false
+  menuX.value = event.clientX
+  menuY.value = event.clientY
+}
+
+/** 点击「断连」：调用取消端点，关闭菜单。 */
+async function onDisconnect() {
+  if (!menuTarget.value || canceling.value) return
+  canceling.value = true
+  await store.cancelCall(menuTarget.value.requestId)
+  closeMenu()
+}
+
+/** 关闭菜单。 */
+function closeMenu() {
+  menuTarget.value = null
+  canceling.value = false
 }
 </script>
 
@@ -82,20 +113,32 @@ function onCancel(toast: CallToast) {
   <div class="call-toast-stack">
     <transition-group name="toast">
       <div v-for="toast in orderedToasts" :key="toast.requestId" class="call-toast"
-        :class="{ 'call-toast--leaving': toast.leaving }">
+        :class="{
+          'call-toast--leaving': toast.leaving,
+          'call-toast--interactive': !isTerminal(toast.phase),
+        }"
+        @contextmenu="onContextMenu($event, toast)">
         <span class="call-toast__dot" :class="phaseClass(toast.phase)"
           :data-pulsing="isPulsing(toast.phase) ? 'true' : 'false'"></span>
         <div class="call-toast__body">
           <div class="call-toast__model">{{ toast.model }}</div>
           <div class="call-toast__text">{{ phaseText(toast) }}</div>
         </div>
-        <button v-if="toast.canCancel" type="button" class="call-toast__cancel" :disabled="toast.canceling"
-          :title="toast.canceling ? '取消中…' : '取消本次调用'" :aria-label="toast.canceling ? '取消中' : '取消本次调用'"
-          @click="onCancel(toast)">
-          <span class="call-toast__cancel-icon" :class="{ 'is-spinning': toast.canceling }" aria-hidden="true"></span>
-        </button>
       </div>
     </transition-group>
+
+    <!-- 右键上下文菜单 -->
+    <Teleport to="body">
+      <div v-if="menuTarget" class="call-toast-menu-overlay" @click="closeMenu" @contextmenu.prevent="closeMenu">
+        <div class="call-toast-menu" :style="{ left: menuX + 'px', top: menuY + 'px' }"
+          @click.stop @contextview.prevent>
+          <button type="button" class="call-toast-menu__item" :disabled="canceling" @click="onDisconnect">
+            <span v-if="canceling" class="call-toast-menu__spinner" aria-hidden="true"></span>
+            {{ canceling ? '断连中…' : '断开连接' }}
+          </button>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -125,6 +168,10 @@ function onCancel(toast: CallToast) {
   box-shadow: $shadow-md;
   pointer-events: auto;
   min-width: 240px;
+
+  &--interactive {
+    cursor: context-menu;
+  }
 }
 
 .call-toast__dot {
@@ -159,16 +206,8 @@ function onCancel(toast: CallToast) {
     background: $text-muted;
   }
 
-  &.is-retrying {
-    background: $accent;
-  }
-
   &.is-aborted {
     background: $text-muted;
-  }
-
-  &.is-stalled {
-    background: $accent;
   }
 
   &[data-pulsing='true'] {
@@ -210,72 +249,55 @@ function onCancel(toast: CallToast) {
   color: $text-body;
 }
 
-.call-toast__cancel {
-  flex: 0 0 auto;
-  align-self: center;
-  display: inline-flex;
+/* 上下文菜单 */
+.call-toast-menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+}
+
+.call-toast-menu {
+  position: fixed;
+  z-index: 301;
+  min-width: 140px;
+  padding: $space-xs 0;
+  background: $surface;
+  border: 1px solid $border;
+  border-radius: $radius;
+  box-shadow: $shadow-md;
+}
+
+.call-toast-menu__item {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
+  gap: $space-xs;
+  width: 100%;
+  padding: $space-xs $space-md;
   border: none;
-  border-radius: 50%;
   background: transparent;
-  color: $text-muted;
+  font-family: $font-body;
+  font-size: 13px;
+  color: $danger;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease;
 
   &:hover:not(:disabled) {
-    background: rgba($danger, 0.12);
-    color: $danger;
+    background: rgba($danger, 0.08);
   }
 
   &:disabled {
     cursor: default;
+    opacity: 0.6;
   }
 }
 
-/* × 图标：用两条伪元素斜线绘制，避免依赖字体字形。 */
-.call-toast__cancel-icon {
-  position: relative;
-  width: 10px;
-  height: 10px;
-
-  &::before,
-  &::after {
-    content: '';
-    position: absolute;
-    top: 50%;
-    left: 0;
-    width: 100%;
-    height: 1.5px;
-    background: currentColor;
-    border-radius: 1px;
-  }
-
-  &::before {
-    transform: translateY(-50%) rotate(45deg);
-  }
-
-  &::after {
-    transform: translateY(-50%) rotate(-45deg);
-  }
-
-  /* canceling 时切换为旋转的加载小圈。 */
-  &.is-spinning {
-    width: 12px;
-    height: 12px;
-    border: 1.5px solid rgba($text-muted, 0.35);
-    border-top-color: $text-muted;
-    border-radius: 50%;
-    animation: cancel-spin 0.6s linear infinite;
-
-    &::before,
-    &::after {
-      display: none;
-    }
-  }
+.call-toast-menu__spinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid rgba($text-muted, 0.35);
+  border-top-color: $text-muted;
+  border-radius: 50%;
+  animation: cancel-spin 0.6s linear infinite;
 }
 
 @keyframes cancel-spin {
