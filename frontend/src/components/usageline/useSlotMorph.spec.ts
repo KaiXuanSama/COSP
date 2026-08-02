@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  alignShift,
   buildMorphFrame,
   framesOfMorph,
   framesOfSeeds,
@@ -181,10 +182,10 @@ describe('退场元素向线端收回', () => {
 })
 
 describe('内容身份：同一位置换了东西', () => {
-  it('文字变了则交叉淡出，两者一起滑向新坐标', () => {
+  it('开启 crossFade 时旧内容淡出、新内容淡入，两者一起滑向新坐标', () => {
     // 最左侧那一格从 7/24 变成 05:00，位置没动但内容全换了，直接改写文字是一次硬切
     const from = framesOfSeeds(labels([0, '7/24'], [1, '7/30']))
-    const morph = buildMorphFrame(from, labels([0, '05:00'], [1, '05:00']), 0.5, byText)
+    const morph = buildMorphFrame(from, labels([0, '05:00'], [1, '05:00']), 0.5, byText, true)
 
     const texts = morph.map((item) => item.data.text)
     expect(texts).toContain('7/24')
@@ -198,6 +199,19 @@ describe('内容身份：同一位置换了东西', () => {
     expect(outgoing[0].x).toBeCloseTo(incoming[0].x)
   })
 
+  /**
+   * 不开 crossFade 时旧内容直接消失，只有新内容淡入。
+   *
+   * 端点走这条路：交叉淡化会让被顶掉的旧点串进折线路径，凭空多出一整段线。
+   */
+  it('未开 crossFade 时不产生交叉淡出的元素', () => {
+    const from = framesOfSeeds(labels([0, '7/24'], [1, '7/30']))
+    const morph = buildMorphFrame(from, labels([0, '05:00'], [1, '05:00']), 0.5, byText)
+
+    expect(morph.filter((item) => item.phase === 'leave')).toHaveLength(0)
+    expect(morph.filter((item) => item.phase === 'enter')).toHaveLength(2)
+  })
+
   it('文字未变则视为留存，只滑动不淡', () => {
     const from = framesOfSeeds(labels([0, '05:00'], [0.5, '11:00']))
     const morph = buildMorphFrame(from, labels([0, '05:00'], [1, '11:00']), 0.5, byText)
@@ -208,19 +222,129 @@ describe('内容身份：同一位置换了东西', () => {
 
   it('新旧元素 key 不同，故能同时存在于 DOM', () => {
     const from = framesOfSeeds(labels([0, 'a']))
-    const morph = buildMorphFrame(from, labels([0, 'b']), 0.5, byText)
+    const morph = buildMorphFrame(from, labels([0, 'b']), 0.5, byText, true)
 
     const keys = morph.map((item) => item.key)
     expect(new Set(keys).size).toBe(keys.length)
   })
 
   it('未给 identity 时位置相同即视为留存，不做交叉', () => {
-    // 一个点长什么样与它代表哪个时刻无关，滑过去就是最自然的表达
+    // 未给身份就无从对齐，只能按位置配对
     const from = framesOfSeeds(labels([0, 'a']))
     const morph = buildMorphFrame(from, labels([1, 'b']), 0.5)
 
     expect(morph).toHaveLength(1)
     expect(morph[0].phase).toBe('stable')
+  })
+})
+
+/**
+ * 身份对齐 —— 窗口滑动与跨度变化时的方位正确性。
+ *
+ * <p>这组锁的是「进出场发生在哪一侧」。纯位置配对把第 i 个新元素接到第 i 个旧元素上，
+ * 于是窗口左移一格会被算成「每个位置的读数各自跳变」：没有进出场、没有横向移动，
+ * 看不出窗口动过。而实际发生的事情是「整条线右移一格、右端移出、左端补入」。
+ */
+describe('身份对齐：窗口滑动', () => {
+  it('窗口左移一格：右端退场、左端进场，同名元素横向平移', () => {
+    // 旧批 a,b,c 在 slot 0..2；新批 z,a,b —— 同名的 a、b 指向位移 δ=-1
+    const from = framesOfSeeds(labels([0, 'a'], [0.5, 'b'], [1, 'c']))
+    const morph = buildMorphFrame(from, labels([0, 'z'], [0.5, 'a'], [1, 'b']), 1, byText)
+
+    // slot 从 -1 起：负值无妨，它只是渲染 key 与排序依据
+    expect(morph.map((item) => item.slot)).toEqual([-1, 0, 1, 2])
+    expect(morph.map((item) => item.phase)).toEqual(['enter', 'stable', 'stable', 'leave'])
+    // 最左是新进场的 z，最右是退场的 c
+    expect(morph[0].data.text).toBe('z')
+    expect(morph[3].data.text).toBe('c')
+  })
+
+  it('窗口右移一格：左端退场、右端进场', () => {
+    const from = framesOfSeeds(labels([0, 'a'], [0.5, 'b'], [1, 'c']))
+    const morph = buildMorphFrame(from, labels([0, 'b'], [0.5, 'c'], [1, 'd']), 1, byText)
+
+    expect(morph.map((item) => item.slot)).toEqual([0, 1, 2, 3])
+    expect(morph.map((item) => item.phase)).toEqual(['leave', 'stable', 'stable', 'enter'])
+    expect(morph[0].data.text).toBe('a')
+    expect(morph[3].data.text).toBe('d')
+  })
+
+  /**
+   * 新元素从<strong>邻近</strong>的那一端出发。
+   *
+   * 这是「左侧生长」的全部实现：新元素的 slot 比所有旧元素都小，
+   * 旧首位离它更近，于是它从左端抽出，而不是横穿整张图从末位跑过来。
+   */
+  it('左端新增的元素从旧首位出发', () => {
+    const from = framesOfSeeds(labels([0.2, 'a'], [1, 'b']))
+    // 新批 [z, a, b]：δ=-1，z 落在 slot -1
+    const morph = buildMorphFrame(from, labels([0, 'z'], [0.5, 'a'], [1, 'b']), 0, byText)
+
+    const entering = morph.find((item) => item.phase === 'enter')!
+    // 进度 0 时它还在出发处 —— 旧首位的 0.2，而非旧末位的 1
+    expect(entering.x).toBeCloseTo(0.2)
+  })
+
+  it('右端新增的元素从旧末位出发', () => {
+    const from = framesOfSeeds(labels([0, 'a'], [0.8, 'b']))
+    const morph = buildMorphFrame(from, labels([0, 'a'], [0.5, 'b'], [1, 'c']), 0, byText)
+
+    const entering = morph.find((item) => item.phase === 'enter')!
+    expect(entering.x).toBeCloseTo(0.8)
+  })
+
+  /** 退场元素归向邻近的新线端 —— 与进场对称，线是被拽短的而非截断的。 */
+  it('左端退场的元素收向新首位', () => {
+    const from = framesOfSeeds(labels([0, 'a'], [0.5, 'b'], [1, 'c']))
+    // 新批 [b, c]：δ=+1，slot 0 的 a 无人接手
+    const morph = buildMorphFrame(from, labels([0.3, 'b'], [1, 'c']), 1, byText)
+
+    const leaving = morph.find((item) => item.phase === 'leave')!
+    expect(leaving.data.text).toBe('a')
+    // 归处是新首位 0.3，而非新末位 1
+    expect(leaving.x).toBeCloseTo(0.3)
+  })
+
+  it('左侧拖宽：两个新元素都在留存元素左侧', () => {
+    const from = framesOfSeeds(labels([0, 'c'], [1, 'd']))
+    const morph = buildMorphFrame(from, labels([0, 'a'], [0.33, 'b'], [0.66, 'c'], [1, 'd']), 1, byText)
+
+    expect(morph.map((item) => item.slot)).toEqual([-2, -1, 0, 1])
+    expect(morph.map((item) => item.phase)).toEqual(['enter', 'enter', 'stable', 'stable'])
+  })
+
+  it('两批毫无重合时退化为位置配对', () => {
+    const from = framesOfSeeds(labels([0, 'a'], [1, 'b']))
+    const morph = buildMorphFrame(from, labels([0, 'x'], [1, 'y']), 1, byText)
+
+    // δ=0：位置相同即接手，未开 crossFade 故旧内容直接消失
+    expect(morph.map((item) => item.slot)).toEqual([0, 1])
+    expect(morph.map((item) => item.phase)).toEqual(['enter', 'enter'])
+  })
+})
+
+describe('alignShift', () => {
+  it('两批毫无重合时返回 0', () => {
+    expect(alignShift(framesOfSeeds(labels([0, 'a'])), labels([0, 'x']), byText)).toBe(0)
+  })
+
+  it('任一批为空时返回 0', () => {
+    expect(alignShift([], labels([0, 'a']), byText)).toBe(0)
+    expect(alignShift(framesOfSeeds(labels([0, 'a'])), [], byText)).toBe(0)
+  })
+
+  it('取票数最多的位移量', () => {
+    const from = framesOfSeeds(labels([0, 'a'], [0.3, 'b'], [0.6, 'c'], [1, 'd']))
+    // 新批 b,c,d,e 中三个身份指向 δ=+1
+    expect(alignShift(from, labels([0, 'b'], [0.3, 'c'], [0.6, 'd'], [1, 'e']), byText)).toBe(1)
+  })
+
+  it('平票时取位移绝对值更小的', () => {
+    // 旧批只有 b 在 slot 0；新批 [x, b] 让 δ=-1 得一票、无其他候选。
+    // 换成 [b, x] 则 δ=0，绝对值更小。
+    const from = framesOfSeeds(labels([0.5, 'b']))
+    expect(alignShift(from, labels([0, 'b'], [1, 'x']), byText)).toBe(0)
+    expect(alignShift(from, labels([0, 'x'], [1, 'b']), byText)).toBe(-1)
   })
 })
 

@@ -132,6 +132,14 @@ export interface SeriesPoint {
   y: number
   /** 原始数值，供 tooltip 显示。 */
   value: number
+  /**
+   * 来源桶键 —— 形变模型据它对齐两批点。
+   *
+   * 窗口滑动时两批点大量同名、只是整体错开几格；有了它才能得出
+   * 「整条线平移、一端移出、另一端补入」，而不是「每个位置的读数各自跳变」。
+   * 详见 {@code useSlotMorph.alignShift}。
+   */
+  bucket: string
 }
 
 /** 一条已换算好的折线。 */

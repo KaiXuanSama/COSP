@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  alignSlotsByIdentity,
   assignSlots,
   buildMorphBars,
   ENTER_HEIGHT_RATIO,
@@ -402,5 +403,171 @@ describe('锚定复用：点击的那根柱子必然留存', () => {
     const morph = buildMorphBars(next, previous, 200, true, 1)
 
     expect(morph.map(item => item.phase)).toEqual(['stable', 'stable', 'enter'])
+  })
+})
+
+/**
+ * 身份对齐 —— 窗口滑动与跨度变化时的方位正确性。
+ *
+ * <p>这组用例锁的是「进出场发生在哪一侧」。位置对齐把第 i 根新柱接到第 i 根旧柱上，
+ * 于是窗口左移一天会被算成「全部原地改值」：没有任何进出场，每根柱的数值凭空跳变。
+ * 而实际发生的事情是「整排右移一格、右端移出、左端补入」。
+ *
+ * <p>方位本身不需要单独实现 —— 柱子按 slot 升序渲染、宽度由 flex 权重分配，
+ * 进场柱的 slot 比留存柱小它就从左侧挤入。故这里断言的是 slot 与 phase 的组合。
+ */
+describe('身份对齐：窗口滑动与跨度变化', () => {
+  it('窗口左移一格：右端退场、左端进场，中间原地复用', () => {
+    // 7/27~7/31 → 7/26~7/30。三根同名柱（7/27~7/29）必须复用同一节点。
+    const previous = seats(bar('7/27', 10), bar('7/28', 20), bar('7/29', 30), bar('7/30', 40))
+    const next = [bar('7/26', 5), bar('7/27', 10), bar('7/28', 20), bar('7/29', 30)]
+
+    const morph = buildMorphBars(next, previous, 100)
+
+    // 位移 δ = -1：新柱 i 落在 i-1，故 slot 从 -1 起。负 slot 无妨 ——
+    // 它只是渲染 key 与排序依据。
+    expect(morph.map(item => item.slot)).toEqual([-1, 0, 1, 2, 3])
+    // 最左是新进场的 7/26，最右是退场的 7/30
+    expect(morph.map(item => item.phase)).toEqual(['enter', 'stable', 'stable', 'stable', 'leave'])
+    expect(morph[0].bar.key).toBe('7/26')
+    expect(morph[4].bar.key).toBe('7/30')
+    // 进场柱在最左、退场柱在最右 —— 这就是「从左侧补入、从右侧移出」
+    expect(morph[0].slot).toBeLessThan(morph[1].slot)
+    expect(morph[4].slot).toBeGreaterThan(morph[3].slot)
+  })
+
+  it('窗口右移一格：左端退场、右端进场', () => {
+    const previous = seats(bar('7/26', 5), bar('7/27', 10), bar('7/28', 20), bar('7/29', 30))
+    const next = [bar('7/27', 10), bar('7/28', 20), bar('7/29', 30), bar('7/30', 40)]
+
+    const morph = buildMorphBars(next, previous, 100)
+
+    // 位移 δ = +1
+    expect(morph.map(item => item.slot)).toEqual([0, 1, 2, 3, 4])
+    expect(morph.map(item => item.phase)).toEqual(['leave', 'stable', 'stable', 'stable', 'enter'])
+    expect(morph[0].bar.key).toBe('7/26')
+    expect(morph[4].bar.key).toBe('7/30')
+  })
+
+  it('左手柄向外拖：新柱出现在左侧而非右侧', () => {
+    // 这是位置对齐最明显的错处 —— 新增的是更早的一天，而 assignSlots
+    // 只会在右端追加位置，新柱于是从右侧挤进来，与事实相反。
+    const previous = seats(bar('7/28', 20), bar('7/29', 30), bar('7/30', 40))
+    const next = [bar('7/26', 5), bar('7/27', 10), bar('7/28', 20), bar('7/29', 30), bar('7/30', 40)]
+
+    const morph = buildMorphBars(next, previous, 100)
+
+    expect(morph.map(item => item.slot)).toEqual([-2, -1, 0, 1, 2])
+    expect(morph.map(item => item.phase)).toEqual(['enter', 'enter', 'stable', 'stable', 'stable'])
+    // 两根新柱都在留存柱左侧
+    expect(morph.filter(item => item.phase === 'enter').map(item => item.bar.key))
+      .toEqual(['7/26', '7/27'])
+  })
+
+  it('右手柄向外拖：新柱出现在右侧', () => {
+    const previous = seats(bar('7/26', 5), bar('7/27', 10), bar('7/28', 20))
+    const next = [bar('7/26', 5), bar('7/27', 10), bar('7/28', 20), bar('7/29', 30)]
+
+    const morph = buildMorphBars(next, previous, 100)
+
+    expect(morph.map(item => item.slot)).toEqual([0, 1, 2, 3])
+    expect(morph.map(item => item.phase)).toEqual(['stable', 'stable', 'stable', 'enter'])
+  })
+
+  it('左手柄向内收：左端退场，右端不动', () => {
+    const previous = seats(bar('7/26', 5), bar('7/27', 10), bar('7/28', 20), bar('7/29', 30))
+    const next = [bar('7/28', 20), bar('7/29', 30)]
+
+    const morph = buildMorphBars(next, previous, 100)
+
+    // δ = +2：新柱 0 接旧 slot 2
+    expect(morph.map(item => item.slot)).toEqual([0, 1, 2, 3])
+    expect(morph.map(item => item.phase)).toEqual(['leave', 'leave', 'stable', 'stable'])
+    expect([morph[0].bar.key, morph[1].bar.key]).toEqual(['7/26', '7/27'])
+  })
+
+  it('整批身份都变（下钻）时回退到位置对齐', () => {
+    // 日期 → 供应商，身份毫无重合，此时位置是唯一可循的线索
+    const previous = seats(bar('7/26', 5), bar('7/27', 10), bar('7/28', 20))
+    const next = [bar('deepseek', 30), bar('zhipu', 20)]
+
+    const morph = buildMorphBars(next, previous, 100)
+
+    expect(morph.map(item => item.slot)).toEqual([0, 1, 2])
+    expect(morph.map(item => item.phase)).toEqual(['stable', 'stable', 'leave'])
+  })
+
+  it('有锚点时不做身份对齐 —— 下钻的指向性优先', () => {
+    // 极端情形：下钻后的某个供应商恰好与某个日期同名。身份对齐会把它接到那个
+    // 日期上，而锚点表达的「新一屏从被点那根长出来」是更强的意图。
+    const previous = seats(bar('a', 10), bar('b', 20), bar('c', 30))
+    const next = [bar('a', 5)]
+
+    const morph = buildMorphBars(next, previous, 100, true, 2)
+
+    // 锚点 2 生效：新柱落在被点那根的位置，而非被身份对齐拉到 slot 0
+    expect(morph.find(item => item.phase === 'stable')!.slot).toBe(2)
+  })
+
+  it('窗口整体跳到无重合的另一段时回退到位置对齐', () => {
+    // 翻页一整页：两批日期完全不相交，没有位移量可循
+    const previous = seats(bar('7/01', 5), bar('7/02', 10), bar('7/03', 20))
+    const next = [bar('7/20', 30), bar('7/21', 40), bar('7/22', 50)]
+
+    const morph = buildMorphBars(next, previous, 100)
+
+    expect(morph.map(item => item.slot)).toEqual([0, 1, 2])
+    expect(morph.map(item => item.phase)).toEqual(['stable', 'stable', 'stable'])
+  })
+
+  it('身份完全一致时无进出场，slot 不变', () => {
+    // SSE 推送导致数值变化，但窗口没动 —— 不该有任何柱子进出
+    const previous = seats(bar('7/26', 5), bar('7/27', 10))
+    const next = [bar('7/26', 50), bar('7/27', 100)]
+
+    const morph = buildMorphBars(next, previous, 200)
+
+    expect(morph.map(item => item.slot)).toEqual([0, 1])
+    expect(morph.map(item => item.phase)).toEqual(['stable', 'stable'])
+  })
+})
+
+describe('alignSlotsByIdentity', () => {
+  it('两批毫无重合时返回 null，交由调用方回退', () => {
+    const previous = seats(bar('a', 1), bar('b', 2))
+    expect(alignSlotsByIdentity(['x', 'y'], previous)).toBeNull()
+  })
+
+  it('任一批为空时返回 null', () => {
+    expect(alignSlotsByIdentity([], seats(bar('a', 1)))).toBeNull()
+    expect(alignSlotsByIdentity(['a'], [])).toBeNull()
+  })
+
+  it('取票数最多的位移量', () => {
+    // 旧批 a,b,c,d 在 slot 0..3；新批 b,c,d,e 中三个身份指向 δ=+1
+    const previous = seats(bar('a', 1), bar('b', 2), bar('c', 3), bar('d', 4))
+    expect(alignSlotsByIdentity(['b', 'c', 'd', 'e'], previous)).toEqual([1, 2, 3, 4])
+  })
+
+  /**
+   * 平票时取 |δ| 最小的。
+   *
+   * 刻度身份在一批内唯一，故正常情况下最高票是唯一的；平票只出现在重合极少的
+   * 边缘情形，此时位移越小、留存柱的横向移动越少，更接近「几乎没变」这个事实。
+   */
+  it('平票时取位移绝对值更小的', () => {
+    // 旧批只有 b 在 slot 1；新批 [b, x] 让 δ=+1 得一票，[x, b] 让 δ=0 得一票
+    const previous: MorphSnapshot[] = [{ slot: 1, bar: bar('b', 2) }]
+    expect(alignSlotsByIdentity(['x', 'b'], previous)).toEqual([0, 1])
+  })
+
+  /** 不连续占位（锚定复用的产物）同样适用 —— 位移是相对旧 slot 算的。 */
+  it('旧批占位不连续时仍按旧 slot 算位移', () => {
+    const previous: MorphSnapshot[] = [
+      { slot: 0, bar: bar('a', 1) },
+      { slot: 4, bar: bar('e', 5) },
+    ]
+    // 新批 [e, f]：e 在旧 slot 4，δ = 4 - 0 = 4
+    expect(alignSlotsByIdentity(['e', 'f'], previous)).toEqual([4, 5])
   })
 })

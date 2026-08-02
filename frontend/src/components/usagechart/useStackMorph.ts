@@ -15,15 +15,30 @@ import type { StackBar, StackSegment } from './usagechart'
  * 「全部归零、重新长高」。按位置配对则始终有留存：
  * 第 1 根柱永远接着上一批的第 1 根柱演化。
  *
- * <h2>柱体维度：左侧复用，右侧进出</h2>
- * 以左端为锚点对齐两批柱子：
+ * <h2>柱体维度：先按身份对齐，对不上再按位置</h2>
+ * 两批柱子的对齐方式取决于这次变化的性质：
  * <ol>
- *   <li>公共前缀（{@code min(oldCount, newCount)} 根）—— 原地复用，
- *       高度与分层从旧值连续演化到新值，不经过 0；</li>
- *   <li>新增的尾部柱 —— 自右向左淡入，起始高度取<strong>轴中位</strong>
- *       （见 {@link ENTER_HEIGHT_RATIO}），因此是「挤进来并调整」而非「从地面长出」；</li>
- *   <li>多余的尾部柱 —— 向右淡出，不再参与新布局。</li>
+ *   <li><strong>身份对齐</strong>（{@link alignSlotsByIdentity}）—— 日期窗口滑动、
+ *       拖动手柄改变跨度时，两批柱子有大量同名成员，只是整体错开了几格。
+ *       找出使身份重合最多的整体位移，同名柱因此复用同一节点；
+ *       没被覆盖的旧位置退场、没有旧柱的新位置进场，
+ *       <strong>左右方位由位移量自然决定</strong>，不必判断「这次往哪边动」。</li>
+ *   <li><strong>位置对齐</strong>（{@link assignSlots}）—— 下钻时身份整批替换
+ *       （日期 → 供应商 → 模型），身份毫无重合，位置是唯一可循的线索。
+ *       以左端为锚点：公共前缀原地复用、尾部进出。</li>
  * </ol>
+ * 两者的入口是 {@link resolveSlots}。
+ *
+ * <p>身份对齐是后加的：早先只有位置对齐，于是「窗口左移一天」会被算成
+ * 「7 根柱全部原地改值」—— 每根柱子的数值凭空跳变，而实际发生的事情是
+ * 「整排右移一格、右端移出、左端补入」。同理，从左侧手柄拖宽窗口时新增的是
+ * 更早的一天，位置对齐却只会在右端追加位置，新柱从右侧挤进来，与事实相反。
+ *
+ * <h2>进出场的方位不需要单独实现</h2>
+ * 柱子按 slot 升序渲染，横向位置由 flex 权重分配。进场柱权重从 0 涨到 1、
+ * 退场柱从 1 收到 0 —— 于是它在<strong>哪一侧</strong>出现或消失，
+ * 完全取决于它的 slot 落在留存柱的左边还是右边。身份对齐把这件事一并解决了：
+ * 窗口左移时新柱的 slot 比所有留存柱都小，它自然从左侧挤入。
  *
  * <h2>下钻锚点：让被点的那根柱子延续下去</h2>
  * 上述左端对齐是无指向的默认规则。但下钻是一次<strong>有明确指向</strong>的操作 ——
@@ -192,7 +207,7 @@ export function buildMorphBars(
   /** 旧批各位置上的柱子，供按 slot 取配对参照物。 */
   const previousBySlot = new Map(previous.map(item => [item.slot, item.bar]))
   /** 第 i 根新柱占用的位置序号；决定它接着旧批哪一根演化。 */
-  const slots = assignSlots(bars.length, previous.map(item => item.slot), anchor)
+  const slots = resolveSlots(bars, previous, anchor)
   const taken = new Set(slots)
   const result: MorphBar[] = []
 
@@ -366,6 +381,102 @@ export function assignSlots(
 }
 
 /**
+ * 按<strong>业务身份</strong>对齐两批柱子，给出整体位移量。
+ *
+ * <h2>为什么位置对齐不够</h2>
+ * {@link assignSlots} 把第 i 根新柱接到第 i 根旧柱上。这对下钻是对的（身份整批
+ * 替换，位置是唯一可循的线索），但对<strong>窗口滑动</strong>就错了：
+ * 日期窗口从 `7/27~8/2` 左移一天变成 `7/26~8/1`，两批各 7 根、身份错开一格 ——
+ * 按位置配对得到「7 根柱全部原地改值」，没有任何进出场。观感是每根柱子的数值
+ * 凭空跳变，而实际发生的事情是「整排右移一格、右端移出、左端补入」。
+ *
+ * <p>同理，从左侧手柄向外拖宽窗口时新增的是<strong>更早</strong>的一天，
+ * 而 {@link assignSlots} 只会在右端追加位置，新柱于是从右侧挤进来 ——
+ * 与「左边多了一天」的事实相反。
+ *
+ * <h2>做法：找出使身份重合最多的整体位移</h2>
+ * 每个「新柱 i 的身份 == 旧柱在 slot s 的身份」都投票给位移 {@code δ = s - i}。
+ * 取票数最多的 δ，新柱 i 即落在 {@code i + δ}。于是身份相同的柱子必然复用
+ * 同一个 DOM 节点，没被覆盖的旧位置退场、没有旧柱的新位置进场，
+ * 而两者的左右方位由 δ 自然决定 —— 不需要再判断「这次是往左还是往右」。
+ *
+ * <p>slot 因此<strong>可以为负</strong>。它只是渲染 key 与排序依据，
+ * 负值毫无妨碍；而强行归一化会让同一批柱子的 key 凭空改变，
+ * 反倒把留存柱推去复用别的节点。
+ *
+ * <h2>为什么平票时取 |δ| 最小的</h2>
+ * 刻度身份在一批内唯一，故正常情况下票数最多的 δ 是唯一的。平票只出现在
+ * 重合极少的边缘情形（如只剩一根柱子对得上两个位置），此时位移越小、
+ * 留存柱的横向移动越少，更接近「几乎没变」这个事实。
+ *
+ * @param keys 新一批柱子的身份，顺序即从左到右
+ * @param previous 旧批柱子及其占位
+ * @returns 长度与 {@code keys} 相同的升序 slot 序列；两批身份毫无重合时返回
+ *   {@code null}，交由调用方回退到位置对齐
+ */
+export function alignSlotsByIdentity(
+  keys: string[],
+  previous: MorphSnapshot[],
+): number[] | null {
+  if (keys.length === 0 || previous.length === 0) return null
+
+  const slotByKey = new Map<string, number>()
+  for (const item of previous) {
+    // 同一批内身份唯一；真出现重复时取最左的那个，与「最左优先」的一贯取舍一致
+    if (!slotByKey.has(item.bar.key)) slotByKey.set(item.bar.key, item.slot)
+  }
+
+  /** 位移量 → 票数。 */
+  const votes = new Map<number, number>()
+  keys.forEach((key, index) => {
+    const slot = slotByKey.get(key)
+    if (slot === undefined) return
+    const delta = slot - index
+    votes.set(delta, (votes.get(delta) ?? 0) + 1)
+  })
+  if (votes.size === 0) return null
+
+  let best = 0
+  let bestVotes = -1
+  for (const [delta, count] of votes) {
+    if (count > bestVotes || (count === bestVotes && Math.abs(delta) < Math.abs(best))) {
+      best = delta
+      bestVotes = count
+    }
+  }
+
+  return keys.map((_, index) => index + best)
+}
+
+/**
+ * 决定新一批柱子各自占用哪个位置 —— 全部配对运算的唯一入口。
+ *
+ * <p>三处调用（{@link buildMorphBars}、{@link snapshotOf}、{@code hasNewcomer}）
+ * 必须走同一条：它们对同一批数据的 slot 判断若不一致，就会出现
+ * 「渲染时算作复用、快照里却记成另一个位置」这类错位，而错位只表现为动画抽一下。
+ *
+ * <h2>身份对齐优先，但下钻除外</h2>
+ * 有锚点意味着这次变化是一次<strong>下钻</strong>：身份整批替换（日期 → 供应商），
+ * 身份对齐本就找不到重合，而锚点表达的「新一屏从被点那根长出来」是更强的意图。
+ * 故有锚点时直接走位置对齐，不去试探身份。
+ *
+ * @param bars 新一批柱子
+ * @param previous 旧批柱子及其占位
+ * @param anchor 必须被复用的位置（下钻时为被点击的那根）
+ */
+export function resolveSlots(
+  bars: StackBar[],
+  previous: MorphSnapshot[],
+  anchor: number | null,
+): number[] {
+  if (anchor === null) {
+    const aligned = alignSlotsByIdentity(bars.map(bar => bar.key), previous)
+    if (aligned) return aligned
+  }
+  return assignSlots(bars.length, previous.map(item => item.slot), anchor)
+}
+
+/**
  * 判断新一批里是否存在「凭空出现」的柱子或堆叠层。
  *
  * 只有它们需要两帧提交 —— 复用的柱与层在 DOM 里已有前一刻的高度，
@@ -397,15 +508,15 @@ export function snapshotOf(
   previous: MorphSnapshot[],
   anchor: number | null,
 ): MorphSnapshot[] {
-  const slots = assignSlots(bars.length, previous.map(item => item.slot), anchor)
+  const slots = resolveSlots(bars, previous, anchor)
   return bars.map((bar, index) => ({ slot: slots[index], bar }))
 }
 
 function hasNewcomer(bars: StackBar[], previous: MorphSnapshot[], anchor: number | null): boolean {
-  if (bars.length > previous.length) return true
   const previousBySlot = new Map(previous.map(item => [item.slot, item.bar]))
-  const slots = assignSlots(bars.length, previous.map(item => item.slot), anchor)
-  // 柱数未增，仍需检查各柱内部是否长出了新的顶层
+  const slots = resolveSlots(bars, previous, anchor)
+  // 身份对齐下柱数相同也可能有新柱（整排位移，两端一进一出），
+  // 故不能靠 `bars.length > previous.length` 提前返回 —— 必须逐个位置查。
   return bars.some((bar, index) => {
     const previousBar = previousBySlot.get(slots[index])
     // 该位置本来就空着 —— 柱子本身是新的，自然算凭空出现

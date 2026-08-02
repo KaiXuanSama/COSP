@@ -71,6 +71,9 @@ export function useTimelineSeries(points: Ref<UsageTimelinePoint[]>) {
         x: xRatioOf(index, total),
         y: yRatioOf(config.valueOf(point), ceiling.value),
         value: config.valueOf(point),
+        // 桶键随坐标一起带出：形变模型据它对齐两批点，窗口滑动才能表达成
+        // 「整条线平移、两端一进一出」，而非每个位置各自跳变。
+        bucket: point.bucket,
       })),
     }))
   })

@@ -146,10 +146,19 @@ const drawnSeries = computed(() => series.value.find((item) => item.config.drawn
  *
  * 位移由模型逐帧算出而非交给 CSS：CSS 过渡的中间值只存在于合成器内部，
  * JS 读不到，线便只能按终点重算而当帧跳到位，观感是「线闪现、点随后追上」。
+ *
+ * <p>{@code identity} 取桶键（时刻 / 日期）：窗口滑动时两批点大量同名、
+ * 只是整体错开几格，据此对齐才能得出「整条线平移、一端移出、另一端补入」。
+ * 不给的话滑动一格会被算成「每个位置的读数各自跳变」—— 线的形状变了，
+ * 但看不出窗口动过。
+ *
+ * <p>{@code crossFade} <strong>不开</strong>：对齐失败时（近 N 日 ↔ 今日时段）
+ * 交叉淡化会让被顶掉的旧点也串进折线路径，凭空多出一整段线。
+ * 点本身长得一样，直接滑过去即可。
  */
 const { morphItems: morphPoints } = useSlotMorph<SeriesPoint>(
   computed(() => drawnSeries.value?.points ?? []),
-  { duration: props.morphDuration },
+  { duration: props.morphDuration, identity: (point) => point.bucket },
 )
 
 /**
@@ -158,13 +167,15 @@ const { morphItems: morphPoints } = useSlotMorph<SeriesPoint>(
  * 标签标的就是端点所在的时刻，两者必须同步滑动；各自实现必然在节奏上漂移，
  * 结果是标签与自己对应的点脱节。
  *
- * 这里给出 {@code identity}：同一格里文字变了就是换了个东西（最左侧从 `7/24`
- * 变成 `05:00`），旧的淡出、新的淡入，两者一起滑向新坐标。端点不需要这层判断 ——
- * 一个点长什么样与它代表哪个时刻无关，直接滑过去最自然。
+ * <p>{@code identity} 取文字：与端点同理，窗口滑动时同名标签据此对齐并横向移动。
+ *
+ * <p>这里<strong>开</strong> {@code crossFade}：对齐失败时（最左那一格从 `7/24`
+ * 变成 `05:00`）位置没动但内容全换了，直接改写文字是一次硬切。
+ * 标签不参与折线路径，故不存在端点那个问题。
  */
 const { morphItems: morphLabels } = useSlotMorph<AxisLabel>(
   computed(() => axisLabels.value),
-  { duration: props.morphDuration, identity: (label) => label.text },
+  { duration: props.morphDuration, identity: (label) => label.text, crossFade: true },
 )
 
 /**

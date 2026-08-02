@@ -96,14 +96,79 @@ export interface SlotMorphOptions<T extends MorphSeed> {
   /** 形变时长（ms）。 */
   duration?: number
   /**
-   * 内容身份。给出时，位置相同但身份不同的元素视为<strong>换了一个东西</strong>：
-   * 旧的淡出、新的淡入，两者同时朝该位置的新坐标滑动。
+   * 内容身份 —— 用于把两批元素<strong>对齐</strong>（见 {@link alignShift}）。
    *
-   * 横轴标签需要它 —— 最左侧那一格从 `7/24` 变成 `05:00`，位置没动但内容全换了，
-   * 直接改写文字是一次硬切。端点不需要 —— 一个点长什么样与它代表哪个时刻无关，
-   * 滑过去就是最自然的表达。
+   * 给出它，窗口滑动才能被识别成「整排平移 + 两端一进一出」。不给则退化为
+   * 纯位置配对：第 i 个新元素接第 i 个旧元素，滑动一格会被算成
+   * 「每个位置的读数各自跳变」，看不出窗口动了。
    */
   identity?: (data: T) => string
+  /**
+   * 同一位置的内容换了东西时，是否让旧的淡出、新的淡入（两者同时滑向新坐标）。
+   *
+   * <p>横轴标签需要它 —— 对齐失败时（如从「近 N 日」切到「今日时段」，
+   * 日期与时刻毫无重合）最左那一格从 `7/24` 变成 `05:00`，位置没动但内容全换了，
+   * 直接改写文字是一次硬切。
+   *
+   * <p>端点<strong>不能</strong>开：一个点长什么样与它代表哪个时刻无关，
+   * 交叉淡化只是在同一坐标上多画一个一模一样的点；更要紧的是那些点会被串进
+   * 折线路径（{@link MorphItem} 全部入路径），对齐失败时凭空多出一整段折线。
+   */
+  crossFade?: boolean
+}
+
+/**
+ * 找出使两批元素<strong>身份重合最多</strong>的整体位移。
+ *
+ * <h2>为什么位置配对不够</h2>
+ * 纯位置配对把第 i 个新元素接到第 i 个旧元素上。这对「换了一批完全不同的东西」
+ * 是对的（日期 → 时刻，身份无从对应），但对<strong>窗口滑动</strong>就错了：
+ * 日期窗口从 `7/27~8/2` 左移一天变成 `7/26~8/1`，两批各 7 个、身份错开一格 ——
+ * 按位置配对得到「7 个位置全部原地改值」，没有任何进出场，也没有横向移动。
+ * 而实际发生的事情是「整条线右移一格、右端移出、左端补入」。
+ *
+ * <h2>投票</h2>
+ * 每个「新元素 i 的身份 == 旧元素在 slot s 的身份」都投票给位移 {@code δ = s - i}，
+ * 取票数最多的 δ。于是身份相同的元素必然从彼此的位置延续，
+ * 而进出场发生在<strong>哪一侧</strong>由 δ 自然决定（{@link buildMorphFrame}
+ * 据此选出发处与归处），不需要再判断「这次是往左还是往右」。
+ *
+ * <p>平票时取 |δ| 更小的：身份在一批内唯一，故正常情况下最高票唯一，
+ * 平票只出现在重合极少的边缘情形，此时位移越小、留存元素的移动越少。
+ *
+ * @returns 位移量；两批毫无重合时返回 {@code 0}，即退化为位置配对
+ */
+export function alignShift<T extends MorphSeed>(
+  from: MorphFrame<T>[],
+  to: T[],
+  identity: (data: T) => string,
+): number {
+  if (from.length === 0 || to.length === 0) return 0
+
+  const slotByKey = new Map<string, number>()
+  for (const frame of from) {
+    const key = identity(frame.data)
+    // 同一批内身份唯一；真出现重复时取最左的那个
+    if (!slotByKey.has(key)) slotByKey.set(key, frame.slot)
+  }
+
+  const votes = new Map<number, number>()
+  to.forEach((target, index) => {
+    const slot = slotByKey.get(identity(target))
+    if (slot === undefined) return
+    const delta = slot - index
+    votes.set(delta, (votes.get(delta) ?? 0) + 1)
+  })
+
+  let best = 0
+  let bestVotes = 0
+  for (const [delta, count] of votes) {
+    if (count > bestVotes || (count === bestVotes && Math.abs(delta) < Math.abs(best))) {
+      best = delta
+      bestVotes = count
+    }
+  }
+  return bestVotes > 0 ? best : 0
 }
 
 /**
@@ -119,27 +184,61 @@ export interface SlotMorphOptions<T extends MorphSeed> {
  * @param eased 已缓动的进度，0 为起始态、1 为目标态
  * @param identity 内容身份，见 {@link SlotMorphOptions.identity}
  */
+/**
+ * 算出某一帧的元素状态。
+ *
+ * 纯函数，不读时间也不碰 DOM —— 形变的全部规则都在这里，可逐条单测。
+ *
+ * <h2>两批元素怎么对齐</h2>
+ * 给出 {@code identity} 时先求整体位移（{@link alignShift}）：新元素 i 落在
+ * {@code i + shift}，身份相同者因此从彼此的位置延续。窗口滑动、拖动手柄改跨度
+ * 都属这一类。没给或毫无重合时 {@code shift = 0}，退化为纯位置配对。
+ *
+ * <p>slot 因此<strong>可以为负</strong>。它只是渲染 key 与排序依据，负值毫无妨碍；
+ * 强行归一化反而会让同一批元素的 key 凭空改变，把留存元素推去复用别的节点。
+ *
+ * <h2>进出场的方位</h2>
+ * 新元素的出发处不再固定取「上一批末位」，而是取<strong>离它最近的那一端</strong>：
+ * slot 比所有旧元素都小就从旧首位出发（左侧生长），比所有都大就从旧末位出发
+ * （右侧生长）。退场元素的归处同理。于是窗口左移时新点从左端抽出、旧点向右端收回，
+ * 与「整条线右移」的事实一致。
+ *
+ * <p>输出顺序为「留存与进场按 slot 升序，随后是交叉淡出的元素、再是退场元素」。
+ * 折线路径依赖这个顺序 —— 前两段拼起来仍是位置升序，
+ * 而端点不开 {@code crossFade}，故中间那段对折线为空。
+ *
+ * @param from 起始帧（上一次变化发生时元素的实际位置）；首次渲染传空数组
+ * @param to 目标元素
+ * @param eased 已缓动的进度，0 为起始态、1 为目标态
+ * @param identity 内容身份，见 {@link SlotMorphOptions.identity}
+ * @param crossFade 同位置换内容时是否交叉淡化，见 {@link SlotMorphOptions.crossFade}
+ */
 export function buildMorphFrame<T extends MorphSeed>(
   from: MorphFrame<T>[],
   to: T[],
   eased: number,
   identity?: (data: T) => string,
+  crossFade = false,
 ): MorphItem<T>[] {
   const t = clamp01(eased)
   const fromBySlot = new Map(from.map((frame) => [frame.slot, frame]))
+  /** 整体位移：身份相同的元素据此落到彼此的位置上。 */
+  const shift = identity ? alignShift(from, to, identity) : 0
 
   /**
-   * 新增元素的出发处 —— 上一批的末位。
+   * 旧批两端 —— 新增元素的出发处、退场元素的归处，按远近就地取用。
    *
-   * 线因此是从原有尾端抽出来的，而不是在新位置凭空多出一段；标签同理，
-   * 新的一批时刻从原本的轴末长出来。首次渲染没有上一批，就地淡入（无处可出发）。
+   * 线因此是从<strong>邻近</strong>的那一端抽出来的：窗口左移时新点在左端出现，
+   * 就该从旧首位长出，而不是横穿整张图从末位跑过来。
    */
-  const tail = from.length ? from[from.length - 1] : null
+  const head = from.length ? from.reduce((a, b) => (a.slot <= b.slot ? a : b)) : null
+  const tail = from.length ? from.reduce((a, b) => (a.slot >= b.slot ? a : b)) : null
 
   /** 被新内容顶掉的旧元素：位置还在，但装的东西换了，须与新元素交叉淡出。 */
   const replaced: MorphItem<T>[] = []
 
-  const alive: MorphItem<T>[] = to.map((target, slot) => {
+  const alive: MorphItem<T>[] = to.map((target, index) => {
+    const slot = index + shift
     const source = fromBySlot.get(slot)
     const targetOpacity = target.opacity ?? 1
     const continued = source !== undefined
@@ -157,7 +256,7 @@ export function buildMorphFrame<T extends MorphSeed>(
       }
     }
 
-    if (source !== undefined) {
+    if (source !== undefined && crossFade) {
       // 该位置原本装着别的内容：让它随新元素一起滑到新坐标，同时淡出
       replaced.push({
         key: `out-${slot}`,
@@ -170,8 +269,8 @@ export function buildMorphFrame<T extends MorphSeed>(
       })
     }
 
-    // 从该位置原有内容处、或上一批的末位出发；两者都没有则就地淡入
-    const origin = source ?? tail ?? { x: target.x, y: target.y }
+    // 出发处：该位置原有内容 → 邻近的那一端 → 就地淡入
+    const origin = source ?? nearestEnd(slot, head, tail) ?? { x: target.x, y: target.y }
     return {
       key: `slot-${slot}`,
       slot,
@@ -184,21 +283,26 @@ export function buildMorphFrame<T extends MorphSeed>(
   })
 
   /**
-   * 溢出元素的归处 —— 新一批的末位。
+   * 新批两端 —— 退场元素的归处。
    *
-   * 与进场对称：多余的尾部收回到新的线端，线是被拽短的而非截断的。
-   * 新一批为空时就地淡出（无处可去）。
+   * 与进场对称：多余的元素收回到<strong>邻近</strong>的新线端，线是被拽短的
+   * 而非截断的。新一批为空时就地淡出（无处可去）。
    */
-  const sink = to.length ? to[to.length - 1] : null
+  const sinkHead = to.length ? { x: to[0].x, y: to[0].y, slot: shift } : null
+  const sinkTail = to.length
+    ? { x: to[to.length - 1].x, y: to[to.length - 1].y, slot: to.length - 1 + shift }
+    : null
+
+  /** 本次被新元素占用的位置，其余旧位置一律退场。 */
+  const taken = new Set(to.map((_unused, index) => index + shift))
 
   const overflow: MorphItem<T>[] = []
-  for (let slot = to.length; slot < from.length; slot += 1) {
-    const stale = fromBySlot.get(slot)
-    if (!stale) continue
-    const destination = sink ?? { x: stale.x, y: stale.y }
+  for (const stale of from) {
+    if (taken.has(stale.slot)) continue
+    const destination = nearestEnd(stale.slot, sinkHead, sinkTail) ?? { x: stale.x, y: stale.y }
     overflow.push({
-      key: `out-${slot}`,
-      slot,
+      key: `out-${stale.slot}`,
+      slot: stale.slot,
       x: lerp(stale.x, destination.x, t),
       y: lerp(stale.y, destination.y, t),
       opacity: lerp(stale.opacity, 0, t),
@@ -207,9 +311,34 @@ export function buildMorphFrame<T extends MorphSeed>(
     })
   }
 
-  // 留存与进场在前、退场在后：折线路径按此顺序连线，而无 identity 时退场元素
-  // 全在尾部溢出段，拼起来仍是位置升序。
-  return [...alive, ...replaced, ...overflow]
+  /*
+   * 整体按 slot 排序 —— 折线路径直接按这个顺序连线。
+   *
+   * 必须是整体而非分段排序：退场元素现在可能落在<strong>左侧</strong>
+   * （窗口右移时最早那个点被移出），若仍把它们拼在末尾，折线会从右端折回左端，
+   * 凭空多出一条斜线。原实现里退场元素必然是尾部溢出，所以拼接才成立。
+   *
+   * 排序稳定，故同 slot 的交叉淡出元素仍排在接手它的新元素之后 ——
+   * 那两者坐标相同，先后不影响路径。
+   */
+  return [...alive, ...replaced, ...overflow].sort((a, b) => a.slot - b.slot)
+}
+
+/**
+ * 取离 {@code slot} 更近的那一端。
+ *
+ * <p>这是「进出场发生在哪一侧」的全部实现：新元素的 slot 比所有旧元素都小时
+ * head 更近，于是它从左端长出；比所有都大时 tail 更近，从右端长出。
+ * 不需要显式判断方向。
+ */
+function nearestEnd<P extends { slot: number; x: number; y: number }>(
+  slot: number,
+  head: P | null,
+  tail: P | null,
+): P | null {
+  if (!head) return tail
+  if (!tail) return head
+  return Math.abs(slot - head.slot) <= Math.abs(slot - tail.slot) ? head : tail
 }
 
 /** 把一批目标元素铺成「依次占用 0 起的位置、已达目标不透明度」的帧，用作动画终态。 */
@@ -280,6 +409,7 @@ export function useSlotMorph<T extends MorphSeed>(
 ) {
   const duration = options.duration ?? SLOT_MORPH_DURATION
   const identity = options.identity
+  const crossFade = options.crossFade ?? false
 
   /** 当前帧的元素状态 —— 所有依赖这批位置的渲染物共同的唯一数据来源。 */
   const morphItems = shallowRef<MorphItem<T>[]>([])
@@ -296,8 +426,11 @@ export function useSlotMorph<T extends MorphSeed>(
 
   /** 收尾：目标态即下一次的起始帧，退场元素随之从列表消失。 */
   function finish(): void {
+    // 归一化到 0 起：本批已成为新的基准，slot 从此重新从 0 数。
+    // 不归一化的话，反复滑动会让 slot 单向漂移（-1、-2、…），
+    // 而 slot 是渲染 key，漂移本身无害但读日志时难以对照。
     from = framesOfSeeds(target)
-    morphItems.value = buildMorphFrame(from, target, 1, identity)
+    morphItems.value = buildMorphFrame(from, target, 1, identity, crossFade)
   }
 
   watch(seeds, (next) => {
@@ -329,7 +462,7 @@ export function useSlotMorph<T extends MorphSeed>(
     }
 
     startedAt = now()
-    morphItems.value = buildMorphFrame(from, target, 0, identity)
+    morphItems.value = buildMorphFrame(from, target, 0, identity, crossFade)
     schedule()
   }, { immediate: true, flush: 'post' })
 
@@ -340,7 +473,7 @@ export function useSlotMorph<T extends MorphSeed>(
       finish()
       return
     }
-    morphItems.value = buildMorphFrame(from, target, SLOT_MORPH_EASING(elapsed), identity)
+    morphItems.value = buildMorphFrame(from, target, SLOT_MORPH_EASING(elapsed), identity, crossFade)
     schedule()
   }
 
