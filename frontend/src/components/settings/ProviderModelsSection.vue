@@ -37,6 +37,7 @@ const effortOptions = [
     { label: 'Medium', value: 'Medium' },
     { label: 'High', value: 'High' },
     { label: 'Xhigh', value: 'Xhigh' },
+    { label: 'Max', value: 'Max' }
 ]
 </script>
 
