@@ -138,18 +138,17 @@ function closeMenu() {
 <template>
   <div class="call-toast-stack">
     <!--
-      常驻徽标：header 右侧的紧凑指示器。有进行中调用才出现；
-      面板展开期间保留（即使计数归零），作为关闭的锚点。
+      常驻徽标：header 右侧的紧凑指示器，始终显示。
+      计数归零时状态点退为中性灰（is-idle），脉冲随 activeCount 关闭；
+      点击它展开 / 收起面板，无需进行中的调用即可查看历史记录。
     -->
-    <transition name="badge">
-      <button v-if="activeCount > 0 || panelOpen" type="button" class="call-toast-badge"
-        :class="{ 'is-open': panelOpen }" :aria-expanded="panelOpen" :title="panelOpen ? '收起实时调用' : '实时调用'"
-        @click="togglePanel">
-        <span class="call-toast-badge__dot" :class="badgePhaseClass"
-          :data-pulsing="activeCount > 0 ? 'true' : 'false'"></span>
-        <span class="call-toast-badge__count">{{ activeCount }}</span>
-      </button>
-    </transition>
+    <button type="button" class="call-toast-badge"
+      :class="{ 'is-open': panelOpen }" :aria-expanded="panelOpen" :title="panelOpen ? '收起实时调用' : '实时调用'"
+      @click="togglePanel">
+      <span class="call-toast-badge__dot" :class="badgePhaseClass"
+        :data-pulsing="activeCount > 0 ? 'true' : 'false'"></span>
+      <span class="call-toast-badge__count">{{ activeCount }}</span>
+    </button>
 
     <Teleport to="body">
       <div v-if="panelOpen" class="call-toast-panel">
@@ -378,18 +377,6 @@ function closeMenu() {
 }
 
 /* ── 过渡动画 ── */
-
-/* 徽标出现/消失（进行中调用数从 0 变 1 时淡入）。 */
-.badge-enter-active,
-.badge-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
-}
-
-.badge-enter-from,
-.badge-leave-to {
-  opacity: 0;
-  transform: translateY(-6px);
-}
 
 /* 面板展开/收起。 */
 .panel-enter-active,
