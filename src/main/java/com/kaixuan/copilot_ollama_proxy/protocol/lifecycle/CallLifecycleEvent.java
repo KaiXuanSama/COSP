@@ -1,10 +1,10 @@
 package com.kaixuan.copilot_ollama_proxy.protocol.lifecycle;
 
 /**
- * 单次调用生命周期事件 DTO。
+ * 单次调用生命周期事件 DTO.
  *
  * <p>由控制器在调用链的各观测点发出，经 {@code CallLifecyclePublisher} 推送到
- * SSE {@code /config/api/calls/stream}，前端据此按 {@link #requestId} 分组渲染 Toast。
+ * SSE {@code /config/api/calls/stream}，前端据此按 {@link #requestId} 分组渲染 Toast.
  *
  * <p>字段说明：
  * <ul>
@@ -35,31 +35,32 @@ public record CallLifecycleEvent(
         boolean stream,
         int chunkCount,
         int attempt,
-        long timestamp,
-        boolean canCancel) {
+        long timestamp) {
 
     /** 构造一个不含计数的阶段事件（RECEIVED / CONNECTED / FAILED / CANCELED）。 */
     public static CallLifecycleEvent of(String requestId, CallPhase phase, String model, boolean stream) {
-        return new CallLifecycleEvent(requestId, phase, model, stream, 0, 0, System.currentTimeMillis(), false);
+        return new CallLifecycleEvent(requestId, phase, model, stream, 0, 0, System.currentTimeMillis());
     }
 
     /** 构造一个带 chunk 计数的阶段事件（CHUNK / COMPLETED / CANCELED）。 */
     public static CallLifecycleEvent of(String requestId, CallPhase phase, String model, boolean stream, int chunkCount) {
-        return new CallLifecycleEvent(requestId, phase, model, stream, chunkCount, 0, System.currentTimeMillis(), false);
+        return new CallLifecycleEvent(requestId, phase, model, stream, chunkCount, 0, System.currentTimeMillis());
     }
 
     /** 构造一个 RETRYING 事件，携带即将进行的重试次数。 */
     public static CallLifecycleEvent retrying(String requestId, String model, boolean stream, int attempt) {
-        return new CallLifecycleEvent(requestId, CallPhase.RETRYING, model, stream, 0, attempt, System.currentTimeMillis(), false);
+        return new CallLifecycleEvent(requestId, CallPhase.RETRYING, model, stream, 0, attempt, System.currentTimeMillis());
     }
 
     /**
-     * 基于当前事件复制一个 canCancel=true 的新事件，阶段与其余字段保持不变。
+     * 复制一个替换了模型名的事件，其余字段保持不变。
      *
-     * <p>供后端看门狗在等待满阈值后调用：只翻转“可取消”标志，不改变当前阶段（
-     * 可能是 RECEIVED / CONNECTED / RETRYING），避免错误覆盖真实阶段。
+     * <p>供 {@code CallLifecyclePublisher} 统一展示名：provider 层只知道<strong>剥掉供应商
+     * 前缀后的上游模型名</strong>（它要用这个名字请求上游、写日志），而展示名应当是客户端
+     * 原始请求名。前者不能反推出后者 —— {@code providerKey} 的大小写未必与客户端所写一致，
+     * 且无前缀路由时本就不该补前缀。故展示名以调用的首个事件为准，由发布器统一改写。
      */
-    public CallLifecycleEvent asCancelable() {
-        return new CallLifecycleEvent(requestId, phase, model, stream, chunkCount, attempt, timestamp, true);
+    public CallLifecycleEvent withModel(String model) {
+        return new CallLifecycleEvent(requestId, phase, model, stream, chunkCount, attempt, timestamp);
     }
 }

@@ -75,7 +75,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- 调用生命周期 Toast 栈：固定定位、脱离路由视图，跨页面切换常驻 -->
+  <!-- 调用生命周期指示器：常驻 header 右侧（徽标），点击展开调用列表；跨页面切换常驻 -->
   <CallToastStack />
 
   <!-- 遮罩层 -->

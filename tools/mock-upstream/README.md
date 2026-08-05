@@ -36,14 +36,14 @@ node tools/mock-upstream/mock-upstream.js
 | 模型名 | 行为 | 验证的 Toast 状态 |
 | --- | --- | --- |
 | `normal` | 正常流式，完整 chunk + `[DONE]` + 关连接 | RECEIVED → CONNECTED → CHUNK → COMPLETED 全链路 |
-| `hang-first-byte` | CONNECTED 后卡住不吐首字（默认 10 分钟） | 等待首字 + 60s 后取消按钮出现（手动取消 → ABORTED） |
-| `stall-recover` | 吐若干 chunk 后停滞 35s，再继续到结束 | STALLED（30s 警告）→ 恢复回 CHUNK |
-| `stall-forever` | 吐若干 chunk 后永久停滞（不关连接） | STALLED（30s 警告）→ 出现手动取消控件（手动取消 → ABORTED 静默断连） |
+| `hang-first-byte` | CONNECTED 后卡住不吐首字（默认 10 分钟） | 等待首字（右键断连 → ABORTED） |
+| `stall-recover` | 吐若干 chunk 后停滞 35s，再继续到结束 | 停滞期间右键可断连；恢复后继续 CHUNK → COMPLETED |
+| `stall-forever` | 吐若干 chunk 后永久停滞（不关连接） | 停滞期间右键断连 → ABORTED 静默断连 |
 | `done-no-close` | 发完内容 + `[DONE]`，但保持 TCP 不关闭 | Layer 1（`[DONE]` 触发 COMPLETED，不等连接关闭） |
 | `no-done-close` | 发完内容后直接关连接，不发 `[DONE]` | Layer 2（TCP 关闭兜底完成） |
 | `error-500` | 返回 500 | RETRYING（COSP 应重试） |
 | `error-401` | 返回 401 | FAILED（快速失败，不重试） |
-| `slow-steady` | 每 3s 一个 chunk，持续较久 | 验证 chunk 间隔 < 30s 不会误判 STALLED |
+| `slow-steady` | 每 3s 一个 chunk，持续较久 | 长连接下 Toast 持续更新 chunk 计数 |
 
 ## 可调参数
 
@@ -51,7 +51,7 @@ node tools/mock-upstream/mock-upstream.js
 
 - `PORT` / `MOCK_PORT`：监听端口（默认 8081；避开 9090，那是 Clash/mihomo 控制面默认端口）
 - `HANG_FIRST_BYTE_MS`：`hang-first-byte` 卡首字时长（默认 10 分钟）
-- `STALL_RECOVER_MS`：`stall-recover` 停滞时长（默认 35s，需 > COSP 的 30s STALLED 阈值，以触发 STALLED 后再恢复）
+- `STALL_RECOVER_MS`：`stall-recover` 停滞时长（默认 35s）
 - `STALL_AFTER_CHUNKS`：停滞前先吐的 chunk 数
 - `NORMAL_CHUNK_INTERVAL_MS` / `NORMAL_CHUNK_COUNT`：正常流的间隔与数量
 - `SLOW_STEADY_INTERVAL_MS` / `SLOW_STEADY_CHUNK_COUNT`：slow-steady 的间隔与数量

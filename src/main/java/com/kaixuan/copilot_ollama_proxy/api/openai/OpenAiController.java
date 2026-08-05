@@ -27,6 +27,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
@@ -47,25 +48,18 @@ public class OpenAiController {
     private static final Logger log = LoggerFactory.getLogger(OpenAiController.class);
 
     /**
-     * 首字后 chunk 间空闲超此毫秒数即发 STALLED 警告（非终态，可恢复）。
+     * chat completions SSE 的心跳周期。
      *
-     * <p>仅作为提示：告知前端「上游停滞」并放开手动断连控件，由用户决定是否中止。
-     * 后端<strong>不再</strong>自动断连——因为工具调用等场景可能把大块内容塞进单个 chunk 导致
-     * 首字后长时间阻塞，自动断连会误杀正常请求。是否断连交给用户判断。
+     * <p>下游断连的检测靠两条路径：{@code channelInactive}（Reactor Netty 主动终止）
+     * 与写失败（尝试写时发现 socket 已关）。前者在「从未写过数据的空闲连接」上不可靠 ——
+     * 上游等待首字或重试退避期间服务端一个字节都不写，此时下游断开可能要等到
+     * 上游产生响应、服务端尝试写时才发现，白白浪费一次上游调用。
+     *
+     * <p>管理后台的各条 SSE 流都有心跳注释帧，唯独 chat completions 缺失。
+     * 这里补上，使空闲连接也有周期写操作：断连后最迟一个心跳周期内被写失败路径兜底。
+     * 注释帧（{@code : keep-alive}）对 SSE 客户端无副作用，被规范要求忽略。
      */
-    private static final long STREAM_STALL_WARNING_MS = 30_000L;
-
-    /**
-     * 等待首字超此毫秒数后，放开「手动取消」按钮（由后端裁决，而非前端计时器）。
-     *
-     * <p>过去这是纯前端 setTimeout，起点是事件到达浏览器会话的时刻，刷新即归零——
-     * 一个已等待很久的调用重开页面后又要重新等待。现改由后端看门狗裁决并通过
-     * {@code canCancel} 字段下发，任何新建立的 SSE 连接在快照补发时都能立即拿到正确状态。
-     *
-     * <p>覆盖两处等待场景：非流式全程等待、流式首字到达之前。首字之后的停滞另由
-     * {@link #STREAM_STALL_WARNING_MS} 判定。
-     */
-    private static final long WAIT_CANCELABLE_MS = 30_000L;
+    private static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(5);
 
     private final ChatCompletionService chatCompletionService;
     private final ObjectMapper objectMapper;
@@ -179,26 +173,12 @@ public class OpenAiController {
         // 非流式：获取完整响应后提取 usage 进行记录，并返回给客户端。
         // CONNECTED 现由 provider 层在上游响应真正到达时发出（更准确），此处不再乐观发出。
         // 注册取消信号：外部点击取消时，cancelSignal 正常 complete，firstWithSignal 会抛 CallCanceledException 中止 chat 链。
+        // 取消权限不分阶段——前端右键 Toast 即可随时断连，后端不需要超时看门狗。
         Mono<String> cancelSignal = callCancellationRegistry.register(requestId)
                 .then(Mono.error(new CallCanceledException()));
-        // 非流式全程等待看门狗：满 WAIT_CANCELABLE_MS 仍无结果 -> 放开手动取消（后端裁决，前端仅读 canCancel）。
-        // 独立 interval 订阅，不并入返回的 Mono；完成/失败/取消即在 doFinally 释放。
-        java.util.concurrent.atomic.AtomicReference<reactor.core.Disposable> nonStreamWatchdogRef =
-                new java.util.concurrent.atomic.AtomicReference<>();
         return Mono.firstWithSignal(
                         chatCompletionService.chatCompletion(requestBody, model, requestHeaders, requestId),
                         cancelSignal)
-                .doOnSubscribe(sub -> {
-                    long start = System.nanoTime();
-                    java.util.concurrent.atomic.AtomicBoolean emitted = new java.util.concurrent.atomic.AtomicBoolean(false);
-                    nonStreamWatchdogRef.set(Flux.interval(Duration.ofSeconds(1))
-                            .subscribe(tick -> {
-                                long waitMs = (System.nanoTime() - start) / 1_000_000L;
-                                if (waitMs >= WAIT_CANCELABLE_MS && emitted.compareAndSet(false, true)) {
-                                    callLifecyclePublisher.markCancelable(requestId);
-                                }
-                            }));
-                })
                 .doOnNext(this::recordUsage)
                 // COMPLETED：非流式无 chunk 计数，最终计数为 0。
                 .doOnNext(json -> callLifecyclePublisher.publish(
@@ -239,10 +219,6 @@ public class OpenAiController {
                 // 无论正常结束、失败还是取消，都清理注册表，避免内存泄漏。
                 .doFinally(signal -> {
                     callCancellationRegistry.remove(requestId);
-                    reactor.core.Disposable wd = nonStreamWatchdogRef.get();
-                    if (wd != null) {
-                        wd.dispose();
-                    }
                 });
     }
 
@@ -267,61 +243,18 @@ public class OpenAiController {
         java.util.concurrent.atomic.AtomicBoolean canceled = new java.util.concurrent.atomic.AtomicBoolean(false);
         // completed 标志：Layer 1（[DONE] 语义信号）与 Layer 2（doOnComplete TCP 关闭）去重，谁先到谁发 COMPLETED。
         java.util.concurrent.atomic.AtomicBoolean completed = new java.util.concurrent.atomic.AtomicBoolean(false);
-        // 首字后的空闲看门狗状态：
-        // lastChunkAt 记录最近一次 chunk 到达的纳秒时间戳（<0 表示尚未收到首字，不计时——尊重「首字可无限等」）。
-        // stalledEmitted 保证 STALLED 警告只发一次（除非收到新 chunk 后重置）。
-        java.util.concurrent.atomic.AtomicLong lastChunkAt = new java.util.concurrent.atomic.AtomicLong(-1L);
-        java.util.concurrent.atomic.AtomicBoolean stalledEmitted = new java.util.concurrent.atomic.AtomicBoolean(false);
-        // 订阅起始纳秒时间戳：用于计算「等待首字」时长，满 WAIT_CANCELABLE_MS 后放开取消按钮。
-        java.util.concurrent.atomic.AtomicLong subscribedAt = new java.util.concurrent.atomic.AtomicLong(0L);
-        // waitCancelableEmitted 保证「等首字超时放开取消」只发一次（首字到达后不再触发）。
-        java.util.concurrent.atomic.AtomicBoolean waitCancelableEmitted = new java.util.concurrent.atomic.AtomicBoolean(false);
 
         // 注册取消信号：外部点击取消时 cancelSignal 正常 complete，takeUntilOther 会中止上游流。
-        // 取消行为对下游一律静默断连（不注入错误帧）：无论首字前还是首字后停滞取消，语义一致，
-        // 下游 Copilot 自行处理断连（工具调用整块 chunk 阻塞时，注入错误/硬超时都可能导致重复消耗，故不做）。
+        // 取消行为对下游一律静默断连（不注入错误帧），下游 Copilot 自行处理断连。
         Mono<Void> cancelSignal = callCancellationRegistry.register(requestId)
                 .doOnSuccess(v -> canceled.set(true));
 
-        // 首字后空闲看门狗（独立订阅，不并入返回的数据流，以免 interval 永不完成而污染数据流的完成信号）。
-        // 每秒检查距上次 chunk 的间隔，仅在收到首字后（lastChunkAt >= 0）生效——尊重「首字可无限等」：
-        // 停滞超 STREAM_STALL_WARNING_MS 发 STALLED 警告（非终态，可恢复），仅提示，不主动断连。
-        // 是否断连交由用户在前端手动决定（避免误杀工具调用整块 chunk 的合理长阻塞）。
-        // 在 doOnSubscribe 启动、doFinally 释放，随请求生命周期存活。
-        java.util.concurrent.atomic.AtomicReference<reactor.core.Disposable> watchdogRef =
-                new java.util.concurrent.atomic.AtomicReference<>();
-        Runnable startWatchdog = () -> watchdogRef.set(Flux.interval(Duration.ofSeconds(1))
-                .subscribe(tick -> {
-                    if (completed.get() || canceled.get()) {
-                        return;
-                    }
-                    long last = lastChunkAt.get();
-                    if (last < 0) {
-                        // 首字未到：按「等待首字」时长判定是否放开手动取消（由后端裁决，前端仅读 canCancel）。
-                        long start = subscribedAt.get();
-                        if (start > 0) {
-                            long waitMs = (System.nanoTime() - start) / 1_000_000L;
-                            if (waitMs >= WAIT_CANCELABLE_MS && waitCancelableEmitted.compareAndSet(false, true)) {
-                                // 只翻转 canCancel 标志，不改变当前阶段（可能是 CONNECTED / RETRYING）。
-                                callLifecyclePublisher.markCancelable(requestId);
-                            }
-                        }
-                        return;
-                    }
-                    long idleMs = (System.nanoTime() - last) / 1_000_000L;
-                    if (idleMs >= STREAM_STALL_WARNING_MS && stalledEmitted.compareAndSet(false, true)) {
-                        // 停滞警告：发 STALLED（非终态，inFlight 保留），提示连接停滞但仍可恢复。
-                        // 不主动断连——上游可能在为工具调用组装整块 chunk（如创建文件），属合理长阻塞。
-                        // STALLED 直接携带 canCancel=true：首字后停滞时前端应能立即手动取消，
-                        // 语义与「等首字超时放开取消」统一，前端无需再对 STALLED 特殊置位。
-                        callLifecyclePublisher.publish(
-                                CallLifecycleEvent.of(requestId, CallPhase.STALLED, model, true, chunkCount.get())
-                                        .asCancelable());
-                    }
-                }));
+        // 数据流结束信号：数据流无论以何种方式终止（完成 / 错误 / 取消）都会 emit，
+        // 心跳据此停止 —— 否则 Flux.interval 永不完成，merge 永不完成，doOnComplete 兜底失效。
+        Sinks.Empty<Void> streamEnd = Sinks.empty();
 
-        // CONNECTED 现由 provider 层在上游响应真正到达时发出（更准确），此处不再乐观发出。
-        return chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders, requestId)
+        Flux<ServerSentEvent<String>> streamBody =
+                chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders, requestId)
                 .doOnNext(chunk -> {
                     accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens);
                     // Layer 1（语义信号优先）：收到 [DONE] 即认定上游内容已发完，立即 finalize，
@@ -332,22 +265,11 @@ public class OpenAiController {
                                 streamInputTokens, streamOutputTokens);
                         return;
                     }
-                    // 收到内容 chunk：刷新看门狗时间戳，并清除 STALLED 警告标志（若之前停滞过，现在恢复了）。
-                    lastChunkAt.set(System.nanoTime());
-                    if (stalledEmitted.compareAndSet(true, false)) {
-                        // 从 STALLED 恢复：重新发一次 CHUNK 让前端退回正常态（chunkCount 会在下面自增）。
-                        log.debug("流式调用从停滞恢复 [{}] {}", model, requestId);
-                    }
                     // 每个 chunk 都推一次 CHUNK 事件（不节流）。单次响应 chunk 数通常不过数百，SSE 开销可接受。
                     callLifecyclePublisher.publish(
                             CallLifecycleEvent.of(requestId, CallPhase.CHUNK, model, true, chunkCount.incrementAndGet()));
                 })
                 .map(chunk -> ServerSentEvent.builder(chunk).build())
-                // 订阅时启动首字后空闲看门狗（独立订阅，见上方 startWatchdog）。
-                .doOnSubscribe(sub -> {
-                    subscribedAt.set(System.nanoTime());
-                    startWatchdog.run();
-                })
                 .takeUntilOther(cancelSignal)
                 // 取消时静默断连：只发 ABORTED 终态事件，不向下游注入任何错误帧，下游自行处理断连。
                 .concatWith(Flux.defer(() -> {
@@ -395,14 +317,21 @@ public class OpenAiController {
                     callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, true, chunkCount.get()));
                     log.info("下游主动断连，静默收尾 [{}] {}", model, requestId);
                 })
-                // 无论正常结束、失败还是取消，都清理注册表与看门狗，避免内存/定时器泄漏。
+                // 无论正常结束、失败还是取消，都清理注册表，避免内存泄漏；
+                // 同时 emit streamEnd 让心跳停止（与 doOnComplete 里的 emit 幂等，谁先到都行）。
                 .doFinally(signal -> {
                     callCancellationRegistry.remove(requestId);
-                    reactor.core.Disposable wd = watchdogRef.get();
-                    if (wd != null) {
-                        wd.dispose();
-                    }
+                    streamEnd.tryEmitEmpty();
                 });
+
+        // 心跳：空闲期周期性写注释帧。客户端断开后，下一次写即失败，走写失败路径
+        // 触发取消 / 错误，从而立即终止上游调用，而不是干等到上游产生响应。
+        // 数据流结束（streamEnd emit）时心跳随之停止，保证 merge 能正常完成。
+        Flux<ServerSentEvent<String>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
+                .map(tick -> ServerSentEvent.<String>builder().comment("keep-alive").build())
+                .takeUntilOther(streamEnd.asMono());
+
+        return Flux.merge(streamBody, heartbeat);
     }
 
     /**

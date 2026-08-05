@@ -9,7 +9,6 @@ export type CallPhase =
   | 'CONNECTED'
   | 'CHUNK'
   | 'RETRYING'
-  | 'STALLED'
   | 'COMPLETED'
   | 'FAILED'
   | 'CANCELED'
@@ -25,8 +24,6 @@ export interface CallLifecycleEvent {
   /** 重试次数（RETRYING 阶段有意义，表示即将进行的第几次重试，其余为 0）。 */
   attempt: number
   timestamp: number
-  /** 是否允许手动取消：由后端看门狗裁决（等首字超 N 秒 / 首字后停滞）。前端仅读此字段决定是否显示取消按钮，不再维护本地计时器——刷新/新开页面都能立即显示正确状态。 */
-  canCancel: boolean
 }
 
 /** 前端渲染用的 Toast 状态，按 requestId 分组，随事件流转更新。 */
@@ -40,10 +37,7 @@ export interface CallToast {
   attempt: number
   /** 是否正在退场淡出（COMPLETED/FAILED 后短暂保留再移除）。 */
   leaving: boolean
-  /** 是否可取消：等待产出（RECEIVED/CONNECTED）持续超过阈值后置位，展示取消按钮。 */
-  canCancel: boolean
-  /** 取消请求是否已发出（避免重复点击），置位后按钮进入“取消中”禁用态。 */
-  canceling: boolean
+
 }
 
 /** SSE 端点路径（相对 http.baseURL）。走认证，token 由 createAuthEventSource 以 Bearer header 附带。 */
@@ -107,9 +101,6 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
       if (event.attempt > 0) {
         existing.attempt = event.attempt
       }
-      // canCancel 完全由后端裁决：声明式读取，不再维护本地计时器。
-      // 一旦后端翻转为 true（等首字超时 / 首字后停滞），刷新或新开页面都能立即显示取消按钮。
-      existing.canCancel = event.canCancel
     } else {
       toasts.value = [
         ...toasts.value,
@@ -121,8 +112,6 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
           chunkCount: event.chunkCount,
           attempt: event.attempt,
           leaving: false,
-          canCancel: event.canCancel,
-          canceling: false,
         },
       ]
     }
@@ -133,19 +122,15 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
   }
 
   /**
-   * 主动取消一次调用：向后端取消端点发 POST（走认证），置位 canceling 防重复点击。
+   * 主动断连一次调用：向后端取消端点发 POST（走认证）。
    * 后端触发取消后会推送 ABORTED 事件，Toast 随终态淡出。
+   * 调用方负责防重复（如菜单项 loading 态）。
    */
   async function cancelCall(requestId: string) {
-    const target = toasts.value.find((t) => t.requestId === requestId)
-    if (!target || target.canceling) return
-    target.canceling = true
     try {
       await http.post(CANCEL_PATH(requestId))
     } catch {
-      // 取消请求失败（如调用已自然结束）：回滚 canceling，让用户可重试。
-      const latest = toasts.value.find((t) => t.requestId === requestId)
-      if (latest) latest.canceling = false
+      // 取消请求失败（如调用已自然结束），静默忽略。
     }
   }
 
