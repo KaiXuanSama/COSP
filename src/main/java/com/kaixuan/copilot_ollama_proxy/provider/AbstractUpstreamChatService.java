@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -518,13 +519,17 @@ public abstract class AbstractUpstreamChatService {
     /**
      * 构建 OpenAI 上游的统一重试策略。
      *
-     * 覆盖四类可恢复场景：
-     * 1. 429 上游限速（使用指数退避，避免加重上游压力）
-     * 2. 5xx 服务端错误
-     * 3. 可重试的 400 错误
-     * 4. 网络层异常：包括 WebClientRequestException（连接建立失败）
-     *    以及 WebClientResponseException 的 cause chain 中的 IOException
-     *    （如 SocketException: Connection reset，即 HTTP 200 但 SSE 流中途断开）
+     * <p>重试次数固定为 5（首次请求外再试 5 次），指数退避 2 秒起、上限 30 秒。
+     * 是否重试由 {@link #isRetryableFailure} 裁决，覆盖四类可恢复场景：
+     * <ol>
+     *   <li>429 上游限速（指数退避避免加重上游压力）；</li>
+     *   <li>5xx 服务端错误；</li>
+     *   <li>可重试的 400 错误；</li>
+     *   <li>网络层异常 —— 连接建立失败（{@link WebClientRequestException}）、
+     *       HTTP 200 后 SSE 流中途断开（cause chain 中的 {@code IOException}）、
+     *       TLS 握手失败（cause chain 中的 {@code SSLException}）。</li>
+     * </ol>
+     * 其余错误（如 401/403 等确定性 4xx）不重试 —— 请求内容未变，重试结果必然相同。
      *
      * @param method 调用方方法名，用于日志区分重试来源
      * @param requestId 本次调用唯一标识，用于发出 RETRYING 生命周期事件
@@ -535,21 +540,84 @@ public abstract class AbstractUpstreamChatService {
     protected Retry buildRetrySpec(String method, ProviderRuntimeConfiguration provider,
                                    String requestId, String model, boolean stream) {
         return Retry.backoff(5, Duration.ofSeconds(2)).maxBackoff(Duration.ofSeconds(30))
-                .filter(ex -> ((ex instanceof WebClientResponseException responseException) && (responseException.getStatusCode().value() == 429 || responseException.getStatusCode().is5xxServerError()
-                        || responseException.getStatusCode().value() == 400 || hasNetworkCause(responseException))) || ex instanceof WebClientRequestException
-                        || hasSslHandshakeFailure(ex))
+                .filter(AbstractUpstreamChatService::isRetryableFailure)
                 .doBeforeRetry(signal -> {
                     int attempt = (int) (signal.totalRetries() + 1);
                     // RETRYING：让前端 Toast 从“已连接/等待中”切换到“上游异常，正在重试（第N次）”，
                     // 避免重试期间静默卡顿让用户误以为卡死。
                     publishLifecycle(CallLifecycleEvent.retrying(requestId, model, stream, attempt));
-                    if (signal.failure() instanceof WebClientResponseException responseException && responseException.getStatusCode().value() == 429) {
-                        String retryAfter = responseException.getHeaders().getFirst("Retry-After");
-                        log.warn("[{}] {} API 限速 (429)，重试第 {} 次{}", method, provider.providerKey(), attempt, retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
-                    } else {
-                        log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, provider.providerKey(), attempt, signal.failure().getMessage());
-                    }
+                    logRetryAttempt(method, provider, signal, attempt);
                 });
+    }
+
+    /**
+     * 判定某次上游失败是否值得重试。
+     *
+     * <p>按异常类型分三类裁决，各自的语义是：
+     * <ul>
+     *   <li><strong>连接建立失败</strong>（{@link WebClientRequestException}）——
+     *       上游不可达或未响应，多半是瞬时网络问题，值得重试；</li>
+     *   <li><strong>TLS 握手失败</strong>（cause chain 含 {@code SSLException}）——
+     *       与上同理，属瞬时环境问题；</li>
+     *   <li><strong>HTTP 错误响应</strong>（{@link WebClientResponseException}）——
+     *       状态码本身可重试（429 / 5xx / 400），或 cause chain 含
+     *       {@code IOException}（HTTP 200 后 SSE 流中途断开，实为网络层失败）。</li>
+     * </ul>
+     * 其余错误一律不重试：请求内容未变，确定性错误重试结果必然相同。
+     *
+     * @param failure 上游抛出的异常
+     * @return 是否值得重试
+     */
+    private static boolean isRetryableFailure(Throwable failure) {
+        if (failure instanceof WebClientRequestException) {
+            // 连接建立失败：上游不可达 / 未响应
+            return true;
+        }
+        if (hasSslHandshakeFailure(failure)) {
+            // TLS 握手失败：瞬时网络环境问题
+            return true;
+        }
+        if (failure instanceof WebClientResponseException responseException) {
+            // HTTP 错误响应：状态码可重试，或实际为网络层中断
+            return isRetryableStatus(responseException.getStatusCode())
+                    || hasNetworkCause(responseException);
+        }
+        return false;
+    }
+
+    /**
+     * 判定 HTTP 状态码是否可重试。
+     *
+     * @param status 上游返回的状态码
+     * @return 429（限速）、5xx（服务端错误）、400（容忍上游临时抽风）为可重试
+     */
+    private static boolean isRetryableStatus(HttpStatusCode status) {
+        int code = status.value();
+        return code == 429 || status.is5xxServerError() || code == 400;
+    }
+
+    /**
+     * 记录一次重试的日志。
+     *
+     * <p>429 单独区分：限速是上游明确的节流信号，附带其 {@code Retry-After} 头
+     * 便于人工判断退避是否符合预期；其余失败只记异常消息。
+     *
+     * @param method 调用方方法名
+     * @param provider 供应商配置（取 providerKey 用于日志区分）
+     * @param signal 本次重试信号（含失败异常）
+     * @param attempt 当前重试序号，从 1 起
+     */
+    private void logRetryAttempt(String method, ProviderRuntimeConfiguration provider,
+                                 Retry.RetrySignal signal, int attempt) {
+        if (signal.failure() instanceof WebClientResponseException responseException
+                && responseException.getStatusCode().value() == 429) {
+            String retryAfter = responseException.getHeaders().getFirst("Retry-After");
+            log.warn("[{}] {} API 限速 (429)，重试第 {} 次{}", method, provider.providerKey(), attempt,
+                    retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
+        } else {
+            log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, provider.providerKey(), attempt,
+                    signal.failure().getMessage());
+        }
     }
 
     /**
