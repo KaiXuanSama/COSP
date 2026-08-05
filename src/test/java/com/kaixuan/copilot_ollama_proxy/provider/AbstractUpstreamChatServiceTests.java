@@ -453,6 +453,249 @@ class AbstractUpstreamChatServiceTests {
         assertThat(received).anyMatch(chunk -> chunk.contains("ok"));
     }
 
+    // ── 空响应兜底 ──────────────────────────────────────────────────────────
+
+    /**
+     * 空流（仅 role / finish / [DONE]，无任何实质载荷）触发自动重试，第二轮有内容即放行。
+     *
+     * <p>对应 mock 的 {@code empty-stream}。断言两件事：
+     * 上游被重发（次数 2），且下游<strong>只看到第二轮</strong>的内容 ——
+     * 第一轮的空帧被 gate 拦下，不该泄漏给下游。
+     */
+    @Test
+    void emptyStreamTriggersRetryAndSecondRoundContentPassesThrough() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            int attempt = upstreamCallCount.incrementAndGet();
+            Flux<DataBuffer> body = attempt == 1
+                    // 第一轮：role + finish + [DONE]，零实质载荷。
+                    ? Flux.concat(
+                            Mono.just(sseData(factory, "{\"id\":\"e-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}")),
+                            Mono.just(sseData(factory, "{\"id\":\"e-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}")),
+                            Mono.just(sseData(factory, "[DONE]")))
+                    // 第二轮：正常回复。
+                    : Flux.concat(
+                            Mono.just(sseData(factory, "{\"id\":\"ok\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}")),
+                            Mono.just(sseData(factory, "[DONE]")));
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        List<String> received = service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-empty-1")
+                .collectList().block(Duration.ofSeconds(20));
+
+        assertThat(upstreamCallCount.get()).isEqualTo(2);
+        assertThat(received).isNotNull();
+        assertThat(received).anyMatch(chunk -> chunk.contains("hello"));
+        // 第一轮的空帧被拦住，没有泄漏到下游。
+        assertThat(received).noneMatch(chunk -> chunk.contains("\"id\":\"e-1\""));
+    }
+
+    /** 200 但 0 帧（空 body）同样判空并重试 —— gate 一帧都没见到，自然没开闸。 */
+    @Test
+    void emptyBodyWithZeroFramesTriggersRetry() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            int attempt = upstreamCallCount.incrementAndGet();
+            Flux<DataBuffer> body = attempt == 1
+                    ? Flux.empty()
+                    : Flux.concat(
+                            Mono.just(sseData(factory, "{\"id\":\"ok\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"recovered\"},\"finish_reason\":null}]}")),
+                            Mono.just(sseData(factory, "[DONE]")));
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        List<String> received = service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-empty-body-1")
+                .collectList().block(Duration.ofSeconds(20));
+
+        assertThat(upstreamCallCount.get()).isEqualTo(2);
+        assertThat(received).isNotNull().anyMatch(chunk -> chunk.contains("recovered"));
+    }
+
+    /** 全 0 usage 不是独立判据：空流带全 0 usage 仍按内容口径判空并重试。 */
+    @Test
+    void emptyStreamWithAllZeroUsageStillTriggersRetry() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            int attempt = upstreamCallCount.incrementAndGet();
+            Flux<DataBuffer> body = attempt == 1
+                    ? Flux.concat(
+                            Mono.just(sseData(factory, "{\"id\":\"z-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}}")),
+                            Mono.just(sseData(factory, "[DONE]")))
+                    : Flux.concat(
+                            Mono.just(sseData(factory, "{\"id\":\"ok\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"zzz\"},\"finish_reason\":null}]}")),
+                            Mono.just(sseData(factory, "[DONE]")));
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        List<String> received = service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-empty-usage-1")
+                .collectList().block(Duration.ofSeconds(20));
+
+        assertThat(upstreamCallCount.get()).isEqualTo(2);
+        assertThat(received).isNotNull().anyMatch(chunk -> chunk.contains("zzz"));
+    }
+
+    /**
+     * 对照场景：纯工具调用<strong>不算</strong>空响应，不该触发任何重试。
+     *
+     * <p>对应 mock 的 {@code empty-tool-call}。这条测试是判定口径的护栏 ——
+     * 若将来把「无正文」误当成「空」，此处会立刻失败。
+     */
+    @Test
+    void toolCallOnlyStreamIsNotTreatedAsEmpty() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            upstreamCallCount.incrementAndGet();
+            Flux<DataBuffer> body = Flux.concat(
+                    Mono.just(sseData(factory, "{\"id\":\"t-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}")),
+                    Mono.just(sseData(factory, "{\"id\":\"t-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}")),
+                    Mono.just(sseData(factory, "[DONE]")));
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        List<String> received = service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-tool-1")
+                .collectList().block(Duration.ofSeconds(20));
+
+        // 只调用一次：没有被判空重试。
+        assertThat(upstreamCallCount.get()).isEqualTo(1);
+        assertThat(received).isNotNull().anyMatch(chunk -> chunk.contains("get_weather"));
+    }
+
+    /**
+     * 纯思考链（仅 reasoning 兼容字段）不算空 —— gate 工作在清洗之前，
+     * 因此必须认得 {@code thinking} 这类未统一的别名。
+     */
+    @Test
+    void reasoningAliasOnlyStreamIsNotTreatedAsEmpty() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            upstreamCallCount.incrementAndGet();
+            Flux<DataBuffer> body = Flux.concat(
+                    // 用别名 thinking 而非 reasoning_content：gate 在清洗前，别名也得认。
+                    Mono.just(sseData(factory, "{\"id\":\"r-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"thinking\":\"pondering\"},\"finish_reason\":null}]}")),
+                    Mono.just(sseData(factory, "{\"id\":\"r-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}")),
+                    Mono.just(sseData(factory, "[DONE]")));
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        List<String> received = service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-reasoning-1")
+                .collectList().block(Duration.ofSeconds(60));
+
+        assertThat(upstreamCallCount.get()).isEqualTo(1);
+        // 无正文时 reasoning fallback 会把思考内容转成正文下发。
+        assertThat(received).isNotNull().anyMatch(chunk -> chunk.contains("pondering"));
+    }
+
+    /**
+     * 空响应与异常失败<strong>共用同一份 5 次预算</strong>：混合失败序列不该叠加成两套额度。
+     *
+     * <p>序列：空响应 → 500 → 空响应 → 成功。共 4 次上游调用，其中前 3 次消耗预算。
+     * 若两类失败各有独立计数，次数会与此不符。
+     */
+    @Test
+    void emptyResponseSharesRetryBudgetWithExceptionFailures() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            int attempt = upstreamCallCount.incrementAndGet();
+            if (attempt == 2) {
+                // 第 2 轮：可重试的 500，与空响应共用预算。
+                return Mono.just(ClientResponse.create(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                        .body("{\"error\":\"boom\"}").build());
+            }
+            Flux<DataBuffer> body = attempt <= 3
+                    // 第 1、3 轮：空响应。
+                    ? Mono.just(sseData(factory, "[DONE]")).flux()
+                    // 第 4 轮：成功。
+                    : Flux.concat(
+                            Mono.just(sseData(factory, "{\"id\":\"ok\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"final\"},\"finish_reason\":null}]}")),
+                            Mono.just(sseData(factory, "[DONE]")));
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        List<String> received = service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-shared-budget-1")
+                .collectList().block(Duration.ofSeconds(60));
+
+        assertThat(upstreamCallCount.get()).isEqualTo(4);
+        assertThat(received).isNotNull().anyMatch(chunk -> chunk.contains("final"));
+    }
+
+    /**
+     * 空响应重试耗尽后，把最后一轮被拦下的帧原样放行给下游，而不是抛错。
+     *
+     * <p>行为与其他失败的「耗尽后透传最后一次响应」一致：至少让下游看到上游真实返回了什么。
+     * 上游共 6 次调用（首次 + 5 次重试预算）。
+     */
+    @Test
+    void exhaustedEmptyResponseRetriesPassLastRoundFramesDownstream() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            upstreamCallCount.incrementAndGet();
+            // 每轮都是空响应：role + [DONE]，永不恢复。
+            Flux<DataBuffer> body = Flux.concat(
+                    Mono.just(sseData(factory, "{\"id\":\"x-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}")),
+                    Mono.just(sseData(factory, "[DONE]")));
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        List<String> received = service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-exhausted-1")
+                .collectList().block(Duration.ofSeconds(180));
+
+        // 首次 + 5 次重试预算 = 6 次上游调用。
+        assertThat(upstreamCallCount.get()).isEqualTo(6);
+        // 没有抛错：最后一轮的帧被原样放行。
+        assertThat(received).isNotNull().isNotEmpty();
+        assertThat(received).anyMatch(chunk -> chunk.contains("\"role\":\"assistant\"") || chunk.contains("[DONE]"));
+    }
+
+    /** 构造一个最小请求体。 */
+    private static Map<String, Object> newRequest() {
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("model", "model-a");
+        return request;
+    }
+
     /** 把一段 JSON 包装成 SSE data 帧的 DataBuffer（{@code data: {...}\n\n}）。 */
     private static DataBuffer sseData(DefaultDataBufferFactory factory, String json) {
         byte[] bytes = ("data: " + json + "\n\n").getBytes(StandardCharsets.UTF_8);

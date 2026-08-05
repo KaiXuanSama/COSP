@@ -54,6 +54,27 @@ import java.util.concurrent.atomic.AtomicReference;
  *   （无正文时回退用思考内容作为回复）、API 调用日志记录。
  *
  * 运行时配置（API Key、Base URL、模型列表）由调用方显式传入。
+ *
+ * <h2>两条重试通道</h2>
+ * 「静默」指重试发生在 COSP 内部、下游连接保持打开、Copilot 全程无感知。两条通道都是静默的，
+ * 区别只在触发者与是否消耗预算：
+ * <table border="1">
+ *   <caption>重试通道对照</caption>
+ *   <tr><th>通道</th><th>触发者</th><th>消耗 5 次预算</th><th>实现位置</th></tr>
+ *   <tr><td>异常重试</td><td>COSP 自身（上游失败 / 空响应）</td><td>是</td>
+ *       <td>{@link #buildRetrySpec} 的 {@code retryWhen}</td></tr>
+ *   <tr><td>手动重试</td><td>用户在管理后台右键 Toast</td><td>否</td>
+ *       <td>{@code CallRetryRegistry} + {@code takeUntilOther}</td></tr>
+ * </table>
+ * 手动重试不消耗预算是有意的：那是用户可感知的主动操作，不该挤占自动恢复的余量。
+ *
+ * <h2>空响应兜底</h2>
+ * 第三方中转站偶发 HTTP 200 但内容全空的响应（无正文、无思考链、无工具调用，
+ * 有时连 usage 与 {@code [DONE]} 都没有）。管道在 {@code retryWhen} 内侧设一道 gate：
+ * 开闸前逐帧缓存不下发，出现实质载荷即整批释放并当轮不再拦截；整轮未开闸则抛
+ * {@link EmptyUpstreamResponseException}，走上面那条<strong>同一份</strong>重试预算。
+ * 耗尽后把最后一轮的帧原样放行给下游，与其他失败的耗尽行为保持一致。
+ * 判定口径见 {@link UpstreamChunkContentDetector}。
  */
 public abstract class AbstractUpstreamChatService {
 
@@ -146,6 +167,12 @@ public abstract class AbstractUpstreamChatService {
      * @param model 请求中指定的模型名称
      * @return 上游返回的原始 OpenAI JSON 响应字符串
      */
+    // TODO 非流式空响应兜底尚未实现。流式已有 gate（见 chatCompletionStream），
+    //  非流式的判定本身更简单（一次拿到完整 body，直接看 choices[*].message 三类载荷，
+    //  无需缓存-释放机制），但落库路径、usage 提取、retryWhen 位置都是另一套，
+    //  且 message 与 delta 的字段形态不同，UpstreamChunkContentDetector 需要另开一个入口。
+    //  当前实际流量几乎全是流式，故先只做流式；补做时注意与流式共用同一份重试预算，
+    //  不要引入第二套重试次数配置。
     protected Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
                                           ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                           String requestId) {
@@ -231,6 +258,13 @@ public abstract class AbstractUpstreamChatService {
         AtomicReference<String> usageRaw = new AtomicReference<>(null);
         // 静默重试标志：上游尝试被重试信号中断时置位，收尾处据此重新发起一轮。
         AtomicBoolean silentRetryRequested = new AtomicBoolean(false);
+        // 空响应兜底 gate 的两个状态，每轮往返在起点重置：
+        // gateOpen —— 本轮是否已出现实质载荷（正文/思考链/工具调用）。开闸后当轮不再拦截。
+        // heldFrames —— 开闸前被拦下的原始帧，开闸时整批放行；到轮末仍未开闸则随异常带出。
+        AtomicBoolean gateOpen = new AtomicBoolean(false);
+        List<ServerSentEvent<String>> heldFrames = new java.util.concurrent.CopyOnWriteArrayList<>();
+        // 空响应重试耗尽后的放行标记：该轮已在 doOnError 落过库，收尾处据此跳过，避免同一轮记两条。
+        AtomicBoolean emptyResponsePassthrough = new AtomicBoolean(false);
 
         // 单次上游尝试：每次订阅都注册新鲜的静默重试信号并把自己挂在信号上，
         // 被触发时取消当前 WebClient 请求（无值完成），由外层循环决定是否重发。
@@ -240,6 +274,8 @@ public abstract class AbstractUpstreamChatService {
                     logChunks.clear();
                     ttfbMs.set(-1);
                     usageRaw.set(null);
+                    gateOpen.set(false);
+                    heldFrames.clear();
                     return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, true)
                             .post().uri(chatCompletionsUri()).bodyValue(requestBody)
                             .exchangeToFlux(response -> {
@@ -266,18 +302,83 @@ public abstract class AbstractUpstreamChatService {
                                 return response.bodyToFlux(STRING_SSE_TYPE);
                             });
                 })
+                // ── 空响应 gate ──────────────────────────────────────────────
+                // 挂在 retryWhen <strong>内侧</strong>，因此每轮重订阅各自独立判定。
+                // 开闸前逐帧缓存不下发；一旦出现实质载荷（正文/思考链/工具调用）立即整批释放，
+                // 之后当轮不再拦截（gateOpen 常真，热路径只多一次 volatile 读）。
+                .concatMap(frame -> {
+                    // 首字打点放在此处而非 gate 下游：保持"首 chunk"语义 —— 只要上游吐了帧就算测得，
+                    // 不因该帧被 gate 暂扣而延后。每轮往返已在起点重置。
+                    if (ttfbMs.get() < 0) {
+                        ttfbMs.set(System.currentTimeMillis() - attemptStart.get());
+                    }
+                    if (gateOpen.get()) {
+                        return Flux.just(frame);
+                    }
+                    if (UpstreamChunkContentDetector.hasMeaningfulPayload(objectMapper, frame.data())) {
+                        gateOpen.set(true);
+                        // 整批释放：缓存帧按到达顺序在前，当前帧在后，下游看到的顺序与上游一致。
+                        List<ServerSentEvent<String>> released = new ArrayList<>(heldFrames);
+                        heldFrames.clear();
+                        released.add(frame);
+                        return Flux.fromIterable(released);
+                    }
+                    heldFrames.add(frame);
+                    return Flux.empty();
+                })
+                // 轮末综合判定：整轮从未开闸即为空响应，抛信号异常交给下游 retryWhen 按预算重试。
+                // 放在 concatWith 而非 doFinally，是因为只有前者能把错误信号注入流中。
+                // 此处也覆盖"0 帧空 body"：一帧都没来，gate 自然没开。
+                .concatWith(Flux.defer(() -> {
+                    if (gateOpen.get()) {
+                        return Flux.<ServerSentEvent<String>>empty();
+                    }
+                    List<String> emptyFrames = heldFrames.stream()
+                            .map(ServerSentEvent::data)
+                            .filter(Objects::nonNull)
+                            .toList();
+                    log.warn("{} 上游空响应（无正文/思考链/工具调用），拦截帧数 {}，将按重试预算重发 [{}] {}",
+                            provider.providerKey(), emptyFrames.size(), model, requestId);
+                    return Flux.error(new EmptyUpstreamResponseException(emptyFrames));
+                }))
                 // 网络类失败往返（无上游错误响应，如连接失败 / HTTP 200 后流中途断开）：即时落一条记录。
                 // 错误响应（4xx/5xx）已在 exchangeToFlux 分支落库，此处用 findWebResponseException==null 排除以免重复。
                 .doOnError(e -> {
+                    EmptyUpstreamResponseException emptyResponse = findEmptyUpstreamException(e);
+                    if (emptyResponse != null) {
+                        // 空响应往返：帧被 gate 拦在上游，logChunks 是空的 —— 必须改用异常携带的缓存帧落库，
+                        // 否则日志只剩「200 且零 chunk」，恰恰在最该看清上游吐了什么的场景下什么都看不到。
+                        saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
+                                capturedRespHeaders.get(), capturedStatusCode.get(),
+                                emptyResponse.bufferedFrames(), attemptStart.get());
+                        return;
+                    }
                     if (findWebResponseException(e) == null) {
                         int statusCode = capturedStatusCode.get() == 0 ? -1 : capturedStatusCode.get();
                         saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
                                 capturedRespHeaders.get(), statusCode, List.copyOf(logChunks), attemptStart.get());
                     }
                 })
-                // 异常重试照旧：与静默重试完全独立 —— 静默重试走 takeUntilOther 的正常完成，
-                // 不经过 retryWhen，因此不消耗异常重试的 5 次预算。
-                .retryWhen(buildRetrySpec("chatCompletionStream", provider, requestId, model, true));
+                // 异常重试：空响应与 429 / 5xx / 网络中断共用这一条预算 —— 空响应被包成
+                // EmptyUpstreamResponseException 抛出，isRetryableFailure 认它，因此无需第二套重试实现。
+                // 与之相对，手动静默重试走 takeUntilOther 的正常完成，不经过 retryWhen，故不消耗预算。
+                .retryWhen(buildRetrySpec("chatCompletionStream", provider, requestId, model, true))
+                // 空响应重试耗尽：把最后一轮被拦下的帧原样放给下游，与其他失败「耗尽后透传最后一次响应」
+                // 保持一致 —— 至少让下游看到上游真实返回了什么，而不是收到一个 500。
+                // 该轮已在上面的 doOnError 落库，故放行后由 emptyResponsePassthrough 让收尾跳过重复落库。
+                // 注意用 findEmptyUpstreamException 解包而非按类型匹配：retryWhen 耗尽时原异常被
+                // 包进 RetryExhaustedException，onErrorResume(Class) 匹配不到。
+                .onErrorResume(error -> {
+                    EmptyUpstreamResponseException emptyResponse = findEmptyUpstreamException(error);
+                    if (emptyResponse == null) {
+                        return Flux.error(error);
+                    }
+                    log.warn("{} 上游空响应重试耗尽，放行最后一轮的 {} 帧给下游 [{}] {}",
+                            provider.providerKey(), emptyResponse.bufferedFrames().size(), model, requestId);
+                    emptyResponsePassthrough.set(true);
+                    return Flux.fromIterable(emptyResponse.bufferedFrames())
+                            .map(data -> ServerSentEvent.builder(data).build());
+                });
 
         // 静默重试循环：把重试信号挂到<strong>整轮尝试</strong>（含 retryWhen 的 backoff 等待）上，
         // 使请求进行中与退避等待两个阶段都能被信号中断。被中断的轮次（无值完成）若标志为真则重发。
@@ -303,13 +404,9 @@ public abstract class AbstractUpstreamChatService {
                 .mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
                 .doOnNext(raw -> {
                     log.debug("{} 上游原始: {}", provider.providerKey(), raw);
-                    // 首字打点：上游首个 chunk 到达即记时长（语义为"首 chunk"，不区分其载荷形态）。
-                    // 打在最上游的原始 chunk 处，因此纯思考（仅 reasoning_content）、纯工具调用
-                    // （仅 tool_calls）等无正文响应同样能测得首字，不依赖 contentEmitted。
-                    // 每次往返（defer 重订阅）已在起点重置，故反映最终成功往返的首字延迟。
-                    if (ttfbMs.get() < 0) {
-                        ttfbMs.set(System.currentTimeMillis() - attemptStart.get());
-                    }
+                    // 首字打点已移到空响应 gate 处（retryWhen 内侧、拦截判定之前），
+                    // 以免被 gate 暂扣的帧让 ttfb 虚高。语义仍是"首 chunk"而非"首正文"，
+                    // 故纯思考、纯工具调用等无正文响应同样能测得。
                     // 从上游原始 chunk 提取 usage 原始 JSON（通常在尾 chunk）；有则记录供成功收尾落库。
                     String rawUsage = UsageParser.extractUsageRawJson(objectMapper, raw);
                     if (rawUsage != null) {
@@ -336,6 +433,10 @@ public abstract class AbstractUpstreamChatService {
                 .doFinally(signal -> {
                     if (callRetryRegistry != null && requestId != null) {
                         callRetryRegistry.remove(requestId);
+                    }
+                    // 空响应耗尽放行：该轮已在 doOnError 用缓存帧落过库，此处再落一条会重复。
+                    if (emptyResponsePassthrough.get()) {
+                        return;
                     }
                     if (signal != SignalType.ON_ERROR) {
                         int statusCode = capturedStatusCode.get();
@@ -594,7 +695,7 @@ public abstract class AbstractUpstreamChatService {
     /**
      * 判定某次上游失败是否值得重试。
      *
-     * <p>按异常类型分三类裁决，各自的语义是：
+     * <p>按异常类型分四类裁决，各自的语义是：
      * <ul>
      *   <li><strong>连接建立失败</strong>（{@link WebClientRequestException}）——
      *       上游不可达或未响应，多半是瞬时网络问题，值得重试；</li>
@@ -603,6 +704,9 @@ public abstract class AbstractUpstreamChatService {
      *   <li><strong>HTTP 错误响应</strong>（{@link WebClientResponseException}）——
      *       状态码本身可重试（429 / 5xx / 400），或 cause chain 含
      *       {@code IOException}（HTTP 200 后 SSE 流中途断开，实为网络层失败）。</li>
+     *   <li><strong>空响应</strong>（{@link EmptyUpstreamResponseException}）——
+     *       HTTP 层成功但一轮下来无正文、无思考链、无工具调用。做成异常正是为了
+     *       复用这份预算，避免出现第二套独立的重试次数配置。</li>
      * </ul>
      * 其余错误一律不重试：请求内容未变，确定性错误重试结果必然相同。
      *
@@ -623,7 +727,32 @@ public abstract class AbstractUpstreamChatService {
             return isRetryableStatus(responseException.getStatusCode())
                     || hasNetworkCause(responseException);
         }
+        if (failure instanceof EmptyUpstreamResponseException) {
+            // 空响应：HTTP 层通常是 200，但内容为空 —— 复用同一份重试预算，
+            // 使「重试次数」只有 buildRetrySpec 一个来源，未来做可配置时不必改两处。
+            return true;
+        }
         return false;
+    }
+
+    /**
+     * 从异常链中解包出 {@link EmptyUpstreamResponseException}。
+     *
+     * <p>与 {@link #findWebResponseException} 同理：{@code retryWhen} 耗尽时原异常被包进
+     * {@code RetryExhaustedException}，必须递归解包才能拿到，按类型直接匹配会漏掉。
+     *
+     * @param throwable 待解包异常
+     * @return 链上第一个空响应异常；没有则返回 null
+     */
+    private static EmptyUpstreamResponseException findEmptyUpstreamException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof EmptyUpstreamResponseException emptyResponse) {
+                return emptyResponse;
+            }
+            current = current.getCause();
+        }
+        return null;
     }
 
     /**
@@ -833,7 +962,9 @@ public abstract class AbstractUpstreamChatService {
      * 从多个兼容字段中提取思考内容，并统一成 reasoning_content。
      */
     private String extractReasoning(Map<String, Object> delta) {
-        String[] keys = {"reasoning_content", "reasoning_text", "reasoning", "thinking", "cot_summary"};
+        // 与空响应 gate 的判定共用同一份清单：gate 工作在清洗之前，必须逐个检查兼容字段。
+        // 新增兼容字段时改 UpstreamChunkContentDetector.REASONING_KEYS 一处即可，两侧同步生效。
+        String[] keys = UpstreamChunkContentDetector.REASONING_KEYS;
         for (String key : keys) {
             Object value = delta.get(key);
             if (value instanceof String str && !str.isBlank()) {
