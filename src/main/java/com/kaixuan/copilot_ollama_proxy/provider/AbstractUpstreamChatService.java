@@ -7,8 +7,10 @@ import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotif
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
+import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageParser;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import org.slf4j.Logger;
@@ -16,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -52,6 +55,27 @@ import java.util.concurrent.atomic.AtomicReference;
  *   （无正文时回退用思考内容作为回复）、API 调用日志记录。
  *
  * 运行时配置（API Key、Base URL、模型列表）由调用方显式传入。
+ *
+ * <h2>两条重试通道</h2>
+ * 「静默」指重试发生在 COSP 内部、下游连接保持打开、Copilot 全程无感知。两条通道都是静默的，
+ * 区别只在触发者与是否消耗预算：
+ * <table border="1">
+ *   <caption>重试通道对照</caption>
+ *   <tr><th>通道</th><th>触发者</th><th>消耗 5 次预算</th><th>实现位置</th></tr>
+ *   <tr><td>异常重试</td><td>COSP 自身（上游失败 / 空响应）</td><td>是</td>
+ *       <td>{@link #buildRetrySpec} 的 {@code retryWhen}</td></tr>
+ *   <tr><td>手动重试</td><td>用户在管理后台右键 Toast</td><td>否</td>
+ *       <td>{@code CallRetryRegistry} + {@code takeUntilOther}</td></tr>
+ * </table>
+ * 手动重试不消耗预算是有意的：那是用户可感知的主动操作，不该挤占自动恢复的余量。
+ *
+ * <h2>空响应兜底</h2>
+ * 第三方中转站偶发 HTTP 200 但内容全空的响应（无正文、无思考链、无工具调用，
+ * 有时连 usage 与 {@code [DONE]} 都没有）。管道在 {@code retryWhen} 内侧设一道 gate：
+ * 开闸前逐帧缓存不下发，出现实质载荷即整批释放并当轮不再拦截；整轮未开闸则抛
+ * {@link EmptyUpstreamResponseException}，走上面那条<strong>同一份</strong>重试预算。
+ * 耗尽后把最后一轮的帧原样放行给下游，与其他失败的耗尽行为保持一致。
+ * 判定口径见 {@link UpstreamChunkContentDetector}。
  */
 public abstract class AbstractUpstreamChatService {
 
@@ -78,6 +102,15 @@ public abstract class AbstractUpstreamChatService {
     /** 调用生命周期事件通知器，由 Spring 可选注入；用于发出 CONNECTED / RETRYING 等 provider 层观测点。 */
     private CallLifecycleNotifier lifecycleNotifier;
 
+    /** 静默重试协调器，由 Spring 可选注入；管理后台右键 Toast 触发时，重新发起当前上游请求。 */
+    private CallRetryRegistry callRetryRegistry;
+
+    /**
+     * 重试次数策略，由 Spring 可选注入；未注入（如单元测试）时回退到默认 5 次。
+     * 只在 {@link #buildRetrySpec} 一处使用，保证重试次数只有一个来源。
+     */
+    private RetryPolicyService retryPolicyService;
+
     /**
      * 全局 WebClient.Builder，由 Spring 通过 setter 注入。
      * 该 Builder 在 WebClientConfig 中配置了 JDK 系统 DNS 解析器，
@@ -99,6 +132,16 @@ public abstract class AbstractUpstreamChatService {
     @Autowired(required = false)
     public void setLifecycleNotifier(CallLifecycleNotifier lifecycleNotifier) {
         this.lifecycleNotifier = lifecycleNotifier;
+    }
+
+    @Autowired(required = false)
+    public void setCallRetryRegistry(CallRetryRegistry callRetryRegistry) {
+        this.callRetryRegistry = callRetryRegistry;
+    }
+
+    @Autowired(required = false)
+    public void setRetryPolicyService(RetryPolicyService retryPolicyService) {
+        this.retryPolicyService = retryPolicyService;
     }
 
     @Autowired(required = false)
@@ -136,6 +179,12 @@ public abstract class AbstractUpstreamChatService {
      * @param model 请求中指定的模型名称
      * @return 上游返回的原始 OpenAI JSON 响应字符串
      */
+    // TODO 非流式空响应兜底尚未实现。流式已有 gate（见 chatCompletionStream），
+    //  非流式的判定本身更简单（一次拿到完整 body，直接看 choices[*].message 三类载荷，
+    //  无需缓存-释放机制），但落库路径、usage 提取、retryWhen 位置都是另一套，
+    //  且 message 与 delta 的字段形态不同，UpstreamChunkContentDetector 需要另开一个入口。
+    //  当前实际流量几乎全是流式，故先只做流式；补做时注意与流式共用同一份重试预算，
+    //  不要引入第二套重试次数配置。
     protected Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
                                           ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                           String requestId) {
@@ -219,12 +268,26 @@ public abstract class AbstractUpstreamChatService {
         AtomicLong ttfbMs = new AtomicLong(-1);
         // 本次往返的 usage 原始 JSON：从上游原始 chunk 提取，成功收尾写用量表。往返起点清空。
         AtomicReference<String> usageRaw = new AtomicReference<>(null);
-        return Flux.defer(() -> {
+        // 静默重试标志：上游尝试被重试信号中断时置位，收尾处据此重新发起一轮。
+        AtomicBoolean silentRetryRequested = new AtomicBoolean(false);
+        // 空响应兜底 gate 的两个状态，每轮往返在起点重置：
+        // gateOpen —— 本轮是否已出现实质载荷（正文/思考链/工具调用）。开闸后当轮不再拦截。
+        // heldFrames —— 开闸前被拦下的原始帧，开闸时整批放行；到轮末仍未开闸则随异常带出。
+        AtomicBoolean gateOpen = new AtomicBoolean(false);
+        List<ServerSentEvent<String>> heldFrames = new java.util.concurrent.CopyOnWriteArrayList<>();
+        // 空响应重试耗尽后的放行标记：该轮已在 doOnError 落过库，收尾处据此跳过，避免同一轮记两条。
+        AtomicBoolean emptyResponsePassthrough = new AtomicBoolean(false);
+
+        // 单次上游尝试：每次订阅都注册新鲜的静默重试信号并把自己挂在信号上，
+        // 被触发时取消当前 WebClient 请求（无值完成），由外层循环决定是否重发。
+        Flux<ServerSentEvent<String>> rawAttempt = Flux.defer(() -> {
                     // 本次往返起点：重置计时与 chunk 收集，使每条日志只反映该次往返（不跨重试累加）。
                     attemptStart.set(System.currentTimeMillis());
                     logChunks.clear();
                     ttfbMs.set(-1);
                     usageRaw.set(null);
+                    gateOpen.set(false);
+                    heldFrames.clear();
                     return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, true)
                             .post().uri(chatCompletionsUri()).bodyValue(requestBody)
                             .exchangeToFlux(response -> {
@@ -251,26 +314,111 @@ public abstract class AbstractUpstreamChatService {
                                 return response.bodyToFlux(STRING_SSE_TYPE);
                             });
                 })
+                // ── 空响应 gate ──────────────────────────────────────────────
+                // 挂在 retryWhen <strong>内侧</strong>，因此每轮重订阅各自独立判定。
+                // 开闸前逐帧缓存不下发；一旦出现实质载荷（正文/思考链/工具调用）立即整批释放，
+                // 之后当轮不再拦截（gateOpen 常真，热路径只多一次 volatile 读）。
+                .concatMap(frame -> {
+                    // 首字打点放在此处而非 gate 下游：保持"首 chunk"语义 —— 只要上游吐了帧就算测得，
+                    // 不因该帧被 gate 暂扣而延后。每轮往返已在起点重置。
+                    if (ttfbMs.get() < 0) {
+                        ttfbMs.set(System.currentTimeMillis() - attemptStart.get());
+                    }
+                    if (gateOpen.get()) {
+                        return Flux.just(frame);
+                    }
+                    if (UpstreamChunkContentDetector.hasMeaningfulPayload(objectMapper, frame.data())) {
+                        gateOpen.set(true);
+                        // 整批释放：缓存帧按到达顺序在前，当前帧在后，下游看到的顺序与上游一致。
+                        List<ServerSentEvent<String>> released = new ArrayList<>(heldFrames);
+                        heldFrames.clear();
+                        released.add(frame);
+                        return Flux.fromIterable(released);
+                    }
+                    heldFrames.add(frame);
+                    return Flux.empty();
+                })
+                // 轮末综合判定：整轮从未开闸即为空响应，抛信号异常交给下游 retryWhen 按预算重试。
+                // 放在 concatWith 而非 doFinally，是因为只有前者能把错误信号注入流中。
+                // 此处也覆盖"0 帧空 body"：一帧都没来，gate 自然没开。
+                .concatWith(Flux.defer(() -> {
+                    if (gateOpen.get()) {
+                        return Flux.<ServerSentEvent<String>>empty();
+                    }
+                    List<String> emptyFrames = heldFrames.stream()
+                            .map(ServerSentEvent::data)
+                            .filter(Objects::nonNull)
+                            .toList();
+                    log.warn("{} 上游空响应（无正文/思考链/工具调用），拦截帧数 {}，将按重试预算重发 [{}] {}",
+                            provider.providerKey(), emptyFrames.size(), model, requestId);
+                    return Flux.error(new EmptyUpstreamResponseException(emptyFrames));
+                }))
                 // 网络类失败往返（无上游错误响应，如连接失败 / HTTP 200 后流中途断开）：即时落一条记录。
                 // 错误响应（4xx/5xx）已在 exchangeToFlux 分支落库，此处用 findWebResponseException==null 排除以免重复。
                 .doOnError(e -> {
+                    EmptyUpstreamResponseException emptyResponse = findEmptyUpstreamException(e);
+                    if (emptyResponse != null) {
+                        // 空响应往返：帧被 gate 拦在上游，logChunks 是空的 —— 必须改用异常携带的缓存帧落库，
+                        // 否则日志只剩「200 且零 chunk」，恰恰在最该看清上游吐了什么的场景下什么都看不到。
+                        saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
+                                capturedRespHeaders.get(), capturedStatusCode.get(),
+                                emptyResponse.bufferedFrames(), attemptStart.get());
+                        return;
+                    }
                     if (findWebResponseException(e) == null) {
                         int statusCode = capturedStatusCode.get() == 0 ? -1 : capturedStatusCode.get();
                         saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
                                 capturedRespHeaders.get(), statusCode, List.copyOf(logChunks), attemptStart.get());
                     }
                 })
-                // 重试挂在落库下游：中间失败已在上游各自记录，此处仅负责重订阅。
-                .retryWhen(buildRetrySpec("chatCompletionStream", provider, requestId, model, true)).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
+                // 异常重试：空响应与 429 / 5xx / 网络中断共用这一条预算 —— 空响应被包成
+                // EmptyUpstreamResponseException 抛出，isRetryableFailure 认它，因此无需第二套重试实现。
+                // 与之相对，手动静默重试走 takeUntilOther 的正常完成，不经过 retryWhen，故不消耗预算。
+                .retryWhen(buildRetrySpec("chatCompletionStream", provider, requestId, model, true))
+                // 空响应重试耗尽：把最后一轮被拦下的帧原样放给下游，与其他失败「耗尽后透传最后一次响应」
+                // 保持一致 —— 至少让下游看到上游真实返回了什么，而不是收到一个 500。
+                // 该轮已在上面的 doOnError 落库，故放行后由 emptyResponsePassthrough 让收尾跳过重复落库。
+                // 注意用 findEmptyUpstreamException 解包而非按类型匹配：retryWhen 耗尽时原异常被
+                // 包进 RetryExhaustedException，onErrorResume(Class) 匹配不到。
+                .onErrorResume(error -> {
+                    EmptyUpstreamResponseException emptyResponse = findEmptyUpstreamException(error);
+                    if (emptyResponse == null) {
+                        return Flux.error(error);
+                    }
+                    log.warn("{} 上游空响应重试耗尽，放行最后一轮的 {} 帧给下游 [{}] {}",
+                            provider.providerKey(), emptyResponse.bufferedFrames().size(), model, requestId);
+                    emptyResponsePassthrough.set(true);
+                    return Flux.fromIterable(emptyResponse.bufferedFrames())
+                            .map(data -> ServerSentEvent.builder(data).build());
+                });
+
+        // 静默重试循环：把重试信号挂到<strong>整轮尝试</strong>（含 retryWhen 的 backoff 等待）上，
+        // 使请求进行中与退避等待两个阶段都能被信号中断。被中断的轮次（无值完成）若标志为真则重发。
+        // 每次重发都重新注册新鲜的信号，连续点击可连续触发；下游断连时整个链被取消，递归随之终止。
+        AtomicReference<Flux<ServerSentEvent<String>>> attemptLoopRef = new AtomicReference<>();
+        Flux<ServerSentEvent<String>> attemptLoop = Flux.defer(() -> {
+                    Mono<Void> silentRetrySignal = callRetryRegistry == null || requestId == null
+                            ? Mono.never()
+                            : callRetryRegistry.register(requestId)
+                                    .doOnSuccess(v -> silentRetryRequested.set(true));
+                    return rawAttempt.takeUntilOther(silentRetrySignal);
+                })
+                .concatWith(Flux.defer(() -> {
+                    if (silentRetryRequested.compareAndSet(true, false)) {
+                        log.info("静默重试：重新发起上游请求 [{}] {}", model, requestId);
+                        return attemptLoopRef.get();
+                    }
+                    return Flux.<ServerSentEvent<String>>empty();
+                }));
+        attemptLoopRef.set(attemptLoop);
+
+        return attemptLoop
+                .mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
                 .doOnNext(raw -> {
                     log.debug("{} 上游原始: {}", provider.providerKey(), raw);
-                    // 首字打点：上游首个 chunk 到达即记时长（语义为"首 chunk"，不区分其载荷形态）。
-                    // 打在最上游的原始 chunk 处，因此纯思考（仅 reasoning_content）、纯工具调用
-                    // （仅 tool_calls）等无正文响应同样能测得首字，不依赖 contentEmitted。
-                    // 每次往返（defer 重订阅）已在起点重置，故反映最终成功往返的首字延迟。
-                    if (ttfbMs.get() < 0) {
-                        ttfbMs.set(System.currentTimeMillis() - attemptStart.get());
-                    }
+                    // 首字打点已移到空响应 gate 处（retryWhen 内侧、拦截判定之前），
+                    // 以免被 gate 暂扣的帧让 ttfb 虚高。语义仍是"首 chunk"而非"首正文"，
+                    // 故纯思考、纯工具调用等无正文响应同样能测得。
                     // 从上游原始 chunk 提取 usage 原始 JSON（通常在尾 chunk）；有则记录供成功收尾落库。
                     String rawUsage = UsageParser.extractUsageRawJson(objectMapper, raw);
                     if (rawUsage != null) {
@@ -295,6 +443,13 @@ public abstract class AbstractUpstreamChatService {
                 // 成功往返收尾：仅在非错误终结（complete / cancel）时落一条成功记录。
                 // 失败往返（错误响应 / 网络失败）已在 retry 上游即时落库，此处 ON_ERROR 不重复。
                 .doFinally(signal -> {
+                    if (callRetryRegistry != null && requestId != null) {
+                        callRetryRegistry.remove(requestId);
+                    }
+                    // 空响应耗尽放行：该轮已在 doOnError 用缓存帧落过库，此处再落一条会重复。
+                    if (emptyResponsePassthrough.get()) {
+                        return;
+                    }
                     if (signal != SignalType.ON_ERROR) {
                         int statusCode = capturedStatusCode.get();
                         if (statusCode == 0 && logChunks.isEmpty()) {
@@ -518,13 +673,26 @@ public abstract class AbstractUpstreamChatService {
     /**
      * 构建 OpenAI 上游的统一重试策略。
      *
-     * 覆盖四类可恢复场景：
-     * 1. 429 上游限速（使用指数退避，避免加重上游压力）
-     * 2. 5xx 服务端错误
-     * 3. 可重试的 400 错误
-     * 4. 网络层异常：包括 WebClientRequestException（连接建立失败）
-     *    以及 WebClientResponseException 的 cause chain 中的 IOException
-     *    （如 SocketException: Connection reset，即 HTTP 200 但 SSE 流中途断开）
+     * <p>重试次数固定为 5（首次请求外再试 5 次），指数退避 2 秒起、上限 30 秒。
+     * 是否重试由 {@link #isRetryableFailure} 裁决，覆盖四类可恢复场景：
+     * <ol>
+     *   <li>429 上游限速（指数退避避免加重上游压力）；</li>
+     *   <li>5xx 服务端错误；</li>
+     *   <li>可重试的 400 错误；</li>
+     *   <li>网络层异常 —— 连接建立失败（{@link WebClientRequestException}）、
+     *       HTTP 200 后 SSE 流中途断开（cause chain 中的 {@code IOException}）、
+     *       TLS 握手失败（cause chain 中的 {@code SSLException}）。</li>
+     * </ol>
+     * 其余错误（如 401/403 等确定性 4xx）不重试 —— 请求内容未变，重试结果必然相同。
+     *
+     * <h2>重试次数来源</h2>
+     * 次数取自 {@code app_config} 的 {@code retry_max_attempts}（管理后台可改，改完即时生效）：
+     * 正数为具体次数，{@code 0} 不重试，{@code -1} 无限重试。未注入策略服务时（单元测试）
+     * 回退到 {@link RetryPolicyService#DEFAULT_MAX_ATTEMPTS}。
+     *
+     * <p>注意 {@code 0} 与「不加 retryWhen」并不完全等价：{@code filter} 与
+     * {@code doBeforeRetry} 依旧挂着，只是永远不会触发重订阅，异常照常透传。保留这条链
+     * 而不做分支，是为了让重试次数始终只有这一个来源。
      *
      * @param method 调用方方法名，用于日志区分重试来源
      * @param requestId 本次调用唯一标识，用于发出 RETRYING 生命周期事件
@@ -534,22 +702,120 @@ public abstract class AbstractUpstreamChatService {
      */
     protected Retry buildRetrySpec(String method, ProviderRuntimeConfiguration provider,
                                    String requestId, String model, boolean stream) {
-        return Retry.backoff(5, Duration.ofSeconds(2)).maxBackoff(Duration.ofSeconds(30))
-                .filter(ex -> ((ex instanceof WebClientResponseException responseException) && (responseException.getStatusCode().value() == 429 || responseException.getStatusCode().is5xxServerError()
-                        || responseException.getStatusCode().value() == 400 || hasNetworkCause(responseException))) || ex instanceof WebClientRequestException
-                        || hasSslHandshakeFailure(ex))
+        int configured = retryPolicyService != null
+                ? retryPolicyService.getMaxAttempts()
+                : RetryPolicyService.DEFAULT_MAX_ATTEMPTS;
+        long maxAttempts = RetryPolicyService.toReactorMaxAttempts(configured);
+        boolean unlimited = configured == RetryPolicyService.UNLIMITED_MAX_ATTEMPTS;
+        return Retry.backoff(maxAttempts, Duration.ofSeconds(2)).maxBackoff(Duration.ofSeconds(30))
+                .filter(AbstractUpstreamChatService::isRetryableFailure)
                 .doBeforeRetry(signal -> {
                     int attempt = (int) (signal.totalRetries() + 1);
                     // RETRYING：让前端 Toast 从“已连接/等待中”切换到“上游异常，正在重试（第N次）”，
-                    // 避免重试期间静默卡顿让用户误以为卡死。
+                    // 避免重试期间静默卡顿让用户误以为卡死。无限模式下前端拿 total=-1 以示无上限。
                     publishLifecycle(CallLifecycleEvent.retrying(requestId, model, stream, attempt));
-                    if (signal.failure() instanceof WebClientResponseException responseException && responseException.getStatusCode().value() == 429) {
-                        String retryAfter = responseException.getHeaders().getFirst("Retry-After");
-                        log.warn("[{}] {} API 限速 (429)，重试第 {} 次{}", method, provider.providerKey(), attempt, retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
-                    } else {
-                        log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, provider.providerKey(), attempt, signal.failure().getMessage());
-                    }
+                    logRetryAttempt(method, provider, signal, attempt, unlimited ? -1 : (int) maxAttempts);
                 });
+    }
+
+    /**
+     * 判定某次上游失败是否值得重试。
+     *
+     * <p>按异常类型分四类裁决，各自的语义是：
+     * <ul>
+     *   <li><strong>连接建立失败</strong>（{@link WebClientRequestException}）——
+     *       上游不可达或未响应，多半是瞬时网络问题，值得重试；</li>
+     *   <li><strong>TLS 握手失败</strong>（cause chain 含 {@code SSLException}）——
+     *       与上同理，属瞬时环境问题；</li>
+     *   <li><strong>HTTP 错误响应</strong>（{@link WebClientResponseException}）——
+     *       状态码本身可重试（429 / 5xx / 400），或 cause chain 含
+     *       {@code IOException}（HTTP 200 后 SSE 流中途断开，实为网络层失败）。</li>
+     *   <li><strong>空响应</strong>（{@link EmptyUpstreamResponseException}）——
+     *       HTTP 层成功但一轮下来无正文、无思考链、无工具调用。做成异常正是为了
+     *       复用这份预算，避免出现第二套独立的重试次数配置。</li>
+     * </ul>
+     * 其余错误一律不重试：请求内容未变，确定性错误重试结果必然相同。
+     *
+     * @param failure 上游抛出的异常
+     * @return 是否值得重试
+     */
+    private static boolean isRetryableFailure(Throwable failure) {
+        if (failure instanceof WebClientRequestException) {
+            // 连接建立失败：上游不可达 / 未响应
+            return true;
+        }
+        if (hasSslHandshakeFailure(failure)) {
+            // TLS 握手失败：瞬时网络环境问题
+            return true;
+        }
+        if (failure instanceof WebClientResponseException responseException) {
+            // HTTP 错误响应：状态码可重试，或实际为网络层中断
+            return isRetryableStatus(responseException.getStatusCode())
+                    || hasNetworkCause(responseException);
+        }
+        if (failure instanceof EmptyUpstreamResponseException) {
+            // 空响应：HTTP 层通常是 200，但内容为空 —— 复用同一份重试预算，
+            // 使「重试次数」只有 buildRetrySpec 一个来源，未来做可配置时不必改两处。
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 从异常链中解包出 {@link EmptyUpstreamResponseException}。
+     *
+     * <p>与 {@link #findWebResponseException} 同理：{@code retryWhen} 耗尽时原异常被包进
+     * {@code RetryExhaustedException}，必须递归解包才能拿到，按类型直接匹配会漏掉。
+     *
+     * @param throwable 待解包异常
+     * @return 链上第一个空响应异常；没有则返回 null
+     */
+    private static EmptyUpstreamResponseException findEmptyUpstreamException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof EmptyUpstreamResponseException emptyResponse) {
+                return emptyResponse;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    /**
+     * 判定 HTTP 状态码是否可重试。
+     *
+     * @param status 上游返回的状态码
+     * @return 429（限速）、5xx（服务端错误）、400（容忍上游临时抽风）为可重试
+     */
+    private static boolean isRetryableStatus(HttpStatusCode status) {
+        int code = status.value();
+        return code == 429 || status.is5xxServerError() || code == 400;
+    }
+
+    /**
+     * 记录一次重试的日志。
+     *
+     * <p>429 单独区分：限速是上游明确的节流信号，附带其 {@code Retry-After} 头
+     * 便于人工判断退避是否符合预期；其余失败只记异常消息。
+     *
+     * @param method 调用方方法名
+     * @param provider 供应商配置（取 providerKey 用于日志区分）
+     * @param signal 本次重试信号（含失败异常）
+     * @param attempt 当前重试序号，从 1 起
+     * @param maxAttempts 本次调用的重试上限；{@code -1} 表示无限
+     */
+    private void logRetryAttempt(String method, ProviderRuntimeConfiguration provider,
+                                 Retry.RetrySignal signal, int attempt, int maxAttempts) {
+        String budget = maxAttempts < 0 ? "∞" : String.valueOf(maxAttempts);
+        if (signal.failure() instanceof WebClientResponseException responseException
+                && responseException.getStatusCode().value() == 429) {
+            String retryAfter = responseException.getHeaders().getFirst("Retry-After");
+            log.warn("[{}] {} API 限速 (429)，重试第 {}/{} 次{}", method, provider.providerKey(), attempt, budget,
+                    retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
+        } else {
+            log.warn("[{}] {} API 调用失败，重试第 {}/{} 次: {}", method, provider.providerKey(), attempt, budget,
+                    signal.failure().getMessage());
+        }
     }
 
     /**
@@ -724,7 +990,9 @@ public abstract class AbstractUpstreamChatService {
      * 从多个兼容字段中提取思考内容，并统一成 reasoning_content。
      */
     private String extractReasoning(Map<String, Object> delta) {
-        String[] keys = {"reasoning_content", "reasoning_text", "reasoning", "thinking", "cot_summary"};
+        // 与空响应 gate 的判定共用同一份清单：gate 工作在清洗之前，必须逐个检查兼容字段。
+        // 新增兼容字段时改 UpstreamChunkContentDetector.REASONING_KEYS 一处即可，两侧同步生效。
+        String[] keys = UpstreamChunkContentDetector.REASONING_KEYS;
         for (String key : keys) {
             Object value = delta.get(key);
             if (value instanceof String str && !str.isBlank()) {

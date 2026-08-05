@@ -25,17 +25,20 @@ public class RuntimeConfigService {
 
     private final AppConfigRepository appConfigRepository;
     private final GatewayAuthService gatewayAuthService;
+    private final RetryPolicyService retryPolicyService;
 
     public RuntimeConfigService(AppConfigRepository appConfigRepository,
-                                GatewayAuthService gatewayAuthService) {
+                                GatewayAuthService gatewayAuthService,
+                                RetryPolicyService retryPolicyService) {
         this.appConfigRepository = appConfigRepository;
         this.gatewayAuthService = gatewayAuthService;
+        this.retryPolicyService = retryPolicyService;
     }
 
     /**
      * 聚合读取设置页所需的全部运行时配置。
      *
-     * @return 结构化配置 DTO（伪造版本号 + 下游鉴权状态）
+     * @return 结构化配置 DTO（伪造版本号 + 下游鉴权状态 + 重试策略）
      */
     public Mono<RuntimeConfigView> getRuntimeConfig() {
         Mono<String> fakeVersionMono = Mono.fromCallable(() -> {
@@ -43,8 +46,14 @@ public class RuntimeConfigService {
             return value == null ? "" : value;
         }).subscribeOn(Schedulers.boundedElastic());
 
-        return Mono.zip(fakeVersionMono, gatewayAuthService.getStatus())
-                .map(tuple -> new RuntimeConfigView(tuple.getT1(), tuple.getT2()));
+        Mono<Integer> retryMaxAttemptsMono = Mono.fromCallable(retryPolicyService::getMaxAttempts)
+                .subscribeOn(Schedulers.boundedElastic());
+
+        return Mono.zip(fakeVersionMono, gatewayAuthService.getStatus(), retryMaxAttemptsMono)
+                .map(tuple -> new RuntimeConfigView(tuple.getT1(), tuple.getT2(),
+                        new RetryPolicyView(tuple.getT3(),
+                                RetryPolicyService.DEFAULT_MAX_ATTEMPTS,
+                                RetryPolicyService.MAX_CONFIGURABLE_ATTEMPTS)));
     }
 
     public Mono<Void> saveFakeVersion(String version) {
@@ -55,11 +64,37 @@ public class RuntimeConfigService {
     }
 
     /**
+     * 保存上游重试次数。
+     *
+     * @param maxAttempts {@code -1} 无限重试，{@code 0} 不重试，正数为具体次数
+     * @return 完成信号；值非法时以 {@link IllegalArgumentException} 终止
+     */
+    public Mono<Void> saveRetryMaxAttempts(int maxAttempts) {
+        return Mono.<Void>fromRunnable(() -> retryPolicyService.saveMaxAttempts(maxAttempts))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
      * 运行时配置聚合视图。
      *
      * @param fakeVersion  伪造版本号（未配置时为空串）
      * @param gatewayAuth  下游鉴权状态（含脱敏 Key，绝不含明文）
+     * @param retryPolicy  上游重试策略
      */
-    public record RuntimeConfigView(String fakeVersion, GatewayAuthStatus gatewayAuth) {
+    public record RuntimeConfigView(String fakeVersion, GatewayAuthStatus gatewayAuth,
+                                    RetryPolicyView retryPolicy) {
+    }
+
+    /**
+     * 重试策略视图。
+     *
+     * <p>默认值与上限一并下发，是为了让前端不必自己维护一份常量 ——
+     * 同一约束写两处时，改一侧不会报错，只会让用户在 UI 上选到一个被后端静默拒绝的值。
+     *
+     * @param maxAttempts 当前生效的重试次数；{@code -1} 表示无限
+     * @param defaultValue 默认值，供前端做「恢复默认」
+     * @param maxConfigurable 允许配置的上限，供前端做输入框约束
+     */
+    public record RetryPolicyView(int maxAttempts, int defaultValue, int maxConfigurable) {
     }
 }

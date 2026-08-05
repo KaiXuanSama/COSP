@@ -48,6 +48,8 @@ const COMPLETED_LINGER = 2200
 const LEAVE_DURATION = 320
 /** 取消端点路径（走认证，http 实例自动附带 Bearer Token）。 */
 const CANCEL_PATH = (requestId: string) => `/calls/${requestId}/cancel`
+/** 静默重试端点路径（走认证）。 */
+const RETRY_PATH = (requestId: string) => `/calls/${requestId}/retry`
 
 export const useCallLifecycleStore = defineStore('callLifecycle', () => {
   /** 当前存活的 Toast 列表，按接收顺序排列（越新的调用越靠前由组件控制）。 */
@@ -134,6 +136,19 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
     }
   }
 
+  /**
+   * 静默重试一次调用：向后端重试端点发 POST（走认证）。
+   * 后端只中断当前上游请求并重新发起，下游连接保持打开、无感知。
+   * 调用方负责防重复（如菜单项 loading 态）。
+   */
+  async function retryCall(requestId: string) {
+    try {
+      await http.post(RETRY_PATH(requestId))
+    } catch {
+      // 重试请求失败（如调用已自然结束），静默忽略。
+    }
+  }
+
   /** 终态：完成 / 失败 / 客户端断连 / 主动取消，均需安排 Toast 淡出移除。 */
   function isTerminalPhase(phase: CallPhase): boolean {
     return phase === 'COMPLETED' || phase === 'FAILED' || phase === 'CANCELED'
@@ -169,5 +184,5 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
     removalTimers.clear()
   }
 
-  return { toasts, connectStream, disconnectStream, cancelCall }
+  return { toasts, connectStream, disconnectStream, cancelCall, retryCall }
 })

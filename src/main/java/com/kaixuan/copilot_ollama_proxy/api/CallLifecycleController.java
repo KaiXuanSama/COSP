@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.api;
 
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.SseConnectionGate;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import org.springframework.http.MediaType;
@@ -27,13 +28,16 @@ public class CallLifecycleController {
 
     private final CallLifecyclePublisher callLifecyclePublisher;
     private final CallCancellationRegistry callCancellationRegistry;
+    private final CallRetryRegistry callRetryRegistry;
     private final SseConnectionGate sseConnectionGate;
 
     public CallLifecycleController(CallLifecyclePublisher callLifecyclePublisher,
                                    CallCancellationRegistry callCancellationRegistry,
+                                   CallRetryRegistry callRetryRegistry,
                                    SseConnectionGate sseConnectionGate) {
         this.callLifecyclePublisher = callLifecyclePublisher;
         this.callCancellationRegistry = callCancellationRegistry;
+        this.callRetryRegistry = callRetryRegistry;
         this.sseConnectionGate = sseConnectionGate;
     }
 
@@ -100,6 +104,29 @@ public class CallLifecycleController {
         return Mono.fromSupplier(() -> {
             boolean canceled = callCancellationRegistry.cancel(requestId);
             return ResponseEntity.ok(Map.of("requestId", requestId, "canceled", canceled));
+        });
+    }
+
+    /**
+     * 静默重试一次正在进行的调用（管理后台右键 Toast 点「静默重试」）。
+     *
+     * <p>与 {@link #cancelCall} 的区别：取消会终止整条调用链并关闭下游连接；
+     * 静默重试只中断<strong>当前上游请求</strong>并重新发起，下游 SSE 连接保持打开，
+     * 新响应的 chunk 继续沿同一条流下发 —— 下游 Copilot 无感知，也不消耗
+     * provider 层异常重试的 5 次预算。
+     *
+     * <p>注意：已吐出部分 chunk 后触发重试，重新发起的上游响应会<strong>从头再吐一遍</strong>，
+     * 下游会收到重复内容 —— 这是有意的取舍（方案 B），用户可感知。
+     *
+     * @param requestId 目标调用唯一标识
+     * @return {@code retried=true} 表示成功触发；{@code false} 表示该调用不存在
+     *         （已完成 / 已取消 / 从未存在）
+     */
+    @PostMapping("/config/api/calls/{requestId}/retry")
+    public Mono<ResponseEntity<Map<String, Object>>> retryCall(@PathVariable String requestId) {
+        return Mono.fromSupplier(() -> {
+            boolean retried = callRetryRegistry.retry(requestId);
+            return ResponseEntity.ok(Map.of("requestId", requestId, "retried", retried));
         });
     }
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { NCard, NInput, NButton, NSwitch, NModal, useMessage } from 'naive-ui'
+import { ref, computed, onMounted } from 'vue'
+import { NCard, NInput, NInputNumber, NButton, NSwitch, NModal, useMessage } from 'naive-ui'
 import { useProviderStore } from '@/stores/providers'
 import { copyToClipboard } from '@/utils/clipboard'
 
@@ -9,6 +9,23 @@ const message = useMessage()
 
 const fakeVersion = ref('')
 const versionPlaceholder = ref('0.6.4')
+
+// ── 上游重试次数 ──
+// 语义：-1 无限重试，0 不重试，正数为具体次数（都不含首次请求）。
+// 上下限由后端下发，前端不自己维护一份常量 —— 否则改一侧不报错，
+// 只会让用户在 UI 上选到一个被后端静默拒绝的值。
+const retryMaxAttempts = ref<number | null>(5)
+const retryDefaultValue = ref(5)
+const retryMaxConfigurable = ref(100)
+const retrySaving = ref(false)
+
+/** 把当前取值翻译成人话，避免用户对着 -1 / 0 猜语义。 */
+const retryHint = computed(() => {
+  const value = retryMaxAttempts.value
+  if (value === -1) return '无限重试：上游持续失败时会一直重试，直到成功或你手动断连'
+  if (value === 0) return '不重试：上游首次失败即直接返回错误'
+  return `首次请求失败后最多再试 ${value} 次，退避 2 秒起、上限 30 秒`
+})
 
 // ── 下游鉴权管理 ──
 const gatewayEnabled = ref(false)
@@ -30,10 +47,30 @@ onMounted(async () => {
     gatewayEnabled.value = config.gatewayAuth.enabled
     gatewayMaskedKey.value = config.gatewayAuth.maskedKey
     gatewayConfigured.value = config.gatewayAuth.configured
+    retryMaxAttempts.value = config.retryPolicy.maxAttempts
+    retryDefaultValue.value = config.retryPolicy.defaultValue
+    retryMaxConfigurable.value = config.retryPolicy.maxConfigurable
   } catch {
     // 读取失败时保持默认值
   }
 })
+
+async function saveRetryMaxAttempts() {
+  const value = retryMaxAttempts.value
+  if (value === null) {
+    message.warning('请先填写重试次数')
+    return
+  }
+  retrySaving.value = true
+  try {
+    await providerStore.saveRetryMaxAttempts(value)
+    message.success(value === -1 ? '已设为无限重试' : `重试次数已设为 ${value}`)
+  } catch {
+    message.error('保存失败，请检查取值是否合法')
+  } finally {
+    retrySaving.value = false
+  }
+}
 
 async function saveFakeVersion() {
   await providerStore.saveFakeVersion(fakeVersion.value)
@@ -110,6 +147,20 @@ async function regenerateGatewayKey() {
       </div>
     </n-card>
 
+    <!-- 上游重试次数 -->
+    <n-card title="上游重试次数" :bordered="true" style="margin-top: 16px;">
+      <div class="retry-policy-row">
+        <n-input-number class="retry-attempts-input" v-model:value="retryMaxAttempts" :min="-1"
+          :max="retryMaxConfigurable" :step="1" :precision="0" placeholder="重试次数"
+          @keyup.enter="saveRetryMaxAttempts" />
+        <n-button type="primary" :loading="retrySaving" @click="saveRetryMaxAttempts">保存</n-button>
+      </div>
+      <div class="retry-policy-hint">{{ retryHint }}</div>
+      <div class="retry-policy-note">
+        对上游限速（429）、服务端错误（5xx）、网络中断与空响应兜底生效；
+        401/403 这类确定性错误仍然立即失败。默认 {{ retryDefaultValue }} 次。
+      </div>
+    </n-card>
     <!-- 下游鉴权管理 -->
     <n-card :bordered="true" style="margin-top: 16px;">
       <template #header>
@@ -209,6 +260,34 @@ async function regenerateGatewayKey() {
   display: flex;
   gap: $space-sm;
   align-items: center;
+}
+
+.retry-policy-row {
+  display: flex;
+  gap: $space-sm;
+  align-items: center;
+}
+
+/* 与 .fake-version-row 里的 n-input 对齐：输入框吃掉剩余宽度，
+   「保存」因此落在与版本号卡片同一列的右缘上。n-input-number 默认
+   宽度由内容决定，不撑开就会让两张卡片的按钮错位。 */
+.retry-attempts-input {
+  flex: 1;
+}
+
+/* 取值语义提示：随输入实时变化，比让用户对着 -1 / 0 猜含义更直接。 */
+.retry-policy-hint {
+  margin-top: $space-sm;
+  font-size: 13px;
+  color: $text-body;
+}
+
+/* 生效范围说明：静态文案，字号更小以区分于随值变化的提示。 */
+.retry-policy-note {
+  margin-top: 4px;
+  font-size: 12px;
+  color: $text-muted;
+  line-height: 1.6;
 }
 
 .gateway-auth-row {

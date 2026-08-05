@@ -51,6 +51,8 @@ const menuX = ref(0)
 const menuY = ref(0)
 /** 断连请求是否在途（菜单项 loading 态，防重复）。 */
 const canceling = ref(false)
+/** 静默重试请求是否在途（菜单项 loading 态，防重复）。 */
+const retrying = ref(false)
 
 /** 各阶段的展示文案。流式与非流式在 CHUNK/COMPLETED 上略有差异。 */
 function phaseText(toast: CallToast): string {
@@ -110,12 +112,13 @@ function isTerminal(phase: CallPhase): boolean {
   return phase === 'COMPLETED' || phase === 'FAILED' || phase === 'CANCELED' || phase === 'ABORTED'
 }
 
-/** 右键 Toast：打开上下文菜单。终态调用不弹菜单（断连无意义）。 */
+/** 右键 Toast：打开上下文菜单。终态调用不弹菜单（断连与重试均无意义）。 */
 function onContextMenu(event: MouseEvent, toast: CallToast) {
   if (isTerminal(toast.phase)) return
   event.preventDefault()
   menuTarget.value = toast
   canceling.value = false
+  retrying.value = false
   menuX.value = event.clientX
   menuY.value = event.clientY
 }
@@ -128,10 +131,24 @@ async function onDisconnect() {
   closeMenu()
 }
 
+/**
+ * 点击「静默重试」：调用重试端点，关闭菜单。
+ *
+ * 后端只中断当前上游请求并重新发起，下游连接保持打开、Copilot 无感知；
+ * 若上游已吐出部分 chunk，重发后会收到重复内容（有意的取舍，用户可感知）。
+ */
+async function onSilentRetry() {
+  if (!menuTarget.value || retrying.value) return
+  retrying.value = true
+  await store.retryCall(menuTarget.value.requestId)
+  closeMenu()
+}
+
 /** 关闭菜单。 */
 function closeMenu() {
   menuTarget.value = null
   canceling.value = false
+  retrying.value = false
 }
 </script>
 
@@ -174,7 +191,11 @@ function closeMenu() {
       <div v-if="menuTarget" class="call-toast-menu-overlay" @click="closeMenu" @contextmenu.prevent="closeMenu">
         <div class="call-toast-menu" :style="{ left: menuX + 'px', top: menuY + 'px' }"
           @click.stop @contextview.prevent>
-          <button type="button" class="call-toast-menu__item" :disabled="canceling" @click="onDisconnect">
+          <button type="button" class="call-toast-menu__item" :disabled="retrying" @click="onSilentRetry">
+            <span v-if="retrying" class="call-toast-menu__spinner" aria-hidden="true"></span>
+            {{ retrying ? '静默重试中…' : '静默重试' }}
+          </button>
+          <button type="button" class="call-toast-menu__item call-toast-menu__item--danger" :disabled="canceling" @click="onDisconnect">
             <span v-if="canceling" class="call-toast-menu__spinner" aria-hidden="true"></span>
             {{ canceling ? '断连中…' : '断开连接' }}
           </button>
@@ -436,6 +457,11 @@ function closeMenu() {
   box-shadow: $shadow-md;
 }
 
+/*
+  菜单项基类用中性色 —— 静默重试等非破坏操作是常态；
+  危险操作（断开连接）通过 --danger modifier 单独标红，
+  避免「普通项也红、危险项也红」分不清轻重。
+*/
 .call-toast-menu__item {
   display: flex;
   align-items: center;
@@ -446,17 +472,25 @@ function closeMenu() {
   background: transparent;
   font-family: $font-body;
   font-size: 13px;
-  color: $danger;
+  color: $text-primary;
   cursor: pointer;
   transition: background 0.15s ease;
 
   &:hover:not(:disabled) {
-    background: rgba($danger, 0.08);
+    background: $bg;
   }
 
   &:disabled {
     cursor: default;
     opacity: 0.6;
+  }
+}
+
+.call-toast-menu__item--danger {
+  color: $danger;
+
+  &:hover:not(:disabled) {
+    background: rgba($danger, 0.08);
   }
 }
 

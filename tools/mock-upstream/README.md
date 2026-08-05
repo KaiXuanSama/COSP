@@ -39,11 +39,32 @@ node tools/mock-upstream/mock-upstream.js
 | `hang-first-byte` | CONNECTED 后卡住不吐首字（默认 10 分钟） | 等待首字（右键断连 → ABORTED） |
 | `stall-recover` | 吐若干 chunk 后停滞 35s，再继续到结束 | 停滞期间右键可断连；恢复后继续 CHUNK → COMPLETED |
 | `stall-forever` | 吐若干 chunk 后永久停滞（不关连接） | 停滞期间右键断连 → ABORTED 静默断连 |
+| `delayed-stall-forever` | 延迟 5s 才吐首字，随后吐若干 chunk 并永久停滞 | 等待首字与产出后停滞两个阶段均可右键断连 |
 | `done-no-close` | 发完内容 + `[DONE]`，但保持 TCP 不关闭 | Layer 1（`[DONE]` 触发 COMPLETED，不等连接关闭） |
 | `no-done-close` | 发完内容后直接关连接，不发 `[DONE]` | Layer 2（TCP 关闭兜底完成） |
 | `error-500` | 返回 500 | RETRYING（COSP 应重试） |
 | `error-401` | 返回 401 | FAILED（快速失败，不重试） |
 | `slow-steady` | 每 3s 一个 chunk，持续较久 | 长连接下 Toast 持续更新 chunk 计数 |
+| `retry-then-succeed` | 前 2 次请求返回 500，第 3 次正常回复 | 异常重试中途成功（RETRYING → CONNECTED → COMPLETED） |
+| `empty-stream` | 200 + 仅 role/finish/`[DONE]`，无内容 | 空响应兜底（RETRYING，自动重发） |
+| `empty-usage-zero` | 空流但带全 0 usage | 空响应兜底（全 0 usage 仍算空，自动重发） |
+| `empty-tool-call` | 纯工具调用流 | **不**触发兜底（对照场景：工具调用不算空） |
+| `empty-body` | 200 但响应体 0 帧 | 空响应兜底（空 body 也判空，自动重发） |
+
+### 空响应兜底的判定口径
+
+四个 `empty-*` 场景验证的是同一条规则：**一轮上游往返里从未出现过带实质载荷的 delta**
+（正文 `content`、思考链 5 个兼容字段之一、工具调用 `tool_calls`），即判为空响应。
+
+- `empty-usage-zero` 里的全 0 usage **不是判据**，只是伴随现象 —— 该场景之所以被判空，
+  纯粹因为它本来就没有内容。不少中转站正常回复也不吐 usage 或吐全 0，把 usage 当条件会误伤它们。
+- `empty-tool-call` 是**对照组**：它没有正文，但有工具调用，因此不该触发兜底。
+  若这个场景也被重发，说明判定逻辑把「无正文」误当成了「空」。
+- 兜底重发与 429 / 5xx / 网络中断**共用同一份 5 次预算**（`buildRetrySpec`），
+  不是第二套重试实现。耗尽后把最后一轮的帧原样放行给下游。
+
+判定实现见 `UpstreamChunkContentDetector`，接线点在 `AbstractUpstreamChatService#chatCompletionStream`
+的 gate（`retryWhen` 内侧）。非流式尚未实现，已在 `chatCompletion` 上方打 TODO。
 
 ## 可调参数
 

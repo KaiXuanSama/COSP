@@ -27,6 +27,8 @@ const HANG_FIRST_BYTE_MS = 10 * 60 * 1000;
 const STALL_RECOVER_MS = 35 * 1000;
 /** stall-recover / stall-forever 停滞前先吐的 chunk 数。 */
 const STALL_AFTER_CHUNKS = 5;
+/** delayed-stall-forever 首字之前的延迟（毫秒）。 */
+const DELAYED_STALL_LEAD_MS = 5 * 1000;
 /** normal 等正常流的 chunk 间隔（毫秒）。 */
 const NORMAL_CHUNK_INTERVAL_MS = 80;
 /** normal 流的 chunk 数。 */
@@ -47,12 +49,17 @@ const MODELS = [
   { id: 'hang-first-byte', desc: 'CONNECTED 后卡住不吐首字（默认 10 分钟）' },
   { id: 'stall-recover', desc: '吐若干 chunk 后停滞 35s，再继续到结束' },
   { id: 'stall-forever', desc: '吐若干 chunk 后永久停滞（等待用户右键断连）' },
+  { id: 'delayed-stall-forever', desc: '延迟 5s 才吐首字，随后永久停滞（等待用户右键断连）' },
   { id: 'done-no-close', desc: '发完内容 + [DONE]，但保持 TCP 不关闭' },
   { id: 'no-done-close', desc: '发完内容后直接关连接，不发 [DONE]' },
   { id: 'error-500', desc: '返回 500（COSP 应重试）' },
   { id: 'error-401', desc: '返回 401（COSP 应快速失败不重试）' },
   { id: 'slow-steady', desc: '每 3s 一个 chunk，持续较久' },
   { id: 'retry-then-succeed', desc: '前 2 次请求返回 500，第 3 次正常回复 chunk + [DONE]（验证 COSP 重试中成功）' },
+  { id: 'empty-stream', desc: '200 + 仅 role/finish/[DONE]，无任何内容（COSP 应空响应兜底重发）' },
+  { id: 'empty-usage-zero', desc: '空流但带全 0 usage（COSP 应空响应兜底重发）' },
+  { id: 'empty-tool-call', desc: '纯工具调用流（COSP 不应判定为空）' },
+  { id: 'empty-body', desc: '200 但响应体完全为空、0 个 SSE 帧（COSP 应空响应兜底重发）' },
 ];
 
 const MODEL_IDS = new Set(MODELS.map((m) => m.id));
@@ -133,6 +140,8 @@ function handleChat(req, res, model) {
       return stallRecover(res, id, model);
     case 'stall-forever':
       return stallForever(res, id, model);
+    case 'delayed-stall-forever':
+      return delayedStallForever(res, id, model);
     case 'done-no-close':
       return doneNoClose(res, id, model);
     case 'no-done-close':
@@ -145,6 +154,14 @@ function handleChat(req, res, model) {
       return slowSteady(res, id, model);
     case 'retry-then-succeed':
       return retryThenSucceed(res, id, model);
+    case 'empty-stream':
+      return emptyStream(res, id, model);
+    case 'empty-usage-zero':
+      return emptyUsageZero(res, id, model);
+    case 'empty-tool-call':
+      return emptyToolCall(res, id, model);
+    case 'empty-body':
+      return emptyBody(res, id, model);
     default:
       // 未知模型：当作 normal 处理，方便随手测试。
       log(`? 未知模型 ${model}，按 normal 处理`);
@@ -246,6 +263,42 @@ function stallForever(res, id, model) {
     // 什么都不做：连接保持打开，永不再吐 chunk，也不 end。
   }
   pump();
+}
+
+/**
+ * delayed-stall-forever：连接建立后先静默 5s，再吐 K 个 chunk，然后永久停滞。
+ *
+ * <p>与 stall-forever 的区别只在前半段：stall-forever 立刻吐首字，本场景刻意把
+ * 「等待首字」和「产出后停滞」两个阶段都拉长到可观察。用于验证 Toast 在
+ * CONNECTED（等待首字）→ CHUNK（产出中）之间的状态流转，以及两个阶段下右键断连都可用。
+ * 与 hang-first-byte 的区别是：那个卡满 10 分钟后会正常收尾，本场景吐完就再也不动。
+ */
+function delayedStallForever(res, id, model) {
+  writeSseHead(res);
+  // 先 flush 响应头让 COSP 进入 CONNECTED，但不带任何数据 chunk。
+  res.write(':\n\n'); // SSE 注释帧，不算数据 chunk
+  log(`… delayed-stall-forever 已建立连接，${DELAYED_STALL_LEAD_MS / 1000}s 后才吐首字  model=${model}`);
+
+  let i = 0;
+  function pump() {
+    if (res.writableEnded) return;
+    if (i < STALL_AFTER_CHUNKS) {
+      res.write(contentFrame(id, model, makeChunkText(i)));
+      i += 1;
+      const t = setTimeout(pump, NORMAL_CHUNK_INTERVAL_MS);
+      res.on('close', () => clearTimeout(t));
+      return;
+    }
+    log(`… delayed-stall-forever 永久停滞（不关连接）  model=${model}`);
+    // 什么都不做：连接保持打开，永不再吐 chunk，也不 end。
+  }
+
+  const lead = setTimeout(() => {
+    if (res.writableEnded) return;
+    res.write(roleFrame(id, model));
+    pump();
+  }, DELAYED_STALL_LEAD_MS);
+  res.on('close', () => clearTimeout(lead));
 }
 
 /** done-no-close：发完内容 + [DONE]，但保持 TCP 不关闭。 */
@@ -379,6 +432,99 @@ function errorResponse(res, status, message, model) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(body);
   log(`✗ 返回错误 ${status}  model=${model}`);
+}
+
+// ── 空响应场景（验证 COSP 空响应兜底）─────────────────────────────────────
+/**
+ * empty-stream：200 + 仅 role → finish → [DONE]，无 content / reasoning / tool_calls。
+ *
+ * <p>对应「上游返回 200 但响应没有思考链也没有正文」的场景。
+ * COSP 拦截 gate 应判定为空响应，触发自动兜底重发。
+ */
+function emptyStream(res, id, model) {
+  writeSseHead(res);
+  res.write(roleFrame(id, model));
+  res.write(finishFrame(id, model));
+  res.write('data: [DONE]\n\n');
+  res.end();
+  log(`✓ empty-stream 已返回空流（role+finish+[DONE]，无内容）  model=${model}`);
+}
+
+/**
+ * empty-usage-zero：与 empty-stream 相同，但收尾 chunk 带<strong>全 0 usage</strong>。
+ *
+ * <p>对应「连结算 usage 都是 0」的场景 —— 按判定口径，全 0 usage 仍算空响应，
+ * COSP 应触发自动兜底重发。
+ */
+function emptyUsageZero(res, id, model) {
+  writeSseHead(res);
+  res.write(roleFrame(id, model));
+  const payload = {
+    id,
+    object: 'chat.completion.chunk',
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+  };
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  res.write('data: [DONE]\n\n');
+  res.end();
+  log(`✓ empty-usage-zero 已返回空流 + 全 0 usage  model=${model}`);
+}
+
+/**
+ * empty-tool-call：纯工具调用流 —— 有 tool_calls、无 content / reasoning。
+ *
+ * <p>这是<strong>对照</strong>场景：工具调用不算空响应，COSP 不应触发兜底。
+ * 若兜底被触发，说明判定逻辑误把纯工具调用当成了空（错误）。
+ */
+function emptyToolCall(res, id, model) {
+  writeSseHead(res);
+  const first = {
+    id,
+    object: 'chat.completion.chunk',
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [{
+      index: 0,
+      delta: {
+        role: 'assistant',
+        tool_calls: [{
+          index: 0,
+          id: 'call_mock_1',
+          type: 'function',
+          function: { name: 'get_weather', arguments: '{}' },
+        }],
+      },
+      finish_reason: null,
+    }],
+  };
+  res.write(`data: ${JSON.stringify(first)}\n\n`);
+  const finish = {
+    id,
+    object: 'chat.completion.chunk',
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+  };
+  res.write(`data: ${JSON.stringify(finish)}\n\n`);
+  res.write('data: [DONE]\n\n');
+  res.end();
+  log(`✓ empty-tool-call 已返回纯工具调用流  model=${model}`);
+}
+
+/**
+ * empty-body：200 但响应体<strong>完全为空</strong>（0 个 SSE 帧）。
+ *
+ * <p>只写 SSE 头立即 end，不吐任何帧。对应「上游返回 200 但响应体根本没有数据」
+ * 的场景 —— COSP 空响应判定已下沉到轮末综合判定，此场景应同样触发兜底重发。
+ */
+function emptyBody(res, id, model) {
+  writeSseHead(res);
+  // 关键：写头后立即 end，0 个 SSE data 帧。
+  res.end();
+  log(`✓ empty-body 已返回 200 空 body（0 帧）  model=${model}`);
 }
 
 /** /v1/models：列出所有场景模型。 */
