@@ -44,6 +44,11 @@ node tools/mock-upstream/mock-upstream.js
 | `error-500` | 返回 500 | RETRYING（COSP 应重试） |
 | `error-401` | 返回 401 | FAILED（快速失败，不重试） |
 | `slow-steady` | 每 3s 一个 chunk，持续较久 | 长连接下 Toast 持续更新 chunk 计数 |
+| `retry-then-succeed` | 前 2 次请求返回 500，第 3 次正常回复 | 异常重试中途成功（RETRYING → CONNECTED → COMPLETED） |
+| `empty-stream` | 200 + 仅 role/finish/`[DONE]`，无内容 | 空响应兜底（RETRYING，自动重发） |
+| `empty-usage-zero` | 空流但带全 0 usage | 空响应兜底（全 0 usage 仍算空，自动重发） |
+| `empty-tool-call` | 纯工具调用流 | **不**触发兜底（对照场景：工具调用不算空） |
+| `empty-body` | 200 但响应体 0 帧 | 空响应兜底（空 body 也判空，自动重发） |
 
 ## 可调参数
 
