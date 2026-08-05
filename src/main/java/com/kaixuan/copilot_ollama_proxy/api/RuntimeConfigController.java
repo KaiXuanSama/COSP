@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.api;
 
 import com.kaixuan.copilot_ollama_proxy.application.config.RuntimeConfigService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RuntimeConfigService.RuntimeConfigView;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -44,5 +45,23 @@ public class RuntimeConfigController {
     @PostMapping("/config/api/fake-version")
     public Mono<Map<String, Object>> saveFakeVersion(@RequestParam String fakeVersion) {
         return runtimeConfigService.saveFakeVersion(fakeVersion).thenReturn(Map.of("ok", true));
+    }
+
+    /**
+     * 保存上游重试次数。
+     *
+     * <p>值非法（超出 {@code [-1, 100]}）时返回 400 并带上原因，不落库。
+     * 没有 {@code @ControllerAdvice}，故在此就地处理。
+     *
+     * @param maxAttempts {@code -1} 无限重试，{@code 0} 不重试，正数为具体次数
+     * @return {@code { ok: true }}；非法值返回 400 与 {@code { ok: false, message }}
+     */
+    @PostMapping("/config/api/retry-policy")
+    public Mono<ResponseEntity<Map<String, Object>>> saveRetryMaxAttempts(@RequestParam int maxAttempts) {
+        return runtimeConfigService.saveRetryMaxAttempts(maxAttempts)
+                .thenReturn(ResponseEntity.ok(Map.<String, Object>of("ok", true)))
+                .onErrorResume(IllegalArgumentException.class, error ->
+                        Mono.just(ResponseEntity.badRequest()
+                                .body(Map.of("ok", false, "message", error.getMessage()))));
     }
 }

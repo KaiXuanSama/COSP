@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
+import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
@@ -687,6 +688,118 @@ class AbstractUpstreamChatServiceTests {
         // 没有抛错：最后一轮的帧被原样放行。
         assertThat(received).isNotNull().isNotEmpty();
         assertThat(received).anyMatch(chunk -> chunk.contains("\"role\":\"assistant\"") || chunk.contains("[DONE]"));
+    }
+
+    // ── 可配置重试次数 ──────────────────────────────────────────────────────
+
+    /**
+     * 配置为 0 时完全不重试：首次失败即透传，上游只被调用一次。
+     *
+     * <p>与「不挂 retryWhen」不完全等价 —— filter / doBeforeRetry 仍在链上，
+     * 只是永不触发重订阅。这条测试锁的是对外可观测的行为。
+     */
+    @Test
+    void zeroConfiguredAttemptsDisablesRetryEntirely() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+        service.setRetryPolicyService(fixedRetryPolicy(0));
+
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            upstreamCallCount.incrementAndGet();
+            return Mono.just(ClientResponse.create(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                    .body("{\"error\":\"boom\"}").build());
+        }));
+
+        Throwable error = catchThrowable(() -> service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-zero-retry")
+                .collectList().block(Duration.ofSeconds(20)));
+
+        assertThat(upstreamCallCount.get()).isEqualTo(1);
+        assertThat(error).isNotNull();
+    }
+
+    /** 配置为 2 时预算随之收窄：首次 + 2 次重试 = 3 次上游调用后放弃。 */
+    @Test
+    void configuredAttemptsBoundTheRetryBudget() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+        service.setRetryPolicyService(fixedRetryPolicy(2));
+
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            upstreamCallCount.incrementAndGet();
+            return Mono.just(ClientResponse.create(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                    .body("{\"error\":\"boom\"}").build());
+        }));
+
+        catchThrowable(() -> service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-two-retry")
+                .collectList().block(Duration.ofSeconds(30)));
+
+        assertThat(upstreamCallCount.get()).isEqualTo(3);
+    }
+
+    /**
+     * 空响应兜底同样受配置约束 —— 两类失败共用一份预算，配置改小对两者同时生效。
+     *
+     * <p>配置 1 次：首轮空响应 + 1 次重试仍空 = 2 次调用，随后耗尽放行。
+     */
+    @Test
+    void configuredAttemptsAlsoBoundEmptyResponseFallback() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+        service.setRetryPolicyService(fixedRetryPolicy(1));
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            upstreamCallCount.incrementAndGet();
+            Flux<DataBuffer> body = Mono.just(sseData(factory, "[DONE]")).flux();
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        List<String> received = service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-empty-budget-1")
+                .collectList().block(Duration.ofSeconds(30));
+
+        // 首次 + 1 次重试 = 2 次，而非默认的 6 次。
+        assertThat(upstreamCallCount.get()).isEqualTo(2);
+        // 耗尽后放行，不抛错。
+        assertThat(received).isNotNull();
+    }
+
+    /** 未注入策略服务时（纯单元测试场景）回退默认 5 次：首次 + 5 = 6 次调用。 */
+    @Test
+    void missingRetryPolicyServiceFallsBackToDefaultBudget() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+        // 刻意不调用 setRetryPolicyService。
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            upstreamCallCount.incrementAndGet();
+            Flux<DataBuffer> body = Mono.just(sseData(factory, "[DONE]")).flux();
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        service.exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-default-budget")
+                .collectList().block(Duration.ofSeconds(180));
+
+        assertThat(upstreamCallCount.get()).isEqualTo(6);
+    }
+
+    /** 构造一个固定返回指定次数的策略服务，避免测试触库。 */
+    private static RetryPolicyService fixedRetryPolicy(int maxAttempts) {
+        return new RetryPolicyService(null) {
+            @Override
+            public int getMaxAttempts() {
+                return maxAttempts;
+            }
+        };
     }
 
     /** 构造一个最小请求体。 */

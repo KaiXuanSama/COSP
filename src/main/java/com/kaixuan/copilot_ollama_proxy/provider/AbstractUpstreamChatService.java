@@ -7,6 +7,7 @@ import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotif
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
+import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageParser;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
@@ -105,6 +106,12 @@ public abstract class AbstractUpstreamChatService {
     private CallRetryRegistry callRetryRegistry;
 
     /**
+     * 重试次数策略，由 Spring 可选注入；未注入（如单元测试）时回退到默认 5 次。
+     * 只在 {@link #buildRetrySpec} 一处使用，保证重试次数只有一个来源。
+     */
+    private RetryPolicyService retryPolicyService;
+
+    /**
      * 全局 WebClient.Builder，由 Spring 通过 setter 注入。
      * 该 Builder 在 WebClientConfig 中配置了 JDK 系统 DNS 解析器，
      * 避免 Netty 默认异步解析器在 Windows 上的间歇性 DNS 解析失败。
@@ -130,6 +137,11 @@ public abstract class AbstractUpstreamChatService {
     @Autowired(required = false)
     public void setCallRetryRegistry(CallRetryRegistry callRetryRegistry) {
         this.callRetryRegistry = callRetryRegistry;
+    }
+
+    @Autowired(required = false)
+    public void setRetryPolicyService(RetryPolicyService retryPolicyService) {
+        this.retryPolicyService = retryPolicyService;
     }
 
     @Autowired(required = false)
@@ -673,6 +685,15 @@ public abstract class AbstractUpstreamChatService {
      * </ol>
      * 其余错误（如 401/403 等确定性 4xx）不重试 —— 请求内容未变，重试结果必然相同。
      *
+     * <h2>重试次数来源</h2>
+     * 次数取自 {@code app_config} 的 {@code retry_max_attempts}（管理后台可改，改完即时生效）：
+     * 正数为具体次数，{@code 0} 不重试，{@code -1} 无限重试。未注入策略服务时（单元测试）
+     * 回退到 {@link RetryPolicyService#DEFAULT_MAX_ATTEMPTS}。
+     *
+     * <p>注意 {@code 0} 与「不加 retryWhen」并不完全等价：{@code filter} 与
+     * {@code doBeforeRetry} 依旧挂着，只是永远不会触发重订阅，异常照常透传。保留这条链
+     * 而不做分支，是为了让重试次数始终只有这一个来源。
+     *
      * @param method 调用方方法名，用于日志区分重试来源
      * @param requestId 本次调用唯一标识，用于发出 RETRYING 生命周期事件
      * @param model 模型名称（含前缀），用于 RETRYING 事件展示
@@ -681,14 +702,19 @@ public abstract class AbstractUpstreamChatService {
      */
     protected Retry buildRetrySpec(String method, ProviderRuntimeConfiguration provider,
                                    String requestId, String model, boolean stream) {
-        return Retry.backoff(5, Duration.ofSeconds(2)).maxBackoff(Duration.ofSeconds(30))
+        int configured = retryPolicyService != null
+                ? retryPolicyService.getMaxAttempts()
+                : RetryPolicyService.DEFAULT_MAX_ATTEMPTS;
+        long maxAttempts = RetryPolicyService.toReactorMaxAttempts(configured);
+        boolean unlimited = configured == RetryPolicyService.UNLIMITED_MAX_ATTEMPTS;
+        return Retry.backoff(maxAttempts, Duration.ofSeconds(2)).maxBackoff(Duration.ofSeconds(30))
                 .filter(AbstractUpstreamChatService::isRetryableFailure)
                 .doBeforeRetry(signal -> {
                     int attempt = (int) (signal.totalRetries() + 1);
                     // RETRYING：让前端 Toast 从“已连接/等待中”切换到“上游异常，正在重试（第N次）”，
-                    // 避免重试期间静默卡顿让用户误以为卡死。
+                    // 避免重试期间静默卡顿让用户误以为卡死。无限模式下前端拿 total=-1 以示无上限。
                     publishLifecycle(CallLifecycleEvent.retrying(requestId, model, stream, attempt));
-                    logRetryAttempt(method, provider, signal, attempt);
+                    logRetryAttempt(method, provider, signal, attempt, unlimited ? -1 : (int) maxAttempts);
                 });
     }
 
@@ -776,16 +802,18 @@ public abstract class AbstractUpstreamChatService {
      * @param provider 供应商配置（取 providerKey 用于日志区分）
      * @param signal 本次重试信号（含失败异常）
      * @param attempt 当前重试序号，从 1 起
+     * @param maxAttempts 本次调用的重试上限；{@code -1} 表示无限
      */
     private void logRetryAttempt(String method, ProviderRuntimeConfiguration provider,
-                                 Retry.RetrySignal signal, int attempt) {
+                                 Retry.RetrySignal signal, int attempt, int maxAttempts) {
+        String budget = maxAttempts < 0 ? "∞" : String.valueOf(maxAttempts);
         if (signal.failure() instanceof WebClientResponseException responseException
                 && responseException.getStatusCode().value() == 429) {
             String retryAfter = responseException.getHeaders().getFirst("Retry-After");
-            log.warn("[{}] {} API 限速 (429)，重试第 {} 次{}", method, provider.providerKey(), attempt,
+            log.warn("[{}] {} API 限速 (429)，重试第 {}/{} 次{}", method, provider.providerKey(), attempt, budget,
                     retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
         } else {
-            log.warn("[{}] {} API 调用失败，重试第 {} 次: {}", method, provider.providerKey(), attempt,
+            log.warn("[{}] {} API 调用失败，重试第 {}/{} 次: {}", method, provider.providerKey(), attempt, budget,
                     signal.failure().getMessage());
         }
     }
