@@ -27,8 +27,10 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
 
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -44,6 +46,20 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class OpenAiController {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiController.class);
+
+    /**
+     * chat completions SSE 的心跳周期。
+     *
+     * <p>下游断连的检测靠两条路径：{@code channelInactive}（Reactor Netty 主动终止）
+     * 与写失败（尝试写时发现 socket 已关）。前者在「从未写过数据的空闲连接」上不可靠 ——
+     * 上游等待首字或重试退避期间服务端一个字节都不写，此时下游断开可能要等到
+     * 上游产生响应、服务端尝试写时才发现，白白浪费一次上游调用。
+     *
+     * <p>管理后台的各条 SSE 流都有心跳注释帧，唯独 chat completions 缺失。
+     * 这里补上，使空闲连接也有周期写操作：断连后最迟一个心跳周期内被写失败路径兜底。
+     * 注释帧（{@code : keep-alive}）对 SSE 客户端无副作用，被规范要求忽略。
+     */
+    private static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(5);
 
     private final ChatCompletionService chatCompletionService;
     private final ObjectMapper objectMapper;
@@ -233,8 +249,12 @@ public class OpenAiController {
         Mono<Void> cancelSignal = callCancellationRegistry.register(requestId)
                 .doOnSuccess(v -> canceled.set(true));
 
-        // CONNECTED 现由 provider 层在上游响应真正到达时发出（更准确），此处不再乐观发出。
-        return chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders, requestId)
+        // 数据流结束信号：数据流无论以何种方式终止（完成 / 错误 / 取消）都会 emit，
+        // 心跳据此停止 —— 否则 Flux.interval 永不完成，merge 永不完成，doOnComplete 兜底失效。
+        Sinks.Empty<Void> streamEnd = Sinks.empty();
+
+        Flux<ServerSentEvent<String>> streamBody =
+                chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders, requestId)
                 .doOnNext(chunk -> {
                     accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens);
                     // Layer 1（语义信号优先）：收到 [DONE] 即认定上游内容已发完，立即 finalize，
@@ -297,10 +317,21 @@ public class OpenAiController {
                     callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, true, chunkCount.get()));
                     log.info("下游主动断连，静默收尾 [{}] {}", model, requestId);
                 })
-                // 无论正常结束、失败还是取消，都清理注册表，避免内存泄漏。
+                // 无论正常结束、失败还是取消，都清理注册表，避免内存泄漏；
+                // 同时 emit streamEnd 让心跳停止（与 doOnComplete 里的 emit 幂等，谁先到都行）。
                 .doFinally(signal -> {
                     callCancellationRegistry.remove(requestId);
+                    streamEnd.tryEmitEmpty();
                 });
+
+        // 心跳：空闲期周期性写注释帧。客户端断开后，下一次写即失败，走写失败路径
+        // 触发取消 / 错误，从而立即终止上游调用，而不是干等到上游产生响应。
+        // 数据流结束（streamEnd emit）时心跳随之停止，保证 merge 能正常完成。
+        Flux<ServerSentEvent<String>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
+                .map(tick -> ServerSentEvent.<String>builder().comment("keep-alive").build())
+                .takeUntilOther(streamEnd.asMono());
+
+        return Flux.merge(streamBody, heartbeat);
     }
 
     /**
