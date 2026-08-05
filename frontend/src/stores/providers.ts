@@ -54,6 +54,12 @@ export interface GatewayAuthStatus {
   configured: boolean
 }
 
+export interface RetryPolicyView {
+  maxAttempts: number
+  defaultValue: number
+  maxConfigurable: number
+}
+
 export interface GeneratedGatewayKey {
   apiKey: string
   maskedKey: string
@@ -62,6 +68,7 @@ export interface GeneratedGatewayKey {
 export interface RuntimeConfigView {
   fakeVersion: string
   gatewayAuth: GatewayAuthStatus
+  retryPolicy: RetryPolicyView
 }
 
 export const useProviderStore = defineStore('providers', () => {
@@ -113,12 +120,13 @@ export const useProviderStore = defineStore('providers', () => {
     fakeVersion.value = version
   }
 
-  // 聚合读取全部运行时配置（伪造版本号 + 下游鉴权状态），一次调用拿全部显示信息。
+  // 聚合读取全部运行时配置（伪造版本号 + 下游鉴权状态 + 重试策略），一次调用拿全部显示信息。
   // 敏感值已在后端脱敏；明文 Key 仍只经 reveal / regenerate 按需获取。
   async function fetchRuntimeConfig(): Promise<RuntimeConfigView> {
     const res = await http.get('/runtime-config')
     fakeVersion.value = res.data.fakeVersion || ''
     const auth = res.data.gatewayAuth || {}
+    const retry = res.data.retryPolicy || {}
     return {
       fakeVersion: res.data.fakeVersion || '',
       gatewayAuth: {
@@ -126,7 +134,16 @@ export const useProviderStore = defineStore('providers', () => {
         maskedKey: auth.maskedKey || '',
         configured: !!auth.configured,
       },
+      retryPolicy: {
+        maxAttempts: retry.maxAttempts ?? 5,
+        defaultValue: retry.defaultValue ?? 5,
+        maxConfigurable: retry.maxConfigurable ?? 100,
+      },
     }
+  }
+
+  async function saveRetryMaxAttempts(maxAttempts: number) {
+    await http.post('/retry-policy', null, { params: { maxAttempts } })
   }
 
   // ==================== 下游鉴权（网关 API Key）====================
@@ -193,5 +210,5 @@ export const useProviderStore = defineStore('providers', () => {
     await fetchAll()
   }
 
-  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchRuntimeConfig, setGatewayAuthEnabled, revealGatewayApiKey, regenerateGatewayApiKey, addProvider, deleteProvider, updateProvider }
+  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchRuntimeConfig, saveRetryMaxAttempts, setGatewayAuthEnabled, revealGatewayApiKey, regenerateGatewayApiKey, addProvider, deleteProvider, updateProvider }
 })
