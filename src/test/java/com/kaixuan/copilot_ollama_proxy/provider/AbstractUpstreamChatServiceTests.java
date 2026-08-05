@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.provider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import org.junit.jupiter.api.Test;
@@ -323,6 +324,133 @@ class AbstractUpstreamChatServiceTests {
         // 锁定行为：取消发生在 backoff 等待期间，重试链应停止，上游调用次数不再增长。
         assertThat(callsBeforeCancel).isEqualTo(1);
         assertThat(callsAfterCancel).isEqualTo(callsBeforeCancel);
+    }
+
+    /**
+     * 静默重试实锤测试：触发重试信号后，当前上游请求被中断，重新发起一次新请求，
+     * 且<strong>下游流不终止</strong> —— 新的 chunk 继续沿同一条流下发。
+     *
+     * <p>场景：第一次上游调用<strong>挂起</strong>（返回永不结束的 SSE 流，不吐任何 chunk），
+     * 此时触发 {@link CallRetryRegistry#retry}。预期：
+     * <ol>
+     *   <li>第一次上游请求被取消（takeUntilOther 中断）；</li>
+     *   <li>重新发起第二次上游请求，且返回的 chunk 正常送达下游；</li>
+     *   <li>全程没有 error、没有提前 complete —— 下游看到的是一条连贯的流。</li>
+     * </ol>
+     *
+     * <p>这是「静默重试」的核心语义：只中断上游往返，不触碰下游连接。
+     */
+    @Test
+    void silentRetryReissuesUpstreamRequestWhileDownstreamStaysOpen() throws InterruptedException {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        CallRetryRegistry retryRegistry = new CallRetryRegistry();
+        TestOpenAiService service = new TestOpenAiService();
+        service.setCallRetryRegistry(retryRegistry);
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            int attempt = upstreamCallCount.incrementAndGet();
+            if (attempt == 1) {
+                // 第一次：挂起 —— 永不结束、不吐任何数据。等待被静默重试信号中断。
+                return Mono.just(ClientResponse.create(HttpStatus.OK)
+                        .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                        .body(Flux.<DataBuffer>never())
+                        .build());
+            }
+            // 第二次：正常吐一个 chunk 后结束。
+            Flux<DataBuffer> body = Mono.just(sseData(factory,
+                    "{\"id\":\"ok-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"retried\"},\"finish_reason\":null}]}"))
+                    .concatWith(Mono.just(sseData(factory, "[DONE]")));
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("model", "model-a");
+
+        List<String> received = new java.util.concurrent.CopyOnWriteArrayList<>();
+        reactor.core.Disposable subscription = service
+                .exposeChatCompletionStream(request, "model-a", provider(), "req-silent-retry-1")
+                .subscribe(received::add, error -> { });
+
+        // 等到第一次上游调用已发生且仍挂起。
+        Thread.sleep(500);
+        assertThat(upstreamCallCount.get()).isEqualTo(1);
+
+        // 触发静默重试。
+        assertThat(retryRegistry.retry("req-silent-retry-1")).isTrue();
+
+        // 等到第二次调用完成、chunk 送达下游。
+        Thread.sleep(2000);
+
+        System.out.println("[SILENT-RETRY] 上游调用次数 = " + upstreamCallCount.get());
+        System.out.println("[SILENT-RETRY] 下游收到 = " + received);
+
+        // 第二次上游调用已发生，且它的 chunk 正常到了下游。
+        assertThat(upstreamCallCount.get()).isEqualTo(2);
+        assertThat(received).anyMatch(chunk -> chunk.contains("retried"));
+        assertThat(received).contains("[DONE]");
+        // 流未提前终止：订阅仍活着（第二次调用完成后才自然结束）。
+        subscription.dispose();
+    }
+
+    /**
+     * 静默重试不消耗异常重试预算：即使信号在「异常重试 backoff 等待期间」触发，
+     * 也直接进入新的一轮请求，而不是被 retryWhen 计入 5 次。
+     *
+     * <p>场景：第一次上游返回可重试的 500，进入 backoff 等待；此时触发静默重试。
+     * 预期：backoff 定时器被取消，新请求立即发起并成功 —— 总上游调用次数为 2
+     * （1 次 500 + 1 次成功），而非「1 + 1（异常重试）…」的叠加。
+     */
+    @Test
+    void silentRetryDuringBackoffDoesNotConsumeExceptionRetryBudget() throws InterruptedException {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        CallRetryRegistry retryRegistry = new CallRetryRegistry();
+        TestOpenAiService service = new TestOpenAiService();
+        service.setCallRetryRegistry(retryRegistry);
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            int attempt = upstreamCallCount.incrementAndGet();
+            if (attempt == 1) {
+                // 第一次：可重试的 500，会触发异常重试 backoff。
+                return Mono.just(ClientResponse.create(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                        .body("{\"error\":\"upstream boom\"}").build());
+            }
+            // 第二次：成功。
+            Flux<DataBuffer> body = Mono.just(sseData(factory,
+                    "{\"id\":\"ok-2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}"))
+                    .concatWith(Mono.just(sseData(factory, "[DONE]")));
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("model", "model-a");
+
+        List<String> received = new java.util.concurrent.CopyOnWriteArrayList<>();
+        service.exposeChatCompletionStream(request, "model-a", provider(), "req-silent-budget-1")
+                .subscribe(received::add, error -> { });
+
+        // 等到第一次 500 已发生、进入 backoff 等待。
+        Thread.sleep(500);
+        assertThat(upstreamCallCount.get()).isEqualTo(1);
+
+        // 在 backoff 等待期间触发静默重试：应取消定时器并立即发起新请求。
+        assertThat(retryRegistry.retry("req-silent-budget-1")).isTrue();
+
+        // 等待第二次调用完成。
+        Thread.sleep(2000);
+
+        System.out.println("[SILENT-BUDGET] 上游调用次数 = " + upstreamCallCount.get());
+        System.out.println("[SILENT-BUDGET] 下游收到 = " + received);
+
+        // 只有 1 次 500 + 1 次成功，没有被异常重试预算叠加成 6 次。
+        assertThat(upstreamCallCount.get()).isEqualTo(2);
+        assertThat(received).anyMatch(chunk -> chunk.contains("ok"));
     }
 
     /** 把一段 JSON 包装成 SSE data 帧的 DataBuffer（{@code data: {...}\n\n}）。 */

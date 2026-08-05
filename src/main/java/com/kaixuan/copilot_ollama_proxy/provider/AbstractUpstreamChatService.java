@@ -9,6 +9,7 @@ import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageParser;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import org.slf4j.Logger;
@@ -79,6 +80,9 @@ public abstract class AbstractUpstreamChatService {
     /** 调用生命周期事件通知器，由 Spring 可选注入；用于发出 CONNECTED / RETRYING 等 provider 层观测点。 */
     private CallLifecycleNotifier lifecycleNotifier;
 
+    /** 静默重试协调器，由 Spring 可选注入；管理后台右键 Toast 触发时，重新发起当前上游请求。 */
+    private CallRetryRegistry callRetryRegistry;
+
     /**
      * 全局 WebClient.Builder，由 Spring 通过 setter 注入。
      * 该 Builder 在 WebClientConfig 中配置了 JDK 系统 DNS 解析器，
@@ -100,6 +104,11 @@ public abstract class AbstractUpstreamChatService {
     @Autowired(required = false)
     public void setLifecycleNotifier(CallLifecycleNotifier lifecycleNotifier) {
         this.lifecycleNotifier = lifecycleNotifier;
+    }
+
+    @Autowired(required = false)
+    public void setCallRetryRegistry(CallRetryRegistry callRetryRegistry) {
+        this.callRetryRegistry = callRetryRegistry;
     }
 
     @Autowired(required = false)
@@ -220,7 +229,12 @@ public abstract class AbstractUpstreamChatService {
         AtomicLong ttfbMs = new AtomicLong(-1);
         // 本次往返的 usage 原始 JSON：从上游原始 chunk 提取，成功收尾写用量表。往返起点清空。
         AtomicReference<String> usageRaw = new AtomicReference<>(null);
-        return Flux.defer(() -> {
+        // 静默重试标志：上游尝试被重试信号中断时置位，收尾处据此重新发起一轮。
+        AtomicBoolean silentRetryRequested = new AtomicBoolean(false);
+
+        // 单次上游尝试：每次订阅都注册新鲜的静默重试信号并把自己挂在信号上，
+        // 被触发时取消当前 WebClient 请求（无值完成），由外层循环决定是否重发。
+        Flux<ServerSentEvent<String>> rawAttempt = Flux.defer(() -> {
                     // 本次往返起点：重置计时与 chunk 收集，使每条日志只反映该次往返（不跨重试累加）。
                     attemptStart.set(System.currentTimeMillis());
                     logChunks.clear();
@@ -261,8 +275,32 @@ public abstract class AbstractUpstreamChatService {
                                 capturedRespHeaders.get(), statusCode, List.copyOf(logChunks), attemptStart.get());
                     }
                 })
-                // 重试挂在落库下游：中间失败已在上游各自记录，此处仅负责重订阅。
-                .retryWhen(buildRetrySpec("chatCompletionStream", provider, requestId, model, true)).mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
+                // 异常重试照旧：与静默重试完全独立 —— 静默重试走 takeUntilOther 的正常完成，
+                // 不经过 retryWhen，因此不消耗异常重试的 5 次预算。
+                .retryWhen(buildRetrySpec("chatCompletionStream", provider, requestId, model, true));
+
+        // 静默重试循环：把重试信号挂到<strong>整轮尝试</strong>（含 retryWhen 的 backoff 等待）上，
+        // 使请求进行中与退避等待两个阶段都能被信号中断。被中断的轮次（无值完成）若标志为真则重发。
+        // 每次重发都重新注册新鲜的信号，连续点击可连续触发；下游断连时整个链被取消，递归随之终止。
+        AtomicReference<Flux<ServerSentEvent<String>>> attemptLoopRef = new AtomicReference<>();
+        Flux<ServerSentEvent<String>> attemptLoop = Flux.defer(() -> {
+                    Mono<Void> silentRetrySignal = callRetryRegistry == null || requestId == null
+                            ? Mono.never()
+                            : callRetryRegistry.register(requestId)
+                                    .doOnSuccess(v -> silentRetryRequested.set(true));
+                    return rawAttempt.takeUntilOther(silentRetrySignal);
+                })
+                .concatWith(Flux.defer(() -> {
+                    if (silentRetryRequested.compareAndSet(true, false)) {
+                        log.info("静默重试：重新发起上游请求 [{}] {}", model, requestId);
+                        return attemptLoopRef.get();
+                    }
+                    return Flux.<ServerSentEvent<String>>empty();
+                }));
+        attemptLoopRef.set(attemptLoop);
+
+        return attemptLoop
+                .mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
                 .doOnNext(raw -> {
                     log.debug("{} 上游原始: {}", provider.providerKey(), raw);
                     // 首字打点：上游首个 chunk 到达即记时长（语义为"首 chunk"，不区分其载荷形态）。
@@ -296,6 +334,9 @@ public abstract class AbstractUpstreamChatService {
                 // 成功往返收尾：仅在非错误终结（complete / cancel）时落一条成功记录。
                 // 失败往返（错误响应 / 网络失败）已在 retry 上游即时落库，此处 ON_ERROR 不重复。
                 .doFinally(signal -> {
+                    if (callRetryRegistry != null && requestId != null) {
+                        callRetryRegistry.remove(requestId);
+                    }
                     if (signal != SignalType.ON_ERROR) {
                         int statusCode = capturedStatusCode.get();
                         if (statusCode == 0 && logChunks.isEmpty()) {
