@@ -50,6 +50,21 @@ node tools/mock-upstream/mock-upstream.js
 | `empty-tool-call` | 纯工具调用流 | **不**触发兜底（对照场景：工具调用不算空） |
 | `empty-body` | 200 但响应体 0 帧 | 空响应兜底（空 body 也判空，自动重发） |
 
+### 空响应兜底的判定口径
+
+四个 `empty-*` 场景验证的是同一条规则：**一轮上游往返里从未出现过带实质载荷的 delta**
+（正文 `content`、思考链 5 个兼容字段之一、工具调用 `tool_calls`），即判为空响应。
+
+- `empty-usage-zero` 里的全 0 usage **不是判据**，只是伴随现象 —— 该场景之所以被判空，
+  纯粹因为它本来就没有内容。不少中转站正常回复也不吐 usage 或吐全 0，把 usage 当条件会误伤它们。
+- `empty-tool-call` 是**对照组**：它没有正文，但有工具调用，因此不该触发兜底。
+  若这个场景也被重发，说明判定逻辑把「无正文」误当成了「空」。
+- 兜底重发与 429 / 5xx / 网络中断**共用同一份 5 次预算**（`buildRetrySpec`），
+  不是第二套重试实现。耗尽后把最后一轮的帧原样放行给下游。
+
+判定实现见 `UpstreamChunkContentDetector`，接线点在 `AbstractUpstreamChatService#chatCompletionStream`
+的 gate（`retryWhen` 内侧）。非流式尚未实现，已在 `chatCompletion` 上方打 TODO。
+
 ## 可调参数
 
 所有时长常量在 `mock-upstream.js` 顶部的“可调参数”区，直接改即可：
