@@ -39,6 +39,7 @@ node tools/mock-upstream/mock-upstream.js
 | `hang-first-byte` | CONNECTED 后卡住不吐首字（默认 10 分钟） | 等待首字（右键断连 → ABORTED） |
 | `stall-recover` | 吐若干 chunk 后停滞 35s，再继续到结束 | 停滞期间右键可断连；恢复后继续 CHUNK → COMPLETED |
 | `stall-forever` | 吐若干 chunk 后永久停滞（不关连接） | 停滞期间右键断连 → ABORTED 静默断连 |
+| `delayed-stall-forever` | 延迟 5s 才吐首字，随后吐若干 chunk 并永久停滞 | 等待首字与产出后停滞两个阶段均可右键断连 |
 | `done-no-close` | 发完内容 + `[DONE]`，但保持 TCP 不关闭 | Layer 1（`[DONE]` 触发 COMPLETED，不等连接关闭） |
 | `no-done-close` | 发完内容后直接关连接，不发 `[DONE]` | Layer 2（TCP 关闭兜底完成） |
 | `error-500` | 返回 500 | RETRYING（COSP 应重试） |
