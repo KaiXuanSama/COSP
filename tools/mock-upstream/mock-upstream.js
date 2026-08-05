@@ -27,6 +27,8 @@ const HANG_FIRST_BYTE_MS = 10 * 60 * 1000;
 const STALL_RECOVER_MS = 35 * 1000;
 /** stall-recover / stall-forever 停滞前先吐的 chunk 数。 */
 const STALL_AFTER_CHUNKS = 5;
+/** delayed-stall-forever 首字之前的延迟（毫秒）。 */
+const DELAYED_STALL_LEAD_MS = 5 * 1000;
 /** normal 等正常流的 chunk 间隔（毫秒）。 */
 const NORMAL_CHUNK_INTERVAL_MS = 80;
 /** normal 流的 chunk 数。 */
@@ -47,6 +49,7 @@ const MODELS = [
   { id: 'hang-first-byte', desc: 'CONNECTED 后卡住不吐首字（默认 10 分钟）' },
   { id: 'stall-recover', desc: '吐若干 chunk 后停滞 35s，再继续到结束' },
   { id: 'stall-forever', desc: '吐若干 chunk 后永久停滞（等待用户右键断连）' },
+  { id: 'delayed-stall-forever', desc: '延迟 5s 才吐首字，随后永久停滞（等待用户右键断连）' },
   { id: 'done-no-close', desc: '发完内容 + [DONE]，但保持 TCP 不关闭' },
   { id: 'no-done-close', desc: '发完内容后直接关连接，不发 [DONE]' },
   { id: 'error-500', desc: '返回 500（COSP 应重试）' },
@@ -137,6 +140,8 @@ function handleChat(req, res, model) {
       return stallRecover(res, id, model);
     case 'stall-forever':
       return stallForever(res, id, model);
+    case 'delayed-stall-forever':
+      return delayedStallForever(res, id, model);
     case 'done-no-close':
       return doneNoClose(res, id, model);
     case 'no-done-close':
@@ -258,6 +263,42 @@ function stallForever(res, id, model) {
     // 什么都不做：连接保持打开，永不再吐 chunk，也不 end。
   }
   pump();
+}
+
+/**
+ * delayed-stall-forever：连接建立后先静默 5s，再吐 K 个 chunk，然后永久停滞。
+ *
+ * <p>与 stall-forever 的区别只在前半段：stall-forever 立刻吐首字，本场景刻意把
+ * 「等待首字」和「产出后停滞」两个阶段都拉长到可观察。用于验证 Toast 在
+ * CONNECTED（等待首字）→ CHUNK（产出中）之间的状态流转，以及两个阶段下右键断连都可用。
+ * 与 hang-first-byte 的区别是：那个卡满 10 分钟后会正常收尾，本场景吐完就再也不动。
+ */
+function delayedStallForever(res, id, model) {
+  writeSseHead(res);
+  // 先 flush 响应头让 COSP 进入 CONNECTED，但不带任何数据 chunk。
+  res.write(':\n\n'); // SSE 注释帧，不算数据 chunk
+  log(`… delayed-stall-forever 已建立连接，${DELAYED_STALL_LEAD_MS / 1000}s 后才吐首字  model=${model}`);
+
+  let i = 0;
+  function pump() {
+    if (res.writableEnded) return;
+    if (i < STALL_AFTER_CHUNKS) {
+      res.write(contentFrame(id, model, makeChunkText(i)));
+      i += 1;
+      const t = setTimeout(pump, NORMAL_CHUNK_INTERVAL_MS);
+      res.on('close', () => clearTimeout(t));
+      return;
+    }
+    log(`… delayed-stall-forever 永久停滞（不关连接）  model=${model}`);
+    // 什么都不做：连接保持打开，永不再吐 chunk，也不 end。
+  }
+
+  const lead = setTimeout(() => {
+    if (res.writableEnded) return;
+    res.write(roleFrame(id, model));
+    pump();
+  }, DELAYED_STALL_LEAD_MS);
+  res.on('close', () => clearTimeout(lead));
 }
 
 /** done-no-close：发完内容 + [DONE]，但保持 TCP 不关闭。 */
