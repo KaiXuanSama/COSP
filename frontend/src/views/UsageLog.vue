@@ -352,11 +352,17 @@ onUnmounted(() => {
               -->
               <tr v-if="expandedId === row.id" class="expand-row" :data-expand-for="row.id">
                 <td :colspan="10" class="expand-cell">
-                  <div v-if="expandedLoading" class="expand-state">
-                    <n-spin size="small" />
+                  <!--
+                    内层卡片：把详情从表格的网格里“抬”出来，成为一个自成一体的块。
+                    没有边界时，四条数据行看上去像是表格自己多长出来的行，层级关系读不出来。
+                  -->
+                  <div class="expand-card">
+                    <div v-if="expandedLoading" class="expand-state">
+                      <n-spin size="small" />
+                    </div>
+                    <CallLogDetail v-else-if="expandedDetail" :detail="expandedDetail" compact />
+                    <div v-else class="expand-state expand-state--empty">详情加载失败</div>
                   </div>
-                  <CallLogDetail v-else-if="expandedDetail" :detail="expandedDetail" />
-                  <div v-else class="expand-state expand-state--empty">详情加载失败</div>
                 </td>
               </tr>
             </template>
@@ -445,33 +451,53 @@ onUnmounted(() => {
   }
 }
 
-/* 展开态：数据行保持高亮，与下方展开区连成一块，明示两者归属同一条记录 */
+/* 展开态：数据行保持高亮，明示卡片归属于哪一条记录 */
 .usage-row.row--expanded {
   background: $accent-light;
 
   td {
-    border-bottom-color: transparent;
+    border-bottom-color: $accent-mid;
   }
 }
 
 /*
-  展开区：底色微沉一档 + 左侧强调条，从密集的表格行中划出来。
+  展开单元格：只做卡片的容器。底色微沉一档，让上面的白色卡片浮起来。
   选择器带上 .usage-table 是为了在特异性上压过上面的 `.usage-table td`，
-  从而无需 !important 就能归零内边距（内边距由 CallLogDetail 自己掌管）。
+  从而无需 !important 就能接管内边距。
  */
 .usage-table .expand-cell {
-  padding: 0;
+  padding: $space-sm $space-md $space-md;
   background: $bg;
-  border-left: 2px solid $accent;
   /* 展开区内部是普通流式布局，不该继承表格单元格的 nowrap */
   white-space: normal;
+}
+
+/*
+  详情卡片：白底 + 边框 + 阴影，与全局的 n-card 同一套视觉语言。
+  左侧强调条改到卡片上（而非单元格），才能跟卡片圆角对齐。
+
+  width: 0 + min-width: 100% 是让卡片不撑宽表格的关键。
+  colspan 单元格的内容宽度会参与表格总宽计算，而卡片里的预览文本是长单行，
+  不加这两条会把表格撑到数千像素（横向滚动条被拉得很长，其余列也跟着变形）。
+  width: 0 使本卡片对表格固有宽度的贡献归零，min-width: 100% 再让它填满解析后的单元格，
+  于是表格宽度只由上方十列决定，卡片被动跟随——预览文本的省略号也因此按真实可视宽度打。
+ */
+.expand-card {
+  width: 0;
+  min-width: 100%;
+  background: $surface;
+  border: 1px solid $border-light;
+  border-left: 2px solid $accent;
+  border-radius: $radius;
+  box-shadow: $shadow-sm;
+  overflow: hidden;
 }
 
 .expand-state {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: $space-lg 0;
+  padding: $space-md 0;
 }
 
 .expand-state--empty {

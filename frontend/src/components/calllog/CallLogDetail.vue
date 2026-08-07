@@ -17,9 +17,21 @@ import ChunksViewer from './ChunksViewer.vue'
 import type { CollapseRule } from './JsonNode.vue'
 import type { DetailItem, UsageDetail } from '@/types/calllog'
 
-const props = defineProps<{
-  detail: DetailItem
-}>()
+const props = withDefaults(
+  defineProps<{
+    detail: DetailItem
+    /**
+     * 紧凑模式：收紧间距与字号。
+     *
+     * 调用者视角把本组件放在一整张卡片里，有充足纵向空间，用默认的舒展排布；
+     * 消费者视角把它嵌在表格行内，上下都是密集的数据行，同样的间距会显得松散、
+     * 且把下方记录推出视口。故用一个开关切换两套尺度，而不是让宿主用 :deep() 穿透覆盖——
+     * 后者会把本组件的内部结构固化进宿主的样式表。
+     */
+    compact?: boolean
+  }>(),
+  { compact: false },
+)
 
 const jsonModal = ref({ show: false, title: '', content: null as unknown, collapseRule: 'none' as CollapseRule })
 const chunksModal = ref({ show: false, chunks: [] as string[] })
@@ -36,11 +48,22 @@ function formatTime(dateStr: string): string {
 }
 
 /**
- * 截断文本
+ * 预览文本的字符上限。
+ *
+ * 视觉上的截断交给 CSS 的 text-overflow: ellipsis —— 它按容器实际宽度裁，
+ * 窗口缩放自动跟随，比在 JS 里定一个字符数准确得多（等宽字体下 12px 约 7px/字符，
+ * 宽 620px 的容器能放 86 个字符，容器一变这个数就错了）。
+ *
+ * 这里的上限只为性能兜底：request_body 可能有数 MB，整串塞进文本节点，
+ * 浏览器仍要为这一行做完整排版。400 字符远超任何现实容器宽度（约 2880px），
+ * 因此不会提前把 CSS 该裁的地方裁掉。
  */
-function truncate(str: string | null, maxLen = 50): string {
+const PREVIEW_MAX_CHARS = 400
+
+/** 取预览文本：只做性能兜底的粗切，视觉截断由 CSS 负责。 */
+function preview(str: string | null): string {
   if (!str) return ''
-  return str.length > maxLen ? str.substring(0, maxLen) + '...' : str
+  return str.length > PREVIEW_MAX_CHARS ? str.substring(0, PREVIEW_MAX_CHARS) : str
 }
 
 /**
@@ -251,7 +274,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="detail-content">
+  <div class="detail-content" :class="{ 'detail-content--compact': props.compact }">
     <!-- 顶部元信息 -->
     <div class="detail-meta">
       <div class="detail-meta-main">
@@ -316,7 +339,7 @@ onUnmounted(() => {
         @keydown.space.prevent="openJsonModal('请求头', props.detail.request_headers)"
       >
         <span class="detail-row-label">请求头</span>
-        <span class="detail-row-value">{{ truncate(props.detail.request_headers) }}</span>
+        <span class="detail-row-value">{{ preview(props.detail.request_headers) }}</span>
         <span class="detail-row-action">展示</span>
       </div>
 
@@ -331,7 +354,7 @@ onUnmounted(() => {
         @keydown.space.prevent="openJsonModal('请求体', props.detail.request_body, requestBodyCollapseRule)"
       >
         <span class="detail-row-label">请求体</span>
-        <span class="detail-row-value">{{ truncate(props.detail.request_body) }}</span>
+        <span class="detail-row-value">{{ preview(props.detail.request_body) }}</span>
         <span class="detail-row-action">展示</span>
       </div>
 
@@ -346,7 +369,7 @@ onUnmounted(() => {
         @keydown.space.prevent="openJsonModal('响应头', props.detail.response_headers)"
       >
         <span class="detail-row-label">响应头</span>
-        <span class="detail-row-value">{{ truncate(props.detail.response_headers) }}</span>
+        <span class="detail-row-value">{{ preview(props.detail.response_headers) }}</span>
         <span class="detail-row-action">展示</span>
       </div>
 
@@ -362,7 +385,7 @@ onUnmounted(() => {
         @keydown.space.prevent="openJsonModal('响应体', props.detail.response_body)"
       >
         <span class="detail-row-label">响应体</span>
-        <span class="detail-row-value">{{ truncate(props.detail.response_body) }}</span>
+        <span class="detail-row-value">{{ preview(props.detail.response_body) }}</span>
         <span class="detail-row-action">展示</span>
       </div>
 
@@ -378,7 +401,7 @@ onUnmounted(() => {
         @keydown.space.prevent="openChunksModal(props.detail.chunks)"
       >
         <span class="detail-row-label">流式响应</span>
-        <span class="detail-row-value">{{ truncate(props.detail.chunks) }}</span>
+        <span class="detail-row-value">{{ preview(props.detail.chunks) }}</span>
         <span class="detail-row-action">展示</span>
       </div>
     </div>
@@ -622,8 +645,15 @@ onUnmounted(() => {
   color: $text-primary;
 }
 
+/*
+  预览文本：填满标签与"展示"之间的剩余空间，超出部分由 CSS 按容器实际宽度打省略号。
+
+  min-width: 0 是让 overflow: hidden 真正生效的关键——flex 子项的自动最小尺寸
+  默认是内容宽度，没有它时长文本会把行撑宽而不是被裁掉。
+ */
 .detail-row-value {
   flex: 1;
+  min-width: 0;
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   font-size: 12px;
   color: $text-body;
@@ -647,5 +677,56 @@ onUnmounted(() => {
   transition: all 0.2s ease;
   pointer-events: none;
   user-select: none;
+}
+
+/*
+  ── 紧凑变体 ──
+  只调间距与字号，不动结构与配色：行内展开需要在有限的纵向空间里放完同样的信息，
+  而不是换一套视觉语言。各处压缩幅度按「信息密度 vs 可读性」取舍——
+  数值与预览文本保持原字号（它们是主体内容），被压缩的是留白与标签。
+ */
+.detail-content--compact {
+  padding: 0;
+
+  .detail-meta {
+    /* 元信息只有一行文字，上下留白收到最小；分隔线保留，它是分区的唯一线索 */
+    padding: $space-sm $space-md;
+    margin-bottom: $space-sm;
+  }
+
+  .detail-provider {
+    font-size: 15px;
+  }
+
+  .detail-model {
+    font-size: 13px;
+  }
+
+  .detail-usage {
+    margin: 0 $space-md $space-sm;
+  }
+
+  .detail-usage-cell {
+    /* 标签与数值改为同行横排：竖排两行在紧凑模式下是最大的一块空间浪费 */
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: center;
+    gap: $space-xs;
+    padding: 6px $space-sm;
+  }
+
+  .detail-row {
+    padding: 6px $space-md;
+  }
+
+  .detail-row-label {
+    width: 52px;
+    font-size: 12px;
+  }
+
+  .detail-row-action {
+    padding: 1px 6px;
+    font-size: 11px;
+  }
 }
 </style>
