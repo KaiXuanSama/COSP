@@ -171,7 +171,7 @@ onBeforeUnmount(() => {
         v-for="view in viewMenu.views"
         :key="view.path"
         class="nav-view-menu-item"
-        :class="{ active: route.path === view.path }"
+        :class="{ 'is-current': route.path === view.path }"
         type="button"
         role="menuitem"
         @click="selectView(view.path)"
