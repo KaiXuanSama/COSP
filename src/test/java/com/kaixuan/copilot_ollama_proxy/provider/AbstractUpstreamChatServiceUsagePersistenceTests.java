@@ -8,6 +8,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfi
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.HttpHeaders;
@@ -33,6 +34,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -258,6 +260,93 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
 
         verify(usageService, times(1)).save(isNull(), eq("stub"), eq("model-a"), eq(true),
                 anyString(), any(UsageTokens.class), any());
+    }
+
+    /**
+     * 变更信号必须晚于用量写入 —— 消费者视角的 token 不得出现空窗。
+     *
+     * <p>信号是同步投递的，故「发布点在哪一行」就是可观测的时序边界。若沿用旧实现
+     * （在日志 INSERT 内部发信号），前端收到通知去查时用量行尚未写入，
+     * 那一行的 token 会短暂显示为空。这里用 InOrder 把顺序钉死。
+     */
+    @Test
+    void callRecordedSignalIsPublishedAfterUsageWrite() {
+        when(logService.saveStream(anyString(), anyString(), any(), any(), any(), anyInt(), any(), anyLong()))
+                .thenReturn(7L);
+
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+            Flux<DataBuffer> body = Flux.<DataBuffer>concat(
+                    Mono.just(sseData(factory, "{\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}")),
+                    Mono.just(sseData(factory, "{\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}")))
+                    .concatWith(Mono.just(sseData(factory, "[DONE]")));
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("model", "model-a");
+        service.exposeChatCompletionStream(request, "model-a", provider()).blockLast(Duration.ofSeconds(20));
+
+        InOrder order = inOrder(logService, usageService);
+        order.verify(logService).saveStream(anyString(), anyString(), any(), any(), any(), anyInt(), any(), anyLong());
+        order.verify(usageService).save(any(), anyString(), anyString(), anyBoolean(), any(), any(), any());
+        order.verify(logService).publishCallRecorded();
+    }
+
+    /**
+     * 成功但上游未返回 usage：不写用量行，但仍须发信号。
+     *
+     * <p>这是 finally 语义的核心 —— 判据是「落库流程走完」而非「两张表都写了」。
+     */
+    @Test
+    void signalIsPublishedEvenWhenNoUsageRowIsWritten() {
+        when(logService.saveStream(anyString(), anyString(), any(), any(), any(), anyInt(), any(), anyLong()))
+                .thenReturn(8L);
+
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+            Flux<DataBuffer> body = Mono.just(sseData(factory,
+                            "{\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}"))
+                    .concatWith(Mono.just(sseData(factory, "[DONE]")))
+                    .cast(DataBuffer.class);
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("model", "model-a");
+        service.exposeChatCompletionStream(request, "model-a", provider()).blockLast(Duration.ofSeconds(20));
+
+        verify(usageService, never()).save(any(), anyString(), anyString(), anyBoolean(), any(), any(), any());
+        verify(logService, times(1)).publishCallRecorded();
+    }
+
+    /**
+     * 失败往返同样要发信号 —— 否则错误行永远不会实时出现在前端。
+     *
+     * <p>失败路径根本不走用量写入，若按「两张表都写了」判定，这些记录就没有信号。
+     * 而错误行恰恰是最需要立刻看到的。
+     */
+    @Test
+    void signalIsPublishedForFailedRoundTrip() {
+        when(logService.saveNonStream(anyString(), anyString(), any(), any(), any(), anyInt(), any(), anyLong()))
+                .thenReturn(9L);
+
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request ->
+                Mono.just(ClientResponse.create(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                        .body("{\"error\":\"boom\"}").build())));
+
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("model", "model-a");
+        catchThrowable(() -> service.exposeChatCompletion(request, "model-a", provider()).block(Duration.ofSeconds(20)));
+
+        verify(usageService, never()).save(any(), anyString(), anyString(), anyBoolean(), any(), any(), any());
+        // 每个落库分支各发一次：500 会被重试，故信号数等于往返次数，此处只断言"至少发过"。
+        verify(logService, org.mockito.Mockito.atLeastOnce()).publishCallRecorded();
     }
 
     /** 把一段 JSON 包装成 SSE data 帧的 DataBuffer。 */

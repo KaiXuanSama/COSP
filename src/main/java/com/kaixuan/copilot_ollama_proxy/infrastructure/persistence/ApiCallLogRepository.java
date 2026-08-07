@@ -89,11 +89,33 @@ public class ApiCallLogRepository implements ApiCallLogService {
     }
 
     /**
+     * 发出一次「调用记录已落库」信号，供管理后台的日志 SSE 流唤醒前端重新拉取。
+     *
+     * 由 provider 层在<strong>整条落库流程收尾时</strong>调用，而非在本类的 INSERT 内部 ——
+     * 一次调用要写两张表（api_call_log 与可选的 api_call_usage），若在日志 INSERT 后
+     * 立即发信号，消费者视角收到通知去查时用量行可能尚未写入，那一行的 token 会短暂显示为空。
+     *
+     * 信号是同步投递的（{@code Sinks.directBestEffort().tryEmitNext}
+     * 在调用线程上直接推给订阅者），所以「发布点在哪一行」就是可观测的时序边界，
+     * 不存在异步排队把窗口自然抹平的可能。
+     *
+     * 语义是「流程走完」而非「两张表都写了」：失败调用与上游未返回 usage 的调用
+     * 本就不写用量行，若按「都写了」发信号，这些记录永远不会实时出现在前端 ——
+     * 而错误行恰恰最需要立刻看到。
+     */
+    @Override
+    public void publishCallRecorded() {
+        logEventPublisher.publishLogCreated();
+    }
+
+    /**
      * 执行 INSERT 并返回新行的自增 id。
      *
      * 仅改变客户端读取生成键的方式（{@link KeyHolder}），不改变 SQL 与表结构；
      * SQLite 每次 INSERT 本就生成自增 id，此处只是把它读回用于软链接关联。
      * 沿用原有"只 warn 不抛"的容错策略：写入失败返回 null，绝不影响主调用链。
+     *
+     * 不在此发变更信号：见 {@link #publishCallRecorded()} 的说明。
      *
      * @param sql  带占位符的 INSERT 语句
      * @param args 占位符实参，顺序与 SQL 一致
@@ -109,7 +131,6 @@ public class ApiCallLogRepository implements ApiCallLogService {
                 }
                 return ps;
             }, keyHolder);
-            logEventPublisher.publishLogCreated();
             Number key = keyHolder.getKey();
             return key == null ? null : key.longValue();
         } catch (Exception e) {
@@ -144,6 +165,76 @@ public class ApiCallLogRepository implements ApiCallLogService {
                     cursor, pageSize);
         }
 
+        return buildPage(items, pageSize);
+    }
+
+    /**
+     * 消费者视角分页查询（内附 token 用量）。
+     *
+     * 与 {@link #findLogs(Long, int)} 同源同游标，区别只在附带 token 用量：
+     * 调用者视角关心「这次请求成功了吗」，消费者视角关心「这次请求花了多少 token」，
+     * 后者需要在列表阶段就拿到用量，否则每行都要再发一次详情请求。
+     *
+     * 为何以 api_call_log 为主表：V8.5 起日志只瘦身载荷、永不删行，
+     * 故它在语义上是 api_call_usage 的超集 —— 每条用量必有对应日志行，
+     * 反之则不然（失败调用、上游未返回 usage 的调用都只有日志）。
+     * 以超集为主表 + LEFT JOIN 附属表，单表游标即可覆盖全部记录，
+     * 不需要 UNION 两表与复合游标。V8.5 之前产生的孤儿用量行不在本视图内，
+     * 它们的数据价值已由概览页的聚合视图承担。
+     *
+     * 用相关子查询而非直接 JOIN：{@code findByLogId} 的 {@code ORDER BY id DESC LIMIT 1}
+     * 说明一个 log_id 理论上可能对应多行用量，直接 JOIN 会让这类日志在列表里重复出现。
+     * 子查询固定取最新一行，行数因此严格等于日志行数。
+     *
+     * 不带 usage_raw：那是零损失原始 JSON，单条可达数百字节，
+     * 列表一次取 50 行不该为悬浮浮窗才用得上的字段付流量，详情端点已提供。
+     *
+     * token 列一律原样透传，NULL 不折成 0 —— null 表示上游未提供，
+     * 0 表示上游报告的真实零值，这个区分对缓存命中率的解读至关重要。
+     *
+     * @param cursor 上一页最后一条记录的 ID，首屏传 null
+     * @param pageSize 每页条数，钳制到 [1, 100]
+     * @return 包含分页信息的 Map：items、nextCursor、hasMore、pageSize
+     */
+    public Map<String, Object> findUsageLogs(Long cursor, int pageSize) {
+        if (pageSize < 1) pageSize = 10;
+        if (pageSize > 100) pageSize = 100;
+
+        String columns = "l.id, l.provider_key, l.model_name, l.is_stream, l.status_code, "
+                + "l.duration_ms, l.payload_trimmed, l.created_at, "
+                + "(SELECT u.prompt_tokens FROM api_call_usage u WHERE u.log_id = l.id "
+                + "ORDER BY u.id DESC LIMIT 1) AS prompt_tokens, "
+                + "(SELECT u.completion_tokens FROM api_call_usage u WHERE u.log_id = l.id "
+                + "ORDER BY u.id DESC LIMIT 1) AS completion_tokens, "
+                + "(SELECT u.cached_tokens FROM api_call_usage u WHERE u.log_id = l.id "
+                + "ORDER BY u.id DESC LIMIT 1) AS cached_tokens, "
+                + "(SELECT u.ttfb_ms FROM api_call_usage u WHERE u.log_id = l.id "
+                + "ORDER BY u.id DESC LIMIT 1) AS ttfb_ms";
+
+        List<Map<String, Object>> items;
+        if (cursor == null) {
+            items = jdbcTemplate.queryForList(
+                    "SELECT " + columns + " FROM api_call_log l "
+                            + "ORDER BY l.created_at DESC, l.id DESC LIMIT ?",
+                    pageSize);
+        } else {
+            items = jdbcTemplate.queryForList(
+                    "SELECT " + columns + " FROM api_call_log l WHERE l.id < ? "
+                            + "ORDER BY l.created_at DESC, l.id DESC LIMIT ?",
+                    cursor, pageSize);
+        }
+
+        return buildPage(items, pageSize);
+    }
+
+    /**
+     * 把查询结果包装成游标分页响应。
+     *
+     * hasMore 用「本页恰好取满」判定：这会让最后一页刚好满时多一次空请求，
+     * 但代价只是一次索引查找，比多查一行再丢弃更直观。两个列表端点共用同一判定，
+     * 因此前端的翻页逻辑对两个视角完全一致。
+     */
+    private Map<String, Object> buildPage(List<Map<String, Object>> items, int pageSize) {
         Long nextCursor = null;
         boolean hasMore = false;
         if (!items.isEmpty()) {

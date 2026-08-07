@@ -6,6 +6,7 @@ import Settings from '@/views/Settings.vue'
 import Preferences from '@/views/Preferences.vue'
 import Account from '@/views/Account.vue'
 import CallLog from '@/views/CallLog.vue'
+import UsageLog from '@/views/UsageLog.vue'
 import NotFound from '@/views/NotFound.vue'
 import { auth } from '@/api'
 
@@ -75,6 +76,18 @@ const routes = [
         path: '',
         name: 'call-log',
         component: CallLog,
+        meta: { requiresAuth: true },
+      },
+    ],
+  },
+  {
+    path: '/usage-log',
+    component: AdminLayout,
+    children: [
+      {
+        path: '',
+        name: 'usage-log',
+        component: UsageLog,
         meta: { requiresAuth: true },
       },
     ],

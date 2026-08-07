@@ -12,15 +12,91 @@ const callLifecycleStore = useCallLifecycleStore()
 const sidebarOpen = ref(false)
 const username = ref('root')
 
-const navItems = [
+interface NavView {
+  path: string
+  label: string
+}
+
+interface NavItem {
+  path: string
+  label: string
+  icon: string
+  views?: NavView[]
+}
+
+/**
+ * 侧边栏导航项。
+ *
+ * `views` 表示该项有多个并行视角：左键走 `path`（默认视角），右键弹出上下文菜单选择。
+ * 日志有「调用者视角」（响应码、请求响应全文）与「消费者视角」（token 用量），
+ * 两者读同一批调用记录、只是关注面不同，故共用一个导航项而非各占一格。
+ */
+const navItems: NavItem[] = [
   { path: '/overview', label: '概览', icon: 'overview' },
   { path: '/settings', label: '配置', icon: 'config' },
-  { path: '/call-log', label: '日志', icon: 'log' },
+  {
+    path: '/usage-log',
+    label: '日志',
+    icon: 'log',
+    views: [
+      { path: '/usage-log', label: '消费者视角' },
+      { path: '/call-log', label: '调用者视角' },
+    ],
+  },
   { path: '/preferences', label: '设置', icon: 'settings' },
   { path: '/account', label: '账号', icon: 'account' },
 ]
 
-const isActive = (path: string) => route.path === path
+/**
+ * 高亮判定：多视角项在其任一视角下都算激活。
+ *
+ * 否则从消费者视角切到调用者视角后，「日志」这一项会失去高亮，
+ * 用户会以为自己离开了日志区域。
+ */
+function isActive(item: NavItem): boolean {
+  if (item.views) {
+    return item.views.some((view) => route.path === view.path)
+  }
+  return route.path === item.path
+}
+
+/**
+ * 视角选择上下文菜单状态。
+ *
+ * 位置用视口坐标（fixed 定位），因为菜单 Teleport 到 body，
+ * 不受侧边栏的 transform 与滚动影响。
+ */
+const viewMenu = ref({ show: false, x: 0, y: 0, views: [] as NavView[] })
+
+/** 右键多视角导航项：在光标处弹出视角选择菜单。单视角项不响应，保留浏览器默认菜单。 */
+function openViewMenu(event: MouseEvent, item: NavItem) {
+  if (!item.views) return
+  event.preventDefault()
+  viewMenu.value = { show: true, x: event.clientX, y: event.clientY, views: item.views }
+}
+
+function closeViewMenu() {
+  viewMenu.value.show = false
+}
+
+/** 选择某个视角：跳转并关闭菜单。 */
+function selectView(path: string) {
+  closeViewMenu()
+  navigate(path)
+}
+
+/**
+ * 文档级点击：点菜单外任意处关闭。
+ *
+ * 用捕获阶段，避免被子元素的 stopPropagation 拦掉。菜单项自身的点击由
+ * selectView 处理，故这里要放行菜单内部，否则会先关再跳、出现闪烁。
+ */
+function onDocumentClickForViewMenu(event: MouseEvent) {
+  if (!viewMenu.value.show) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.nav-view-menu')) return
+  closeViewMenu()
+}
 
 const avatarLetter = computed(() => username.value.charAt(0).toUpperCase())
 
@@ -64,12 +140,14 @@ function handleResize() {
 onMounted(() => {
   fetchUsername()
   window.addEventListener('resize', handleResize)
+  document.addEventListener('click', onDocumentClickForViewMenu, true)
   // 调用生命周期 SSE 连接常驻布局层，跨页面切换不断开，Toast 始终可见。
   callLifecycleStore.connectStream()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
+  document.removeEventListener('click', onDocumentClickForViewMenu, true)
   callLifecycleStore.disconnectStream()
 })
 </script>
@@ -77,6 +155,31 @@ onBeforeUnmount(() => {
 <template>
   <!-- 调用生命周期指示器：常驻 header 右侧（徽标），点击展开调用列表；跨页面切换常驻 -->
   <CallToastStack />
+
+  <!--
+    视角选择上下文菜单。Teleport 到 body：侧边栏在移动端带 transform，
+    fixed 子元素会以它为包含块，导致菜单定位偏移。
+  -->
+  <Teleport to="body">
+    <div
+      v-if="viewMenu.show"
+      class="nav-view-menu"
+      role="menu"
+      :style="{ left: `${viewMenu.x}px`, top: `${viewMenu.y}px` }"
+    >
+      <button
+        v-for="view in viewMenu.views"
+        :key="view.path"
+        class="nav-view-menu-item"
+        :class="{ active: route.path === view.path }"
+        type="button"
+        role="menuitem"
+        @click="selectView(view.path)"
+      >
+        {{ view.label }}
+      </button>
+    </div>
+  </Teleport>
 
   <!-- 遮罩层 -->
   <div class="sidebar-overlay" :class="{ open: sidebarOpen }" @click="sidebarOpen = false"></div>
@@ -93,8 +196,10 @@ onBeforeUnmount(() => {
 
     <nav class="sidebar-nav">
       <div class="nav-section-label">管理</div>
-      <a v-for="item in navItems" :key="item.path" class="nav-item" :class="{ active: isActive(item.path) }"
-        @click="navigate(item.path)">
+      <a v-for="item in navItems" :key="item.path" class="nav-item"
+        :class="{ active: isActive(item) }"
+        @click="navigate(item.path)"
+        @contextmenu="openViewMenu($event, item)">
         <svg v-if="item.icon === 'overview'" class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
           stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <rect x="3" y="3" width="7" height="7" />
@@ -290,6 +395,51 @@ onBeforeUnmount(() => {
   width: 18px;
   height: 18px;
   flex-shrink: 0;
+}
+
+/*
+  视角选择上下文菜单。
+  Teleport 到 body 并用 fixed 定位：侧边栏在移动端有 transform，
+  菜单若留在其内部会跟着位移，且会被 overflow 裁剪。
+  z-index 高于侧边栏（100）与遮罩（90）。
+ */
+.nav-view-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 132px;
+  padding: 4px;
+  background: $surface;
+  border: 1px solid $border;
+  border-radius: $radius;
+  box-shadow: $shadow-lg;
+}
+
+.nav-view-menu-item {
+  display: block;
+  width: 100%;
+  padding: 7px 12px;
+  text-align: left;
+  font-family: $font-body;
+  font-size: 13px;
+  color: $text-primary;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+
+  &:hover,
+  &:focus-visible {
+    background: $accent-light;
+    color: $accent;
+    outline: none;
+  }
+
+  /* 当前所在视角：标出但不禁用 —— 再次点击相当于刷新，不必特殊处理 */
+  &.is-current {
+    color: $accent;
+    font-weight: 600;
+  }
 }
 
 .sidebar-footer {

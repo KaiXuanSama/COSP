@@ -37,6 +37,22 @@ public class CallLogController {
         return callLogQueryService.listLogs(cursor, pageSize);
     }
 
+    /**
+     * 消费者视角：调用记录分页列表，每行附带 token 用量。
+     *
+     * <p>与 {@code /config/api/logs} 共用游标和分页响应格式，区别在于每行额外返回
+     * {@code prompt_tokens / completion_tokens / cached_tokens / ttfb_ms}，
+     * 前端无需为每行再发一次详情请求即可渲染完整的消费者视图。
+     *
+     * <p>主表为 api_call_log，token 用量以相关子查询附属，故失败调用、
+     * 上游未返回 usage 的调用仍出现在列表中，用量列为 null（渲染为 —）。
+     */
+    @GetMapping("/config/api/usage-logs")
+    public Mono<Map<String, Object>> listUsageLogs(@RequestParam(value = "cursor", required = false) Long cursor,
+                                                    @RequestParam(value = "pageSize", defaultValue = "20") int pageSize) {
+        return callLogQueryService.listUsageLogs(cursor, pageSize);
+    }
+
     @GetMapping("/config/api/logs/{id}")
     public Mono<ResponseEntity<Map<String, Object>>> getLogDetail(@PathVariable long id) {
         return callLogQueryService.findLog(id)

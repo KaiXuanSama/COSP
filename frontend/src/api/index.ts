@@ -60,6 +60,13 @@ export function fetchLogs(cursor: number | null, pageSize: number) {
 }
 
 /**
+ * 获取消费者视角日志列表（游标分页，每行附带 token 用量）
+ */
+export function fetchUsageLogs(cursor: number | null, pageSize: number) {
+  return http.get('/usage-logs', { params: { cursor, pageSize } })
+}
+
+/**
  * 获取单条日志详情
  */
 export function fetchLogDetail(id: number) {

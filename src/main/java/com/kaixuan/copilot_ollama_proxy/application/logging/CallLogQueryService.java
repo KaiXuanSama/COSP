@@ -43,6 +43,18 @@ public class CallLogQueryService {
     }
 
     /**
+     * 消费者视角的调用记录分页列表，每行附带 token 用量。
+     *
+     * <p>与 {@link #listLogs} 共用相同的游标语义和分页响应格式，
+     * 区别是每行额外附带 prompt_tokens / completion_tokens / cached_tokens / ttfb_ms，
+     * 无需客户端再为每行发一次详情请求即可完整渲染消费者列表。
+     */
+    public Mono<Map<String, Object>> listUsageLogs(Long cursor, int pageSize) {
+        return Mono.fromCallable(() -> apiCallLogRepository.findUsageLogs(cursor, pageSize))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
      * 查询单条日志详情，并附带该次调用的 token 用量。
      *
      * <p>返回结构在 {@code api_call_log} 全列之上多一个 {@code usage} 字段：
