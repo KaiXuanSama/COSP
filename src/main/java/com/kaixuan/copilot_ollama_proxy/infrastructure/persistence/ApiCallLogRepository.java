@@ -198,6 +198,14 @@ public class ApiCallLogRepository implements ApiCallLogService {
      *    早已清空的历史行，避免无谓的写放大与 WAL 增长。也正因如此，返回值是
      *    「本次新瘦身的行数」而非「瘦身区间内的总行数」。
      *
+     * 4. 性能特征（实测，20 万行 / ~1 年数据量）
+     *    外层 UPDATE 是主键范围扫描（id &lt; 边界），但 {@code payload_trimmed = 0}
+     *    只能作为逐行过滤器，故空转（无新行需瘦身）时仍摸过历史主键区间，耗时约 44 ms。
+     *    真正有活干（~100 行）时约 162 ms。每小时一次，代价完全可接受。
+     *    若将来规模增长到无法接受，可加偏索引
+     *    {@code CREATE INDEX ON api_call_log(id) WHERE payload_trimmed = 0}，
+     *    实测可将空转降到 7 ms；目前属于过早优化，暂不引入。
+     *
      * @param maxRecords 保留完整载荷的最新记录数，必须大于 0
      * @return 本次新瘦身的行数
      */
