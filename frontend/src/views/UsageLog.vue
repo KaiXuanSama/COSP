@@ -10,10 +10,12 @@
  * api_call_usage 的超集），token 用量作为附属列附带。因此失败调用同样在列表中，
  * 只是 token 列显示为「—」。
  */
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { NCard, NEmpty, NSpin } from 'naive-ui'
-import { fetchUsageLogs } from '@/api'
+import { fetchUsageLogs, fetchLogDetail } from '@/api'
 import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
+import { CallLogDetail } from '@/components/calllog'
+import type { DetailItem } from '@/types/calllog'
 
 /**
  * 消费者视角的一行。
@@ -48,6 +50,54 @@ let knownMaxId = 0
 /** 新到行的一次性高亮标记，动画播完由 CSS 自然淡出。 */
 const freshIds = ref<Set<number>>(new Set())
 
+// ── 行内展开 ────────────────────────────────────────────
+
+/** 当前展开的行 id；null 表示无展开。同时只允许展开一行，避免表格被撑得难以扫读。 */
+const expandedId = ref<number | null>(null)
+/** 展开区的详情数据，来自 GET /config/api/logs/{id}。 */
+const expandedDetail = ref<DetailItem | null>(null)
+const expandedLoading = ref(false)
+
+/**
+ * 点击行：展开 / 收起详情。
+ *
+ * 列表接口刻意不返回 usage_raw 与请求/响应载荷（大字段，只有展开时才需要），
+ * 故展开时才按 id 拉一次完整详情，复用调用者视角的同一个端点。
+ */
+async function toggleRow(id: number) {
+  if (expandedId.value === id) {
+    expandedId.value = null
+    expandedDetail.value = null
+    return
+  }
+  expandedId.value = id
+  expandedDetail.value = null
+  expandedLoading.value = true
+  try {
+    const res = await fetchLogDetail(id)
+    // 加载期间用户可能已点开别的行或收起，落后的响应不得覆盖当前状态。
+    if (expandedId.value !== id) return
+    expandedDetail.value = res.data
+    await nextTick()
+    scrollExpandedIntoView(id)
+  } catch (e) {
+    console.error('加载调用详情失败:', e)
+  } finally {
+    if (expandedId.value === id) expandedLoading.value = false
+  }
+}
+
+/**
+ * 展开后把展开区滚进视口。
+ *
+ * 点击靠底部的行时展开区会落在视口之外，用户看不到刚展开的内容。
+ * block: 'nearest' 只在必要时滚动最小距离，不会把已经可见的行强行居中。
+ */
+function scrollExpandedIntoView(id: number) {
+  const el = document.querySelector(`[data-expand-for="${id}"]`)
+  el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+}
+
 /** 加载第一页。 */
 async function loadFirstPage() {
   initialLoading.value = true
@@ -64,9 +114,11 @@ async function loadFirstPage() {
   }
 }
 
-/** 刷新：整表替换，不走增量高亮。 */
+/** 刷新：整表替换，不走增量高亮。展开态一并收起（原展开行未必还在新的第一页里）。 */
 async function refresh() {
   freshIds.value = new Set()
+  expandedId.value = null
+  expandedDetail.value = null
   rows.value = []
   nextCursor.value = null
   hasMore.value = false
@@ -263,21 +315,51 @@ onUnmounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in rows" :key="row.id" :class="{ 'row--fresh': freshIds.has(row.id) }">
-              <td class="col-time">{{ formatTime(row.created_at) }}</td>
-              <td class="col-status">
-                <span class="status-dot" :class="statusClass(row.status_code)"></span>
-                <span class="status-text">{{ statusLabel(row.status_code) }}</span>
-              </td>
-              <td class="col-provider">{{ row.provider_key }}</td>
-              <td class="col-model" :title="row.model_name">{{ row.model_name }}</td>
-              <td class="col-ttfb">{{ formatDuration(row.ttfb_ms) }}</td>
-              <td class="col-timing-sep" aria-hidden="true">/</td>
-              <td class="col-total">{{ formatDuration(row.duration_ms) }}</td>
-              <td class="col-num">{{ formatTokens(row.prompt_tokens) }}</td>
-              <td class="col-num">{{ formatTokens(row.completion_tokens) }}</td>
-              <td class="col-num">{{ formatCacheHitRate(row) }}</td>
-            </tr>
+            <!--
+              每条记录渲染两个 tr：数据行 + 展开行。用 template 包住而非嵌套 div，
+              是因为 tbody 的合法子节点只有 tr，插入其它元素会被浏览器提到表格外。
+            -->
+            <template v-for="row in rows" :key="row.id">
+              <tr
+                class="usage-row"
+                :class="{ 'row--fresh': freshIds.has(row.id), 'row--expanded': expandedId === row.id }"
+                role="button"
+                tabindex="0"
+                :aria-expanded="expandedId === row.id"
+                :aria-label="`展开 ${row.model_name} 的调用详情`"
+                @click="toggleRow(row.id)"
+                @keydown.enter.prevent="toggleRow(row.id)"
+                @keydown.space.prevent="toggleRow(row.id)"
+              >
+                <td class="col-time">{{ formatTime(row.created_at) }}</td>
+                <td class="col-status">
+                  <span class="status-dot" :class="statusClass(row.status_code)"></span>
+                  <span class="status-text">{{ statusLabel(row.status_code) }}</span>
+                </td>
+                <td class="col-provider">{{ row.provider_key }}</td>
+                <td class="col-model" :title="row.model_name">{{ row.model_name }}</td>
+                <td class="col-ttfb">{{ formatDuration(row.ttfb_ms) }}</td>
+                <td class="col-timing-sep" aria-hidden="true">/</td>
+                <td class="col-total">{{ formatDuration(row.duration_ms) }}</td>
+                <td class="col-num">{{ formatTokens(row.prompt_tokens) }}</td>
+                <td class="col-num">{{ formatTokens(row.completion_tokens) }}</td>
+                <td class="col-num">{{ formatCacheHitRate(row) }}</td>
+              </tr>
+
+              <!--
+                展开行：colspan 覆盖全部 10 列，让内部布局摆脱表格列宽约束，
+                CallLogDetail 因此能按自身网格铺开，与调用者视角完全一致。
+              -->
+              <tr v-if="expandedId === row.id" class="expand-row" :data-expand-for="row.id">
+                <td :colspan="10" class="expand-cell">
+                  <div v-if="expandedLoading" class="expand-state">
+                    <n-spin size="small" />
+                  </div>
+                  <CallLogDetail v-else-if="expandedDetail" :detail="expandedDetail" />
+                  <div v-else class="expand-state expand-state--empty">详情加载失败</div>
+                </td>
+              </tr>
+            </template>
           </tbody>
         </table>
 
@@ -343,17 +425,58 @@ onUnmounted(() => {
     white-space: nowrap;
   }
 
-  tbody tr {
-    transition: background 0.2s ease;
-
-    &:hover {
-      background: $accent-light;
-    }
-
-    &:last-child td {
-      border-bottom: none;
-    }
+  tbody tr:last-child td {
+    border-bottom: none;
   }
+}
+
+/*
+  数据行整行即展开控件：一行只有十个短字段，没有可独立点击的子元素，
+  故不必再放展开箭头，整行命中区最大。
+ */
+.usage-row {
+  cursor: pointer;
+  transition: background 0.2s ease;
+
+  &:hover,
+  &:focus-visible {
+    background: $accent-light;
+    outline: none;
+  }
+}
+
+/* 展开态：数据行保持高亮，与下方展开区连成一块，明示两者归属同一条记录 */
+.usage-row.row--expanded {
+  background: $accent-light;
+
+  td {
+    border-bottom-color: transparent;
+  }
+}
+
+/*
+  展开区：底色微沉一档 + 左侧强调条，从密集的表格行中划出来。
+  选择器带上 .usage-table 是为了在特异性上压过上面的 `.usage-table td`，
+  从而无需 !important 就能归零内边距（内边距由 CallLogDetail 自己掌管）。
+ */
+.usage-table .expand-cell {
+  padding: 0;
+  background: $bg;
+  border-left: 2px solid $accent;
+  /* 展开区内部是普通流式布局，不该继承表格单元格的 nowrap */
+  white-space: normal;
+}
+
+.expand-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: $space-lg 0;
+}
+
+.expand-state--empty {
+  color: $text-muted;
+  font-size: 13px;
 }
 
 /* 数值列右对齐 + 等宽数字，纵向扫读时同位数字上下对齐 */
