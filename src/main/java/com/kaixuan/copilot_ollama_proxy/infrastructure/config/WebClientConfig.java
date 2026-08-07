@@ -1,7 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.config;
 
 import io.netty.resolver.DefaultAddressResolverGroup;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
@@ -10,7 +9,6 @@ import org.springframework.web.reactive.config.WebFluxConfigurer;
 import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.netty.http.client.HttpClient;
-import reactor.netty.transport.ProxyProvider;
 
 /**
  * WebClient 与 WebFlux 编解码全局配置。
@@ -42,44 +40,14 @@ public class WebClientConfig implements WebFluxConfigurer {
     private static final int MAX_IN_MEMORY_SIZE = 64 * 1024 * 1024;
 
     /**
-     * 出站 HTTP 代理主机；留空表示不使用代理。
-     *
-     * TODO(临时): 仅为本地开发期临时需求引入，未来会移除。
-     */
-    @Value("${http.proxy.host:}")
-    private String proxyHost;
-
-    /**
-     * 出站 HTTP 代理端口。
-     *
-     * TODO(临时): 仅为本地开发期临时需求引入，未来会移除。
-     */
-    @Value("${http.proxy.port:7890}")
-    private int proxyPort;
-
-    /**
      * 提供统一配置的 Reactor Netty HttpClient。
      *
      * 独立暴露该 Bean，使上游调用可以基于同一客户端派生请求级 doOnRequest 钩子，
      * 在传输层记录 User-Agent、Host 等由 Reactor Netty 最后补入的请求头。
-     *
-     * 若配置了 {@code http.proxy.host}，所有经此客户端发出的出站请求都会走该代理
-     * （聊天补全、模型发现两条出站链路共用一个 Bean，因此一处配置全局生效）。
-     *
-     * TODO(临时): 下方代理分支是本地开发期的临时方案，未来会清除。它把代理作为
-     * 进程级全局开关，无法按供应商区分；若确定要长期保留该能力，应改为随供应商
-     * 配置下发（provider_config / provider_request_transform），并在此移除硬编码分支。
      */
     @Bean
     public HttpClient httpClient() {
-        HttpClient client = HttpClient.create().resolver(DefaultAddressResolverGroup.INSTANCE);
-        // TODO(临时): 临时代理支持，未来移除。
-        if (proxyHost != null && !proxyHost.isBlank()) {
-            client = client.proxy(proxy -> proxy.type(ProxyProvider.Proxy.HTTP)
-                    .host(proxyHost)
-                    .port(proxyPort));
-        }
-        return client;
+        return HttpClient.create().resolver(DefaultAddressResolverGroup.INSTANCE);
     }
 
     /**
