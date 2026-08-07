@@ -52,11 +52,39 @@ const freshIds = ref<Set<number>>(new Set())
 
 // ── 行内展开 ────────────────────────────────────────────
 
+/**
+ * 展开区进出场动画时长（毫秒），需与样式中 .expand-enter-active / .expand-leave-active 一致。
+ *
+ * 显式传给 Transition 的 :duration 而非让 Vue 自动探测：过渡声明在内层的 .expand-anim 上，
+ * 被 Transition 直接控制的 tr 自身没有 transition，Vue 探测不到时长会立刻移除元素。
+ */
+const EXPAND_ANIM_DURATION = 260
+
 /** 当前展开的行 id；null 表示无展开。同时只允许展开一行，避免表格被撑得难以扫读。 */
 const expandedId = ref<number | null>(null)
-/** 展开区的详情数据，来自 GET /config/api/logs/{id}。 */
-const expandedDetail = ref<DetailItem | null>(null)
-const expandedLoading = ref(false)
+/** 正在加载详情的行 id；null 表示没有请求在飞。 */
+const loadingId = ref<number | null>(null)
+
+/**
+ * 已加载的详情，按 log id 缓存。
+ *
+ * 按 id 存而不是只留一个 expandedDetail，是收起动画的正确性要求：收起时
+ * expandedId 立刻变为 null，但那一行还要播 260ms 的离场动画。若同时把详情清空，
+ * 正在离场的行会瞬间掉到「加载失败」分支闪一下；切换到另一行时同理，
+ * 离场的旧行会闪出新行的 loading 态。每行只读自己的那份，这两个问题都不存在。
+ *
+ * 副作用是重新展开同一行无需再请求。
+ */
+const detailCache = ref<Map<number, DetailItem>>(new Map())
+
+/**
+ * 详情缓存上限。
+ *
+ * 单条详情含完整请求/响应载荷，可达数 MB，不能无上限地留在内存里。
+ * 满了就淘汰最早插入的那条（Map 保证插入序），够覆盖「收起动画期间仍需读到旧数据」
+ * 与「来回对比几条记录」这两个实际用途。
+ */
+const DETAIL_CACHE_LIMIT = 8
 
 /**
  * 点击行：展开 / 收起详情。
@@ -67,24 +95,42 @@ const expandedLoading = ref(false)
 async function toggleRow(id: number) {
   if (expandedId.value === id) {
     expandedId.value = null
-    expandedDetail.value = null
     return
   }
   expandedId.value = id
-  expandedDetail.value = null
-  expandedLoading.value = true
+
+  // 命中缓存直接展开，不闪 loading。
+  if (detailCache.value.has(id)) {
+    await nextTick()
+    scrollExpandedIntoView(id)
+    return
+  }
+
+  loadingId.value = id
   try {
     const res = await fetchLogDetail(id)
     // 加载期间用户可能已点开别的行或收起，落后的响应不得覆盖当前状态。
     if (expandedId.value !== id) return
-    expandedDetail.value = res.data
+    putDetail(id, res.data)
     await nextTick()
     scrollExpandedIntoView(id)
   } catch (e) {
     console.error('加载调用详情失败:', e)
   } finally {
-    if (expandedId.value === id) expandedLoading.value = false
+    if (loadingId.value === id) loadingId.value = null
   }
+}
+
+/** 写入详情缓存，超出上限时淘汰最早插入的一条。 */
+function putDetail(id: number, detail: DetailItem) {
+  const next = new Map(detailCache.value)
+  next.set(id, detail)
+  while (next.size > DETAIL_CACHE_LIMIT) {
+    const oldest = next.keys().next().value
+    if (oldest === undefined) break
+    next.delete(oldest)
+  }
+  detailCache.value = next
 }
 
 /**
@@ -92,10 +138,17 @@ async function toggleRow(id: number) {
  *
  * 点击靠底部的行时展开区会落在视口之外，用户看不到刚展开的内容。
  * block: 'nearest' 只在必要时滚动最小距离，不会把已经可见的行强行居中。
+ *
+ * 等展开动画播完再滚：动画期间行高还在长，此刻算出的目标位置会在滚动过程中失效，
+ * 平滑滚动与高度增长同时进行会互相拉扯。
  */
 function scrollExpandedIntoView(id: number) {
-  const el = document.querySelector(`[data-expand-for="${id}"]`)
-  el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  setTimeout(() => {
+    // 延迟期间可能已收起或切换到别的行，此时不该再滚动。
+    if (expandedId.value !== id) return
+    const el = document.querySelector(`[data-expand-for="${id}"]`)
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, EXPAND_ANIM_DURATION)
 }
 
 /** 加载第一页。 */
@@ -118,7 +171,7 @@ async function loadFirstPage() {
 async function refresh() {
   freshIds.value = new Set()
   expandedId.value = null
-  expandedDetail.value = null
+  detailCache.value = new Map()
   rows.value = []
   nextCursor.value = null
   hasMore.value = false
@@ -350,21 +403,45 @@ onUnmounted(() => {
                 展开行：colspan 覆盖全部 10 列，让内部布局摆脱表格列宽约束，
                 CallLogDetail 因此能按自身网格铺开，与调用者视角完全一致。
               -->
-              <tr v-if="expandedId === row.id" class="expand-row" :data-expand-for="row.id">
-                <td :colspan="10" class="expand-cell">
-                  <!--
-                    内层卡片：把详情从表格的网格里“抬”出来，成为一个自成一体的块。
-                    没有边界时，四条数据行看上去像是表格自己多长出来的行，层级关系读不出来。
-                  -->
-                  <div class="expand-card">
-                    <div v-if="expandedLoading" class="expand-state">
-                      <n-spin size="small" />
+              <!--
+                展开行的进出场动画。
+
+                Transition 的过渡类加在 tr 上，但真正被动画的是内层的 .expand-anim——
+                tr 是 display: table-row，其 height 过渡在各浏览器上行为不一致，
+                故通过后代选择器驱动内层元素（见样式中的 .expand-enter-from .expand-anim）。
+                也正因为 tr 自身没有 transition，Vue 无从探测时长，必须显式给 :duration。
+              -->
+              <Transition name="expand" :duration="EXPAND_ANIM_DURATION">
+                <tr v-if="expandedId === row.id" class="expand-row" :data-expand-for="row.id">
+                  <td :colspan="10" class="expand-cell">
+                    <!--
+                      三层结构各有分工：
+                      anim 用 grid-template-rows 承担高度动画，inner 提供内边距并裁掉溢出，
+                      card 只管视觉边界。内边距必须落在 inner 而非 td，否则高度收拢到 0 时
+                      仍会残留一段内边距高度。
+                    -->
+                    <div class="expand-anim">
+                      <div class="expand-anim-inner">
+                        <!--
+                          内层卡片：把详情从表格的网格里“抬”出来，成为一个自成一体的块。
+                          没有边界时，四条数据行看上去像是表格自己多长出来的行，层级关系读不出来。
+                        -->
+                        <div class="expand-card">
+                          <CallLogDetail
+                            v-if="detailCache.get(row.id)"
+                            :detail="detailCache.get(row.id)!"
+                            compact
+                          />
+                          <div v-else-if="loadingId === row.id" class="expand-state">
+                            <n-spin size="small" />
+                          </div>
+                          <div v-else class="expand-state expand-state--empty">详情加载失败</div>
+                        </div>
+                      </div>
                     </div>
-                    <CallLogDetail v-else-if="expandedDetail" :detail="expandedDetail" compact />
-                    <div v-else class="expand-state expand-state--empty">详情加载失败</div>
-                  </div>
-                </td>
-              </tr>
+                  </td>
+                </tr>
+              </Transition>
             </template>
           </tbody>
         </table>
@@ -466,31 +543,105 @@ onUnmounted(() => {
   从而无需 !important 就能接管内边距。
  */
 .usage-table .expand-cell {
-  padding: $space-sm $space-md $space-md;
+  /* 内边距下移到 .expand-anim-inner：留在此处的话，高度收拢到 0 时会残留一段内边距高度 */
+  padding: 0;
   background: $bg;
   /* 展开区内部是普通流式布局，不该继承表格单元格的 nowrap */
   white-space: normal;
 }
 
 /*
+  高度动画层：用 grid-template-rows 的 0fr → 1fr 过渡实现「按内容高度」的展开，
+  无需 JS 测量再写死 max-height（内容高度随请求头长短变化，写死的值要么截断要么留空）。
+  子元素必须 min-height: 0，否则它的自动最小尺寸会顶住 0fr 使收拢无效。
+
+  width: 0 + min-width: 100% 从卡片移到这里：colspan 单元格的内容宽度参与表格总宽计算，
+  而里面的预览文本是长单行，不加这两条会把表格撑到数千像素（横向滚动条拉得很长，其余列变形）。
+  width: 0 让本层对表格固有宽度的贡献归零，min-width: 100% 再让它填满解析后的单元格，
+  于是表格宽度只由上方十列决定——预览文本的省略号也因此按真实可视宽度打。
+ */
+.expand-anim {
+  display: grid;
+  grid-template-rows: 1fr;
+  width: 0;
+  min-width: 100%;
+}
+
+/*
+  裁剪层：只能有 min-height 与 overflow，不能带内边距。
+
+  内边距不参与 grid 轨道的高度插值——轨道到 0fr 时只把内容高度压到 0，
+  padding-top / padding-bottom 仍原样加在盒模型外侧。收起时高度会先平滑降到
+  内边距之和（曾经是 24px）停住，直到元素被移除才一次性消失，看上去是一段
+  固定高度的空白突然塔陷。故间距一律交给卡片的外边距（见 .expand-card）。
+ */
+.expand-anim-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/*
   详情卡片：白底 + 边框 + 阴影，与全局的 n-card 同一套视觉语言。
   左侧强调条改到卡片上（而非单元格），才能跟卡片圆角对齐。
 
-  width: 0 + min-width: 100% 是让卡片不撑宽表格的关键。
-  colspan 单元格的内容宽度会参与表格总宽计算，而卡片里的预览文本是长单行，
-  不加这两条会把表格撑到数千像素（横向滚动条被拉得很长，其余列也跟着变形）。
-  width: 0 使本卡片对表格固有宽度的贡献归零，min-width: 100% 再让它填满解析后的单元格，
-  于是表格宽度只由上方十列决定，卡片被动跟随——预览文本的省略号也因此按真实可视宽度打。
+  四周间距用外边距而非父层的内边距：外边距计入裁剪容器的内容高度，
+  会跟着 grid 轨道一起插值到 0，收起因此能一直平滑到底。
+  裁剪层的 overflow: hidden 同时立了 BFC，上外边距不会向外塔陷。
  */
 .expand-card {
-  width: 0;
-  min-width: 100%;
+  margin: $space-sm $space-md $space-md;
   background: $surface;
   border: 1px solid $border-light;
   border-left: 2px solid $accent;
   border-radius: $radius;
   box-shadow: $shadow-sm;
   overflow: hidden;
+}
+
+/*
+  ── 展开 / 收起动画 ──
+
+  高度用 grid-template-rows 过渡（0fr ↔ 1fr），卡片同时做轻微的淡入与上移，
+  两者叠加后是「向下生长」的观感，而非生硬的高度撑开。
+
+  缓动选 cubic-bezier(0.22, 1, 0.36, 1)（easeOutQuint）与列表入场动画保持一致：
+  起步快、收尾缓，高度变化在末段几乎静止，视线容易跟上。
+
+  时长需与脚本中的 EXPAND_ANIM_DURATION 对齐（260ms）。
+ */
+.expand-enter-active .expand-anim {
+  transition: grid-template-rows 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/*
+  收起用对称缓动，不复用 easeOutQuint。
+  同一条曲线用在收起方向上是「起步极快、长尾收束」：实测高度在 155ms 就已归零，
+  余下 105ms 元素以零高度空转，观感是动画早就结束了却还卡着一帧。
+  cubic-bezier(0.4, 0, 0.2, 1) 两端对称，高度变化铺满整个时长。
+ */
+.expand-leave-active .expand-anim {
+  transition: grid-template-rows 0.26s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.expand-enter-from .expand-anim,
+.expand-leave-to .expand-anim {
+  grid-template-rows: 0fr;
+}
+
+/* 卡片自身的淡入上移比高度略快收尾，使内容先"就位"再由高度补齐余量 */
+.expand-enter-active .expand-card {
+  transition: opacity 0.22s ease, transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* 收起时卡片先淡出（比高度快一档），高度收拢期间不再有内容可见，避免内容被"压扁" */
+.expand-leave-active .expand-card {
+  transition: opacity 0.16s ease, transform 0.26s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.expand-enter-from .expand-card,
+.expand-leave-to .expand-card {
+  opacity: 0;
+  transform: translateY(-6px);
 }
 
 .expand-state {
