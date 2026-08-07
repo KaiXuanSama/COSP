@@ -380,6 +380,17 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
             return "https://example.com";
         }
 
+        /** 退避压成毫秒级：本类验证落库联动，不验证等待时长。理由同姊妹测试类。 */
+        @Override
+        protected Duration retryFirstBackoff() {
+            return Duration.ofMillis(5);
+        }
+
+        @Override
+        protected Duration retryMaxBackoff() {
+            return Duration.ofMillis(20);
+        }
+
         @Override
         protected String chatCompletionsUri() {
             return "/v1/chat/completions";

@@ -747,6 +747,10 @@ public abstract class AbstractUpstreamChatService {
      * {@code doBeforeRetry} 依旧挂着，只是永远不会触发重订阅，异常照常透传。保留这条链
      * 而不做分支，是为了让重试次数始终只有这一个来源。
      *
+     * <h2>退避时长</h2>
+     * 首次退避 {@link #retryFirstBackoff()}、上限 {@link #retryMaxBackoff()}，两者均可被
+     * 子类覆盖以便测试压缩等待，见那两个方法的说明。
+     *
      * @param method 调用方方法名，用于日志区分重试来源
      * @param requestId 本次调用唯一标识，用于发出 RETRYING 生命周期事件
      * @param model 模型名称（含前缀），用于 RETRYING 事件展示
@@ -760,7 +764,7 @@ public abstract class AbstractUpstreamChatService {
                 : RetryPolicyService.DEFAULT_MAX_ATTEMPTS;
         long maxAttempts = RetryPolicyService.toReactorMaxAttempts(configured);
         boolean unlimited = configured == RetryPolicyService.UNLIMITED_MAX_ATTEMPTS;
-        return Retry.backoff(maxAttempts, Duration.ofSeconds(2)).maxBackoff(Duration.ofSeconds(30))
+        return Retry.backoff(maxAttempts, retryFirstBackoff()).maxBackoff(retryMaxBackoff())
                 .filter(AbstractUpstreamChatService::isRetryableFailure)
                 .doBeforeRetry(signal -> {
                     int attempt = (int) (signal.totalRetries() + 1);
@@ -769,6 +773,36 @@ public abstract class AbstractUpstreamChatService {
                     publishLifecycle(CallLifecycleEvent.retrying(requestId, model, stream, attempt));
                     logRetryAttempt(method, provider, signal, attempt, unlimited ? -1 : (int) maxAttempts);
                 });
+    }
+
+    /**
+     * 首次重试前的退避时长，随重试次数指数增长（2s → 4s → 8s …），上限见 {@link #retryMaxBackoff()}。
+     *
+     * <h2>为何做成可覆盖方法而非常量</h2>
+     * 退避是<strong>真实的时钟等待</strong>：一次耗尽 5 次重试的调用要等
+     * {@code 2+4+8+16+32 = 62} 秒。测试若按生产值等待，单个「重试到耗尽」的用例就占
+     * 一分钟以上，而它要验证的是「重试了几次、按什么条件重试」—— 退避时长本身不是被测行为。
+     * 故测试子类覆盖成毫秒级，把等待压缩掉而不改变重试次数与判定逻辑。
+     *
+     * <p>退避策略本身仍有覆盖：由专门的用例用 Reactor 虚拟时间断言时长序列，
+     * 那种方式不消耗真实时间。
+     *
+     * <p>不用配置项承载：这是上游友好度的工程默认值，不属于用户可调策略
+     * （用户可调的是<em>次数</em>，见 {@code RetryPolicyService}）。做成方法而非字段，
+     * 使覆盖点显式且不需要构造函数改签名。
+     */
+    protected Duration retryFirstBackoff() {
+        return Duration.ofSeconds(2);
+    }
+
+    /**
+     * 退避时长上限，指数增长到此值后不再翻倍。
+     *
+     * 无限重试模式下这个上限才是稳态间隔 —— 没有它，指数增长会让间隔迅速膨胀到不可接受。
+     * 可覆盖的理由同 {@link #retryFirstBackoff()}。
+     */
+    protected Duration retryMaxBackoff() {
+        return Duration.ofSeconds(30);
     }
 
     /**
