@@ -244,7 +244,19 @@ onUnmounted(() => {
               <th class="col-status">状态</th>
               <th class="col-provider">供应商</th>
               <th class="col-model">模型</th>
-              <th class="col-num" title="首字响应时长 / 总响应时长">首字 / 总耗时</th>
+              <!--
+                首字/总耗时拆成三列（右对齐 / 斜杠 / 左对齐）：合成一列右对齐时，
+                两个变宽数字被整体推到右边界，斜杠位置随内容漂移，纵向扫读找不到锚点。
+                拆开后斜杠列固定居中，两侧数字向它靠拢，同类量级自然上下对齐。
+
+                表头同样拆成三列而非 colspan 跨列：跨列表头的文字比三列内容更宽时，
+                浏览器会把多余宽度分摊给三列，斜杠列也分到一份并居中，
+                于是两侧凭空多出空隙。分列后表头与数据的对齐方式逐列一致，宽度也不被撑开。
+              -->
+              <th class="col-ttfb" title="首字响应时长">首字</th>
+              <!-- 表头也放斜杠：与数据行的分隔符同列同位，三列因此在视觉上重新绑成一组 -->
+              <th class="col-timing-sep" aria-hidden="true">/</th>
+              <th class="col-total" title="总响应时长">总耗时</th>
               <th class="col-num">输入</th>
               <th class="col-num">输出</th>
               <th class="col-num">缓存占比</th>
@@ -259,9 +271,9 @@ onUnmounted(() => {
               </td>
               <td class="col-provider">{{ row.provider_key }}</td>
               <td class="col-model" :title="row.model_name">{{ row.model_name }}</td>
-              <td class="col-num">
-                {{ formatDuration(row.ttfb_ms) }} / {{ formatDuration(row.duration_ms) }}
-              </td>
+              <td class="col-ttfb">{{ formatDuration(row.ttfb_ms) }}</td>
+              <td class="col-timing-sep" aria-hidden="true">/</td>
+              <td class="col-total">{{ formatDuration(row.duration_ms) }}</td>
               <td class="col-num">{{ formatTokens(row.prompt_tokens) }}</td>
               <td class="col-num">{{ formatTokens(row.completion_tokens) }}</td>
               <td class="col-num">{{ formatCacheHitRate(row) }}</td>
@@ -353,6 +365,57 @@ onUnmounted(() => {
 
 th.col-num {
   text-align: right;
+}
+
+/*
+  首字 / 总耗时三列组：斜杠列作为固定的视觉锚点，两侧数字向它靠拢。
+  三者共用等宽数字，故同量级的值在纵向上仍能对齐。
+ */
+.col-ttfb,
+.col-total {
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 右对齐并贴近斜杠：右内边距归零，间隙由斜杠列自己的内边距提供 */
+.col-ttfb {
+  text-align: right;
+  padding-right: 0;
+}
+
+/* 左对齐并贴近斜杠 */
+.col-total {
+  text-align: left;
+  padding-left: 0;
+}
+
+/*
+  斜杠：只作分隔符，弱化颜色、不参与信息层级。
+  width: 1% 在表格 auto 布局下等价于「按内容取最小宽度」——
+  声明值达不到内容宽度时浏览器以内容为准，多余宽度则让给两侧数字列，
+  斜杠因此紧贴两侧数字，整组更紧凑。
+ */
+.usage-table .col-timing-sep {
+  width: 1%;
+  padding-left: 2px;
+  padding-right: 2px;
+  color: $text-muted;
+  text-align: center;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/*
+  表头对齐随所在列，覆盖 th 的默认左对齐。
+  「首字」压在右对齐的数字上方、「总耗时」压在左对齐的数字上方，
+  于是表头与数据在视觉上是同一条竖线。
+ */
+.usage-table th.col-ttfb {
+  text-align: right;
+}
+
+.usage-table th.col-total {
+  text-align: left;
 }
 
 .col-time {
