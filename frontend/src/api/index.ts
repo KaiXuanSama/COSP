@@ -53,17 +53,13 @@ export const auth = {
 }
 
 /**
- * 获取日志列表（游标分页）
+ * 获取日志列表（游标分页，每行附带 token 用量）。
+ *
+ * 两个日志视角共用此函数：调用者视角只读元信息列，消费者视角还读 token 用量列。
+ * 后端是同一个端点 —— 用量列是元信息列的严格超集，且实测附带它们的代价在噪声内。
  */
 export function fetchLogs(cursor: number | null, pageSize: number) {
   return http.get('/logs', { params: { cursor, pageSize } })
-}
-
-/**
- * 获取消费者视角日志列表（游标分页，每行附带 token 用量）
- */
-export function fetchUsageLogs(cursor: number | null, pageSize: number) {
-  return http.get('/usage-logs', { params: { cursor, pageSize } })
 }
 
 /**

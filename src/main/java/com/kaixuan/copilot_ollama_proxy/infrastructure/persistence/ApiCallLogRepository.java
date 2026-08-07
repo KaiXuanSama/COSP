@@ -140,40 +140,18 @@ public class ApiCallLogRepository implements ApiCallLogService {
     }
 
     /**
-     * 基于游标分页查询 API 调用日志，按时间倒序。
+     * 基于游标分页查询 API 调用日志，按时间倒序，每行附带 token 用量。
      *
-     * @param cursor 上一页最后一条记录的 ID，首屏传 null
-     * @param pageSize 每页条数
-     * @return 包含分页信息的 Map：items、nextCursor、hasMore、pageSize
-     */
-    public Map<String, Object> findLogs(Long cursor, int pageSize) {
-        if (pageSize < 1) pageSize = 10;
-        if (pageSize > 100) pageSize = 100;
-
-        List<Map<String, Object>> items;
-        if (cursor == null) {
-            items = jdbcTemplate.queryForList(
-                    "SELECT id, provider_key, model_name, is_stream, status_code, duration_ms, "
-                            + "payload_trimmed, created_at "
-                            + "FROM api_call_log ORDER BY created_at DESC, id DESC LIMIT ?",
-                    pageSize);
-        } else {
-            items = jdbcTemplate.queryForList(
-                    "SELECT id, provider_key, model_name, is_stream, status_code, duration_ms, "
-                            + "payload_trimmed, created_at "
-                            + "FROM api_call_log WHERE id < ? ORDER BY created_at DESC, id DESC LIMIT ?",
-                    cursor, pageSize);
-        }
-
-        return buildPage(items, pageSize);
-    }
-
-    /**
-     * 消费者视角分页查询（内附 token 用量）。
+     * 一个查询同时服务两个视角：调用者视角关心「这次请求成功了吗」，只读前 8 列；
+     * 消费者视角关心「这次请求花了多少 token」，还要读后 4 列。曾经是两个方法两个
+     * 端点，但它们主表、游标语义、排序、分页响应格式完全相同，后者的列是前者的严格
+     * 超集，拆开只是让同一段逻辑维护两份。
      *
-     * 与 {@link #findLogs(Long, int)} 同源同游标，区别只在附带 token 用量：
-     * 调用者视角关心「这次请求成功了吗」，消费者视角关心「这次请求花了多少 token」，
-     * 后者需要在列表阶段就拿到用量，否则每行都要再发一次详情请求。
+     * 为何总是带上用量而不做成开关：实测附加 4 列的代价在测量噪声内
+     * （50 行/页时约 -0.2 ~ +0.6 ms，偶尔反而更快）。列表查询的成本几乎全在
+     * 「回表跨过大载荷」—— 最新 50 行的请求/响应载荷可达 20 MB 量级，SQLite 读
+     * 这些行的小列时必须跨过溢出页，故首屏约 38 ms，而载荷已瘦身的旧数据段同样
+     * 50 行只要 0.5 ms。省不下来的部分本来就省不下，多带的部分几乎免费。
      *
      * 为何以 api_call_log 为主表：V8.5 起日志只瘦身载荷、永不删行，
      * 故它在语义上是 api_call_usage 的超集 —— 每条用量必有对应日志行，
@@ -182,8 +160,9 @@ public class ApiCallLogRepository implements ApiCallLogService {
      * 不需要 UNION 两表与复合游标。V8.5 之前产生的孤儿用量行不在本视图内，
      * 它们的数据价值已由概览页的聚合视图承担。
      *
-     * 用相关子查询而非直接 JOIN：{@code findByLogId} 的 {@code ORDER BY id DESC LIMIT 1}
-     * 说明一个 log_id 理论上可能对应多行用量，直接 JOIN 会让这类日志在列表里重复出现。
+     * JOIN 条件写成 {@code u.id = (SELECT ... ORDER BY u2.id DESC LIMIT 1)} 而非
+     * 直接 {@code u.log_id = l.id}：{@code findByLogId} 的同款排序说明一个 log_id
+     * 理论上可能对应多行用量，直接等值 JOIN 会让这类日志在列表里重复出现。
      * 子查询固定取最新一行，行数因此严格等于日志行数。
      *
      * 不带 usage_raw：那是零损失原始 JSON，单条可达数百字节，
@@ -196,31 +175,25 @@ public class ApiCallLogRepository implements ApiCallLogService {
      * @param pageSize 每页条数，钳制到 [1, 100]
      * @return 包含分页信息的 Map：items、nextCursor、hasMore、pageSize
      */
-    public Map<String, Object> findUsageLogs(Long cursor, int pageSize) {
+    public Map<String, Object> findLogs(Long cursor, int pageSize) {
         if (pageSize < 1) pageSize = 10;
         if (pageSize > 100) pageSize = 100;
 
-        String columns = "l.id, l.provider_key, l.model_name, l.is_stream, l.status_code, "
+        String sql = "SELECT l.id, l.provider_key, l.model_name, l.is_stream, l.status_code, "
                 + "l.duration_ms, l.payload_trimmed, l.created_at, "
-                + "(SELECT u.prompt_tokens FROM api_call_usage u WHERE u.log_id = l.id "
-                + "ORDER BY u.id DESC LIMIT 1) AS prompt_tokens, "
-                + "(SELECT u.completion_tokens FROM api_call_usage u WHERE u.log_id = l.id "
-                + "ORDER BY u.id DESC LIMIT 1) AS completion_tokens, "
-                + "(SELECT u.cached_tokens FROM api_call_usage u WHERE u.log_id = l.id "
-                + "ORDER BY u.id DESC LIMIT 1) AS cached_tokens, "
-                + "(SELECT u.ttfb_ms FROM api_call_usage u WHERE u.log_id = l.id "
-                + "ORDER BY u.id DESC LIMIT 1) AS ttfb_ms";
+                + "u.prompt_tokens, u.completion_tokens, u.cached_tokens, u.ttfb_ms "
+                + "FROM api_call_log l LEFT JOIN api_call_usage u ON u.id = ("
+                + "SELECT u2.id FROM api_call_usage u2 WHERE u2.log_id = l.id "
+                + "ORDER BY u2.id DESC LIMIT 1) ";
 
         List<Map<String, Object>> items;
         if (cursor == null) {
             items = jdbcTemplate.queryForList(
-                    "SELECT " + columns + " FROM api_call_log l "
-                            + "ORDER BY l.created_at DESC, l.id DESC LIMIT ?",
+                    sql + "ORDER BY l.created_at DESC, l.id DESC LIMIT ?",
                     pageSize);
         } else {
             items = jdbcTemplate.queryForList(
-                    "SELECT " + columns + " FROM api_call_log l WHERE l.id < ? "
-                            + "ORDER BY l.created_at DESC, l.id DESC LIMIT ?",
+                    sql + "WHERE l.id < ? ORDER BY l.created_at DESC, l.id DESC LIMIT ?",
                     cursor, pageSize);
         }
 
@@ -231,8 +204,7 @@ public class ApiCallLogRepository implements ApiCallLogService {
      * 把查询结果包装成游标分页响应。
      *
      * hasMore 用「本页恰好取满」判定：这会让最后一页刚好满时多一次空请求，
-     * 但代价只是一次索引查找，比多查一行再丢弃更直观。两个列表端点共用同一判定，
-     * 因此前端的翻页逻辑对两个视角完全一致。
+     * 但代价只是一次索引查找，比多查一行再丢弃更直观。
      */
     private Map<String, Object> buildPage(List<Map<String, Object>> items, int pageSize) {
         Long nextCursor = null;

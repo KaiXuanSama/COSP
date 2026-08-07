@@ -31,6 +31,12 @@ class ApiCallLogRepositoryCursorTests {
                 + "status_code INTEGER NOT NULL DEFAULT 0, request_headers TEXT, request_body TEXT, response_headers TEXT, response_body TEXT, "
                 + "chunks TEXT, duration_ms INTEGER, payload_trimmed INTEGER NOT NULL DEFAULT 0, "
                 + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
+        // findLogs 会 LEFT JOIN 用量表取 token 列，故测试库必须同时具备两张表。
+        jdbcTemplate.execute("CREATE TABLE api_call_usage ("
+                + "id INTEGER PRIMARY KEY AUTOINCREMENT, log_id INTEGER, provider_key TEXT, model_name TEXT, "
+                + "is_stream INTEGER NOT NULL DEFAULT 0, usage_raw TEXT, prompt_tokens INTEGER, "
+                + "completion_tokens INTEGER, cached_tokens INTEGER, ttfb_ms INTEGER, "
+                + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         insertLog("deepseek", "gpt", 200, "2026-07-11T10:00:00");
         insertLog("mimo", "mimo", 200, "2026-07-11T09:00:00");
         insertLog("custom", "custom", 500, "2026-07-11T08:00:00");
@@ -59,6 +65,63 @@ class ApiCallLogRepositoryCursorTests {
         assertThat(((java.util.List<?>) secondPage.get("items"))).hasSize(1);
         assertThat(secondPage.get("hasMore")).isEqualTo(false);
         assertThat(secondPage.get("nextCursor")).isNull();
+    }
+
+    /**
+     * 列表每行都带 token 用量列，缺用量的行取 null 而非 0。
+     *
+     * null 与 0 必须可区分：null 表示上游未提供用量，0 表示上游报告的真实零值。
+     * 若 JOIN 写成 INNER 或用 COALESCE 兜底，失败调用就会从列表里消失或伪装成零消耗。
+     */
+    @Test
+    void everyRowCarriesTokenColumnsAndMissingUsageStaysNull() {
+        jdbcTemplate.update("INSERT INTO api_call_usage (log_id, prompt_tokens, completion_tokens, "
+                + "cached_tokens, ttfb_ms) VALUES (1, 100, 20, 0, 350)");
+
+        @SuppressWarnings("unchecked")
+        java.util.List<Map<String, Object>> items =
+                (java.util.List<Map<String, Object>>) repository.findLogs(null, 10).get("items");
+
+        assertThat(items).hasSize(3);
+        assertThat(items).allSatisfy(row ->
+                assertThat(row).containsKeys("prompt_tokens", "completion_tokens", "cached_tokens", "ttfb_ms"));
+
+        Map<String, Object> withUsage = items.stream()
+                .filter(row -> ((Number) row.get("id")).longValue() == 1L)
+                .findFirst().orElseThrow();
+        assertThat(withUsage.get("prompt_tokens")).isEqualTo(100);
+        assertThat(withUsage.get("completion_tokens")).isEqualTo(20);
+        assertThat(withUsage.get("cached_tokens")).isEqualTo(0);
+        assertThat(withUsage.get("ttfb_ms")).isEqualTo(350);
+
+        assertThat(items).filteredOn(row -> ((Number) row.get("id")).longValue() != 1L)
+                .allSatisfy(row -> {
+                    assertThat(row.get("prompt_tokens")).isNull();
+                    assertThat(row.get("completion_tokens")).isNull();
+                    assertThat(row.get("ttfb_ms")).isNull();
+                });
+    }
+
+    /**
+     * 一个 log_id 对应多行用量时，日志行不得重复出现，且取最新那行用量。
+     *
+     * 这是 JOIN 条件写成 {@code u.id = (SELECT ... ORDER BY id DESC LIMIT 1)}
+     * 而非 {@code u.log_id = l.id} 的原因：后者会让这条日志在列表里出现两次，
+     * 破坏游标分页的行数契约（本页取满判定会误判 hasMore）。
+     */
+    @Test
+    void duplicateUsageRowsDoNotDuplicateLogRow() {
+        jdbcTemplate.update("INSERT INTO api_call_usage (log_id, prompt_tokens) VALUES (1, 111)");
+        jdbcTemplate.update("INSERT INTO api_call_usage (log_id, prompt_tokens) VALUES (1, 222)");
+
+        @SuppressWarnings("unchecked")
+        java.util.List<Map<String, Object>> items =
+                (java.util.List<Map<String, Object>>) repository.findLogs(null, 10).get("items");
+
+        assertThat(items).hasSize(3);
+        assertThat(items).filteredOn(row -> ((Number) row.get("id")).longValue() == 1L)
+                .singleElement()
+                .satisfies(row -> assertThat(row.get("prompt_tokens")).isEqualTo(222));
     }
 
     /**

@@ -6,13 +6,13 @@
  * 以卡片列表 + 右侧详情呈现单次调用的完整请求/响应；这里关心「这次请求花了多少 token」，
  * 故以宽表平铺，一行一次调用，九个字段横向对齐便于纵向扫读与比较。
  *
- * 数据源是 `/config/api/usage-logs` —— 主表仍为 api_call_log（V8.5 起它是
- * api_call_usage 的超集），token 用量作为附属列附带。因此失败调用同样在列表中，
- * 只是 token 列显示为「—」。
+ * 数据源与调用者视角同为 `/config/api/logs` —— 那个端点每行都附带 token 用量，
+ * 本视图多读 4 列而已。主表是 api_call_log（V8.5 起它是 api_call_usage 的超集），
+ * 用量以 LEFT JOIN 附属，因此失败调用同样在列表中，只是 token 列显示为「—」。
  */
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { NCard, NEmpty, NSpin } from 'naive-ui'
-import { fetchUsageLogs, fetchLogDetail } from '@/api'
+import { fetchLogs, fetchLogDetail } from '@/api'
 import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 import { CallLogDetail } from '@/components/calllog'
 import type { DetailItem } from '@/types/calllog'
@@ -155,7 +155,7 @@ function scrollExpandedIntoView(id: number) {
 async function loadFirstPage() {
   initialLoading.value = true
   try {
-    const res = await fetchUsageLogs(null, pageSize)
+    const res = await fetchLogs(null, pageSize)
     rows.value = res.data.items || []
     nextCursor.value = res.data.nextCursor ?? null
     hasMore.value = Boolean(res.data.hasMore)
@@ -183,7 +183,7 @@ async function loadMore() {
   if (!hasMore.value || loadingMore.value) return
   loadingMore.value = true
   try {
-    const res = await fetchUsageLogs(nextCursor.value, pageSize)
+    const res = await fetchLogs(nextCursor.value, pageSize)
     rows.value = [...rows.value, ...(res.data.items || [])]
     nextCursor.value = res.data.nextCursor ?? null
     hasMore.value = Boolean(res.data.hasMore)
@@ -206,7 +206,7 @@ async function syncLatest() {
   if (syncing) return
   syncing = true
   try {
-    const res = await fetchUsageLogs(null, pageSize)
+    const res = await fetchLogs(null, pageSize)
     const latest: UsageLogItem[] = res.data.items || []
     if (!latest.length) return
 

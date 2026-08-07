@@ -37,20 +37,16 @@ public class CallLogQueryService {
         this.logEventPublisher = logEventPublisher;
     }
 
+    /**
+     * 调用记录分页列表，每行附带 token 用量。
+     *
+     * <p>同时服务两个视角：调用者视角只读元信息列，消费者视角还读
+     * prompt_tokens / completion_tokens / cached_tokens / ttfb_ms。
+     * 两者的主表、游标语义与分页格式完全一致，故共用一个端点，
+     * 客户端无需为每行再发一次详情请求即可渲染消费者列表。
+     */
     public Mono<Map<String, Object>> listLogs(Long cursor, int pageSize) {
         return Mono.fromCallable(() -> apiCallLogRepository.findLogs(cursor, pageSize))
-                .subscribeOn(Schedulers.boundedElastic());
-    }
-
-    /**
-     * 消费者视角的调用记录分页列表，每行附带 token 用量。
-     *
-     * <p>与 {@link #listLogs} 共用相同的游标语义和分页响应格式，
-     * 区别是每行额外附带 prompt_tokens / completion_tokens / cached_tokens / ttfb_ms，
-     * 无需客户端再为每行发一次详情请求即可完整渲染消费者列表。
-     */
-    public Mono<Map<String, Object>> listUsageLogs(Long cursor, int pageSize) {
-        return Mono.fromCallable(() -> apiCallLogRepository.findUsageLogs(cursor, pageSize))
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
