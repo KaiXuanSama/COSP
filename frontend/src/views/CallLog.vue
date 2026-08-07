@@ -4,6 +4,8 @@ import { NCard, NEmpty, NSpin } from 'naive-ui'
 import { fetchLogs, fetchLogDetail } from '@/api'
 import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 import { CallLogDetail } from '@/components/calllog'
+import { prependWithCursorShift } from '@/features/call-log/pagination'
+import { createCoalescingSync } from '@/features/call-log/sync'
 import type { DetailItem } from '@/types/calllog'
 
 interface LogItem {
@@ -145,7 +147,6 @@ async function selectLog(id: number) {
 const LOG_STREAM_PATH = '/logs/stream'
 
 let logStreamSource: AuthEventSource | null = null
-let syncing = false
 
 /**
  * 收到“有新日志”信号后的增量同步。
@@ -155,10 +156,10 @@ let syncing = false
  *
  * 用 knownMaxId 而非列表首条 id 去重：动画播放期间新记录尚未进入 logs，
  * 若以列表首条为准会导致同一条被重复入队。
+ *
+ * 包在 {@link createCoalescingSync} 里：保证不并发拉取，且拉取期间到来的信号不被丢掉。
  */
-async function syncLatestLogs() {
-  if (syncing) return
-  syncing = true
+const syncLatestLogs = createCoalescingSync(async () => {
   try {
     const res = await fetchLogs(null, pageSize)
     const latest: LogItem[] = res.data.items || []
@@ -186,10 +187,8 @@ async function syncLatestLogs() {
     void flushEnterQueue()
   } catch (e) {
     console.error('同步最新日志失败:', e)
-  } finally {
-    syncing = false
   }
-}
+})
 
 /**
  * 串行消费入场队列：每次 shift 一条 prepend 到列表顶部并标记为入场中，
@@ -204,8 +203,12 @@ async function flushEnterQueue() {
     while (enterQueue.length) {
       const item = enterQueue.shift() as LogItem
       // 头部插入新项的同时移除末尾最老一项（无动画），保持列表长度不随实时流无限增长。
-      // slice(0, -1) 对空数组/单元素数组均安全；此处 logs 必非空（首次填充走另一分支）。
-      logs.value = [item, ...logs.value.slice(0, -1)]
+      // 游标必须随着前移，否则被砍掉的行会落进「已渲染之外、游标之内」的缝隙而永久消失；
+      // 逐条插入故逐次结算，一批 N 条新数据会把游标一共前移 N 行。
+      const shifted = prependWithCursorShift([...logs.value], [item], nextCursor.value, hasMore.value)
+      logs.value = shifted.rows
+      nextCursor.value = shifted.nextCursor
+      hasMore.value = shifted.hasMore
       animatingId.value = item.id
       await nextTick()
       await sleep(ANIM_DURATION)

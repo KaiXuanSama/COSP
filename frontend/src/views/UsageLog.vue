@@ -13,6 +13,8 @@
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { NCard, NEmpty, NSpin } from 'naive-ui'
 import { fetchLogs, fetchLogDetail } from '@/api'
+import { prependWithCursorShift } from '@/features/call-log/pagination'
+import { createCoalescingSync } from '@/features/call-log/sync'
 import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 import { CallLogDetail } from '@/components/calllog'
 import type { DetailItem } from '@/types/calllog'
@@ -200,11 +202,10 @@ async function loadMore() {
  * 只拉第一页，把 id 超过水位线的新行整批插到表顶并标记高亮。
  * 与调用者视角的逐条入场队列不同：宽表的行高一致、信息密度高，
  * 逐条播放动画反而让视线难以跟随，整批插入 + 一次性高亮更清晰。
+ *
+ * 包在 {@link createCoalescingSync} 里：保证不并发拉取，且拉取期间到来的信号不被丢掉。
  */
-let syncing = false
-async function syncLatest() {
-  if (syncing) return
-  syncing = true
+const syncLatest = createCoalescingSync(async () => {
   try {
     const res = await fetchLogs(null, pageSize)
     const latest: UsageLogItem[] = res.data.items || []
@@ -221,8 +222,12 @@ async function syncLatest() {
     const fresh = latest.filter((item) => item.id > knownMaxId)
     if (!fresh.length) return
 
-    // 头部插入的同时从表尾截掉同样数量，保持表长不随实时流无限增长。
-    rows.value = [...fresh, ...rows.value].slice(0, rows.value.length)
+    // 头部插入的同时从表尾截掉同样数量，保持表长不随实时流无限增长；
+    // 游标同步前移到新尾行，使被截掉的那批正好是下一页的开头，翻页即可拿回。
+    const shifted = prependWithCursorShift(rows.value, fresh, nextCursor.value, hasMore.value)
+    rows.value = shifted.rows
+    nextCursor.value = shifted.nextCursor
+    hasMore.value = shifted.hasMore
     knownMaxId = Math.max(knownMaxId, ...fresh.map((item) => item.id))
 
     const marked = new Set(fresh.map((item) => item.id))
@@ -235,10 +240,8 @@ async function syncLatest() {
     }, 1400)
   } catch (e) {
     console.error('同步最新消费记录失败:', e)
-  } finally {
-    syncing = false
   }
-}
+})
 
 // ── 格式化 ──────────────────────────────────────────────
 
