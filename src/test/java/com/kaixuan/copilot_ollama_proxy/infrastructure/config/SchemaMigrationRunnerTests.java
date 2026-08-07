@@ -16,6 +16,7 @@ import org.sqlite.SQLiteDataSource;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -132,6 +133,7 @@ class SchemaMigrationRunnerTests {
         assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
         assertThat(tableExists(jdbcTemplate, "api_call_usage")).isTrue();
         assertThat(indexExists(jdbcTemplate, "idx_api_call_usage_created")).isTrue();
+        assertThat(columnNames(jdbcTemplate, "api_call_log")).contains("payload_trimmed");
     }
 
     @Test
@@ -326,6 +328,57 @@ class SchemaMigrationRunnerTests {
         assertThat(plan).contains("idx_api_call_usage_created");
     }
 
+    /**
+     * V8.4 库升到 V8.5 时补出 payload_trimmed 列，且既有行一律视为「载荷完整」。
+     *
+     * 存量行默认 0 是正确的：V8.5 之前的保留任务只做整行删除、从不清空字段，
+     * 因此活着的行必然携带完整载荷。若默认成 1，详情页会把所有历史日志误报为已清理。
+     */
+    @Test
+    void v84DatabaseAddsPayloadTrimmedFlagDuringV85Migration() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createCurrentSchema(jdbcTemplate);
+        createV84CallLogTable(jdbcTemplate);
+        jdbcTemplate.execute("CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
+                + "version REAL NOT NULL, description TEXT NOT NULL, applied_at TEXT)");
+        jdbcTemplate.update("INSERT INTO schema_version (id, version, description) VALUES (1, 8.4, 'V8.4')");
+        jdbcTemplate.update("INSERT INTO api_call_log (provider_key, model_name, is_stream, status_code, "
+                + "request_body, chunks, duration_ms, created_at) "
+                + "VALUES ('deepseek', 'chat', 1, 200, '{\"m\":1}', '[\"c\"]', 1500, '2026-07-30T14:23:07')");
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        runner.run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+        assertThat(columnNames(jdbcTemplate, "api_call_log")).contains("payload_trimmed");
+        // 纯加列迁移：既有行与载荷一个不动，且被视为载荷完整
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM api_call_log", Integer.class)).isEqualTo(1);
+        Map<String, Object> row = jdbcTemplate.queryForMap("SELECT * FROM api_call_log WHERE id = 1");
+        assertThat(((Number) row.get("payload_trimmed")).intValue()).isZero();
+        assertThat(row.get("request_body")).isEqualTo("{\"m\":1}");
+        assertThat(row.get("chunks")).isEqualTo("[\"c\"]");
+        assertThat(row.get("created_at")).isEqualTo("2026-07-30T14:23:07");
+    }
+
+    /** 迁移补出的列须与 schema.sql 同样带 0/1 约束，避免新库与升级库的约束分叉。 */
+    @Test
+    void migratedPayloadTrimmedColumnRejectsValuesOutsideZeroAndOne() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createCurrentSchema(jdbcTemplate);
+        createV84CallLogTable(jdbcTemplate);
+        jdbcTemplate.execute("CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
+                + "version REAL NOT NULL, description TEXT NOT NULL, applied_at TEXT)");
+        jdbcTemplate.update("INSERT INTO schema_version (id, version, description) VALUES (1, 8.4, 'V8.4')");
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "INSERT INTO api_call_log (provider_key, payload_trimmed) VALUES ('p', 2)"))
+                .isInstanceOf(DataAccessException.class);
+    }
+
     @Test
     void historicalV5MigrationDoesNotOverwriteExistingRequestTransformConfiguration() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
@@ -479,6 +532,19 @@ class SchemaMigrationRunnerTests {
                 jdbcTemplate.execute("CREATE INDEX idx_api_call_usage_log ON api_call_usage(log_id)");
         }
 
+        /**
+         * 建出 V8.4 时的 api_call_log —— 载荷五列齐备，但<strong>没有</strong>
+         * payload_trimmed 标记列，那正是 V8.5 要补的。
+         */
+        private void createV84CallLogTable(JdbcTemplate jdbcTemplate) {
+                jdbcTemplate.execute("CREATE TABLE api_call_log ("
+                                + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key VARCHAR(30), model_name VARCHAR(100), "
+                                + "is_stream INTEGER NOT NULL DEFAULT 0 CHECK (is_stream IN (0, 1)), status_code INTEGER, "
+                                + "request_headers TEXT, request_body TEXT, response_headers TEXT, response_body TEXT, chunks TEXT, "
+                                + "duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0), "
+                                + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')))");
+        }
+
         private void createCurrentProviderAssociations(JdbcTemplate jdbcTemplate) {
                 jdbcTemplate.execute("CREATE TABLE provider_model (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL)");
                 jdbcTemplate.execute("CREATE TABLE provider_api_key (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL)");
@@ -535,8 +601,13 @@ class SchemaMigrationRunnerTests {
                         assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
                         assertThat(tableExists(jdbcTemplate, "api_call_usage")).isTrue();
                 }
-                if (version >= SchemaMigrationRunner.currentSchemaVersion()) {
+                // 8.4 建索引、8.5 加列，两者是各自版本的持久不变量，故用字面版本号而非
+                // currentSchemaVersion()：后者会随下次迁移前移，导致旧检查点漏断言。
+                if (version >= 8.4) {
                         assertThat(indexExists(jdbcTemplate, "idx_api_call_usage_created")).isTrue();
+                }
+                if (version >= 8.5) {
+                        assertThat(columnNames(jdbcTemplate, "api_call_log")).contains("payload_trimmed");
                 }
         }
 }

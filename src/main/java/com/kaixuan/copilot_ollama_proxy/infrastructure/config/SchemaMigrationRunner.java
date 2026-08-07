@@ -34,7 +34,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final double V8_1_VERSION = 8.1;
     private static final double V8_2_VERSION = 8.2;
     private static final double V8_3_VERSION = 8.3;
-    private static final double CURRENT_SCHEMA_VERSION = 8.4;
+    private static final double V8_4_VERSION = 8.4;
+    private static final double CURRENT_SCHEMA_VERSION = 8.5;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -134,8 +135,10 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                 new MigrationStep(V8_1_VERSION, "移除固定的 API 格式字段", this::migrateToV81RemoveApiFormat),
                 new MigrationStep(V8_2_VERSION, "移除思考链缓存", this::migrateToV82RemoveReasoningCache),
                 new MigrationStep(V8_3_VERSION, "新增 token 用量表", this::migrateToV83AddUsageTable),
-                new MigrationStep(CURRENT_SCHEMA_VERSION, "新增用量时间范围查询索引",
-                        this::migrateToV84AddUsageCreatedAtIndex));
+                new MigrationStep(V8_4_VERSION, "新增用量时间范围查询索引",
+                        this::migrateToV84AddUsageCreatedAtIndex),
+                new MigrationStep(CURRENT_SCHEMA_VERSION, "日志保留改为载荷瘦身",
+                        this::migrateToV85AddPayloadTrimmedFlag));
     }
 
     private List<MigrationStep> baselineMigrations() {
@@ -165,7 +168,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         return version != null && version >= CURRENT_SCHEMA_VERSION
             && columnExists("provider_config", "display_name") && !columnExists("provider_config", "api_format")
             && !hasLegacyProviderConfigColumns() && !tableExists("reasoning_cache")
-            && tableExists("api_call_usage") && indexExists("idx_api_call_usage_created");
+            && tableExists("api_call_usage") && indexExists("idx_api_call_usage_created")
+            && columnExists("api_call_log", "payload_trimmed");
     }
 
     /**
@@ -178,7 +182,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         + "ON CONFLICT(id) DO UPDATE SET version = excluded.version, "
                         + "description = excluded.description, "
                         + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
-                    CURRENT_SCHEMA_VERSION, "V8.4 架构基线：统一供应商实现、token 用量表与时间范围查询索引"));
+                    CURRENT_SCHEMA_VERSION, "V8.5 架构基线：统一供应商实现、token 用量表与日志载荷瘦身"));
         log.info("[SchemaMigration] 已建立 V{} 架构基线", CURRENT_SCHEMA_VERSION);
     }
 
@@ -526,7 +530,49 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                 + "ON api_call_usage(created_at)");
         jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
                 + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
-            CURRENT_SCHEMA_VERSION, "V8.4 增量迁移：新增用量时间范围查询索引");
+            V8_4_VERSION, "V8.4 增量迁移：新增用量时间范围查询索引");
+    }
+
+    /**
+     * V8.5：为 api_call_log 补 payload_trimmed 标记，日志保留策略由整行删除改为载荷瘦身。
+     *
+     * 纯加列迁移，不动既有数据、不改任何约束。新列默认 0，故所有存量行都被视为「载荷完整」——
+     * 这与事实一致：此前的保留任务只做整行删除，从不清空字段，活着的行必然携带完整载荷。
+     *
+     * 1. 为何需要显式标记而非判 request_body IS NULL
+     *    NULL 无法区分「上游/本次调用本就没有该字段」与「已被保留任务清除」。前者应展示为
+     *    无内容，后者应展示为已清理，两者在详情页是不同的语义。多数写入路径确实会留下
+     *    部分 NULL 列（如流式调用的 response_body），仅凭 NULL 判定必然误报。
+     *
+     * 2. 为何这是使 api_call_log 成为 api_call_usage 超集的前提
+     *    此前日志按条数整行删除，而用量表永不裁剪，于是老数据段存在大量「孤儿用量行」
+     *    （log_id 悬空），日志表在时间维度上反而是用量表的子集。改为瘦身后行永久保留，
+     *    调用元信息（状态码、耗时）不再随载荷一同消失，两表在新数据段上恢复为
+     *    「日志 ⊇ 用量」的稳定包含关系，明细视图因此可以单表分页而无需跨表 UNION。
+     *
+     * 3. 为何不回填历史孤儿
+     *    被删除的行已物理消失，状态码与耗时无从恢复；凭用量行反向插入只会产出一批
+     *    关键字段为空的伪日志。存量孤儿的数据价值已由概览页的聚合视图承载，
+     *    此处不做补偿。
+     *
+     * 4. ADD COLUMN 携带 CHECK 的可行性
+     *    SQLite 对 ALTER TABLE ADD COLUMN 的限制是不得为 PRIMARY KEY / UNIQUE、
+     *    NOT NULL 必须带非 NULL 默认值，CHECK 不在禁止之列。因此这里与 schema.sql
+     *    的列定义保持完全一致，避免「新库有约束、升级库没有」的分叉。
+     *
+     * 5. 为何要判表存在
+     *    columnExists 在表缺失时同样返回 false，仅凭它会对不存在的表执行 ALTER 而报错。
+     *    真实数据库由 schema.sql 保证该表存在，但迁移不应依赖这一前提 ——
+     *    表缺失时跳过即可，后续 schema.sql 会以最终结构建出带该列的表。
+     */
+    private void migrateToV85AddPayloadTrimmedFlag() {
+        if (tableExists("api_call_log") && !columnExists("api_call_log", "payload_trimmed")) {
+            jdbcTemplate.execute("ALTER TABLE api_call_log ADD COLUMN payload_trimmed "
+                    + "INTEGER NOT NULL DEFAULT 0 CHECK (payload_trimmed IN (0, 1))");
+        }
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+            CURRENT_SCHEMA_VERSION, "V8.5 增量迁移：日志保留改为载荷瘦身");
     }
 
             private void deleteProviderConfiguration(int providerId) {

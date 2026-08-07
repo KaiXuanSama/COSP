@@ -132,12 +132,14 @@ public class ApiCallLogRepository implements ApiCallLogService {
         List<Map<String, Object>> items;
         if (cursor == null) {
             items = jdbcTemplate.queryForList(
-                    "SELECT id, provider_key, model_name, is_stream, status_code, duration_ms, created_at "
+                    "SELECT id, provider_key, model_name, is_stream, status_code, duration_ms, "
+                            + "payload_trimmed, created_at "
                             + "FROM api_call_log ORDER BY created_at DESC, id DESC LIMIT ?",
                     pageSize);
         } else {
             items = jdbcTemplate.queryForList(
-                    "SELECT id, provider_key, model_name, is_stream, status_code, duration_ms, created_at "
+                    "SELECT id, provider_key, model_name, is_stream, status_code, duration_ms, "
+                            + "payload_trimmed, created_at "
                             + "FROM api_call_log WHERE id < ? ORDER BY created_at DESC, id DESC LIMIT ?",
                     cursor, pageSize);
         }
@@ -172,19 +174,42 @@ public class ApiCallLogRepository implements ApiCallLogService {
     }
 
     /**
-     * 删除超出数量上限的旧日志，仅保留 ID 最大的最新记录。
+     * 把超出数量上限的旧日志「瘦身」：只清空大载荷列，保留整行。
      *
-     * 完整请求、响应和 SSE chunks 不做任何截断；该方法只删除整条旧记录。
+     * 清空 request_headers / request_body / response_headers / response_body / chunks
+     * 五列并置 payload_trimmed = 1；provider_key、model_name、status_code、duration_ms、
+     * created_at 等调用元信息一律保留。<strong>行永不删除。</strong>
      *
-     * @param maxRecords 最多保留的记录数，必须大于 0
-     * @return 删除的旧日志数量
+     * 1. 为何不再整行删除
+     *    整行删除会让日志表在时间维度上成为 api_call_usage 的子集（用量表永不裁剪），
+     *    于是老数据段全是 log_id 悬空的孤儿用量行。保留元信息后两表恢复
+     *    「日志 ⊇ 用量」的稳定包含关系，消费者视角的明细视图因此能单表分页。
+     *
+     * 2. 为何没有行数上限兜底
+     *    瘦身后每行仅剩定长元信息（约百字节量级），与 api_call_usage 的行宽同一量级，
+     *    而后者本就按「永不裁剪」设计 —— 给一张设上限而另一张不设并不自洽。
+     *    游标分页走 {@code WHERE id < ?} 加主键索引，代价与表总量无关，行数增长也不会拖慢翻页。
+     *    更重要的是，任何按行数删除的兜底都会让被删行对应的用量记录重新变成孤儿，
+     *    亲手打破本方法要建立的超集关系 —— 那是个平时看不见、触发时正好在排查现场的隐患。
+     *    真需要控制总量时应按时间删除，且两张表同步进行。
+     *
+     * 3. payload_trimmed = 0 条件的必要性
+     *    使操作幂等：每小时一次的定时任务只处理新落入瘦身区间的行，不会反复重写
+     *    早已清空的历史行，避免无谓的写放大与 WAL 增长。也正因如此，返回值是
+     *    「本次新瘦身的行数」而非「瘦身区间内的总行数」。
+     *
+     * @param maxRecords 保留完整载荷的最新记录数，必须大于 0
+     * @return 本次新瘦身的行数
      */
-    public int trimToLatest(int maxRecords) {
+    public int trimPayloadToLatest(int maxRecords) {
         if (maxRecords <= 0) {
             throw new IllegalArgumentException("maxRecords 必须大于 0");
         }
         return jdbcTemplate.update(
-                "DELETE FROM api_call_log WHERE id < COALESCE(("
+                "UPDATE api_call_log SET request_headers = NULL, request_body = NULL, "
+                        + "response_headers = NULL, response_body = NULL, chunks = NULL, "
+                        + "payload_trimmed = 1 "
+                        + "WHERE payload_trimmed = 0 AND id < COALESCE(("
                         + "SELECT MIN(id) FROM (SELECT id FROM api_call_log ORDER BY id DESC LIMIT ?)"
                         + "), 0)",
                 maxRecords);

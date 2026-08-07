@@ -105,7 +105,10 @@ CREATE TABLE IF NOT EXISTS api_usage_daily (
 );
 
 -- ==================== API 调用详细日志表 ====================
--- 记录每次调用上游供应商 API 的完整请求/响应信息
+-- 记录每次调用上游供应商 API 的完整请求/响应信息。
+-- 行永久保留、只增不减；超出保留条数的旧行只清空大载荷列（请求头/体、响应头/体、chunks）
+-- 并置 payload_trimmed = 1，调用元信息（状态码、耗时、供应商、模型、时刻）始终留存。
+-- 因此本表在时间维度上是 api_call_usage 的超集：每条用量行都能反查到对应的日志行。
 
 CREATE TABLE IF NOT EXISTS api_call_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,6 +122,7 @@ CREATE TABLE IF NOT EXISTS api_call_log (
     response_body   TEXT,                           -- 非流式时的响应体
     chunks          TEXT,                           -- 流式时的响应 chunks JSON 数组
     duration_ms     INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0), -- 耗时（毫秒）
+    payload_trimmed INTEGER   NOT NULL DEFAULT 0 CHECK (payload_trimmed IN (0, 1)), -- 载荷是否已被保留任务清空
     created_at      TEXT      NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
 );
 
