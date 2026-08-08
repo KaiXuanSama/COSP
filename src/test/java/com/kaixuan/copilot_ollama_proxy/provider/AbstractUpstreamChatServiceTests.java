@@ -290,6 +290,8 @@ class AbstractUpstreamChatServiceTests {
     void downstreamCancelDuringRetryBackoffStopsUpstreamRetries() throws InterruptedException {
         AtomicInteger upstreamCallCount = new AtomicInteger(0);
         TestOpenAiService service = new TestOpenAiService();
+        // 本例要在退避等待窗口内 dispose，故把窗口放宽到可稳定命中的量级（默认 5ms 太窄）。
+        service.setBackoff(Duration.ofMillis(300));
 
         // 上游持续返回可重试的 500：若重试不被取消，会一路重试下去。
         service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
@@ -308,15 +310,15 @@ class AbstractUpstreamChatServiceTests {
                 .exposeChatCompletionStream(request, "model-a", provider(), "req-cancel-retry-1")
                 .subscribe(chunk -> { }, error -> { });
 
-        // 等到首次上游调用已发生，但仍处于第一个 backoff 等待窗口内（backoff 最小 ≥1s，此处 500ms 安全）。
-        Thread.sleep(500);
+        // 等到首次上游调用已发生，但仍处于第一个 backoff 等待窗口内。
+        Thread.sleep(80);
         int callsBeforeCancel = upstreamCallCount.get();
 
         // 模拟下游主动断开：dispose 订阅，取消信号应穿透到 retryWhen 的 backoff。
         subscription.dispose();
 
-        // 等待远超第一个 backoff 窗口（jitter 后最大约 3s）：若取消未穿透，第 2 次上游调用会在此期间发生。
-        Thread.sleep(4500);
+        // 等待远超退避窗口：若取消未穿透，第 2 次上游调用会在此期间发生。
+        Thread.sleep(1200);
         int callsAfterCancel = upstreamCallCount.get();
 
         System.out.println("[CANCEL-RETRY] 取消前上游调用次数 = " + callsBeforeCancel);
@@ -375,15 +377,15 @@ class AbstractUpstreamChatServiceTests {
                 .exposeChatCompletionStream(request, "model-a", provider(), "req-silent-retry-1")
                 .subscribe(received::add, error -> { });
 
-        // 等到第一次上游调用已发生且仍挂起。
-        Thread.sleep(500);
+        // 等到第一次上游调用已发生且仍挂起。首次调用不经过退避，故无需等一个退避窗口。
+        Thread.sleep(150);
         assertThat(upstreamCallCount.get()).isEqualTo(1);
 
         // 触发静默重试。
         assertThat(retryRegistry.retry("req-silent-retry-1")).isTrue();
 
         // 等到第二次调用完成、chunk 送达下游。
-        Thread.sleep(2000);
+        Thread.sleep(600);
 
         System.out.println("[SILENT-RETRY] 上游调用次数 = " + upstreamCallCount.get());
         System.out.println("[SILENT-RETRY] 下游收到 = " + received);
@@ -409,6 +411,8 @@ class AbstractUpstreamChatServiceTests {
         AtomicInteger upstreamCallCount = new AtomicInteger(0);
         CallRetryRegistry retryRegistry = new CallRetryRegistry();
         TestOpenAiService service = new TestOpenAiService();
+        // 本例要在退避等待窗口内触发静默重试，故放宽窗口（默认 5ms 太窄，无法稳定命中）。
+        service.setBackoff(Duration.ofMillis(300));
         service.setCallRetryRegistry(retryRegistry);
 
         DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
@@ -436,15 +440,15 @@ class AbstractUpstreamChatServiceTests {
         service.exposeChatCompletionStream(request, "model-a", provider(), "req-silent-budget-1")
                 .subscribe(received::add, error -> { });
 
-        // 等到第一次 500 已发生、进入 backoff 等待。
-        Thread.sleep(500);
+        // 等到第一次 500 已发生、进入 backoff 等待（退避已放宽到 300ms，此处 80ms 落在窗口内）。
+        Thread.sleep(80);
         assertThat(upstreamCallCount.get()).isEqualTo(1);
 
         // 在 backoff 等待期间触发静默重试：应取消定时器并立即发起新请求。
         assertThat(retryRegistry.retry("req-silent-budget-1")).isTrue();
 
         // 等待第二次调用完成。
-        Thread.sleep(2000);
+        Thread.sleep(600);
 
         System.out.println("[SILENT-BUDGET] 上游调用次数 = " + upstreamCallCount.get());
         System.out.println("[SILENT-BUDGET] 下游收到 = " + received);
@@ -793,6 +797,57 @@ class AbstractUpstreamChatServiceTests {
     }
 
     /** 构造一个固定返回指定次数的策略服务，避免测试触库。 */
+    /**
+     * 锁定生产退避时长：首次 2s、上限 30s。
+     *
+     * <p>其余重试用例把退避覆盖成毫秒级以省掉真实等待（见 {@code TestOpenAiService}），
+     * 于是「退避多久」失去了断言 —— 有人把生产值改成 2 分钟也不会有测试失败。
+     * 这里直接断言那两个方法的默认返回值把它钉住。
+     *
+     * <p>为何不用 {@code StepVerifier.withVirtualTime} 跑一遍真实退避序列：
+     * 那需要引入 {@code reactor-test} 依赖，而它唯一的用处就是这一个断言。
+     * 退避的<em>行为</em>（指数增长、封顶）由 Reactor 的 {@code Retry.backoff} 保证，
+     * 本项目要守的是「喂给它的参数没被改坏」，直接断言参数即可。
+     */
+    @Test
+    void retryBackoffKeepsProductionDurations() {
+        // 用不覆盖退避的实例，读到的就是生产默认值。
+        ProductionBackoffService service = new ProductionBackoffService();
+
+        assertThat(service.exposeRetryFirstBackoff()).isEqualTo(Duration.ofSeconds(2));
+        assertThat(service.exposeRetryMaxBackoff()).isEqualTo(Duration.ofSeconds(30));
+    }
+
+    /**
+     * 不覆盖退避时长的测试子类 —— 仅用于读取生产默认值。
+     *
+     * 其他用例用的 {@code TestOpenAiService} 覆盖了退避为毫秒级，无法验证生产时长。
+     */
+    private static final class ProductionBackoffService extends AbstractUpstreamChatService {
+
+        private ProductionBackoffService() {
+            super(new ObjectMapper(), "default-model", new ProviderRequestHeaderService(new ObjectMapper()));
+        }
+
+        private Duration exposeRetryFirstBackoff() {
+            return retryFirstBackoff();
+        }
+
+        private Duration exposeRetryMaxBackoff() {
+            return retryMaxBackoff();
+        }
+
+        @Override
+        protected String defaultBaseUrl() {
+            return "https://example.com";
+        }
+
+        @Override
+        protected String chatCompletionsUri() {
+            return "/v1/chat/completions";
+        }
+    }
+
     private static RetryPolicyService fixedRetryPolicy(int maxAttempts) {
         return new RetryPolicyService(null) {
             @Override
@@ -851,6 +906,33 @@ class AbstractUpstreamChatServiceTests {
         @Override
         protected String defaultBaseUrl() {
             return "https://example.com";
+        }
+
+        /**
+         * 退避时长，默认压成毫秒级。
+         *
+         * <p>多数用例验证的是重试次数与判定条件，不是等待时长；按生产值（2s 起步、指数增长）
+         * 一次耗尽 5 次重试要真实等待 62 秒，本类因此曾占整个测试套件近半时间。
+         *
+         * <p>做成可设字段而非固定常量：少数用例要在<strong>退避等待窗口内</strong>
+         * 插入动作（如静默重试打断 backoff 定时器），毫秒级窗口太窄无法稳定命中，
+         * 那些用例用 {@link #setBackoff} 单独放宽到几百毫秒。
+         */
+        private Duration backoff = Duration.ofMillis(5);
+
+        private void setBackoff(Duration backoff) {
+            this.backoff = backoff;
+        }
+
+        @Override
+        protected Duration retryFirstBackoff() {
+            return backoff;
+        }
+
+        @Override
+        protected Duration retryMaxBackoff() {
+            // 上限取首次的 4 倍：保持「有上限」这一语义，同时不让指数增长把用例拖长。
+            return backoff.multipliedBy(4);
         }
 
         @Override

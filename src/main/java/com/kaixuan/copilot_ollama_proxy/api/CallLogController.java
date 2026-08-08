@@ -31,6 +31,17 @@ public class CallLogController {
         this.sseConnectionGate = sseConnectionGate;
     }
 
+    /**
+     * 调用记录分页列表，每行附带 token 用量。
+     *
+     * <p>调用者视角与消费者视角共用本端点：前者只用元信息列，后者还用
+     * {@code prompt_tokens / completion_tokens / cached_tokens / ttfb_ms}。
+     * 曾经拆成两个端点，但它们的主表、游标语义、排序与分页格式完全相同，
+     * 后者的列是前者的严格超集，合并后同一段逻辑只维护一份。
+     *
+     * <p>主表为 api_call_log，token 用量以 LEFT JOIN 附属，故失败调用、
+     * 上游未返回 usage 的调用仍出现在列表中，用量列为 null（渲染为 —）。
+     */
     @GetMapping("/config/api/logs")
     public Mono<Map<String, Object>> listLogs(@RequestParam(value = "cursor", required = false) Long cursor,
                                                @RequestParam(value = "pageSize", defaultValue = "20") int pageSize) {

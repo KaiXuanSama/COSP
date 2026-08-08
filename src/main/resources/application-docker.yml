@@ -27,6 +27,7 @@ admin:
 # 环境变量：COSP_MASTER_KEY，任意 1-64 个字符，未配置时服务拒绝启动。
 
 # ===== API 调用日志 =====
+# max-records —— 保留完整载荷的最新条数；超出者只清空请求/响应载荷，整行永久保留。
 call-log:
   max-records: ${CALL_LOG_MAX_RECORDS:1000}
 

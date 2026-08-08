@@ -223,8 +223,12 @@ public abstract class AbstractUpstreamChatService {
                         responseException.getHeaders().forEach((k, v) -> errHeaders.put(k, String.join(", ", v)));
                         saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, errHeaders,
                                 responseException.getStatusCode().value(), responseException.getResponseBodyAsString(), attemptStart.get());
+                        // 失败往返不写用量行，故落库流程到此即完 —— 直接宣告就绪，
+                        // 否则错误行永远不会实时出现在前端。
+                        publishCallRecorded();
                     } else {
                         saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, Map.of(), -1, null, attemptStart.get());
+                        publishCallRecorded();
                     }
                 })
                 // 重试挂在落库下游：中间失败已在上面各自记录，此处仅负责重订阅。
@@ -303,6 +307,8 @@ public abstract class AbstractUpstreamChatService {
                                         saveStreamLogWithError(providerKey, modelName, reqHeaders, requestBody,
                                                 respHeaders, response.statusCode().value(), List.of(),
                                                 respHeaders, response.statusCode().value(), errorBody, attemptStart.get());
+                                        // 失败往返不写用量行，落库流程到此即完。
+                                        publishCallRecorded();
                                         return Flux.error(new WebClientResponseException(
                                                 response.statusCode().value(), "上游错误响应", null, errorBody.getBytes(), null));
                                     });
@@ -363,12 +369,15 @@ public abstract class AbstractUpstreamChatService {
                         saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
                                 capturedRespHeaders.get(), capturedStatusCode.get(),
                                 emptyResponse.bufferedFrames(), attemptStart.get());
+                        // 空响应往返不写用量行（无 usage 可言），落库流程到此即完。
+                        publishCallRecorded();
                         return;
                     }
                     if (findWebResponseException(e) == null) {
                         int statusCode = capturedStatusCode.get() == 0 ? -1 : capturedStatusCode.get();
                         saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
                                 capturedRespHeaders.get(), statusCode, List.copyOf(logChunks), attemptStart.get());
+                        publishCallRecorded();
                     }
                 })
                 // 异常重试：空响应与 429 / 5xx / 网络中断共用这一条预算 —— 空响应被包成
@@ -582,11 +591,16 @@ public abstract class AbstractUpstreamChatService {
      */
     private void saveUsageIfPresent(Long logId, String providerKey, String modelName, boolean stream,
                                     String fullBody, Integer ttfbMs) {
-        if (apiCallUsage == null) return;
-        String usageRaw = UsageParser.extractUsageRawJson(objectMapper, fullBody);
-        if (usageRaw == null) return; // 无 usage：不写（方案 a）
-        UsageTokens tokens = UsageParser.parseUsageObject(objectMapper, usageRaw);
-        apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw, tokens, ttfbMs);
+        try {
+            if (apiCallUsage == null) return;
+            String usageRaw = UsageParser.extractUsageRawJson(objectMapper, fullBody);
+            if (usageRaw == null) return; // 无 usage：不写（方案 a）
+            UsageTokens tokens = UsageParser.parseUsageObject(objectMapper, usageRaw);
+            apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw, tokens, ttfbMs);
+        } finally {
+            // finally 语义：无论用量是否实际写入，用量流程走完即宣告该次调用的记录就绪。
+            publishCallRecorded();
+        }
     }
 
     /**
@@ -601,10 +615,49 @@ public abstract class AbstractUpstreamChatService {
      */
     private void saveUsage(Long logId, String providerKey, String modelName, boolean stream,
                            String usageRaw, Integer ttfbMs) {
-        if (apiCallUsage == null) return;
-        if (usageRaw == null) return; // 无 usage：不写（方案 a）
-        UsageTokens tokens = UsageParser.parseUsageObject(objectMapper, usageRaw);
-        apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw, tokens, ttfbMs);
+        try {
+            if (apiCallUsage == null) return;
+            if (usageRaw == null) return; // 无 usage：不写（方案 a）
+            UsageTokens tokens = UsageParser.parseUsageObject(objectMapper, usageRaw);
+            apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw, tokens, ttfbMs);
+        } finally {
+            // finally 语义：无论用量是否实际写入，用量流程走完即宣告该次调用的记录就绪。
+            publishCallRecorded();
+        }
+    }
+
+    /**
+     * 宣告「本次调用的记录已全部落库」，唤醒管理后台的日志 SSE 流。
+     *
+     * <h2>为何发布点在此层而非仓储的 INSERT 内部</h2>
+     * 一次调用要写两张表：api_call_log 必写，api_call_usage 视上游是否返回 usage 而定，
+     * 且日志先写。信号是<strong>同步投递</strong>的（{@code Sinks.directBestEffort} 在调用
+     * 线程上直接推给订阅者），故若在日志 INSERT 后立即发信号，消费者视角收到通知去查时
+     * 用量行可能尚未写入 —— 那一行的 token 会短暂显示为空，直到下次刷新。
+     * 实践中该窗口只有微秒级、远窄于一次 SSE 投递加 HTTP 回拉的往返，几乎不可观测，
+     * 但它依赖的是「网络比本地慢」这一隐含前提，不是设计保证。把发布点上移到编排层，
+     * 「这次调用的记录整体就绪」才成为显式的时序契约。
+     *
+     * <h2>为何是 finally 语义而非「两张表都写了」</h2>
+     * 失败调用与上游未返回 usage 的调用本就不写用量行。若按 {@code &&} 判定，
+     * 这些记录永远不会实时出现在前端 —— 而错误行恰恰最需要立刻看到。
+     * 因此判据是「落库流程走完」：走到用量环节并结束（无论是否真的写入），即可宣告就绪。
+     *
+     * <h2>一次调用发几次</h2>
+     * 每个<strong>落库分支</strong>各发一次，不是每次调用固定一次 ——
+     * 一次逻辑调用若经历重试，每轮往返都会各自落一条日志，因此也各自发一次信号。
+     * 这与重构前的行为一致（原先每次 INSERT 发一次），前端的回拉是幂等的，
+     * 多余的信号只会多一次「查到相同数据」的请求，不会造成状态错误。
+     *
+     * 只 warn 不抛：与 save* 的容错策略一致，推送失败不得影响主调用链。
+     */
+    private void publishCallRecorded() {
+        if (apiCallLog == null) return;
+        try {
+            apiCallLog.publishCallRecorded();
+        } catch (Exception e) {
+            log.warn("发布调用记录变更信号失败: {}", e.getMessage());
+        }
     }
 
     /**
@@ -694,6 +747,10 @@ public abstract class AbstractUpstreamChatService {
      * {@code doBeforeRetry} 依旧挂着，只是永远不会触发重订阅，异常照常透传。保留这条链
      * 而不做分支，是为了让重试次数始终只有这一个来源。
      *
+     * <h2>退避时长</h2>
+     * 首次退避 {@link #retryFirstBackoff()}、上限 {@link #retryMaxBackoff()}，两者均可被
+     * 子类覆盖以便测试压缩等待，见那两个方法的说明。
+     *
      * @param method 调用方方法名，用于日志区分重试来源
      * @param requestId 本次调用唯一标识，用于发出 RETRYING 生命周期事件
      * @param model 模型名称（含前缀），用于 RETRYING 事件展示
@@ -707,7 +764,7 @@ public abstract class AbstractUpstreamChatService {
                 : RetryPolicyService.DEFAULT_MAX_ATTEMPTS;
         long maxAttempts = RetryPolicyService.toReactorMaxAttempts(configured);
         boolean unlimited = configured == RetryPolicyService.UNLIMITED_MAX_ATTEMPTS;
-        return Retry.backoff(maxAttempts, Duration.ofSeconds(2)).maxBackoff(Duration.ofSeconds(30))
+        return Retry.backoff(maxAttempts, retryFirstBackoff()).maxBackoff(retryMaxBackoff())
                 .filter(AbstractUpstreamChatService::isRetryableFailure)
                 .doBeforeRetry(signal -> {
                     int attempt = (int) (signal.totalRetries() + 1);
@@ -716,6 +773,36 @@ public abstract class AbstractUpstreamChatService {
                     publishLifecycle(CallLifecycleEvent.retrying(requestId, model, stream, attempt));
                     logRetryAttempt(method, provider, signal, attempt, unlimited ? -1 : (int) maxAttempts);
                 });
+    }
+
+    /**
+     * 首次重试前的退避时长，随重试次数指数增长（2s → 4s → 8s …），上限见 {@link #retryMaxBackoff()}。
+     *
+     * <h2>为何做成可覆盖方法而非常量</h2>
+     * 退避是<strong>真实的时钟等待</strong>：一次耗尽 5 次重试的调用要等
+     * {@code 2+4+8+16+32 = 62} 秒。测试若按生产值等待，单个「重试到耗尽」的用例就占
+     * 一分钟以上，而它要验证的是「重试了几次、按什么条件重试」—— 退避时长本身不是被测行为。
+     * 故测试子类覆盖成毫秒级，把等待压缩掉而不改变重试次数与判定逻辑。
+     *
+     * <p>退避策略本身仍有覆盖：由专门的用例用 Reactor 虚拟时间断言时长序列，
+     * 那种方式不消耗真实时间。
+     *
+     * <p>不用配置项承载：这是上游友好度的工程默认值，不属于用户可调策略
+     * （用户可调的是<em>次数</em>，见 {@code RetryPolicyService}）。做成方法而非字段，
+     * 使覆盖点显式且不需要构造函数改签名。
+     */
+    protected Duration retryFirstBackoff() {
+        return Duration.ofSeconds(2);
+    }
+
+    /**
+     * 退避时长上限，指数增长到此值后不再翻倍。
+     *
+     * 无限重试模式下这个上限才是稳态间隔 —— 没有它，指数增长会让间隔迅速膨胀到不可接受。
+     * 可覆盖的理由同 {@link #retryFirstBackoff()}。
+     */
+    protected Duration retryMaxBackoff() {
+        return Duration.ofSeconds(30);
     }
 
     /**
