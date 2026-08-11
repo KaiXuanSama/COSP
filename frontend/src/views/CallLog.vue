@@ -292,6 +292,9 @@ onUnmounted(() => {
             <div class="log-item-content">
               <div class="log-item-header">
                 <span class="log-provider">{{ log.provider_key }}</span>
+                <span class="log-stream-tag" :class="{ 'log-stream-tag--stream': log.is_stream }">
+                  {{ log.is_stream ? '流式' : '非流式' }}
+                </span>
                 <span class="log-status">{{ log.status_code }}</span>
               </div>
               <div class="log-item-body">
@@ -464,8 +467,8 @@ onUnmounted(() => {
 
 .log-item-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: $space-xs;
   margin-bottom: $space-xs;
 }
 
@@ -474,9 +477,36 @@ onUnmounted(() => {
   font-size: 15px;
   font-weight: 600;
   color: $text-primary;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+  流式/非流式徽章：紧跟供应商名，故 header 从 space-between 改为 gap + 状态码 auto 左边距。
+  否则三个元素会被均匀分散，徽章飘到行中间读不出它在修饰谁。
+ */
+.log-stream-tag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  font-family: $font-body;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 999px;
+  background: rgba($text-muted, 0.12);
+  color: $text-muted;
+  white-space: nowrap;
+
+  &--stream {
+    background: rgba($accent, 0.15);
+    color: $accent;
+  }
 }
 
 .log-status {
+  flex-shrink: 0;
+  /* 状态码保持贴右：header 已改用 gap 让徽章紧跟供应商，右对齐改由本列自己承担 */
+  margin-left: auto;
   font-family: $font-body;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
