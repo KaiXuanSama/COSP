@@ -31,4 +31,6 @@ description: "COSP Java 测试约定。Use when: 新增或修改 src/test/java �
 ./mvnw test                    # 全量，含前端构建
 ```
 
-先用编辑器诊断检查改动文件，再跑命令。`tools/mock-upstream`、`tools/mock-cosp` 是手动验证工具，不参与自动化测试。
+先用编辑器诊断检查改动文件，再跑命令。`tools/mock-upstream`（流式）、`tools/mock-nonstream`（非流式）、`tools/mock-cosp` 是手动验证工具，不参与自动化测试。
+
+上游 stub 的响应体**必须带实质载荷**（`content` / 思考链 / `tool_calls` 之一），否则会被空响应兜底判空并卷入重试循环，用例表现为超时而非断言失败。`"choices":[]` 这类占位响应已不再安全 —— `ProviderRequestBodyTransformationIntegrationTests` 曾因此踩坑。
