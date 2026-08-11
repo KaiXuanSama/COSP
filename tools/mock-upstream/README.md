@@ -10,7 +10,7 @@ Toast 状态（正常 / 卡首字 / 停滞 / 不关连接 / 错误码等），�
 
 ```bash
 cd frontend
-./node/npm run mock
+./node/npm run mock:stream
 ```
 
 或直接用 Node 跑：
