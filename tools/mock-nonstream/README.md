@@ -87,12 +87,12 @@ curl.exe -s -X POST http://localhost:8082/v1/chat/completions `
 | `ns-empty-content` | 200 + 合法 JSON，`content` 为空串 | 空响应兜底，自动重发 |
 | `ns-empty-usage-zero` | 空正文 + 全 0 usage | 空响应兜底（全 0 usage 不是判据） |
 | `ns-empty-choices` | 200 + `choices` 为空数组 | 空响应兜底 |
-| `ns-empty-body` | 200 + **0 字节** body | 空响应兜底 |
+| `ns-empty-body` | 200 + **0 字节** body | 空响应兜底，耗尽后放行空 body |
 | `ns-tool-call` | 纯工具调用，无正文 | **不**兜底（对照组） |
 | `ns-reasoning-only` | 只有 `reasoning_content` 无 `content` | **不**兜底（对照组），且应触发 reasoning fallback |
 | `ns-malformed-json` | 200 + 残缺 JSON 文本 | **不**兜底（解析失败保守放行） |
 | `ns-truncated` | 声明 `Content-Length` 后只写一半就断 socket | 网络类失败，可重试 |
-| `ns-sse-despite-nonstream` | 无视 `stream=false`，回 `text/event-stream` | 观察 COSP 如何处理 |
+| `ns-sse-despite-nonstream` | 无视 `stream=false`，回 `text/event-stream` | 200 原样透传 SSE 文本，**不**兜底（`toEntity(String)` 收得下任意文本类型，JSON 解析失败按保守放行） |
 | `ns-error-500` | 返回 500 | RETRYING（应重试） |
 | `ns-error-401` | 返回 401 | FAILED（快速失败，不重试） |
 | `ns-retry-then-succeed` | 前 2 次 500，第 3 次正常 | 重试中途成功 |
@@ -121,8 +121,27 @@ curl.exe -s -X POST http://localhost:8082/v1/chat/completions `
 ```
 
 好消息是 `message` 与 `delta` 的**字段名完全相同**（`content` / 5 个 reasoning 别名 / `tool_calls`），
-差别只在外层那个 key。所以 COSP 侧的载荷判定可以复用同一个内层方法，
+差别只在外层那个 key。COSP 侧因此共用同一个内层判定方法（`payloadHasContent`），
 两条路径的口径一致不靠纪律维持而靠同一份代码。
+
+## 已验证的行为基线
+
+一轮实测的结论，可作为回归对照。**关键在于三个对照组必须快速返回** ——
+它们若也开始重试，说明判定把「无正文」误当成了「空」：
+
+| 场景 | 实测 | 含义 |
+| --- | --- | --- |
+| `ns-normal` | 200，59ms | 主路径正常 |
+| `ns-tool-call` | 200，71ms，零重试 | 对照组：工具调用是实质载荷 |
+| `ns-reasoning-only` | 200，59ms，零重试，`content` 已被思考内容填充 | 对照组 + fallback 生效 |
+| `ns-malformed-json` | 200，35ms，零重试，原样透传 | 解析失败保守放行 |
+| `ns-sse-despite-nonstream` | 200，6ms，零重试，SSE 文本原样透传 | 同上（SSE 文本解析必然失败） |
+| `ns-empty-content` | 按预算重试，Toast 显示「正在重试（第 N 次）」 | 兜底生效 |
+| `ns-empty-body` | 重试满预算 → 放行空 body（200 / 0 字节） | 兜底 + 耗尽放行 |
+| `ns-truncated` | 按预算重试，日志状态码 `-1` | 传输截断属可重试网络失败 |
+
+> `ns-truncated` 在日志里显示为「空响应」，那是 `-1` 占位值的展示问题（多种非 HTTP 异常共用），
+> 不代表它走了空响应判定。排查时看响应头是否为 `{}` 来区分。
 
 ## 空响应兜底的判定口径
 

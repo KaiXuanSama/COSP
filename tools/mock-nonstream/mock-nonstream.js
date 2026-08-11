@@ -47,7 +47,7 @@ const MODELS = [
   { id: 'ns-empty-content', desc: '200 + 合法 JSON，但 message.content 为空串（应空响应兜底重发）' },
   { id: 'ns-empty-usage-zero', desc: '空正文 + 全 0 usage（应空响应兜底重发）' },
   { id: 'ns-empty-choices', desc: '200 + choices 为空数组（应空响应兜底重发）' },
-  { id: 'ns-empty-body', desc: '200 + 0 字节 body（应空响应兜底；当前会误报「无法连接到上游」）' },
+  { id: 'ns-empty-body', desc: '200 + 0 字节 body（应空响应兜底重发，耗尽后放行空 body）' },
   { id: 'ns-tool-call', desc: '纯工具调用，无正文（对照组：不应判定为空）' },
   { id: 'ns-reasoning-only', desc: '只有 reasoning_content 无 content（对照组：思考链不算空）' },
   { id: 'ns-malformed-json', desc: '200 + 残缺 JSON 文本（判定应保守放行，不判空）' },
@@ -214,10 +214,13 @@ function nsEmptyChoices(res, id, model) {
 /**
  * ns-empty-body：200 + <strong>0 字节</strong> body。
  *
- * <p>这是当前 COSP 非流式路径的一个真实缺陷入口：`chatCompletion` 末尾的
+ * <p>应触发空响应兜底重发，耗尽后放行空 body（透传上游真实返回）。
+ *
+ * <p>此场景曾是一个真实缺陷的入口：`chatCompletion` 末尾的
  * `.map(entity -> entity.getBody())` 拿到 null，Reactor 不允许 null 会抛 NPE；
  * 而 NPE 不在可重试判定范围内、且已错过 retryWhen 的位置，最终落到控制器的
- * 「无法连接到上游服务」502 分支 —— 上游明明连上了。修完兜底后此场景应改为触发重发。
+ * 「无法连接到上游服务」502 分支 —— 上游明明连上了。判定前置到 `.map` 之前后已修复，
+ * 保留此场景作为回归哨兵：若它又开始立刻返回 502，说明判定位置被挪动了。
  */
 function nsEmptyBody(res, model) {
   res.writeHead(200, {
