@@ -281,6 +281,9 @@ onUnmounted(() => {
         <div class="detail-meta-title">
           <span class="detail-provider">{{ props.detail.provider_key }}</span>
           <span class="detail-model">{{ props.detail.model_name }}</span>
+          <span class="detail-stream-tag" :class="{ 'detail-stream-tag--stream': props.detail.is_stream }">
+            {{ props.detail.is_stream ? '流式' : '非流式' }}
+          </span>
         </div>
       </div>
       <div class="detail-meta-sub">
@@ -483,6 +486,24 @@ onUnmounted(() => {
   font-family: $font-body;
   font-size: 14px;
   color: $text-body;
+}
+
+.detail-stream-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  font-family: $font-body;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 999px;
+  background: rgba($text-muted, 0.12);
+  color: $text-muted;
+  white-space: nowrap;
+
+  &--stream {
+    background: rgba($accent, 0.15);
+    color: $accent;
+  }
 }
 
 .detail-meta-sub {

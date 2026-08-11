@@ -896,6 +896,11 @@ class AbstractUpstreamChatServiceTests {
             return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, requestId);
         }
 
+        private Mono<String> exposeChatCompletion(Map<String, Object> request, String model,
+                                                  ProviderRuntimeConfiguration provider, String requestId) {
+            return chatCompletion(request, model, provider, HttpHeaders.EMPTY, requestId);
+        }
+
         private String exposeTranslateChunk(String chunk) throws Exception {
             Method method = AbstractUpstreamChatService.class.getDeclaredMethod(
                     "normalizeUpstreamChunk", String.class, AtomicBoolean.class, StringBuilder.class, AtomicReference.class);
@@ -945,6 +950,90 @@ class AbstractUpstreamChatServiceTests {
                                             ProviderRuntimeConfiguration provider) {
             body.put("customized", true);
         }
+    }
+
+    // ===== 非流式兜底与清洗 =====
+
+    /**
+     * 非流式空响应触发重试并放行最后一轮（与流式相同的兜底语义）。
+     *
+     * <p>第一轮返回 200 + 空 body；第二轮正常返回。断言上游被调 2 次、下游拿到第二轮内容。
+     */
+    @Test
+    void nonStreamEmptyResponseTriggersRetryAndPassesLastRound() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            int attempt = upstreamCallCount.incrementAndGet();
+            String body = attempt == 1
+                    ? ""
+                    : "{\"id\":\"ok\",\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"recovered\"},\"finish_reason\":\"stop\"}]}";
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                    .body(body).build());
+        }));
+
+        String received = service
+                .exposeChatCompletion(newRequest(), "model-a", provider(), "req-nonstream-empty")
+                .block(Duration.ofSeconds(20));
+
+        assertThat(upstreamCallCount.get()).isEqualTo(2);
+        assertThat(received).isNotNull().contains("recovered");
+    }
+
+    /**
+     * 非流式重试耗尽后放行最后一轮空响应（与流式相同的最后手段语义）。
+     *
+     * <p>配置 2 次重试：首轮 + 2 次重试 = 3 次上游调用，随后耗尽放行而非抛错。
+     * 空 body 场景放行的是空串 —— 保持「透传上游真实返回」语义。
+     */
+    @Test
+    void nonStreamExhaustedEmptyResponsePassesLastRound() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+        service.setRetryPolicyService(fixedRetryPolicy(2));
+
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            upstreamCallCount.incrementAndGet();
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                    .body("").build());
+        }));
+
+        String received = service
+                .exposeChatCompletion(newRequest(), "model-a", provider(), "req-nonstream-exhausted")
+                .block(Duration.ofSeconds(20));
+
+        // 首次 + 2 次重试 = 3 次。
+        assertThat(upstreamCallCount.get()).isEqualTo(3);
+        assertThat(received).isNotNull().isEmpty();
+    }
+
+    /**
+     * 非流式 reasoning 清洗：统一别名字段名到 {@code reasoning_content}、
+     * 移除空内容字段时触发 fallback（把思考内容填充到空正文）。
+     */
+    @Test
+    void nonStreamReasoningNormalizationAndFallback() {
+        TestOpenAiService service = new TestOpenAiService();
+
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request ->
+                Mono.just(ClientResponse.create(HttpStatus.OK)
+                        .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                        .body("{\"id\":\"ok\",\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"thinking\":\"deep thought\",\"content\":\"\"},\"finish_reason\":\"stop\"}]}")
+                        .build())));
+
+        String received = service
+                .exposeChatCompletion(newRequest(), "model-a", provider(), "req-nonstream-reasoning")
+                .block(Duration.ofSeconds(20));
+
+        assertThat(received).isNotNull();
+        // 别名 thinking 应改写成 reasoning_content
+        assertThat(received).contains("\"reasoning_content\":\"deep thought\"");
+        assertThat(received).doesNotContain("\"thinking\"");
+        // 空 content 应被 fallback 填充
+        assertThat(received).contains("\"content\":\"deep thought\"");
     }
 
     private ProviderRuntimeConfiguration provider() {

@@ -57,4 +57,4 @@ Naive UI 组件的内联 CSS 变量优先级高于 scoped class 里的同名变�
 
 ## 手动验证
 
-`npm run mock` 启动 mock 上游（8081），`npm run mock:cosp` 启动 mock COSP（11333）。两者都是零依赖 Node 脚本，用法见各自 README。
+`npm run mock:stream` 启动流式 mock 上游（8081），`npm run mock:nonstream` 启动非流式 mock 上游（8082），`npm run mock:cosp` 启动 mock COSP（11333）。三者都是零依赖 Node 脚本，用法见各自 README。

@@ -175,16 +175,21 @@ public abstract class AbstractUpstreamChatService {
      * 请求体会经过 {@link #prepareRequestBody} 处理，包括模型名称解析、
      * stream 标志设置和子类的自定义字段注入。
      *
+     * <h2>空响应兜底</h2>
+     * 与流式共用同一份重试预算：空响应被包成 {@link EmptyUpstreamResponseException} 抛出，
+     * 走的是下方同一条 {@code retryWhen}，因此「重试次数」始终只有 {@link #buildRetrySpec}
+     * 一个来源。判定挂在 {@code retryWhen} <strong>内侧</strong>（在 {@code doOnNext} 落库之后）
+     * 才能触发重发；耗尽后由 {@code onErrorResume} 把最后一轮的原始 body 放行给下游，
+     * 与其他失败「耗尽后透传最后一次响应」保持一致。
+     *
+     * <p>非流式无需流式那套 gate 的缓存-释放机制：一次拿到完整 body 直接判即可。
+     * 落库也比流式省事 —— 流式的帧被 gate 拦在上游、{@code logChunks} 是空的，
+     * 必须靠异常携带缓存帧才能落库；非流式的 {@code saveNonStreamLog} 已经把完整 body 写进去了。
+     *
      * @param openAiRequest 原始 OpenAI 格式请求体
      * @param model 请求中指定的模型名称
-     * @return 上游返回的原始 OpenAI JSON 响应字符串
+     * @return 上游返回的 OpenAI JSON 响应字符串（已统一 reasoning 字段名并做过 fallback）
      */
-    // TODO 非流式空响应兜底尚未实现。流式已有 gate（见 chatCompletionStream），
-    //  非流式的判定本身更简单（一次拿到完整 body，直接看 choices[*].message 三类载荷，
-    //  无需缓存-释放机制），但落库路径、usage 提取、retryWhen 位置都是另一套，
-    //  且 message 与 delta 的字段形态不同，UpstreamChunkContentDetector 需要另开一个入口。
-    //  当前实际流量几乎全是流式，故先只做流式；补做时注意与流式共用同一份重试预算，
-    //  不要引入第二套重试次数配置。
     protected Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
                                           ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                           String requestId) {
@@ -231,9 +236,126 @@ public abstract class AbstractUpstreamChatService {
                         publishCallRecorded();
                     }
                 })
+                // ── 空响应兜底 ────────────────────────────────────────────────
+                // 挂在 retryWhen 内侧、doOnNext 落库之后：落库先行保证「上游到底返回了什么」
+                // 在日志里可查，判定随后才有资格触发重发。
+                // 转成异常而非直接返回，是为了复用下方 retryWhen 的同一份预算 ——
+                // isRetryableFailure 已认 EmptyUpstreamResponseException，无需第二套重试实现。
+                .flatMap(entity -> {
+                    String body = entity.getBody();
+                    if (UpstreamChunkContentDetector.hasMeaningfulNonStreamPayload(objectMapper, body)) {
+                        return Mono.just(entity);
+                    }
+                    log.warn("{} 上游空响应（无正文/思考链/工具调用），body 长度 {}，将按重试预算重发 [{}] {}",
+                            provider.providerKey(), body == null ? 0 : body.length(), model, requestId);
+                    // 携带原始 body：耗尽后要原样放行给下游。空 body 用空列表表示。
+                    return Mono.error(new EmptyUpstreamResponseException(
+                            body == null ? List.of() : List.of(body)));
+                })
                 // 重试挂在落库下游：中间失败已在上面各自记录，此处仅负责重订阅。
                 .retryWhen(buildRetrySpec("chatCompletion", provider, requestId, modelName, false))
-                .map(entity -> entity.getBody());
+                // 取出响应体。空 body 场景已在上面被判空转成异常，走不到这里，
+                // 故此处不会再出现 getBody() 为 null 导致 Reactor 抛 NPE 的情况 ——
+                // 那个 NPE 曾让「200 + 空 body」被误报成「无法连接到上游服务」的 502。
+                .map(entity -> entity.getBody())
+                // 空响应重试耗尽：把最后一轮的原始 body 原样放行给下游，与其他失败
+                // 「耗尽后透传最后一次响应」一致 —— 至少让下游看到上游真实返回了什么。
+                // 用 findEmptyUpstreamException 解包而非按类型匹配：retryWhen 耗尽时
+                // 原异常被包进 RetryExhaustedException，onErrorResume(Class) 匹配不到。
+                // 该轮已在上面的 doOnNext 落过库，此处不重复落库。
+                .onErrorResume(error -> {
+                    EmptyUpstreamResponseException emptyResponse = findEmptyUpstreamException(error);
+                    if (emptyResponse == null) {
+                        return Mono.error(error);
+                    }
+                    List<String> frames = emptyResponse.bufferedFrames();
+                    log.warn("{} 上游空响应重试耗尽，放行最后一轮的响应体给下游 [{}] {}",
+                            provider.providerKey(), model, requestId);
+                    // 空 body 场景 frames 为空：给下游一个空响应体，保持「透传上游真实返回」语义。
+                    return Mono.just(frames.isEmpty() ? "" : frames.get(0));
+                })
+                // reasoning 清洗与 fallback：与流式对齐，统一 5 个兼容字段名到 reasoning_content，
+                // 并在「只有思考链没有正文」时把思考内容转为正文。
+                // 放在兜底之后：判定看的是上游原始形态（与流式 gate 判原始帧同理），
+                // 清洗只影响交给下游的内容。
+                .map(body -> normalizeNonStreamResponse(body, model));
+    }
+
+    /**
+     * 清洗非流式响应：统一 reasoning 字段名，并在只有思考链时回退为正文。
+     *
+     * <p>与流式的 {@code normalizeUpstreamChunk} 对齐，但简单得多 —— 流式要跨帧累积
+     * {@code contentEmitted} / {@code reasoningBuffer} 才能在流末判断是否需要 fallback，
+     * 非流式一次就拿到完整 {@code message}，判断是当场完成的。
+     *
+     * <p>解析失败原样返回：与判定器「结构未知保守放行」同一取向 —— 透传对上游格式差异
+     * 免疫是非流式当前的优势，不该因为清洗而引入结构约束。
+     *
+     * @param body  上游原始响应体
+     * @param model 模型名（仅用于日志）
+     * @return 清洗后的 JSON 字符串；无需改动或解析失败时返回原串
+     */
+    @SuppressWarnings("unchecked")
+    private String normalizeNonStreamResponse(String body, String model) {
+        if (body == null || body.isBlank()) {
+            return body;
+        }
+        try {
+            Map<String, Object> root = objectMapper.readValue(body, Map.class);
+            Object choicesObj = root.get("choices");
+            if (!(choicesObj instanceof List<?> choices) || choices.isEmpty()) {
+                return body;
+            }
+            boolean changed = false;
+            for (Object choiceObj : choices) {
+                if (!(choiceObj instanceof Map<?, ?> choiceRaw)) {
+                    continue;
+                }
+                Map<String, Object> choice = (Map<String, Object>) choiceRaw;
+                if (!(choice.get("message") instanceof Map<?, ?> messageRaw)) {
+                    continue;
+                }
+                Map<String, Object> message = (Map<String, Object>) messageRaw;
+                // 先记下是否带别名字段：extractReasoning 会顺手移除它们（含值为空的），
+                // 那本身就是一次改动，漏记会让清洗结果不被写回。
+                boolean hadAliasKey = hasReasoningAliasKey(message);
+                // 统一 reasoning 字段名到 reasoning_content（上游各家命名不统一）。
+                String reasoning = extractReasoning(message);
+                if (reasoning != null && !reasoning.isBlank()) {
+                    message.put("reasoning_content", reasoning);
+                    changed = true;
+                } else if (hadAliasKey) {
+                    changed = true;
+                }
+                // reasoning fallback：只有思考链没有正文时，把思考内容作为回复输出，
+                // 否则下游会看到一次「空回复」。与流式同一策略。
+                boolean contentEmpty = !(message.get("content") instanceof String content) || content.isEmpty();
+                if (contentEmpty && reasoning != null && !reasoning.isBlank()) {
+                    log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {}) [{}]", reasoning.length(), model);
+                    message.put("content", reasoning);
+                    changed = true;
+                }
+            }
+            return changed ? objectMapper.writeValueAsString(root) : body;
+        } catch (Exception exception) {
+            // 结构未知：原样透传，不因清洗失败影响正常响应。
+            return body;
+        }
+    }
+
+    /**
+     * message 是否带 reasoning_content 之外的思考链别名字段（无论其值是否为空）。
+     *
+     * <p>只用于判断「{@link #extractReasoning} 是否会产生改动」：它会移除所有别名字段，
+     * 包括值为空的那些，这类纯删除也需要把清洗结果写回。
+     */
+    private boolean hasReasoningAliasKey(Map<String, Object> message) {
+        for (String key : UpstreamChunkContentDetector.REASONING_KEYS) {
+            if (!"reasoning_content".equals(key) && message.containsKey(key)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

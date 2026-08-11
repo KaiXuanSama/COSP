@@ -6,7 +6,8 @@
 这个结论直接决定「下游 API Key」能不能走标准 Bearer 认证方案。
 
 > 与 `tools/mock-upstream` 的区别：
-> - `mock-upstream` 模拟**上游供应商**，供 COSP 转发请求过去（抓 COSP → 供应商的出站行为）。
+- `mock-upstream` 模拟**上游供应商（流式）**，供 COSP 转发请求过去（抓 COSP → 供应商的出站行为，SSE 帧序列）。
+- `mock-nonstream` 模拟**上游供应商（非流式）**，供 COSP 转发请求过去（抓 COSP → 供应商的出站行为，单个 JSON 响应）。
 > - `mock-cosp` 模拟 **COSP 自己**，供 Copilot 直接连接（抓 Copilot → COSP 的入站请求头）。
 
 ## 启动

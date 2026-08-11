@@ -6,16 +6,19 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 判定一个上游原始 SSE 帧是否带<strong>实质载荷</strong>。
+ * 判定上游响应是否带<strong>实质载荷</strong>，流式与非流式各有一个入口。
  *
- * <p>服务于空响应兜底：只要一轮里出现过任一实质帧，该轮就是正常响应；
- * 一轮到底都没有，则判定为空响应并触发重试。
+ * <p>服务于空响应兜底：只要出现过实质载荷就是正常响应；到底都没有则判定为空响应并触发重试。
+ * 流式看 {@link #hasMeaningfulPayload}（逐帧判，一轮里任一帧有内容即算有），
+ * 非流式看 {@link #hasMeaningfulNonStreamPayload}（一次拿到完整 body 直接判）。
  *
  * <h2>三类实质载荷</h2>
+ * 载荷容器在流式是 {@code choices[*].delta}、非流式是 {@code choices[*].message}，
+ * 但<strong>字段名完全相同</strong>，故两个入口共用同一份内层判定：
  * <ul>
- *   <li>正文 —— {@code choices[*].delta.content} 非空字符串；</li>
- *   <li>思考链 —— {@code choices[*].delta} 下 {@link #REASONING_KEYS} 任一字段非空白；</li>
- *   <li>工具调用 —— {@code choices[*].delta.tool_calls} 含至少一个非空元素。</li>
+ *   <li>正文 —— {@code content} 非空字符串；</li>
+ *   <li>思考链 —— {@link #REASONING_KEYS} 任一字段非空白；</li>
+ *   <li>工具调用 —— {@code tool_calls} 含至少一个非空元素。</li>
  * </ul>
  *
  * <h2>为何判原始帧而非清洗后的帧</h2>
@@ -76,7 +79,7 @@ final class UpstreamChunkContentDetector {
             // 遍历所有 choice：n>1 时任一分支有内容即算有内容。
             for (Object choiceObj : choices) {
                 if (choiceObj instanceof Map<?, ?> choice
-                        && deltaHasPayload((Map<String, Object>) choice.get("delta"))) {
+                        && payloadHasContent((Map<String, Object>) choice.get("delta"))) {
                     return true;
                 }
             }
@@ -87,8 +90,61 @@ final class UpstreamChunkContentDetector {
         }
     }
 
-    /** 判断单个 delta 是否带三类实质载荷之一。 */
-    private static boolean deltaHasPayload(Map<String, Object> delta) {
+    /**
+     * 判断一个<strong>非流式</strong>完整响应体是否带实质载荷。
+     *
+     * <p>与流式版共用同一份内层判定（{@link #payloadHasContent}），因为
+     * {@code choices[].message} 与 {@code choices[].delta} 的<strong>字段名完全相同</strong>
+     * （{@code content} / {@link #REASONING_KEYS} / {@code tool_calls}），差别只在外层那个 key。
+     * 共用而非各写一份，是为了让「两种传输模式判定口径一致」由同一份代码保证，
+     * 而不是靠纪律维持 —— 将来新增兼容字段时天然不会漂移。
+     *
+     * <h2>为何非流式也要判</h2>
+     * 「200 + 合法 JSON + 空 content」与流式「一轮下来没有任何实质 delta」是<strong>同一个
+     * 上游行为</strong>在两种传输模式下的呈现（中转站抽风返回空回复）。若给非流式单独放宽，
+     * 就会出现「切一下 stream 开关，同一个上游故障的结论就不同」的荒谬情形。
+     *
+     * <p>空 body（0 字节）同样判空：这是非流式独有的一档，比流式的「0 帧」更极端 ——
+     * 连 JSON 骨架都没有。
+     *
+     * @param objectMapper JSON 解析器
+     * @param fullBody     上游返回的完整响应体；null / 空白视为空响应
+     * @return 含正文 / 思考链 / 工具调用之一返回 true；解析失败也返回 true（保守放行）
+     */
+    @SuppressWarnings("unchecked")
+    static boolean hasMeaningfulNonStreamPayload(ObjectMapper objectMapper, String fullBody) {
+        // 空 body：非流式独有的极端形态，连 JSON 骨架都没有，判空。
+        if (fullBody == null || fullBody.isBlank()) {
+            return false;
+        }
+        try {
+            Map<String, Object> body = objectMapper.readValue(fullBody, Map.class);
+            Object choicesObj = body.get("choices");
+            if (!(choicesObj instanceof List<?> choices)) {
+                return false;
+            }
+            // choices 为空数组：整个响应没有任何候选回复，判空。
+            for (Object choiceObj : choices) {
+                if (choiceObj instanceof Map<?, ?> choice
+                        && payloadHasContent((Map<String, Object>) choice.get("message"))) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Exception exception) {
+            // 结构未知：保守认为有内容。宁可放行一个没见过的格式，
+            // 也不要因为结构陌生就把正常响应判成空并重试。
+            return true;
+        }
+    }
+
+    /**
+     * 判断单个载荷容器是否带三类实质载荷之一。
+     *
+     * <p>流式传 {@code choices[].delta}，非流式传 {@code choices[].message} ——
+     * 两者字段名一致，故同一份判定通吃。
+     */
+    private static boolean payloadHasContent(Map<String, Object> delta) {
         if (delta == null || delta.isEmpty()) {
             return false;
         }

@@ -10,7 +10,7 @@ Toast 状态（正常 / 卡首字 / 停滞 / 不关连接 / 错误码等），�
 
 ```bash
 cd frontend
-./node/npm run mock
+./node/npm run mock:stream
 ```
 
 或直接用 Node 跑：
@@ -64,7 +64,8 @@ node tools/mock-upstream/mock-upstream.js
   不是第二套重试实现。耗尽后把最后一轮的帧原样放行给下游。
 
 判定实现见 `UpstreamChunkContentDetector`，接线点在 `AbstractUpstreamChatService#chatCompletionStream`
-的 gate（`retryWhen` 内侧）。非流式尚未实现，已在 `chatCompletion` 上方打 TODO。
+的 gate（`retryWhen` 内侧）。非流式走同一份内层判定但另有入口，场景见
+[tools/mock-nonstream/README.md](../mock-nonstream/README.md)。
 
 ## 可调参数
 

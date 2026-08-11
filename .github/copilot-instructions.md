@@ -17,6 +17,7 @@
 - 对外调用必须复用注入的 `WebClient.Builder`，不要使用裸 `WebClient.builder()`。
 - 标准供应商不创建新 Java 包；供应商差异先用 `provider_request_transform` 的请求头/请求体规则表达。
 - `GatewayAuthFilter` 只拦截 `POST /v1/chat/completions`，Ollama 发现接口必须保持匿名可访。
+- 流式与非流式共用同一份重试预算（`buildRetrySpec`）与同一份空响应判定（`UpstreamChunkContentDetector.payloadHasContent`），不要为某一侧另起 `retryWhen` 或放宽判定口径。
 
 ## 测试
 

@@ -352,6 +352,7 @@ onUnmounted(() => {
               <th class="col-status">状态</th>
               <th class="col-provider">供应商</th>
               <th class="col-model">模型</th>
+              <th class="col-stream">类型</th>
               <!--
                 首字/总耗时拆成三列（右对齐 / 斜杠 / 左对齐）：合成一列右对齐时，
                 两个变宽数字被整体推到右边界，斜杠位置随内容漂移，纵向扫读找不到锚点。
@@ -394,6 +395,11 @@ onUnmounted(() => {
                 </td>
                 <td class="col-provider">{{ row.provider_key }}</td>
                 <td class="col-model" :title="row.model_name">{{ row.model_name }}</td>
+                <td class="col-stream">
+                  <span class="stream-tag" :class="{ 'stream-tag--stream': row.is_stream }">
+                    {{ row.is_stream ? '流式' : '非流式' }}
+                  </span>
+                </td>
                 <td class="col-ttfb">{{ formatDuration(row.ttfb_ms) }}</td>
                 <td class="col-timing-sep" aria-hidden="true">/</td>
                 <td class="col-total">{{ formatDuration(row.duration_ms) }}</td>
@@ -403,7 +409,7 @@ onUnmounted(() => {
               </tr>
 
               <!--
-                展开行：colspan 覆盖全部 10 列，让内部布局摆脱表格列宽约束，
+                展开行：colspan 覆盖全部 11 列，让内部布局摆脱表格列宽约束，
                 CallLogDetail 因此能按自身网格铺开，与调用者视角完全一致。
               -->
               <!--
@@ -416,7 +422,7 @@ onUnmounted(() => {
               -->
               <Transition name="expand" :duration="EXPAND_ANIM_DURATION">
                 <tr v-if="expandedId === row.id" class="expand-row" :data-expand-for="row.id">
-                  <td :colspan="10" class="expand-cell">
+                  <td :colspan="11" class="expand-cell">
                     <!--
                       三层结构各有分工：
                       anim 用 grid-template-rows 承担高度动画，inner 提供内边距并裁掉溢出，
@@ -737,6 +743,35 @@ th.col-num {
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/*
+  类型列：width: 1% 在 auto 布局下等价于「按内容取最小宽度」，
+  徽章宽度固定且短，多余宽度让给模型名与数字列。
+ */
+.usage-table .col-stream {
+  width: 1%;
+  white-space: nowrap;
+}
+
+/*
+  流式/非流式徽章。流式用强调色、非流式用中性灰：
+  绝大多数调用是流式，用中性色标出非流式反而让少数派更易被扫到。
+ */
+.stream-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 999px;
+  background: rgba($text-muted, 0.12);
+  color: $text-muted;
+  white-space: nowrap;
+
+  &--stream {
+    background: rgba($accent, 0.15);
+    color: $accent;
+  }
 }
 
 .col-status {
