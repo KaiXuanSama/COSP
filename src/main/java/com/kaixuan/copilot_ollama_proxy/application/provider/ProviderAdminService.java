@@ -24,6 +24,18 @@ import java.util.TreeSet;
 @Service
 public class ProviderAdminService {
 
+    /**
+     * 展示名派生不出路由标识时的错误提示。
+     *
+     * {@link #toProviderKey} 只保留 ASCII 字母数字，所以纯中文或全角名称
+     * （如「深度求索」「ＭｉＭｏ」）会得到空串。空串在 SQLite 里能通过
+     * {@code NOT NULL} 约束照常入库，随后引发两个隐蔽故障：模型在 Copilot 侧
+     * 失去 {@code [provider-key]} 前缀而无法精确路由；且 {@code UNIQUE} 约束
+     * 使第二个这类供应商被拒绝时，报出与展示名不符的「名称已存在」。
+     * 故必须在入库前拦掉。前端另有同源提示，此处是防止绕过界面直接调接口。
+     */
+    static final String EMPTY_PROVIDER_KEY_ERROR = "供应商名称需包含至少一个英文字母或数字，用于生成路由标识";
+
     private final ProviderConfigRepository providerConfigRepository;
     private final ProviderApiKeyRepository providerApiKeyRepository;
     private final ProviderRequestTransformRepository providerRequestTransformRepository;
@@ -87,6 +99,7 @@ public class ProviderAdminService {
             String name = value(form, "displayName", "").trim();
             if (name.isEmpty()) return Outcome.badRequest("供应商名称不能为空");
             String providerKey = toProviderKey(name);
+            if (providerKey.isEmpty()) return Outcome.badRequest(EMPTY_PROVIDER_KEY_ERROR);
             if (providerConfigRepository.findByKey(providerKey) != null) return Outcome.badRequest("该供应商名称已存在");
             try {
                 providerRequestTransformService.createProvider(providerKey, name, value(form, "baseUrl", "").trim(),
@@ -115,6 +128,7 @@ public class ProviderAdminService {
             ProviderConfigRow existing = providerConfigRepository.findByKey(providerKey);
             if (existing == null) return Outcome.badRequest("供应商不存在");
             String newProviderKey = toProviderKey(name);
+            if (newProviderKey.isEmpty()) return Outcome.badRequest(EMPTY_PROVIDER_KEY_ERROR);
             if (!newProviderKey.equals(providerKey) && providerConfigRepository.findByKey(newProviderKey) != null) {
                 return Outcome.badRequest("该供应商名称已存在");
             }

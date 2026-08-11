@@ -13,6 +13,7 @@ import {
   buildEditableModel,
   buildPullDiff,
   createProviderDefaultEditorState,
+  describeProviderKey,
   displayKey,
   extractModelNames,
   findPreset,
@@ -222,6 +223,42 @@ function safeParseJson(text: string | null | undefined): unknown {
   }
 }
 
+/**
+ * 现有供应商的「路由标识 → 展示名」映射，供重名检测使用。
+ *
+ * 取自 store 而非 providerMeta：后者是前端本地元数据，可能滞后于数据库。
+ */
+const existingProviderKeys = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {}
+  for (const [key, provider] of Object.entries(providerStore.providers)) {
+    map[key] = provider?.displayName || key
+  }
+  return map
+})
+
+/** 当前输入的供应商名称会派生出什么样的路由标识。 */
+const providerKeyInfo = computed(() =>
+  describeProviderKey(providerName.value, {
+    existing: existingProviderKeys.value,
+    currentKey: editingProviderKey.value,
+  })
+)
+
+/** 路由标识提示的说明文案。`ok` 无需额外解释，返回空串。 */
+const providerKeyHint = computed(() => {
+  const info = providerKeyInfo.value
+  switch (info.status) {
+    case 'unavailable':
+      return '名称需包含至少一个英文字母或数字，否则无法生成路由标识'
+    case 'conflict':
+      return `已被供应商「${info.conflictWith}」占用，请换一个名称`
+    case 'lossy':
+      return `名称中的 ${info.droppedChars.join(' ')} 不参与标识生成`
+    default:
+      return info.renamed ? '改名后 Copilot 中的模型前缀会随之变化，需重新选择模型' : ''
+  }
+})
+
 /** 选择预设时自动填充名称、地址、请求头、请求体模板和规则。 */
 function applyPreset(label: string) {
   const preset = findPreset(label)
@@ -332,6 +369,12 @@ async function saveProvider() {
   const name = providerName.value.trim()
   if (!name) {
     message.warning('请输入供应商名称')
+    return
+  }
+  // 标识为空或冲突时本地就拦下：后端虽有同源校验，但它对冲突只能回
+  // 「该供应商名称已存在」，与用户看到的展示名对不上。
+  if (!providerKeyInfo.value.submittable) {
+    message.warning(providerKeyHint.value)
     return
   }
   try {
@@ -644,6 +687,21 @@ function removeModel(index: number) {
           <n-input v-model:value="providerName" placeholder="输入供应商名称" />
           <n-button size="small" @click="clearProviderForm">清空</n-button>
           <n-button size="small" @click="showPresetModal = true">预设</n-button>
+        </div>
+
+        <!-- 路由标识预览：让用户在输入时就知道名称会被转换成什么 -->
+        <div v-if="providerKeyInfo.status !== 'blank'" class="provider-key-preview"
+          :class="`provider-key-preview--${providerKeyInfo.status}`">
+          <div class="provider-key-preview-row">
+            <span class="provider-key-preview-label">路由标识</span>
+            <code v-if="providerKeyInfo.renamed" class="provider-key-preview-value">
+              <span class="provider-key-preview-old">{{ providerKeyInfo.previousKey }}</span>
+              <span class="provider-key-preview-arrow">→</span>{{ providerKeyInfo.key }}
+            </code>
+            <code v-else-if="providerKeyInfo.key" class="provider-key-preview-value">{{ providerKeyInfo.key }}</code>
+            <span v-else class="provider-key-preview-value provider-key-preview-value--empty">无法生成</span>
+          </div>
+          <div v-if="providerKeyHint" class="provider-key-preview-hint">{{ providerKeyHint }}</div>
         </div>
       </div>
 
@@ -1074,6 +1132,83 @@ function removeModel(index: number) {
   display: flex;
   gap: $space-sm;
   align-items: center;
+}
+
+/* 路由标识预览 —— 把「展示名 → provider-key」的转换结果摊开给用户看 */
+.provider-key-preview {
+  margin-top: $space-sm;
+  padding: $space-sm $space-sm + 2px;
+  border-radius: $radius;
+  border: 1px solid $border;
+  background: $border-light;
+  border-left: 2px solid $text-muted;
+}
+
+.provider-key-preview-row {
+  display: flex;
+  align-items: baseline;
+  gap: $space-sm;
+}
+
+.provider-key-preview-label {
+  flex-shrink: 0;
+  font-family: $font-mono;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: $text-muted;
+}
+
+.provider-key-preview-value {
+  font-family: $font-mono;
+  font-size: 12px;
+  color: $text-primary;
+  word-break: break-all;
+}
+
+.provider-key-preview-value--empty {
+  color: $danger;
+}
+
+/* 改名时并列旧标识，划掉表示即将失效 */
+.provider-key-preview-old {
+  color: $text-muted;
+  text-decoration: line-through;
+}
+
+.provider-key-preview-arrow {
+  margin: 0 $space-xs;
+  color: $text-muted;
+}
+
+.provider-key-preview-hint {
+  margin-top: $space-xs;
+  font-size: 12px;
+  line-height: 1.5;
+  color: $text-body;
+}
+
+.provider-key-preview--lossy {
+  border-left-color: $warning;
+
+  .provider-key-preview-hint {
+    color: $warning;
+  }
+}
+
+.provider-key-preview--unavailable,
+.provider-key-preview--conflict {
+  border-left-color: $danger;
+
+  .provider-key-preview-hint {
+    color: $danger;
+  }
+}
+
+/* 未改名的正常态：仅陈述事实，不需要强调 */
+.provider-key-preview--ok {
+  border-left-color: $success;
 }
 
 /* ── 预设供应商列表 ── */

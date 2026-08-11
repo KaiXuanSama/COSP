@@ -5,7 +5,13 @@
  * `components/settings/**` 从这里取逻辑，自身只负责状态编排与渲染。
  */
 
-export { toProviderKey } from './providerKey'
+export {
+  describeProviderKey,
+  toProviderKey,
+  type DescribeProviderKeyOptions,
+  type ProviderKeyDescription,
+  type ProviderKeyStatus,
+} from './providerKey'
 
 export {
   NEW_KEY_VALUE_PREFIX,
