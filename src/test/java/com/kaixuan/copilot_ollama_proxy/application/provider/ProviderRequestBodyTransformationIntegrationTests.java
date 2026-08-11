@@ -65,7 +65,11 @@ class ProviderRequestBodyTransformationIntegrationTests {
                     headers.put(name, String.join(", ", values)));
             capturedRequestHeaders.set(headers);
             capturedRequest.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
-            byte[] response = "{\"id\":\"chatcmpl-test\",\"object\":\"chat.completion\",\"choices\":[]}".getBytes(StandardCharsets.UTF_8);
+            // 必须带实质载荷（此处为正文）：空 choices 会被非流式空响应兜底判为空响应并触发重试，
+            // 本用例验证的是请求体转换规则，不该被兜底逻辑卷进重试循环。
+            byte[] response = ("{\"id\":\"chatcmpl-test\",\"object\":\"chat.completion\",\"choices\":"
+                    + "[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}")
+                    .getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.sendResponseHeaders(200, response.length);
             exchange.getResponseBody().write(response);

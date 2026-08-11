@@ -191,7 +191,12 @@ function closeMenu() {
       <div v-if="menuTarget" class="call-toast-menu-overlay" @click="closeMenu" @contextmenu.prevent="closeMenu">
         <div class="call-toast-menu" :style="{ left: menuX + 'px', top: menuY + 'px' }"
           @click.stop @contextview.prevent>
-          <button type="button" class="call-toast-menu__item" :disabled="retrying" @click="onSilentRetry">
+          <!--
+            静默重试仅对流式可用：手动重试靠 provider 层的 takeUntilOther 中断在途请求后重发，
+            这套机制只接在 chatCompletionStream 上，非流式调用没有注册项，
+            点了必然静默失败。与其让按钮转一圈什么都不发生，不如直接不给。
+          -->
+          <button v-if="menuTarget.stream" type="button" class="call-toast-menu__item" :disabled="retrying" @click="onSilentRetry">
             <span v-if="retrying" class="call-toast-menu__spinner" aria-hidden="true"></span>
             {{ retrying ? '静默重试中…' : '静默重试' }}
           </button>
