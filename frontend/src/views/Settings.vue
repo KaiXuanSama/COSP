@@ -5,12 +5,36 @@ import ProviderModelsSection from '@/components/settings/ProviderModelsSection.v
 import RequestBodyRuleEditor from '@/components/settings/request-body-rules/RequestBodyRuleEditor.vue'
 import { useProviderStore, type ApiKeyEntry } from '@/stores/providers'
 import type { RequestBodyEditorState } from '@/features/request-body-rules/editorState'
-import { countRules, createDefaultRequestBodyEditorState } from '@/features/request-body-rules/editorState'
-import { MIMO_EXAMPLE_RULESET } from '@/features/request-body-rules/defaultRequestBody'
-import type { RequestBodyTemplateKey } from '@/features/request-body-rules/requestBodyTemplates'
-import { composeRequestBodyTemplate } from '@/features/request-body-rules/requestBodyTemplates'
-import type { RuleSet, RuleSetV2 } from '@/features/request-body-rules/types'
+import { countRules } from '@/features/request-body-rules/editorState'
 import { migrateRuleSet } from '@/features/request-body-rules/migration'
+import {
+  aggregatorPresets,
+  applyPullDiff,
+  buildEditableModel,
+  buildPullDiff,
+  createProviderDefaultEditorState,
+  displayKey,
+  extractModelNames,
+  findPreset,
+  hasChanges as pullDiffHasChanges,
+  isNewKeyValue,
+  keepMeaningfulEntries,
+  newKeyValue,
+  officialPresets,
+  relayPresets,
+  resolveActiveValue,
+  resolvePullCredential,
+  resolvePullModelsErrorMessage,
+  revertDiffEntry,
+  toApiKeyPayloads,
+  toEditableModel,
+  toModelFormParams,
+  toPresetFormValues,
+  toProviderKey,
+  type EditableModel,
+  type HeaderEntry,
+  type PullDiff,
+} from '@/features/provider-config'
 
 const providerStore = useProviderStore()
 const message = useMessage()
@@ -35,19 +59,13 @@ const editForm = ref({
   baseUrl: '',
   apiKeys: [] as ApiKeyEntry[],
   activeKeyUuid: '' as string,
-  models: [] as any[],
+  models: [] as EditableModel[],
 })
 const pullingModels = ref(false)
 
-interface PullDiffEntry {
-  modelName: string
-  status: 'added' | 'removed' | 'unchanged'
-  existingModel?: any
-}
-
-const pullDiffModal = ref({
+const pullDiffModal = ref<{ visible: boolean } & PullDiff>({
   visible: false,
-  entries: [] as PullDiffEntry[],
+  entries: [],
   addedCount: 0,
   removedCount: 0,
 })
@@ -153,23 +171,11 @@ async function handleProviderContextSelect(action: 'edit' | 'disable') {
 const showApiKeyModal = ref(false)
 const editingApiKeys = ref<ApiKeyEntry[]>([])
 
-/** 脱敏显示 API Key：前4位 + **** + 后4位 */
-function maskApiKey(key: string): string {
-  if (!key || key.length <= 10) return key ? '****' : ''
-  return key.substring(0, 6) + '****' + key.substring(key.length - 4)
-}
-
-/** 展示某条 Key 的脱敏值：优先展示后端脱敏值，其次对新输入的明文脱敏 */
-function displayKey(entry: ApiKeyEntry): string {
-  if (entry.apiKey && entry.apiKey.trim()) return maskApiKey(entry.apiKey.trim())
-  return entry.masked || ''
-}
-
 /** 构建下拉选项，value 使用 keyUuid（新增未保存项用临时标记） */
 const apiKeyOptions = computed(() =>
   editForm.value.apiKeys.map((entry, index) => ({
     label: `${entry.name || '未命名'}: ${displayKey(entry)}`,
-    value: entry.keyUuid || `__new_${index}`,
+    value: entry.keyUuid || newKeyValue(index),
   }))
 )
 
@@ -187,14 +193,9 @@ function removeApiKeyEntry(index: number) {
 }
 
 function saveApiKeyModal() {
-  // 保留有 keyUuid（已有）或填了新明文的项
-  const valid = editingApiKeys.value.filter(k => (k.keyUuid && k.keyUuid.length > 0) || (k.apiKey && k.apiKey.trim()))
+  const valid = keepMeaningfulEntries(editingApiKeys.value)
   editForm.value.apiKeys = valid
-  // 若激活项已被删除，重置为第一项
-  const activeStillExists = valid.some(k => k.keyUuid && k.keyUuid === editForm.value.activeKeyUuid)
-  if (!activeStillExists) {
-    editForm.value.activeKeyUuid = valid[0]?.keyUuid || (valid.length > 0 ? `__new_0` : '')
-  }
+  editForm.value.activeKeyUuid = resolveActiveValue(valid, editForm.value.activeKeyUuid)
   showApiKeyModal.value = false
 }
 
@@ -211,147 +212,6 @@ const editingProviderKey = ref<string | null>(null)
 const providerBaseUrl = ref('')
 const showPresetModal = ref(false)
 
-/** 预设供应商模板 */
-interface ProviderPreset {
-  label: string
-  baseUrl: string
-  headers: KeyValueEntry[]
-  /** 可选的默认请求体模板键；未配置时回退为基础参数。 */
-  requestBodyTemplateKeys?: RequestBodyTemplateKey[]
-  /** 可选的默认请求体映射规则；未配置时回退为空规则集。 */
-  requestBodyRules?: RuleSet
-}
-
-const IMAGE_COMPATIBILITY_TEMPLATE_KEYS: RequestBodyTemplateKey[] = ['message-tool-image']
-
-/**
- * 创建供应商默认图片兼容配置，避免共享可变规则集。
- *
- * 预设规则统一落在单个仅适用 OpenAI 的规则组里：它们的字段路径是照 OpenAI
- * 请求体写的（messages 里含 system、无 max_tokens），作用在 Anthropic 请求体上
- * 多数匹配不到 —— 静默失效比不执行更难排查。
- */
-function createProviderDefaultEditorState(): RequestBodyEditorState {
-  return {
-    rules: presetRuleSetV2(MIMO_EXAMPLE_RULESET, IMAGE_COMPATIBILITY_TEMPLATE_KEYS),
-  }
-}
-
-const officialPresets: ProviderPreset[] = [
-  {
-    label: 'MiMo',
-    baseUrl: 'https://api.xiaomimimo.com/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'DeepSeek',
-    baseUrl: 'https://api.deepseek.com/v1',
-    headers: [],
-  },
-  {
-    label: 'LongCat',
-    baseUrl: 'https://api.longcat.chat/openai/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'Kimi',
-    baseUrl: 'https://api.moonshot.cn/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'Kimi (CodePlan)',
-    baseUrl: 'https://api.kimi.com/coding/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'Mimo (TokenPlan)',
-    baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'Agnes',
-    baseUrl: 'https://apihub.agnes-ai.com/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'Zhipu',
-    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'StepFun',
-    baseUrl: 'https://api.stepfun.com/v1',
-    headers: [],
-  },
-]
-
-const aggregatorPresets: ProviderPreset[] = [
-  {
-    label: 'SenseNova',
-    baseUrl: 'https://token.sensenova.cn/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'Uumit',
-    baseUrl: 'https://agent.uumit.com/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'Xunfei',
-    baseUrl: 'https://maas-api.cn-huabei-1.xf-yun.com/v2',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'WorkBuddy',
-    baseUrl: 'https://copilot.tencent.com/v2',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-]
-
-const relayPresets: ProviderPreset[] = [
-  {
-    label: 'AgentRouter',
-    baseUrl: 'https://agentrouter.org/v1',
-    headers: [
-      { key: 'User-Agent', value: 'claude-cli/2.1.195 (external, cli)' },
-      { key: 'Accept-Encoding', value: '/del/' }
-    ],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'FreeModel',
-    baseUrl: 'https://api.freemodel.dev/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-]
-
-const allPresets = [...officialPresets, ...aggregatorPresets, ...relayPresets]
-
 /** 宽容解析后端回传的 JSON 字段；无法解析时返回 undefined 交由迁移函数兼容。 */
 function safeParseJson(text: string | null | undefined): unknown {
   if (!text) return undefined
@@ -362,35 +222,15 @@ function safeParseJson(text: string | null | undefined): unknown {
   }
 }
 
-/** 深拷贝规则集，避免预设常量被编辑器状态原地修改。 */
-function cloneRuleSet(rules: RuleSet): RuleSet {
-  return JSON.parse(JSON.stringify(rules)) as RuleSet
-}
-
-/** 把预设的 V1 规则集升为单组 V2，并带上预设自带的预览模板。 */
-function presetRuleSetV2(
-  rules: RuleSet,
-  templateKeys?: RequestBodyTemplateKey[],
-): RuleSetV2 {
-  const migrated = migrateRuleSet(cloneRuleSet(rules))
-  const group = migrated.groups[0]
-  if (group && templateKeys && templateKeys.length > 0) {
-    group.templateKeys = [...templateKeys]
-    group.previewBody = composeRequestBodyTemplate(templateKeys)
-  }
-  return migrated
-}
-
 /** 选择预设时自动填充名称、地址、请求头、请求体模板和规则。 */
 function applyPreset(label: string) {
-  const preset = allPresets.find(p => p.label === label)
+  const preset = findPreset(label)
   if (preset) {
-    providerName.value = preset.label
-    providerBaseUrl.value = preset.baseUrl
-    providerHeaders.value = preset.headers.map(h => ({ ...h }))
-    requestBodyEditorState.value = preset.requestBodyRules
-      ? { rules: presetRuleSetV2(preset.requestBodyRules, preset.requestBodyTemplateKeys) }
-      : createDefaultRequestBodyEditorState()
+    const values = toPresetFormValues(preset)
+    providerName.value = values.displayName
+    providerBaseUrl.value = values.baseUrl
+    providerHeaders.value = values.headers
+    requestBodyEditorState.value = values.editorState
     providerAdvancedExpanded.value = true
   }
   showPresetModal.value = false
@@ -406,11 +246,7 @@ function clearProviderForm() {
 }
 
 /** 高级设置 - 请求头覆盖列表 */
-interface KeyValueEntry {
-  key: string
-  value: string
-}
-const providerHeaders = ref<KeyValueEntry[]>([])
+const providerHeaders = ref<HeaderEntry[]>([])
 
 /** 请求体映射规则及编辑器预览状态。 */
 const requestBodyEditorState = ref<RequestBodyEditorState>(createProviderDefaultEditorState())
@@ -509,7 +345,7 @@ async function saveProvider() {
       )
       // 更新前端元数据
       const oldKey = editingProviderKey.value
-      const newKey = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+      const newKey = toProviderKey(name)
       const metaUpdate = { displayName: name, apiUrlPlaceholder: baseUrl || 'https://api.example.com/v1' }
       if (newKey !== oldKey && providerMeta.value[oldKey]) {
         providerMeta.value[newKey] = { ...providerMeta.value[oldKey], ...metaUpdate }
@@ -605,100 +441,9 @@ function openEditPanel(key: string) {
       baseUrl: p.baseUrl || providerMeta.value[key]?.apiUrlPlaceholder || '',
       apiKeys,
       activeKeyUuid: activeEntry?.keyUuid || apiKeys[0]?.keyUuid || '',
-      models: p.models.map(m => ({
-        ...m,
-        contextSize: String(m.contextSize ?? '0'),
-        maxOutputTokens: String(m.maxOutputTokens ?? '128000'),
-        reasoningEffort: typeof m.reasoningEffort === 'string' && m.reasoningEffort.trim()
-          ? m.reasoningEffort.split(',')[0].trim()
-          : 'Medium',
-      })),
+      models: p.models.map(toEditableModel),
     }
   }
-}
-
-function buildEditableModel(modelName = '', source: Record<string, any> = {}) {
-  return {
-    ...source,
-    modelName,
-    enabled: source.enabled ?? true,
-    contextSize: String(source.contextSize ?? '128000'),
-    maxOutputTokens: String(source.maxOutputTokens ?? '128000'),
-    capsTools: source.capsTools ?? true,
-    capsVision: source.capsVision ?? false,
-    reasoningEffort: typeof source.reasoningEffort === 'string' && source.reasoningEffort.trim()
-      ? source.reasoningEffort.split(',')[0].trim()
-      : 'Medium',
-  }
-}
-
-function extractModelNames(payload: unknown) {
-  let parsedPayload = payload
-  if (typeof parsedPayload === 'string') {
-    try {
-      parsedPayload = JSON.parse(parsedPayload)
-    } catch {
-      return [] as string[]
-    }
-  }
-
-  const modelNames = new Set<string>()
-
-  const collect = (items: unknown) => {
-    if (!Array.isArray(items)) return
-    for (const item of items) {
-      if (typeof item === 'string') {
-        const value = item.trim()
-        if (value) modelNames.add(value)
-        continue
-      }
-      if (!item || typeof item !== 'object') continue
-      for (const key of ['id', 'model', 'name']) {
-        const value = (item as Record<string, unknown>)[key]
-        if (typeof value === 'string' && value.trim()) {
-          modelNames.add(value.trim())
-          break
-        }
-      }
-    }
-  }
-
-  if (Array.isArray(parsedPayload)) {
-    collect(parsedPayload)
-  } else if (parsedPayload && typeof parsedPayload === 'object') {
-    const source = parsedPayload as Record<string, unknown>
-    collect(source.data)
-    collect(source.models)
-  }
-
-  return Array.from(modelNames)
-}
-
-function resolvePullModelsErrorMessage(error: any) {
-  const status = error?.response?.status
-  const data = error?.response?.data
-
-  // 优先使用后端返回的友好错误信息
-  if (data && typeof data === 'object' && typeof data.error === 'string' && data.error.trim()) {
-    return '模型拉取失败：' + data.error
-  }
-  if (typeof data === 'string' && data.trim()) {
-    try {
-      const parsed = JSON.parse(data)
-      if (typeof parsed.error === 'string' && parsed.error.trim()) {
-        return '模型拉取失败：' + parsed.error
-      }
-    } catch { /* 非 JSON，使用原文 */ }
-    return '模型拉取失败：' + data
-  }
-  // 前端兜底
-  if (status === 401 || status === 403) {
-    return '模型拉取失败：API Key 无效或无权限'
-  }
-  if (status === 404) {
-    return '模型拉取失败：模型列表端点不存在'
-  }
-  return '拉取模型失败，请检查网络连接和 API 地址'
 }
 
 function closeEditPanel() {
@@ -708,29 +453,12 @@ function closeEditPanel() {
 async function saveEditPanel() {
   if (!editingKey.value) return
   const key = editingKey.value
-  // 序列化 apiKeys：仅回传 keyUuid（未修改）或 keyUuid+apiKey（修改）或 apiKey（新增）
-  const apiKeysPayload = editForm.value.apiKeys.map(k => {
-    const entry: Record<string, string> = { name: k.name || '' }
-    if (k.keyUuid) entry.keyUuid = k.keyUuid
-    if (k.apiKey && k.apiKey.trim()) entry.apiKey = k.apiKey.trim()
-    return entry
-  })
   const params: Record<string, string> = {
     baseUrl: editForm.value.baseUrl,
-    apiKeys: JSON.stringify(apiKeysPayload),
-    activeKeyUuid: editForm.value.activeKeyUuid.startsWith('__new_') ? '' : editForm.value.activeKeyUuid,
+    apiKeys: JSON.stringify(toApiKeyPayloads(editForm.value.apiKeys)),
+    activeKeyUuid: isNewKeyValue(editForm.value.activeKeyUuid) ? '' : editForm.value.activeKeyUuid,
+    ...toModelFormParams(editForm.value.models),
   }
-  editForm.value.models.forEach((m, i) => {
-    params[`models[${i}].name`] = m.modelName
-    params[`models[${i}].enabled`] = m.enabled ? 'on' : ''
-    params[`models[${i}].contextSize`] = m.contextSize || '0'
-    params[`models[${i}].maxOutputTokens`] = m.maxOutputTokens || '128000'
-    params[`models[${i}].capsTools`] = m.capsTools ? 'on' : ''
-    params[`models[${i}].capsVision`] = m.capsVision ? 'on' : ''
-    if (m.reasoningEffort) {
-      params[`models[${i}].reasoningEffort`] = m.reasoningEffort
-    }
-  })
   try {
     await providerStore.saveProviderConfig(key, params)
     // 保存后从后端重新拉取，确保拿到最新的 keyUuid 与脱敏值
@@ -755,32 +483,8 @@ async function pullModels() {
   if (!editingKey.value) return
   const providerKey = editingKey.value
 
-  // 解析拉取模型所需的 Key：
-  // 1. 优先使用当前选中 Key 条目中新输入的明文（覆盖新增未保存 + 重新输入的场景）
-  // 2. 其次使用任意一条有明文输入的 Key
-  // 3. 若表单中完全没有明文，但当前选中 Key 已保存（有 keyUuid）→ 通过 UUID 让后端解密
-  // 4. 以上都不满足 → 提示用户
-  const activeUuid = editForm.value.activeKeyUuid
-  const activeEntry = editForm.value.apiKeys.find(
-    k => (k.keyUuid && k.keyUuid === activeUuid) || `__new_0` === activeUuid
-  )
-  let apiKey = activeEntry?.apiKey?.trim() || ''
-  let keyUuid = ''
-  if (!apiKey) {
-    const anyPlain = editForm.value.apiKeys.find(k => k.apiKey && k.apiKey.trim())
-    apiKey = anyPlain?.apiKey?.trim() || ''
-  }
-  if (!apiKey) {
-    // 没有明文可用，尝试使用已保存 Key 的 UUID 让后端解密
-    if (activeEntry?.keyUuid) {
-      keyUuid = activeEntry.keyUuid
-    } else {
-      // 尝试任意一条已保存的 Key
-      const anySaved = editForm.value.apiKeys.find(k => k.keyUuid)
-      keyUuid = anySaved?.keyUuid || ''
-    }
-  }
-  if (!apiKey && !keyUuid) {
+  const credential = resolvePullCredential(editForm.value.apiKeys, editForm.value.activeKeyUuid)
+  if (!credential) {
     message.warning('拉取模型需要 API Key。请在"管理 API Key"中新增一条 Key 后再拉取。')
     return
   }
@@ -789,10 +493,10 @@ async function pullModels() {
   try {
     const resolvedBaseUrl = editForm.value.baseUrl.trim() || providerMeta.value[providerKey]?.apiUrlPlaceholder || ''
     const payload: Record<string, string> = { baseUrl: resolvedBaseUrl }
-    if (apiKey) {
-      payload.apiKey = apiKey
-    } else {
-      payload.keyUuid = keyUuid
+    if (credential.apiKey) {
+      payload.apiKey = credential.apiKey
+    } else if (credential.keyUuid) {
+      payload.keyUuid = credential.keyUuid
     }
     const responsePayload = await providerStore.pullProviderModels(providerKey, payload)
     const modelNames = extractModelNames(responsePayload)
@@ -801,33 +505,9 @@ async function pullModels() {
       return
     }
 
-    // 计算差异
-    const currentModelNames = new Set(editForm.value.models.map((m: any) => m.modelName))
-    const pulledModelNames = new Set(modelNames)
-
-    const entries: PullDiffEntry[] = []
-    // 保留的 + 新增的
-    for (const name of modelNames) {
-      entries.push({
-        modelName: name,
-        status: currentModelNames.has(name) ? 'unchanged' : 'added',
-        existingModel: currentModelNames.has(name)
-          ? editForm.value.models.find((m: any) => m.modelName === name)
-          : undefined,
-      })
-    }
-    // 被删除的
-    for (const m of editForm.value.models as any[]) {
-      if (!pulledModelNames.has(m.modelName)) {
-        entries.push({ modelName: m.modelName, status: 'removed', existingModel: m })
-      }
-    }
-
     pullDiffModal.value = {
       visible: true,
-      entries,
-      addedCount: entries.filter(e => e.status === 'added').length,
-      removedCount: entries.filter(e => e.status === 'removed').length,
+      ...buildPullDiff(editForm.value.models, modelNames),
     }
   } catch (error: any) {
     message.error(resolvePullModelsErrorMessage(error))
@@ -837,12 +517,10 @@ async function pullModels() {
 }
 
 function applyPulledModels() {
-  // 只保留 added 和 unchanged 的模型
-  editForm.value.models = pullDiffModal.value.entries
-    .filter(e => e.status !== 'removed')
-    .map(e => buildEditableModel(e.modelName, e.existingModel ?? {}))
+  const { addedCount, removedCount } = pullDiffModal.value
+  editForm.value.models = applyPullDiff(pullDiffModal.value)
   pullDiffModal.value.visible = false
-  message.success(`已应用：新增 ${pullDiffModal.value.addedCount} 个，移除 ${pullDiffModal.value.removedCount} 个`)
+  message.success(`已应用：新增 ${addedCount} 个，移除 ${removedCount} 个`)
 }
 
 function cancelPulledModels() {
@@ -850,17 +528,10 @@ function cancelPulledModels() {
 }
 
 function revertPullDiff(index: number) {
-  const entry = pullDiffModal.value.entries[index]
-  if (!entry || entry.status === 'unchanged') return
-  if (entry.status === 'added') {
-    // 新增的撤销 → 从列表中移除
-    pullDiffModal.value.entries.splice(index, 1)
-  } else {
-    // 移除的撤销 → 恢复为未变更
-    entry.status = 'unchanged'
+  pullDiffModal.value = {
+    visible: pullDiffModal.value.visible,
+    ...revertDiffEntry(pullDiffModal.value, index),
   }
-  pullDiffModal.value.addedCount = pullDiffModal.value.entries.filter(e => e.status === 'added').length
-  pullDiffModal.value.removedCount = pullDiffModal.value.entries.filter(e => e.status === 'removed').length
 }
 
 function addModel() {
@@ -904,7 +575,7 @@ function removeModel(index: number) {
           </div>
           <div class="provider-card-models">
             <span v-if="providerStore.providers[key]?.models?.length">
-              {{providerStore.providers[key].models.filter((m: any) => m.enabled).length}} 个模型
+              {{providerStore.providers[key].models.filter(m => m.enabled).length}} 个模型
             </span>
             <span v-else class="text-muted">未配置</span>
           </div>
@@ -1111,7 +782,7 @@ function removeModel(index: number) {
         <div class="pull-diff-footer">
           <n-button @click="cancelPulledModels">取消</n-button>
           <n-button type="primary" @click="applyPulledModels"
-            :disabled="!pullDiffModal.addedCount && !pullDiffModal.removedCount">
+            :disabled="!pullDiffHasChanges(pullDiffModal)">
             应用
           </n-button>
         </div>
