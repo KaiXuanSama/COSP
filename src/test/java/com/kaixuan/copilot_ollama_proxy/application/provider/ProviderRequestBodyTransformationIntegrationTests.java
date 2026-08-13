@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.DatabaseRuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRepository;
@@ -123,7 +124,7 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyLong());
         genericChatService.setApiCallLog(callLogService);
         ChatCompletionService chatCompletionService = new ChatCompletionService(
-                new ProviderRouteResolver(catalog), genericChatService);
+                new ProviderRouteResolver(catalog), new ProtocolDispatchManager(), genericChatService);
 
         HttpHeaders downstreamHeaders = new HttpHeaders();
         downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-token");
