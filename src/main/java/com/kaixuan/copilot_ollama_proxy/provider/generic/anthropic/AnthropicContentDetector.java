@@ -25,6 +25,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * <h2>解析失败一律保守放行</h2>
  * 与 OpenAI 侧同一取向：宁可放行一个没见过的格式，也不要因为结构陌生就把正常响应
  * 判成空并重试。
+ *
+ * <h2>与 OpenAI 侧的命名不一致（待统一）</h2>
+ * TODO 本类与 {@code provider.UpstreamChunkContentDetector} 是<strong>同一职责的两个协议实现</strong>，
+ *  不是不同层次的东西。后者名字里不带协议、且放在 {@code provider} 根下，是「只有一种协议时」
+ *  的产物 —— 那时 {@code Upstream} 一词隐含了 OpenAI。现在有两种协议，这个隐含变成了误导。
+ *  <p>待翻译层阶段一并整理：把 {@code UpstreamChunkContentDetector} 重命名为
+ *  {@code OpenAiContentDetector} 并移入 {@code provider.generic.openai}，与本类对称。
+ *  同时那个类是包私有（{@code final class} 无 {@code public}），移包后需放开可见性，
+ *  或让两侧都保持包私有 —— 本类之所以是 {@code public}，纯粹因为跨包被服务引用。
+ *  <p>在此之前：读代码时不要因为两者位置与命名不同就以为它们职责不同。
  */
 public final class AnthropicContentDetector {
 

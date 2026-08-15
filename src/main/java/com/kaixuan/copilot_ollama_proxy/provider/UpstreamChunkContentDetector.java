@@ -38,6 +38,17 @@ import java.util.Map;
  *
  * <p>解析失败一律按「有内容」处理（{@code true}）：宁可放行一个可疑帧，
  * 也不要因为格式没见过就把正常响应判成空并重试。
+ *
+ * <h2>类名与位置待统一</h2>
+ * TODO 本类只服务 <strong>OpenAI</strong> 协议（读 {@code choices[].delta} 与
+ *  {@code choices[].message}），但名字里不带协议、且放在 {@code provider} 根下 ——
+ *  那是「只有一种协议时」的产物，{@code Upstream} 一词当时隐含了 OpenAI。
+ *  现在 {@code provider.generic.anthropic.AnthropicContentDetector} 是同一职责的
+ *  另一个协议实现，两者命名风格不一致会让人误以为层次不同。
+ *  <p>待翻译层阶段一并整理：重命名为 {@code OpenAiContentDetector} 并移入
+ *  {@code provider.generic.openai}。移包后本类需从包私有放开为 {@code public}
+ *  （{@code AbstractUpstreamChatService} 在 {@code provider} 包下引用它），
+ *  或把两侧都收成包私有。
  */
 final class UpstreamChunkContentDetector {
 

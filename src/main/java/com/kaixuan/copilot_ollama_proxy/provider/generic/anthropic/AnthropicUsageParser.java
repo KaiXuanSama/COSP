@@ -26,6 +26,16 @@ import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
  * {@code message_start} 携带 {@code input_tokens}（此时 {@code output_tokens}
  * 通常为 0 或缺失），{@code message_delta} 携带最终的 {@code output_tokens}。
  * 因此流式链路不能只取一个事件就完事，需要跨事件合并 —— 见 {@link #merge}。
+ *
+ * <h2>与 OpenAI 侧的位置不一致（待统一）</h2>
+ * TODO 本类与 {@code application.usage.UsageParser} 是<strong>同一职责的两个协议实现</strong>。
+ *  后者硬编码 {@code prompt_tokens} / {@code completion_tokens}，同样只服务 OpenAI，
+ *  却因为「只有一种协议时不需要区分」而放在 {@code application.usage} 且名字不带协议。
+ *  <p>待翻译层阶段一并整理：重命名为 {@code OpenAiUsageParser} 并移入
+ *  {@code provider.generic.openai}，与本类对称。注意它被 {@code OpenAiController} 与
+ *  {@code AbstractUpstreamChatService} 引用，移包会波及那两处 import。
+ *  <p>{@link UsageTokens} 不在此列 —— 它是<strong>共享的输出契约</strong>
+ *  （两侧都产出它，落库与前端因此无需分支），留在 {@code application.usage} 是正确的归属。
  */
 public final class AnthropicUsageParser {
 
