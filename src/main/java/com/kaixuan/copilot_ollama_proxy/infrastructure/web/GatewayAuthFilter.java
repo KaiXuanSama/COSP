@@ -16,21 +16,26 @@ import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Set;
 
 /**
- * 下游鉴权过滤器 —— 仅拦截对外聊天接口 {@code POST /v1/chat/completions}。
+ * 下游鉴权过滤器 —— 仅拦截对外聊天接口。
  *
  * <p>这是面向「部署到公网供自己使用」场景的防滥用闸门：当管理员在后台开启下游鉴权后，
- * 来自客户端（如 VS Code Copilot 的 Ollama 供应商）的聊天请求必须携带正确的网关
- * API Key（{@code Authorization: Bearer <key>}）才会被放行。
+ * 来自客户端（如 VS Code Copilot 的 Ollama 供应商、Claude Desktop）的聊天请求
+ * 必须携带正确的网关 API Key（{@code Authorization: Bearer <key>}）才会被放行。
  *
- * <p><strong>拦截范围严格限定</strong>为聊天补全这一个真正消耗上游额度的端点：
+ * <p><strong>拦截范围严格限定</strong>为真正消耗上游额度的两个聊天端点
+ * （{@code POST /v1/chat/completions} 与 {@code POST /v1/messages}）：
  * <ul>
  *   <li>Ollama 模型发现接口（{@code /api/version}、{@code /api/tags}、{@code /api/show}）
  *       本身不携带 Authorization 头，若一并拦截会导致 Copilot 连模型都发现不了，故放行；</li>
  *   <li>{@code /v1/models} 等其它接口同样放行；</li>
  *   <li>管理后台接口在独立的 Security JWT 链下，与本过滤器互不干扰。</li>
  * </ul>
+ *
+ * <p>两个聊天端点<strong>共用同一把网关 Key</strong>：它保护的是「谁能用这个代理」，
+ * 与下游说哪种协议无关。按协议分设不同 Key 只会增加管理成本而不增加安全性。
  *
  * <p>本过滤器只读取请求头、不消费请求体，天然避开 WebFlux 请求体重放的坑。
  * 具体的开关判断、Key 解密与常量时间比对都内聚在 {@link GatewayAuthService#authorize}。
@@ -42,8 +47,15 @@ import java.nio.charset.StandardCharsets;
 @Order(-120)
 public class GatewayAuthFilter implements WebFilter {
 
-    /** 受保护的目标路径。 */
-    private static final String PROTECTED_PATH = "/v1/chat/completions";
+    /**
+     * 受保护的目标路径集合 —— 两个协议的聊天端点。
+     *
+     * <p>用 {@code Set} 而非单值：两条端点的鉴权语义完全相同（同一把网关 Key、
+     * 同一个 401 响应），差别只在路径。将来若再有新的聊天端点，加一行即可。
+     */
+    private static final Set<String> PROTECTED_PATHS = Set.of(
+            "/v1/chat/completions",   // OpenAI Chat Completions
+            "/v1/messages");          // Anthropic Messages
 
     /** 401 响应体，OpenAI 风格错误结构，便于客户端展示可读信息。 */
     private static final String UNAUTHORIZED_BODY =
@@ -57,7 +69,7 @@ public class GatewayAuthFilter implements WebFilter {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
-        // 仅拦截 POST /v1/chat/completions，其它路径/方法一律直接放行。
+        // 仅拦截两个聊天端点的 POST，其它路径/方法一律直接放行。
         if (!isProtected(exchange)) {
             return chain.filter(exchange);
         }
@@ -68,10 +80,10 @@ public class GatewayAuthFilter implements WebFilter {
                         : writeUnauthorized(exchange.getResponse()));
     }
 
-    /** 判断当前请求是否为受保护的聊天补全端点。 */
+    /** 判断当前请求是否为受保护的聊天端点。 */
     private boolean isProtected(ServerWebExchange exchange) {
         return HttpMethod.POST.equals(exchange.getRequest().getMethod())
-                && PROTECTED_PATH.equals(exchange.getRequest().getPath().value());
+                && PROTECTED_PATHS.contains(exchange.getRequest().getPath().value());
     }
 
     /** 写出 401 响应。 */

@@ -18,6 +18,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
+import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService;
@@ -49,6 +50,10 @@ class GatewayAuthFilterTests {
 
     @SuppressWarnings("removal")
     @MockBean
+    private MessagesService messagesService;
+
+    @SuppressWarnings("removal")
+    @MockBean
     private AppConfigRepository appConfigRepository;
 
     @Autowired
@@ -64,6 +69,9 @@ class GatewayAuthFilterTests {
         given(chatCompletionService.chatCompletion(anyMap(), anyString(),
                 any(HttpHeaders.class), anyString()))
                 .willReturn(Mono.just("{\"id\":\"chatcmpl-test\",\"object\":\"chat.completion\"}"));
+        given(messagesService.messages(anyMap(), anyString(),
+                any(HttpHeaders.class), anyString()))
+                .willReturn(Mono.just("{\"id\":\"msg_test\",\"type\":\"message\"}"));
     }
 
     /** 在 mock 仓库中写入「已开启 + 指定明文 Key」的配置。 */
@@ -81,6 +89,16 @@ class GatewayAuthFilterTests {
             spec = spec.header(HttpHeaders.AUTHORIZATION, "Bearer " + bearer);
         }
         return spec.bodyValue("{\"model\":\"test-model\",\"messages\":[]}").exchange();
+    }
+
+    /** 打 Anthropic 端点，与 {@link #postChat} 对称。 */
+    private WebTestClient.ResponseSpec postMessages(String bearer) {
+        WebTestClient.RequestBodySpec spec = webTestClient.post().uri("/v1/messages")
+                .contentType(MediaType.APPLICATION_JSON);
+        if (bearer != null) {
+            spec = spec.header(HttpHeaders.AUTHORIZATION, "Bearer " + bearer);
+        }
+        return spec.bodyValue("{\"model\":\"test-model\",\"max_tokens\":100,\"messages\":[]}").exchange();
     }
 
     @Test
@@ -122,5 +140,38 @@ class GatewayAuthFilterTests {
         // fake_version 未 stub 时返回 null，控制器回退到 application.yml 默认版本，仍为 200。
         enableWithKey(VALID_KEY);
         webTestClient.get().uri("/api/version").exchange().expectStatus().isOk();
+    }
+
+    // ---------- Anthropic 端点 ----------
+
+    /**
+     * Anthropic 端点同样受保护。
+     *
+     * <p>它与 OpenAI 端点一样真实消耗上游额度，若漏掉就等于给鉴权开了个后门 ——
+     * 攻击者换个端点即可绕过。
+     */
+    @Test
+    void anthropicEndpointWithoutAuthorizationReturns401() {
+        enableWithKey(VALID_KEY);
+        postMessages(null).expectStatus().isUnauthorized();
+    }
+
+    @Test
+    void anthropicEndpointWithWrongKeyReturns401() {
+        enableWithKey(VALID_KEY);
+        postMessages("cosp-wrong-key").expectStatus().isUnauthorized();
+    }
+
+    /** 两个端点共用同一把网关 Key —— 它保护的是「谁能用这个代理」，与协议无关。 */
+    @Test
+    void anthropicEndpointAcceptsTheSameGatewayKey() {
+        enableWithKey(VALID_KEY);
+        postMessages(VALID_KEY).expectStatus().isOk();
+    }
+
+    @Test
+    void anthropicEndpointPassesThroughWhenAuthDisabled() {
+        given(appConfigRepository.findConfigValue(ENABLED_KEY)).willReturn("false");
+        postMessages(null).expectStatus().isOk();
     }
 }
