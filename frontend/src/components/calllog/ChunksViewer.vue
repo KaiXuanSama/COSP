@@ -11,10 +11,12 @@ import { NModal, NRadioGroup, NRadio, NScrollbar, NTooltip, useMessage } from 'n
 import { marked } from 'marked'
 import JsonNode from './JsonNode.vue'
 import { copyToClipboard } from '@/utils/clipboard'
+import { aggregateChunks, type ChunkSegment, type WireProtocol } from './chunkAggregation'
 
 const props = defineProps<{
   show: boolean
   chunks: string[]
+  upstreamProtocol: WireProtocol
 }>()
 
 const emit = defineEmits<{
@@ -102,98 +104,13 @@ function copyBlockChunk(chunk: string, index: number) {
  *  - 思考 / 正文：复制纯文本
  *  - 工具调用：复制 JSON 字符串
  */
-function copySegment(seg: Segment, index: number) {
+function copySegment(seg: ChunkSegment, index: number) {
   const text =
     seg.type === 'tool_calls' ? JSON.stringify(seg.toolCalls ?? [], null, 2) : seg.text
   return () => handleCopy(text, `segment-${index}`)
 }
 
-interface Segment {
-  type: 'thinking' | 'content' | 'tool_calls'
-  text: string
-  toolCalls?: unknown[]
-}
-
-/**
- * 将 chunks 数组聚合为语义片段
- */
-function aggregateChunks(chunks: string[]): Segment[] {
-  let reasoning = ''
-  let content = ''
-  const mergedToolCalls = new Map<number, { id: string | null; type: string; function: { name: string | null; arguments: string } }>()
-
-  for (const raw of chunks) {
-    if (raw === '[DONE]') continue
-    let obj: Record<string, unknown>
-    try {
-      const parsed = JSON.parse(raw)
-      if (!parsed || typeof parsed !== 'object') continue
-      obj = parsed
-    } catch {
-      continue
-    }
-    // 跳过 usage 之类的非 choices 块
-    const choices = obj.choices as Array<Record<string, unknown>> | undefined
-    if (!choices || choices.length === 0) continue
-
-    const delta = choices[0]?.delta as Record<string, unknown> | undefined
-    if (!delta) continue
-
-    // 累积思考文本（兼容 reasoning_text 和 reasoning_content）
-    const rt = delta.reasoning_text ?? delta.reasoning_content
-    if (typeof rt === 'string' && rt.length > 0) {
-      reasoning += rt
-    }
-    // 累积正文
-    const dc = delta.content
-    if (typeof dc === 'string' && dc.length > 0) {
-      content += dc
-    }
-    // 收集工具调用（按 index 合并增量 chunk）
-    const tc = delta.tool_calls as Array<Record<string, unknown>> | null | undefined
-    if (Array.isArray(tc) && tc.length > 0) {
-      for (const call of tc) {
-        const idx = call.index as number
-        if (!mergedToolCalls.has(idx)) {
-          mergedToolCalls.set(idx, {
-            id: (call.id as string) ?? null,
-            type: (call.type as string) ?? 'function',
-            function: {
-              name: ((call.function as Record<string, unknown>)?.name as string) ?? null,
-              arguments: ((call.function as Record<string, unknown>)?.arguments as string) ?? '',
-            },
-          })
-        } else {
-          const existing = mergedToolCalls.get(idx)!
-          if (call.id) existing.id = call.id as string
-          const fn = call.function as Record<string, unknown> | undefined
-          if (fn?.name) existing.function.name = fn.name as string
-          if (typeof fn?.arguments === 'string') {
-            existing.function.arguments += fn.arguments
-          }
-        }
-      }
-    }
-  }
-
-  const segments: Segment[] = []
-  if (reasoning) segments.push({ type: 'thinking', text: reasoning })
-  if (mergedToolCalls.size > 0) {
-    const toolCalls = [...mergedToolCalls.values()].map(tc => ({
-      id: tc.id,
-      type: tc.type,
-      function: {
-        name: tc.function.name,
-        arguments: (() => { try { return JSON.parse(tc.function.arguments) } catch { return tc.function.arguments } })(),
-      },
-    }))
-    segments.push({ type: 'tool_calls', text: '', toolCalls })
-  }
-  if (content) segments.push({ type: 'content', text: content })
-  return segments
-}
-
-const segments = computed(() => aggregateChunks(props.chunks))
+const segments = computed(() => aggregateChunks(props.chunks, props.upstreamProtocol))
 
 /**
  * 渲染 Markdown

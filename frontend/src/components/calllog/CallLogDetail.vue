@@ -34,7 +34,11 @@ const props = withDefaults(
 )
 
 const jsonModal = ref({ show: false, title: '', content: null as unknown, collapseRule: 'none' as CollapseRule })
-const chunksModal = ref({ show: false, chunks: [] as string[] })
+const chunksModal = ref({
+  show: false,
+  chunks: [] as string[],
+  upstreamProtocol: 'OPENAI' as DetailItem['upstream_protocol'],
+})
 
 // ── 格式化 ──────────────────────────────────────────────
 
@@ -269,7 +273,11 @@ function openChunksModal(rawChunks: string | null) {
   } catch {
     parsed = [rawChunks]
   }
-  chunksModal.value = { show: true, chunks: parsed }
+  chunksModal.value = {
+    show: true,
+    chunks: parsed,
+    upstreamProtocol: props.detail.upstream_protocol,
+  }
 }
 
 onMounted(() => {
@@ -434,6 +442,7 @@ onUnmounted(() => {
     <ChunksViewer
       v-model:show="chunksModal.show"
       :chunks="chunksModal.chunks"
+      :upstream-protocol="chunksModal.upstreamProtocol"
     />
 
     <!--
