@@ -672,7 +672,8 @@ public abstract class AbstractUpstreamChatService {
     private Long saveNonStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, String responseBody, long startTime) {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        return apiCallLog.saveNonStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, responseBody, duration);
+        return apiCallLog.saveNonStream(providerKey, modelName, reqHeaders, requestBody, respHeaders,
+                statusCode, responseBody, duration);
     }
 
     /**
@@ -683,7 +684,8 @@ public abstract class AbstractUpstreamChatService {
     private Long saveStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, List<String> chunks, long startTime) {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        return apiCallLog.saveStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, chunks, duration);
+        return apiCallLog.saveStream(providerKey, modelName, reqHeaders, requestBody, respHeaders,
+                statusCode, chunks, duration);
     }
 
     /**

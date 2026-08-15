@@ -48,9 +48,18 @@ public class ApiCallLogRepository implements ApiCallLogService {
     public Long saveNonStream(String providerKey, String modelName,
                               Map<String, String> requestHeaders, Map<String, Object> requestBody,
                               Map<String, String> responseHeaders, int statusCode, String responseBody, long durationMs) {
-        String sql = "INSERT INTO api_call_log (provider_key, model_name, is_stream, status_code, request_headers, request_body, response_headers, response_body, duration_ms) "
-                + "VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)";
-        Object[] args = {providerKey, modelName, statusCode,
+        return saveNonStream(providerKey, modelName, "OPENAI", "OPENAI", requestHeaders, requestBody,
+                responseHeaders, statusCode, responseBody, durationMs);
+    }
+
+    @Override
+    public Long saveNonStream(String providerKey, String modelName,
+                              String downstreamProtocol, String upstreamProtocol,
+                              Map<String, String> requestHeaders, Map<String, Object> requestBody,
+                              Map<String, String> responseHeaders, int statusCode, String responseBody, long durationMs) {
+        String sql = "INSERT INTO api_call_log (provider_key, model_name, is_stream, downstream_protocol, upstream_protocol, status_code, request_headers, request_body, response_headers, response_body, duration_ms) "
+                + "VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)";
+        Object[] args = {providerKey, modelName, downstreamProtocol, upstreamProtocol, statusCode,
                 toJson(requestHeaders), toJson(requestBody),
                 toJson(responseHeaders), responseBody, durationMs};
         return insertReturningId(sql, args);
@@ -63,9 +72,18 @@ public class ApiCallLogRepository implements ApiCallLogService {
     public Long saveStream(String providerKey, String modelName,
                            Map<String, String> requestHeaders, Map<String, Object> requestBody,
                            Map<String, String> responseHeaders, int statusCode, List<String> chunks, long durationMs) {
-        String sql = "INSERT INTO api_call_log (provider_key, model_name, is_stream, status_code, request_headers, request_body, response_headers, chunks, duration_ms) "
-                + "VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)";
-        Object[] args = {providerKey, modelName, statusCode,
+        return saveStream(providerKey, modelName, "OPENAI", "OPENAI", requestHeaders, requestBody,
+                responseHeaders, statusCode, chunks, durationMs);
+    }
+
+    @Override
+    public Long saveStream(String providerKey, String modelName,
+                           String downstreamProtocol, String upstreamProtocol,
+                           Map<String, String> requestHeaders, Map<String, Object> requestBody,
+                           Map<String, String> responseHeaders, int statusCode, List<String> chunks, long durationMs) {
+        String sql = "INSERT INTO api_call_log (provider_key, model_name, is_stream, downstream_protocol, upstream_protocol, status_code, request_headers, request_body, response_headers, chunks, duration_ms) "
+                + "VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)";
+        Object[] args = {providerKey, modelName, downstreamProtocol, upstreamProtocol, statusCode,
                 toJson(requestHeaders), toJson(requestBody),
                 toJson(responseHeaders), toJson(chunks), durationMs};
         return insertReturningId(sql, args);
@@ -80,9 +98,19 @@ public class ApiCallLogRepository implements ApiCallLogService {
                                     Map<String, String> requestHeaders, Map<String, Object> requestBody,
                                     Map<String, String> responseHeaders, int statusCode, List<String> chunks,
                                     Map<String, String> errorHeaders, int errorCode, String errorBody, long durationMs) {
-        String sql = "INSERT INTO api_call_log (provider_key, model_name, is_stream, status_code, request_headers, request_body, response_headers, response_body, chunks, duration_ms) "
-                + "VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)";
-        Object[] args = {providerKey, modelName, errorCode,
+        return saveStreamWithError(providerKey, modelName, "OPENAI", "OPENAI", requestHeaders, requestBody,
+                responseHeaders, statusCode, chunks, errorHeaders, errorCode, errorBody, durationMs);
+    }
+
+    @Override
+    public Long saveStreamWithError(String providerKey, String modelName,
+                                    String downstreamProtocol, String upstreamProtocol,
+                                    Map<String, String> requestHeaders, Map<String, Object> requestBody,
+                                    Map<String, String> responseHeaders, int statusCode, List<String> chunks,
+                                    Map<String, String> errorHeaders, int errorCode, String errorBody, long durationMs) {
+        String sql = "INSERT INTO api_call_log (provider_key, model_name, is_stream, downstream_protocol, upstream_protocol, status_code, request_headers, request_body, response_headers, response_body, chunks, duration_ms) "
+                + "VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        Object[] args = {providerKey, modelName, downstreamProtocol, upstreamProtocol, errorCode,
                 toJson(requestHeaders), toJson(requestBody),
                 toJson(errorHeaders), errorBody, toJson(chunks), durationMs};
         return insertReturningId(sql, args);
@@ -179,7 +207,8 @@ public class ApiCallLogRepository implements ApiCallLogService {
         if (pageSize < 1) pageSize = 10;
         if (pageSize > 100) pageSize = 100;
 
-        String sql = "SELECT l.id, l.provider_key, l.model_name, l.is_stream, l.status_code, "
+        String sql = "SELECT l.id, l.provider_key, l.model_name, l.is_stream, l.downstream_protocol, "
+                + "l.upstream_protocol, l.status_code, "
                 + "l.duration_ms, l.payload_trimmed, l.created_at, "
                 + "u.prompt_tokens, u.completion_tokens, u.cached_tokens, u.ttfb_ms "
                 + "FROM api_call_log l LEFT JOIN api_call_usage u ON u.id = ("

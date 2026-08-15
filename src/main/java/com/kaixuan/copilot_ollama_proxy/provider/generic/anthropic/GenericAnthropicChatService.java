@@ -772,7 +772,8 @@ public class GenericAnthropicChatService {
                                   int statusCode, String responseBody, long startTime) {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        return apiCallLog.saveNonStream(providerKey, modelName, reqHeaders, requestBody, respHeaders,
+        return apiCallLog.saveNonStream(providerKey, modelName, "ANTHROPIC", "ANTHROPIC",
+                reqHeaders, requestBody, respHeaders,
                 statusCode, responseBody, duration);
     }
 
@@ -781,7 +782,8 @@ public class GenericAnthropicChatService {
                                int statusCode, List<String> chunks, long startTime) {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        return apiCallLog.saveStream(providerKey, modelName, reqHeaders, requestBody, respHeaders,
+        return apiCallLog.saveStream(providerKey, modelName, "ANTHROPIC", "ANTHROPIC",
+                reqHeaders, requestBody, respHeaders,
                 statusCode, chunks, duration);
     }
 
@@ -791,8 +793,9 @@ public class GenericAnthropicChatService {
                                         int errorCode, String errorBody, long startTime) {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        return apiCallLog.saveStreamWithError(providerKey, modelName, reqHeaders, requestBody,
-                respHeaders, statusCode, chunks, errorHeaders, errorCode, errorBody, duration);
+        return apiCallLog.saveStreamWithError(providerKey, modelName, "ANTHROPIC", "ANTHROPIC",
+                reqHeaders, requestBody, respHeaders, statusCode, chunks, errorHeaders,
+                errorCode, errorBody, duration);
     }
 
     /** 非流式用量写入：从原始 usage JSON 解析。 */

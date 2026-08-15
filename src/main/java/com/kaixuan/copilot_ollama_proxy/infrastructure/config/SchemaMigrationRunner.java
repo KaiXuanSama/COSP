@@ -35,7 +35,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final double V8_2_VERSION = 8.2;
     private static final double V8_3_VERSION = 8.3;
     private static final double V8_4_VERSION = 8.4;
-    private static final double CURRENT_SCHEMA_VERSION = 8.5;
+    private static final double V8_5_VERSION = 8.5;
+    private static final double CURRENT_SCHEMA_VERSION = 8.6;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -137,8 +138,10 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                 new MigrationStep(V8_3_VERSION, "新增 token 用量表", this::migrateToV83AddUsageTable),
                 new MigrationStep(V8_4_VERSION, "新增用量时间范围查询索引",
                         this::migrateToV84AddUsageCreatedAtIndex),
-                new MigrationStep(CURRENT_SCHEMA_VERSION, "日志保留改为载荷瘦身",
-                        this::migrateToV85AddPayloadTrimmedFlag));
+                new MigrationStep(V8_5_VERSION, "日志保留改为载荷瘦身",
+                        this::migrateToV85AddPayloadTrimmedFlag),
+                new MigrationStep(CURRENT_SCHEMA_VERSION, "调用日志记录上下游线路协议",
+                        this::migrateToV86AddCallLogProtocols));
     }
 
     private List<MigrationStep> baselineMigrations() {
@@ -169,7 +172,9 @@ public class SchemaMigrationRunner implements ApplicationRunner {
             && columnExists("provider_config", "display_name") && !columnExists("provider_config", "api_format")
             && !hasLegacyProviderConfigColumns() && !tableExists("reasoning_cache")
             && tableExists("api_call_usage") && indexExists("idx_api_call_usage_created")
-            && columnExists("api_call_log", "payload_trimmed");
+            && columnExists("api_call_log", "payload_trimmed")
+            && columnExists("api_call_log", "downstream_protocol")
+            && columnExists("api_call_log", "upstream_protocol");
     }
 
     /**
@@ -182,7 +187,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         + "ON CONFLICT(id) DO UPDATE SET version = excluded.version, "
                         + "description = excluded.description, "
                         + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
-                    CURRENT_SCHEMA_VERSION, "V8.5 架构基线：统一供应商实现、token 用量表与日志载荷瘦身"));
+                    CURRENT_SCHEMA_VERSION, "V8.6 架构基线：统一供应商实现、token 用量表、日志载荷瘦身与线路协议"));
         log.info("[SchemaMigration] 已建立 V{} 架构基线", CURRENT_SCHEMA_VERSION);
     }
 
@@ -572,7 +577,30 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
         jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
                 + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
-            CURRENT_SCHEMA_VERSION, "V8.5 增量迁移：日志保留改为载荷瘦身");
+                V8_5_VERSION, "V8.5 增量迁移：日志保留改为载荷瘦身");
+    }
+
+    /**
+     * V8.6：记录一次调用两侧实际采用的线路协议。
+     *
+     * <p>翻译层尚未实现，故存量日志必为直连：下游与上游协议相同。迁移依据历史
+     * chunk：流式 OpenAI 的终止块是 {@code [DONE]}，而 Anthropic 使用 {@code message_stop}
+     * 并不会出现该块。因 {@code chunks} 仅存流式载荷，NULL 统一回填 OPENAI：其中既包括
+     * 所有非流式记录，也包括载荷已瘦身的旧记录；后者发生在 Anthropic 接口出现之前，
+     * 因而该保守归类与历史事实一致。
+     */
+    private void migrateToV86AddCallLogProtocols() {
+        if (tableExists("api_call_log")) {
+            addColumnIfNotExists("api_call_log", "downstream_protocol",
+                    "TEXT NOT NULL DEFAULT 'OPENAI' CHECK (downstream_protocol IN ('OPENAI', 'ANTHROPIC'))");
+            addColumnIfNotExists("api_call_log", "upstream_protocol",
+                    "TEXT NOT NULL DEFAULT 'OPENAI' CHECK (upstream_protocol IN ('OPENAI', 'ANTHROPIC'))");
+            jdbcTemplate.update("UPDATE api_call_log SET downstream_protocol = 'ANTHROPIC', "
+                    + "upstream_protocol = 'ANTHROPIC' WHERE chunks IS NOT NULL AND chunks NOT LIKE '%[DONE]%'");
+        }
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+                CURRENT_SCHEMA_VERSION, "V8.6 增量迁移：调用日志记录上下游线路协议");
     }
 
             private void deleteProviderConfiguration(int providerId) {

@@ -380,6 +380,56 @@ class SchemaMigrationRunnerTests {
     }
 
     @Test
+    void v85DatabaseAddsProtocolColumnsAndClassifiesChunkHistoryDuringV86Migration() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createCurrentSchema(jdbcTemplate);
+        createV85CallLogTable(jdbcTemplate);
+        jdbcTemplate.execute("CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
+                + "version REAL NOT NULL, description TEXT NOT NULL, applied_at TEXT)");
+        jdbcTemplate.update("INSERT INTO schema_version (id, version, description) VALUES (1, 8.5, 'V8.5')");
+        jdbcTemplate.update("INSERT INTO api_call_log (provider_key, model_name, is_stream, chunks) "
+                + "VALUES ('openai-stream', 'm', 1, '[\"chunk\", \"[DONE]\"]')");
+        jdbcTemplate.update("INSERT INTO api_call_log (provider_key, model_name, is_stream, chunks) "
+                + "VALUES ('anthropic-stream', 'm', 1, '[\"message_start\", \"message_stop\"]')");
+        jdbcTemplate.update("INSERT INTO api_call_log (provider_key, model_name, is_stream, chunks, payload_trimmed) "
+                + "VALUES ('trimmed', 'm', 1, NULL, 1)");
+        jdbcTemplate.update("INSERT INTO api_call_log (provider_key, model_name, is_stream, chunks) "
+                + "VALUES ('non-stream', 'm', 0, NULL)");
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        runner.run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+        assertThat(columnNames(jdbcTemplate, "api_call_log"))
+                .contains("downstream_protocol", "upstream_protocol");
+        assertProtocols(jdbcTemplate, "openai-stream", "OPENAI");
+        assertProtocols(jdbcTemplate, "anthropic-stream", "ANTHROPIC");
+        // chunks 仅属于流式；NULL 也覆盖已瘦身的历史行，按既定规则统一归 OpenAI。
+        assertProtocols(jdbcTemplate, "trimmed", "OPENAI");
+        assertProtocols(jdbcTemplate, "non-stream", "OPENAI");
+    }
+
+    /** 迁移补出的协议列须限制在当前两种线路协议内，避免脏值进入未来翻译判断。 */
+    @Test
+    void migratedProtocolColumnsRejectUnknownValues() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createCurrentSchema(jdbcTemplate);
+        createV85CallLogTable(jdbcTemplate);
+        jdbcTemplate.execute("CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
+                + "version REAL NOT NULL, description TEXT NOT NULL, applied_at TEXT)");
+        jdbcTemplate.update("INSERT INTO schema_version (id, version, description) VALUES (1, 8.5, 'V8.5')");
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "INSERT INTO api_call_log (provider_key, downstream_protocol, upstream_protocol) "
+                        + "VALUES ('p', 'UNKNOWN', 'OPENAI')"))
+                .isInstanceOf(DataAccessException.class);
+    }
+
+    @Test
     void historicalV5MigrationDoesNotOverwriteExistingRequestTransformConfiguration() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
         createLegacySchema(jdbcTemplate);
@@ -545,6 +595,17 @@ class SchemaMigrationRunnerTests {
                                 + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')))");
         }
 
+        /** 建出 V8.5 时的 api_call_log：已有载荷瘦身标记，但尚无两侧协议字段。 */
+        private void createV85CallLogTable(JdbcTemplate jdbcTemplate) {
+                jdbcTemplate.execute("CREATE TABLE api_call_log ("
+                                + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key VARCHAR(30), model_name VARCHAR(100), "
+                                + "is_stream INTEGER NOT NULL DEFAULT 0 CHECK (is_stream IN (0, 1)), status_code INTEGER, "
+                                + "request_headers TEXT, request_body TEXT, response_headers TEXT, response_body TEXT, chunks TEXT, "
+                                + "duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0), "
+                                + "payload_trimmed INTEGER NOT NULL DEFAULT 0 CHECK (payload_trimmed IN (0, 1)), "
+                                + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')))");
+        }
+
         private void createCurrentProviderAssociations(JdbcTemplate jdbcTemplate) {
                 jdbcTemplate.execute("CREATE TABLE provider_model (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL)");
                 jdbcTemplate.execute("CREATE TABLE provider_api_key (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL)");
@@ -567,6 +628,13 @@ class SchemaMigrationRunnerTests {
         return jdbcTemplate.queryForList("PRAGMA table_info(" + tableName + ")").stream()
                 .map(row -> String.valueOf(row.get("name")))
                 .toList();
+    }
+
+    private void assertProtocols(JdbcTemplate jdbcTemplate, String providerKey, String expectedProtocol) {
+        Map<String, Object> row = jdbcTemplate.queryForMap(
+                "SELECT downstream_protocol, upstream_protocol FROM api_call_log WHERE provider_key = ?", providerKey);
+        assertThat(row.get("downstream_protocol")).isEqualTo(expectedProtocol);
+        assertThat(row.get("upstream_protocol")).isEqualTo(expectedProtocol);
     }
 
         private boolean tableExists(JdbcTemplate jdbcTemplate, String tableName) {
@@ -601,13 +669,17 @@ class SchemaMigrationRunnerTests {
                         assertThat(tableExists(jdbcTemplate, "reasoning_cache")).isFalse();
                         assertThat(tableExists(jdbcTemplate, "api_call_usage")).isTrue();
                 }
-                // 8.4 建索引、8.5 加列，两者是各自版本的持久不变量，故用字面版本号而非
+        // 8.4 建索引、8.5 加列、8.6 补协议字段，两者是各自版本的持久不变量，故用字面版本号而非
                 // currentSchemaVersion()：后者会随下次迁移前移，导致旧检查点漏断言。
                 if (version >= 8.4) {
                         assertThat(indexExists(jdbcTemplate, "idx_api_call_usage_created")).isTrue();
                 }
                 if (version >= 8.5) {
                         assertThat(columnNames(jdbcTemplate, "api_call_log")).contains("payload_trimmed");
+                }
+                if (version >= 8.6) {
+                        assertThat(columnNames(jdbcTemplate, "api_call_log"))
+                                .contains("downstream_protocol", "upstream_protocol");
                 }
         }
 }

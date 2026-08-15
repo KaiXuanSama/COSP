@@ -28,6 +28,7 @@ class ApiCallLogRepositoryCursorTests {
         jdbcTemplate = new JdbcTemplate(dataSource);
         jdbcTemplate.execute("CREATE TABLE api_call_log ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT, model_name TEXT, is_stream INTEGER NOT NULL DEFAULT 0, "
+                + "downstream_protocol TEXT NOT NULL DEFAULT 'OPENAI', upstream_protocol TEXT NOT NULL DEFAULT 'OPENAI', "
                 + "status_code INTEGER NOT NULL DEFAULT 0, request_headers TEXT, request_body TEXT, response_headers TEXT, response_body TEXT, "
                 + "chunks TEXT, duration_ms INTEGER, payload_trimmed INTEGER NOT NULL DEFAULT 0, "
                 + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
@@ -84,7 +85,8 @@ class ApiCallLogRepositoryCursorTests {
 
         assertThat(items).hasSize(3);
         assertThat(items).allSatisfy(row ->
-                assertThat(row).containsKeys("prompt_tokens", "completion_tokens", "cached_tokens", "ttfb_ms"));
+                assertThat(row).containsKeys("prompt_tokens", "completion_tokens", "cached_tokens", "ttfb_ms",
+                        "downstream_protocol", "upstream_protocol"));
 
         Map<String, Object> withUsage = items.stream()
                 .filter(row -> ((Number) row.get("id")).longValue() == 1L)
