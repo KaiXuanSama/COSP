@@ -421,9 +421,10 @@ public class GenericAnthropicChatService {
     /**
      * Messages 端点路径。
      *
-     * <p>数据库里存的 Base URL 目前都带 {@code /v1} 后缀（OpenAI 的惯例），
-     * 而多数中转站的 Anthropic 端点是在<strong>根路径</strong>下暴露 {@code /messages}，
-     * 故此处先按「Base URL 去掉 {@code /v1} 后直接接 {@code /messages}」处理。
+     * <p>当前全局规则是<strong>保留</strong>数据库 Base URL 自带的路径，
+     * 再接 {@code /messages}：已有供应商的 Base URL 通常是 {@code .../v1}，
+     * 因而实际请求为 {@code .../v1/messages}。这与 Anthropic 官方及 tokenrhythm
+     * 的实测端点一致。
      *
      * @see #normalizeAnthropicBaseUrl
      */
@@ -432,23 +433,21 @@ public class GenericAnthropicChatService {
     }
 
     /**
-     * 把 OpenAI 惯例的 Base URL 调整成 Anthropic 端点的基址。
+     * 归一化 Anthropic 上游 Base URL，但<strong>不裁切路径</strong>。
      *
-     * <p>TODO 上游 Anthropic 端点是否带 {@code /v1} 前缀尚未实测确认，此处先剥掉尾部的
-     *  {@code /v1}（形如 {@code https://agentrouter.org/v1} → {@code https://agentrouter.org}，
-     *  再接 {@code /messages}）。这是多数中转站的做法，但<strong>Anthropic 官方是
-     *  {@code /v1/messages}</strong>，两者并不一致。
-     *  待验证各中转站的真实形态后，应在 {@code provider_config} 增加独立的 Anthropic
-     *  Base URL 列（或端点路径列）由用户显式配置，而不是在代码里猜。
-     *  在此之前：若某供应商的 Anthropic 端点确实需要 {@code /v1}，本方法会把它剥掉
-     *  导致 404 —— 该失败有完整日志（请求 URL 可查），不会静默。
+     * <p>原先的乐观规则会把尾部 {@code /v1} 剥掉（{@code .../v1 → ...}），再接
+     * {@code /messages}；对 tokenrhythm 实测得到站点根路径的 405，而其 Anthropic
+     * 端点实际是 {@code POST /v1/messages}。因此全局规则改为完整保留数据库中的路径，
+     * 只做已有的尾斜杠归一化。
+     *
+     * <p>TODO 当前仍是全局猜测，不是按供应商特化：已有 Base URL 带 {@code /v1} 的供应商
+     * 统一走 {@code /v1/messages}，若将来某个中转站确实把 Anthropic 端点暴露在根路径
+     * {@code /messages}，它会得到 404 / 405。待验证更多供应商后，应在
+     * {@code provider_config} 增加独立的 Anthropic Base URL 或端点路径配置，
+     * 由用户显式决定而非继续在代码里猜。
      */
     private String normalizeAnthropicBaseUrl(String baseUrl) {
-        String normalized = providerRequestHeaderService.normalizeBaseUrl(baseUrl);
-        if (normalized.endsWith("/v1")) {
-            return normalized.substring(0, normalized.length() - "/v1".length());
-        }
-        return normalized;
+        return providerRequestHeaderService.normalizeBaseUrl(baseUrl);
     }
 
     /**
