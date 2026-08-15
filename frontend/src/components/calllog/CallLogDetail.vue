@@ -113,6 +113,15 @@ function formatTtfb(usage: UsageDetail | null): string {
   return formatDuration(usage.ttfb_ms)
 }
 
+function formatCallType(detail: DetailItem): string {
+  const upstream = detail.upstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
+  const downstream = detail.downstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
+  const protocol = upstream === downstream
+    ? (upstream === 'A' ? 'Anthropic' : 'OpenAI')
+    : `${upstream}→${downstream}`
+  return `${detail.is_stream ? '流式' : '非流'}: ${protocol}`
+}
+
 /**
  * 缓存命中占比 = 缓存命中 token / 输入 token。
  *
@@ -281,8 +290,12 @@ onUnmounted(() => {
         <div class="detail-meta-title">
           <span class="detail-provider">{{ props.detail.provider_key }}</span>
           <span class="detail-model">{{ props.detail.model_name }}</span>
-          <span class="detail-stream-tag" :class="{ 'detail-stream-tag--stream': props.detail.is_stream }">
-            {{ props.detail.is_stream ? '流式' : '非流式' }}
+          <span
+            class="detail-call-tag"
+            :class="{ 'detail-call-tag--stream': props.detail.is_stream }"
+            :title="`上游 ${props.detail.upstream_protocol} → 下游 ${props.detail.downstream_protocol}`"
+          >
+            {{ formatCallType(props.detail) }}
           </span>
         </div>
       </div>
@@ -488,7 +501,7 @@ onUnmounted(() => {
   color: $text-body;
 }
 
-.detail-stream-tag {
+.detail-call-tag {
   display: inline-flex;
   align-items: center;
   padding: 1px 6px;

@@ -32,6 +32,8 @@ export interface DetailItem {
   provider_key: string
   model_name: string
   is_stream: number
+  downstream_protocol: 'OPENAI' | 'ANTHROPIC'
+  upstream_protocol: 'OPENAI' | 'ANTHROPIC'
   status_code: number
   request_headers: string | null
   request_body: string | null

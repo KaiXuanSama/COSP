@@ -30,6 +30,8 @@ interface UsageLogItem {
   provider_key: string
   model_name: string
   is_stream: number
+  downstream_protocol: 'OPENAI' | 'ANTHROPIC'
+  upstream_protocol: 'OPENAI' | 'ANTHROPIC'
   status_code: number
   duration_ms: number | null
   payload_trimmed: number
@@ -283,6 +285,15 @@ function statusClass(code: number): string {
   return 'default'
 }
 
+function formatCallType(row: UsageLogItem): string {
+  const upstream = row.upstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
+  const downstream = row.downstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
+  const protocol = upstream === downstream
+    ? (upstream === 'A' ? 'Anthropic' : 'OpenAI')
+    : `${upstream}→${downstream}`
+  return `${row.is_stream ? '流式' : '非流'}: ${protocol}`
+}
+
 /** 状态码 -1 是空响应兜底的占位值，直接显示数字会让人误以为是 HTTP 码。 */
 function statusLabel(code: number): string {
   return code === -1 ? '空响应' : String(code)
@@ -352,7 +363,7 @@ onUnmounted(() => {
               <th class="col-status">状态</th>
               <th class="col-provider">供应商</th>
               <th class="col-model">模型</th>
-              <th class="col-stream">类型</th>
+              <th class="col-call-type">类型</th>
               <!--
                 首字/总耗时拆成三列（右对齐 / 斜杠 / 左对齐）：合成一列右对齐时，
                 两个变宽数字被整体推到右边界，斜杠位置随内容漂移，纵向扫读找不到锚点。
@@ -395,9 +406,12 @@ onUnmounted(() => {
                 </td>
                 <td class="col-provider">{{ row.provider_key }}</td>
                 <td class="col-model" :title="row.model_name">{{ row.model_name }}</td>
-                <td class="col-stream">
-                  <span class="stream-tag" :class="{ 'stream-tag--stream': row.is_stream }">
-                    {{ row.is_stream ? '流式' : '非流式' }}
+                <td
+                  class="col-call-type"
+                  :title="`上游 ${row.upstream_protocol} → 下游 ${row.downstream_protocol}`"
+                >
+                  <span class="call-type-tag" :class="{ 'call-type-tag--stream': row.is_stream }">
+                    {{ formatCallType(row) }}
                   </span>
                 </td>
                 <td class="col-ttfb">{{ formatDuration(row.ttfb_ms) }}</td>
@@ -745,20 +759,12 @@ th.col-num {
   text-overflow: ellipsis;
 }
 
-/*
-  类型列：width: 1% 在 auto 布局下等价于「按内容取最小宽度」，
-  徽章宽度固定且短，多余宽度让给模型名与数字列。
- */
-.usage-table .col-stream {
+.col-call-type {
   width: 1%;
   white-space: nowrap;
 }
 
-/*
-  流式/非流式徽章。流式用强调色、非流式用中性灰：
-  绝大多数调用是流式，用中性色标出非流式反而让少数派更易被扫到。
- */
-.stream-tag {
+.call-type-tag {
   display: inline-block;
   padding: 1px 6px;
   font-size: 11px;
