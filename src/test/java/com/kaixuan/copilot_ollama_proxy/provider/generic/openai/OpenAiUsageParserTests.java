@@ -1,4 +1,6 @@
-package com.kaixuan.copilot_ollama_proxy.application.usage;
+package com.kaixuan.copilot_ollama_proxy.provider.generic.openai;
+
+import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -15,12 +17,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>顶层 cached_tokens 永不参与（恒为 0 且不可信）。</li>
  * </ul>
  */
-class UsageParserTests {
+class OpenAiUsageParserTests {
 
     private final ObjectMapper mapper = new ObjectMapper();
 
     private UsageTokens parse(String usageJson) {
-        return UsageParser.parseFromJson(mapper, "{\"usage\":" + usageJson + "}");
+        return OpenAiUsageParser.parseFromJson(mapper, "{\"usage\":" + usageJson + "}");
     }
 
     // ==================== 样本 1：标准嵌套 cached + cache_creation ====================
@@ -174,17 +176,17 @@ class UsageParserTests {
     // ==================== 边界：非法 JSON / null / 空串 → EMPTY ====================
     @Test
     void invalidOrMissingUsage_returnsEmpty() {
-        assertThat(UsageParser.parseFromJson(mapper, null).isEmpty()).isTrue();
-        assertThat(UsageParser.parseFromJson(mapper, "").isEmpty()).isTrue();
-        assertThat(UsageParser.parseFromJson(mapper, "[DONE]").isEmpty()).isTrue();
-        assertThat(UsageParser.parseFromJson(mapper, "not json").isEmpty()).isTrue();
-        assertThat(UsageParser.parseFromJson(mapper, "{\"choices\":[]}").isEmpty()).isTrue();
+        assertThat(OpenAiUsageParser.parseFromJson(mapper, null).isEmpty()).isTrue();
+        assertThat(OpenAiUsageParser.parseFromJson(mapper, "").isEmpty()).isTrue();
+        assertThat(OpenAiUsageParser.parseFromJson(mapper, "[DONE]").isEmpty()).isTrue();
+        assertThat(OpenAiUsageParser.parseFromJson(mapper, "not json").isEmpty()).isTrue();
+        assertThat(OpenAiUsageParser.parseFromJson(mapper, "{\"choices\":[]}").isEmpty()).isTrue();
     }
 
     // ==================== 边界：usage 为 null 字面量 → EMPTY ====================
     @Test
     void usageNullLiteral_returnsEmpty() {
-        assertThat(UsageParser.parseFromJson(mapper, "{\"usage\":null}").isEmpty()).isTrue();
+        assertThat(OpenAiUsageParser.parseFromJson(mapper, "{\"usage\":null}").isEmpty()).isTrue();
     }
 
     // ==================== 边界：cached_tokens 为 null 字面量 → 视为缺失，继续 fallback ====================

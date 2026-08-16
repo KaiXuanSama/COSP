@@ -5,8 +5,8 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageParser;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.OpenAiUsageParser;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
@@ -538,7 +538,7 @@ public class OpenAiController {
      * @param openAiJson 非流式响应的 JSON 字符串，包含 usage 字段
      */
     private void recordUsage(String openAiJson) {
-        UsageTokens tokens = UsageParser.parseFromJson(objectMapper, openAiJson);
+        UsageTokens tokens = OpenAiUsageParser.parseFromJson(objectMapper, openAiJson);
         if (!tokens.isEmpty()) {
             apiUsageCollector.record(tokens.promptOrZero(), tokens.completionOrZero());
         }
@@ -552,7 +552,7 @@ public class OpenAiController {
      * @param outputTokens 输出 token 累加器
      */
     private void accumulateStreamUsage(String chunk, AtomicInteger inputTokens, AtomicInteger outputTokens) {
-        UsageTokens tokens = UsageParser.parseFromJson(objectMapper, chunk);
+        UsageTokens tokens = OpenAiUsageParser.parseFromJson(objectMapper, chunk);
         // 流式 usage 通常只出现在尾 chunk；有则覆盖累加器（缺失记 0，保持既有日聚合行为）。
         if (!tokens.isEmpty()) {
             inputTokens.set(tokens.promptOrZero());

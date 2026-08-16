@@ -8,11 +8,12 @@ import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageParser;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.OpenAiContentDetector;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.OpenAiUsageParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -75,7 +76,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 开闸前逐帧缓存不下发，出现实质载荷即整批释放并当轮不再拦截；整轮未开闸则抛
  * {@link EmptyUpstreamResponseException}，走上面那条<strong>同一份</strong>重试预算。
  * 耗尽后把最后一轮的帧原样放行给下游，与其他失败的耗尽行为保持一致。
- * 判定口径见 {@link UpstreamChunkContentDetector}。
+ * 判定口径见 {@link OpenAiContentDetector}。
  */
 public abstract class AbstractUpstreamChatService {
 
@@ -243,7 +244,7 @@ public abstract class AbstractUpstreamChatService {
                 // isRetryableFailure 已认 EmptyUpstreamResponseException，无需第二套重试实现。
                 .flatMap(entity -> {
                     String body = entity.getBody();
-                    if (UpstreamChunkContentDetector.hasMeaningfulNonStreamPayload(objectMapper, body)) {
+                    if (OpenAiContentDetector.hasMeaningfulNonStreamPayload(objectMapper, body)) {
                         return Mono.just(entity);
                     }
                     log.warn("{} 上游空响应（无正文/思考链/工具调用），body 长度 {}，将按重试预算重发 [{}] {}",
@@ -350,7 +351,7 @@ public abstract class AbstractUpstreamChatService {
      * 包括值为空的那些，这类纯删除也需要把清洗结果写回。
      */
     private boolean hasReasoningAliasKey(Map<String, Object> message) {
-        for (String key : UpstreamChunkContentDetector.REASONING_KEYS) {
+        for (String key : OpenAiContentDetector.REASONING_KEYS) {
             if (!"reasoning_content".equals(key) && message.containsKey(key)) {
                 return true;
             }
@@ -455,7 +456,7 @@ public abstract class AbstractUpstreamChatService {
                     if (gateOpen.get()) {
                         return Flux.just(frame);
                     }
-                    if (UpstreamChunkContentDetector.hasMeaningfulPayload(objectMapper, frame.data())) {
+                    if (OpenAiContentDetector.hasMeaningfulPayload(objectMapper, frame.data())) {
                         gateOpen.set(true);
                         // 整批释放：缓存帧按到达顺序在前，当前帧在后，下游看到的顺序与上游一致。
                         List<ServerSentEvent<String>> released = new ArrayList<>(heldFrames);
@@ -551,7 +552,7 @@ public abstract class AbstractUpstreamChatService {
                     // 以免被 gate 暂扣的帧让 ttfb 虚高。语义仍是"首 chunk"而非"首正文"，
                     // 故纯思考、纯工具调用等无正文响应同样能测得。
                     // 从上游原始 chunk 提取 usage 原始 JSON（通常在尾 chunk）；有则记录供成功收尾落库。
-                    String rawUsage = UsageParser.extractUsageRawJson(objectMapper, raw);
+                    String rawUsage = OpenAiUsageParser.extractUsageRawJson(objectMapper, raw);
                     if (rawUsage != null) {
                         usageRaw.set(rawUsage);
                     }
@@ -717,9 +718,9 @@ public abstract class AbstractUpstreamChatService {
                                     String fullBody, Integer ttfbMs) {
         try {
             if (apiCallUsage == null) return;
-            String usageRaw = UsageParser.extractUsageRawJson(objectMapper, fullBody);
+            String usageRaw = OpenAiUsageParser.extractUsageRawJson(objectMapper, fullBody);
             if (usageRaw == null) return; // 无 usage：不写（方案 a）
-            UsageTokens tokens = UsageParser.parseUsageObject(objectMapper, usageRaw);
+            UsageTokens tokens = OpenAiUsageParser.parseUsageObject(objectMapper, usageRaw);
             apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw, tokens, ttfbMs);
         } finally {
             // finally 语义：无论用量是否实际写入，用量流程走完即宣告该次调用的记录就绪。
@@ -742,7 +743,7 @@ public abstract class AbstractUpstreamChatService {
         try {
             if (apiCallUsage == null) return;
             if (usageRaw == null) return; // 无 usage：不写（方案 a）
-            UsageTokens tokens = UsageParser.parseUsageObject(objectMapper, usageRaw);
+            UsageTokens tokens = OpenAiUsageParser.parseUsageObject(objectMapper, usageRaw);
             apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw, tokens, ttfbMs);
         } finally {
             // finally 语义：无论用量是否实际写入，用量流程走完即宣告该次调用的记录就绪。
@@ -1202,8 +1203,8 @@ public abstract class AbstractUpstreamChatService {
      */
     private String extractReasoning(Map<String, Object> delta) {
         // 与空响应 gate 的判定共用同一份清单：gate 工作在清洗之前，必须逐个检查兼容字段。
-        // 新增兼容字段时改 UpstreamChunkContentDetector.REASONING_KEYS 一处即可，两侧同步生效。
-        String[] keys = UpstreamChunkContentDetector.REASONING_KEYS;
+        // 新增兼容字段时改 OpenAiContentDetector.REASONING_KEYS 一处即可，两侧同步生效。
+        String[] keys = OpenAiContentDetector.REASONING_KEYS;
         for (String key : keys) {
             Object value = delta.get(key);
             if (value instanceof String str && !str.isBlank()) {

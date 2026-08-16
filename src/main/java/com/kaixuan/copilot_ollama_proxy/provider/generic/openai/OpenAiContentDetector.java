@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.provider;
+package com.kaixuan.copilot_ollama_proxy.provider.generic.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -39,18 +39,15 @@ import java.util.Map;
  * <p>解析失败一律按「有内容」处理（{@code true}）：宁可放行一个可疑帧，
  * 也不要因为格式没见过就把正常响应判成空并重试。
  *
- * <h2>类名与位置待统一</h2>
- * TODO 本类只服务 <strong>OpenAI</strong> 协议（读 {@code choices[].delta} 与
- *  {@code choices[].message}），但名字里不带协议、且放在 {@code provider} 根下 ——
- *  那是「只有一种协议时」的产物，{@code Upstream} 一词当时隐含了 OpenAI。
- *  现在 {@code provider.generic.anthropic.AnthropicContentDetector} 是同一职责的
- *  另一个协议实现，两者命名风格不一致会让人误以为层次不同。
- *  <p>待翻译层阶段一并整理：重命名为 {@code OpenAiContentDetector} 并移入
- *  {@code provider.generic.openai}。移包后本类需从包私有放开为 {@code public}
- *  （{@code AbstractUpstreamChatService} 在 {@code provider} 包下引用它），
- *  或把两侧都收成包私有。
+ * <h2>与 Anthropic 侧对称</h2>
+ * 本类只服务 <strong>OpenAI Chat Completions</strong> 协议（读 {@code choices[].delta}
+ * 与 {@code choices[].message}），与 {@code provider.generic.anthropic.AnthropicContentDetector}
+ * 是同一职责的两个协议实现：<strong>类别定义共享（正文 / 思考链 / 工具调用），
+ * 取值路径各自独立</strong>。早期叫 {@code UpstreamChunkContentDetector} 并放在
+ * {@code provider} 根下，那是「只有一种协议时」的产物，{@code Upstream} 一词隐含了
+ * OpenAI；现已改名并与 Anthropic 侧同层。
  */
-final class UpstreamChunkContentDetector {
+public final class OpenAiContentDetector {
 
     /**
      * 思考链的兼容字段名，与清洗链 {@code extractReasoning} 共用同一份清单。
@@ -58,11 +55,11 @@ final class UpstreamChunkContentDetector {
      * <p>上游各家命名不统一，清洗阶段会把这 5 种统一改写为 {@code reasoning_content}；
      * 但本判定器工作在清洗之前，因此必须逐个检查。
      */
-    static final String[] REASONING_KEYS = {
+    public static final String[] REASONING_KEYS = {
             "reasoning_content", "reasoning_text", "reasoning", "thinking", "cot_summary"
     };
 
-    private UpstreamChunkContentDetector() {
+    private OpenAiContentDetector() {
     }
 
     /**
@@ -73,7 +70,7 @@ final class UpstreamChunkContentDetector {
      * @return 含正文 / 思考链 / 工具调用之一返回 true；解析失败也返回 true（保守放行）
      */
     @SuppressWarnings("unchecked")
-    static boolean hasMeaningfulPayload(ObjectMapper objectMapper, String rawChunk) {
+    public static boolean hasMeaningfulPayload(ObjectMapper objectMapper, String rawChunk) {
         if (rawChunk == null || rawChunk.isBlank()) {
             return false;
         }
@@ -123,7 +120,7 @@ final class UpstreamChunkContentDetector {
      * @return 含正文 / 思考链 / 工具调用之一返回 true；解析失败也返回 true（保守放行）
      */
     @SuppressWarnings("unchecked")
-    static boolean hasMeaningfulNonStreamPayload(ObjectMapper objectMapper, String fullBody) {
+    public static boolean hasMeaningfulNonStreamPayload(ObjectMapper objectMapper, String fullBody) {
         // 空 body：非流式独有的极端形态，连 JSON 骨架都没有，判空。
         if (fullBody == null || fullBody.isBlank()) {
             return false;

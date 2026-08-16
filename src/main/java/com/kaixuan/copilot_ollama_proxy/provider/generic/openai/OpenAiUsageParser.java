@@ -1,10 +1,11 @@
-package com.kaixuan.copilot_ollama_proxy.application.usage;
+package com.kaixuan.copilot_ollama_proxy.provider.generic.openai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 
 /**
- * 上游 usage 对象解析器 —— 子项 A 的唯一 usage 解析实现。
+ * OpenAI Chat Completions 协议的 usage 解析器。
  *
  * <p>非流式响应体、流式尾 chunk 与日聚合收集三处共用本解析器，避免多套解析逻辑漂移，
  * fallback 链只维护一份。
@@ -24,21 +25,20 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * </ol>
  * <b>顶层 {@code cached_tokens} 永不参与</b>——实证样本证明它恒为 0 且不可信（真实命中藏在嵌套/私有位）。
  *
- * <h2>类名与位置待统一</h2>
- * TODO 本类只服务 <strong>OpenAI</strong> 协议（硬编码 {@code prompt_tokens} /
- *  {@code completion_tokens}，以及一条 OpenAI 兼容生态特有的 cached_tokens fallback 链），
- *  但名字里不带协议、且放在 {@code application.usage} —— 那是「只有一种协议时」的产物。
- *  现在 {@code provider.generic.anthropic.AnthropicUsageParser} 是同一职责的另一个协议实现。
- *  <p>待翻译层阶段一并整理：重命名为 {@code OpenAiUsageParser} 并移入
- *  {@code provider.generic.openai}。注意 {@code OpenAiController} 与
- *  {@code AbstractUpstreamChatService} 都引用它，移包会波及那两处 import。
- *  <p>{@link UsageTokens} 不随之移动 —— 它是<strong>共享的输出契约</strong>
- *  （两种协议的解析都产出它，落库与前端因此无需按协议分支），
- *  留在 {@code application.usage} 是正确的归属。这也是「解析各写一份、度量归一化」的分界。
+ * <h2>与 Anthropic 侧对称</h2>
+ * 本类只服务 OpenAI 协议（硬编码 {@code prompt_tokens} / {@code completion_tokens}，
+ * 以及一条 OpenAI 兼容生态特有的 cached_tokens fallback 链），与
+ * {@code provider.generic.anthropic.AnthropicUsageParser} 是同一职责的两个协议实现。
+ * 早期叫 {@code UsageParser} 并放在 {@code application.usage}，那是「只有一种协议时」
+ * 的产物；现已改名并与 Anthropic 侧同层。
+ *
+ * <p>{@link UsageTokens} 不随之移动 —— 它是<strong>共享的输出契约</strong>
+ * （两种协议的解析都产出它，落库与前端因此无需按协议分支），
+ * 留在 {@code application.usage} 是正确的归属。这也是「解析各写一份、度量归一化」的分界。
  */
-public final class UsageParser {
+public final class OpenAiUsageParser {
 
-    private UsageParser() {
+    private OpenAiUsageParser() {
     }
 
     /**
