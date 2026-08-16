@@ -1036,6 +1036,38 @@ class AbstractUpstreamChatServiceTests {
         assertThat(received).contains("\"content\":\"deep thought\"");
     }
 
+    @Test
+    void modelConfiguredMaxReasoningEffortIsNormalizedForOpenAiRequest() {
+        TestOpenAiService service = new TestOpenAiService();
+        Map<String, Object> request = new LinkedHashMap<>();
+
+        Map<String, Object> prepared = service.exposePrepareRequestBody(
+                request, true, "model-a", providerWithReasoningEffort("Max"));
+
+        assertThat(prepared).containsEntry("reasoning_effort", "max");
+    }
+
+    @Test
+    void explicitReasoningEffortTakesPrecedenceOverModelConfiguration() {
+        TestOpenAiService service = new TestOpenAiService();
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("reasoning_effort", "low");
+
+        Map<String, Object> prepared = service.exposePrepareRequestBody(
+                request, false, "model-a", providerWithReasoningEffort("Max"));
+
+        assertThat(prepared).containsEntry("reasoning_effort", "low");
+    }
+
+    /**
+     * 将后台模型配置构造成运行时快照，验证思考档位确实经过后端而非只停留在前端。
+     */
+    private ProviderRuntimeConfiguration providerWithReasoningEffort(String effort) {
+        return new ProviderRuntimeConfiguration("stub", "", "", List.of(
+                new com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel(
+                        "model-a", 32768, false, false, effort)));
+    }
+
     private ProviderRuntimeConfiguration provider() {
         return new ProviderRuntimeConfiguration("stub", "", "", List.of());
     }
