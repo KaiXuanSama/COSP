@@ -89,22 +89,25 @@ class GenericAnthropicChatServiceTests {
     // ==================== 出站路径 ====================
 
     /**
-     * Base URL 的 {@code /v1} 被剥掉，端点接在根路径下的 {@code /messages}。
+     * Base URL 自带的路径被<strong>完整保留</strong>，{@code /messages} 接在其后。
      *
-     * <p>这是本阶段的乐观假设（多数中转站的做法），与 Anthropic 官方的
-     * {@code /v1/messages} 并不一致 —— 见服务里 {@code normalizeAnthropicBaseUrl} 的 TODO。
-     * 这条用例的价值在于：将来改成读配置时，它会明确地失败并提醒改断言。
+     * <p>数据库里已有供应商的 Base URL 通常是 {@code .../v1}，因而实际请求为
+     * {@code /v1/messages} —— 与 Anthropic 官方及 tokenrhythm 的实测端点一致。
+     * 早先的乐观规则会先剥掉尾部 {@code /v1}，对 tokenrhythm 得到站点根路径的 405。
+     *
+     * <p>这条用例的价值在于：将来改成按供应商读端点配置时，它会明确地失败并提醒改断言。
+     * 见服务里 {@code normalizeAnthropicBaseUrl} 的 TODO。
      */
     @Test
-    void versionPrefixIsStrippedAndMessagesPathIsAppended() {
+    void baseUrlPathIsPreservedAndMessagesPathIsAppended() {
         realService().exposeMessages(newRequest(), routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
 
-        assertThat(capturedPath.get()).isEqualTo("/messages");
+        assertThat(capturedPath.get()).isEqualTo("/v1/messages");
     }
 
-    /** Base URL 本就没有 {@code /v1} 时不受影响。 */
+    /** Base URL 本就是站点根路径时，端点落在 {@code /messages}。 */
     @Test
-    void baseUrlWithoutVersionPrefixWorksToo() {
+    void baseUrlWithoutVersionPrefixHitsRootMessagesPath() {
         realService().exposeMessages(newRequest(), routeTo(baseUrlRoot())).block(Duration.ofSeconds(10));
 
         assertThat(capturedPath.get()).isEqualTo("/messages");
