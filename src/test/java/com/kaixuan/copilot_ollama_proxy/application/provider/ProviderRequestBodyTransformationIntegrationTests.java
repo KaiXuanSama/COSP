@@ -189,6 +189,7 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 + "provider_id INTEGER PRIMARY KEY, header_rules_version INTEGER NOT NULL, "
                 + "header_rules_json TEXT NOT NULL, body_template_keys_json TEXT NOT NULL, "
                 + "body_preview_json TEXT NOT NULL, body_rules_version INTEGER NOT NULL, "
-                + "body_rules_json TEXT NOT NULL, created_at TEXT, updated_at TEXT)");
+                + "body_rules_json TEXT NOT NULL, body_rules_schema INTEGER NOT NULL DEFAULT 2, "
+                + "created_at TEXT, updated_at TEXT)");
     }
 }

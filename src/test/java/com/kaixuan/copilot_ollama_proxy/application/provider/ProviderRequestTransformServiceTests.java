@@ -229,6 +229,7 @@ class ProviderRequestTransformServiceTests {
                 + "body_preview_json TEXT NOT NULL CHECK (json_valid(body_preview_json)), "
                 + "body_rules_version INTEGER NOT NULL, "
                 + "body_rules_json TEXT NOT NULL CHECK (json_valid(body_rules_json)), "
+                + "body_rules_schema INTEGER NOT NULL DEFAULT 2 CHECK (body_rules_schema >= 1), "
                 + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
     }

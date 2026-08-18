@@ -29,7 +29,7 @@ class DatabaseRuntimeProviderCatalogTests {
                         true, false, "Medium", 0)));
         ProviderRequestTransformRow transform = new ProviderRequestTransformRow(
                 42, 1, "[{\"key\":\"X-New\",\"value\":\"new\"}]",
-                "[\"base\"]", "{}", 1, "{\"version\":1,\"rules\":[{\"id\":\"rule-1\"}]}",
+                "[\"base\"]", "{}", 2, "{\"version\":2,\"groups\":[{\"id\":\"g1\"}]}", 2,
                 "2026-07-18T00:00:00", "2026-07-18T00:00:00");
         when(providerConfigRepository.findAllActiveProvidersWithEnabledModels()).thenReturn(List.of(provider));
         when(providerApiKeyRepository.resolveActiveApiKey(42)).thenReturn("test-key");
@@ -40,7 +40,7 @@ class DatabaseRuntimeProviderCatalogTests {
 
         ProviderRuntimeConfiguration configuration = catalog.getActiveProvider("mimo-user");
         assertThat(configuration.headerRulesJson()).isEqualTo("[{\"key\":\"X-New\",\"value\":\"new\"}]");
-        assertThat(configuration.bodyRulesJson()).isEqualTo("{\"version\":1,\"rules\":[{\"id\":\"rule-1\"}]}");
+        assertThat(configuration.bodyRulesJson()).isEqualTo("{\"version\":2,\"groups\":[{\"id\":\"g1\"}]}");
     }
 
     @Test

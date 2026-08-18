@@ -69,15 +69,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_api_key_active
 
 -- ==================== 供应商请求转换配置表 ====================
 -- 请求头运行时读取本表的 header_rules_json；请求体运行时读取本表 body_rules_json。
+-- body_rules_json 自 V8.7 起是 V2 规则组格式：{"version":2,"groups":[...]}，
+-- 每组自带 protocols（适用线路）、templateKeys 与 previewBody（该组专属调试样本）。
+-- body_template_keys_json 与 body_preview_json 是 legacy 列：内容已下沉进第一个规则组，
+-- 不再是配置来源，仅为旧版本回滚时仍能读到一份有意义的样本而保留。
 
 CREATE TABLE IF NOT EXISTS provider_request_transform (
     provider_id             INTEGER PRIMARY KEY,       -- 与供应商一对一关联
     header_rules_version    INTEGER NOT NULL DEFAULT 1 CHECK (header_rules_version >= 1),
     header_rules_json       TEXT    NOT NULL DEFAULT '[]' CHECK (json_valid(header_rules_json)),
-    body_template_keys_json TEXT    NOT NULL DEFAULT '["custom"]' CHECK (json_valid(body_template_keys_json)),
-    body_preview_json       TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(body_preview_json)),
-    body_rules_version      INTEGER NOT NULL DEFAULT 1 CHECK (body_rules_version >= 1),
-    body_rules_json         TEXT    NOT NULL DEFAULT '{"version":1,"rules":[]}' CHECK (json_valid(body_rules_json)),
+    body_template_keys_json TEXT    NOT NULL DEFAULT '["custom"]' CHECK (json_valid(body_template_keys_json)), -- legacy
+    body_preview_json       TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(body_preview_json)),               -- legacy
+    body_rules_version      INTEGER NOT NULL DEFAULT 2 CHECK (body_rules_version >= 1),
+    body_rules_json         TEXT    NOT NULL DEFAULT '{"version":2,"groups":[]}' CHECK (json_valid(body_rules_json)),
+    body_rules_schema       INTEGER NOT NULL DEFAULT 2 CHECK (body_rules_schema >= 1),  -- 规则集结构版本，V8.7 迁移的结构性标记
     created_at              TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')),
     updated_at              TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')),
     FOREIGN KEY (provider_id) REFERENCES provider_config(id) ON DELETE CASCADE

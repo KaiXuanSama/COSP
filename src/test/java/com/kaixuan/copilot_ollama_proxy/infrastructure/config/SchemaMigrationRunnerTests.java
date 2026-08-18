@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.config;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService;
@@ -79,9 +80,19 @@ class SchemaMigrationRunnerTests {
                 "{\"model\":\"<string>\",\"temperature\":0.1,\"top_p\":1.0,\"stream\":true,"
                         + "\"n\":1,\"stream_options\":{\"include_usage\":true},"
                         + "\"reasoning_effort\":\"medium\"}"));
-        String bodyRules = jdbcTemplate.queryForObject(
-                "SELECT body_rules_json FROM provider_request_transform WHERE provider_id = 1", String.class);
-        assertThat(bodyRules).isEqualTo("{\"version\":1,\"rules\":[]}");
+        // V8.7：V5 写入的 V1 空规则集被升为 V2 单组，legacy 两列的内容搬进该组但列本身不变。
+        JsonNode bodyRules = new ObjectMapper().readTree(jdbcTemplate.queryForObject(
+                "SELECT body_rules_json FROM provider_request_transform WHERE provider_id = 1", String.class));
+        assertThat(bodyRules.path("version").asInt()).isEqualTo(2);
+        assertThat(bodyRules.path("groups")).hasSize(1);
+        JsonNode legacyGroup = bodyRules.path("groups").get(0);
+        assertThat(legacyGroup.path("protocols").toString()).isEqualTo("[\"OPENAI\"]");
+        assertThat(legacyGroup.path("rules")).isEmpty();
+        assertThat(legacyGroup.path("templateKeys").toString()).isEqualTo("[\"base\"]");
+        assertThat(legacyGroup.path("previewBody")).isEqualTo(new ObjectMapper().readTree(bodyPreview));
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT body_rules_schema FROM provider_request_transform WHERE provider_id = 1", Integer.class))
+                .isEqualTo(2);
         String fingerprint = jdbcTemplate.queryForObject(
                 "SELECT config_value FROM app_config WHERE config_key = 'encryption_key_fingerprint'", String.class);
         assertThat(fingerprint).isEqualTo(cryptoService.fingerprint());
@@ -413,8 +424,7 @@ class SchemaMigrationRunnerTests {
 
     /** 迁移补出的协议列须限制在当前两种线路协议内，避免脏值进入未来翻译判断。 */
     @Test
-    void migratedProtocolColumnsRejectUnknownValues() {
-        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+    void migratedProtocolColumnsRejectUnknownValues() {        JdbcTemplate jdbcTemplate = createJdbcTemplate();
         createCurrentSchema(jdbcTemplate);
         createV85CallLogTable(jdbcTemplate);
         jdbcTemplate.execute("CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
@@ -429,8 +439,158 @@ class SchemaMigrationRunnerTests {
                 .isInstanceOf(DataAccessException.class);
     }
 
+    // ==================== V8.7：请求体规则分组 ====================
+
+    /**
+     * V8.6 库升到 V8.7：V1 规则集升为单个「仅 OPENAI」规则组，legacy 两列的内容搬进该组。
+     *
+     * <p>协议只给 OPENAI 而非两条都给：这些规则的字段路径是照 OpenAI 请求体写的，
+     * 作用在 Anthropic 请求体上多数匹配不到 —— 静默失效比不执行更难排查。
+     */
     @Test
-    void historicalV5MigrationDoesNotOverwriteExistingRequestTransformConfiguration() {
+    void v86DatabaseWrapsLegacyRuleSetIntoOpenAiRuleGroupDuringV87Migration() throws Exception {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createCurrentSchema(jdbcTemplate);
+        createV86RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.6);
+        jdbcTemplate.update("INSERT INTO provider_request_transform (provider_id, header_rules_version, "
+                        + "header_rules_json, body_template_keys_json, body_preview_json, "
+                        + "body_rules_version, body_rules_json) VALUES (1, 1, '[]', ?, ?, 1, ?)",
+                "[\"message-tool-image\"]", "{\"model\":\"m\"}",
+                "{\"version\":1,\"rules\":[{\"id\":\"legacy-rule\",\"order\":0,\"field\":\"temperature\"}]}");
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        JsonNode ruleSet = readRuleSet(jdbcTemplate, 1);
+        assertThat(ruleSet.path("version").asInt()).isEqualTo(2);
+        assertThat(ruleSet.path("groups")).hasSize(1);
+        JsonNode group = ruleSet.path("groups").get(0);
+        assertThat(group.path("protocols").toString()).isEqualTo("[\"OPENAI\"]");
+        assertThat(group.path("enabled").asBoolean()).isTrue();
+        assertThat(group.path("order").asInt()).isZero();
+        assertThat(group.path("templateKeys").toString()).isEqualTo("[\"message-tool-image\"]");
+        assertThat(group.path("previewBody").toString()).isEqualTo("{\"model\":\"m\"}");
+        assertThat(group.path("rules").get(0).path("id").asText()).isEqualTo("legacy-rule");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT body_rules_schema FROM provider_request_transform WHERE provider_id = 1", Integer.class))
+                .isEqualTo(2);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT body_rules_version FROM provider_request_transform WHERE provider_id = 1", Integer.class))
+                .isEqualTo(2);
+    }
+
+    /**
+     * legacy 两列在迁移后原封不动。
+     *
+     * <p>它们是废弃保留而非物理删除：SQLite 删列要重建表（连带外键与触发器），
+     * 而保留的成本只是两个不再读取的字段，还能让旧版本回滚时读到一份有意义的样本。
+     */
+    @Test
+    void v87MigrationLeavesLegacyEditorColumnsUntouched() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createCurrentSchema(jdbcTemplate);
+        createV86RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.6);
+        jdbcTemplate.update("INSERT INTO provider_request_transform (provider_id, header_rules_version, "
+                        + "header_rules_json, body_template_keys_json, body_preview_json, "
+                        + "body_rules_version, body_rules_json) VALUES (1, 1, '[]', ?, ?, 1, ?)",
+                "[\"custom\"]", "{\"kept\":true}", "{\"version\":1,\"rules\":[]}");
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT body_template_keys_json FROM provider_request_transform WHERE provider_id = 1",
+                String.class)).isEqualTo("[\"custom\"]");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT body_preview_json FROM provider_request_transform WHERE provider_id = 1",
+                String.class)).isEqualTo("{\"kept\":true}");
+    }
+
+    /**
+     * 已是 V2 的行不被重写。
+     *
+     * <p>迁移必须幂等，且重写会打乱用户已有的组顺序与组 ID —— 组 ID 是前端列表 key，
+     * 变了会让界面状态错位。
+     */
+    @Test
+    void v87MigrationDoesNotRewriteRuleSetsThatAreAlreadyV2() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createCurrentSchema(jdbcTemplate);
+        createV86RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.6);
+        String existing = "{\"version\":2,\"groups\":[{\"id\":\"user-group\",\"name\":\"Anthropic\","
+                + "\"order\":0,\"enabled\":true,\"protocols\":[\"ANTHROPIC\"],"
+                + "\"templateKeys\":[\"custom\"],\"previewBody\":{},\"rules\":[]}]}";
+        jdbcTemplate.update("INSERT INTO provider_request_transform (provider_id, header_rules_version, "
+                        + "header_rules_json, body_template_keys_json, body_preview_json, "
+                        + "body_rules_version, body_rules_json) VALUES (1, 1, '[]', '[\"base\"]', '{}', 2, ?)",
+                existing);
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT body_rules_json FROM provider_request_transform WHERE provider_id = 1",
+                String.class)).isEqualTo(existing);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT body_rules_schema FROM provider_request_transform WHERE provider_id = 1", Integer.class))
+                .isEqualTo(2);
+    }
+
+    /**
+     * 无法识别的规则集被替换为空 V2 规则集而非阻断迁移。
+     *
+     * <p>让一行坏数据挡住整库升级是最差的选择；留着一份读不懂的 JSON 也不行 ——
+     * 那会让「过一遍 V8.7 后全库同格式」这个不变量名存实亡，而下游读取点正是靠它
+     * 才能把 V1 兼容当作纯粹的向后兜底。
+     */
+    @Test
+    void v87MigrationReplacesUnparsableRuleSetWithEmptyV2() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createCurrentSchema(jdbcTemplate);
+        createV86RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.6);
+        jdbcTemplate.update("INSERT INTO provider_request_transform (provider_id, header_rules_version, "
+                + "header_rules_json, body_template_keys_json, body_preview_json, "
+                + "body_rules_version, body_rules_json) VALUES (1, 1, '[]', '[\"base\"]', '{}', 1, '[]')");
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT body_rules_json FROM provider_request_transform WHERE provider_id = 1",
+                String.class)).isEqualTo("{\"version\":2,\"groups\":[]}");
+    }
+
+    /**
+     * {@code body_rules_schema} 是 V8.7 的结构性判定依据，因此空表也必须能判定已迁移。
+     *
+     * <p>若只靠「随便挑一行看它是不是 V2」，空库永远判不出已迁移，迁移每次启动都重跑。
+     * 这里断言重复执行后版本号稳定在当前值，即基线判定成立。
+     */
+    @Test
+    void v87MigrationIsIdempotentOnDatabaseWithoutAnyProvider() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createCurrentSchema(jdbcTemplate);
+        createV86RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.6);
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        runner.run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+        assertThat(columnNames(jdbcTemplate, "provider_request_transform")).contains("body_rules_schema");
+    }
+
+    /**
+     * V5 不覆盖已存在的请求转换配置；V8.7 只把它升格而不丢内容。
+     *
+     * <p>两件事必须同时成立才算「用户配置被尊重」：V5 不能用默认值盖掉已有行（这是原本的断言），
+     * 而 V8.7 的升格也不能把规则内容洗掉 —— 它只是把同一批规则装进一个规则组。
+     * 因此这里既断言 legacy 两列原封不动，也断言规则本体在新结构里仍然找得到。
+     */
+    @Test
+    void historicalV5MigrationDoesNotOverwriteExistingRequestTransformConfiguration() throws Exception {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
         createLegacySchema(jdbcTemplate);
         seedLegacyData(jdbcTemplate);
@@ -461,9 +621,16 @@ class SchemaMigrationRunnerTests {
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT body_preview_json FROM provider_request_transform WHERE provider_id = 1",
                 String.class)).isEqualTo("{\"saved\":true}");
-        assertThat(jdbcTemplate.queryForObject(
-                "SELECT body_rules_json FROM provider_request_transform WHERE provider_id = 1",
-                String.class)).isEqualTo(customRules);
+        // V8.7 只重新包装而不改写规则本体：那条 id=saved 的规则仍在新结构的唯一一个组里。
+        JsonNode upgraded = new ObjectMapper().readTree(jdbcTemplate.queryForObject(
+                "SELECT body_rules_json FROM provider_request_transform WHERE provider_id = 1", String.class));
+        assertThat(upgraded.path("version").asInt()).isEqualTo(2);
+        assertThat(upgraded.path("groups").get(0).path("rules").get(0).path("id").asText())
+                .isEqualTo("saved");
+        assertThat(upgraded.path("groups").get(0).path("templateKeys").toString())
+                .isEqualTo("[\"custom\"]");
+        assertThat(upgraded.path("groups").get(0).path("previewBody").toString())
+                .isEqualTo("{\"saved\":true}");
     }
 
     @Test
@@ -596,8 +763,7 @@ class SchemaMigrationRunnerTests {
         }
 
         /** 建出 V8.5 时的 api_call_log：已有载荷瘦身标记，但尚无两侧协议字段。 */
-        private void createV85CallLogTable(JdbcTemplate jdbcTemplate) {
-                jdbcTemplate.execute("CREATE TABLE api_call_log ("
+        private void createV85CallLogTable(JdbcTemplate jdbcTemplate) {                jdbcTemplate.execute("CREATE TABLE api_call_log ("
                                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key VARCHAR(30), model_name VARCHAR(100), "
                                 + "is_stream INTEGER NOT NULL DEFAULT 0 CHECK (is_stream IN (0, 1)), status_code INTEGER, "
                                 + "request_headers TEXT, request_body TEXT, response_headers TEXT, response_body TEXT, chunks TEXT, "
@@ -610,6 +776,39 @@ class SchemaMigrationRunnerTests {
                 jdbcTemplate.execute("CREATE TABLE provider_model (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL)");
                 jdbcTemplate.execute("CREATE TABLE provider_api_key (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL)");
                 jdbcTemplate.execute("CREATE TABLE provider_request_transform (provider_id INTEGER PRIMARY KEY)");
+        }
+
+        /**
+         * 建出 V8.6 时的 provider_request_transform：七列齐备，但<strong>没有</strong>
+         * body_rules_schema，那正是 V8.7 要补的结构性标记。
+         */
+        private void createV86RequestTransformTable(JdbcTemplate jdbcTemplate) {
+                jdbcTemplate.execute("CREATE TABLE provider_request_transform ("
+                                + "provider_id INTEGER PRIMARY KEY, "
+                                + "header_rules_version INTEGER NOT NULL DEFAULT 1 CHECK (header_rules_version >= 1), "
+                                + "header_rules_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(header_rules_json)), "
+                                + "body_template_keys_json TEXT NOT NULL DEFAULT '[\"custom\"]' "
+                                + "CHECK (json_valid(body_template_keys_json)), "
+                                + "body_preview_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(body_preview_json)), "
+                                + "body_rules_version INTEGER NOT NULL DEFAULT 1 CHECK (body_rules_version >= 1), "
+                                + "body_rules_json TEXT NOT NULL DEFAULT '{\"version\":1,\"rules\":[]}' "
+                                + "CHECK (json_valid(body_rules_json)), "
+                                + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), "
+                                + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')))");
+        }
+
+        /** 写入单行基线版本记录，模拟一个已升到指定版本的库。 */
+        private void seedV86SchemaVersion(JdbcTemplate jdbcTemplate, double version) {
+                jdbcTemplate.execute("CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), "
+                                + "version REAL NOT NULL, description TEXT NOT NULL, applied_at TEXT)");
+                jdbcTemplate.update("INSERT INTO schema_version (id, version, description) VALUES (1, ?, ?)",
+                                version, "V" + version);
+        }
+
+        private JsonNode readRuleSet(JdbcTemplate jdbcTemplate, int providerId) throws Exception {
+                return new ObjectMapper().readTree(jdbcTemplate.queryForObject(
+                                "SELECT body_rules_json FROM provider_request_transform WHERE provider_id = ?",
+                                String.class, providerId));
         }
 
     private void seedLegacyData(JdbcTemplate jdbcTemplate) {
@@ -680,6 +879,10 @@ class SchemaMigrationRunnerTests {
                 if (version >= 8.6) {
                         assertThat(columnNames(jdbcTemplate, "api_call_log"))
                                 .contains("downstream_protocol", "upstream_protocol");
+                }
+                if (version >= 8.7) {
+                        assertThat(columnNames(jdbcTemplate, "provider_request_transform"))
+                                .contains("body_rules_schema");
                 }
         }
 }

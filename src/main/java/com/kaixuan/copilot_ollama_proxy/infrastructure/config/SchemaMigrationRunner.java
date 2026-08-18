@@ -36,7 +36,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final double V8_3_VERSION = 8.3;
     private static final double V8_4_VERSION = 8.4;
     private static final double V8_5_VERSION = 8.5;
-    private static final double CURRENT_SCHEMA_VERSION = 8.6;
+    private static final double V8_6_VERSION = 8.6;
+    private static final double CURRENT_SCHEMA_VERSION = 8.7;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -47,7 +48,18 @@ public class SchemaMigrationRunner implements ApplicationRunner {
             + "\"n\":1,"
             + "\"stream_options\":{\"include_usage\":true},"
             + "\"reasoning_effort\":\"medium\"}";
+    /**
+     * V5 时代的空规则集字面量。
+     *
+     * <p><strong>不要升到 V2。</strong>V5 迁移写入的行会被同一次迁移里的
+     * {@code verifyProviderRequestTransforms} 校验，而那段历史校验要求 {@code version == 1}。
+     * 库里的规则由 V8.7 统一升格 —— 历史迁移只负责把数据带到它那个年代的形态。
+     */
     private static final String EMPTY_BODY_RULES_JSON = "{\"version\":1,\"rules\":[]}";
+    /** 当前的空规则集字面量（V2 规则组）。 */
+    private static final String EMPTY_BODY_RULES_JSON_V2 = "{\"version\":2,\"groups\":[]}";
+    /** 当前请求体规则集的协议版本，与 {@code body_rules_version} 列取值一致。 */
+    private static final int CURRENT_BODY_RULES_VERSION = 2;
 
     private final JdbcTemplate jdbcTemplate;
     private final TransactionTemplate transactionTemplate;
@@ -140,8 +152,10 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         this::migrateToV84AddUsageCreatedAtIndex),
                 new MigrationStep(V8_5_VERSION, "日志保留改为载荷瘦身",
                         this::migrateToV85AddPayloadTrimmedFlag),
-                new MigrationStep(CURRENT_SCHEMA_VERSION, "调用日志记录上下游线路协议",
-                        this::migrateToV86AddCallLogProtocols));
+                new MigrationStep(V8_6_VERSION, "调用日志记录上下游线路协议",
+                        this::migrateToV86AddCallLogProtocols),
+                new MigrationStep(CURRENT_SCHEMA_VERSION, "请求体规则升级为按线路分组",
+                        this::migrateToV87RuleGroups));
     }
 
     private List<MigrationStep> baselineMigrations() {
@@ -174,7 +188,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
             && tableExists("api_call_usage") && indexExists("idx_api_call_usage_created")
             && columnExists("api_call_log", "payload_trimmed")
             && columnExists("api_call_log", "downstream_protocol")
-            && columnExists("api_call_log", "upstream_protocol");
+            && columnExists("api_call_log", "upstream_protocol")
+            && columnExists("provider_request_transform", "body_rules_schema");
     }
 
     /**
@@ -187,7 +202,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         + "ON CONFLICT(id) DO UPDATE SET version = excluded.version, "
                         + "description = excluded.description, "
                         + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
-                    CURRENT_SCHEMA_VERSION, "V8.6 架构基线：统一供应商实现、token 用量表、日志载荷瘦身与线路协议"));
+                    CURRENT_SCHEMA_VERSION,
+                    "V8.7 架构基线：统一供应商实现、token 用量表、日志载荷瘦身与线路协议、请求体规则分组"));
         log.info("[SchemaMigration] 已建立 V{} 架构基线", CURRENT_SCHEMA_VERSION);
     }
 
@@ -600,7 +616,158 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
         jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
                 + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
-                CURRENT_SCHEMA_VERSION, "V8.6 增量迁移：调用日志记录上下游线路协议");
+                V8_6_VERSION, "V8.6 增量迁移：调用日志记录上下游线路协议");
+    }
+
+    /**
+     * V8.7：把请求体规则集从 V1 扁平列表升为 V2 规则组，并记录规则集结构版本。
+     *
+     * <p>V2 的形态是 {@code {version:2, groups:[...]}}，每个规则组自带 {@code protocols}
+     * （适用线路）、{@code templateKeys} 与 {@code previewBody}（该组专属的调试样本）。
+     *
+     * <h2>为何这不是一次「伪迁移」</h2>
+     * 表结构本身确实只多一列，真正的变化在 {@code body_rules_json} 的内容形态。但它必须走
+     * 迁移体系而非留给应用层惰性升级：只要库里可能残留 V1，所有读取点就都得同时理解两种格式，
+     * 而「两种格式并存」正是要消除的状态。过一遍 V8.7 后全库同格式，读取端的 V1 兼容
+     * 就退化为纯粹的向后兜底而非常态路径。
+     *
+     * <h2>为何要加 {@code body_rules_schema} 列</h2>
+     * {@link #isCurrentBaseline()} 的判定全部由结构性谓词（列/表/索引是否存在）构成，
+     * 因为那些谓词与「数据里恰好有什么」无关，空库也成立。若 V8.7 只改 JSON 内容，
+     * 唯一可查的证据就是「随便挑一行看它是不是 V2」—— 而空表或全新库根本没有行，
+     * 判定会永远为假、迁移每次启动都重跑。加一列把这次变更变成可判定的结构事实。
+     *
+     * <h2>旧的两个编辑器列</h2>
+     * {@code body_template_keys_json} 与 {@code body_preview_json} 保留为 legacy：
+     * 它们的内容被搬进第一个规则组，此后不再是配置来源。不物理删列是因为 SQLite 删列
+     * 需要重建表（连带重建外键与触发器），而它们的存在成本只是两个不再读取的字段；
+     * 保存路径仍写入首组的值，让旧版本回滚时还能读到一份有意义的样本而非空对象。
+     *
+     * <h2>迁移后的协议归属</h2>
+     * 存量规则一律归入 {@code protocols:["OPENAI"]} 单组，而非「两条线路都执行」。
+     * 那些规则的字段路径是照 OpenAI 请求体写的（{@code messages} 里含 system、
+     * 无 {@code max_tokens}），作用在 Anthropic 请求体上多数匹配不到 ——
+     * 静默失效比不执行更难排查。这与前端 {@code migrateRuleSet} 的判断一致。
+     */
+    private void migrateToV87RuleGroups() {
+        if (tableExists("provider_request_transform")) {
+            addColumnIfNotExists("provider_request_transform", "body_rules_schema",
+                    "INTEGER NOT NULL DEFAULT " + CURRENT_BODY_RULES_VERSION
+                            + " CHECK (body_rules_schema >= 1)");
+            if (columnExists("provider_request_transform", "body_rules_json")) {
+                upgradeRuleSetsToV2();
+            }
+        }
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+                CURRENT_SCHEMA_VERSION, "V8.7 增量迁移：请求体规则升级为按线路分组");
+    }
+
+    /**
+     * 逐行把 {@code body_rules_json} 升为 V2。
+     *
+     * <p>已是 V2 的行只更新 {@code body_rules_schema}，不重写 JSON —— 迁移必须幂等，
+     * 且重写会打乱用户已有的组顺序与 ID。无法解析的行替换为空 V2 规则集并留下警告：
+     * 让一行坏数据阻断整库升级是最差的选择，而留着一份读不懂的 JSON 只会让
+     * 「全库同格式」这个不变量名存实亡。
+     *
+     * <p>两个 legacy 列可能在极旧的库里不存在，故取值前逐列判存 —— 缺失时退到各自默认值。
+     */
+    private void upgradeRuleSetsToV2() {
+        boolean hasTemplateKeys = columnExists("provider_request_transform", "body_template_keys_json");
+        boolean hasPreview = columnExists("provider_request_transform", "body_preview_json");
+        String columns = "provider_id, body_rules_json"
+                + (hasTemplateKeys ? ", body_template_keys_json" : "")
+                + (hasPreview ? ", body_preview_json" : "");
+        var rows = jdbcTemplate.queryForList(
+                "SELECT " + columns + " FROM provider_request_transform ORDER BY provider_id");
+        for (var row : rows) {
+            int providerId = ((Number) row.get("provider_id")).intValue();
+            String upgraded = upgradeRuleSetJson(providerId, (String) row.get("body_rules_json"),
+                    hasTemplateKeys ? (String) row.get("body_template_keys_json") : null,
+                    hasPreview ? (String) row.get("body_preview_json") : null);
+            if (upgraded == null) {
+                jdbcTemplate.update("UPDATE provider_request_transform SET body_rules_schema = ? "
+                        + "WHERE provider_id = ?", CURRENT_BODY_RULES_VERSION, providerId);
+                continue;
+            }
+            jdbcTemplate.update("UPDATE provider_request_transform SET body_rules_json = ?, "
+                            + "body_rules_version = ?, body_rules_schema = ? WHERE provider_id = ?",
+                    upgraded, CURRENT_BODY_RULES_VERSION, CURRENT_BODY_RULES_VERSION, providerId);
+        }
+    }
+
+    /**
+     * 把单个 V1 规则集包成 V2 单组；已是 V2 或无法解析时返回 null 表示不重写 JSON。
+     */
+    private String upgradeRuleSetJson(int providerId, String rulesJson,
+                                      String templateKeysJson, String previewJson) {
+        try {
+            JsonNode ruleSet = rulesJson == null || rulesJson.isBlank()
+                    ? null : objectMapper.readTree(rulesJson);
+            if (ruleSet == null || !ruleSet.isObject()) {
+                return EMPTY_BODY_RULES_JSON_V2;
+            }
+            int version = ruleSet.path("version").asInt(-1);
+            if (version == CURRENT_BODY_RULES_VERSION && ruleSet.path("groups").isArray()) {
+                return null;
+            }
+            if (version != 1 || !ruleSet.path("rules").isArray()) {
+                log.warn("[SchemaMigration] V8.7 无法识别 provider_id={} 的请求体规则集，已替换为空 V2 规则集",
+                        providerId);
+                return EMPTY_BODY_RULES_JSON_V2;
+            }
+            return objectMapper.writeValueAsString(
+                    buildLegacyRuleGroupSet(ruleSet.path("rules"), templateKeysJson, previewJson));
+        } catch (Exception exception) {
+            log.warn("[SchemaMigration] V8.7 解析 provider_id={} 的请求体规则集失败，已替换为空 V2 规则集: {}",
+                    providerId, exception.getMessage());
+            return EMPTY_BODY_RULES_JSON_V2;
+        }
+    }
+
+    /**
+     * 构造由 V1 升格而来的单个「OpenAI 规则组」。
+     *
+     * <p>组 ID 用固定字面量而非随机值：迁移必须可重放且结果可预期，随机 ID 会让
+     * 「同一份输入升两次得到不同结果」，也让测试只能做模糊断言。
+     */
+    private Map<String, Object> buildLegacyRuleGroupSet(JsonNode rules, String templateKeysJson,
+                                                        String previewJson) throws Exception {
+        Map<String, Object> group = new LinkedHashMap<>();
+        group.put("id", "group-legacy-openai");
+        group.put("name", "OpenAI 规则组");
+        group.put("order", 0);
+        group.put("enabled", true);
+        group.put("protocols", List.of("OPENAI"));
+        group.put("templateKeys", parseArrayOrDefault(templateKeysJson, DEFAULT_BODY_TEMPLATE_KEYS_JSON));
+        group.put("previewBody", parseObjectOrEmpty(previewJson));
+        group.put("rules", rules);
+
+        Map<String, Object> ruleSet = new LinkedHashMap<>();
+        ruleSet.put("version", CURRENT_BODY_RULES_VERSION);
+        ruleSet.put("groups", List.of(group));
+        return ruleSet;
+    }
+
+    private JsonNode parseArrayOrDefault(String json, String fallbackJson) throws Exception {
+        if (json != null && !json.isBlank()) {
+            JsonNode parsed = objectMapper.readTree(json);
+            if (parsed.isArray() && !parsed.isEmpty()) {
+                return parsed;
+            }
+        }
+        return objectMapper.readTree(fallbackJson);
+    }
+
+    private JsonNode parseObjectOrEmpty(String json) throws Exception {
+        if (json != null && !json.isBlank()) {
+            JsonNode parsed = objectMapper.readTree(json);
+            if (parsed.isObject()) {
+                return parsed;
+            }
+        }
+        return objectMapper.createObjectNode();
     }
 
             private void deleteProviderConfiguration(int providerId) {
@@ -670,6 +837,9 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                 + "(strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), "
                 + "FOREIGN KEY (provider_id) REFERENCES provider_config(id) ON DELETE CASCADE)");
     }
+    // 上面的 DEFAULT 是 V5 时代的 V1 字面量，与 EMPTY_BODY_RULES_JSON 同理不可升到 V2：
+    // 这张表由 V5 迁移创建，同一次迁移里的 verifyProviderRequestTransforms 要求 version == 1。
+    // 新建库走 schema.sql（那里是 V2 默认值），旧库走 V5 建表再由 V8.7 升格。
 
     private String extractHeaderRulesJson(int providerId, String customTransforms) {
         String source = customTransforms == null || customTransforms.isBlank() ? "{}" : customTransforms;

@@ -27,6 +27,8 @@ public class ProviderRequestTransformService {
             + "\"reasoning_effort\":\"medium\"}";
     /** 默认空规则集。 */
     public static final String EMPTY_BODY_RULES_JSON = "{\"version\":2,\"groups\":[]}";
+    /** 当前规则集协议版本，与 {@code body_rules_json} 里的 {@code version} 一致。 */
+    public static final int BODY_RULES_VERSION = 2;
 
     private static final Set<String> TEMPLATE_KEYS = Set.of(
             "base", "message-start", "message-assistant", "message-tool-basic",
@@ -113,7 +115,7 @@ public class ProviderRequestTransformService {
         requestTransformRepository.upsert(
                 providerId, 1, transform.headerRulesJson(),
                 transform.templateKeysJson(), transform.bodyPreviewJson(),
-                1, transform.bodyRulesJson());
+                BODY_RULES_VERSION, transform.bodyRulesJson());
     }
 
     private ValidatedTransform validate(String headerRulesJson, String templateKeysJson,
