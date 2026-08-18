@@ -39,13 +39,17 @@ import static org.mockito.Mockito.when;
 class ProviderRequestBodyTransformationIntegrationTests {
 
     private static final String RULES = """
-            {"version":1,"rules":[{
-              "id":"rewrite-temperature","order":0,"field":"temperature","array":false,
-              "conditional":false,"conditionMode":"all","conditions":[],
-              "operations":[{"type":"set_value","value":0.2}]},
-              {"id":"remove-reasoning","order":1,"field":"reasoning_effort","array":false,
-              "conditional":false,"conditionMode":"all","conditions":[],
-              "operations":[{"type":"delete"}]}
+            {"version":2,"groups":[{
+              "id":"g-openai","name":"OpenAI 规则组","order":0,"enabled":true,
+              "protocols":["OPENAI"],"templateKeys":["base"],"previewBody":{},
+              "rules":[{
+                "id":"rewrite-temperature","order":0,"field":"temperature","array":false,
+                "conditional":false,"conditionMode":"all","conditions":[],
+                "operations":[{"type":"set_value","value":0.2}]},
+                {"id":"remove-reasoning","order":1,"field":"reasoning_effort","array":false,
+                "conditional":false,"conditionMode":"all","conditions":[],
+                "operations":[{"type":"delete"}]}
+              ]}
             ]}
             """;
 

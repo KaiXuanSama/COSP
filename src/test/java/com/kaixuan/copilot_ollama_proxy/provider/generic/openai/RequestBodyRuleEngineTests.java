@@ -127,6 +127,12 @@ class RequestBodyRuleEngineTests {
                 .contains("数组模式下\"设置字段值\"应通过嵌套规则定位字段", "字段值不是对象，无法执行\"调整对象内容\"");
     }
 
+    /**
+     * 根结构无法识别时原样放行。
+     *
+     * <p>这里用 {@code version:2} 配 {@code rules}（V2 该用 {@code groups}）—— 版本号对得上
+     * 而载荷键对不上，是「手工编辑规则 JSON 时最容易犯的错」，也是引擎唯一需要保守放行的场景。
+     */
     @Test
     void invalidRuleSetReturnsDeepCopyAndConciseWarning() {
         Map<String, Object> input = Map.of("model", "mimo-v2.5-pro", "nested", Map.of("enabled", true));
@@ -136,7 +142,60 @@ class RequestBodyRuleEngineTests {
         assertThat(result.output()).isEqualTo(input).isNotSameAs(input);
         assertThat(result.warnings()).singleElement()
                 .extracting(RequestBodyRuleEngine.TransformWarning::message)
-                .isEqualTo("请求体规则集必须是 version=1 且包含 rules 数组，已跳过");
+                .isEqualTo("请求体规则集必须是 version=1 含 rules 或 version=2 含 groups，已跳过");
+    }
+
+    /** V2 规则组按组的 order 依次执行，组内再按规则的 order。 */
+    @Test
+    void ruleGroupsAreExecutedInGroupOrderThenRuleOrder() {
+        Map<String, Object> input = Map.of("marker", "none");
+
+        RequestBodyRuleEngine.TransformResult result = engine.transform(input, """
+                {"version":2,"groups":[
+                  {"id":"second","name":"\u540e\u6267\u884c","order":1,"enabled":true,
+                   "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                   "rules":[{"id":"r2","order":0,"field":"marker","array":false,"conditional":false,
+                    "conditionMode":"all","conditions":[],
+                    "operations":[{"type":"set_value","value":"last-wins"}]}]},
+                  {"id":"first","name":"\u5148\u6267\u884c","order":0,"enabled":true,
+                   "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                   "rules":[{"id":"r1","order":0,"field":"marker","array":false,"conditional":false,
+                    "conditionMode":"all","conditions":[],
+                    "operations":[{"type":"set_value","value":"first"}]}]}
+                ]}
+                """);
+
+        assertThat(result.output()).containsEntry("marker", "last-wins");
+        assertThat(result.warnings()).isEmpty();
+    }
+
+    /** 已禁用的规则组整组跳过。 */
+    @Test
+    void disabledRuleGroupIsSkipped() {
+        Map<String, Object> input = Map.of("marker", "kept");
+
+        RequestBodyRuleEngine.TransformResult result = engine.transform(input, """
+                {"version":2,"groups":[
+                  {"id":"off","name":"\u5df2\u7981\u7528","order":0,"enabled":false,
+                   "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                   "rules":[{"id":"r1","order":0,"field":"marker","array":false,"conditional":false,
+                    "conditionMode":"all","conditions":[],
+                    "operations":[{"type":"set_value","value":"should-not-apply"}]}]}
+                ]}
+                """);
+
+        assertThat(result.output()).containsEntry("marker", "kept");
+    }
+
+    /** 空 groups 是合法的 V2 规则集，不产生警告。 */
+    @Test
+    void emptyRuleGroupsProduceNoWarning() {
+        Map<String, Object> input = Map.of("model", "m");
+
+        RequestBodyRuleEngine.TransformResult result = engine.transform(input, "{\"version\":2,\"groups\":[]}");
+
+        assertThat(result.output()).isEqualTo(input);
+        assertThat(result.warnings()).isEmpty();
     }
 
     @SuppressWarnings("unchecked")

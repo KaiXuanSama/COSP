@@ -60,6 +60,6 @@ class DatabaseRuntimeProviderCatalogTests {
 
         ProviderRuntimeConfiguration configuration = catalog.getActiveProvider("mimo-user");
         assertThat(configuration.headerRulesJson()).isEqualTo("[]");
-                assertThat(configuration.bodyRulesJson()).isEqualTo("{\"version\":1,\"rules\":[]}");
+                assertThat(configuration.bodyRulesJson()).isEqualTo("{\"version\":2,\"groups\":[]}");
     }
 }

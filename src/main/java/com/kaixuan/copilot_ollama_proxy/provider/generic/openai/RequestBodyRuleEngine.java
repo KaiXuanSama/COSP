@@ -12,11 +12,14 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 请求体 RuleSet V1 转换引擎。
+ * 请求体 RuleSet 转换引擎。
  *
  * 该类是独立的纯转换组件，仅将输入请求体深拷贝后按 body_rules_json 执行，不读取数据库。
  * 它由 {@link GenericOpenAiChatService} 在生产聊天请求发送到上游前调用；规则语义与前端
  * request-body-rules/engine.ts 保持一致。
+ *
+ * <p>同时接受 V1（扁平 {@code rules}）与 V2（{@code groups} 规则组）两种根结构，
+ * 见 {@link #parseRules}。
  */
 public final class RequestBodyRuleEngine {
 
@@ -43,12 +46,7 @@ public final class RequestBodyRuleEngine {
     public TransformResult transform(Map<String, Object> input, String bodyRulesJson) {
         List<TransformWarning> warnings = new ArrayList<>();
         ObjectNode output = copyInput(input);
-        JsonNode ruleSet = parseRuleSet(bodyRulesJson, warnings);
-        if (ruleSet == null || !ruleSet.path("rules").isArray()) {
-            return new TransformResult(toMap(output), List.copyOf(warnings));
-        }
-
-        for (JsonNode rule : sortedRules(ruleSet.path("rules"))) {
+        for (JsonNode rule : parseRules(bodyRulesJson, warnings)) {
             executeRule(output, rule, "", warnings);
         }
         return new TransformResult(toMap(output), List.copyOf(warnings));
@@ -59,23 +57,63 @@ public final class RequestBodyRuleEngine {
         return source instanceof ObjectNode objectNode ? objectNode.deepCopy() : objectMapper.createObjectNode();
     }
 
-    private JsonNode parseRuleSet(String bodyRulesJson, List<TransformWarning> warnings) {
+    /**
+     * 解析规则集并展平出待执行的规则序列。
+     *
+     * <p>接受两种根结构：
+     * <ul>
+     *   <li>V1 {@code {version:1, rules:[...]}} —— 单一扁平规则列表；</li>
+     *   <li>V2 {@code {version:2, groups:[...]}} —— 规则装在「规则组」里，每组声明适用线路协议。</li>
+     * </ul>
+     *
+     * <p>V2 分支目前把**全部已启用组**按 {@code order} 展平，尚不按协议筛选 ——
+     * 协议筛选连同 Anthropic 侧接入是下一步的事。保持全局 {@code order} 语义：
+     * 组内规则的 {@code order} 只在组内有效，跨组顺序由组的 {@code order} 决定，
+     * 因此展平必须逐组排序后依次追加，而不能把所有规则混在一起按 {@code order} 排。
+     *
+     * <p>解析失败一律返回空列表并留下警告，即原请求体原样放行 —— 与其他保守放行的判定同调：
+     * 宁可让一条没识别的规则不生效，也不要因为结构陌生就把用户的请求改坏。
+     */
+    private List<JsonNode> parseRules(String bodyRulesJson, List<TransformWarning> warnings) {
         if (bodyRulesJson == null || bodyRulesJson.isBlank()) {
             warnings.add(new TransformWarning("", "", "请求体规则 JSON 为空，已跳过"));
-            return null;
+            return List.of();
         }
         try {
             JsonNode ruleSet = objectMapper.readTree(bodyRulesJson);
-            if (!ruleSet.isObject() || ruleSet.path("version").asInt(-1) != 1
-                    || !ruleSet.path("rules").isArray()) {
-                warnings.add(new TransformWarning("", "", "请求体规则集必须是 version=1 且包含 rules 数组，已跳过"));
-                return null;
+            if (!ruleSet.isObject()) {
+                warnings.add(new TransformWarning("", "", "请求体规则集必须是 JSON 对象，已跳过"));
+                return List.of();
             }
-            return ruleSet;
+            int version = ruleSet.path("version").asInt(-1);
+            if (version == 1 && ruleSet.path("rules").isArray()) {
+                return sortedRules(ruleSet.path("rules"));
+            }
+            if (version == 2 && ruleSet.path("groups").isArray()) {
+                return flattenGroups(ruleSet.path("groups"));
+            }
+            warnings.add(new TransformWarning("", "",
+                    "请求体规则集必须是 version=1 含 rules 或 version=2 含 groups，已跳过"));
+            return List.of();
         } catch (Exception exception) {
             warnings.add(new TransformWarning("", "", "请求体规则 JSON 无效，已跳过"));
-            return null;
+            return List.of();
         }
+    }
+
+    private List<JsonNode> flattenGroups(JsonNode groups) {
+        List<JsonNode> ordered = new ArrayList<>();
+        groups.forEach(ordered::add);
+        ordered.sort(Comparator.comparingInt(group -> group.path("order").asInt(0)));
+
+        List<JsonNode> rules = new ArrayList<>();
+        for (JsonNode group : ordered) {
+            if (!group.path("enabled").asBoolean(true)) {
+                continue;
+            }
+            rules.addAll(sortedRules(group.path("rules")));
+        }
+        return rules;
     }
 
     private void executeRule(ObjectNode scope, JsonNode rule, String parentPath, List<TransformWarning> warnings) {

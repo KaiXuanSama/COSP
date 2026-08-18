@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.application.runtime;
 
+import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestTransformService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
@@ -44,7 +45,8 @@ public class DatabaseRuntimeProviderCatalog implements RuntimeProviderCatalog {
                 providerApiKeyRepository.resolveActiveApiKey(source.id()),
                 source.models().stream().map(this::toModel).toList(),
                 transform != null ? transform.headerRulesJson() : "[]",
-                transform != null ? transform.bodyRulesJson() : "{\"version\":1,\"rules\":[]}"
+                transform != null ? transform.bodyRulesJson()
+                        : ProviderRequestTransformService.EMPTY_BODY_RULES_JSON
         );
     }
 
