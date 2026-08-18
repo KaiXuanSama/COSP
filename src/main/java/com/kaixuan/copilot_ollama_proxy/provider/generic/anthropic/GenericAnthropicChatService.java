@@ -5,7 +5,9 @@ import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotif
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
+import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
@@ -101,6 +103,7 @@ public class GenericAnthropicChatService {
 
     private final ObjectMapper objectMapper;
     private final ProviderRequestHeaderService providerRequestHeaderService;
+    private final RequestBodyRuleEngine requestBodyRuleEngine;
 
     private ApiCallLogService apiCallLog;
     private ApiCallUsageService apiCallUsage;
@@ -110,9 +113,11 @@ public class GenericAnthropicChatService {
     private HttpClient httpClient = HttpClient.create();
 
     public GenericAnthropicChatService(ObjectMapper objectMapper,
-                                       ProviderRequestHeaderService providerRequestHeaderService) {
+                                       ProviderRequestHeaderService providerRequestHeaderService,
+                                       RequestBodyRuleEngine requestBodyRuleEngine) {
         this.objectMapper = objectMapper;
         this.providerRequestHeaderService = providerRequestHeaderService;
+        this.requestBodyRuleEngine = requestBodyRuleEngine;
     }
 
     @Autowired(required = false)
@@ -517,14 +522,20 @@ public class GenericAnthropicChatService {
      *       优先取模型配置的 {@code max_output_tokens}，再退到
      *       {@link #FALLBACK_MAX_TOKENS}。</li>
      *   <li><strong>思考深度用 {@code thinking} 对象</strong> ——
-     *       而非 OpenAI 的 {@code reasoning_effort} 字符串。本阶段只做剥离，
+     *       而非 OpenAI 的 {@code reasoning_effort} 字符串。当前只做剥离，
      *       不做映射（见下方 TODO）。</li>
      * </ol>
      *
-     * <p>请求体转换规则（{@code provider_request_transform.body_rules_json}）
-     * <strong>本阶段不应用</strong>：那些规则是照 OpenAI 请求体的路径写的
-     * （如 {@code ./messages[*]/content}），作用在 Anthropic 请求体上多数匹配不到，
-     * 静默失效比报错更难排查。见下方 TODO。
+     * <h2>请求体转换规则的执行位置</h2>
+     * 规则在协议归一化<strong>之后</strong>执行（{@code system} 已提到顶层、
+     * {@code max_tokens} 已补齐），因为规则的字段路径是照最终发往上游的形态写的 ——
+     * 若在归一化前执行，用户看到的预览与实际请求体结构不一致。
+     *
+     * <p>但要在 {@code removeIf(Objects::isNull)} 之前：规则可能把某个字段显式设为 null，
+     * 而 Anthropic 对多余的 null 字段并不宽容，最终清洗必须是链条的最后一步。
+     *
+     * <p>协议筛选由引擎完成：只有声明适用 {@link WireProtocol#ANTHROPIC} 的规则组才会执行。
+     * 库里那些照 OpenAI 结构写的旧规则被归一为「仅 OPENAI」，因此不会在此静默匹配失败。
      */
     private Map<String, Object> prepareRequestBody(Map<String, Object> request, boolean stream,
                                                    String model, ProviderRuntimeConfiguration provider) {
@@ -541,17 +552,29 @@ public class GenericAnthropicChatService {
         //  且 budget_tokens 必须小于 max_tokens。本阶段先剥掉该字段避免上游 400，
         //  待确认各中转站是否支持 thinking 参数后再补映射。
         //  影响：配置了思考深度的模型，走 Anthropic 协议时该设置暂时不生效。
+        //  变通办法：用一条仅适用 ANTHROPIC 的请求体规则手工设置 thinking 字段。
         body.remove("reasoning_effort");
 
-        // TODO 请求体转换规则（body_rules_json）本阶段不应用于 Anthropic 请求。
-        //  RequestBodyRuleEngine 本身是协议无关的纯 JSON 路径操作，能跑；
-        //  但库里已有的规则都是照 OpenAI 请求体结构写的（system 在 messages 里、
-        //  无 max_tokens 等），作用在 Anthropic 请求体上会静默匹配不到 —— 不报错，
-        //  只是什么都没做，这比报错更难排查。
-        //  待 provider_config 能区分协议后，规则也应按协议分开存储与编辑。
+        applyBodyRules(body, provider);
 
         body.values().removeIf(Objects::isNull);
         return body;
+    }
+
+    /**
+     * 执行适用于 Anthropic 线路的请求体规则组。
+     *
+     * <p>引擎返回新 Map 而非原地修改，这里原地替换内容以保留调用方持有的引用。
+     */
+    private void applyBodyRules(Map<String, Object> body, ProviderRuntimeConfiguration provider) {
+        RequestBodyRuleEngine.TransformResult result = requestBodyRuleEngine.transform(
+                body, provider.bodyRulesJson(), WireProtocol.ANTHROPIC);
+        body.clear();
+        body.putAll(result.output());
+        for (RequestBodyRuleEngine.TransformWarning warning : result.warnings()) {
+            log.warn("[Anthropic] 请求体规则已跳过: ruleId={}, path={}, message={}",
+                    warning.ruleId(), warning.fieldPath(), warning.message());
+        }
     }
 
     /**

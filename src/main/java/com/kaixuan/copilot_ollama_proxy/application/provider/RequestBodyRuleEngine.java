@@ -1,10 +1,12 @@
-package com.kaixuan.copilot_ollama_proxy.provider.generic.openai;
+package com.kaixuan.copilot_ollama_proxy.application.provider;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.NullNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -15,12 +17,17 @@ import java.util.Map;
  * 请求体 RuleSet 转换引擎。
  *
  * 该类是独立的纯转换组件，仅将输入请求体深拷贝后按 body_rules_json 执行，不读取数据库。
- * 它由 {@link GenericOpenAiChatService} 在生产聊天请求发送到上游前调用；规则语义与前端
- * request-body-rules/engine.ts 保持一致。
+ * 上游服务在把聊天请求发往上游前调用它；规则语义与前端 request-body-rules/engine.ts 保持一致。
  *
- * <p>同时接受 V1（扁平 {@code rules}）与 V2（{@code groups} 规则组）两种根结构，
- * 见 {@link #parseRules}。
+ * <h2>为何放在 application 而不是某个协议包下</h2>
+ * 规则本身只是 JSON 路径操作，与报文格式无关 —— OpenAI 与 Anthropic 两侧共用同一份实现。
+ * 它原先在 {@code provider/generic/openai} 下，那个位置暗示「这是 OpenAI 专属能力」，
+ * 而 Anthropic 侧接入后该暗示就是错的。协议差异只体现在<strong>规则组声明适用哪条线路</strong>，
+ * 由 {@link #transform(Map, String, WireProtocol)} 的筛选完成，不影响执行语义。
+ *
+ * <p>同时接受 V1（扁平 {@code rules}）与 V2（{@code groups} 规则组）两种根结构，见 {@link #parseRules}。
  */
+@Component
 public final class RequestBodyRuleEngine {
 
     private final ObjectMapper objectMapper;
@@ -41,12 +48,13 @@ public final class RequestBodyRuleEngine {
      *
      * @param input 原始请求体
      * @param bodyRulesJson body_rules_json 内容
+     * @param protocol 本次调用实际使用的上游线路协议
      * @return 转换结果
      */
-    public TransformResult transform(Map<String, Object> input, String bodyRulesJson) {
+    public TransformResult transform(Map<String, Object> input, String bodyRulesJson, WireProtocol protocol) {
         List<TransformWarning> warnings = new ArrayList<>();
         ObjectNode output = copyInput(input);
-        for (JsonNode rule : parseRules(bodyRulesJson, warnings)) {
+        for (JsonNode rule : parseRules(bodyRulesJson, protocol, warnings)) {
             executeRule(output, rule, "", warnings);
         }
         return new TransformResult(toMap(output), List.copyOf(warnings));
@@ -66,15 +74,20 @@ public final class RequestBodyRuleEngine {
      *   <li>V2 {@code {version:2, groups:[...]}} —— 规则装在「规则组」里，每组声明适用线路协议。</li>
      * </ul>
      *
-     * <p>V2 分支目前把**全部已启用组**按 {@code order} 展平，尚不按协议筛选 ——
-     * 协议筛选连同 Anthropic 侧接入是下一步的事。保持全局 {@code order} 语义：
-     * 组内规则的 {@code order} 只在组内有效，跨组顺序由组的 {@code order} 决定，
-     * 因此展平必须逐组排序后依次追加，而不能把所有规则混在一起按 {@code order} 排。
+     * <p>V1 只在 {@link WireProtocol#OPENAI} 下执行：那些规则的字段路径是照 OpenAI 请求体写的
+     * （{@code messages} 里含 system、无 {@code max_tokens}），作用在 Anthropic 请求体上多数
+     * 匹配不到 —— 静默失效比不执行更难排查。这与前端迁移把 V1 归一为
+     * {@code protocols:['OPENAI']} 单组是同一个判断。写入路径已不再接受 V1，
+     * 但读取仍需兼容：迁移未跑完的窗口里若不认 V1，既有规则会全部静默失效。
+     *
+     * <p>保持全局 {@code order} 语义：组内规则的 {@code order} 只在组内有效，跨组顺序由组的
+     * {@code order} 决定，因此展平必须逐组排序后依次追加，而不能把所有规则混在一起按
+     * {@code order} 排。
      *
      * <p>解析失败一律返回空列表并留下警告，即原请求体原样放行 —— 与其他保守放行的判定同调：
      * 宁可让一条没识别的规则不生效，也不要因为结构陌生就把用户的请求改坏。
      */
-    private List<JsonNode> parseRules(String bodyRulesJson, List<TransformWarning> warnings) {
+    private List<JsonNode> parseRules(String bodyRulesJson, WireProtocol protocol, List<TransformWarning> warnings) {
         if (bodyRulesJson == null || bodyRulesJson.isBlank()) {
             warnings.add(new TransformWarning("", "", "请求体规则 JSON 为空，已跳过"));
             return List.of();
@@ -87,10 +100,10 @@ public final class RequestBodyRuleEngine {
             }
             int version = ruleSet.path("version").asInt(-1);
             if (version == 1 && ruleSet.path("rules").isArray()) {
-                return sortedRules(ruleSet.path("rules"));
+                return protocol == WireProtocol.OPENAI ? sortedRules(ruleSet.path("rules")) : List.of();
             }
             if (version == 2 && ruleSet.path("groups").isArray()) {
-                return flattenGroups(ruleSet.path("groups"));
+                return flattenGroups(ruleSet.path("groups"), protocol);
             }
             warnings.add(new TransformWarning("", "",
                     "请求体规则集必须是 version=1 含 rules 或 version=2 含 groups，已跳过"));
@@ -101,19 +114,38 @@ public final class RequestBodyRuleEngine {
         }
     }
 
-    private List<JsonNode> flattenGroups(JsonNode groups) {
+    /**
+     * 按组的 {@code order} 展平适用于当前协议的已启用规则组。
+     *
+     * <p>{@code protocols} 缺失时视为**全协议适用**：一个 V2 组能存在说明它写于协议概念之后，
+     * 作者省略该字段更可能是「没在意」而非「只要某一条线路」。而空数组是显式的「哪条都不要」，
+     * 与缺失是不同意图，因此不能用 {@code isEmpty()} 统一处理。
+     */
+    private List<JsonNode> flattenGroups(JsonNode groups, WireProtocol protocol) {
         List<JsonNode> ordered = new ArrayList<>();
         groups.forEach(ordered::add);
         ordered.sort(Comparator.comparingInt(group -> group.path("order").asInt(0)));
 
         List<JsonNode> rules = new ArrayList<>();
         for (JsonNode group : ordered) {
-            if (!group.path("enabled").asBoolean(true)) {
-                continue;
+            if (group.path("enabled").asBoolean(true) && groupAppliesTo(group, protocol)) {
+                rules.addAll(sortedRules(group.path("rules")));
             }
-            rules.addAll(sortedRules(group.path("rules")));
         }
         return rules;
+    }
+
+    private boolean groupAppliesTo(JsonNode group, WireProtocol protocol) {
+        JsonNode protocols = group.path("protocols");
+        if (!protocols.isArray()) {
+            return true;
+        }
+        for (JsonNode candidate : protocols) {
+            if (candidate.isTextual() && protocol.name().equals(candidate.asText())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void executeRule(ObjectNode scope, JsonNode rule, String parentPath, List<TransformWarning> warnings) {

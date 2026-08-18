@@ -1,6 +1,7 @@
-package com.kaixuan.copilot_ollama_proxy.provider.generic.openai;
+package com.kaixuan.copilot_ollama_proxy.application.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -19,13 +20,24 @@ class RequestBodyRuleEngineTests {
         engine = new RequestBodyRuleEngine(objectMapper);
     }
 
+    /**
+     * 默认走 OpenAI 线路的简便入口。
+     *
+     * <p>大多数用例验证的是规则**执行语义**（路径、条件、操作、顺序），
+     * 与协议无关；每处都写上协议入参只会遮蔽真正在验证的东西。
+     * 协议筛选由尾部一组专门的用例覆盖。
+     */
+    private RequestBodyRuleEngine.TransformResult transform(Map<String, Object> input, String bodyRulesJson) {
+        return engine.transform(input, bodyRulesJson, WireProtocol.OPENAI);
+    }
+
     @Test
     void transformsNestedObjectAndPreservesOriginalInput() {
         Map<String, Object> input = Map.of(
                 "stream_options", Map.of("include_usage", true, "keep", "value"),
                 "model", "original");
 
-        RequestBodyRuleEngine.TransformResult result = engine.transform(input, """
+        RequestBodyRuleEngine.TransformResult result = transform(input, """
                 {
                   "version": 1,
                   "rules": [{
@@ -64,7 +76,7 @@ class RequestBodyRuleEngineTests {
                         "type", "image_url", "image_url", Map.of("url", "data:image/png;base64,def"))),
                         "tool_call_id", "call-user")));
 
-        RequestBodyRuleEngine.TransformResult result = engine.transform(input, mimoImageToolRuleSet());
+        RequestBodyRuleEngine.TransformResult result = transform(input, mimoImageToolRuleSet());
 
         List<Map<String, Object>> messages = messages(result.output());
         assertThat(messages.get(0)).containsEntry("role", "user").doesNotContainKey("tool_call_id");
@@ -79,7 +91,7 @@ class RequestBodyRuleEngineTests {
     void appliesRulesInAscendingOrderRegardlessOfJsonArrayOrder() {
         Map<String, Object> input = Map.of("temperature", 0.1);
 
-        RequestBodyRuleEngine.TransformResult result = engine.transform(input, """
+        RequestBodyRuleEngine.TransformResult result = transform(input, """
                 {"version":1,"rules":[
                   {"id":"set-second","order":10,"field":"temperature","array":false,"conditional":false,
                    "conditionMode":"all","conditions":[],"operations":[{"type":"set_value","value":0.8}]},
@@ -95,7 +107,7 @@ class RequestBodyRuleEngineTests {
     void equalsConditionUsesJsonTypesAndDoesNotMatchStringAgainstNumber() {
         Map<String, Object> input = Map.of("max_tokens", 10, "reasoning_effort", "medium");
 
-        RequestBodyRuleEngine.TransformResult result = engine.transform(input, """
+        RequestBodyRuleEngine.TransformResult result = transform(input, """
                 {"version":1,"rules":[
                   {"id":"number-match","order":0,"field":"reasoning_effort","array":false,"conditional":true,
                    "conditionMode":"all","conditions":[{"path":"./max_tokens","operator":"equals","value":10}],
@@ -113,7 +125,7 @@ class RequestBodyRuleEngineTests {
     void returnsWarningsForUnsupportedArrayOperationsAndInvalidObjectTarget() {
         Map<String, Object> input = Map.of("messages", List.of(Map.of("role", "user")), "temperature", 0.1);
 
-        RequestBodyRuleEngine.TransformResult result = engine.transform(input, """
+        RequestBodyRuleEngine.TransformResult result = transform(input, """
                 {"version":1,"rules":[
                   {"id":"array-set","order":0,"field":"messages","array":true,"conditional":false,
                    "conditionMode":"all","conditions":[],"operations":[{"type":"set_value","value":"ignored"}]},
@@ -137,7 +149,7 @@ class RequestBodyRuleEngineTests {
     void invalidRuleSetReturnsDeepCopyAndConciseWarning() {
         Map<String, Object> input = Map.of("model", "mimo-v2.5-pro", "nested", Map.of("enabled", true));
 
-        RequestBodyRuleEngine.TransformResult result = engine.transform(input, "{\"version\":2,\"rules\":[]}");
+        RequestBodyRuleEngine.TransformResult result = transform(input, "{\"version\":2,\"rules\":[]}");
 
         assertThat(result.output()).isEqualTo(input).isNotSameAs(input);
         assertThat(result.warnings()).singleElement()
@@ -150,7 +162,7 @@ class RequestBodyRuleEngineTests {
     void ruleGroupsAreExecutedInGroupOrderThenRuleOrder() {
         Map<String, Object> input = Map.of("marker", "none");
 
-        RequestBodyRuleEngine.TransformResult result = engine.transform(input, """
+        RequestBodyRuleEngine.TransformResult result = transform(input, """
                 {"version":2,"groups":[
                   {"id":"second","name":"\u540e\u6267\u884c","order":1,"enabled":true,
                    "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
@@ -174,7 +186,7 @@ class RequestBodyRuleEngineTests {
     void disabledRuleGroupIsSkipped() {
         Map<String, Object> input = Map.of("marker", "kept");
 
-        RequestBodyRuleEngine.TransformResult result = engine.transform(input, """
+        RequestBodyRuleEngine.TransformResult result = transform(input, """
                 {"version":2,"groups":[
                   {"id":"off","name":"\u5df2\u7981\u7528","order":0,"enabled":false,
                    "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
@@ -192,10 +204,107 @@ class RequestBodyRuleEngineTests {
     void emptyRuleGroupsProduceNoWarning() {
         Map<String, Object> input = Map.of("model", "m");
 
-        RequestBodyRuleEngine.TransformResult result = engine.transform(input, "{\"version\":2,\"groups\":[]}");
+        RequestBodyRuleEngine.TransformResult result = transform(input, "{\"version\":2,\"groups\":[]}");
 
         assertThat(result.output()).isEqualTo(input);
         assertThat(result.warnings()).isEmpty();
+    }
+
+    // ==================== 协议筛选 ====================
+
+    /** 只执行 protocols 包含当前线路的组。 */
+    @Test
+    void onlyGroupsDeclaringCurrentProtocolAreExecuted() {
+        Map<String, Object> input = Map.of("marker", "none");
+        String rules = """
+                {"version":2,"groups":[
+                  {"id":"openai-only","name":"o","order":0,"enabled":true,
+                   "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                   "rules":[{"id":"r1","order":0,"field":"marker","array":false,"conditional":false,
+                    "conditionMode":"all","conditions":[],
+                    "operations":[{"type":"set_value","value":"from-openai"}]}]},
+                  {"id":"anthropic-only","name":"a","order":1,"enabled":true,
+                   "protocols":["ANTHROPIC"],"templateKeys":["custom"],"previewBody":{},
+                   "rules":[{"id":"r2","order":0,"field":"marker","array":false,"conditional":false,
+                    "conditionMode":"all","conditions":[],
+                    "operations":[{"type":"set_value","value":"from-anthropic"}]}]}
+                ]}
+                """;
+
+        assertThat(engine.transform(input, rules, WireProtocol.OPENAI).output())
+                .containsEntry("marker", "from-openai");
+        assertThat(engine.transform(input, rules, WireProtocol.ANTHROPIC).output())
+                .containsEntry("marker", "from-anthropic");
+    }
+
+    /**
+     * {@code protocols} 缺失视为全协议适用。
+     *
+     * <p>一个 V2 组能存在说明它写于协议概念之后，作者省略该字段更可能是「没在意」。
+     */
+    @Test
+    void groupWithoutProtocolsFieldAppliesToEveryProtocol() {
+        Map<String, Object> input = Map.of("marker", "none");
+        String rules = """
+                {"version":2,"groups":[
+                  {"id":"g","name":"g","order":0,"enabled":true,
+                   "templateKeys":["custom"],"previewBody":{},
+                   "rules":[{"id":"r1","order":0,"field":"marker","array":false,"conditional":false,
+                    "conditionMode":"all","conditions":[],
+                    "operations":[{"type":"set_value","value":"applied"}]}]}
+                ]}
+                """;
+
+        assertThat(engine.transform(input, rules, WireProtocol.OPENAI).output())
+                .containsEntry("marker", "applied");
+        assertThat(engine.transform(input, rules, WireProtocol.ANTHROPIC).output())
+                .containsEntry("marker", "applied");
+    }
+
+    /**
+     * {@code protocols} 为空数组的组永不执行。
+     *
+     * <p>空数组是显式的「哪条都不要」，与字段缺失是不同意图。
+     */
+    @Test
+    void groupWithEmptyProtocolsNeverApplies() {
+        Map<String, Object> input = Map.of("marker", "kept");
+        String rules = """
+                {"version":2,"groups":[
+                  {"id":"g","name":"g","order":0,"enabled":true,
+                   "protocols":[],"templateKeys":["custom"],"previewBody":{},
+                   "rules":[{"id":"r1","order":0,"field":"marker","array":false,"conditional":false,
+                    "conditionMode":"all","conditions":[],
+                    "operations":[{"type":"set_value","value":"should-not-apply"}]}]}
+                ]}
+                """;
+
+        assertThat(engine.transform(input, rules, WireProtocol.OPENAI).output())
+                .containsEntry("marker", "kept");
+        assertThat(engine.transform(input, rules, WireProtocol.ANTHROPIC).output())
+                .containsEntry("marker", "kept");
+    }
+
+    /**
+     * V1 规则集只在 OpenAI 线路执行。
+     *
+     * <p>V1 规则的字段路径是照 OpenAI 请求体写的，作用在 Anthropic 请求体上
+     * 多数匹配不到 —— 静默失效比不执行更难排查。
+     */
+    @Test
+    void legacyV1RuleSetIsSkippedOnNonOpenAiProtocol() {
+        Map<String, Object> input = Map.of("temperature", 0.1);
+        String rules = """
+                {"version":1,"rules":[
+                  {"id":"r1","order":0,"field":"temperature","array":false,"conditional":false,
+                   "conditionMode":"all","conditions":[],"operations":[{"type":"set_value","value":0.9}]}
+                ]}
+                """;
+
+        assertThat(engine.transform(input, rules, WireProtocol.OPENAI).output())
+                .containsEntry("temperature", 0.9);
+        assertThat(engine.transform(input, rules, WireProtocol.ANTHROPIC).output())
+                .containsEntry("temperature", 0.1);
     }
 
     @SuppressWarnings("unchecked")

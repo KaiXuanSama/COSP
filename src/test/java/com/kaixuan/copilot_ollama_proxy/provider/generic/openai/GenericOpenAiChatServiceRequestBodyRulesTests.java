@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.provider.generic.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
+import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import org.junit.jupiter.api.Test;
 
@@ -74,7 +75,8 @@ class GenericOpenAiChatServiceRequestBodyRulesTests {
         private final ProviderRuntimeConfiguration configuration;
 
         private TestGenericOpenAiChatService(ProviderRuntimeConfiguration configuration) {
-            super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()));
+            super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
+                    new RequestBodyRuleEngine(new ObjectMapper()));
             this.configuration = configuration;
         }
 
