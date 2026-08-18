@@ -1,8 +1,15 @@
 /**
- * 请求体映射规则 V1 前端协议。
+ * 请求体映射规则前端协议。
  *
  * 规则通过供应商配置持久化，并由后端 RequestBodyRuleEngine 在生产请求中执行。
+ *
+ * <h2>两个版本共存</h2>
+ * V1（{@link RuleSet}）是单一扁平规则列表，只服务 OpenAI 一条线路。
+ * V2（{@link RuleSetV2}）把规则装进「规则组」，每组声明自己适用于哪些线路协议。
+ * V1 类型保留是为了让迁移函数能类型安全地读旧数据，**不再作为保存格式**。
  */
+import type { WireProtocol } from '@/types/protocol'
+import type { RequestBodyTemplateKey } from './requestBodyTemplates'
 
 /** 条件运算符。V1 只实现 exists 和 equals。 */
 export type ConditionOperator = 'exists' | 'equals'
@@ -53,12 +60,53 @@ export interface FieldRule {
   operations: FieldOperation[]
 }
 
-/** 规则集根。 */
+/** 规则集根（V1，仅用于读取旧数据并迁移）。 */
 export interface RuleSet {
   /** 协议版本 */
   version: 1
   /** 根字段规则列表 */
   rules: FieldRule[]
+}
+
+/**
+ * 规则组：一批规则 + 它们适用的线路协议 + 该组自己的调试样本。
+ *
+ * <h3>为何协议放在组上而不是单条规则上</h3>
+ * 适配一个上游差异往往需要好几条规则协同（改 messages、删字段、补字段），
+ * 它们必然同进同出。放在每条规则上等于要求用户重复勾选同一组值，
+ * 且一旦某条漏勾就会出现「一半规则跑了一半没跑」的半成品请求体。
+ *
+ * <h3>为何每组各带一份 previewBody</h3>
+ * 不同协议的请求体形状不同（Anthropic 的 system 在顶层、必带 max_tokens），
+ * 用同一个样本调试两条线路的规则会让至少一边的预览完全匹配不到。
+ * 代价是组间预览**不串联** —— 每组的预览是自包含的调试样本，
+ * 不是上一组的输出。运行时多组会依次作用于同一请求体，编辑器不模拟这一点。
+ */
+export interface RuleGroup {
+  /** 稳定 ID，用于 Vue 列表 key */
+  id: string
+  /** 组名，仅用于界面识别 */
+  name: string
+  /** 组间执行顺序，从 0 开始 */
+  order: number
+  /** 是否启用；关闭时该组整体跳过 */
+  enabled: boolean
+  /** 适用的线路协议；空数组表示任何线路都不执行 */
+  protocols: WireProtocol[]
+  /** 该组预览请求体所选的模板片段 */
+  templateKeys: RequestBodyTemplateKey[]
+  /** 该组的调试样本请求体 */
+  previewBody: Record<string, unknown>
+  /** 组内字段规则列表 */
+  rules: FieldRule[]
+}
+
+/** 规则集根（V2，当前保存格式）。 */
+export interface RuleSetV2 {
+  /** 协议版本 */
+  version: 2
+  /** 规则组列表，按 order 依次执行 */
+  groups: RuleGroup[]
 }
 
 /** 引擎执行中产生的结构化警告。 */
@@ -107,7 +155,18 @@ export function createEmptyCondition(): RuleCondition {
   }
 }
 
-/** 创建空规则集 */
+/** 创建空规则集（V1；仅测试与迁移入参构造使用） */
 export function createEmptyRuleSet(): RuleSet {
   return { version: 1, rules: [] }
 }
+
+/** 生成唯一规则组 ID */
+export function generateRuleGroupId(): string {
+  return `group-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** 创建空 V2 规则集 */
+export function createEmptyRuleSetV2(): RuleSetV2 {
+  return { version: 2, groups: [] }
+}
+

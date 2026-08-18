@@ -7,12 +7,16 @@
  *
  * 草稿语义：打开时复制父级规则，"应用"才提交，"取消"丢弃。
  * 应用后的完整编辑器状态由供应商表单统一保存并回显，并参与生产请求转换。
+ *
+ * 过渡态：数据契约已升到 V2（规则组 + 适用线路协议），但本组件界面尚未改造，
+ * 因此它把编辑对象限定为首个规则组 —— 行为与 V1 时完全一致。多组卡片 UI 属后续阶段；
+ * 在那之前 JSON 视图能存下多组，可视化列表只展示首组。
  */
 import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
 import { NModal, NButton, NInput, NScrollbar, NSelect, useMessage } from 'naive-ui'
-import type { RuleSet, FieldRule } from '@/features/request-body-rules/types'
-import { createEmptyRuleSet } from '@/features/request-body-rules/types'
-import { transform } from '@/features/request-body-rules/engine'
+import type { FieldRule, RuleGroup, RuleSetV2 } from '@/features/request-body-rules/types'
+import { createEmptyRuleSetV2 } from '@/features/request-body-rules/types'
+import { transformWithRules } from '@/features/request-body-rules/engine'
 import {
   MIMO_EXAMPLE_RULESET,
 } from '@/features/request-body-rules/defaultRequestBody'
@@ -23,8 +27,10 @@ import {
 } from '@/features/request-body-rules/requestBodyTemplates'
 import type { RequestBodyTemplateKey } from '@/features/request-body-rules/requestBodyTemplates'
 import type { RequestBodyEditorState } from '@/features/request-body-rules/editorState'
+import { createRuleGroup } from '@/features/request-body-rules/editorState'
 import { buildDiffTree } from '@/features/request-body-rules/diff'
 import { formatRuleSetJson, parseRuleSetJson } from '@/features/request-body-rules/ruleSetJson'
+import { migrateRuleSet } from '@/features/request-body-rules/migration'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
 import DiffJsonNode from './DiffJsonNode.vue'
 import RequestBodyRuleHelp from './RequestBodyRuleHelp.vue'
@@ -44,7 +50,7 @@ const message = useMessage()
 
 // ==================== 草稿状态 ====================
 
-const draftRules = ref<RuleSet>(createEmptyRuleSet())
+const draftRuleSet = ref<RuleSetV2>(createEmptyRuleSetV2())
 const inputJsonText = ref('')
 const inputError = ref('')
 const lastValidInput = ref<unknown>(null)
@@ -53,6 +59,16 @@ const selectedTemplateKeys = ref<RequestBodyTemplateKey[]>([...DEFAULT_TEMPLATE_
 const rulesViewMode = ref<'visual' | 'json'>('visual')
 const rulesJsonText = ref('')
 const rulesJsonError = ref('')
+
+/** 首个规则组的规则列表；无组时为空。 */
+const draftRules = computed<FieldRule[]>(() => draftRuleSet.value.groups[0]?.rules ?? [])
+
+/** 局部更新首个规则组；组不存在时先补一个。 */
+function patchPrimaryGroup(patch: Partial<RuleGroup>) {
+  const groups = [...draftRuleSet.value.groups]
+  groups[0] = { ...(groups[0] ?? createRuleGroup(0)), ...patch }
+  draftRuleSet.value = { version: 2, groups }
+}
 
 function templateJson(keys: readonly RequestBodyTemplateKey[]): string {
   return JSON.stringify(composeRequestBodyTemplate(keys), null, 2)
@@ -63,12 +79,17 @@ watch(
   () => props.show,
   (visible) => {
     if (visible) {
-      draftRules.value = JSON.parse(JSON.stringify(props.modelValue.rules || createEmptyRuleSet()))
+      const source = props.modelValue.rules ?? createEmptyRuleSetV2()
+      const migrated = migrateRuleSet(JSON.parse(JSON.stringify(source)))
+      draftRuleSet.value = migrated.groups.length > 0
+        ? migrated
+        : { version: 2, groups: [createRuleGroup(0)] }
       rulesViewMode.value = 'visual'
-      rulesJsonText.value = formatRuleSetJson(draftRules.value)
+      rulesJsonText.value = formatRuleSetJson(draftRuleSet.value)
       rulesJsonError.value = ''
-      selectedTemplateKeys.value = [...props.modelValue.templateKeys]
-      inputJsonText.value = JSON.stringify(props.modelValue.previewBody, null, 2)
+      const group = draftRuleSet.value.groups[0]!
+      selectedTemplateKeys.value = [...group.templateKeys]
+      inputJsonText.value = JSON.stringify(group.previewBody, null, 2)
       parseInput()
     }
   },
@@ -242,7 +263,7 @@ const transformResult = computed(() => {
   if (inputError.value || lastValidInput.value == null) {
     return null
   }
-  return transform(lastValidInput.value, draftRules.value)
+  return transformWithRules(lastValidInput.value, draftRules.value)
 })
 
 const outputJsonText = computed(() => {
@@ -267,7 +288,7 @@ const scopeObject = computed<Record<string, unknown> | null>(() => {
 })
 
 function updateRules(rules: FieldRule[]) {
-  draftRules.value = { ...draftRules.value, rules }
+  patchPrimaryGroup({ rules })
 }
 
 function updateRulesJson(value: string) {
@@ -277,13 +298,13 @@ function updateRulesJson(value: string) {
     rulesJsonError.value = parsed.error
     return
   }
-  draftRules.value = parsed.rules
+  draftRuleSet.value = parsed.rules
   rulesJsonError.value = ''
 }
 
 function toggleRulesView() {
   if (rulesViewMode.value === 'visual') {
-    rulesJsonText.value = formatRuleSetJson(draftRules.value)
+    rulesJsonText.value = formatRuleSetJson(draftRuleSet.value)
     rulesJsonError.value = ''
     rulesViewMode.value = 'json'
     return
@@ -294,7 +315,7 @@ function toggleRulesView() {
     message.error('请先修正规则 JSON')
     return
   }
-  draftRules.value = parsed.rules
+  draftRuleSet.value = parsed.rules
   rulesJsonError.value = ''
   rulesViewMode.value = 'visual'
 }
@@ -319,18 +340,18 @@ function copyOutput() {
 }
 
 function loadImageToolCompatibilityRules() {
-  draftRules.value = JSON.parse(JSON.stringify(MIMO_EXAMPLE_RULESET))
+  patchPrimaryGroup({ rules: JSON.parse(JSON.stringify(MIMO_EXAMPLE_RULESET.rules)) })
   if (rulesViewMode.value === 'json') {
-    rulesJsonText.value = formatRuleSetJson(draftRules.value)
+    rulesJsonText.value = formatRuleSetJson(draftRuleSet.value)
     rulesJsonError.value = ''
   }
   message.success('已加载图片工具消息兼容规则')
 }
 
 function clearRules() {
-  draftRules.value = createEmptyRuleSet()
+  patchPrimaryGroup({ rules: [] })
   if (rulesViewMode.value === 'json') {
-    rulesJsonText.value = formatRuleSetJson(draftRules.value)
+    rulesJsonText.value = formatRuleSetJson(draftRuleSet.value)
     rulesJsonError.value = ''
   }
   message.info('已清空规则')
@@ -347,13 +368,14 @@ function handleApply() {
     message.error('请先修正预览请求体 JSON')
     return
   }
-  emit('apply', {
+  patchPrimaryGroup({
     templateKeys: [...selectedTemplateKeys.value],
     previewBody: JSON.parse(JSON.stringify(lastValidInput.value)),
-    rules: JSON.parse(JSON.stringify(draftRules.value)),
   })
+  const ruleCount = draftRules.value.length
+  emit('apply', { rules: JSON.parse(JSON.stringify(draftRuleSet.value)) })
   emit('update:show', false)
-  message.success(`已应用 ${draftRules.value.rules.length} 条规则，请保存供应商配置以完成落库`)
+  message.success(`已应用 ${ruleCount} 条规则，请保存供应商配置以完成落库`)
 }
 
 function handleCancel() {
@@ -470,7 +492,7 @@ function handleCancel() {
       </div>
       <RequestBodyRuleList
         v-if="rulesViewMode === 'visual'"
-        :rules="draftRules.rules"
+        :rules="draftRules"
         :scope-object="scopeObject"
         :depth="0"
         @update:rules="updateRules"
@@ -493,7 +515,7 @@ function handleCancel() {
     <!-- 底部操作 -->
     <template #footer>
       <div class="editor-footer">
-        <span class="editor-footer-count">当前规则：{{ draftRules.rules.length }} 条</span>
+        <span class="editor-footer-count">当前规则：{{ draftRules.length }} 条</span>
         <div class="editor-footer-actions">
           <NButton @click="handleCancel">取消</NButton>
           <NButton type="primary" :disabled="Boolean(rulesJsonError)" @click="handleApply">应用</NButton>

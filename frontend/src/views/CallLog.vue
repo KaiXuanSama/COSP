@@ -7,14 +7,15 @@ import { CallLogDetail } from '@/components/calllog'
 import { prependWithCursorShift } from '@/features/call-log/pagination'
 import { createCoalescingSync } from '@/features/call-log/sync'
 import type { DetailItem } from '@/types/calllog'
+import type { WireProtocol } from '@/types/protocol'
 
 interface LogItem {
   id: number
   provider_key: string
   model_name: string
   is_stream: number
-  downstream_protocol: 'OPENAI' | 'ANTHROPIC'
-  upstream_protocol: 'OPENAI' | 'ANTHROPIC'
+  downstream_protocol: WireProtocol
+  upstream_protocol: WireProtocol
   status_code: number
   created_at: string
 }

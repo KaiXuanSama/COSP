@@ -10,7 +10,7 @@ import { NButton, NInput, NModal, NScrollbar, NTabPane, NTabs } from 'naive-ui'
 import { transform } from '@/features/request-body-rules/engine'
 import { buildDiffTree } from '@/features/request-body-rules/diff'
 import { RULE_HELP_EXAMPLES } from '@/features/request-body-rules/helpExamples'
-import { formatRuleSetJson } from '@/features/request-body-rules/ruleSetJson'
+import { formatRuleListAsRuleSetJson } from '@/features/request-body-rules/ruleSetJson'
 import type { RuleSet, TransformWarning } from '@/features/request-body-rules/types'
 import DiffJsonNode from './DiffJsonNode.vue'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
@@ -279,7 +279,7 @@ onBeforeUnmount(unbindPreviewScroll)
               />
               <NInput
                 v-else
-                :value="formatRuleSetJson(exampleRules[example.key] ?? example.rules)"
+                :value="formatRuleListAsRuleSetJson((exampleRules[example.key] ?? example.rules).rules)"
                 type="textarea"
                 :autosize="{ minRows: 12, maxRows: 24 }"
                 :resizable="true"
