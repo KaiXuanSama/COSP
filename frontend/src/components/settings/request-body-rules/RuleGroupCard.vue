@@ -18,7 +18,8 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { NButton, NInput, NScrollbar, NSelect, NSwitch, useMessage } from 'naive-ui'
 import type { FieldRule, RuleGroup } from '@/features/request-body-rules/types'
-import { transformWithRules } from '@/features/request-body-rules/engine'
+import { createPreviewScheduler } from '@/features/request-body-rules/preview'
+import { previewRequestBodyRules } from '@/api'
 import { MIMO_EXAMPLE_RULESET } from '@/features/request-body-rules/defaultRequestBody'
 import {
   composeRequestBodyTemplate,
@@ -108,12 +109,35 @@ function updateInputJsonText(value: string) {
   patch({ templateKeys: ['custom'] })
 }
 
-// ==================== 转换预览 ====================
+// ==================== 转换预览（由后端生产引擎计算） ====================
 
-const transformResult = computed(() => {
-  if (inputError.value) return null
-  return transformWithRules(props.group.previewBody, props.group.rules)
-})
+/**
+ * 预览调度器。
+ *
+ * 预览走后端而非前端自带引擎：那样「预览」与「实际转换」由同一份代码产出，
+ * 「看到的和将发生的不一致」在结构上不再可能。代价是预览变成异步 ——
+ * 防抖、请求竞态、加载态与失败降级都由 `preview.ts` 的调度器负责。
+ */
+const scheduler = createPreviewScheduler((payload) =>
+  previewRequestBodyRules(payload.previewBody, payload.rules).then((response) => response.data),
+)
+
+/** 输入或规则一变就重新取预览；JSON 写坏时不发请求，右栏保留上次结果并标记过期。 */
+watch(
+  () => [props.group.previewBody, props.group.rules] as const,
+  () => {
+    if (inputError.value) return
+    scheduler.schedule({
+      previewBody: props.group.previewBody,
+      rules: props.group.rules as unknown[],
+    })
+  },
+  { deep: true, immediate: true },
+)
+
+onBeforeUnmount(scheduler.dispose)
+
+const transformResult = scheduler.result
 
 const outputJsonText = computed(() =>
   transformResult.value ? JSON.stringify(transformResult.value.output, null, 2) : '',
@@ -125,6 +149,20 @@ const diffTree = computed(() => {
 })
 
 const warnings = computed(() => transformResult.value?.warnings ?? [])
+
+/**
+ * 右栏的提示文案。
+ *
+ * 三种「不是正常结果」的情形要分开说：本地 JSON 写坏（用户自己能修）、
+ * 请求失败（后端问题，展示的是旧结果）、首次加载中（还没有任何结果可展示）。
+ * 混成一句「无法预览」会让用户不知道该改什么。
+ */
+const previewNotice = computed(() => {
+  if (inputError.value) return '（请先修正左侧 JSON）'
+  if (scheduler.error.value) return `预览请求失败：${scheduler.error.value}`
+  if (!transformResult.value) return '（正在计算预览…）'
+  return ''
+})
 
 const scopeObject = computed<Record<string, unknown> | null>(() => props.group.previewBody ?? null)
 
@@ -354,7 +392,13 @@ function copyOutput() {
 
       <div class="preview-panel">
         <div class="preview-header">
-          <span class="preview-title">转换后请求体</span>
+          <div class="preview-heading">
+            <span class="preview-title">转换后请求体</span>
+            <span v-if="scheduler.loading.value" class="preview-badge">计算中…</span>
+            <span v-else-if="scheduler.stale.value && transformResult" class="preview-badge preview-badge--stale">
+              结果已过期
+            </span>
+          </div>
           <div class="preview-actions">
             <NButton text size="tiny" :disabled="!outputJsonText" @click="copyOutput">复制</NButton>
           </div>
@@ -364,9 +408,10 @@ function copyOutput() {
             <div v-if="diffTree" class="preview-output-tree">
               <DiffJsonNode :node="diffTree" :is-last="true" />
             </div>
-            <pre v-else class="preview-output">（请先修正左侧 JSON）</pre>
+            <pre v-else class="preview-output">{{ previewNotice }}</pre>
           </NScrollbar>
         </div>
+        <div v-if="previewNotice && diffTree" class="preview-error">{{ previewNotice }}</div>
       </div>
     </div>
 
@@ -567,6 +612,17 @@ function copyOutput() {
   font-size: 13px;
   font-weight: 600;
   color: $text-primary;
+}
+
+/** 预览状态角标：加载中与结果过期共用样式，只差颜色。 */
+.preview-badge {
+  font-size: 11px;
+  color: $text-muted;
+  white-space: nowrap;
+}
+
+.preview-badge--stale {
+  color: $warning;
 }
 
 .preview-actions {

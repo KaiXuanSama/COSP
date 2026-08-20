@@ -1,7 +1,8 @@
 /**
  * 请求体映射规则前端协议。
  *
- * 规则通过供应商配置持久化，并由后端 RequestBodyRuleEngine 在生产请求中执行。
+ * 规则通过供应商配置持久化，并由后端 `RequestBodyRuleEngine` 执行 —— 生产转换与编辑器预览
+ * 都走那一份实现，前端只负责编辑与展示，不再自带引擎。
  *
  * <h2>两个版本共存</h2>
  * V1（{@link RuleSet}）是单一扁平规则列表，只服务 OpenAI 一条线路。
@@ -11,7 +12,7 @@
 import type { WireProtocol } from '@/types/protocol'
 import type { RequestBodyTemplateKey } from './requestBodyTemplates'
 
-/** 条件运算符。V1 只实现 exists 和 equals。 */
+/** 条件运算符。当前只实现 exists 和 equals。 */
 export type ConditionOperator = 'exists' | 'equals'
 
 /** 单个条件。 */
@@ -109,7 +110,12 @@ export interface RuleSetV2 {
   groups: RuleGroup[]
 }
 
-/** 引擎执行中产生的结构化警告。 */
+/**
+ * 引擎执行中产生的结构化警告。
+ *
+ * 由后端预览端点回传（字段名与 Java 侧 `TransformWarning` record 一致），
+ * 编辑器按 `fieldPath` + `message` 展示给用户。
+ */
 export interface TransformWarning {
   /** 规则 ID */
   ruleId: string
@@ -119,9 +125,14 @@ export interface TransformWarning {
   message: string
 }
 
-/** 转换结果。 */
+/**
+ * 转换结果。
+ *
+ * 前端不再自带引擎实现 —— 该结构是后端预览端点的响应形态，
+ * 与生产转换出自同一份代码，因此「预览与实际不一致」在结构上不再可能。
+ */
 export interface TransformResult {
-  /** 转换后的 JSON 对象（深拷贝，不修改原始输入） */
+  /** 转换后的 JSON 对象 */
   output: unknown
   /** 执行过程中产生的警告 */
   warnings: TransformWarning[]

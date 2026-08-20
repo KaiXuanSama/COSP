@@ -60,6 +60,30 @@ public final class RequestBodyRuleEngine {
         return new TransformResult(toMap(output), List.copyOf(warnings));
     }
 
+    /**
+     * 对请求体执行<strong>单一规则列表</strong>，不经规则集根结构与协议筛选。
+     *
+     * <p>供管理后台的规则预览端点使用：编辑器里每个规则组各带一份调试样本，
+     * 预览的语义正是「这一组的规则作用在这一组的样本上」，与协议筛选无关 ——
+     * 那一层由用户在卡片上勾选「适用协议」表达，预览不应替他做筛选。
+     *
+     * <p>入参是 {@code JsonNode} 而非规则 record：规则来自正在编辑中的表单，
+     * 可能缺字段、可能有未知操作类型。引擎对这些情况本就产出警告而非抛错，
+     * 强类型反序列化反而会在用户打字的中途整个失败。
+     *
+     * @param input 原始请求体
+     * @param rules 规则数组节点；非数组时按空列表处理
+     * @return 转换结果
+     */
+    public TransformResult transformWithRules(Map<String, Object> input, JsonNode rules) {
+        List<TransformWarning> warnings = new ArrayList<>();
+        ObjectNode output = copyInput(input);
+        for (JsonNode rule : sortedRules(rules == null ? objectMapper.createArrayNode() : rules)) {
+            executeRule(output, rule, "", warnings);
+        }
+        return new TransformResult(toMap(output), List.copyOf(warnings));
+    }
+
     private ObjectNode copyInput(Map<String, Object> input) {
         JsonNode source = objectMapper.valueToTree(input == null ? Map.of() : input);
         return source instanceof ObjectNode objectNode ? objectNode.deepCopy() : objectMapper.createObjectNode();

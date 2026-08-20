@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildDiffTree } from './diff'
-import { transform } from './engine'
-import { DEFAULT_REQUEST_BODY, MIMO_EXAMPLE_RULESET } from './defaultRequestBody'
+import { DEFAULT_REQUEST_BODY } from './defaultRequestBody'
 
 describe('buildDiffTree', () => {
   it('未变化时全部标记为 same', () => {
@@ -50,15 +49,25 @@ describe('buildDiffTree', () => {
     expect(messages?.children?.every((child) => child.key === null)).toBe(true)
   })
 
-  it('MiMo 示例规则下图片 tool 消息正确高亮', () => {
-    const result = transform(DEFAULT_REQUEST_BODY, MIMO_EXAMPLE_RULESET)
-    const tree = buildDiffTree(DEFAULT_REQUEST_BODY, result.output)
+  /**
+   * 图片 tool 消息被改写后的高亮形态。
+   *
+   * <p>转换结果是**手写**的而非由引擎算出：规则的执行已迁到后端，前端不再有引擎；
+   * 而这条用例要验的是 diff 树的着色，与「谁算出这个结果」无关。
+   * 手写输入输出对反而让被测意图更清楚 —— 改了 role、删了 tool_call_id，别的都没动。
+   */
+  it('图片 tool 消息改写后 role 标 changed、tool_call_id 标 deleted', () => {
+    const original = DEFAULT_REQUEST_BODY
+    const transformed = JSON.parse(JSON.stringify(original)) as typeof DEFAULT_REQUEST_BODY
+    const imageToolMessage = transformed.messages[4] as Record<string, unknown>
+    imageToolMessage.role = 'user'
+    delete imageToolMessage.tool_call_id
+
+    const tree = buildDiffTree(original, transformed)
     const messages = tree.children?.find((c) => c.key === 'messages')
     expect(messages?.kind).toBe('array')
 
-    // messages[4] 是图片 tool 消息
     const imageMsg = messages?.children?.[4]
-    expect(imageMsg).toBeTruthy()
     expect(imageMsg?.status).toBe('changed')
 
     const role = imageMsg?.children?.find((c) => c.key === 'role')
@@ -69,8 +78,7 @@ describe('buildDiffTree', () => {
     expect(toolCallId?.status).toBe('deleted')
     expect(toolCallId?.value).toBe('<string>')
 
-    // 非图片 tool 消息不受影响
-    const textToolMsg = messages?.children?.[3]
-    expect(textToolMsg?.status).toBe('same')
+    // 未被改动的文本 tool 消息保持 same
+    expect(messages?.children?.[3]?.status).toBe('same')
   })
 })

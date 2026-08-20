@@ -2,12 +2,18 @@
 /**
  * RequestBodyRuleHelp — 请求体规则编辑器的新手帮助。
  *
- * 每个选项卡都使用正式转换引擎实时执行示例，左侧 JSON 可编辑，
+ * 每个选项卡的示例都由**后端生产引擎**实时执行，左侧 JSON 可编辑，
  * 右侧通过与主编辑器相同的差异树展示结果，避免文档示例与实际行为脱节。
+ *
+ * <h2>只计算当前选项卡</h2>
+ * 五个示例的结果曾由一个 computed 一次性算完 —— 那时转换是同步纯函数，代价可忽略。
+ * 改走后端后每次求值都是一次网络往返，而用户一次只看得到一个选项卡，
+ * 因此只对激活的那个发请求，切换选项卡时重新取。
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { NButton, NInput, NModal, NScrollbar, NTabPane, NTabs } from 'naive-ui'
-import { transform } from '@/features/request-body-rules/engine'
+import { createPreviewScheduler } from '@/features/request-body-rules/preview'
+import { previewRequestBodyRules } from '@/api'
 import { buildDiffTree } from '@/features/request-body-rules/diff'
 import { RULE_HELP_EXAMPLES } from '@/features/request-body-rules/helpExamples'
 import { formatRuleListAsRuleSetJson } from '@/features/request-body-rules/ruleSetJson'
@@ -71,36 +77,51 @@ interface HelpLiveResult {
   warnings: TransformWarning[]
 }
 
-const exampleResults = computed<Record<string, HelpLiveResult>>(() => {
-  return Object.fromEntries(RULE_HELP_EXAMPLES.map((example) => {
-    const source = exampleInputs.value[example.key] ?? ''
-    try {
-      const input = JSON.parse(source)
-      if (input == null || typeof input !== 'object' || Array.isArray(input)) {
-        return [example.key, {
-          input: null,
-          tree: null,
-          error: '示例请求体必须是 JSON 对象',
-          warnings: [],
-        }]
-      }
-      const rules = exampleRules.value[example.key] ?? example.rules
-      const result = transform(input, rules)
-      return [example.key, {
-        input: input as Record<string, unknown>,
-        tree: buildDiffTree(input, result.output),
-        error: '',
-        warnings: result.warnings,
-      }]
-    } catch (error: any) {
-      return [example.key, {
-        input: null,
-        tree: null,
-        error: `JSON 语法错误：${error.message}`,
-        warnings: [],
-      }]
+const scheduler = createPreviewScheduler((payload) =>
+  previewRequestBodyRules(payload.previewBody, payload.rules).then((response) => response.data),
+)
+
+/** 当前选项卡的左侧输入解析结果；语法错误时带 error。 */
+const activeInput = computed<{ value: Record<string, unknown> | null; error: string }>(() => {
+  const source = exampleInputs.value[activeExample.value.key] ?? ''
+  try {
+    const parsed = JSON.parse(source)
+    if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { value: null, error: '示例请求体必须是 JSON 对象' }
     }
-  }))
+    return { value: parsed as Record<string, unknown>, error: '' }
+  } catch (error: any) {
+    return { value: null, error: `JSON 语法错误：${error.message}` }
+  }
+})
+
+// 输入、规则或选项卡任一变化都重新向后端取结果；语法错误时不发请求。
+watch(
+  () => [activeExample.value.key, activeInput.value.value, exampleRules.value[activeExample.value.key]] as const,
+  () => {
+    const input = activeInput.value.value
+    if (!input) return
+    const rules = exampleRules.value[activeExample.value.key] ?? activeExample.value.rules
+    scheduler.schedule({ previewBody: input, rules: rules.rules as unknown[] })
+  },
+  { deep: true, immediate: true },
+)
+
+onBeforeUnmount(scheduler.dispose)
+
+/** 当前选项卡的展示结果。 */
+const activeResult = computed<HelpLiveResult>(() => {
+  const input = activeInput.value.value
+  if (!input) {
+    return { input: null, tree: null, error: activeInput.value.error, warnings: [] }
+  }
+  const preview = scheduler.result.value
+  return {
+    input,
+    tree: preview ? buildDiffTree(input, preview.output) : null,
+    error: scheduler.error.value ? `预览请求失败：${scheduler.error.value}` : '',
+    warnings: preview?.warnings ?? [],
+  }
 })
 
 function restoreCurrentInput() {
@@ -226,8 +247,8 @@ onBeforeUnmount(unbindPreviewScroll)
                   class="demo-input"
                   placeholder="请输入 JSON 对象"
                 />
-                <div v-if="exampleResults[example.key]?.error" class="demo-error">
-                  {{ exampleResults[example.key].error }}
+                <div v-if="activeResult.error" class="demo-error">
+                  {{ activeResult.error }}
                 </div>
               </div>
 
@@ -237,15 +258,19 @@ onBeforeUnmount(unbindPreviewScroll)
                 <div class="demo-header">
                   <div>
                     <span class="demo-title">实时转换结果</span>
-                    <span class="demo-subtitle">颜色标出规则影响</span>
+                    <span class="demo-subtitle">
+                      {{ scheduler.loading.value ? '计算中…' : '颜色标出规则影响' }}
+                    </span>
                   </div>
                 </div>
                 <div class="demo-output">
                   <NScrollbar>
-                    <div v-if="exampleResults[example.key]?.tree" class="demo-tree">
-                      <DiffJsonNode :node="exampleResults[example.key].tree!" :is-last="true" />
+                    <div v-if="activeResult.tree" class="demo-tree">
+                      <DiffJsonNode :node="activeResult.tree!" :is-last="true" />
                     </div>
-                    <div v-else class="demo-placeholder">修正左侧 JSON 后显示结果</div>
+                    <div v-else class="demo-placeholder">
+                      {{ activeInput.value ? '正在计算结果…' : '修正左侧 JSON 后显示结果' }}
+                    </div>
                   </NScrollbar>
                 </div>
               </div>
@@ -273,7 +298,7 @@ onBeforeUnmount(unbindPreviewScroll)
               <RequestBodyRuleList
                 v-if="exampleRuleViewModes[example.key] !== 'json'"
                 :rules="exampleRules[example.key]?.rules ?? []"
-                :scope-object="exampleResults[example.key]?.input ?? null"
+                :scope-object="activeResult.input"
                 :depth="0"
                 :readonly="true"
               />
@@ -289,10 +314,10 @@ onBeforeUnmount(unbindPreviewScroll)
               />
             </section>
 
-            <div v-if="exampleResults[example.key]?.warnings.length" class="example-warnings">
+            <div v-if="activeResult.warnings.length" class="example-warnings">
               <strong>执行警告</strong>
               <span
-                v-for="warning in exampleResults[example.key].warnings"
+                v-for="warning in activeResult.warnings"
                 :key="`${warning.ruleId}-${warning.fieldPath}`"
               >
                 {{ warning.fieldPath || '根对象' }}：{{ warning.message }}
