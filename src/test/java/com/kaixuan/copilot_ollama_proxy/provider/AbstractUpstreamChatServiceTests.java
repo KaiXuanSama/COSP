@@ -51,6 +51,30 @@ class AbstractUpstreamChatServiceTests {
         assertThat(prepared).doesNotContainKey("tool_choice");
     }
 
+    /**
+     * 规则产生的 null 不会发给上游 —— null 清洗必须排在规则之后。
+     *
+     * <p>「设置字段值」留空即置 null 是既定语义，因此规则完全可能产出 null；
+     * 而部分上游对多余的 null 字段并不宽容。清洗若排在规则之前，那个 null 就直接出站。
+     *
+     * <p>这条用例同时钉住两条线路的顺序一致性：Anthropic 侧的
+     * {@code prepareRequestBody} 也是「归一化 → 规则 → 清洗」，两侧一致才能保证
+     * 同一条规则换个协议不会得到无法解释的差异。
+     */
+    @Test
+    void requestBodyRulesRunBeforeNullStrippingSoRuleAssignedNullNeverReachesUpstream() {
+        NullAssigningService service = new NullAssigningService();
+
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("model", "m");
+        request.put("temperature", 0.7);
+
+        Map<String, Object> prepared = service.exposePrepareRequestBody(request, false, "m", provider());
+
+        assertThat(prepared).doesNotContainKey("temperature");
+        assertThat(prepared).containsEntry("model", "m");
+    }
+
     @Test
     void normalizeChunkRemovesEmptyToolCallsAndNormalizesFinishReason() throws Exception {
         TestOpenAiService service = new TestOpenAiService();
@@ -949,6 +973,41 @@ class AbstractUpstreamChatServiceTests {
         protected void customizeRequestBody(Map<String, Object> body, String resolvedModel,
                                             ProviderRuntimeConfiguration provider) {
             body.put("customized", true);
+        }
+    }
+
+    /**
+     * 转换钩子把字段置为 null 的测试子类。
+     *
+     * <p>模拟「设置字段值」留空的规则效果，用于验证 null 清洗排在规则之后。
+     * 不复用 {@link TestOpenAiService} 是因为那个钩子的 {@code customized} 标记
+     * 被多条用例断言，往里塞 null 赋值会让那些用例的意图变模糊。
+     */
+    private static final class NullAssigningService extends AbstractUpstreamChatService {
+
+        private NullAssigningService() {
+            super(new ObjectMapper(), "default-model", new ProviderRequestHeaderService(new ObjectMapper()));
+        }
+
+        private Map<String, Object> exposePrepareRequestBody(Map<String, Object> request, boolean stream,
+                                                             String model, ProviderRuntimeConfiguration provider) {
+            return prepareRequestBody(request, stream, model, provider);
+        }
+
+        @Override
+        protected String defaultBaseUrl() {
+            return "https://example.com";
+        }
+
+        @Override
+        protected String chatCompletionsUri() {
+            return "/v1/chat/completions";
+        }
+
+        @Override
+        protected void customizeRequestBody(Map<String, Object> body, String resolvedModel,
+                                            ProviderRuntimeConfiguration provider) {
+            body.put("temperature", null);
         }
     }
 

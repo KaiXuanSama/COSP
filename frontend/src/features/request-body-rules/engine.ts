@@ -205,6 +205,11 @@ function executeScalarRule(
         break
       }
       case 'set_value':
+        // TODO 缺 value 时这里写入 undefined，序列化后整个键消失，等同于「删除字段」；
+        //  而后端 RequestBodyRuleEngine 落显式 null。「留空即置 null」是既定语义，
+        //  因此本侧行为是错的，应改为 `op.value ?? null`。
+        //  暂不改是因为该语义连同预览一致性会在引擎接口化时一并处理 ——
+        //  届时预览直接由后端计算，本函数不再参与生产路径。
         scope[rule.field] = op.value
         break
       case 'delete':

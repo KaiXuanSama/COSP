@@ -192,6 +192,13 @@ public final class RequestBodyRuleEngine {
             String type = operation.path("type").asText("");
             switch (type) {
                 case "edit_object" -> editObject(scope, field, fieldPath, ruleId, operation, warnings);
+                // TODO set_value 缺 value 时落显式 null，与前端 engine.ts 不一致 ——
+                //  那边 `scope[field] = op.value` 得到 undefined，序列化后整个键消失，
+                //  于是同一条规则在预览里表现为「删除字段」、在此处表现为「置 null」。
+                //  「留空即置 null」是既定语义（见前端设置字段值的交互），因此本侧行为是对的，
+                //  待前端改为显式写入 null 后即可移除本注释。
+                //  该分歧不影响出站请求体（null 会被 prepareRequestBody 末尾的清洗剥掉），
+                //  只影响预览与真实转换结果的一致性。
                 case "set_value" -> scope.set(field, operation.has("value")
                         ? operation.path("value").deepCopy() : NullNode.getInstance());
                 case "delete" -> scope.remove(field);

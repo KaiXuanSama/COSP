@@ -640,6 +640,21 @@ public abstract class AbstractUpstreamChatService {
 
     /**
     * 准备请求体，解析模型名称，设置流式标志，并应用当前供应商的请求体规则。
+     *
+     * <h2>为何 null 清洗必须在规则之后</h2>
+     * 两件事都依赖这个顺序：
+     * <ol>
+     *   <li><strong>规则产生的 null 不能发给上游。</strong>「设置字段值」留空即置 null，
+     *       若先清洗后执行规则，那个 null 会原样出站；而部分上游对多余的 null 字段并不宽容。</li>
+     *   <li><strong>规则看到的输入要与编辑器预览一致。</strong>预览里规则直接作用于用户粘贴的
+     *       请求体，不做任何 null 剥离；若运行时先清洗，同一条 {@code exists} 条件就会
+     *       「预览命中、线上不命中」—— 预览一旦会说谎，它的全部价值就没了。</li>
+     * </ol>
+     *
+     * <p>与 {@code GenericAnthropicChatService.prepareRequestBody} 的顺序保持一致 ——
+     * 两侧都是「协议归一化 → 规则 → null 清洗」。这不是巧合而是必须：同一条规则在两条线路上
+     * 应当产生同一种结果，否则「换个协议试试」会得到无法解释的差异。
+     *
      * @param openAiRequest 请求体的初始 Map 结构
      * @param stream 是否启用流式响应
      * @param model 模型名称
@@ -660,8 +675,8 @@ public abstract class AbstractUpstreamChatService {
                 body.remove("reasoning_effort");
             }
         }
-        body.values().removeIf(Objects::isNull);
         customizeRequestBody(body, resolvedModel, provider);
+        body.values().removeIf(Objects::isNull);
         return body;
     }
 
