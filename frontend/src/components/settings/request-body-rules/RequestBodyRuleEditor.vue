@@ -92,8 +92,26 @@ function moveGroup(index: number, direction: -1 | 1) {
   draftRuleSet.value = moveGroupIn(draftRuleSet.value, index, direction)
 }
 
-function removeGroup(index: number) {
-  draftRuleSet.value = removeGroupIn(draftRuleSet.value, index)
+/**
+ * 删除确认。
+ *
+ * 弹窗放在容器而非卡片里：删除动作由容器执行，确认紧挨着它才不会出现
+ * 「卡片负责问、容器负责改」的分裂。待删下标存在 ref 里而非闭包，
+ * 因为确认按钮的回调发生在下一次交互，那时组列表可能已因别的操作变化。
+ */
+const pendingRemoval = ref<{ index: number; name: string; ruleCount: number } | null>(null)
+
+function requestRemoveGroup(index: number) {
+  const group = draftRuleSet.value.groups[index]
+  if (!group) return
+  pendingRemoval.value = { index, name: group.name, ruleCount: group.rules.length }
+}
+
+function confirmRemoveGroup() {
+  const pending = pendingRemoval.value
+  pendingRemoval.value = null
+  if (!pending) return
+  draftRuleSet.value = removeGroupIn(draftRuleSet.value, pending.index)
 }
 
 // ==================== JSON 视图 ====================
@@ -195,7 +213,7 @@ function handleCancel() {
         :total="groups.length"
         @update:group="updateGroup(index, $event)"
         @move="moveGroup(index, $event)"
-        @remove="removeGroup(index)"
+        @remove="requestRemoveGroup(index)"
       />
     </template>
 
@@ -224,6 +242,21 @@ function handleCancel() {
         </div>
       </div>
     </template>
+  </NModal>
+
+  <NModal
+    :show="pendingRemoval !== null"
+    @update:show="pendingRemoval = null"
+    preset="dialog"
+    type="error"
+    title="确认删除规则组"
+    positive-text="删除"
+    negative-text="取消"
+    @positive-click="confirmRemoveGroup"
+  >
+    删除规则组「{{ pendingRemoval?.name }}」将同时移除其
+    {{ pendingRemoval?.ruleCount ?? 0 }} 条规则与该组的预览样本。
+    未点击「应用」前可用「取消」整体回退。
   </NModal>
 
   <RequestBodyRuleHelp v-model:show="showRuleHelp" />
