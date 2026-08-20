@@ -216,13 +216,9 @@ public final class RequestBodyRuleEngine {
             String type = operation.path("type").asText("");
             switch (type) {
                 case "edit_object" -> editObject(scope, field, fieldPath, ruleId, operation, warnings);
-                // TODO set_value 缺 value 时落显式 null，与前端 engine.ts 不一致 ——
-                //  那边 `scope[field] = op.value` 得到 undefined，序列化后整个键消失，
-                //  于是同一条规则在预览里表现为「删除字段」、在此处表现为「置 null」。
-                //  「留空即置 null」是既定语义（见前端设置字段值的交互），因此本侧行为是对的，
-                //  待前端改为显式写入 null 后即可移除本注释。
-                //  该分歧不影响出站请求体（null 会被 prepareRequestBody 末尾的清洗剥掉），
-                //  只影响预览与真实转换结果的一致性。
+                // 「设置字段值」留空即置 null 是既定语义：编辑器为该操作提供显式的类型档位
+                // （字符串 / 数值 / 列表 / 布尔 / null），null 是其中一档而非某种留空的副作用。
+                // 缺 value 的规则只可能来自手写 JSON，按同一语义落 null。
                 case "set_value" -> scope.set(field, operation.has("value")
                         ? operation.path("value").deepCopy() : NullNode.getInstance());
                 case "delete" -> scope.remove(field);
@@ -285,10 +281,68 @@ public final class RequestBodyRuleEngine {
             case "exists" -> pathExists(scope, parsePath(path), 0);
             case "equals" -> {
                 JsonNode value = pathValue(scope, parsePath(path), 0);
-                yield value != null && value.equals(condition.path("value"));
+                yield value != null && jsonEquals(value, condition.path("value"));
             }
             default -> false;
         };
+    }
+
+    /**
+     * JSON 值相等判定。
+     *
+     * <h2>为何不直接用 {@code JsonNode.equals}</h2>
+     * Jackson 的 {@code equals} 对数值是<strong>节点类型敏感</strong>的：
+     * {@code IntNode(2)} 不等于 {@code DoubleNode(2.0)}，{@code IntNode(2)} 也不等于
+     * {@code LongNode(2)}。而 JSON 规范里数值没有整数 / 浮点之分，{@code 2} 与 {@code 2.0}
+     * 是同一个值 —— 用户在编辑器里填 {@code 2}，上游送来 {@code 2.0}，规则就静默不匹配，
+     * 且他没有任何办法看出原因。数值一律按 {@link java.math.BigDecimal} 的数值比较。
+     *
+     * <p>递归而非只处理顶层：否则会出现「{@code 2} 匹配 {@code 2.0}，但 {@code [2]}
+     * 不匹配 {@code [2.0]}」这种无法解释的分裂 —— 同一条语义在嵌套一层后就变了。
+     *
+     * <p>NaN / Infinity 交回 {@code equals} 处理：它们不是合法 JSON 值，
+     * 只可能来自 Jackson 对特殊浮点的宽松解析，而 {@code decimalValue()} 对它们会抛异常。
+     * 判定用 {@code isDouble()/isFloat()} 配 {@code Double.isFinite}，
+     * 因为 {@code JsonNode} 本身没有 {@code isNaN()}（那是 {@code DoubleNode} 的内部细节）。
+     */
+    private boolean jsonEquals(JsonNode actual, JsonNode expected) {
+        if (actual.isNumber() && expected.isNumber()) {
+            if (isNonFinite(actual) || isNonFinite(expected)) {
+                return actual.equals(expected);
+            }
+            return actual.decimalValue().compareTo(expected.decimalValue()) == 0;
+        }
+        if (actual.isArray() && expected.isArray()) {
+            if (actual.size() != expected.size()) {
+                return false;
+            }
+            for (int index = 0; index < actual.size(); index++) {
+                if (!jsonEquals(actual.get(index), expected.get(index))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (actual.isObject() && expected.isObject()) {
+            if (actual.size() != expected.size()) {
+                return false;
+            }
+            var fields = actual.fields();
+            while (fields.hasNext()) {
+                var field = fields.next();
+                JsonNode counterpart = expected.get(field.getKey());
+                if (counterpart == null || !jsonEquals(field.getValue(), counterpart)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return actual.equals(expected);
+    }
+
+    /** 判断数值节点是否为 NaN 或无穷 —— 这类值不能进 {@code decimalValue()}。 */
+    private boolean isNonFinite(JsonNode number) {
+        return (number.isDouble() || number.isFloat()) && !Double.isFinite(number.doubleValue());
     }
 
     private boolean pathExists(JsonNode current, List<PathStep> steps, int index) {

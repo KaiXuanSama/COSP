@@ -1,22 +1,28 @@
 /**
- * 「设置字段值」的类型化编辑。
+ * JSON 值的类型化编辑。
  *
  * 单个自由文本输入框无法表达 JSON 的类型意图：`null` 到底是 null 还是字符串 "null"，
  * `123` 是数字还是字符串，都取决于用户想要什么而非他打了什么。因此界面上把类型
  * 显式提出来选，本模块负责「类型 + 文本」与「JSON 值」之间的双向映射。
  *
+ * <h2>两处消费者共用同一套映射</h2>
+ * 「设置字段值」决定发给上游的内容，「条件 · 等于」决定规则是否命中 —— 两者面对的
+ * 都是「用户想表达哪个 JSON 值」这同一个问题，因此共用一份映射而非各写一套。
+ * 条件侧原先用宽松解析（能当 JSON 就当 JSON，否则当字符串），结果是「等于 null」
+ * 只能靠留空试出来、且无法表达「等于字符串 "10"」—— 语义靠猜是这类界面最难用的地方。
+ *
  * <h2>为何不把类型存进规则</h2>
  * JSON 值本身就是自描述的 —— 存下来的 `"abc"` / `12.38` / `[1,2]` / `true` / `null`
- * 各自唯一对应一种类型，回显时用 {@link inferSetValueType} 反推即可。
- * 给操作对象加一个 `valueType` 字段则要动数据契约、后端白名单与迁移，
+ * 各自唯一对应一种类型，回显时用 {@link inferJsonValueType} 反推即可。
+ * 给规则加一个 `valueType` 字段则要动数据契约、后端白名单与迁移，
  * 换来的只是一份可以从值本身算出来的冗余信息，而冗余信息会有和值不一致的可能。
  */
 
 /** 可选的值类型。 */
-export type SetValueType = 'string' | 'number' | 'list' | 'boolean' | 'null'
+export type JsonValueType = 'string' | 'number' | 'list' | 'boolean' | 'null'
 
 /** 下拉选项。 */
-export const SET_VALUE_TYPE_OPTIONS: Array<{ label: string; value: SetValueType }> = [
+export const JSON_VALUE_TYPE_OPTIONS: Array<{ label: string; value: JsonValueType }> = [
   { label: '字符串', value: 'string' },
   { label: '数值', value: 'number' },
   { label: '列表', value: 'list' },
@@ -36,7 +42,7 @@ export const BOOLEAN_VALUE_OPTIONS = [
  * <p>对象值没有对应的类型档位 —— 界面上「调整对象内容」是另一个操作。
  * 真遇到对象（手写 JSON 规则时可能出现）按列表处理，用户至少能看到并编辑原文。
  */
-export function inferSetValueType(value: unknown): SetValueType {
+export function inferJsonValueType(value: unknown): JsonValueType {
   if (value === null) return 'null'
   if (typeof value === 'boolean') return 'boolean'
   if (typeof value === 'number') return 'number'
@@ -50,7 +56,7 @@ export function inferSetValueType(value: unknown): SetValueType {
  * <p>字符串类型直接返回原文而不加引号：用户在「字符串」档位下看到的应当就是他输入的内容。
  * 其余类型走 JSON 序列化，于是列表能看到完整字面量、数字与布尔看到裸值。
  */
-export function formatSetValueText(value: unknown, type: SetValueType): string {
+export function formatJsonValueText(value: unknown, type: JsonValueType): string {
   if (type === 'null') return 'null'
   if (type === 'string') return typeof value === 'string' ? value : String(value ?? '')
   if (type === 'boolean') return value === false ? 'false' : 'true'
@@ -59,7 +65,7 @@ export function formatSetValueText(value: unknown, type: SetValueType): string {
 }
 
 /** 切换类型时的默认文本。 */
-export function defaultSetValueText(type: SetValueType): string {
+export function defaultJsonValueText(type: JsonValueType): string {
   switch (type) {
     case 'list':
       return '[]'
@@ -92,7 +98,7 @@ export function sanitizeNumberInput(text: string): string {
 }
 
 /** 解析结果。`value` 在 `error` 非空时无意义。 */
-export interface SetValueParseResult {
+export interface JsonValueParseResult {
   value: unknown
   error: string
 }
@@ -111,7 +117,7 @@ export interface SetValueParseResult {
  *   <li><strong>null</strong>：恒为 null，忽略文本。</li>
  * </ul>
  */
-export function parseSetValue(text: string, type: SetValueType): SetValueParseResult {
+export function parseJsonValue(text: string, type: JsonValueType): JsonValueParseResult {
   switch (type) {
     case 'null':
       return { value: null, error: '' }

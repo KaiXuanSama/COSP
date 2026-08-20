@@ -5,20 +5,11 @@
  * 递归渲染：当操作为 edit_object 时，内部嵌套 RequestBodyRuleList。
  * 字段下拉选项从当前作用域的原始 JSON 动态生成。
  */
-import { computed, ref } from 'vue'
-import { NSelect, NSwitch, NInput, NButton, NIcon } from 'naive-ui'
+import { computed } from 'vue'
+import { NSelect, NSwitch, NButton, NIcon } from 'naive-ui'
 import type { FieldRule, RuleCondition, ConditionOperator } from '@/features/request-body-rules/types'
 import { createEmptyRule, createEmptyCondition } from '@/features/request-body-rules/types'
-import type { SetValueType } from '@/features/request-body-rules/setValueEditing'
-import {
-  BOOLEAN_VALUE_OPTIONS,
-  SET_VALUE_TYPE_OPTIONS,
-  defaultSetValueText,
-  formatSetValueText,
-  inferSetValueType,
-  parseSetValue,
-  sanitizeNumberInput,
-} from '@/features/request-body-rules/setValueEditing'
+import JsonValueInput from './JsonValueInput.vue'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
 
 const props = defineProps<{
@@ -99,101 +90,18 @@ const currentOperationType = computed({
 // ==================== set_value 值编辑 ====================
 
 /**
- * 用户显式选择的类型档位。
+ * 当前 set_value 操作的值。
  *
- * <p>档位通常能从已保存的 JSON 值反推（见 {@link inferSetValueType}），但有一档反推不出来：
- * 数值档位刚切过去时输入框是空的，空文本解析失败、值写不回去，于是反推仍得到旧类型 ——
- * 用户选了「数值」界面却弹回「字符串」。档位是用户的**意图**，当值暂时无法表达它时
- * 意图必须能独立存在，因此这里显式记一份，写回成功后清空交还给反推。
+ * 类型档位与输入草稿都由 `JsonValueInput` 自己管，这里只负责取值与写回 ——
+ * 那些编辑态是纯粹的本地状态，放进规则只会让非法中间态污染预览与保存。
  */
-const pendingSetValueType = ref<SetValueType | null>(null)
-
-/** 当前生效的类型档位：用户刚选的优先，否则从值反推。 */
-const setValueType = computed<SetValueType>(() => {
-  if (pendingSetValueType.value !== null) return pendingSetValueType.value
+const setValue = computed(() => {
   const op = props.rule.operations[0]
-  if (!op || op.type !== 'set_value') return 'string'
-  return inferSetValueType(op.value)
+  return op && op.type === 'set_value' ? op.value : ''
 })
 
-const setValueText = computed(() => {
-  const op = props.rule.operations[0]
-  if (!op || op.type !== 'set_value') return ''
-  return formatSetValueText(op.value, setValueType.value)
-})
-
-/** 布尔档位用下拉，其余用文本输入。 */
-const setValueUsesSelect = computed(() => setValueType.value === 'boolean')
-
-/** null 档位禁止输入。 */
-const setValueDisabled = computed(() => props.readonly || setValueType.value === 'null')
-
-/** 各档位的输入提示。 */
-const setValuePlaceholder = computed(() => {
-  switch (setValueType.value) {
-    case 'string':
-      return '原样作为字符串，如 user'
-    case 'number':
-      return '如 0.7 或 -2'
-    case 'list':
-      return '如 [12.38, false, "hello world", null]'
-    case 'null':
-      return 'null'
-    default:
-      return ''
-  }
-})
-
-/**
- * 尚未写回的文本。
- *
- * 解析失败时值不写回规则，但输入框必须显示用户实际打的内容 ——
- * 否则打到 `[1,` 就会被弹回上一个合法值，根本没法输入完整的列表。
- */
-const pendingSetValueText = ref<string | null>(null)
-
-/** 输入框显示的文本：优先显示未写回的草稿。 */
-const setValueDisplayText = computed(() => pendingSetValueText.value ?? setValueText.value)
-
-/** 展示用的解析错误：以输入框里实际显示的文本为准。 */
-const setValueDisplayError = computed(() =>
-  parseSetValue(setValueDisplayText.value, setValueType.value).error,
-)
-
-/**
- * 写回解析后的值；解析失败时保留原值，只把文本留作草稿。
- *
- * <p>类型作为显式参数而非读 `setValueType` —— 切换档位时后者尚未更新完毕，
- * 用它解析新档位的文本会得到错的值。
- *
- * <h3>为何成功后仍可能保留草稿</h3>
- * 解析成功不代表输入已经「写完」。`12.` 是合法数值（解析为 12），但把它规范化回 `12`
- * 会吃掉尾部小数点 —— 用户接着打 `3` 就得到 `123` 而不是 `12.3`，小数根本打不出来。
- * 列表同理：`[1, 2]` 规范化成 `[1,2]` 会在打字过程中不断吞掉空格。
- * 因此只在**文本与其规范形式一致**时才交还给反推，否则保留用户的原始文本。
- */
-function commitSetValue(text: string, type: SetValueType) {
-  const parsed = parseSetValue(text, type)
-  if (parsed.error) {
-    pendingSetValueText.value = text
-    return
-  }
-  const canonical = formatSetValueText(parsed.value, type)
-  pendingSetValueText.value = text === canonical ? null : text
-  pendingSetValueType.value = null
-  emit('update:rule', { ...props.rule, operations: [{ type: 'set_value' as const, value: parsed.value }] })
-}
-
-function updateSetValueText(text: string) {
-  const normalized = setValueType.value === 'number' ? sanitizeNumberInput(text) : text
-  commitSetValue(normalized, setValueType.value)
-}
-
-/** 切换类型时用该档位的默认文本重置，避免把上一档位的内容按新类型硬解释。 */
-function updateSetValueType(next: SetValueType) {
-  pendingSetValueType.value = next
-  pendingSetValueText.value = null
-  commitSetValue(defaultSetValueText(next), next)
+function updateSetValue(value: unknown) {
+  emit('update:rule', { ...props.rule, operations: [{ type: 'set_value' as const, value }] })
 }
 
 // ==================== edit_object 嵌套规则 ====================
@@ -306,47 +214,17 @@ function generatePathOptions(
   return options
 }
 
-/** 条件值输入 */
-function conditionValueText(condition: RuleCondition): string {
-  if (condition.value == null) return ''
-  return typeof condition.value === 'string' ? condition.value : JSON.stringify(condition.value)
-}
-
-function updateConditionValue(index: number, text: string) {
-  const parsed = tryParseJson(text)
-  updateCondition(index, { value: parsed.value })
-}
-
-function conditionValueError(condition: RuleCondition): string {
-  if (condition.operator !== 'equals') return ''
-  const text = conditionValueText(condition)
-  return tryParseJson(text).error
+/**
+ * 写回条件比较值。
+ *
+ * 类型档位与输入草稿由 `JsonValueInput` 管理，与「设置字段值」共用同一套映射 ——
+ * 「等于 null」以前只能靠留空试出来，有了显式档位后它是可选项而非隐藏语义。
+ */
+function updateConditionValue(index: number, value: unknown) {
+  updateCondition(index, { value })
 }
 
 // ==================== 工具函数 ====================
-
-/**
- * 条件比较值的宽松解析。
- *
- * <p>能解析成 JSON 就按 JSON 值算，否则当字符串 —— 于是输入 `tool` 得到 `"tool"`、
- * 输入 `10` 得到数字 10。这与「设置字段值」的严格类型档位刻意不同：
- * 那边决定发给上游的内容，猜错会改坏请求；这边只决定一条规则是否命中，
- * 猜错的后果是规则不生效，而 `equals` 的绝大多数用法是与字符串字面量比较。
- *
- * <p>TODO 条件值也该有类型档位。当前 `equals` 无法表达「等于字符串 "10"」——
- * 输入 10 会被当数字。等这个需求真实出现时，复用
- * `features/request-body-rules/setValueEditing` 的那套映射即可。
- */
-function tryParseJson(text: string): { value: unknown; error: string } {
-  const trimmed = text.trim()
-  if (!trimmed) return { value: '', error: '' }
-  try {
-    return { value: JSON.parse(trimmed), error: '' }
-  } catch {
-    // 不是合法 JSON，作为字符串处理
-    return { value: trimmed, error: '' }
-  }
-}
 
 function updateField(val: string) {
   // 从下拉选项中判断是否为数组
@@ -435,35 +313,11 @@ function updateField(val: string) {
     <!-- set_value 值输入：左侧类型档位，右侧取值 -->
     <div v-if="currentOperationType === 'set_value'" class="rule-value-section">
       <label class="rule-value-label">字段值</label>
-      <div class="rule-value-row">
-        <NSelect
-          :value="setValueType"
-          @update:value="updateSetValueType($event as SetValueType)"
-          :options="SET_VALUE_TYPE_OPTIONS"
-          size="small"
-          class="rule-value-type"
-          :disabled="readonly"
-        />
-        <NSelect
-          v-if="setValueUsesSelect"
-          :value="setValueDisplayText"
-          @update:value="updateSetValueText($event)"
-          :options="BOOLEAN_VALUE_OPTIONS"
-          size="small"
-          class="rule-value-input"
-          :disabled="readonly"
-        />
-        <NInput
-          v-else
-          :value="setValueDisplayText"
-          @update:value="updateSetValueText"
-          :placeholder="setValuePlaceholder"
-          size="small"
-          class="rule-value-input"
-          :disabled="setValueDisabled"
-        />
-      </div>
-      <span v-if="setValueDisplayError" class="rule-error">{{ setValueDisplayError }}</span>
+      <JsonValueInput
+        :value="setValue"
+        @update:value="updateSetValue"
+        :readonly="readonly"
+      />
     </div>
 
     <!-- 条件列表 -->
@@ -492,14 +346,13 @@ function updateField(val: string) {
           class="cond-op"
           :disabled="readonly"
         />
-        <NInput
+        <JsonValueInput
           v-if="cond.operator === 'equals'"
-          :value="conditionValueText(cond)"
+          :value="cond.value"
           @update:value="updateConditionValue(idx, $event)"
-          placeholder='比较值，如 "tool"'
-          size="small"
+          :readonly="readonly"
+          type-class="cond-value-type"
           class="cond-value"
-          :disabled="readonly"
         />
         <span v-else class="cond-value-placeholder">—</span>
         <button
@@ -657,23 +510,6 @@ function updateField(val: string) {
   margin-bottom: 2px;
 }
 
-/** 类型档位固定宽度，取值输入占满剩余空间。 */
-.rule-value-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.rule-value-type {
-  width: 96px;
-  flex-shrink: 0;
-}
-
-.rule-value-input {
-  flex: 1;
-  min-width: 0;
-}
-
 .rule-error {
   display: block;
   color: $danger;
@@ -700,7 +536,7 @@ function updateField(val: string) {
 
 .rule-condition-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 4px;
   margin-bottom: 2px;
 }
@@ -708,7 +544,7 @@ function updateField(val: string) {
 .cond-path {
   flex: 1 1 auto;
   width: auto;
-  min-width: 240px;
+  min-width: 200px;
 }
 
 .cond-op {
@@ -716,11 +552,21 @@ function updateField(val: string) {
   width: 90px;
 }
 
+/**
+ * 比较值区。
+ *
+ * 比原先的单输入框宽（内含类型档位 + 取值控件），故让它与路径下拉争抢剩余空间；
+ * 路径的 min-width 相应从 240 降到 200，两者在窄容器下都还能读。
+ */
 .cond-value {
-  flex: 0 1 160px;
-  width: 160px;
-  min-width: 110px;
-  max-width: 180px;
+  flex: 1 1 260px;
+  min-width: 200px;
+  max-width: 340px;
+}
+
+/** 档位下拉在条件行里收窄：这一行控件比「设置字段值」那行多一个。 */
+.cond-value :deep(.cond-value-type) {
+  width: 84px;
 }
 
 .cond-value-placeholder {
