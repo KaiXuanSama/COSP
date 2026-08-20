@@ -2,8 +2,8 @@
 
 ## 当前架构
 
-- Copilot 使用 `/api/version`、`/api/tags`、`/api/show` 发现模型，实际聊天仅走 `/v1/chat/completions`。
-- `ModelDiscoveryService` 与 `ChatCompletionService` 是应用层用例服务，分别委派给 `GenericDiscoveryService` 和 `GenericOpenAiChatService`。
+- Copilot 使用 `/api/version`、`/api/tags`、`/api/show` 发现模型，实际聊天走 `/v1/chat/completions`；另有 `/v1/messages` 供 Claude 系客户端直连（Anthropic 协议）。
+- `ModelDiscoveryService` / `ChatCompletionService` / `MessagesService` 是应用层用例服务；两条聊天线路经 `ProtocolDispatchManager` 分派到 `GenericOpenAiChatService` 或 `GenericAnthropicChatService`。
 - 所有供应商都是数据库记录，不存在内置或专有 provider。通过管理后台配置 Base URL、API Key、模型、能力和转换规则。
 - `ProviderRouteResolver` 对前缀模型精确路由；无前缀模型仅在唯一匹配时允许路由。
 - 单端口 11434 同时提供对外 API 与管理后台（`/config/api/**` + JWT）。
@@ -15,9 +15,10 @@
 - 上下文窗口最小为 8192。
 - WebFlux 中所有 JDBC 调用使用 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`。
 - 对外调用必须复用注入的 `WebClient.Builder`，不要使用裸 `WebClient.builder()`。
-- 标准供应商不创建新 Java 包；供应商差异先用 `provider_request_transform` 的请求头/请求体规则表达。
-- `GatewayAuthFilter` 只拦截 `POST /v1/chat/completions`，Ollama 发现接口必须保持匿名可访。
-- 流式与非流式共用同一份重试预算（`buildRetrySpec`）与同一份空响应判定（`UpstreamChunkContentDetector.payloadHasContent`），不要为某一侧另起 `retryWhen` 或放宽判定口径。
+- 标准供应商不创建新 Java 包；供应商差异先用 `provider_request_transform` 的请求头/请求体规则表达。请求体规则集是 V2（`groups` + 每组 `protocols`），引擎在 `application/provider`，协议无关、两侧上游服务共用。
+- 规则引擎**只有后端一份实现**：编辑器预览走 `POST /config/api/request-body-rules/preview`，不要在前端重建引擎。
+- `GatewayAuthFilter` 只拦截 `POST /v1/chat/completions` 与 `POST /v1/messages`，Ollama 发现接口必须保持匿名可访。
+- 流式与非流式共用同一份重试预算（`buildRetrySpec`）与同一份空响应判定（`OpenAiContentDetector.payloadHasContent`），不要为某一侧另起 `retryWhen` 或放宽判定口径。
 
 ## 测试
 
