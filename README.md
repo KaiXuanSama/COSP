@@ -25,10 +25,12 @@ GET  /api/version
 GET  /api/tags
 POST /api/show
 POST /v1/chat/completions
+POST /v1/messages
 ```
 
 - `/api/version`、`/api/tags`、`/api/show` 仅用于 Ollama 模型发现。
 - `/v1/chat/completions` 执行实际聊天，支持 SSE 与非流式响应。
+- `/v1/messages` 是 Anthropic Messages 协议入口，供 Claude 系客户端直连；Copilot 不走这条。
 - 模型可使用 `[provider-key] model-name` 显式路由；未加前缀的模型只有在全部启用供应商中唯一匹配时才会路由。
 
 ## 技术栈
@@ -67,8 +69,11 @@ spring:
 | `provider_config` | 供应商键、显示名、启用状态与 Base URL |
 | `provider_api_key` | 加密的 API Key 列表与激活项 |
 | `provider_model` | 模型、上下文、输出上限及能力声明 |
-| `provider_request_transform` | 自定义请求头与请求体规则 |
+| `provider_request_transform` | 自定义请求头与请求体规则组 |
 | `app_config` | 伪造版本号等应用配置 |
+
+请求体规则按**规则组**组织：每组声明适用的线路协议（OpenAI / Anthropic）、自带一份调试样本，
+组内规则可按顺序修改、删除字段或递归调整对象与数组中的消息内容。
 
 ## API
 
@@ -77,8 +82,9 @@ spring:
 | `GET` | `/api/version` | 返回 Ollama 版本 |
 | `GET` | `/api/tags` | 返回可用模型 |
 | `POST` | `/api/show` | 返回模型能力和上下文窗口 |
-| `POST` | `/v1/chat/completions` | 执行聊天补全 |
+| `POST` | `/v1/chat/completions` | 执行聊天补全（OpenAI 协议） |
 | `GET` | `/v1/models` | 返回 OpenAI 格式模型列表 |
+| `POST` | `/v1/messages` | 执行聊天补全（Anthropic 协议） |
 
 ## 开发与测试
 

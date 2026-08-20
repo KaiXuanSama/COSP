@@ -39,13 +39,17 @@ import static org.mockito.Mockito.when;
 class ProviderRequestBodyTransformationIntegrationTests {
 
     private static final String RULES = """
-            {"version":1,"rules":[{
-              "id":"rewrite-temperature","order":0,"field":"temperature","array":false,
-              "conditional":false,"conditionMode":"all","conditions":[],
-              "operations":[{"type":"set_value","value":0.2}]},
-              {"id":"remove-reasoning","order":1,"field":"reasoning_effort","array":false,
-              "conditional":false,"conditionMode":"all","conditions":[],
-              "operations":[{"type":"delete"}]}
+            {"version":2,"groups":[{
+              "id":"g-openai","name":"OpenAI 规则组","order":0,"enabled":true,
+              "protocols":["OPENAI"],"templateKeys":["base"],"previewBody":{},
+              "rules":[{
+                "id":"rewrite-temperature","order":0,"field":"temperature","array":false,
+                "conditional":false,"conditionMode":"all","conditions":[],
+                "operations":[{"type":"set_value","value":0.2}]},
+                {"id":"remove-reasoning","order":1,"field":"reasoning_effort","array":false,
+                "conditional":false,"conditionMode":"all","conditions":[],
+                "operations":[{"type":"delete"}]}
+              ]}
             ]}
             """;
 
@@ -109,7 +113,8 @@ class ProviderRequestBodyTransformationIntegrationTests {
         DatabaseRuntimeProviderCatalog catalog = new DatabaseRuntimeProviderCatalog(
                 providerConfigRepository, apiKeyRepository, transformRepository);
         GenericOpenAiChatService genericChatService = new GenericOpenAiChatService(
-                objectMapper, new ProviderRequestHeaderService(objectMapper));
+                objectMapper, new ProviderRequestHeaderService(objectMapper),
+                new RequestBodyRuleEngine(objectMapper));
         genericChatService.setWebClientBuilder(WebClient.builder());
         AtomicReference<Map<String, String>> loggedRequestHeaders = new AtomicReference<>();
         ApiCallLogService callLogService = mock(ApiCallLogService.class);
@@ -184,6 +189,7 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 + "provider_id INTEGER PRIMARY KEY, header_rules_version INTEGER NOT NULL, "
                 + "header_rules_json TEXT NOT NULL, body_template_keys_json TEXT NOT NULL, "
                 + "body_preview_json TEXT NOT NULL, body_rules_version INTEGER NOT NULL, "
-                + "body_rules_json TEXT NOT NULL, created_at TEXT, updated_at TEXT)");
+                + "body_rules_json TEXT NOT NULL, body_rules_schema INTEGER NOT NULL DEFAULT 2, "
+                + "created_at TEXT, updated_at TEXT)");
     }
 }

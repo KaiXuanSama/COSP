@@ -47,6 +47,21 @@ For every new version `Vnext`, update `SchemaMigrationRunnerTests`:
 - A new migration must work for a database arriving through the recursive history path and for a direct predecessor fixture.
 - A fresh database must reach the current baseline without replaying history.
 
+## Two Traps Already Hit
+
+**Historical migrations must reference frozen version constants.** A migration body that writes
+`CURRENT_SCHEMA_VERSION` will silently jump the version to the newest value once that constant is
+bumped, so every migration in between never runs and nothing reports an error. Introduce
+`V8_6_VERSION`-style constants and leave only the newest migration using `CURRENT_SCHEMA_VERSION`.
+
+**Baseline detection needs a structural predicate, not a data probe.** Every predicate in
+`isCurrentBaseline()` asks whether a table/column/index exists, because those hold on an empty
+database too. A migration that only reshapes JSON inside a column has no such evidence — the only
+check available would be "pick a row and look at it", which is false on an empty or brand-new
+database, so the migration re-runs on every startup. V8.7 therefore added the otherwise unnecessary
+`provider_request_transform.body_rules_schema` column purely to make the change a decidable
+structural fact.
+
 ## Verification
 
 1. Use editor diagnostics on the runner, schema SQL, and migration tests.
@@ -58,10 +73,10 @@ For every new version `Vnext`, update `SchemaMigrationRunnerTests`:
 ## Checklist
 
 - [ ] New migration version is strictly greater than the previous version.
-- [ ] Existing migrations were not rewritten.
+- [ ] Existing migrations were not rewritten, and each historical body writes its own frozen version constant.
 - [ ] Migration registry contains the new ordered step.
 - [ ] `schema.sql` matches the new final schema.
-- [ ] Baseline detection reflects the new invariant.
+- [ ] Baseline detection reflects the new invariant via a structural predicate.
 - [ ] Previous-version upgrade test covers the new migration and idempotence.
 - [ ] Recursive checkpoint chain still covers every registered version.
 - [ ] Fresh SQLite plus real `schema.sql` reaches the dynamic current baseline.

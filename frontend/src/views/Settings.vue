@@ -5,11 +5,12 @@ import ProviderModelsSection from '@/components/settings/ProviderModelsSection.v
 import RequestBodyRuleEditor from '@/components/settings/request-body-rules/RequestBodyRuleEditor.vue'
 import { useProviderStore, type ApiKeyEntry } from '@/stores/providers'
 import type { RequestBodyEditorState } from '@/features/request-body-rules/editorState'
-import { createDefaultRequestBodyEditorState } from '@/features/request-body-rules/editorState'
+import { countRules, createDefaultRequestBodyEditorState } from '@/features/request-body-rules/editorState'
 import { MIMO_EXAMPLE_RULESET } from '@/features/request-body-rules/defaultRequestBody'
 import type { RequestBodyTemplateKey } from '@/features/request-body-rules/requestBodyTemplates'
 import { composeRequestBodyTemplate } from '@/features/request-body-rules/requestBodyTemplates'
-import type { RuleSet } from '@/features/request-body-rules/types'
+import type { RuleSet, RuleSetV2 } from '@/features/request-body-rules/types'
+import { migrateRuleSet } from '@/features/request-body-rules/migration'
 
 const providerStore = useProviderStore()
 const message = useMessage()
@@ -223,12 +224,16 @@ interface ProviderPreset {
 
 const IMAGE_COMPATIBILITY_TEMPLATE_KEYS: RequestBodyTemplateKey[] = ['message-tool-image']
 
-/** 创建供应商默认图片兼容配置，避免共享可变规则集。 */
+/**
+ * 创建供应商默认图片兼容配置，避免共享可变规则集。
+ *
+ * 预设规则统一落在单个仅适用 OpenAI 的规则组里：它们的字段路径是照 OpenAI
+ * 请求体写的（messages 里含 system、无 max_tokens），作用在 Anthropic 请求体上
+ * 多数匹配不到 —— 静默失效比不执行更难排查。
+ */
 function createProviderDefaultEditorState(): RequestBodyEditorState {
   return {
-    templateKeys: [...IMAGE_COMPATIBILITY_TEMPLATE_KEYS],
-    previewBody: composeRequestBodyTemplate(IMAGE_COMPATIBILITY_TEMPLATE_KEYS),
-    rules: cloneRuleSet(MIMO_EXAMPLE_RULESET),
+    rules: presetRuleSetV2(MIMO_EXAMPLE_RULESET, IMAGE_COMPATIBILITY_TEMPLATE_KEYS),
   }
 }
 
@@ -347,9 +352,33 @@ const relayPresets: ProviderPreset[] = [
 
 const allPresets = [...officialPresets, ...aggregatorPresets, ...relayPresets]
 
+/** 宽容解析后端回传的 JSON 字段；无法解析时返回 undefined 交由迁移函数兼容。 */
+function safeParseJson(text: string | null | undefined): unknown {
+  if (!text) return undefined
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
+}
+
 /** 深拷贝规则集，避免预设常量被编辑器状态原地修改。 */
 function cloneRuleSet(rules: RuleSet): RuleSet {
   return JSON.parse(JSON.stringify(rules)) as RuleSet
+}
+
+/** 把预设的 V1 规则集升为单组 V2，并带上预设自带的预览模板。 */
+function presetRuleSetV2(
+  rules: RuleSet,
+  templateKeys?: RequestBodyTemplateKey[],
+): RuleSetV2 {
+  const migrated = migrateRuleSet(cloneRuleSet(rules))
+  const group = migrated.groups[0]
+  if (group && templateKeys && templateKeys.length > 0) {
+    group.templateKeys = [...templateKeys]
+    group.previewBody = composeRequestBodyTemplate(templateKeys)
+  }
+  return migrated
 }
 
 /** 选择预设时自动填充名称、地址、请求头、请求体模板和规则。 */
@@ -359,15 +388,9 @@ function applyPreset(label: string) {
     providerName.value = preset.label
     providerBaseUrl.value = preset.baseUrl
     providerHeaders.value = preset.headers.map(h => ({ ...h }))
-    const editorState = createDefaultRequestBodyEditorState()
-    if (preset.requestBodyTemplateKeys && preset.requestBodyTemplateKeys.length > 0) {
-      editorState.templateKeys = [...preset.requestBodyTemplateKeys]
-      editorState.previewBody = composeRequestBodyTemplate(preset.requestBodyTemplateKeys)
-    }
-    if (preset.requestBodyRules) {
-      editorState.rules = cloneRuleSet(preset.requestBodyRules)
-    }
-    requestBodyEditorState.value = editorState
+    requestBodyEditorState.value = preset.requestBodyRules
+      ? { rules: presetRuleSetV2(preset.requestBodyRules, preset.requestBodyTemplateKeys) }
+      : createDefaultRequestBodyEditorState()
     providerAdvancedExpanded.value = true
   }
   showPresetModal.value = false
@@ -428,10 +451,13 @@ function openEditProviderModal(key: string) {
     try {
       const saved = provider.requestTransform
       if (saved) {
+        // 旧的 bodyTemplateKeysJson / bodyPreviewJson 是 V1 时与规则并列的全局调试样本，
+        // 升 V2 时得搬进唯一那个组，否则用户调过的预览请求体会丢。
         requestBodyEditorState.value = {
-          templateKeys: JSON.parse(saved.bodyTemplateKeysJson) as RequestBodyTemplateKey[],
-          previewBody: JSON.parse(saved.bodyPreviewJson) as Record<string, unknown>,
-          rules: JSON.parse(saved.bodyRulesJson),
+          rules: migrateRuleSet(JSON.parse(saved.bodyRulesJson), {
+            templateKeys: safeParseJson(saved.bodyTemplateKeysJson),
+            previewBody: safeParseJson(saved.bodyPreviewJson),
+          }),
         }
       }
     } catch {
@@ -448,6 +474,23 @@ function buildHeaderRulesJson(): string {
   return JSON.stringify(headers.map(h => ({ key: h.key.trim(), value: h.value })))
 }
 
+/**
+ * 构建请求转换配置的提交载荷。
+ *
+ * `bodyTemplateKeysJson` / `bodyPreviewJson` 已是 legacy 列：真正的预览样本现在跟随每个
+ * 规则组存在 `bodyRulesJson` 里。仍然提交它们是因为后端校验还要求非空，
+ * 取首组的值保证旧版本回滚时能读到一份有意义的样本而非空对象。
+ */
+function buildRequestTransformPayload() {
+  const ruleSet = requestBodyEditorState.value.rules
+  const primary = ruleSet.groups[0]
+  return {
+    bodyTemplateKeysJson: JSON.stringify(primary?.templateKeys ?? ['base']),
+    bodyPreviewJson: JSON.stringify(primary?.previewBody ?? {}),
+    bodyRulesJson: JSON.stringify(ruleSet),
+  }
+}
+
 /** 保存供应商。 */
 async function saveProvider() {
   const name = providerName.value.trim()
@@ -458,11 +501,7 @@ async function saveProvider() {
   try {
     const headerRulesJson = buildHeaderRulesJson()
     const baseUrl = providerBaseUrl.value.trim()
-    const requestTransform = {
-      bodyTemplateKeysJson: JSON.stringify(requestBodyEditorState.value.templateKeys),
-      bodyPreviewJson: JSON.stringify(requestBodyEditorState.value.previewBody),
-      bodyRulesJson: JSON.stringify(requestBodyEditorState.value.rules),
-    }
+    const requestTransform = buildRequestTransformPayload()
     if (editingProviderKey.value) {
       // 编辑模式
       await providerStore.updateProvider(
@@ -994,8 +1033,8 @@ function removeModel(index: number) {
             </n-button>
           </div>
           <div class="advanced-empty" style="cursor: pointer;" @click="showRequestBodyRuleEditor = true">
-            已配置 {{ requestBodyEditorState.rules.rules.length }} 条规则
-            <span class="request-body-rules-hint">（保存后作用于 Copilot 实际请求）</span>
+            已配置 {{ requestBodyEditorState.rules.groups.length }} 个规则组、{{ countRules(requestBodyEditorState.rules) }} 条规则
+            <span class="request-body-rules-hint">（保存后按线路作用于实际请求）</span>
           </div>
         </div>
       </div>

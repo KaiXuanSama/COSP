@@ -26,13 +26,24 @@ public class ProviderRequestTransformService {
             + "\"stream\":true,\"n\":1,\"stream_options\":{\"include_usage\":true},"
             + "\"reasoning_effort\":\"medium\"}";
     /** 默认空规则集。 */
-    public static final String EMPTY_BODY_RULES_JSON = "{\"version\":1,\"rules\":[]}";
+    public static final String EMPTY_BODY_RULES_JSON = "{\"version\":2,\"groups\":[]}";
+    /** 当前规则集协议版本，与 {@code body_rules_json} 里的 {@code version} 一致。 */
+    public static final int BODY_RULES_VERSION = 2;
 
     private static final Set<String> TEMPLATE_KEYS = Set.of(
             "base", "message-start", "message-assistant", "message-tool-basic",
             "message-tool-image", "tools", "custom");
     private static final Set<String> CONDITION_OPERATORS = Set.of("exists", "equals");
     private static final Set<String> OPERATION_TYPES = Set.of("edit_object", "set_value", "delete");
+    /**
+     * 规则组可声明的线路协议。
+     *
+     * 字面量与 {@link com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol}
+     * 的枚举常量名一致；此处刻意不直接引用枚举 —— 该白名单校验的是**外部输入的字符串**，
+     * 用 {@code valueOf} 会把非法值变成异常控制流，而这里要的是与其他三个白名单一致的
+     * 「集合包含判断 + 统一错误消息」。
+     */
+    private static final Set<String> PROTOCOLS = Set.of("OPENAI", "ANTHROPIC");
 
     private final ProviderConfigRepository providerConfigRepository;
     private final ProviderRequestTransformRepository requestTransformRepository;
@@ -104,7 +115,7 @@ public class ProviderRequestTransformService {
         requestTransformRepository.upsert(
                 providerId, 1, transform.headerRulesJson(),
                 transform.templateKeysJson(), transform.bodyPreviewJson(),
-                1, transform.bodyRulesJson());
+                BODY_RULES_VERSION, transform.bodyRulesJson());
     }
 
     private ValidatedTransform validate(String headerRulesJson, String templateKeysJson,
@@ -181,11 +192,46 @@ public class ProviderRequestTransformService {
         }
     }
 
+    /**
+     * 校验请求体规则集根结构。
+     *
+     * <p>只接受 V2：数据库里的规则在 V8.7 一次性升格完毕，此后**保存路径不再接受 V1**。
+     * 若继续兼容写入 V1，库里就会重新混入两种格式，而「过一遍迁移后全库同格式」正是
+     * 加那次迁移的目的。前端读取旧导出走各自的迁移函数，不经过这里。
+     */
     private void validateRuleSet(JsonNode root) {
-        if (root.path("version").asInt(-1) != 1 || !root.path("rules").isArray()) {
-            throw new IllegalArgumentException("bodyRulesJson 必须是 version=1 的规则集");
+        if (root.path("version").asInt(-1) != 2 || !root.path("groups").isArray()) {
+            throw new IllegalArgumentException("bodyRulesJson 必须是 version=2 且含 groups 数组的规则集");
         }
-        validateRules(root.path("rules"), "rules");
+        Set<String> groupIds = new HashSet<>();
+        JsonNode groups = root.path("groups");
+        for (int i = 0; i < groups.size(); i++) {
+            validateRuleGroup(groups.get(i), "groups[" + i + "]", groupIds);
+        }
+    }
+
+    private void validateRuleGroup(JsonNode group, String path, Set<String> groupIds) {
+        if (!group.isObject() || !group.path("id").isTextual() || group.path("id").asText().isBlank()
+                || !group.path("name").isTextual()
+                || !group.path("order").isIntegralNumber() || !group.path("order").canConvertToInt()
+                || group.path("order").asInt() < 0
+                || !group.path("enabled").isBoolean()
+                || !group.path("protocols").isArray()
+                || !group.path("templateKeys").isArray()
+                || !group.path("previewBody").isObject()
+                || !group.path("rules").isArray()) {
+            throw new IllegalArgumentException(path + " 结构无效");
+        }
+        if (!groupIds.add(group.path("id").asText())) {
+            throw new IllegalArgumentException(path + ".id 重复: " + group.path("id").asText());
+        }
+        for (JsonNode protocol : group.path("protocols")) {
+            if (!protocol.isTextual() || !PROTOCOLS.contains(protocol.asText())) {
+                throw new IllegalArgumentException("不支持的线路协议: " + protocol.asText());
+            }
+        }
+        validateTemplateKeys(group.path("templateKeys"));
+        validateRules(group.path("rules"), path + ".rules");
     }
 
     private void validateRules(JsonNode rules, String path) {

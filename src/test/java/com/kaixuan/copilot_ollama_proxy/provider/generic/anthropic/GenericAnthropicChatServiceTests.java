@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
+import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.sun.net.httpserver.HttpServer;
@@ -89,22 +90,25 @@ class GenericAnthropicChatServiceTests {
     // ==================== 出站路径 ====================
 
     /**
-     * Base URL 的 {@code /v1} 被剥掉，端点接在根路径下的 {@code /messages}。
+     * Base URL 自带的路径被<strong>完整保留</strong>，{@code /messages} 接在其后。
      *
-     * <p>这是本阶段的乐观假设（多数中转站的做法），与 Anthropic 官方的
-     * {@code /v1/messages} 并不一致 —— 见服务里 {@code normalizeAnthropicBaseUrl} 的 TODO。
-     * 这条用例的价值在于：将来改成读配置时，它会明确地失败并提醒改断言。
+     * <p>数据库里已有供应商的 Base URL 通常是 {@code .../v1}，因而实际请求为
+     * {@code /v1/messages} —— 与 Anthropic 官方及 tokenrhythm 的实测端点一致。
+     * 早先的乐观规则会先剥掉尾部 {@code /v1}，对 tokenrhythm 得到站点根路径的 405。
+     *
+     * <p>这条用例的价值在于：将来改成按供应商读端点配置时，它会明确地失败并提醒改断言。
+     * 见服务里 {@code normalizeAnthropicBaseUrl} 的 TODO。
      */
     @Test
-    void versionPrefixIsStrippedAndMessagesPathIsAppended() {
+    void baseUrlPathIsPreservedAndMessagesPathIsAppended() {
         realService().exposeMessages(newRequest(), routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
 
-        assertThat(capturedPath.get()).isEqualTo("/messages");
+        assertThat(capturedPath.get()).isEqualTo("/v1/messages");
     }
 
-    /** Base URL 本就没有 {@code /v1} 时不受影响。 */
+    /** Base URL 本就是站点根路径时，端点落在 {@code /messages}。 */
     @Test
-    void baseUrlWithoutVersionPrefixWorksToo() {
+    void baseUrlWithoutVersionPrefixHitsRootMessagesPath() {
         realService().exposeMessages(newRequest(), routeTo(baseUrlRoot())).block(Duration.ofSeconds(10));
 
         assertThat(capturedPath.get()).isEqualTo("/messages");
@@ -265,6 +269,85 @@ class GenericAnthropicChatServiceTests {
         realService().exposeMessages(request, routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
 
         assertThat(objectMapper.readTree(capturedBody.get()).path("stream").asBoolean()).isFalse();
+    }
+
+    // ==================== 请求体规则 ====================
+
+    /**
+     * 声明适用 ANTHROPIC 的规则组会作用于出站请求体。
+     *
+     * <p>这里刻意改 {@code system} —— 它是协议归一化的产物（从 messages 提上来的）。
+     * 断言它被规则改到，等于同时验证了「规则在归一化之后执行」这个顺序约束：
+     * 若顺序反了，规则跑的时候顶层还没有 system 字段，什么都匹配不到。
+     */
+    @Test
+    void anthropicRuleGroupIsAppliedToOutboundBody() throws Exception {
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("model", "claude-x");
+        request.put("messages", List.of(
+                Map.of("role", "system", "content", "原始指令"),
+                Map.of("role", "user", "content", "hi")));
+        String rules = """
+                {"version":2,"groups":[
+                  {"id":"ant","name":"Anthropic","order":0,"enabled":true,
+                   "protocols":["ANTHROPIC"],"templateKeys":["custom"],"previewBody":{},
+                   "rules":[{"id":"r1","order":0,"field":"system","array":false,"conditional":false,
+                    "conditionMode":"all","conditions":[],
+                    "operations":[{"type":"set_value","value":"被规则改写"}]}]}
+                ]}
+                """;
+
+        realService().exposeMessages(request, routeWithRules(baseUrlWithV1(), rules))
+                .block(Duration.ofSeconds(10));
+
+        assertThat(objectMapper.readTree(capturedBody.get()).path("system").asText())
+                .isEqualTo("被规则改写");
+    }
+
+    /** 只适用 OPENAI 的规则组不会作用于 Anthropic 请求。 */
+    @Test
+    void openAiOnlyRuleGroupIsNotAppliedToAnthropicRequest() throws Exception {
+        String rules = """
+                {"version":2,"groups":[
+                  {"id":"oai","name":"OpenAI","order":0,"enabled":true,
+                   "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                   "rules":[{"id":"r1","order":0,"field":"model","array":false,"conditional":false,
+                    "conditionMode":"all","conditions":[],
+                    "operations":[{"type":"set_value","value":"should-not-apply"}]}]}
+                ]}
+                """;
+
+        realService().exposeMessages(newRequest(), routeWithRules(baseUrlWithV1(), rules))
+                .block(Duration.ofSeconds(10));
+
+        assertThat(objectMapper.readTree(capturedBody.get()).path("model").asText())
+                .isEqualTo("claude-x");
+    }
+
+    /**
+     * 规则把字段设为 null 时，该字段最终不出现在出站请求体里。
+     *
+     * <p>这验证规则执行位置在 {@code removeIf(Objects::isNull)} <strong>之前</strong> ——
+     * 顺序反了的话 null 会被发给上游，而 Anthropic 对多余的 null 字段并不宽容。
+     */
+    @Test
+    void ruleAssignedNullIsStrippedBeforeSending() throws Exception {
+        Map<String, Object> request = newRequest();
+        request.put("temperature", 0.5);
+        String rules = """
+                {"version":2,"groups":[
+                  {"id":"ant","name":"Anthropic","order":0,"enabled":true,
+                   "protocols":["ANTHROPIC"],"templateKeys":["custom"],"previewBody":{},
+                   "rules":[{"id":"r1","order":0,"field":"temperature","array":false,"conditional":false,
+                    "conditionMode":"all","conditions":[],
+                    "operations":[{"type":"set_value"}]}]}
+                ]}
+                """;
+
+        realService().exposeMessages(request, routeWithRules(baseUrlWithV1(), rules))
+                .block(Duration.ofSeconds(10));
+
+        assertThat(objectMapper.readTree(capturedBody.get()).has("temperature")).isFalse();
     }
 
     // ==================== 空响应兜底 ====================
@@ -575,6 +658,14 @@ class GenericAnthropicChatServiceTests {
                 "claude-x", "[anthro] claude-x");
     }
 
+    /** 带指定请求体规则集的路由。 */
+    private static ResolvedProviderRoute routeWithRules(String baseUrl, String bodyRulesJson) {
+        return new ResolvedProviderRoute(
+                new ProviderRuntimeConfiguration("anthro", baseUrl, "test-key", List.of(),
+                        "[]", bodyRulesJson),
+                "claude-x", "[anthro] claude-x");
+    }
+
     private static RetryPolicyService fixedRetryPolicy(int maxAttempts) {
         return new RetryPolicyService(null) {
             @Override
@@ -616,7 +707,8 @@ class GenericAnthropicChatServiceTests {
     private static final class TestService extends GenericAnthropicChatService {
 
         private TestService() {
-            super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()));
+            super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
+                    new RequestBodyRuleEngine(new ObjectMapper()));
         }
 
         private Mono<String> exposeMessages(Map<String, Object> request, ResolvedProviderRoute route) {

@@ -1,7 +1,9 @@
 package com.kaixuan.copilot_ollama_proxy.provider.generic.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
+import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.provider.AbstractUpstreamChatService;
@@ -23,9 +25,11 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
 
     private final RequestBodyRuleEngine requestBodyRuleEngine;
 
-    public GenericOpenAiChatService(ObjectMapper objectMapper, ProviderRequestHeaderService providerRequestHeaderService) {
+    public GenericOpenAiChatService(ObjectMapper objectMapper,
+                                    ProviderRequestHeaderService providerRequestHeaderService,
+                                    RequestBodyRuleEngine requestBodyRuleEngine) {
         super(objectMapper, "", providerRequestHeaderService);
-        this.requestBodyRuleEngine = new RequestBodyRuleEngine(objectMapper);
+        this.requestBodyRuleEngine = requestBodyRuleEngine;
     }
 
     @Override
@@ -39,14 +43,15 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
     }
 
     /**
-     * 根据新表 body_rules_json 对请求体进行动态转换。
+     * 根据 body_rules_json 对请求体进行动态转换。
      *
-     * 旧 custom_transforms.body_transforms 在此路径中不再执行，也不会作为回退来源。
+     * 只执行声明适用于 {@link WireProtocol#OPENAI} 的规则组；协议筛选由引擎完成。
      */
     @Override
     protected void customizeRequestBody(Map<String, Object> body, String resolvedModel,
                                         ProviderRuntimeConfiguration provider) {
-        RequestBodyRuleEngine.TransformResult result = requestBodyRuleEngine.transform(body, provider.bodyRulesJson());
+        RequestBodyRuleEngine.TransformResult result = requestBodyRuleEngine.transform(
+                body, provider.bodyRulesJson(), WireProtocol.OPENAI);
         body.clear();
         body.putAll(result.output());
         for (RequestBodyRuleEngine.TransformWarning warning : result.warnings()) {

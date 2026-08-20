@@ -11,6 +11,9 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
                                            List<ProviderRuntimeModel> models, String headerRulesJson,
                                            String bodyRulesJson) {
 
+    /** 空规则集（V2）。 */
+    private static final String EMPTY_BODY_RULES_JSON = "{\"version\":2,\"groups\":[]}";
+
     /**
      * 创建无自定义转换的运行时供应商配置。
      *
@@ -21,7 +24,7 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
      */
     public ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey,
                                         List<ProviderRuntimeModel> models) {
-        this(providerKey, baseUrl, apiKey, models, "[]", "{\"version\":1,\"rules\":[]}");
+        this(providerKey, baseUrl, apiKey, models, "[]", EMPTY_BODY_RULES_JSON);
     }
 
     public ProviderRuntimeConfiguration {
@@ -31,7 +34,7 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
         models = models == null ? List.of() : List.copyOf(models);
         headerRulesJson = (headerRulesJson == null || headerRulesJson.isBlank()) ? "[]" : headerRulesJson;
         bodyRulesJson = (bodyRulesJson == null || bodyRulesJson.isBlank())
-            ? "{\"version\":1,\"rules\":[]}" : bodyRulesJson;
+            ? EMPTY_BODY_RULES_JSON : bodyRulesJson;
     }
 
     public boolean supportsModel(String modelName) {

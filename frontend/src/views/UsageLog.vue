@@ -18,6 +18,7 @@ import { createCoalescingSync } from '@/features/call-log/sync'
 import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 import { CallLogDetail } from '@/components/calllog'
 import type { DetailItem } from '@/types/calllog'
+import type { WireProtocol } from '@/types/protocol'
 
 /**
  * 消费者视角的一行。
@@ -30,8 +31,8 @@ interface UsageLogItem {
   provider_key: string
   model_name: string
   is_stream: number
-  downstream_protocol: 'OPENAI' | 'ANTHROPIC'
-  upstream_protocol: 'OPENAI' | 'ANTHROPIC'
+  downstream_protocol: WireProtocol
+  upstream_protocol: WireProtocol
   status_code: number
   duration_ms: number | null
   payload_trimmed: number

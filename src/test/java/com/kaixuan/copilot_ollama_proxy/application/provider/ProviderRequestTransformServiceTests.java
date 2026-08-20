@@ -29,7 +29,7 @@ class ProviderRequestTransformServiceTests {
                 private static final String HEADER_RULES = "[{\"key\":\"api-key\",\"value\":\"{apiKey}\"}]";
     private static final String TEMPLATE_KEYS = "[\"base\",\"tools\"]";
     private static final String PREVIEW = "{\"model\":\"<string>\",\"stream\":true}";
-    private static final String RULES = "{\"version\":1,\"rules\":[]}";
+    private static final String RULES = "{\"version\":2,\"groups\":[]}";
 
     @TempDir
     Path tempDir;
@@ -99,10 +99,13 @@ class ProviderRequestTransformServiceTests {
                                 "alpha", "Alpha", "https://old.example/v1", HEADER_RULES,
                 TEMPLATE_KEYS, PREVIEW, RULES);
         String updatedHeaderRules = "[{\"key\":\"x-token\",\"value\":\"new\"}]";
-        String updatedRules = "{\"version\":1,\"rules\":[{\"id\":\"r1\",\"order\":0,"
+        String updatedRules = "{\"version\":2,\"groups\":[{\"id\":\"g1\",\"name\":\"OpenAI \u89c4\u5219\u7ec4\",\"order\":0,"
+                + "\"enabled\":true,\"protocols\":[\"OPENAI\"],\"templateKeys\":[\"custom\"],"
+                + "\"previewBody\":{\"temperature\":0.2},"
+                + "\"rules\":[{\"id\":\"r1\",\"order\":0,"
                 + "\"field\":\"temperature\",\"array\":false,\"conditional\":false,"
                 + "\"conditionMode\":\"all\",\"conditions\":[],"
-                + "\"operations\":[{\"type\":\"delete\"}]}]}";
+                + "\"operations\":[{\"type\":\"delete\"}]}]}]}";
 
         service.updateProvider(
                 providerId, "alpha", "renamed", "RenamedAPI", "https://new.example/v1",
@@ -162,13 +165,55 @@ class ProviderRequestTransformServiceTests {
     void invalidEditorConfigurationIsRejectedBeforeAnyDatabaseWrite() {
         assertThatThrownBy(() -> service.createProvider(
                 "invalid", "Invalid", "https://invalid.example/v1", HEADER_RULES,
-                "[\"custom\",\"base\"]", "[]", "{\"version\":2,\"rules\":[]}"))
+                "[\"custom\",\"base\"]", "[]", RULES))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("custom 模板不能与其他模板同时选择");
 
         Integer count = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM provider_config WHERE provider_key = 'invalid'", Integer.class);
         assertThat(count).isZero();
+    }
+
+    /**
+     * V1 规则集不再可写入。
+     *
+     * <p>V8.7 迁移把库里的规则一次性升成 V2；若保存路径仍接受 V1，库里就会重新混入
+     * 两种格式，而「过一遍迁移后全库同格式」正是那次迁移的目的。
+     */
+    @Test
+    void legacyV1RuleSetIsRejectedOnSave() {
+        assertThatThrownBy(() -> service.createProvider(
+                "legacy", "Legacy", "https://legacy.example/v1", HEADER_RULES,
+                TEMPLATE_KEYS, PREVIEW, "{\"version\":1,\"rules\":[]}"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("version=2");
+    }
+
+    /** 未知线路协议被白名单拦下。 */
+    @Test
+    void unknownWireProtocolInRuleGroupIsRejected() {
+        String rules = "{\"version\":2,\"groups\":[{\"id\":\"g1\",\"name\":\"g\",\"order\":0,"
+                + "\"enabled\":true,\"protocols\":[\"GEMINI\"],\"templateKeys\":[\"base\"],"
+                + "\"previewBody\":{},\"rules\":[]}]}";
+
+        assertThatThrownBy(() -> service.createProvider(
+                "bad-protocol", "Bad", "https://bad.example/v1", HEADER_RULES,
+                TEMPLATE_KEYS, PREVIEW, rules))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("不支持的线路协议");
+    }
+
+    /** 重复的规则组 ID 被拒绝 —— 前端用它做列表 key，重复会让渲染错乱。 */
+    @Test
+    void duplicateRuleGroupIdIsRejected() {
+        String group = "{\"id\":\"same\",\"name\":\"g\",\"order\":0,\"enabled\":true,"
+                + "\"protocols\":[\"OPENAI\"],\"templateKeys\":[\"base\"],\"previewBody\":{},\"rules\":[]}";
+
+        assertThatThrownBy(() -> service.createProvider(
+                "dup", "Dup", "https://dup.example/v1", HEADER_RULES,
+                TEMPLATE_KEYS, PREVIEW, "{\"version\":2,\"groups\":[" + group + "," + group + "]}"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("id 重复");
     }
 
     private void createProviderTables() {
@@ -184,6 +229,7 @@ class ProviderRequestTransformServiceTests {
                 + "body_preview_json TEXT NOT NULL CHECK (json_valid(body_preview_json)), "
                 + "body_rules_version INTEGER NOT NULL, "
                 + "body_rules_json TEXT NOT NULL CHECK (json_valid(body_rules_json)), "
+                + "body_rules_schema INTEGER NOT NULL DEFAULT 2 CHECK (body_rules_schema >= 1), "
                 + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
     }

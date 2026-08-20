@@ -1,4 +1,7 @@
-export type WireProtocol = 'OPENAI' | 'ANTHROPIC'
+import type { WireProtocol } from '@/types/protocol'
+
+/** 便于 ChunksViewer 一次导入解析器与其协议入参类型。 */
+export type { WireProtocol }
 
 export interface ChunkSegment {
   type: 'thinking' | 'content' | 'tool_calls'

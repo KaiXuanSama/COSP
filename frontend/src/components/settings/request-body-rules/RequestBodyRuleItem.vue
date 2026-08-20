@@ -6,9 +6,10 @@
  * 字段下拉选项从当前作用域的原始 JSON 动态生成。
  */
 import { computed } from 'vue'
-import { NSelect, NSwitch, NInput, NButton, NIcon } from 'naive-ui'
+import { NSelect, NSwitch, NButton, NIcon } from 'naive-ui'
 import type { FieldRule, RuleCondition, ConditionOperator } from '@/features/request-body-rules/types'
 import { createEmptyRule, createEmptyCondition } from '@/features/request-body-rules/types'
+import JsonValueInput from './JsonValueInput.vue'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
 
 const props = defineProps<{
@@ -88,25 +89,20 @@ const currentOperationType = computed({
 
 // ==================== set_value 值编辑 ====================
 
-const setValueText = computed({
-  get: () => {
-    const op = props.rule.operations[0]
-    if (!op || op.type !== 'set_value') return ''
-    return typeof op.value === 'string' ? op.value : JSON.stringify(op.value, null, 2)
-  },
-  set: (val: string) => {
-    const parsed = tryParseJson(val)
-    const newOp = { type: 'set_value' as const, value: parsed.value }
-    emit('update:rule', { ...props.rule, operations: [newOp] })
-  },
+/**
+ * 当前 set_value 操作的值。
+ *
+ * 类型档位与输入草稿都由 `JsonValueInput` 自己管，这里只负责取值与写回 ——
+ * 那些编辑态是纯粹的本地状态，放进规则只会让非法中间态污染预览与保存。
+ */
+const setValue = computed(() => {
+  const op = props.rule.operations[0]
+  return op && op.type === 'set_value' ? op.value : ''
 })
 
-const setValueError = computed(() => {
-  const op = props.rule.operations[0]
-  if (!op || op.type !== 'set_value') return ''
-  const text = typeof op.value === 'string' ? op.value : JSON.stringify(op.value)
-  return tryParseJson(text).error
-})
+function updateSetValue(value: unknown) {
+  emit('update:rule', { ...props.rule, operations: [{ type: 'set_value' as const, value }] })
+}
 
 // ==================== edit_object 嵌套规则 ====================
 
@@ -218,35 +214,17 @@ function generatePathOptions(
   return options
 }
 
-/** 条件值输入 */
-function conditionValueText(condition: RuleCondition): string {
-  if (condition.value == null) return ''
-  return typeof condition.value === 'string' ? condition.value : JSON.stringify(condition.value)
-}
-
-function updateConditionValue(index: number, text: string) {
-  const parsed = tryParseJson(text)
-  updateCondition(index, { value: parsed.value })
-}
-
-function conditionValueError(condition: RuleCondition): string {
-  if (condition.operator !== 'equals') return ''
-  const text = conditionValueText(condition)
-  return tryParseJson(text).error
+/**
+ * 写回条件比较值。
+ *
+ * 类型档位与输入草稿由 `JsonValueInput` 管理，与「设置字段值」共用同一套映射 ——
+ * 「等于 null」以前只能靠留空试出来，有了显式档位后它是可选项而非隐藏语义。
+ */
+function updateConditionValue(index: number, value: unknown) {
+  updateCondition(index, { value })
 }
 
 // ==================== 工具函数 ====================
-
-function tryParseJson(text: string): { value: unknown; error: string } {
-  const trimmed = text.trim()
-  if (!trimmed) return { value: '', error: '' }
-  try {
-    return { value: JSON.parse(trimmed), error: '' }
-  } catch {
-    // 不是合法 JSON，作为字符串处理
-    return { value: trimmed, error: '' }
-  }
-}
 
 function updateField(val: string) {
   // 从下拉选项中判断是否为数组
@@ -332,19 +310,14 @@ function updateField(val: string) {
       </div>
     </div>
 
-    <!-- set_value 值输入 -->
+    <!-- set_value 值输入：左侧类型档位，右侧取值 -->
     <div v-if="currentOperationType === 'set_value'" class="rule-value-section">
-      <label class="rule-value-label">字段值（JSON 类型安全）</label>
-      <NInput
-        :value="setValueText"
-        @update:value="setValueText = $event"
-        type="textarea"
-        :autosize="{ minRows: 1, maxRows: 6 }"
-        placeholder='如 "user" 或 0.7 或 true 或 null'
-        size="small"
-        :disabled="readonly"
+      <label class="rule-value-label">字段值</label>
+      <JsonValueInput
+        :value="setValue"
+        @update:value="updateSetValue"
+        :readonly="readonly"
       />
-      <span v-if="setValueError" class="rule-error">{{ setValueError }}</span>
     </div>
 
     <!-- 条件列表 -->
@@ -373,14 +346,13 @@ function updateField(val: string) {
           class="cond-op"
           :disabled="readonly"
         />
-        <NInput
+        <JsonValueInput
           v-if="cond.operator === 'equals'"
-          :value="conditionValueText(cond)"
+          :value="cond.value"
           @update:value="updateConditionValue(idx, $event)"
-          placeholder='比较值，如 "tool"'
-          size="small"
+          :readonly="readonly"
+          type-class="cond-value-type"
           class="cond-value"
-          :disabled="readonly"
         />
         <span v-else class="cond-value-placeholder">—</span>
         <button
@@ -564,7 +536,7 @@ function updateField(val: string) {
 
 .rule-condition-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 4px;
   margin-bottom: 2px;
 }
@@ -572,7 +544,7 @@ function updateField(val: string) {
 .cond-path {
   flex: 1 1 auto;
   width: auto;
-  min-width: 240px;
+  min-width: 200px;
 }
 
 .cond-op {
@@ -580,11 +552,21 @@ function updateField(val: string) {
   width: 90px;
 }
 
+/**
+ * 比较值区。
+ *
+ * 比原先的单输入框宽（内含类型档位 + 取值控件），故让它与路径下拉争抢剩余空间；
+ * 路径的 min-width 相应从 240 降到 200，两者在窄容器下都还能读。
+ */
 .cond-value {
-  flex: 0 1 160px;
-  width: 160px;
-  min-width: 110px;
-  max-width: 180px;
+  flex: 1 1 260px;
+  min-width: 200px;
+  max-width: 340px;
+}
+
+/** 档位下拉在条件行里收窄：这一行控件比「设置字段值」那行多一个。 */
+.cond-value :deep(.cond-value-type) {
+  width: 84px;
 }
 
 .cond-value-placeholder {
