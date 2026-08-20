@@ -2,37 +2,31 @@
 /**
  * RequestBodyRuleEditor — 请求体规则配置二级模态框。
  *
- * 顶部：左右双栏 JSON 预览（左=原始可编辑，右=转换后只读），中间箭头。
- * 下方：递归规则列表。
+ * 本组件是**规则组列表容器**：新增组、组间排序、整体应用，以及可视化 / JSON 双视图切换。
+ * 单组的预览双栏与规则列表都下沉到 `RuleGroupCard.vue`。
  *
- * 草稿语义：打开时复制父级规则，"应用"才提交，"取消"丢弃。
- * 应用后的完整编辑器状态由供应商表单统一保存并回显，并参与生产请求转换。
+ * 草稿语义：打开时深拷贝父级规则集，"应用"才提交，"取消"丢弃。
  *
- * 过渡态：数据契约已升到 V2（规则组 + 适用线路协议），但本组件界面尚未改造，
- * 因此它把编辑对象限定为首个规则组 —— 行为与 V1 时完全一致。多组卡片 UI 属后续阶段；
- * 在那之前 JSON 视图能存下多组，可视化列表只展示首组。
+ * <h2>为何是多组而不是单一规则列表</h2>
+ * 适配一个上游差异往往要好几条规则协同（改 messages、删字段、补字段），它们同进同出；
+ * 而不同线路协议（OpenAI / Anthropic）需要完全不同的规则与调试样本。
+ * 组是「一批规则 + 它们适用的线路 + 该批规则的调试样本」这个整体的自然单位。
  */
-import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
-import { NModal, NButton, NInput, NScrollbar, NSelect, useMessage } from 'naive-ui'
-import type { FieldRule, RuleGroup, RuleSetV2 } from '@/features/request-body-rules/types'
+import { computed, ref, watch } from 'vue'
+import { NButton, NInput, NModal, useMessage } from 'naive-ui'
+import type { RuleGroup, RuleSetV2 } from '@/features/request-body-rules/types'
 import { createEmptyRuleSetV2 } from '@/features/request-body-rules/types'
-import { transformWithRules } from '@/features/request-body-rules/engine'
-import {
-  MIMO_EXAMPLE_RULESET,
-} from '@/features/request-body-rules/defaultRequestBody'
-import {
-  composeRequestBodyTemplate,
-  DEFAULT_TEMPLATE_KEYS,
-  REQUEST_BODY_TEMPLATE_OPTIONS,
-} from '@/features/request-body-rules/requestBodyTemplates'
-import type { RequestBodyTemplateKey } from '@/features/request-body-rules/requestBodyTemplates'
 import type { RequestBodyEditorState } from '@/features/request-body-rules/editorState'
-import { createRuleGroup } from '@/features/request-body-rules/editorState'
-import { buildDiffTree } from '@/features/request-body-rules/diff'
+import { countRules } from '@/features/request-body-rules/editorState'
+import {
+  appendGroup,
+  moveGroup as moveGroupIn,
+  removeGroup as removeGroupIn,
+  replaceGroup,
+} from '@/features/request-body-rules/groupOperations'
 import { formatRuleSetJson, parseRuleSetJson } from '@/features/request-body-rules/ruleSetJson'
 import { migrateRuleSet } from '@/features/request-body-rules/migration'
-import RequestBodyRuleList from './RequestBodyRuleList.vue'
-import DiffJsonNode from './DiffJsonNode.vue'
+import RuleGroupCard from './RuleGroupCard.vue'
 import RequestBodyRuleHelp from './RequestBodyRuleHelp.vue'
 
 const props = defineProps<{
@@ -51,245 +45,58 @@ const message = useMessage()
 // ==================== 草稿状态 ====================
 
 const draftRuleSet = ref<RuleSetV2>(createEmptyRuleSetV2())
-const inputJsonText = ref('')
-const inputError = ref('')
-const lastValidInput = ref<unknown>(null)
 const showRuleHelp = ref(false)
-const selectedTemplateKeys = ref<RequestBodyTemplateKey[]>([...DEFAULT_TEMPLATE_KEYS])
-const rulesViewMode = ref<'visual' | 'json'>('visual')
+const viewMode = ref<'visual' | 'json'>('visual')
 const rulesJsonText = ref('')
 const rulesJsonError = ref('')
 
-/** 首个规则组的规则列表；无组时为空。 */
-const draftRules = computed<FieldRule[]>(() => draftRuleSet.value.groups[0]?.rules ?? [])
+const groups = computed(() => draftRuleSet.value.groups)
+const totalRules = computed(() => countRules(draftRuleSet.value))
 
-/** 局部更新首个规则组；组不存在时先补一个。 */
-function patchPrimaryGroup(patch: Partial<RuleGroup>) {
-  const groups = [...draftRuleSet.value.groups]
-  groups[0] = { ...(groups[0] ?? createRuleGroup(0)), ...patch }
-  draftRuleSet.value = { version: 2, groups }
-}
-
-function templateJson(keys: readonly RequestBodyTemplateKey[]): string {
-  return JSON.stringify(composeRequestBodyTemplate(keys), null, 2)
-}
-
-// 打开模态框时初始化草稿
+/**
+ * 打开时用迁移函数归一化来源。
+ *
+ * 走 `migrateRuleSet` 而非直接当 V2 用：规则集是可手工编辑的文本，父级传进来的可能是
+ * 旧导出、也可能缺字段，归一化保证卡片渲染时每个组的字段都齐备。
+ */
 watch(
   () => props.show,
   (visible) => {
-    if (visible) {
-      const source = props.modelValue.rules ?? createEmptyRuleSetV2()
-      const migrated = migrateRuleSet(JSON.parse(JSON.stringify(source)))
-      draftRuleSet.value = migrated.groups.length > 0
-        ? migrated
-        : { version: 2, groups: [createRuleGroup(0)] }
-      rulesViewMode.value = 'visual'
-      rulesJsonText.value = formatRuleSetJson(draftRuleSet.value)
-      rulesJsonError.value = ''
-      const group = draftRuleSet.value.groups[0]!
-      selectedTemplateKeys.value = [...group.templateKeys]
-      inputJsonText.value = JSON.stringify(group.previewBody, null, 2)
-      parseInput()
-    }
+    if (!visible) return
+    const source = props.modelValue.rules ?? createEmptyRuleSetV2()
+    draftRuleSet.value = migrateRuleSet(JSON.parse(JSON.stringify(source)))
+    viewMode.value = 'visual'
+    rulesJsonText.value = formatRuleSetJson(draftRuleSet.value)
+    rulesJsonError.value = ''
   },
 )
 
-// ==================== JSON 输入解析 ====================
+// ==================== 规则组操作 ====================
 
-function parseInput() {
-  const trimmed = inputJsonText.value.trim()
-  if (!trimmed) {
-    inputError.value = '输入为空'
-    return
-  }
-  try {
-    const parsed = JSON.parse(trimmed)
-    if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      inputError.value = '请求体必须是 JSON 对象'
-      return
-    }
-    lastValidInput.value = parsed
-    inputError.value = ''
-  } catch (e: any) {
-    inputError.value = `JSON 语法错误: ${e.message}`
-  }
+/**
+ * 写回单个组。
+ *
+ * 卡片是受控组件：它不持有组数据，改动一律经此回写，于是组数组始终是唯一真源。
+ * 具体的数组操作在 `features/request-body-rules/groupOperations`，那里有单测覆盖
+ * 「order 必须与下标同步」这条不显然的约束。
+ */
+function updateGroup(index: number, group: RuleGroup) {
+  draftRuleSet.value = replaceGroup(draftRuleSet.value, index, group)
 }
 
-// ==================== 高度同步：左栏 resize → 右栏跟随 ====================
-
-const leftInputRef = ref<HTMLElement | null>(null)
-const rightOutputRef = ref<HTMLElement | null>(null)
-const rightOutputHeight = ref<string>('140px')
-let resizeObserver: ResizeObserver | null = null
-
-function syncRightHeight(height: number) {
-  rightOutputHeight.value = `${height}px`
+function addGroup() {
+  draftRuleSet.value = appendGroup(draftRuleSet.value)
 }
 
-function resolveLeftDom(): HTMLElement | null {
-  const ref = leftInputRef.value as any
-  if (!ref) return null
-  return ref.$el || ref
+function moveGroup(index: number, direction: -1 | 1) {
+  draftRuleSet.value = moveGroupIn(draftRuleSet.value, index, direction)
 }
 
-// ==================== 滚动同步：左右两栏垂直滚动比例同步 ====================
-
-let isSyncingLeftToRight = false
-let isSyncingRightToLeft = false
-let leftTextarea: HTMLTextAreaElement | null = null
-let rightScrollEl: HTMLElement | null = null
-
-function findLeftTextarea(root: HTMLElement | null): HTMLTextAreaElement | null {
-  if (!root) return null
-  return root.querySelector('textarea')
+function removeGroup(index: number) {
+  draftRuleSet.value = removeGroupIn(draftRuleSet.value, index)
 }
 
-function findRightScrollEl(root: HTMLElement | null): HTMLElement | null {
-  // NScrollbar 内部用 .n-scrollbar-container 承载滚动
-  if (!root) return null
-  return root.querySelector('.n-scrollbar-container') || root.querySelector('.n-scrollbar')
-}
-
-function getScrollMetrics(el: HTMLElement): { ratio: number; max: number } {
-  const max = el.scrollHeight - el.clientHeight
-  const ratio = max > 0 ? el.scrollTop / max : 0
-  return { ratio, max }
-}
-
-function onLeftScroll() {
-  if (isSyncingRightToLeft) return
-  if (!leftTextarea || !rightScrollEl) return
-  const { ratio, max } = getScrollMetrics(leftTextarea)
-  isSyncingLeftToRight = true
-  rightScrollEl.scrollTop = ratio * max
-  requestAnimationFrame(() => {
-    isSyncingLeftToRight = false
-  })
-}
-
-function onRightScroll() {
-  if (isSyncingLeftToRight) return
-  if (!leftTextarea || !rightScrollEl) return
-  const { ratio, max } = getScrollMetrics(rightScrollEl)
-  isSyncingRightToLeft = true
-  leftTextarea.scrollTop = ratio * (leftTextarea.scrollHeight - leftTextarea.clientHeight)
-  requestAnimationFrame(() => {
-    isSyncingRightToLeft = false
-  })
-}
-
-watch(
-  () => props.show,
-  async (visible) => {
-    if (visible) {
-      await nextTick()
-      const el = resolveLeftDom()
-      if (el && typeof ResizeObserver !== 'undefined') {
-        syncRightHeight(el.getBoundingClientRect().height)
-        resizeObserver = new ResizeObserver((entries) => {
-          for (const entry of entries) {
-            const h = entry.contentRect.height
-            if (h > 0) syncRightHeight(h)
-          }
-        })
-        resizeObserver.observe(el)
-      }
-
-      // 绑定滚动同步
-      await nextTick()
-      leftTextarea = findLeftTextarea(el)
-      const rightRoot = rightOutputRef.value
-      rightScrollEl = findRightScrollEl(rightRoot)
-      if (leftTextarea) leftTextarea.addEventListener('scroll', onLeftScroll)
-      if (rightScrollEl) rightScrollEl.addEventListener('scroll', onRightScroll)
-    } else {
-      if (resizeObserver) {
-        resizeObserver.disconnect()
-        resizeObserver = null
-      }
-      if (leftTextarea) {
-        leftTextarea.removeEventListener('scroll', onLeftScroll)
-        leftTextarea = null
-      }
-      if (rightScrollEl) {
-        rightScrollEl.removeEventListener('scroll', onRightScroll)
-        rightScrollEl = null
-      }
-    }
-  },
-)
-
-onBeforeUnmount(() => {
-  if (resizeObserver) {
-    resizeObserver.disconnect()
-    resizeObserver = null
-  }
-  if (leftTextarea) {
-    leftTextarea.removeEventListener('scroll', onLeftScroll)
-  }
-  if (rightScrollEl) {
-    rightScrollEl.removeEventListener('scroll', onRightScroll)
-  }
-})
-
-watch(inputJsonText, parseInput)
-
-// ==================== 请求体显示内容组合 ====================
-
-function updateTemplateSelection(keys: RequestBodyTemplateKey[]) {
-  if (keys.includes('custom')) {
-    const structuredKeys = keys.filter((key) => key !== 'custom')
-    if (selectedTemplateKeys.value.length === 1 && selectedTemplateKeys.value[0] === 'custom') {
-      selectedTemplateKeys.value = structuredKeys
-      inputJsonText.value = templateJson(structuredKeys)
-      return
-    }
-    selectedTemplateKeys.value = ['custom']
-    return
-  }
-  selectedTemplateKeys.value = keys
-  inputJsonText.value = templateJson(keys)
-}
-
-function updateInputJsonText(value: string) {
-  inputJsonText.value = value
-  selectedTemplateKeys.value = ['custom']
-}
-
-// ==================== 转换预览 ====================
-
-const transformResult = computed(() => {
-  if (inputError.value || lastValidInput.value == null) {
-    return null
-  }
-  return transformWithRules(lastValidInput.value, draftRules.value)
-})
-
-const outputJsonText = computed(() => {
-  if (!transformResult.value) return ''
-  return JSON.stringify(transformResult.value.output, null, 2)
-})
-
-const diffTree = computed(() => {
-  if (inputError.value || lastValidInput.value == null || !transformResult.value) {
-    return null
-  }
-  return buildDiffTree(lastValidInput.value, transformResult.value.output)
-})
-
-const warnings = computed(() => transformResult.value?.warnings || [])
-
-// ==================== 规则编辑 ====================
-
-const scopeObject = computed<Record<string, unknown> | null>(() => {
-  if (lastValidInput.value == null || typeof lastValidInput.value !== 'object') return null
-  return lastValidInput.value as Record<string, unknown>
-})
-
-function updateRules(rules: FieldRule[]) {
-  patchPrimaryGroup({ rules })
-}
+// ==================== JSON 视图 ====================
 
 function updateRulesJson(value: string) {
   rulesJsonText.value = value
@@ -302,11 +109,11 @@ function updateRulesJson(value: string) {
   rulesJsonError.value = ''
 }
 
-function toggleRulesView() {
-  if (rulesViewMode.value === 'visual') {
+function toggleView() {
+  if (viewMode.value === 'visual') {
     rulesJsonText.value = formatRuleSetJson(draftRuleSet.value)
     rulesJsonError.value = ''
-    rulesViewMode.value = 'json'
+    viewMode.value = 'json'
     return
   }
   const parsed = parseRuleSetJson(rulesJsonText.value)
@@ -317,44 +124,7 @@ function toggleRulesView() {
   }
   draftRuleSet.value = parsed.rules
   rulesJsonError.value = ''
-  rulesViewMode.value = 'visual'
-}
-
-// ==================== 工具操作 ====================
-
-function formatJson() {
-  try {
-    const parsed = JSON.parse(inputJsonText.value)
-    inputJsonText.value = JSON.stringify(parsed, null, 2)
-    message.success('已格式化')
-  } catch {
-    message.error('JSON 语法错误，无法格式化')
-  }
-}
-
-function copyOutput() {
-  if (!outputJsonText.value) return
-  navigator.clipboard.writeText(outputJsonText.value).then(() => {
-    message.success('已复制转换结果')
-  })
-}
-
-function loadImageToolCompatibilityRules() {
-  patchPrimaryGroup({ rules: JSON.parse(JSON.stringify(MIMO_EXAMPLE_RULESET.rules)) })
-  if (rulesViewMode.value === 'json') {
-    rulesJsonText.value = formatRuleSetJson(draftRuleSet.value)
-    rulesJsonError.value = ''
-  }
-  message.success('已加载图片工具消息兼容规则')
-}
-
-function clearRules() {
-  patchPrimaryGroup({ rules: [] })
-  if (rulesViewMode.value === 'json') {
-    rulesJsonText.value = formatRuleSetJson(draftRuleSet.value)
-    rulesJsonError.value = ''
-  }
-  message.info('已清空规则')
+  viewMode.value = 'visual'
 }
 
 // ==================== 应用/取消 ====================
@@ -364,18 +134,11 @@ function handleApply() {
     message.error('请先修正规则 JSON')
     return
   }
-  if (inputError.value || lastValidInput.value == null) {
-    message.error('请先修正预览请求体 JSON')
-    return
-  }
-  patchPrimaryGroup({
-    templateKeys: [...selectedTemplateKeys.value],
-    previewBody: JSON.parse(JSON.stringify(lastValidInput.value)),
-  })
-  const ruleCount = draftRules.value.length
   emit('apply', { rules: JSON.parse(JSON.stringify(draftRuleSet.value)) })
   emit('update:show', false)
-  message.success(`已应用 ${ruleCount} 条规则，请保存供应商配置以完成落库`)
+  message.success(
+    `已应用 ${groups.value.length} 个规则组、${totalRules.value} 条规则，请保存供应商配置以完成落库`,
+  )
 }
 
 function handleCancel() {
@@ -395,127 +158,66 @@ function handleCancel() {
     :mask-closable="true"
   >
     <div class="editor-notice">
-      左侧模板和预览仅用于编辑、验证规则效果；实际请求体始终由 Copilot 提交，再应用已保存的规则。
+      每个规则组自带一份预览样本，仅用于编辑、验证该组规则的效果；实际请求体始终由下游客户端提交。
+      运行时按组的顺序，依次把<strong>适用当前线路</strong>的组作用于同一份请求体 —— 组间预览不串联。
     </div>
 
-    <!-- 顶部：双栏 JSON 预览 -->
-    <div class="editor-preview">
-      <!-- 左栏：原始 JSON（可编辑） -->
-      <div class="preview-panel">
-        <div class="preview-header">
-          <div class="preview-heading">
-            <span class="preview-title">请求体编辑预览</span>
-            <NSelect
-              :value="selectedTemplateKeys"
-              @update:value="updateTemplateSelection"
-              :options="REQUEST_BODY_TEMPLATE_OPTIONS"
-              multiple
-              clearable
-              max-tag-count="responsive"
-              size="small"
-              class="preview-template-select"
-              placeholder="选择显示内容"
-            />
-          </div>
-          <div class="preview-actions">
-            <NButton text size="tiny" @click="formatJson">格式化</NButton>
-          </div>
-        </div>
-        <NInput
-          ref="leftInputRef"
-          :value="inputJsonText"
-          @update:value="updateInputJsonText"
-          type="textarea"
-          :autosize="{ minRows: 3, maxRows: 30 }"
-          :resizable="true"
-          class="preview-input"
-          placeholder="在此编辑或粘贴请求体 JSON"
-        />
-        <div v-if="inputError" class="preview-error">{{ inputError }}</div>
+    <div class="editor-toolbar">
+      <div class="editor-toolbar-heading">
+        <span class="editor-toolbar-title">规则组（{{ groups.length }}）</span>
+        <button
+          type="button"
+          class="rules-help-button"
+          aria-label="查看请求体规则帮助"
+          title="查看规则帮助与实时示例"
+          @click="showRuleHelp = true"
+        >
+          ?
+        </button>
       </div>
-
-      <!-- 中间箭头 -->
-      <div class="preview-arrow">→</div>
-
-      <!-- 右栏：转换后 JSON（只读） -->
-      <div class="preview-panel">
-        <div class="preview-header">
-          <span class="preview-title">转换后请求体</span>
-          <div class="preview-actions">
-            <NButton text size="tiny" :disabled="!outputJsonText" @click="copyOutput">复制</NButton>
-          </div>
-        </div>
-        <div ref="rightOutputRef" class="preview-output-wrapper" :style="{ height: rightOutputHeight }">
-          <NScrollbar class="preview-output-scroll">
-            <div v-if="diffTree" class="preview-output-tree">
-              <DiffJsonNode :node="diffTree" :is-last="true" />
-            </div>
-            <pre v-else class="preview-output">（请先修正左侧 JSON）</pre>
-          </NScrollbar>
-        </div>
+      <div class="editor-toolbar-actions">
+        <NButton size="tiny" class="rules-action-button" @click="addGroup">新增规则组</NButton>
+        <NButton size="tiny" class="rules-action-button" @click="toggleView">
+          {{ viewMode === 'visual' ? '切换 JSON 视图' : '切换可视化视图' }}
+        </NButton>
       </div>
     </div>
 
-    <!-- 警告列表 -->
-    <div v-if="warnings.length > 0" class="editor-warnings">
-      <div class="warnings-header">执行警告（{{ warnings.length }}）</div>
-      <div v-for="(w, i) in warnings" :key="i" class="warning-item">
-        <span class="warning-path">{{ w.fieldPath || '(根)' }}</span>
-        <span class="warning-msg">{{ w.message }}</span>
+    <template v-if="viewMode === 'visual'">
+      <div v-if="groups.length === 0" class="editor-empty">
+        暂无规则组。新增一个规则组即可开始配置；不加任何组时请求体原样转发。
       </div>
-    </div>
-
-    <!-- 下方：规则列表 -->
-    <div class="editor-rules-section">
-      <div class="rules-section-header">
-        <div class="rules-section-heading">
-          <span class="rules-section-title">请求体调整规则列表</span>
-          <button
-            type="button"
-            class="rules-help-button"
-            aria-label="查看请求体规则帮助"
-            title="查看规则帮助与实时示例"
-            @click="showRuleHelp = true"
-          >
-            ?
-          </button>
-        </div>
-        <div class="rules-section-actions">
-          <NButton size="tiny" class="rules-action-button" @click="loadImageToolCompatibilityRules">
-            加载图片工具兼容规则
-          </NButton>
-          <NButton size="tiny" class="rules-action-button" @click="clearRules">清空</NButton>
-          <NButton size="tiny" class="rules-action-button" @click="toggleRulesView">
-            {{ rulesViewMode === 'visual' ? '切换 JSON 视图' : '切换可视化视图' }}
-          </NButton>
-        </div>
-      </div>
-      <RequestBodyRuleList
-        v-if="rulesViewMode === 'visual'"
-        :rules="draftRules"
-        :scope-object="scopeObject"
-        :depth="0"
-        @update:rules="updateRules"
+      <RuleGroupCard
+        v-for="(group, index) in groups"
+        :key="group.id"
+        :group="group"
+        :index="index"
+        :total="groups.length"
+        @update:group="updateGroup(index, $event)"
+        @move="moveGroup(index, $event)"
+        @remove="removeGroup(index)"
       />
-      <div v-else class="rules-json-editor">
-        <NInput
-          :value="rulesJsonText"
-          @update:value="updateRulesJson"
-          type="textarea"
-          :autosize="{ minRows: 12, maxRows: 30 }"
-          :resizable="true"
-          class="rules-json-input"
-          placeholder="在此编辑或粘贴完整的规则集 JSON"
-        />
-        <div v-if="rulesJsonError" class="rules-json-error">{{ rulesJsonError }}</div>
-        <div v-else class="rules-json-valid">JSON 已同步到转换预览</div>
-      </div>
+    </template>
+
+    <div v-else class="rules-json-editor">
+      <NInput
+        :value="rulesJsonText"
+        @update:value="updateRulesJson"
+        type="textarea"
+        :autosize="{ minRows: 16, maxRows: 34 }"
+        :resizable="true"
+        class="rules-json-input"
+        placeholder="在此编辑或粘贴完整的规则集 JSON"
+      />
+      <div v-if="rulesJsonError" class="rules-json-error">{{ rulesJsonError }}</div>
+      <div v-else class="rules-json-valid">JSON 已同步到可视化视图</div>
     </div>
 
-    <!-- 底部操作 -->
     <template #footer>
       <div class="editor-footer">
-        <span class="editor-footer-count">当前规则：{{ draftRules.length }} 条</span>
+        <span class="editor-footer-count">
+          共 {{ groups.length }} 个规则组、{{ totalRules }} 条规则
+        </span>
         <div class="editor-footer-actions">
           <NButton @click="handleCancel">取消</NButton>
           <NButton type="primary" :disabled="Boolean(rulesJsonError)" @click="handleApply">应用</NButton>
@@ -531,185 +233,48 @@ function handleCancel() {
 @use '@/styles/variables' as *;
 
 .editor-notice {
-  display: flex;
-  align-items: center;
-  gap: $space-xs;
   padding: $space-xs $space-sm;
   background: rgba($accent, 0.08);
   border: 1px solid rgba($accent, 0.2);
   border-radius: $radius;
   font-size: 12px;
-  color: $text-muted;
-  margin-bottom: $space-sm;
-}
-
-.editor-notice-icon {
-  color: $accent;
-  font-size: 14px;
-}
-
-.editor-preview {
-  display: flex;
-  align-items: stretch;
-  gap: $space-sm;
-  margin-bottom: $space-sm;
-}
-
-.preview-panel {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.preview-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 4px;
-}
-
-.preview-heading {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: $space-sm;
-}
-
-.preview-template-select {
-  width: 260px;
-  min-width: 160px;
-}
-
-.preview-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: $text-primary;
-}
-
-.preview-actions {
-  display: flex;
-  gap: $space-xs;
-}
-
-.preview-input {
-  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
-  font-size: 12px;
-  height: 140px;
-  min-height: 100px;
-  max-height: 600px;
-  border: 1px solid $border;
-  border-radius: $radius;
-  resize: vertical;
-  overflow: auto;
-}
-
-.preview-input :deep(.n-input) {
-  height: 100%;
-}
-
-.preview-input :deep(.n-input-wrapper),
-.preview-input :deep(.n-input__textarea) {
-  height: 100%;
-}
-
-.preview-input :deep(.n-input__textarea-el) {
-  height: 100%;
-}
-
-.preview-output-wrapper {
-  border: 1px solid $border;
-  border-radius: $radius;
-  background: $bg;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-
-.preview-output-scroll {
-  flex: 1;
-  height: 100%;
-}
-
-.preview-output {
-  margin: 0;
-  padding: $space-sm;
-  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
-  font-size: 12px;
   line-height: 1.6;
   color: $text-muted;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.preview-output-tree {
-  padding: $space-sm;
-  color: $text-muted;
-}
-
-.preview-error {
-  color: $danger;
-  font-size: 12px;
-  margin-top: 4px;
-}
-
-.preview-arrow {
-  display: flex;
-  align-items: center;
-  font-size: 24px;
-  color: $accent;
-  flex-shrink: 0;
-}
-
-.editor-warnings {
-  margin-bottom: $space-sm;
-  padding: $space-xs $space-sm;
-  background: rgba($warning, 0.08);
-  border: 1px solid rgba($warning, 0.2);
-  border-radius: $radius;
-}
-
-.warnings-header {
-  font-size: 12px;
-  font-weight: 600;
-  color: $warning;
-  margin-bottom: 4px;
-}
-
-.warning-item {
-  display: flex;
-  gap: $space-xs;
-  font-size: 11px;
-  color: $text-muted;
-}
-
-.warning-path {
-  font-family: monospace;
-  color: $accent;
-  flex-shrink: 0;
-}
-
-.editor-rules-section {
   margin-bottom: $space-sm;
 }
 
-.rules-section-header {
+.editor-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: $space-xs;
+  margin-bottom: $space-sm;
 }
 
-.rules-section-heading {
+.editor-toolbar-heading {
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-.rules-section-title {
+.editor-toolbar-title {
   font-size: 14px;
   font-weight: 600;
   color: $text-primary;
+}
+
+.editor-toolbar-actions {
+  display: flex;
+  gap: $space-xs;
+}
+
+.editor-empty {
+  padding: $space-md;
+  border: 1px dashed $border;
+  border-radius: $radius;
+  text-align: center;
+  font-size: 12px;
+  color: $text-muted;
+  margin-bottom: $space-sm;
 }
 
 .rules-help-button {
@@ -742,26 +307,21 @@ function handleCancel() {
   outline-offset: 2px;
 }
 
-.rules-section-actions {
-  display: flex;
-  gap: $space-xs;
-}
-
 .rules-action-button {
   --n-height: 24px !important;
   --n-padding: 0 9px !important;
   --n-border: 1px solid rgba(194, 122, 62, 0.3) !important;
   --n-border-hover: 1px solid rgba(194, 122, 62, 0.58) !important;
-  --n-border-pressed: 1px solid $accent !important;
+  --n-border-pressed: 1px solid #{$accent} !important;
   --n-border-focus: 1px solid rgba(194, 122, 62, 0.58) !important;
   --n-color: rgba(194, 122, 62, 0.07) !important;
   --n-color-hover: rgba(194, 122, 62, 0.13) !important;
   --n-color-pressed: rgba(194, 122, 62, 0.18) !important;
   --n-color-focus: rgba(194, 122, 62, 0.13) !important;
-  --n-text-color: $text-secondary !important;
-  --n-text-color-hover: $accent !important;
-  --n-text-color-pressed: $accent !important;
-  --n-text-color-focus: $accent !important;
+  --n-text-color: #{$text-body} !important;
+  --n-text-color-hover: #{$accent} !important;
+  --n-text-color-pressed: #{$accent} !important;
+  --n-text-color-focus: #{$accent} !important;
   --n-border-radius: 6px !important;
   font-size: 11px;
 }
@@ -773,7 +333,7 @@ function handleCancel() {
 }
 
 .rules-json-input {
-  min-height: 260px;
+  min-height: 300px;
   border: 1px solid $border;
   border-radius: $radius;
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
@@ -807,18 +367,5 @@ function handleCancel() {
 .editor-footer-actions {
   display: flex;
   gap: $space-xs;
-}
-
-/* 窄屏：纵向排列 */
-@media (max-width: 768px) {
-  .editor-preview {
-    flex-direction: column;
-  }
-
-  .preview-arrow {
-    transform: rotate(90deg);
-    justify-content: center;
-    padding: $space-xs 0;
-  }
 }
 </style>

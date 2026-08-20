@@ -1033,8 +1033,8 @@ function removeModel(index: number) {
             </n-button>
           </div>
           <div class="advanced-empty" style="cursor: pointer;" @click="showRequestBodyRuleEditor = true">
-            已配置 {{ countRules(requestBodyEditorState.rules) }} 条规则
-            <span class="request-body-rules-hint">（保存后作用于 Copilot 实际请求）</span>
+            已配置 {{ requestBodyEditorState.rules.groups.length }} 个规则组、{{ countRules(requestBodyEditorState.rules) }} 条规则
+            <span class="request-body-rules-hint">（保存后按线路作用于实际请求）</span>
           </div>
         </div>
       </div>
