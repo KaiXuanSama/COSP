@@ -327,9 +327,7 @@ public final class RequestBodyRuleEngine {
             if (actual.size() != expected.size()) {
                 return false;
             }
-            var fields = actual.fields();
-            while (fields.hasNext()) {
-                var field = fields.next();
+            for (var field : actual.properties()) {
                 JsonNode counterpart = expected.get(field.getKey());
                 if (counterpart == null || !jsonEquals(field.getValue(), counterpart)) {
                     return false;
