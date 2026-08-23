@@ -97,11 +97,11 @@ class OpenAiControllerTests {
     List<ProviderConfigRow> activeProviders = new ArrayList<>();
 
     activeProviders.add(new ProviderConfigRow(
-          1, "mimo", "MiMo", true, "", null,
+          1, "mimo", "MiMo", true, "", "[\"OPENAI\",\"ANTHROPIC\"]", "", null,
             List.of(new ProviderModelRow(1, 1, "mimo-v2.5-pro", true, 0, 128000, false, false, "Medium", 0))
     ));
     activeProviders.add(new ProviderConfigRow(
-          2, "deepseek", "DeepSeek", true, "", null,
+          2, "deepseek", "DeepSeek", true, "", "[\"OPENAI\",\"ANTHROPIC\"]", "", null,
             List.of(new ProviderModelRow(2, 2, "deepseek-v4-flash", true, 0, 128000, false, false, "Medium", 0))
     ));
 

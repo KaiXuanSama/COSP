@@ -442,17 +442,22 @@ public class GenericAnthropicChatService {
      *
      * <p>原先的乐观规则会把尾部 {@code /v1} 剥掉（{@code .../v1 → ...}），再接
      * {@code /messages}；对 tokenrhythm 实测得到站点根路径的 405，而其 Anthropic
-     * 端点实际是 {@code POST /v1/messages}。因此全局规则改为完整保留数据库中的路径，
+     * 端点实际是 {@code POST /v1/messages}。因此规则改为完整保留数据库中的路径，
      * 只做已有的尾斜杠归一化。
      *
-     * <p>TODO 当前仍是全局猜测，不是按供应商特化：已有 Base URL 带 {@code /v1} 的供应商
-     * 统一走 {@code /v1/messages}，若将来某个中转站确实把 Anthropic 端点暴露在根路径
-     * {@code /messages}，它会得到 404 / 405。待验证更多供应商后，应在
-     * {@code provider_config} 增加独立的 Anthropic Base URL 或端点路径配置，
-     * 由用户显式决定而非继续在代码里猜。
+     * <h2>V8.8 起地址来源可由用户指定</h2>
+     * 取值来自 {@link ProviderRuntimeConfiguration#resolveAnthropicBaseUrl()}：优先用
+     * {@code provider_config.anthropic_base_url}，未配置时回退到 {@code base_url}
+     * （即 V8.8 之前的行为）。
+     *
+     * <p>之所以要独立成列而不是继续从 OpenAI 地址推导：中转站把 Anthropic 端点摆在哪里
+     * 是不可预测的 —— 有的在 {@code /v1/messages}，有的在根路径，有的换了子域名。
+     * 任何全局推导规则都只是对某一批供应商成立，遇到不符合的就是「配了却调不通」，
+     * 而用户从界面上看不出代码在背后做了什么拼接，无从排查。给出一列让他显式声明，
+     * 猜错的可能性归零。
      */
-    private String normalizeAnthropicBaseUrl(String baseUrl) {
-        return providerRequestHeaderService.normalizeBaseUrl(baseUrl);
+    private String normalizeAnthropicBaseUrl(ProviderRuntimeConfiguration provider) {
+        return providerRequestHeaderService.normalizeBaseUrl(provider.resolveAnthropicBaseUrl());
     }
 
     /**
@@ -471,7 +476,7 @@ public class GenericAnthropicChatService {
                                      ProviderRuntimeConfiguration provider,
                                      HttpHeaders downstreamHeaders, boolean stream) {
         String apiKey = provider.apiKey();
-        String normalizedUrl = normalizeAnthropicBaseUrl(provider.baseUrl());
+        String normalizedUrl = normalizeAnthropicBaseUrl(provider);
         HttpClient capturingHttpClient = httpClient.doAfterRequest((request, connection) -> {
             HttpHeaders transportHeaders = new HttpHeaders();
             request.requestHeaders().forEach(entry ->

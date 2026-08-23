@@ -36,6 +36,15 @@ public class ProviderAdminService {
      */
     static final String EMPTY_PROVIDER_KEY_ERROR = "供应商名称需包含至少一个英文字母或数字，用于生成路由标识";
 
+    /**
+     * 可声明的线路协议白名单。
+     *
+     * <p>与 {@link ProviderRequestTransformService} 里规则组的同名白名单同理：校验的是
+     * <strong>外部输入的字符串</strong>，用 {@code WireProtocol.valueOf} 会把非法值变成异常控制流，
+     * 而这里要的是「集合包含判断 + 统一错误消息」。
+     */
+    private static final Set<String> SUPPORTED_PROTOCOLS = Set.of("OPENAI", "ANTHROPIC");
+
     private final ProviderConfigRepository providerConfigRepository;
     private final ProviderApiKeyRepository providerApiKeyRepository;
     private final ProviderRequestTransformRepository providerRequestTransformRepository;
@@ -90,8 +99,56 @@ public class ProviderAdminService {
             providerConfigRepository.saveProviderConfigWithModels(providerKey, value(form, "baseUrl", "").trim(),
                     parseApiKeyInputs(value(form, "apiKeys", "[]").trim(), value(form, "activeKeyUuid", "").trim()),
                     parseModels(form));
+            try {
+                providerConfigRepository.updateProviderProtocols(providerKey,
+                        parseSupportedProtocols(form.getFirst("supportedProtocolsJson")),
+                        form.getFirst("anthropicBaseUrl") == null
+                                ? null : form.getFirst("anthropicBaseUrl").trim());
+            } catch (IllegalArgumentException exception) {
+                return Outcome.badRequest(exception.getMessage());
+            }
             return Outcome.ok(Map.of("ok", true));
         }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 校验并规范化协议集合表单值。
+     *
+     * <p>返回 {@code null} 表示<strong>表单没带这个字段</strong>，交由仓储保留原值；
+     * 而非「清成空集」。当前管理后台前端尚未提交该字段，若把缺失当清空，
+     * 任何一次普通的供应商编辑都会把协议支持抹平，而空集会让该供应商的全部调用被拒。
+     *
+     * <p>空串与空白同样视为「未提供」—— 表单里一个未填的隐藏域发出来就是空串，
+     * 把它读成「用户声明了什么」是错的。确实要表达空集就传字面的 {@code []}。
+     *
+     * @throws IllegalArgumentException 不是 JSON 字符串数组，或含未知协议名
+     */
+    private String parseSupportedProtocols(String rawJson) {
+        if (rawJson == null || rawJson.isBlank()) {
+            return null;
+        }
+        JsonNode parsed;
+        try {
+            parsed = objectMapper.readTree(rawJson);
+        } catch (Exception exception) {
+            throw new IllegalArgumentException("协议支持配置不是合法 JSON");
+        }
+        if (!parsed.isArray()) {
+            throw new IllegalArgumentException("协议支持配置必须是数组");
+        }
+        Set<String> normalized = new TreeSet<>();
+        for (JsonNode element : parsed) {
+            String name = element.isTextual() ? element.asText().trim().toUpperCase() : "";
+            if (!SUPPORTED_PROTOCOLS.contains(name)) {
+                throw new IllegalArgumentException("不支持的线路协议: " + element.asText());
+            }
+            normalized.add(name);
+        }
+        try {
+            return objectMapper.writeValueAsString(normalized);
+        } catch (Exception exception) {
+            throw new IllegalArgumentException("协议支持配置序列化失败");
+        }
     }
 
     public Mono<Outcome> addProvider(MultiValueMap<String, String> form) {
@@ -152,6 +209,11 @@ public class ProviderAdminService {
         view.put("displayName", provider.displayName());
         view.put("enabled", provider.enabled());
         view.put("baseUrl", provider.baseUrl());
+        // 协议支持以数组而非 JSON 字符串形式返回：前端拿到就能直接绑多选控件，
+        // 不必再做一次 JSON.parse 并处理它可能失败。规则集那几个字段保持字符串是因为它们
+        // 在前端也以字符串形式回传，而协议集合没有这个对称需求。
+        view.put("supportedProtocols", parseProtocolsForView(provider.supportedProtocolsJson()));
+        view.put("anthropicBaseUrl", provider.anthropicBaseUrl() == null ? "" : provider.anthropicBaseUrl());
         view.put("updatedAt", provider.updatedAt());
         view.put("models", provider.models());
         view.put("apiKeys", buildMaskedApiKeys(provider.id()));
@@ -164,6 +226,36 @@ public class ProviderAdminService {
         transformView.put("bodyRulesJson", transform == null ? ProviderRequestTransformService.EMPTY_BODY_RULES_JSON : transform.bodyRulesJson());
         view.put("requestTransform", transformView);
         return view;
+    }
+
+    /**
+     * 把协议集合 JSON 解成供前端直接使用的列表。
+     *
+     * <p>解不开时回退到两种协议都有，与
+     * {@code ProviderProtocolSupport} 的宽容口径保持一致 —— 否则会出现「界面上看不到勾选，
+     * 实际却两条线路都能跑」这种说不通的状态。显式的空数组仍如实返回空列表。
+     */
+    private List<String> parseProtocolsForView(String supportedProtocolsJson) {
+        List<String> fallback = List.of("OPENAI", "ANTHROPIC");
+        if (supportedProtocolsJson == null || supportedProtocolsJson.isBlank()) {
+            return fallback;
+        }
+        try {
+            JsonNode parsed = objectMapper.readTree(supportedProtocolsJson);
+            if (!parsed.isArray()) {
+                return fallback;
+            }
+            List<String> protocols = new ArrayList<>();
+            for (JsonNode element : parsed) {
+                String name = element.isTextual() ? element.asText().trim().toUpperCase() : "";
+                if (SUPPORTED_PROTOCOLS.contains(name) && !protocols.contains(name)) {
+                    protocols.add(name);
+                }
+            }
+            return protocols;
+        } catch (Exception exception) {
+            return fallback;
+        }
     }
 
     private List<Map<String, Object>> buildMaskedApiKeys(int providerId) {

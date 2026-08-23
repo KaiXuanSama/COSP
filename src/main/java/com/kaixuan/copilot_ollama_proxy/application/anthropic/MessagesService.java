@@ -66,7 +66,7 @@ public class MessagesService {
         //  合成出来的形状，而非上游原生响应）。
         if (decision.translationNeeded()) {
             return Mono.error(new ProtocolTranslationNotSupportedException(
-                    decision.downstreamProtocol(), decision.upstreamProtocol()));
+                    route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
         }
         return anthropicChatService.messages(request, route, downstreamHeaders, requestId);
     }
@@ -89,7 +89,7 @@ public class MessagesService {
         //  源里不存在的结构，且顺序必须合法（严格客户端会校验事件序列）。
         if (decision.translationNeeded()) {
             return Flux.error(new ProtocolTranslationNotSupportedException(
-                    decision.downstreamProtocol(), decision.upstreamProtocol()));
+                    route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
         }
         return anthropicChatService.messagesStream(request, route, downstreamHeaders, requestId);
     }

@@ -32,6 +32,9 @@ class ProviderConfigRepositoryQueryTests {
         jdbcTemplate.execute("CREATE TABLE provider_config ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0, "
                 + "base_url TEXT NOT NULL DEFAULT '', "
+                + "supported_protocols TEXT NOT NULL DEFAULT '[\"OPENAI\",\"ANTHROPIC\"]' "
+                + "CHECK (json_valid(supported_protocols)), "
+                + "anthropic_base_url TEXT NOT NULL DEFAULT '', "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         jdbcTemplate.execute("CREATE TABLE provider_model ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, "

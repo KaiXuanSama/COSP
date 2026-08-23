@@ -37,7 +37,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final double V8_4_VERSION = 8.4;
     private static final double V8_5_VERSION = 8.5;
     private static final double V8_6_VERSION = 8.6;
-    private static final double CURRENT_SCHEMA_VERSION = 8.7;
+    private static final double V8_7_VERSION = 8.7;
+    private static final double CURRENT_SCHEMA_VERSION = 8.8;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -60,6 +61,15 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final String EMPTY_BODY_RULES_JSON_V2 = "{\"version\":2,\"groups\":[]}";
     /** 当前请求体规则集的协议版本，与 {@code body_rules_version} 列取值一致。 */
     private static final int CURRENT_BODY_RULES_VERSION = 2;
+    /**
+     * V8.8 为存量供应商回填的协议支持集合。
+     *
+     * <p>回填成「两种都支持」而非「只支持 OpenAI」：迁移不得改变存量运行时行为。
+     * V8.8 之前 {@code ProviderProtocolSupport} 对所有供应商一律返回全集，
+     * 若这里收窄成 OpenAI，正在使用 Anthropic 线路的供应商会在升级瞬间全部失效。
+     * 收窄是用户的决定，不是迁移的决定 —— 前端新建表单可以只默认勾 OpenAI。
+     */
+    private static final String DEFAULT_SUPPORTED_PROTOCOLS_JSON = "[\"OPENAI\",\"ANTHROPIC\"]";
 
     private final JdbcTemplate jdbcTemplate;
     private final TransactionTemplate transactionTemplate;
@@ -154,8 +164,10 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         this::migrateToV85AddPayloadTrimmedFlag),
                 new MigrationStep(V8_6_VERSION, "调用日志记录上下游线路协议",
                         this::migrateToV86AddCallLogProtocols),
-                new MigrationStep(CURRENT_SCHEMA_VERSION, "请求体规则升级为按线路分组",
-                        this::migrateToV87RuleGroups));
+                new MigrationStep(V8_7_VERSION, "请求体规则升级为按线路分组",
+                        this::migrateToV87RuleGroups),
+                new MigrationStep(CURRENT_SCHEMA_VERSION, "供应商声明支持的线路协议与 Anthropic 端点",
+                        this::migrateToV88ProviderProtocols));
     }
 
     private List<MigrationStep> baselineMigrations() {
@@ -189,7 +201,9 @@ public class SchemaMigrationRunner implements ApplicationRunner {
             && columnExists("api_call_log", "payload_trimmed")
             && columnExists("api_call_log", "downstream_protocol")
             && columnExists("api_call_log", "upstream_protocol")
-            && columnExists("provider_request_transform", "body_rules_schema");
+            && columnExists("provider_request_transform", "body_rules_schema")
+            && columnExists("provider_config", "supported_protocols")
+            && columnExists("provider_config", "anthropic_base_url");
     }
 
     /**
@@ -203,7 +217,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         + "description = excluded.description, "
                         + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
                     CURRENT_SCHEMA_VERSION,
-                    "V8.7 架构基线：统一供应商实现、token 用量表、日志载荷瘦身与线路协议、请求体规则分组"));
+                    "V8.8 架构基线：统一供应商实现、token 用量表、日志载荷瘦身与线路协议、"
+                            + "请求体规则分组、供应商协议支持与 Anthropic 端点"));
         log.info("[SchemaMigration] 已建立 V{} 架构基线", CURRENT_SCHEMA_VERSION);
     }
 
@@ -660,7 +675,53 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
         jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
                 + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
-                CURRENT_SCHEMA_VERSION, "V8.7 增量迁移：请求体规则升级为按线路分组");
+                V8_7_VERSION, "V8.7 增量迁移：请求体规则升级为按线路分组");
+    }
+
+    /**
+     * V8.8：供应商显式声明支持的线路协议，并可为 Anthropic 配置独立端点。
+     *
+     * <h2>为何要落库，而不是继续乐观假设</h2>
+     * V8.8 之前 {@code ProviderProtocolSupport} 对所有供应商返回「两种都支持」，代价是
+     * 下游打 {@code /v1/messages}、而供应商实际只有 OpenAI 端点时，失败发生在上游侧 ——
+     * 日志里是一个上游 404，看起来像上游故障。落库后这类请求被提前拦下，原因明确。
+     *
+     * <h2>为何 Anthropic 端点要独立成列</h2>
+     * 原先由 {@code base_url} 拼 {@code /messages} 得到端点，这对「Base URL 恰好带 /v1」
+     * 的供应商成立，但中转站把 Anthropic 端点摆在哪里是不可预测的。继续在代码里猜，
+     * 结果是「配了却调不通」且无从排查；给出一列让用户显式声明，猜错的可能性归零。
+     *
+     * <h2>两个回填口径不同，都是刻意的</h2>
+     * <ul>
+     *   <li>协议集合回填<strong>全集</strong>（{@link #DEFAULT_SUPPORTED_PROTOCOLS_JSON}）：
+     *       与升级前的乐观假设完全一致，因此升级不改变任何供应商的可用性。</li>
+     *   <li>Anthropic 端点回填 {@code base_url} 的<strong>原值</strong>：升级前的行为正是
+     *       「用 base_url 拼 /messages」，照抄原值才能让这一行为在新的读取路径下保持不变。
+     *       留空同样会回退到 base_url，但显式写入让用户在界面上能直接看到当前生效的地址，
+     *       而不是一个空输入框加一句「留空则复用」—— 后者要理解回退规则才能读懂。</li>
+     * </ul>
+     *
+     * <p>回填只针对 NULL 与空串：{@code ALTER TABLE ADD COLUMN} 会把已有行填成默认值，
+     * 而重跑迁移时不该覆盖用户此后改过的配置。
+     */
+    private void migrateToV88ProviderProtocols() {
+        if (tableExists("provider_config")) {
+            addColumnIfNotExists("provider_config", "supported_protocols",
+                    "TEXT NOT NULL DEFAULT '" + DEFAULT_SUPPORTED_PROTOCOLS_JSON + "' "
+                            + "CHECK (json_valid(supported_protocols))");
+            addColumnIfNotExists("provider_config", "anthropic_base_url", "TEXT NOT NULL DEFAULT ''");
+            jdbcTemplate.update("UPDATE provider_config SET supported_protocols = ? "
+                    + "WHERE supported_protocols IS NULL OR trim(supported_protocols) = ''",
+                    DEFAULT_SUPPORTED_PROTOCOLS_JSON);
+            if (columnExists("provider_config", "base_url")) {
+                jdbcTemplate.update("UPDATE provider_config SET anthropic_base_url = base_url "
+                        + "WHERE (anthropic_base_url IS NULL OR trim(anthropic_base_url) = '') "
+                        + "AND base_url IS NOT NULL AND trim(base_url) <> ''");
+            }
+        }
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+                CURRENT_SCHEMA_VERSION, "V8.8 增量迁移：供应商声明支持的线路协议与 Anthropic 端点");
     }
 
     /**

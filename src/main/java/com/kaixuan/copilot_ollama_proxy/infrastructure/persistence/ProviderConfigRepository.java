@@ -66,6 +66,39 @@ public class ProviderConfigRepository {
     }
 
     /**
+     * 更新供应商的线路协议配置（支持的协议集合与 Anthropic 独立端点）。
+     *
+     * <p><strong>两个参数都按「null 表示不改」处理</strong>，而非「null 表示清空」。
+     * 协议配置目前只由后端接口写入，管理后台表单尚未提交这两个字段；若按「未提供即清空」
+     * 处理，任何一次普通的供应商编辑都会把用户配好的协议支持抹平，而这个字段一旦被清成
+     * 空数组，该供应商的所有调用都会被调度器拒绝 —— 一次无关的保存造成全面不可用，
+     * 是最难联想到成因的那类故障。
+     *
+     * @param providerKey             供应商标识
+     * @param supportedProtocolsJson  协议集合 JSON 字符串数组；null 表示保留原值
+     * @param anthropicBaseUrl        Anthropic 独立端点；null 表示保留原值，空串表示回退到 base_url
+     */
+    public void updateProviderProtocols(String providerKey, String supportedProtocolsJson,
+                                        String anthropicBaseUrl) {
+        if (supportedProtocolsJson == null && anthropicBaseUrl == null) {
+            return;
+        }
+        List<Object> arguments = new ArrayList<>();
+        StringBuilder sql = new StringBuilder("UPDATE provider_config SET ");
+        if (supportedProtocolsJson != null) {
+            sql.append("supported_protocols = ?, ");
+            arguments.add(supportedProtocolsJson);
+        }
+        if (anthropicBaseUrl != null) {
+            sql.append("anthropic_base_url = ?, ");
+            arguments.add(anthropicBaseUrl);
+        }
+        sql.append("updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?");
+        arguments.add(providerKey);
+        jdbcTemplate.update(sql.toString(), arguments.toArray());
+    }
+
+    /**
      * 仅更新服务商的 base_url，不修改 enabled 状态，也不涉及 API Key。
      * 如果指定的 providerKey 不存在，则自动插入一条新记录（enabled = 0）。
      * @return 对应的 provider_config.id
@@ -174,7 +207,8 @@ public class ProviderConfigRepository {
     }
 
     private List<ProviderConfigRow> loadProvidersWithModels(String providerKey, boolean activeOnly, boolean enabledModelsOnly) {
-        StringBuilder sql = new StringBuilder("SELECT pc.id, pc.provider_key, pc.display_name, pc.enabled, pc.base_url, pc.updated_at,")
+        StringBuilder sql = new StringBuilder("SELECT pc.id, pc.provider_key, pc.display_name, pc.enabled, pc.base_url,")
+                .append(" pc.supported_protocols, pc.anthropic_base_url, pc.updated_at,")
                 .append(" pm.id AS model_id, pm.provider_id AS model_provider_id, pm.model_name, pm.enabled AS model_enabled,")
                 .append(" pm.context_size, pm.max_output_tokens, pm.caps_tools, pm.caps_vision, pm.reasoning_effort, pm.sort_order")
                 .append(" FROM provider_config pc")
@@ -206,6 +240,8 @@ public class ProviderConfigRepository {
                     resolveDisplayName(providerKeyValue, (String) row.get("display_name")),
                     ((Number) row.get("enabled")).intValue() == 1,
                     (String) row.get("base_url"),
+                    (String) row.get("supported_protocols"),
+                    (String) row.get("anthropic_base_url"),
                     (String) row.get("updated_at")
             ));
 
@@ -242,6 +278,8 @@ public class ProviderConfigRepository {
                     provider.displayName,
                     provider.enabled,
                     provider.baseUrl,
+                    provider.supportedProtocolsJson,
+                    provider.anthropicBaseUrl,
                     provider.updatedAt,
                     provider.models
             ));
@@ -295,16 +333,21 @@ public class ProviderConfigRepository {
         private final String displayName;
         private final boolean enabled;
         private final String baseUrl;
+        private final String supportedProtocolsJson;
+        private final String anthropicBaseUrl;
         private final String updatedAt;
         private final List<ProviderModelRow> models = new ArrayList<>();
 
         private MutableProviderConfig(int id, String providerKey, String displayName, boolean enabled, String baseUrl,
+                                      String supportedProtocolsJson, String anthropicBaseUrl,
                                       String updatedAt) {
             this.id = id;
             this.providerKey = providerKey;
             this.displayName = displayName;
             this.enabled = enabled;
             this.baseUrl = baseUrl;
+            this.supportedProtocolsJson = supportedProtocolsJson;
+            this.anthropicBaseUrl = anthropicBaseUrl;
             this.updatedAt = updatedAt;
         }
     }

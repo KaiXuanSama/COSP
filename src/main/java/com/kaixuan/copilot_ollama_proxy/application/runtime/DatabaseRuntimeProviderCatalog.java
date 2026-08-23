@@ -46,7 +46,9 @@ public class DatabaseRuntimeProviderCatalog implements RuntimeProviderCatalog {
                 source.models().stream().map(this::toModel).toList(),
                 transform != null ? transform.headerRulesJson() : "[]",
                 transform != null ? transform.bodyRulesJson()
-                        : ProviderRequestTransformService.EMPTY_BODY_RULES_JSON
+                        : ProviderRequestTransformService.EMPTY_BODY_RULES_JSON,
+                source.supportedProtocolsJson(),
+                source.anthropicBaseUrl() != null ? source.anthropicBaseUrl() : ""
         );
     }
 

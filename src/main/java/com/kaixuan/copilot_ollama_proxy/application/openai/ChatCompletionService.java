@@ -67,9 +67,10 @@ public class ChatCompletionService {
         // TODO 跨协议翻译尚未实现，此处直接失败。待 ProtocolTranslator 落地后，
         //  改为把翻译器套在上游服务外侧（装饰器）—— 重试、落库、usage 提取都留在被包装那层，
         //  翻译只负责报文改写，绝不能进 retryWhen 内侧。
+        //  参考实现：cc switch / sub2api / new api 已有成熟方案，不必从零推导帧映射。
         if (decision.translationNeeded()) {
             return Mono.error(new ProtocolTranslationNotSupportedException(
-                    decision.downstreamProtocol(), decision.upstreamProtocol()));
+                    route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
         }
         return genericChatService.chatCompletion(openAiRequest, route, downstreamHeaders, requestId);
     }
@@ -102,7 +103,7 @@ public class ChatCompletionService {
         //  而一个 message_delta 可能产出正文与 finish 两个 chunk。
         if (decision.translationNeeded()) {
             return Flux.error(new ProtocolTranslationNotSupportedException(
-                    decision.downstreamProtocol(), decision.upstreamProtocol()));
+                    route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
         }
         return genericChatService.chatCompletionStream(openAiRequest, route, downstreamHeaders, requestId);
     }

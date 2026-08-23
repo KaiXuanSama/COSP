@@ -56,10 +56,11 @@ public class ProtocolDispatchManager {
         }
 
         // 规则 2：下游协议不被支持，改用供应商支持的其它协议并标记需要翻译。
-        // TODO 本分支在当前的乐观假设下不可达（规则 1 恒成立），因此尚未被真实流量走过。
-        //  调用方（ChatCompletionService 等）收到 translationNeeded=true 时抛
+        // V8.8 协议支持落库后本分支可达：用户只勾了 OpenAI 而下游打 /v1/messages 就会走到这里。
+        // TODO 调用方（ChatCompletionService 等）收到 translationNeeded=true 时抛
         //  ProtocolTranslationNotSupportedException；待 ProtocolTranslator 有实现后，
         //  改为按本结论挑选对应翻译器并把它套在上游服务外侧（装饰器，不进重试内侧）。
+        //  翻译实现不必从零推导：cc switch / sub2api / new api 等开源项目已有成熟的帧映射方案。
         for (WireProtocol candidate : WireProtocol.values()) {
             if (supported.contains(candidate)) {
                 log.info("供应商 {} 不支持下游协议 {}，改用 {} 并需要翻译",

@@ -19,7 +19,14 @@ CREATE TABLE IF NOT EXISTS provider_config (
     provider_key     VARCHAR(30)  NOT NULL UNIQUE,   -- 服务商标识，如 longcat / mimo
     display_name     TEXT         NOT NULL DEFAULT '', -- 前端完整显示名，独立于路由用 provider_key
     enabled          INTEGER      NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)), -- 是否启用（0=禁用，1=启用）
-    base_url         TEXT         NOT NULL DEFAULT '', -- API 基础 URL
+    base_url         TEXT         NOT NULL DEFAULT '', -- OpenAI 协议的 API 基础 URL
+    -- 该供应商支持的线路协议集合（JSON 字符串数组，元素取值同 WireProtocol 枚举名）。
+    -- 空数组表示「一种都不支持」，是显式的非法配置：调度器会明确报错而非静默回退。
+    supported_protocols TEXT      NOT NULL DEFAULT '["OPENAI","ANTHROPIC"]' CHECK (json_valid(supported_protocols)),
+    -- Anthropic 协议的独立 API 基础 URL；为空时回退到 base_url。
+    -- 独立成列而非从 base_url 推导：中转站的 Anthropic 端点位置不可预测（有的在 /v1/messages，
+    -- 有的在根路径），继续猜只会让「配了却调不通」这类问题无从排查。
+    anthropic_base_url  TEXT      NOT NULL DEFAULT '',
     updated_at       TEXT         NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
 );
 

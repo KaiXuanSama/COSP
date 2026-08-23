@@ -145,6 +145,8 @@ class SchemaMigrationRunnerTests {
         assertThat(tableExists(jdbcTemplate, "api_call_usage")).isTrue();
         assertThat(indexExists(jdbcTemplate, "idx_api_call_usage_created")).isTrue();
         assertThat(columnNames(jdbcTemplate, "api_call_log")).contains("payload_trimmed");
+        assertThat(columnNames(jdbcTemplate, "provider_config"))
+                .contains("supported_protocols", "anthropic_base_url");
     }
 
     @Test
@@ -582,6 +584,106 @@ class SchemaMigrationRunnerTests {
         assertThat(columnNames(jdbcTemplate, "provider_request_transform")).contains("body_rules_schema");
     }
 
+    // ==================== V8.8：供应商协议支持与 Anthropic 端点 ====================
+
+    /**
+     * V8.7 库升到 V8.8：两列补齐，存量供应商回填「两种协议都支持」且 Anthropic 端点照抄 base_url。
+     *
+     * <p>回填口径是本次迁移的核心判断：升级不得改变任何供应商的运行时行为。V8.8 之前
+     * {@code ProviderProtocolSupport} 对所有供应商返回全集、Anthropic 端点由 base_url 拼出，
+     * 所以「全集 + 照抄 base_url」正是把那份隐式行为显式化。若这里收窄成只支持 OpenAI，
+     * 正在使用 Anthropic 线路的供应商会在升级瞬间全部失效。
+     */
+    @Test
+    void v87DatabaseBackfillsBothProtocolsAndCopiesBaseUrlDuringV88Migration() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createCurrentSchema(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.7);
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, display_name, enabled, base_url) "
+                + "VALUES ('relay', 'Relay', 1, 'https://relay.example/v1')");
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, display_name, enabled, base_url) "
+                + "VALUES ('blank', 'Blank', 1, '')");
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        runner.run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+        assertThat(columnNames(jdbcTemplate, "provider_config"))
+                .contains("supported_protocols", "anthropic_base_url");
+        Map<String, Object> relay = jdbcTemplate.queryForMap(
+                "SELECT supported_protocols, anthropic_base_url FROM provider_config WHERE provider_key = 'relay'");
+        assertThat(relay.get("supported_protocols")).isEqualTo("[\"OPENAI\",\"ANTHROPIC\"]");
+        assertThat(relay.get("anthropic_base_url")).isEqualTo("https://relay.example/v1");
+        // base_url 本就为空的供应商没有可照抄的地址，保持空串即「回退到 base_url」，语义一致。
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT anthropic_base_url FROM provider_config WHERE provider_key = 'blank'", String.class))
+                .isEmpty();
+    }
+
+    /**
+     * 重跑迁移不覆盖用户此后改过的协议配置。
+     *
+     * <p>回填条件写成「仅 NULL 或空串」而不是无条件 UPDATE，就是为了这个：{@code ADD COLUMN}
+     * 已把存量行填成默认值，若回填再无条件跑一遍，任何一次重启都会把用户的选择冲掉。
+     */
+    @Test
+    void v88BackfillDoesNotOverwriteProtocolsConfiguredAfterMigration() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createCurrentSchema(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.7);
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, display_name, enabled, base_url) "
+                + "VALUES ('relay', 'Relay', 1, 'https://relay.example/v1')");
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        jdbcTemplate.update("UPDATE provider_config SET supported_protocols = '[\"OPENAI\"]', "
+                + "anthropic_base_url = 'https://anthropic.example' WHERE provider_key = 'relay'");
+        runner.run(null);
+
+        Map<String, Object> relay = jdbcTemplate.queryForMap(
+                "SELECT supported_protocols, anthropic_base_url FROM provider_config WHERE provider_key = 'relay'");
+        assertThat(relay.get("supported_protocols")).isEqualTo("[\"OPENAI\"]");
+        assertThat(relay.get("anthropic_base_url")).isEqualTo("https://anthropic.example");
+    }
+
+    /** 迁移补出的列须与 schema.sql 同样带 json_valid 约束，避免新库与升级库的约束分叉。 */
+    @Test
+    void migratedSupportedProtocolsColumnRejectsInvalidJson() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createCurrentSchema(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.7);
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "INSERT INTO provider_config (provider_key, display_name, enabled, base_url, supported_protocols) "
+                        + "VALUES ('bad', 'Bad', 1, '', 'not-json')"))
+                .isInstanceOf(DataAccessException.class);
+    }
+
+    /** 空库同样要判定成已迁移：新增列是结构性证据，与表里有没有行无关。 */
+    @Test
+    void v88MigrationIsIdempotentOnDatabaseWithoutAnyProvider() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createCurrentSchema(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.7);
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        runner.run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+        assertThat(columnNames(jdbcTemplate, "provider_config"))
+                .contains("supported_protocols", "anthropic_base_url");
+    }
+
     /**
      * V5 不覆盖已存在的请求转换配置；V8.7 只把它升格而不丢内容。
      *
@@ -724,10 +826,24 @@ class SchemaMigrationRunnerTests {
         jdbcTemplate.execute("CREATE TABLE api_call_log (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT, model_name TEXT, is_stream INTEGER NOT NULL DEFAULT 0, request_headers TEXT, request_body TEXT, response_body TEXT, chunks TEXT, duration_ms INTEGER, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')))");
     }
 
+        /**
+         * 建出 V8.7 时的 provider_config：既无 supported_protocols 也无 anthropic_base_url，
+         * 那正是 V8.8 要补的两列。
+         *
+         * <p>方法名仍叫 createCurrentSchema 而不重命名成 createV87Schema：它被十几个历史版本
+         * 的用例引用，而对那些用例而言这张表的形态只需「比它们新」即可，具体新到哪一版无关。
+         */
         private void createCurrentSchema(JdbcTemplate jdbcTemplate) {
                 jdbcTemplate.execute("CREATE TABLE provider_config (id INTEGER PRIMARY KEY AUTOINCREMENT, "
                                                                 + "provider_key TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0, "
                                 + "base_url TEXT NOT NULL DEFAULT '', updated_at TEXT)");
+        }
+
+        /** 建出 V8.7 时的 provider_request_transform（已带 body_rules_schema）。 */
+        private void createV87RequestTransformTable(JdbcTemplate jdbcTemplate) {
+                createV86RequestTransformTable(jdbcTemplate);
+                jdbcTemplate.execute("ALTER TABLE provider_request_transform ADD COLUMN body_rules_schema "
+                                + "INTEGER NOT NULL DEFAULT 2 CHECK (body_rules_schema >= 1)");
         }
 
         /**
@@ -883,6 +999,10 @@ class SchemaMigrationRunnerTests {
                 if (version >= 8.7) {
                         assertThat(columnNames(jdbcTemplate, "provider_request_transform"))
                                 .contains("body_rules_schema");
+                }
+                if (version >= 8.8) {
+                        assertThat(columnNames(jdbcTemplate, "provider_config"))
+                                .contains("supported_protocols", "anthropic_base_url");
                 }
         }
 }

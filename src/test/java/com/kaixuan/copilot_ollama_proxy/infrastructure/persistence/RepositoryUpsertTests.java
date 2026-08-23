@@ -32,6 +32,9 @@ class RepositoryUpsertTests {
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, "
                 + "display_name TEXT NOT NULL DEFAULT '', "
                 + "enabled INTEGER NOT NULL DEFAULT 0, base_url TEXT NOT NULL DEFAULT '', "
+                + "supported_protocols TEXT NOT NULL DEFAULT '[\"OPENAI\",\"ANTHROPIC\"]' "
+                + "CHECK (json_valid(supported_protocols)), "
+                + "anthropic_base_url TEXT NOT NULL DEFAULT '', "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         jdbcTemplate.execute("CREATE TABLE provider_model ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, "
@@ -96,6 +99,44 @@ class RepositoryUpsertTests {
         assertThat(row.id()).isEqualTo(providerId);
         assertThat(row.enabled()).isTrue();
         assertThat(row.baseUrl()).isEqualTo("https://new.example");
+    }
+
+    /** 协议配置写入按字段独立生效，未提供的那个保持原值。 */
+    @Test
+    void protocolUpdateWritesOnlyTheFieldsThatWereProvided() {
+        providerConfigRepository.saveProvider("mimo", true, "https://api.example");
+        providerConfigRepository.updateProviderProtocols("mimo", "[\"OPENAI\"]", "https://ant.example");
+
+        providerConfigRepository.updateProviderProtocols("mimo", null, "https://ant2.example");
+        ProviderConfigRow afterUrlOnly = providerConfigRepository.findByKey("mimo");
+        assertThat(afterUrlOnly.supportedProtocolsJson()).isEqualTo("[\"OPENAI\"]");
+        assertThat(afterUrlOnly.anthropicBaseUrl()).isEqualTo("https://ant2.example");
+
+        providerConfigRepository.updateProviderProtocols("mimo", "[\"OPENAI\",\"ANTHROPIC\"]", null);
+        ProviderConfigRow afterProtocolsOnly = providerConfigRepository.findByKey("mimo");
+        assertThat(afterProtocolsOnly.supportedProtocolsJson()).isEqualTo("[\"OPENAI\",\"ANTHROPIC\"]");
+        assertThat(afterProtocolsOnly.anthropicBaseUrl()).isEqualTo("https://ant2.example");
+    }
+
+    /**
+     * 普通的供应商配置保存不得清空协议配置。
+     *
+     * <p>管理后台前端目前不提交这两个字段，若保存路径把「未提供」当成「清空」，
+     * 一次无关的编辑就会把协议支持抹成空集，而空集会让该供应商的全部调用被拒 ——
+     * 故障现象与操作动作之间毫无联系，最难排查。
+     */
+    @Test
+    void normalConfigSaveDoesNotResetProtocolConfiguration() {
+        providerConfigRepository.saveProvider("mimo", true, "https://api.example");
+        providerConfigRepository.updateProviderProtocols("mimo", "[\"ANTHROPIC\"]", "https://ant.example");
+
+        providerConfigRepository.updateProviderConfig("mimo", "https://new.example");
+        providerConfigRepository.updateProviderProtocols("mimo", null, null);
+
+        ProviderConfigRow row = providerConfigRepository.findByKey("mimo");
+        assertThat(row.baseUrl()).isEqualTo("https://new.example");
+        assertThat(row.supportedProtocolsJson()).isEqualTo("[\"ANTHROPIC\"]");
+        assertThat(row.anthropicBaseUrl()).isEqualTo("https://ant.example");
     }
 
     @Test

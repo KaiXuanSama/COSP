@@ -96,8 +96,8 @@ class GenericAnthropicChatServiceTests {
      * {@code /v1/messages} —— 与 Anthropic 官方及 tokenrhythm 的实测端点一致。
      * 早先的乐观规则会先剥掉尾部 {@code /v1}，对 tokenrhythm 得到站点根路径的 405。
      *
-     * <p>这条用例的价值在于：将来改成按供应商读端点配置时，它会明确地失败并提醒改断言。
-     * 见服务里 {@code normalizeAnthropicBaseUrl} 的 TODO。
+     * <p>本用例里供应商未配置独立的 Anthropic 地址，因此走回退到 {@code base_url} 的路径——
+     * 它钉住的正是 V8.8 新增那列之后「不配就与以前一样」这个兼容保证。
      */
     @Test
     void baseUrlPathIsPreservedAndMessagesPathIsAppended() {
@@ -110,6 +110,39 @@ class GenericAnthropicChatServiceTests {
     @Test
     void baseUrlWithoutVersionPrefixHitsRootMessagesPath() {
         realService().exposeMessages(newRequest(), routeTo(baseUrlRoot())).block(Duration.ofSeconds(10));
+
+        assertThat(capturedPath.get()).isEqualTo("/messages");
+    }
+
+    /**
+     * 配了独立 Anthropic 地址时以它为准，{@code base_url} 不参与。
+     *
+     * <p>这是 V8.8 那一列存在的意义：中转站把 Anthropic 端点摆在哪里是不可预测的，
+     * 两个地址共用一列时只能靠代码猜，而猜错的表现是 404 / 405。
+     */
+    @Test
+    void dedicatedAnthropicBaseUrlOverridesOpenAiBaseUrl() {
+        ResolvedProviderRoute route = new ResolvedProviderRoute(
+                new ProviderRuntimeConfiguration("anthro", "https://openai.invalid/v1", "test-key",
+                        List.of(), "[]", "{\"version\":2,\"groups\":[]}",
+                        "[\"OPENAI\",\"ANTHROPIC\"]", baseUrlWithV1()),
+                "claude-x", "[anthro] claude-x");
+
+        realService().exposeMessages(newRequest(), route).block(Duration.ofSeconds(10));
+
+        assertThat(capturedPath.get()).isEqualTo("/v1/messages");
+    }
+
+    /** 独立地址可以指向与 OpenAI 完全不同的路径，而非只能换主机。 */
+    @Test
+    void dedicatedAnthropicBaseUrlMayUseADifferentPathThanOpenAi() {
+        ResolvedProviderRoute route = new ResolvedProviderRoute(
+                new ProviderRuntimeConfiguration("anthro", baseUrlWithV1(), "test-key",
+                        List.of(), "[]", "{\"version\":2,\"groups\":[]}",
+                        "[\"OPENAI\",\"ANTHROPIC\"]", baseUrlRoot()),
+                "claude-x", "[anthro] claude-x");
+
+        realService().exposeMessages(newRequest(), route).block(Duration.ofSeconds(10));
 
         assertThat(capturedPath.get()).isEqualTo("/messages");
     }
@@ -128,7 +161,7 @@ class GenericAnthropicChatServiceTests {
      * 同时发送两种认证头形态。
      *
      * <p>官方用 {@code x-api-key}，多数 OpenAI 兼容中转站沿用
-     * {@code Authorization: Bearer} —— 本阶段两个都给以兼容两类上游，见服务里的 TODO。
+     * {@code Authorization: Bearer} —— 当前两个都给以兼容两类上游，见服务里的 TODO。
      */
     @Test
     void bothAuthenticationHeaderStylesAreSent() {
