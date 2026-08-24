@@ -23,7 +23,17 @@ export interface HeaderEntry {
 
 export interface ProviderPreset {
   label: string
+  /** OpenAI 协议的请求地址。 */
   baseUrl: string
+  /**
+   * Anthropic 协议的请求地址。
+   *
+   * 未声明时视为**与 OpenAI 同源**（由 {@link toPresetFormValues} 填成 `baseUrl` 的值）。
+   * 目前没有任何预设需要单独声明它 —— 这是个乐观假设，而不是已验证的事实：
+   * 中转站把 Anthropic 端点摆在哪里不可预测，一旦发现某个预设不同源，
+   * 在它上面补一行 `anthropicBaseUrl` 即可，不必改动这里的结构。
+   */
+  anthropicBaseUrl?: string
   headers: HeaderEntry[]
   /**
    * 请求体规则集的**工厂**，而非现成对象。
@@ -124,7 +134,10 @@ export function createProviderDefaultEditorState(): RequestBodyEditorState {
 /** 应用预设后的表单初值。 */
 export interface PresetFormValues {
   displayName: string
+  /** OpenAI 协议的请求地址。 */
   baseUrl: string
+  /** Anthropic 协议的请求地址；预设未单独声明时与 {@link baseUrl} 相同。 */
+  anthropicBaseUrl: string
   headers: HeaderEntry[]
   editorState: RequestBodyEditorState
 }
@@ -133,11 +146,17 @@ export interface PresetFormValues {
  * 把预设展开成表单初值。
  *
  * 请求头逐项拷贝、规则集由工厂新造，因此表单编辑不会回写到预设常量上。
+ *
+ * <p>Anthropic 地址在预设未声明时回退为 OpenAI 地址，而不是留空：展开预设的语义是
+ * 「把一个已知可用的配置填进表单」，而两个地址同源正是当前对这些供应商的假设。
+ * 留空会产生一个微妙的错误：空字串会触发输入框的联动逻辑，于是用户选了预设后
+ * 只要碰一下 OpenAI 地址框，Anthropic 那一格就会被重写—— 看上去像预设没生效。
  */
 export function toPresetFormValues(preset: ProviderPreset): PresetFormValues {
   return {
     displayName: preset.label,
     baseUrl: preset.baseUrl,
+    anthropicBaseUrl: preset.anthropicBaseUrl ?? preset.baseUrl,
     headers: preset.headers.map(header => ({ ...header })),
     editorState: preset.createRules
       ? { rules: preset.createRules() }

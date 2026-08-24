@@ -19,6 +19,8 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderModelRow;
@@ -89,6 +91,32 @@ class OpenAiControllerTests {
         .isEqualTo("hello from mimo").jsonPath("$.choices[0].finish_reason").isEqualTo("stop")
         .jsonPath("$.usage.prompt_tokens").isEqualTo(11).jsonPath("$.usage.completion_tokens").isEqualTo(7)
         .jsonPath("$.usage.total_tokens").isEqualTo(18);
+  }
+
+  /**
+   * 供应商未声明支持 OpenAI 时给 400 并点名成因，而不是伪装成上游连接失败。
+   *
+   * <p>{@code ProtocolTranslationNotSupportedException} 不是
+   * {@code WebClientResponseException}，若不单独判定就落进 502 兜底分支、
+   * 被译成「无法连接到上游服务」—— 而上游根本没被尝试连接，那条消息会把排查方向
+   * 指向网络与上游可用性，而真正要改的是供应商的协议勾选。
+   */
+  @Test
+  void unsupportedProtocolReturnsBadRequestNamingTheRealCause() {
+    given(chatCompletionService.chatCompletion(anyMap(), anyString(),
+        org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString()))
+        .willReturn(Mono.error(new ProtocolTranslationNotSupportedException(
+            "relay-x", WireProtocol.OPENAI, WireProtocol.ANTHROPIC)));
+
+    webTestClient.post().uri("/v1/chat/completions").contentType(MediaType.APPLICATION_JSON)
+        .accept(MediaType.APPLICATION_JSON)
+        .bodyValue("{\"model\":\"m\",\"stream\":false,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
+        .exchange().expectStatus().isEqualTo(400).expectBody()
+        .jsonPath("$.error.type").isEqualTo("invalid_request_error")
+        .jsonPath("$.error.message").value(org.hamcrest.Matchers.allOf(
+            org.hamcrest.Matchers.containsString("relay-x"),
+            org.hamcrest.Matchers.containsString("OPENAI"),
+            org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接"))));
   }
 
   @Test

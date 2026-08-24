@@ -50,6 +50,18 @@ export {
 export { resolvePullModelsErrorMessage } from './errorMessage'
 
 export {
+  ANTHROPIC_ENDPOINT_SUFFIX,
+  DEFAULT_NEW_PROVIDER_PROTOCOLS,
+  OPENAI_ENDPOINT_SUFFIX,
+  describeEndpoint,
+  mirrorAnthropicBaseUrl,
+  normalizeProtocols,
+  protocolsToJson,
+  shouldMirrorOnFocus,
+  toggleProtocol,
+} from './protocolUrls'
+
+export {
   IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
   aggregatorPresets,
   allPresets,

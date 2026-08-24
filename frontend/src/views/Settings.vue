@@ -1,22 +1,32 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NSelect, NDropdown, useMessage } from 'naive-ui'
+import { NCard, NCheckbox, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NSelect, NDropdown, useMessage } from 'naive-ui'
 import ProviderModelsSection from '@/components/settings/ProviderModelsSection.vue'
 import RequestBodyRuleEditor from '@/components/settings/request-body-rules/RequestBodyRuleEditor.vue'
 import { useProviderStore, type ApiKeyEntry } from '@/stores/providers'
 import type { RequestBodyEditorState } from '@/features/request-body-rules/editorState'
 import { countRules } from '@/features/request-body-rules/editorState'
 import { migrateRuleSet } from '@/features/request-body-rules/migration'
+import { WIRE_PROTOCOL_LABELS, type WireProtocol } from '@/types/protocol'
 import {
+  ANTHROPIC_ENDPOINT_SUFFIX,
+  DEFAULT_NEW_PROVIDER_PROTOCOLS,
+  OPENAI_ENDPOINT_SUFFIX,
   aggregatorPresets,
   applyPullDiff,
   buildEditableModel,
   buildPullDiff,
   createProviderDefaultEditorState,
+  describeEndpoint,
   describeProviderKey,
   displayKey,
   extractModelNames,
   findPreset,
+  mirrorAnthropicBaseUrl,
+  normalizeProtocols,
+  protocolsToJson,
+  shouldMirrorOnFocus,
+  toggleProtocol,
   hasChanges as pullDiffHasChanges,
   isNewKeyValue,
   keepMeaningfulEntries,
@@ -211,7 +221,60 @@ const providerName = ref('')
 const providerAdvancedExpanded = ref(false)
 const editingProviderKey = ref<string | null>(null)
 const providerBaseUrl = ref('')
+const providerAnthropicBaseUrl = ref('')
+const providerProtocols = ref<WireProtocol[]>([...DEFAULT_NEW_PROVIDER_PROTOCOLS])
 const showPresetModal = ref(false)
+
+/**
+ * 本轮 OpenAI 地址编辑是否联动 Anthropic 地址。
+ *
+ * 在获得焦点时一次性拍快照，而不是每次输入时重新判空 —— 后者会让 Anthropic
+ * 在同步到第一个字符后就不再为空，于是永远停在一个字母上。
+ */
+const mirroringAnthropicBaseUrl = ref(false)
+
+/** 端点预览文案；地址为空时退回占位模板，不拼出只剩路径的半成品。 */
+const openAiEndpointHint = computed(() =>
+  describeEndpoint(providerBaseUrl.value, OPENAI_ENDPOINT_SUFFIX) || `\${openai_url}${OPENAI_ENDPOINT_SUFFIX}`
+)
+const anthropicEndpointHint = computed(() =>
+  describeEndpoint(providerAnthropicBaseUrl.value, ANTHROPIC_ENDPOINT_SUFFIX)
+    || `\${anthropic_url}${ANTHROPIC_ENDPOINT_SUFFIX}`
+)
+
+function isProtocolEnabled(protocol: WireProtocol) {
+  return providerProtocols.value.includes(protocol)
+}
+
+function setProtocolEnabled(protocol: WireProtocol, enabled: boolean) {
+  providerProtocols.value = toggleProtocol(providerProtocols.value, protocol, enabled)
+}
+
+/** 进入 OpenAI 地址输入框：拍下「Anthropic 当前是否为空」作为本轮编辑的联动依据。 */
+function onOpenAiBaseUrlFocus() {
+  mirroringAnthropicBaseUrl.value = shouldMirrorOnFocus(providerAnthropicBaseUrl.value)
+}
+
+function onOpenAiBaseUrlInput(value: string) {
+  providerBaseUrl.value = value
+  providerAnthropicBaseUrl.value = mirrorAnthropicBaseUrl(
+    value, mirroringAnthropicBaseUrl.value, providerAnthropicBaseUrl.value,
+  )
+}
+
+/** 用户亲自改过 Anthropic 地址，联动立即终止—— 否则他的输入会被下一次同步覆盖。 */
+function onAnthropicBaseUrlInput(value: string) {
+  providerAnthropicBaseUrl.value = value
+  mirroringAnthropicBaseUrl.value = false
+}
+
+/** 协议配置的提交载荷。 */
+function buildProtocolPayload() {
+  return {
+    supportedProtocolsJson: protocolsToJson(providerProtocols.value),
+    anthropicBaseUrl: providerAnthropicBaseUrl.value.trim(),
+  }
+}
 
 /** 宽容解析后端回传的 JSON 字段；无法解析时返回 undefined 交由迁移函数兼容。 */
 function safeParseJson(text: string | null | undefined): unknown {
@@ -266,6 +329,8 @@ function applyPreset(label: string) {
     const values = toPresetFormValues(preset)
     providerName.value = values.displayName
     providerBaseUrl.value = values.baseUrl
+    providerAnthropicBaseUrl.value = values.anthropicBaseUrl
+    mirroringAnthropicBaseUrl.value = false
     providerHeaders.value = values.headers
     requestBodyEditorState.value = values.editorState
     providerAdvancedExpanded.value = true
@@ -277,6 +342,9 @@ function applyPreset(label: string) {
 function clearProviderForm() {
   providerName.value = ''
   providerBaseUrl.value = ''
+  providerAnthropicBaseUrl.value = ''
+  providerProtocols.value = [...DEFAULT_NEW_PROVIDER_PROTOCOLS]
+  mirroringAnthropicBaseUrl.value = false
   providerHeaders.value = []
   requestBodyEditorState.value = createProviderDefaultEditorState()
   providerAdvancedExpanded.value = false
@@ -302,6 +370,9 @@ function resetProviderAdvanced() {
   providerHeaders.value = []
   requestBodyEditorState.value = createProviderDefaultEditorState()
   providerBaseUrl.value = ''
+  providerAnthropicBaseUrl.value = ''
+  providerProtocols.value = [...DEFAULT_NEW_PROVIDER_PROTOCOLS]
+  mirroringAnthropicBaseUrl.value = false
   editingProviderKey.value = null
 }
 
@@ -313,7 +384,10 @@ function openEditProviderModal(key: string) {
   providerName.value = displayName
   providerHeaders.value = []
   requestBodyEditorState.value = createProviderDefaultEditorState()
-  providerBaseUrl.value = (provider as any)?.baseUrl || ''
+  providerBaseUrl.value = provider?.baseUrl || ''
+  providerAnthropicBaseUrl.value = provider?.anthropicBaseUrl || ''
+  providerProtocols.value = normalizeProtocols(provider?.supportedProtocols)
+  mirroringAnthropicBaseUrl.value = false
   if (provider) {
     try {
       const headerRules = JSON.parse(provider.requestTransform?.headerRulesJson || '[]')
@@ -377,14 +451,21 @@ async function saveProvider() {
     message.warning(providerKeyHint.value)
     return
   }
+  // 一个协议都不勾在后端是合法入参但非法配置：调度器会拒接该供应商的所有调用。
+  // 在这里拦下比存进去再去排查「为什么全部请求都失败」便宜得多。
+  if (providerProtocols.value.length === 0) {
+    message.warning('至少需要启用一个协议')
+    return
+  }
   try {
     const headerRulesJson = buildHeaderRulesJson()
     const baseUrl = providerBaseUrl.value.trim()
     const requestTransform = buildRequestTransformPayload()
+    const protocolPayload = buildProtocolPayload()
     if (editingProviderKey.value) {
       // 编辑模式
       await providerStore.updateProvider(
-        editingProviderKey.value, name, headerRulesJson, baseUrl, requestTransform,
+        editingProviderKey.value, name, headerRulesJson, baseUrl, requestTransform, protocolPayload,
       )
       // 更新前端元数据
       const oldKey = editingProviderKey.value
@@ -401,7 +482,9 @@ async function saveProvider() {
       message.success(`已修改供应商「${name}」`)
     } else {
       // 新增模式
-      const res = await providerStore.addProvider(name, headerRulesJson, baseUrl, requestTransform)
+      const res = await providerStore.addProvider(
+        name, headerRulesJson, baseUrl, requestTransform, protocolPayload,
+      )
       providerMeta.value[res.providerKey] = {
         displayName: name,
         colorClass: 'accent',
@@ -716,12 +799,34 @@ function removeModel(index: number) {
       </div>
 
       <div v-if="providerAdvancedExpanded" class="advanced-panel">
-        <!-- API 地址 -->
+        <!-- OpenAI 请求 Url -->
         <div class="advanced-section">
           <div class="advanced-section-header">
-            <span class="advanced-section-title">API 地址</span>
+            <span class="advanced-section-title">OpenAI 请求Url</span>
+            <span class="endpoint-hint" :title="openAiEndpointHint">{{ openAiEndpointHint }}</span>
           </div>
-          <n-input v-model:value="providerBaseUrl" placeholder="https://api.example.com/v1" />
+          <div class="protocol-url-row">
+            <n-checkbox :checked="isProtocolEnabled('OPENAI')"
+              :title="`启用 ${WIRE_PROTOCOL_LABELS.OPENAI} 协议`"
+              @update:checked="setProtocolEnabled('OPENAI', $event)" />
+            <n-input :value="providerBaseUrl" placeholder="https://api.example.com/v1"
+              @update:value="onOpenAiBaseUrlInput" @focus="onOpenAiBaseUrlFocus" />
+          </div>
+        </div>
+
+        <!-- Anthropic 请求 Url -->
+        <div class="advanced-section">
+          <div class="advanced-section-header">
+            <span class="advanced-section-title">Anthropic 请求Url</span>
+            <span class="endpoint-hint" :title="anthropicEndpointHint">{{ anthropicEndpointHint }}</span>
+          </div>
+          <div class="protocol-url-row">
+            <n-checkbox :checked="isProtocolEnabled('ANTHROPIC')"
+              :title="`启用 ${WIRE_PROTOCOL_LABELS.ANTHROPIC} 协议`"
+              @update:checked="setProtocolEnabled('ANTHROPIC', $event)" />
+            <n-input :value="providerAnthropicBaseUrl" placeholder="留空则与 OpenAI 地址相同"
+              @update:value="onAnthropicBaseUrlInput" />
+          </div>
         </div>
 
         <!-- 请求头覆盖 -->
@@ -1298,6 +1403,32 @@ function removeModel(index: number) {
   font-size: 13px;
   font-weight: 600;
   color: $text-body;
+  // 标题不参与压缩：地址一长，该被截断的是右侧提示而不是「OpenAI 请求Url」。
+  flex: 0 0 auto;
+}
+
+/**
+ * 端点预览。占据标题右侧的剩余空间并单行截断 —— 完整地址由 title 属性提供，
+ * 因为它可以很长，换行会把整个区块的高度撑起来。
+ */
+.endpoint-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: $space-sm;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: $font-mono;
+  font-size: 11px;
+  color: $text-muted;
+  text-align: right;
+}
+
+/** 复选框 + 地址输入框一行。复选框宽度固定，输入框吃掉剩余空间。 */
+.protocol-url-row {
+  display: flex;
+  align-items: center;
+  gap: $space-sm;
 }
 
 .advanced-add-btn {

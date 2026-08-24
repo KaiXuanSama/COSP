@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import http from '@/api'
+import type { WireProtocol } from '@/types/protocol'
 
 export interface ProviderModel {
   modelName: string
@@ -27,7 +28,17 @@ export interface Provider {
   providerKey: string
   displayName: string
   enabled: boolean
+  /** OpenAI 协议的请求地址。 */
   baseUrl: string | null
+  /**
+   * 该供应商声明支持的线路协议。
+   *
+   * 后端以**数组**返回（不是 JSON 字符串），可直接绑控件。旧后端或读不懂时可能缺失，
+   * 由 `normalizeProtocols` 回退为两种都支持。
+   */
+  supportedProtocols?: WireProtocol[]
+  /** Anthropic 协议的独立地址；空串表示回退到 {@link baseUrl}。 */
+  anthropicBaseUrl?: string
   requestTransform?: ProviderRequestTransform
   apiKeys: ApiKeyEntry[]
   models: ProviderModel[]
@@ -46,6 +57,26 @@ export interface ProviderRequestTransformInput {
   bodyTemplateKeysJson: string
   bodyPreviewJson: string
   bodyRulesJson: string
+}
+
+/** 协议配置的提交载荷。 */
+export interface ProviderProtocolInput {
+  /** JSON 字符串数组，如 `["OPENAI"]`。 */
+  supportedProtocolsJson: string
+  /** Anthropic 独立地址；空串表示回退到 OpenAI 地址。 */
+  anthropicBaseUrl: string
+}
+
+/**
+ * 把协议配置写进表单；未传时一个字段都不发。
+ *
+ * <p>后端把「字段未出现」视为保留原值，因此不传 = 不改。绝不能为了「字段齐全」
+ * 而发空串—— 空串的 `anthropicBaseUrl` 会被当成「清空，回退到 base_url」，那是真实的修改。
+ */
+function appendProtocolFields(formData: URLSearchParams, protocols?: ProviderProtocolInput) {
+  if (!protocols) return
+  formData.append('supportedProtocolsJson', protocols.supportedProtocolsJson)
+  formData.append('anthropicBaseUrl', protocols.anthropicBaseUrl)
 }
 
 export interface GatewayAuthStatus {
@@ -171,7 +202,8 @@ export const useProviderStore = defineStore('providers', () => {
   // ==================== 供应商创建与重命名 ====================
 
   async function addProvider(displayName: string, headerRulesJson: string,
-                                   baseUrl: string, requestTransform: ProviderRequestTransformInput) {
+                                   baseUrl: string, requestTransform: ProviderRequestTransformInput,
+                                   protocols?: ProviderProtocolInput) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
     formData.append('headerRulesJson', headerRulesJson)
@@ -179,6 +211,7 @@ export const useProviderStore = defineStore('providers', () => {
     formData.append('bodyTemplateKeysJson', requestTransform.bodyTemplateKeysJson)
     formData.append('bodyPreviewJson', requestTransform.bodyPreviewJson)
     formData.append('bodyRulesJson', requestTransform.bodyRulesJson)
+    appendProtocolFields(formData, protocols)
     const res = await http.post('/providers', formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
@@ -195,7 +228,8 @@ export const useProviderStore = defineStore('providers', () => {
 
   async function updateProvider(providerKey: string, displayName: string,
                                       headerRulesJson: string, baseUrl: string,
-                                      requestTransform: ProviderRequestTransformInput) {
+                                      requestTransform: ProviderRequestTransformInput,
+                                      protocols?: ProviderProtocolInput) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
     formData.append('headerRulesJson', headerRulesJson)
@@ -203,6 +237,7 @@ export const useProviderStore = defineStore('providers', () => {
     formData.append('bodyTemplateKeysJson', requestTransform.bodyTemplateKeysJson)
     formData.append('bodyPreviewJson', requestTransform.bodyPreviewJson)
     formData.append('bodyRulesJson', requestTransform.bodyRulesJson)
+    appendProtocolFields(formData, protocols)
     await http.put(`/providers/${providerKey}`, formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })

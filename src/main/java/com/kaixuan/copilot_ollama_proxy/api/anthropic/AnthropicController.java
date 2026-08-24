@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.api.anthropic;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.anthropic.AnthropicMessagesRequest;
@@ -327,6 +328,12 @@ public class AnthropicController {
 
     /** 构造非流式错误响应，透传上游状态码与错误体。 */
     private ResponseEntity<?> errorResponse(Throwable ex, String model) {
+        ProtocolTranslationNotSupportedException protocolException = findProtocolException(ex);
+        if (protocolException != null) {
+            log.warn("协议不可用 [{}]: {}", model, protocolException.getMessage());
+            return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
+                    .body(anthropicErrorBody(protocolException.getMessage()));
+        }
         WebClientResponseException responseException = findWebResponseException(ex);
         if (responseException != null) {
             log.warn("上游 API 返回错误 [{}] {}: {}", model,
@@ -342,6 +349,11 @@ public class AnthropicController {
 
     /** 构造流式错误事件的 body，透传上游错误体。 */
     private String errorEventBody(Throwable error, String model) {
+        ProtocolTranslationNotSupportedException protocolException = findProtocolException(error);
+        if (protocolException != null) {
+            log.warn("协议不可用 [{}]: {}", model, protocolException.getMessage());
+            return anthropicErrorBody(protocolException.getMessage());
+        }
         WebClientResponseException responseException = findWebResponseException(error);
         if (responseException != null) {
             log.warn("上游 API 返回错误 [{}] {}: {}", model,
@@ -360,7 +372,20 @@ public class AnthropicController {
      * 且外层多一个 {@code "type":"error"} 标识 —— 客户端据此区分错误帧与内容帧。
      */
     private String anthropicErrorBody(String message) {
-        return "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"" + message + "\"}}";
+        // 走序列化而不拼字符串：message 可能来自异常消息（如协议不可用那条），
+        // 内容不可控；一个引号或换行就能把错误体本身变成非法 JSON，
+        // 而客户端解析失败后看到的是一个完全无关的错误。
+        Map<String, Object> error = new LinkedHashMap<>();
+        error.put("type", "api_error");
+        error.put("message", message);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("type", "error");
+        body.put("error", error);
+        try {
+            return objectMapper.writeValueAsString(body);
+        } catch (Exception exception) {
+            return "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"上游调用失败\"}}";
+        }
     }
 
     /** 判断异常是否由客户端断连引起。 */
@@ -383,6 +408,28 @@ public class AnthropicController {
         while (current != null) {
             if (current instanceof WebClientResponseException responseException) {
                 return responseException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    /**
+     * 递归解包协议不可用异常。
+     *
+     * <p>必须在解包 {@link WebClientResponseException} <strong>之前</strong>判定：
+     * 本异常代表「请求根本没发出去」，若落入兜底分支会被译成「无法连接到上游服务」，
+     * 而上游并未被尝试连接 —— 这会把排查方向指往网络与上游可用性，
+     * 而真正要改的是供应商的协议勾选。
+     *
+     * <p>用 400 而非 502：失败源于本地配置与请求的组合，不是网关上游故障，
+     * 且重试多少次结果都一样—— 5xx 会诱导客户端重试。
+     */
+    private ProtocolTranslationNotSupportedException findProtocolException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof ProtocolTranslationNotSupportedException protocolException) {
+                return protocolException;
             }
             current = current.getCause();
         }

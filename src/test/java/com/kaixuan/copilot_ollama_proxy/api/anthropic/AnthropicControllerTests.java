@@ -3,6 +3,8 @@ package com.kaixuan.copilot_ollama_proxy.api.anthropic;
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
 import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -206,6 +208,38 @@ class AnthropicControllerTests {
                 // 外层 type=error 是 Anthropic 的错误帧标识，客户端据此区分错误与内容。
                 .jsonPath("$.type").isEqualTo("error")
                 .jsonPath("$.error.type").isEqualTo("api_error");
+    }
+
+    /**
+     * 供应商未声明支持 Anthropic 时给 400 并点名成因，而不是伪装成上游连接失败。
+     *
+     * <p>{@code ProtocolTranslationNotSupportedException} 不是
+     * {@code WebClientResponseException}，若不单独判定就会落进 502 兜底分支、
+     * 被译成「无法连接到上游服务」—— 而上游根本没被尝试连接。那条消息会把排查方向
+     * 指向网络与上游可用性，而真正要改的是供应商的协议勾选。
+     *
+     * <p>状态码用 400：失败源于本地配置与请求的组合，重试多少次结果都一样，
+     * 5xx 会诱导客户端重试。
+     */
+    @Test
+    void unsupportedProtocolReturnsBadRequestNamingTheRealCause() {
+        given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                .willReturn(Mono.error(new ProtocolTranslationNotSupportedException(
+                        "relay-x", WireProtocol.ANTHROPIC, WireProtocol.OPENAI)));
+
+        webTestClient.post().uri("/v1/messages")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"model\":\"claude-x\",\"max_tokens\":100,\"messages\":[]}")
+                .exchange()
+                .expectStatus().isEqualTo(400)
+                .expectBody()
+                .jsonPath("$.type").isEqualTo("error")
+                // 消息里要能看到供应商标识与协议名，否则用户不知道该去改哪个配置。
+                .jsonPath("$.error.message").value(org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("relay-x"),
+                        org.hamcrest.Matchers.containsString("ANTHROPIC")))
+                .jsonPath("$.error.message").value(
+                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接")));
     }
 
     // ==================== 流式 ====================

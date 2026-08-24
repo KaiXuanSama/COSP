@@ -90,6 +90,24 @@ describe('toPresetFormValues', () => {
     expect(values.baseUrl).toBe('https://api.xiaomimimo.com/v1')
   })
 
+  // 两个地址同源是当前的乐观假设；回退而不留空是因为空字符串会触发输入框联动，
+  // 那会让用户选了预设后一碰 OpenAI 地址框就把 Anthropic 那一格重写掉。
+  it('预设未单独声明 Anthropic 地址时与 OpenAI 同源', () => {
+    const values = toPresetFormValues(findPreset('MiMo')!)
+    expect(values.anthropicBaseUrl).toBe('https://api.xiaomimimo.com/v1')
+  })
+
+  it('预设显式声明的 Anthropic 地址优先', () => {
+    const values = toPresetFormValues({
+      label: 'Split',
+      baseUrl: 'https://openai.example/v1',
+      anthropicBaseUrl: 'https://anthropic.example',
+      headers: [],
+    })
+    expect(values.baseUrl).toBe('https://openai.example/v1')
+    expect(values.anthropicBaseUrl).toBe('https://anthropic.example')
+  })
+
   it('请求头为拷贝，编辑不回写预设常量', () => {
     const preset = findPreset('AgentRouter')!
     const values = toPresetFormValues(preset)

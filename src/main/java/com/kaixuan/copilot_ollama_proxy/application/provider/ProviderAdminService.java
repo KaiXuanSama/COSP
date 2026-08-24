@@ -100,15 +100,27 @@ public class ProviderAdminService {
                     parseApiKeyInputs(value(form, "apiKeys", "[]").trim(), value(form, "activeKeyUuid", "").trim()),
                     parseModels(form));
             try {
-                providerConfigRepository.updateProviderProtocols(providerKey,
-                        parseSupportedProtocols(form.getFirst("supportedProtocolsJson")),
-                        form.getFirst("anthropicBaseUrl") == null
-                                ? null : form.getFirst("anthropicBaseUrl").trim());
+                saveProtocolsFromForm(providerKey, form);
             } catch (IllegalArgumentException exception) {
                 return Outcome.badRequest(exception.getMessage());
             }
             return Outcome.ok(Map.of("ok", true));
         }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 从表单写入协议配置；字段未出现时保持原值。
+     *
+     * <p>三条保存路径（新建弹窗、改名弹窗、编辑抽屉）共用这一份，因为「未提供即保留」
+     * 这个语义在任何一条路径上被写错，后果都是同一个：一次无关的保存把协议支持抹平。
+     *
+     * @throws IllegalArgumentException 协议集合不是合法的协议名数组
+     */
+    private void saveProtocolsFromForm(String providerKey, MultiValueMap<String, String> form) {
+        String rawAnthropicBaseUrl = form.getFirst("anthropicBaseUrl");
+        providerConfigRepository.updateProviderProtocols(providerKey,
+                parseSupportedProtocols(form.getFirst("supportedProtocolsJson")),
+                rawAnthropicBaseUrl == null ? null : rawAnthropicBaseUrl.trim());
     }
 
     /**
@@ -164,6 +176,7 @@ public class ProviderAdminService {
                         defaultIfBlank(form.getFirst("bodyTemplateKeysJson"), ProviderRequestTransformService.DEFAULT_TEMPLATE_KEYS_JSON),
                         defaultIfBlank(form.getFirst("bodyPreviewJson"), ProviderRequestTransformService.DEFAULT_BODY_PREVIEW_JSON),
                         defaultIfBlank(form.getFirst("bodyRulesJson"), ProviderRequestTransformService.EMPTY_BODY_RULES_JSON));
+                saveProtocolsFromForm(providerKey, form);
                 return Outcome.ok(Map.of("ok", true, "providerKey", providerKey, "displayName", name));
             } catch (IllegalArgumentException exception) {
                 return Outcome.badRequest(exception.getMessage());
@@ -195,6 +208,9 @@ public class ProviderAdminService {
                         defaultIfBlank(form.getFirst("bodyTemplateKeysJson"), ProviderRequestTransformService.DEFAULT_TEMPLATE_KEYS_JSON),
                         defaultIfBlank(form.getFirst("bodyPreviewJson"), ProviderRequestTransformService.DEFAULT_BODY_PREVIEW_JSON),
                         defaultIfBlank(form.getFirst("bodyRulesJson"), ProviderRequestTransformService.EMPTY_BODY_RULES_JSON));
+                // 用改名后的 key 定位：上一行可能刚把 provider_key 改掉，用旧 key 会匹配不到任何行
+                // 而 UPDATE 不报错，表现为协议配置静默丢失。
+                saveProtocolsFromForm(newProviderKey, form);
                 return Outcome.ok(Map.of("ok", true, "providerKey", newProviderKey, "displayName", name));
             } catch (IllegalArgumentException exception) {
                 return Outcome.badRequest(exception.getMessage());
