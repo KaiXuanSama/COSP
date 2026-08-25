@@ -108,6 +108,29 @@ export const OPENAI_ENDPOINT_SUFFIX = '/chat/completions'
 /** Anthropic Messages 的路径后缀。 */
 export const ANTHROPIC_ENDPOINT_SUFFIX = '/messages'
 
+/**
+ * 决定折叠时哪个协议的地址显示在第一行。
+ *
+ * <p>优先 OpenAI；只有它被禁用而 Anthropic 启用时，才把 Anthropic 提到首位 ——
+ * 折叠状态下只看得见第一行，若它恒为 OpenAI，一个只走 Anthropic 的供应商展开前
+ * 看到的是一个自己禁用了的地址，等于没有信息。
+ *
+ * <p><strong>调用方应在打开面板时取一次快照，而不是做成随勾选变化的 computed。</strong>
+ * 顺序实时重排会让「取消勾选 OpenAI」的瞬间两行交换位置，用户正在编辑的输入框
+ * 跳到另一行去 —— 而这个跳动没有任何信息价值，纯粹是布局规则的副作用。
+ */
+export function resolvePrimaryProtocol(protocols: readonly WireProtocol[]): WireProtocol {
+  if (!protocols.includes('OPENAI') && protocols.includes('ANTHROPIC')) {
+    return 'ANTHROPIC'
+  }
+  return 'OPENAI'
+}
+
+/** 按首行协议排出两行的显示顺序。 */
+export function orderProtocolRows(primary: WireProtocol): WireProtocol[] {
+  return primary === 'ANTHROPIC' ? ['ANTHROPIC', 'OPENAI'] : ['OPENAI', 'ANTHROPIC']
+}
+
 /** 拉取模型时选定的线路。 */
 export interface ModelPullTarget {
   protocol: WireProtocol

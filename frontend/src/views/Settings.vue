@@ -24,8 +24,10 @@ import {
   findPreset,
   mirrorAnthropicBaseUrl,
   normalizeProtocols,
+  orderProtocolRows,
   protocolsToJson,
   resolveModelPullTarget,
+  resolvePrimaryProtocol,
   shouldMirrorOnFocus,
   toggleProtocol,
   hasChanges as pullDiffHasChanges,
@@ -84,6 +86,50 @@ const editForm = ref({
  */
 const editMirroringAnthropicBaseUrl = ref(false)
 
+/**
+ * 折叠时显示在第一行的协议。
+ *
+ * <strong>打开抽屉时快照一次，之后不随勾选变化。</strong>做成 computed 会让
+ * 「取消勾选 OpenAI」的瞬间两行交换位置，用户正在编辑的输入框跳到另一行去 ——
+ * 那个跳动没有任何信息价值，纯粹是布局规则的副作用。
+ */
+const editPrimaryProtocol = ref<WireProtocol>('OPENAI')
+
+/** 第二行地址是否展开。 */
+const editUrlsExpanded = ref(false)
+
+/**
+ * 折叠动画的高度由这三个钩子按元素实际高度给出。
+ *
+ * 纯 CSS 写不好这个动画：`max-height` 的目标值只能猜，猜大了前段就空转；
+ * 而 `grid-template-rows` 的 `fr` 插值非线性，250ms 的过渡实测约 75ms 就走完了
+ * 大部分路程。读一次 `scrollHeight` 两个问题同时消失 —— 值是量出来的，
+ * 且 `px` 的插值是线性的。
+ */
+function onProtocolRowEnter(el: Element) {
+  const target = el as HTMLElement
+  // 起点由 CSS 的 enter-from 给（max-height: 0），这里只需把终点设成实际高度。
+  target.style.maxHeight = `${target.scrollHeight}px`
+}
+
+/** 动画结束后清掉内联高度，否则内容变高（如换行）时会被这个固定值裁掉。 */
+function onProtocolRowAfterEnter(el: Element) {
+  ;(el as HTMLElement).style.maxHeight = ''
+}
+
+function onProtocolRowLeave(el: Element) {
+  const target = el as HTMLElement
+  // 离场起点必须显式写成当前高度：此刻内联样式是空的，浏览器拿不到可插值的起始值，
+  // 于是会直接跳到 leave-to 的 0 —— 那就完全没有动画。
+  target.style.maxHeight = `${target.scrollHeight}px`
+  // 强制读取布局，让上面这行先生效，再由 leave-to 的 0 触发过渡。
+  void target.offsetHeight
+  target.style.maxHeight = '0'
+}
+
+/** 两行的显示顺序：首行是快照选出的协议，另一个跟在后面。 */
+const editProtocolRows = computed(() => orderProtocolRows(editPrimaryProtocol.value))
+
 function isEditProtocolEnabled(protocol: WireProtocol) {
   return editForm.value.protocols.includes(protocol)
 }
@@ -92,31 +138,51 @@ function setEditProtocolEnabled(protocol: WireProtocol, enabled: boolean) {
   editForm.value.protocols = toggleProtocol(editForm.value.protocols, protocol, enabled)
 }
 
-function onEditOpenAiBaseUrlFocus() {
-  editMirroringAnthropicBaseUrl.value = shouldMirrorOnFocus(editForm.value.anthropicBaseUrl)
+/** 按协议读地址。Anthropic 的空值不在这里回退 —— 输入框要如实显示空，占位符负责说明。 */
+function editBaseUrlOf(protocol: WireProtocol) {
+  return protocol === 'ANTHROPIC' ? editForm.value.anthropicBaseUrl : editForm.value.baseUrl
 }
 
-function onEditOpenAiBaseUrlInput(value: string) {
+function onEditBaseUrlInput(protocol: WireProtocol, value: string) {
+  if (protocol === 'ANTHROPIC') {
+    editForm.value.anthropicBaseUrl = value
+    // 用户亲手改过，联动立即终止，否则他的输入会被下一次同步覆盖。
+    editMirroringAnthropicBaseUrl.value = false
+    return
+  }
   editForm.value.baseUrl = value
   editForm.value.anthropicBaseUrl = mirrorAnthropicBaseUrl(
     value, editMirroringAnthropicBaseUrl.value, editForm.value.anthropicBaseUrl,
   )
 }
 
-function onEditAnthropicBaseUrlInput(value: string) {
-  editForm.value.anthropicBaseUrl = value
-  editMirroringAnthropicBaseUrl.value = false
+/** 进入 OpenAI 地址框时拍下「Anthropic 当前是否为空」，作为本轮编辑的联动依据。 */
+function onEditBaseUrlFocus(protocol: WireProtocol) {
+  if (protocol === 'OPENAI') {
+    editMirroringAnthropicBaseUrl.value = shouldMirrorOnFocus(editForm.value.anthropicBaseUrl)
+  }
 }
 
-/** 抽屉侧的端点预览文案。 */
-const editOpenAiEndpointHint = computed(() =>
-  describeEndpoint(editForm.value.baseUrl, OPENAI_ENDPOINT_SUFFIX)
+const PROTOCOL_ROW_LABELS: Record<WireProtocol, string> = {
+  OPENAI: 'OpenAI 请求Url',
+  ANTHROPIC: 'Anthropic 请求Url',
+}
+
+const PROTOCOL_ROW_PLACEHOLDERS: Record<WireProtocol, string> = {
+  OPENAI: 'https://api.example.com/v1',
+  ANTHROPIC: '留空则与 OpenAI 地址相同',
+}
+
+/** 端点预览文案；地址为空时退回占位模板，不拼出只剩路径的半成品。 */
+function editEndpointHintOf(protocol: WireProtocol) {
+  if (protocol === 'ANTHROPIC') {
+    return describeEndpoint(
+      editForm.value.anthropicBaseUrl || editForm.value.baseUrl, ANTHROPIC_ENDPOINT_SUFFIX,
+    ) || `\${anthropic_url}${ANTHROPIC_ENDPOINT_SUFFIX}`
+  }
+  return describeEndpoint(editForm.value.baseUrl, OPENAI_ENDPOINT_SUFFIX)
     || `\${openai_url}${OPENAI_ENDPOINT_SUFFIX}`
-)
-const editAnthropicEndpointHint = computed(() =>
-  describeEndpoint(editForm.value.anthropicBaseUrl || editForm.value.baseUrl, ANTHROPIC_ENDPOINT_SUFFIX)
-    || `\${anthropic_url}${ANTHROPIC_ENDPOINT_SUFFIX}`
-)
+}
 const pullingModels = ref(false)
 
 const pullDiffModal = ref<{ visible: boolean } & PullDiff>({
@@ -617,6 +683,9 @@ function openEditPanel(key: string) {
       models: p.models.map(toEditableModel),
     }
     editMirroringAnthropicBaseUrl.value = false
+    // 首行协议与折叠状态都以「打开时」为准：之后勾选变化不重排，避免输入框跳位。
+    editPrimaryProtocol.value = resolvePrimaryProtocol(editForm.value.protocols)
+    editUrlsExpanded.value = false
   }
 }
 
@@ -1023,30 +1092,71 @@ function removeModel(index: number) {
       class="edit-drawer">
       <n-drawer-content :title="editingKey ? providerMeta[editingKey]?.displayName : ''" closable
         @close="closeEditPanel">
-        <div class="field-group">
-          <div class="field-label-row">
-            <label class="field-label">OpenAI 请求Url</label>
-            <span class="endpoint-hint" :title="editOpenAiEndpointHint">{{ editOpenAiEndpointHint }}</span>
+        <!--
+          两个协议地址共处一个容器：左侧是地址行，右侧是展开控件。
+          折叠时只显示首行（由打开时的启用状态决定是谁），把纵向空间让给模型列表。
+        -->
+        <div class="field-group protocol-urls">
+          <div class="protocol-urls__rows">
+            <!--
+              首行与次行显式写出而非用 v-for：Transition 只接受单个子元素，
+              而只有次行参与折叠动画。两者内容结构相同但仅此两处，
+              重复的代价小于为了消重再引入一层组件与 props 传递。
+            -->
+            <div class="protocol-urls__row">
+              <div class="field-label-row">
+                <label class="field-label">{{ PROTOCOL_ROW_LABELS[editProtocolRows[0]] }}</label>
+                <span class="endpoint-hint" :title="editEndpointHintOf(editProtocolRows[0])">
+                  {{ editEndpointHintOf(editProtocolRows[0]) }}
+                </span>
+              </div>
+              <div class="protocol-url-row">
+                <n-input :value="editBaseUrlOf(editProtocolRows[0])"
+                  :placeholder="PROTOCOL_ROW_PLACEHOLDERS[editProtocolRows[0]]"
+                  @update:value="(val: string) => onEditBaseUrlInput(editProtocolRows[0], val)"
+                  @focus="onEditBaseUrlFocus(editProtocolRows[0])" />
+                <n-checkbox :checked="isEditProtocolEnabled(editProtocolRows[0])"
+                  @update:checked="setEditProtocolEnabled(editProtocolRows[0], $event)">启用</n-checkbox>
+              </div>
+            </div>
+            <!--
+              次行外面多一层 __collapse：grid-template-rows 过渡要求过渡元素自身是
+              grid 容器、且内容位于单个可裁剪的子元素中。若直接把 __row 作为过渡元素，
+              它的两个子 div（标签行、输入行）会各占一个轨道，收缩时只有第一个轨道在动。
+            -->
+            <Transition name="protocol-url-slide"
+              @enter="onProtocolRowEnter" @after-enter="onProtocolRowAfterEnter"
+              @leave="onProtocolRowLeave">
+              <div v-if="editUrlsExpanded" class="protocol-urls__collapse">
+                <div class="protocol-urls__row">
+                  <div class="field-label-row">
+                    <label class="field-label">{{ PROTOCOL_ROW_LABELS[editProtocolRows[1]] }}</label>
+                    <span class="endpoint-hint" :title="editEndpointHintOf(editProtocolRows[1])">
+                      {{ editEndpointHintOf(editProtocolRows[1]) }}
+                    </span>
+                  </div>
+                  <div class="protocol-url-row">
+                    <n-input :value="editBaseUrlOf(editProtocolRows[1])"
+                      :placeholder="PROTOCOL_ROW_PLACEHOLDERS[editProtocolRows[1]]"
+                      @update:value="(val: string) => onEditBaseUrlInput(editProtocolRows[1], val)"
+                      @focus="onEditBaseUrlFocus(editProtocolRows[1])" />
+                    <n-checkbox :checked="isEditProtocolEnabled(editProtocolRows[1])"
+                      @update:checked="setEditProtocolEnabled(editProtocolRows[1], $event)">启用</n-checkbox>
+                  </div>
+                </div>
+              </div>
+            </Transition>
           </div>
-          <div class="protocol-url-row">
-            <n-input :value="editForm.baseUrl"
-              :placeholder="editingKey ? providerMeta[editingKey]?.apiUrlPlaceholder : ''"
-              @update:value="onEditOpenAiBaseUrlInput" @focus="onEditOpenAiBaseUrlFocus" />
-            <n-checkbox :checked="isEditProtocolEnabled('OPENAI')"
-              @update:checked="setEditProtocolEnabled('OPENAI', $event)">启用</n-checkbox>
-          </div>
-        </div>
-        <div class="field-group">
-          <div class="field-label-row">
-            <label class="field-label">Anthropic 请求Url</label>
-            <span class="endpoint-hint" :title="editAnthropicEndpointHint">{{ editAnthropicEndpointHint }}</span>
-          </div>
-          <div class="protocol-url-row">
-            <n-input :value="editForm.anthropicBaseUrl" placeholder="留空则与 OpenAI 地址相同"
-              @update:value="onEditAnthropicBaseUrlInput" />
-            <n-checkbox :checked="isEditProtocolEnabled('ANTHROPIC')"
-              @update:checked="setEditProtocolEnabled('ANTHROPIC', $event)">启用</n-checkbox>
-          </div>
+          <button type="button" class="protocol-urls__toggle"
+            :class="{ 'protocol-urls__toggle--expanded': editUrlsExpanded }"
+            :title="editUrlsExpanded ? '收起另一个协议地址' : '展开另一个协议地址'"
+            :aria-expanded="editUrlsExpanded"
+            @click="editUrlsExpanded = !editUrlsExpanded">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
         </div>
         <div class="field-group">
           <label class="field-label">API Key</label>
@@ -1116,6 +1226,122 @@ function removeModel(index: number) {
   letter-spacing: 0.15em;
   text-transform: uppercase;
   color: $text-muted;
+}
+
+/**
+ * 两个协议地址的外层容器：左侧地址行，右侧展开控件。
+ *
+ * 展开按钮垂直居中于**整个容器**而非首行，因为它控制的是容器的展开状态；
+ * 若钉在首行，展开后它会停在上方，看起来像只属于第一行。
+ */
+.protocol-urls {
+  // stretch 而非 center：按钮要纵向撑满容器，居中会让它只占内容高度。
+  display: flex;
+  align-items: stretch;
+  gap: $space-sm;
+}
+
+/**
+ * 行间距由次行的 margin 而非容器的 gap 提供。
+ *
+ * gap 不参与过渡：次行被移除的那一帧，那 8px 会瞬间消失，于是平滑的高度动画末尾
+ * 总带一下突跳。改成 margin 后它能和 max-height 一起被过渡掉。
+ */
+.protocol-urls__rows {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.protocol-urls__row {
+  min-width: 0;
+}
+
+/**
+ * 次行的折叠包装层。
+ *
+ * 间距落在这一层而非行本身：它是被过渡的那个元素，`margin-top` 只有挂在这里
+ * 才能与高度一起被插值掉。
+ */
+.protocol-urls__collapse {
+  min-width: 0;
+  margin-top: $space-sm;
+}
+
+/**
+ * 展开/收起控件：纵向竖长条，高度由容器（左侧地址行）决定。
+ *
+ * 用原生 button 而非 n-button：它只是一个箭头，n-button 的内边距与最小宽度会让它
+ * 在这个位置显得过重，而这里要的是最小横向占用。
+ *
+ * <p>高度靠 `align-items: stretch` 由父容器撑开，不写死数值 —— 展开后左侧多一行，
+ * 写死的高度会与它脱节，而这个控件的语义正是「作用于整个容器」。
+ */
+.protocol-urls__toggle {
+  flex: 0 0 auto;
+  width: 20px;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid $border;
+  border-radius: 4px;
+  background: transparent;
+  color: $text-muted;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+
+  &:hover {
+    color: $accent;
+    border-color: $accent;
+    background: $accent-light;
+  }
+
+  svg {
+    transition: transform 0.25s ease;
+  }
+
+  &--expanded svg {
+    transform: rotate(180deg);
+  }
+}
+
+/**
+ * 次行的滑动淡入 / 淡出。
+ *
+ * <h2>为何高度由 JS 钩子给而不写在 CSS 里</h2>
+ * 两种纯 CSS 写法都测出了可见的不流畅：
+ * <ul>
+ *   <li>`max-height` 的目标值只能猜。实测行高 56px，写 80px 时收起的前 24px
+ *       内容并未被裁剪 —— 那一段是纯空转，元素一动不动，真正的收缩挤在后段，
+ *       观感是「先停一下再突然收起」。</li>
+ *   <li>`grid-template-rows: 1fr → 0fr` 不需猜值，但 `fr` 是比例单位，插值并非线性：
+ *       实测 250ms 的过渡在约 75ms 内就走完了绝大部分路程，变成「一下就没了」。</li>
+ * </ul>
+ * 钩子里读 `scrollHeight` 再写回 `max-height`，两个问题同时消失：值是量出来的不用猜，
+ * 而 `px` 的插值是线性的。
+ *
+ * <p>透明度与位移仍要一起过渡：只做高度像是被挤出来的、没有出现感；
+ * 只做透明度则会让下方的模型列表在展开瞬间被整块推下去，位移是突变的。
+ *
+ * <p>行间距的 `margin-top` 必须同步过渡 —— 它若在最后一帧瞬间消失，
+ * 平滑的高度动画末尾仍会带一下突跳。
+ */
+.protocol-url-slide-enter-active,
+.protocol-url-slide-leave-active {
+  overflow: hidden;
+  transition: max-height 0.25s ease, opacity 0.2s ease, transform 0.25s ease,
+    margin-top 0.25s ease;
+}
+
+.protocol-url-slide-enter-from,
+.protocol-url-slide-leave-to {
+  max-height: 0;
+  margin-top: 0;
+  opacity: 0;
+  transform: translateY(-6px);
 }
 
 /**

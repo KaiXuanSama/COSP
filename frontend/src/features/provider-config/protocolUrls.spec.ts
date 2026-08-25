@@ -7,8 +7,10 @@ import {
   describeEndpoint,
   mirrorAnthropicBaseUrl,
   normalizeProtocols,
+  orderProtocolRows,
   protocolsToJson,
   resolveModelPullTarget,
+  resolvePrimaryProtocol,
   shouldMirrorOnFocus,
   toggleProtocol,
 } from './protocolUrls'
@@ -132,6 +134,44 @@ describe('describeEndpoint', () => {
 describe('DEFAULT_NEW_PROVIDER_PROTOCOLS', () => {
   it('新建供应商默认勾选两个协议', () => {
     expect(DEFAULT_NEW_PROVIDER_PROTOCOLS).toEqual(['OPENAI', 'ANTHROPIC'])
+  })
+})
+
+describe('resolvePrimaryProtocol', () => {
+  it('两个都启用时 OpenAI 在首行', () => {
+    expect(resolvePrimaryProtocol(['OPENAI', 'ANTHROPIC'])).toBe('OPENAI')
+  })
+
+  it('只启用 OpenAI 时在首行', () => {
+    expect(resolvePrimaryProtocol(['OPENAI'])).toBe('OPENAI')
+  })
+
+  // 折叠状态下只看得见第一行，若它恒为 OpenAI，一个只走 Anthropic 的供应商
+  // 展开前看到的是一个自己禁用了的地址，等于没有信息。
+  it('OpenAI 禁用而 Anthropic 启用时把 Anthropic 提到首行', () => {
+    expect(resolvePrimaryProtocol(['ANTHROPIC'])).toBe('ANTHROPIC')
+  })
+
+  it('一个都没启用时仍给 OpenAI，不留无行可显的状态', () => {
+    expect(resolvePrimaryProtocol([])).toBe('OPENAI')
+  })
+})
+
+describe('orderProtocolRows', () => {
+  it('首行为 OpenAI 时的顺序', () => {
+    expect(orderProtocolRows('OPENAI')).toEqual(['OPENAI', 'ANTHROPIC'])
+  })
+
+  it('首行为 Anthropic 时的顺序', () => {
+    expect(orderProtocolRows('ANTHROPIC')).toEqual(['ANTHROPIC', 'OPENAI'])
+  })
+
+  it('两行总是都在，只是次序不同', () => {
+    for (const primary of ['OPENAI', 'ANTHROPIC'] as const) {
+      expect(orderProtocolRows(primary)).toHaveLength(2)
+      expect(orderProtocolRows(primary)).toContain('OPENAI')
+      expect(orderProtocolRows(primary)).toContain('ANTHROPIC')
+    }
   })
 })
 
