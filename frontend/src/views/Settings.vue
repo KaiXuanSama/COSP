@@ -25,6 +25,7 @@ import {
   mirrorAnthropicBaseUrl,
   normalizeProtocols,
   protocolsToJson,
+  resolveModelPullTarget,
   shouldMirrorOnFocus,
   toggleProtocol,
   hasChanges as pullDiffHasChanges,
@@ -68,10 +69,54 @@ const providerMeta = ref<Record<string, { displayName: string; colorClass: strin
 const editingKey = ref<string | null>(null)
 const editForm = ref({
   baseUrl: '',
+  anthropicBaseUrl: '',
+  protocols: [...DEFAULT_NEW_PROVIDER_PROTOCOLS] as WireProtocol[],
   apiKeys: [] as ApiKeyEntry[],
   activeKeyUuid: '' as string,
   models: [] as EditableModel[],
 })
+
+/**
+ * 抽屉里 OpenAI 地址编辑是否联动 Anthropic 地址。
+ *
+ * 与弹窗同一套逻辑但各自持有状态：两个界面可以先后打开，共用一个快照会让
+ * 在弹窗里的一次聚焦影响抽屉的联动行为。
+ */
+const editMirroringAnthropicBaseUrl = ref(false)
+
+function isEditProtocolEnabled(protocol: WireProtocol) {
+  return editForm.value.protocols.includes(protocol)
+}
+
+function setEditProtocolEnabled(protocol: WireProtocol, enabled: boolean) {
+  editForm.value.protocols = toggleProtocol(editForm.value.protocols, protocol, enabled)
+}
+
+function onEditOpenAiBaseUrlFocus() {
+  editMirroringAnthropicBaseUrl.value = shouldMirrorOnFocus(editForm.value.anthropicBaseUrl)
+}
+
+function onEditOpenAiBaseUrlInput(value: string) {
+  editForm.value.baseUrl = value
+  editForm.value.anthropicBaseUrl = mirrorAnthropicBaseUrl(
+    value, editMirroringAnthropicBaseUrl.value, editForm.value.anthropicBaseUrl,
+  )
+}
+
+function onEditAnthropicBaseUrlInput(value: string) {
+  editForm.value.anthropicBaseUrl = value
+  editMirroringAnthropicBaseUrl.value = false
+}
+
+/** 抽屉侧的端点预览文案。 */
+const editOpenAiEndpointHint = computed(() =>
+  describeEndpoint(editForm.value.baseUrl, OPENAI_ENDPOINT_SUFFIX)
+    || `\${openai_url}${OPENAI_ENDPOINT_SUFFIX}`
+)
+const editAnthropicEndpointHint = computed(() =>
+  describeEndpoint(editForm.value.anthropicBaseUrl || editForm.value.baseUrl, ANTHROPIC_ENDPOINT_SUFFIX)
+    || `\${anthropic_url}${ANTHROPIC_ENDPOINT_SUFFIX}`
+)
 const pullingModels = ref(false)
 
 const pullDiffModal = ref<{ visible: boolean } & PullDiff>({
@@ -565,10 +610,13 @@ function openEditPanel(key: string) {
     const activeEntry = apiKeys.find(k => k.active)
     editForm.value = {
       baseUrl: p.baseUrl || providerMeta.value[key]?.apiUrlPlaceholder || '',
+      anthropicBaseUrl: p.anthropicBaseUrl || '',
+      protocols: normalizeProtocols(p.supportedProtocols),
       apiKeys,
       activeKeyUuid: activeEntry?.keyUuid || apiKeys[0]?.keyUuid || '',
       models: p.models.map(toEditableModel),
     }
+    editMirroringAnthropicBaseUrl.value = false
   }
 }
 
@@ -579,8 +627,15 @@ function closeEditPanel() {
 async function saveEditPanel() {
   if (!editingKey.value) return
   const key = editingKey.value
+  // 与弹窗同一道拦：空集在后端是合法入参但非法配置，存进去会让该供应商的全部调用被拒。
+  if (editForm.value.protocols.length === 0) {
+    message.warning('至少需要启用一个协议')
+    return
+  }
   const params: Record<string, string> = {
     baseUrl: editForm.value.baseUrl,
+    anthropicBaseUrl: editForm.value.anthropicBaseUrl.trim(),
+    supportedProtocolsJson: protocolsToJson(editForm.value.protocols),
     apiKeys: JSON.stringify(toApiKeyPayloads(editForm.value.apiKeys)),
     activeKeyUuid: isNewKeyValue(editForm.value.activeKeyUuid) ? '' : editForm.value.activeKeyUuid,
     ...toModelFormParams(editForm.value.models),
@@ -615,10 +670,20 @@ async function pullModels() {
     return
   }
 
+  // 拉取走哪条线路由启用状态决定，不让用户选：两个协议的模型列表端点路径完全相同
+  // （都是 GET /v1/models），无法从响应判断上游以哪种协议作答，所以「选线路」没有参考依据。
+  const target = resolveModelPullTarget(
+    editForm.value.protocols, editForm.value.baseUrl, editForm.value.anthropicBaseUrl,
+  )
+  if (!target) {
+    message.warning('请先启用至少一个协议再拉取模型')
+    return
+  }
+
   pullingModels.value = true
   try {
-    const resolvedBaseUrl = editForm.value.baseUrl.trim() || providerMeta.value[providerKey]?.apiUrlPlaceholder || ''
-    const payload: Record<string, string> = { baseUrl: resolvedBaseUrl }
+    const resolvedBaseUrl = target.baseUrl || providerMeta.value[providerKey]?.apiUrlPlaceholder || ''
+    const payload: Record<string, string> = { baseUrl: resolvedBaseUrl, protocol: target.protocol }
     if (credential.apiKey) {
       payload.apiKey = credential.apiKey
     } else if (credential.keyUuid) {
@@ -959,9 +1024,29 @@ function removeModel(index: number) {
       <n-drawer-content :title="editingKey ? providerMeta[editingKey]?.displayName : ''" closable
         @close="closeEditPanel">
         <div class="field-group">
-          <label class="field-label">API 地址</label>
-          <n-input v-model:value="editForm.baseUrl"
-            :placeholder="editingKey ? providerMeta[editingKey]?.apiUrlPlaceholder : ''" />
+          <div class="field-label-row">
+            <label class="field-label">OpenAI 请求Url</label>
+            <span class="endpoint-hint" :title="editOpenAiEndpointHint">{{ editOpenAiEndpointHint }}</span>
+          </div>
+          <div class="protocol-url-row">
+            <n-input :value="editForm.baseUrl"
+              :placeholder="editingKey ? providerMeta[editingKey]?.apiUrlPlaceholder : ''"
+              @update:value="onEditOpenAiBaseUrlInput" @focus="onEditOpenAiBaseUrlFocus" />
+            <n-checkbox :checked="isEditProtocolEnabled('OPENAI')"
+              @update:checked="setEditProtocolEnabled('OPENAI', $event)">启用</n-checkbox>
+          </div>
+        </div>
+        <div class="field-group">
+          <div class="field-label-row">
+            <label class="field-label">Anthropic 请求Url</label>
+            <span class="endpoint-hint" :title="editAnthropicEndpointHint">{{ editAnthropicEndpointHint }}</span>
+          </div>
+          <div class="protocol-url-row">
+            <n-input :value="editForm.anthropicBaseUrl" placeholder="留空则与 OpenAI 地址相同"
+              @update:value="onEditAnthropicBaseUrlInput" />
+            <n-checkbox :checked="isEditProtocolEnabled('ANTHROPIC')"
+              @update:checked="setEditProtocolEnabled('ANTHROPIC', $event)">启用</n-checkbox>
+          </div>
         </div>
         <div class="field-group">
           <label class="field-label">API Key</label>
@@ -1031,6 +1116,26 @@ function removeModel(index: number) {
   letter-spacing: 0.15em;
   text-transform: uppercase;
   color: $text-muted;
+}
+
+/**
+ * 标签与端点预览同一行。
+ *
+ * 这里的标签不能沿用 `.field-label` 的 `text-transform: uppercase` —— 那会把
+ * 「OpenAI 请求Url」显示成「OPENAI 请求URL」，而协议名的大小写是它的正式写法。
+ */
+.field-label-row {
+  display: flex;
+  align-items: baseline;
+  gap: $space-sm;
+  margin-bottom: 4px;
+
+  .field-label {
+    flex: 0 0 auto;
+    margin-bottom: 0;
+    text-transform: none;
+    letter-spacing: 0.05em;
+  }
 }
 
 .provider-grid {
@@ -1424,11 +1529,26 @@ function removeModel(index: number) {
   text-align: right;
 }
 
-/** 复选框 + 地址输入框一行。复选框宽度固定，输入框吃掉剩余空间。 */
+/**
+ * 地址输入框与启用复选框同一行。
+ *
+ * 输入框吃掉剩余空间、复选框宽度由内容决定。两者的左右次序在弹窗与抽屉里不同
+ * （弹窗复选框在前、抽屉在后），由模板的元素顺序决定，这里不做假设。
+ */
 .protocol-url-row {
   display: flex;
   align-items: center;
   gap: $space-sm;
+
+  :deep(.n-input) {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  :deep(.n-checkbox) {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
 }
 
 .advanced-add-btn {

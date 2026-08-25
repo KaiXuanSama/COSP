@@ -8,6 +8,7 @@ import {
   mirrorAnthropicBaseUrl,
   normalizeProtocols,
   protocolsToJson,
+  resolveModelPullTarget,
   shouldMirrorOnFocus,
   toggleProtocol,
 } from './protocolUrls'
@@ -131,5 +132,43 @@ describe('describeEndpoint', () => {
 describe('DEFAULT_NEW_PROVIDER_PROTOCOLS', () => {
   it('新建供应商默认勾选两个协议', () => {
     expect(DEFAULT_NEW_PROVIDER_PROTOCOLS).toEqual(['OPENAI', 'ANTHROPIC'])
+  })
+})
+
+describe('resolveModelPullTarget', () => {
+  const openai = 'https://openai.example/v1'
+  const ant = 'https://ant.example/v1'
+
+  // 两个协议的模型列表端点路径完全相同，无法从响应判断上游以哪种协议作答，
+  // 所以「让用户选」没有参考价值 —— 固定优先 OpenAI 是唯一不需要用户判断的规则。
+  it('两个都启用时用 OpenAI', () => {
+    expect(resolveModelPullTarget(['OPENAI', 'ANTHROPIC'], openai, ant))
+      .toEqual({ protocol: 'OPENAI', baseUrl: openai })
+  })
+
+  it('只启用 OpenAI 时用 OpenAI', () => {
+    expect(resolveModelPullTarget(['OPENAI'], openai, ant))
+      .toEqual({ protocol: 'OPENAI', baseUrl: openai })
+  })
+
+  it('只启用 Anthropic 时退到 Anthropic 地址', () => {
+    expect(resolveModelPullTarget(['ANTHROPIC'], openai, ant))
+      .toEqual({ protocol: 'ANTHROPIC', baseUrl: ant })
+  })
+
+  // 界面上「留空则与 OpenAI 相同」是一句提示，这里必须是同一条规则，
+  // 否则用户会看到「提示说相同，但拉取报地址为空」。
+  it('只启用 Anthropic 且其地址为空时回退到 OpenAI 地址', () => {
+    expect(resolveModelPullTarget(['ANTHROPIC'], openai, '   '))
+      .toEqual({ protocol: 'ANTHROPIC', baseUrl: openai })
+  })
+
+  // 随便挑一个地址发出去，会让「没启用协议」这个真正的问题被一个上游错误掩盖。
+  it('一个都没启用时返回 null 交由调用方提示', () => {
+    expect(resolveModelPullTarget([], openai, ant)).toBeNull()
+  })
+
+  it('地址两侧空白被去掉', () => {
+    expect(resolveModelPullTarget(['OPENAI'], `  ${openai}  `, '')?.baseUrl).toBe(openai)
   })
 })

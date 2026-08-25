@@ -57,8 +57,10 @@ export {
   mirrorAnthropicBaseUrl,
   normalizeProtocols,
   protocolsToJson,
+  resolveModelPullTarget,
   shouldMirrorOnFocus,
   toggleProtocol,
+  type ModelPullTarget,
 } from './protocolUrls'
 
 export {

@@ -107,3 +107,45 @@ export const OPENAI_ENDPOINT_SUFFIX = '/chat/completions'
 
 /** Anthropic Messages 的路径后缀。 */
 export const ANTHROPIC_ENDPOINT_SUFFIX = '/messages'
+
+/** 拉取模型时选定的线路。 */
+export interface ModelPullTarget {
+  protocol: WireProtocol
+  baseUrl: string
+}
+
+/**
+ * 决定拉取模型该打哪条线路的哪个地址。
+ *
+ * <h2>为何固定优先 OpenAI</h2>
+ * 两个协议的模型列表端点**路径完全相同**（都是 `GET /v1/models`），只有请求头不同
+ * （Anthropic 必须带 `anthropic-version`）。这意味着面对同一个中转站，无法从响应
+ * 判断它到底以哪种协议回答了 —— 于是「让用户选从哪条线路拉」这个选项是没有参考价值的，
+ * 用户也没有依据去选。固定优先 OpenAI 并在它未启用时才退到 Anthropic，
+ * 是唯一不需要用户判断的规则。
+ *
+ * <p>返回 `null` 表示两个协议都没启用：调用方应提示用户先启用一个，
+ * 而不是随便挑一个地址发出去 —— 那会让「没启用协议」这个真正的问题被一个
+ * 上游错误掩盖。
+ *
+ * @param protocols        当前启用的协议集合
+ * @param openAiBaseUrl    OpenAI 地址
+ * @param anthropicBaseUrl Anthropic 地址；空串表示与 OpenAI 同源
+ */
+export function resolveModelPullTarget(
+  protocols: readonly WireProtocol[],
+  openAiBaseUrl: string,
+  anthropicBaseUrl: string,
+): ModelPullTarget | null {
+  if (protocols.includes('OPENAI')) {
+    return { protocol: 'OPENAI', baseUrl: openAiBaseUrl.trim() }
+  }
+  if (protocols.includes('ANTHROPIC')) {
+    // 空串回退到 OpenAI 地址，与后端 resolveAnthropicBaseUrl 同口径：
+    // 「留空即与 OpenAI 相同」在界面上是一句提示，在这里必须是同一条规则，
+    // 否则用户会看到「提示说相同，但拉取报地址为空」。
+    const trimmed = anthropicBaseUrl.trim()
+    return { protocol: 'ANTHROPIC', baseUrl: trimmed || openAiBaseUrl.trim() }
+  }
+  return null
+}
