@@ -211,6 +211,7 @@ function closeMenu() {
 </template>
 
 <style lang="scss" scoped>
+@use 'sass:color';
 @use '@/styles/variables' as *;
 
 /*
@@ -251,7 +252,7 @@ function closeMenu() {
 
   &.is-open {
     background: $bg;
-    border-color: darken($border, 8%);
+    border-color: color.adjust($border, $lightness: -8%);
   }
 }
 
