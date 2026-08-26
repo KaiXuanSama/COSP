@@ -6,6 +6,7 @@ import {
   toModelFormParams,
   type EditableModel,
 } from './modelPayload'
+import { parseReasoningEffortConfig } from './reasoningEffort'
 
 describe('extractModelNames', () => {
   it('解析 OpenAI 标准 { data: [{ id }] }', () => {
@@ -64,8 +65,10 @@ describe('buildEditableModel', () => {
       maxOutputTokens: '128000',
       capsTools: true,
       capsVision: false,
-      reasoningEffort: 'Medium',
     })
+    // 表单里该字段始终是序列化后的 V2 JSON，而非裸档位字符串。
+    expect(parseReasoningEffortConfig(model.reasoningEffort))
+      .toEqual({ effort: 'Medium', mode: 'passthrough' })
   })
 
   it('保留 source 中的其余字段，便于拉取时带回已有配置', () => {
@@ -82,7 +85,22 @@ describe('buildEditableModel', () => {
   })
 
   it('逗号分隔的 reasoningEffort 只取第一项', () => {
-    expect(buildEditableModel('m', { reasoningEffort: 'High,Max' }).reasoningEffort).toBe('High')
+    const model = buildEditableModel('m', { reasoningEffort: 'High,Max' })
+    expect(parseReasoningEffortConfig(model.reasoningEffort).effort).toBe('High')
+  })
+
+  // 旧的 None 表达的是「不发送」，映射到 delete 模式而非回退成默认档位 ——
+  // 否则一次纯读取会让这些模型突然开始向上游发送 medium。
+  it('旧的 None 升级为删除模式', () => {
+    const model = buildEditableModel('m', { reasoningEffort: 'None' })
+    expect(parseReasoningEffortConfig(model.reasoningEffort).mode).toBe('delete')
+  })
+
+  it('已是 V2 JSON 的值原样保留', () => {
+    const raw = '{"reasoning_effort":"max","overwrite_mode":"override"}'
+    const model = buildEditableModel('m', { reasoningEffort: raw })
+    expect(parseReasoningEffortConfig(model.reasoningEffort))
+      .toEqual({ effort: 'Max', mode: 'override' })
   })
 
   it('enabled 为 false 时不被默认值覆盖', () => {
@@ -105,7 +123,8 @@ describe('toEditableModel', () => {
     })
     expect(model.contextSize).toBe('0')
     expect(model.maxOutputTokens).toBe('128000')
-    expect(model.reasoningEffort).toBe('Medium')
+    expect(parseReasoningEffortConfig(model.reasoningEffort))
+      .toEqual({ effort: 'Medium', mode: 'passthrough' })
   })
 })
 

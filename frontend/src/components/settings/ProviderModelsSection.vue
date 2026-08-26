@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { NButton, NCheckbox, NForm, NFormItem, NInput, NPopselect, NSelect, NSwitch } from 'naive-ui'
+import { NButton, NCheckbox, NForm, NFormItem, NInput, NPopselect, NSwitch } from 'naive-ui'
+import {
+  REASONING_EFFORT_OPTIONS,
+  REASONING_OVERWRITE_MODE_HINTS,
+  REASONING_OVERWRITE_MODE_LABELS,
+  nextReasoningOverwriteMode,
+  parseReasoningEffortConfig,
+  serializeReasoningEffortConfig,
+} from '@/features/provider-config'
 
 type EditableModel = Record<string, any>
 
@@ -31,14 +39,54 @@ const maxOutputPresets = [
     { label: '64K', value: '64000' },
 ]
 
-const effortOptions = [
-    { label: 'None', value: 'None' },
-    { label: 'Low', value: 'Low' },
-    { label: 'Medium', value: 'Medium' },
-    { label: 'High', value: 'High' },
-    { label: 'Xhigh', value: 'Xhigh' },
-    { label: 'Max', value: 'Max' }
-]
+const effortOptions = REASONING_EFFORT_OPTIONS.map(option => ({ label: option, value: option }))
+
+/**
+ * 思考深度配置的读写。
+ *
+ * 模型行里 `reasoningEffort` 存的是序列化后的 JSON，而界面要分别编辑「档位」与
+ * 「注入模式」两个维度，所以每次读取都解一次、每次写入都序列化回去。
+ * 不在组件里缓存解析结果：模型数组可能被拉取模型整体替换，缓存需要跟着失效，
+ * 而这个解析是纯字符串操作，代价远低于维护一份同步状态。
+ */
+function effortConfigOf(model: EditableModel) {
+    return parseReasoningEffortConfig(model.reasoningEffort)
+}
+
+function setEffort(model: EditableModel, effort: string) {
+    model.reasoningEffort = serializeReasoningEffortConfig({ ...effortConfigOf(model), effort })
+}
+
+/** 轮转注入模式。三个模式循环切换，无需展开二级菜单。 */
+function cycleOverwriteMode(model: EditableModel) {
+    const current = effortConfigOf(model)
+    model.reasoningEffort = serializeReasoningEffortConfig({
+        ...current,
+        mode: nextReasoningOverwriteMode(current.mode),
+    })
+}
+
+function overwriteModeLabel(model: EditableModel) {
+    return REASONING_OVERWRITE_MODE_LABELS[effortConfigOf(model).mode]
+}
+
+function overwriteModeHint(model: EditableModel) {
+    return REASONING_OVERWRITE_MODE_HINTS[effortConfigOf(model).mode]
+}
+
+/**
+ * 触发器上显示的文案。
+ *
+ * 删除模式下不显示档位而显示「删除」：那个模式下档位不会被发送，
+ * 把它显示出来会让人以为它仍在生效 —— 触发器是折叠状态下唯一的信息来源，
+ * 它必须反映实际行为而非存储内容。
+ */
+function effortTriggerLabel(model: EditableModel) {
+    const config = effortConfigOf(model)
+    return config.mode === 'delete'
+        ? REASONING_OVERWRITE_MODE_LABELS.delete
+        : config.effort
+}
 </script>
 
 <template>
@@ -111,9 +159,40 @@ const effortOptions = [
                                         </n-input>
                                     </n-form-item>
                                     <n-form-item class="model-effort-item">
-                                        <n-select :options="effortOptions" size="small" :value="model.reasoningEffort"
-                                            @update:value="(val: string) => model.reasoningEffort = val"
-                                            :consistent-menu-width="false" />
+                                        <!--
+                                            用 n-popselect 的 header 插槽放模式轮转按钮，而不是把三个模式
+                                            混进选项列表：它们与档位不是同一维度的选择，混排会让用户以为
+                                            「覆写」和「Medium」是互斥的同类项。
+                                        -->
+                                        <n-popselect :options="effortOptions" size="small" trigger="click"
+                                            :value="effortConfigOf(model).effort"
+                                            @update:value="(value: string) => setEffort(model, value)">
+                                            <template #header>
+                                                <button type="button" class="effort-mode-toggle"
+                                                    :title="overwriteModeHint(model)"
+                                                    @click="cycleOverwriteMode(model)">
+                                                    <span class="effort-mode-toggle__label">{{ overwriteModeLabel(model) }}</span>
+                                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                                        stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                                        stroke-linejoin="round" aria-hidden="true">
+                                                        <path d="M17 1l4 4-4 4" />
+                                                        <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+                                                        <path d="M7 23l-4-4 4-4" />
+                                                        <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+                                                    </svg>
+                                                </button>
+                                            </template>
+                                            <button type="button" class="effort-trigger"
+                                                :class="{ 'effort-trigger--muted': effortConfigOf(model).mode === 'delete' }"
+                                                :title="overwriteModeHint(model)">
+                                                <span class="effort-trigger__text">{{ effortTriggerLabel(model) }}</span>
+                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                                    stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                                    stroke-linejoin="round" aria-hidden="true">
+                                                    <polyline points="6 9 12 15 18 9" />
+                                                </svg>
+                                            </button>
+                                        </n-popselect>
                                     </n-form-item>
                                 </div>
                             </div>
@@ -360,6 +439,91 @@ const effortOptions = [
         flex: 0;
         min-width: 0;
     }
+}
+
+/**
+ * 思考深度触发器。
+ *
+ * 自己画一个按钮而非用 n-select：现在触发器要在「删除」模式下显示模式名而非档位，
+ * n-select 的显示值与 `value` 绑死，做不到这种分离。
+ */
+.effort-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid $border;
+    border-radius: $radius;
+    background: $surface;
+    color: $text-body;
+    font-family: $font-body;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 0.15s ease, color 0.15s ease;
+
+    &:hover {
+        border-color: $accent;
+        color: $accent;
+    }
+
+    // 删除模式下档位不参与请求，触发器整体降低存在感，与「已生效的配置」区分开。
+    &--muted {
+        color: $text-muted;
+    }
+}
+
+.effort-trigger__text {
+    font-variant-numeric: tabular-nums;
+}
+
+/**
+ * 下拉菜单顶部的模式轮转按钮。
+ *
+ * <h2>为何用负 margin 而不是直接给内边距</h2>
+ * Naive UI 的 `.n-base-select-menu__header` 自带 `padding: 8px 12px` 与
+ * `border-bottom`。按钮若再叠一层自己的内边距与下边框，结果是**两条横线**
+ * （header 的 + 按钮的）和 45px 的行高 —— 比下方任何一个档位项都高出一倍。
+ *
+ * <p>那个 header 由 Naive UI 渲染，不带本组件的 scoped 属性，`:deep()` 也无法
+ * 从子元素向上选中它，所以改不了它的内边距。用负 margin 抵消掉，再由按钮自己
+ * 给内边距：按钮因此撑满整个 header 宽度，hover 高亮能到边，而分隔线只剩
+ * header 自带的那一条。
+ */
+.effort-mode-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: $space-sm;
+    // 抵消 header 的 12px 左右内边距后再补回，按钮因此横向撑满整个 header；
+    // 写 `width: 100%` 不行 —— 那是 header 内容区宽度，加上负 margin 后会短 24px。
+    width: calc(100% + 24px);
+    margin: -8px -12px;
+    // 纵向边距刻意比 header 的默认更大：负 margin 抵消了两侧，但按钮仍要保留
+    // 自己的纵向呼吸感 —— 上一版只留 5px，行高比档位项还矮，看起来挤。
+    padding: 10px 12px;
+    border: none;
+    background: transparent;
+    color: $text-body;
+    font-family: $font-body;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+
+    &:hover {
+        background: $accent-light;
+        color: $accent;
+    }
+
+    svg {
+        flex-shrink: 0;
+        opacity: 0.6;
+    }
+}
+
+.effort-mode-toggle__label {
+    font-weight: 500;
 }
 
 /**

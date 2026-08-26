@@ -1,4 +1,8 @@
 import type { ProviderModel } from '@/stores/providers'
+import {
+  parseReasoningEffortConfig,
+  serializeReasoningEffortConfig,
+} from './reasoningEffort'
 
 /**
  * 上游模型列表的解析与表单模型的构造。
@@ -24,19 +28,18 @@ export interface EditableModel {
 /** 新建模型行的默认值。上下文与最大输出都按 128K 起步。 */
 const DEFAULT_CONTEXT_SIZE = '128000'
 const DEFAULT_MAX_OUTPUT_TOKENS = '128000'
-const DEFAULT_REASONING_EFFORT = 'Medium'
 
 /**
- * 归一化 `reasoningEffort`。
+ * 归一化 `reasoningEffort` 为 V2 JSON 字符串。
  *
- * 历史数据里该字段可能是逗号分隔的多值（如 `"Medium,High"`），表单只取第一项。
- * 空值或非字符串回退默认档位。
+ * 表单里这个字段始终是序列化后的 JSON（`{reasoning_effort, overwrite_mode}`），
+ * 而非拆成两个字段：它要原样回传给后端的同一个表列，拆开后在提交前又得拼回去，
+ * 多一道可能与解析侧不一致的工序。组件里需要分开编辑时再解一次。
+ *
+ * <p>历史形态（纯档位、逗号多值、`None`）全由 `parseReasoningEffortConfig` 处理。
  */
 function normalizeReasoningEffort(value: unknown): string {
-  if (typeof value === 'string' && value.trim()) {
-    return value.split(',')[0].trim()
-  }
-  return DEFAULT_REASONING_EFFORT
+  return serializeReasoningEffortConfig(parseReasoningEffortConfig(value))
 }
 
 /**
