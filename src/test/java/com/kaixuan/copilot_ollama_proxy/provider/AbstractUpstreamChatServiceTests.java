@@ -1119,6 +1119,72 @@ class AbstractUpstreamChatServiceTests {
     }
 
     /**
+     * 覆写模式无视下游携带的档位。
+     *
+     * <p>这是 V2 引入注入模式的全部目的：此前无论如何配置，下游一旦带了这个字段
+     * 就一定以它为准，用户没有办法从代理侧强制一个档位。
+     */
+    @Test
+    void overrideModeReplacesDownstreamReasoningEffort() {
+        TestOpenAiService service = new TestOpenAiService();
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("reasoning_effort", "low");
+
+        Map<String, Object> prepared = service.exposePrepareRequestBody(request, false, "model-a",
+                providerWithReasoningEffort("{\"reasoning_effort\":\"max\",\"overwrite_mode\":\"override\"}"));
+
+        assertThat(prepared).containsEntry("reasoning_effort", "max");
+    }
+
+    /** 删除模式连下游自己带的也一并移除，让上游用它自己的默认。 */
+    @Test
+    void deleteModeStripsDownstreamReasoningEffort() {
+        TestOpenAiService service = new TestOpenAiService();
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("reasoning_effort", "low");
+
+        Map<String, Object> prepared = service.exposePrepareRequestBody(request, false, "model-a",
+                providerWithReasoningEffort("{\"reasoning_effort\":\"max\",\"overwrite_mode\":\"delete\"}"));
+
+        assertThat(prepared).doesNotContainKey("reasoning_effort");
+    }
+
+    /** 透传模式与 V2 之前的行为一致：下游没带才注入配置值。 */
+    @Test
+    void passthroughModeInjectsConfiguredEffortOnlyWhenDownstreamOmitted() {
+        TestOpenAiService service = new TestOpenAiService();
+        String config = "{\"reasoning_effort\":\"high\",\"overwrite_mode\":\"passthrough\"}";
+
+        Map<String, Object> injected = service.exposePrepareRequestBody(
+                new LinkedHashMap<>(), false, "model-a", providerWithReasoningEffort(config));
+        assertThat(injected).containsEntry("reasoning_effort", "high");
+
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("reasoning_effort", "low");
+        Map<String, Object> kept = service.exposePrepareRequestBody(
+                request, false, "model-a", providerWithReasoningEffort(config));
+        assertThat(kept).containsEntry("reasoning_effort", "low");
+    }
+
+    /**
+     * 遗留的 {@code None} 仍表示不发送。
+     *
+     * <p>若把它当作认不出的档位回退成 medium，这些模型会在升级后突然开始向上游
+     * 发送思考深度 —— 用户没做任何操作，行为却变了。
+     */
+    @Test
+    void legacyNoneStillMeansDoNotSendReasoningEffort() {
+        TestOpenAiService service = new TestOpenAiService();
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("reasoning_effort", "low");
+
+        Map<String, Object> prepared = service.exposePrepareRequestBody(
+                request, false, "model-a", providerWithReasoningEffort("None"));
+
+        assertThat(prepared).doesNotContainKey("reasoning_effort");
+    }
+
+    /**
      * 将后台模型配置构造成运行时快照，验证思考档位确实经过后端而非只停留在前端。
      */
     private ProviderRuntimeConfiguration providerWithReasoningEffort(String effort) {

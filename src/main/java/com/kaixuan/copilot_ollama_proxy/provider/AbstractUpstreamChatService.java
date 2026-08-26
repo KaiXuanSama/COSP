@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
@@ -666,15 +667,8 @@ public abstract class AbstractUpstreamChatService {
         String resolvedModel = resolveModel(body.get("model"), model);
         body.put("model", resolvedModel);
         body.put("stream", stream);
-        // 如果请求中没有指定 reasoning_effort，从模型配置中读取
-        if (!body.containsKey("reasoning_effort")) {
-            String effort = resolveReasoningEffort(resolvedModel, provider);
-            if (effort != null) {
-                body.put("reasoning_effort", effort);
-            } else {
-                body.remove("reasoning_effort");
-            }
-        }
+        // 思考深度按模型配置的注入模式处理：覆写 / 透传 / 删除。
+        resolveReasoningEffort(resolvedModel, provider).applyTo(body);
         customizeRequestBody(body, resolvedModel, provider);
         body.values().removeIf(Objects::isNull);
         return body;
@@ -816,19 +810,22 @@ public abstract class AbstractUpstreamChatService {
     }
 
     /**
-     * 从运行时模型配置中读取思考深度。如果未找到，返回 medium。
+     * 从运行时模型配置中读取思考深度设置。
+     *
+     * <h2>模型未配置时给默认值而非跳过</h2>
+     * 找不到匹配的模型仍返回 {@link ReasoningEffortSetting#defaults()}（中等档位 + 透传），
+     * 与旧实现的硬编码 {@code "medium"} 保持一致。这个兜底值是可疑的 —— 对一个未配置的、
+     * 可能根本不是思考模型的模型名，凭空注入 {@code reasoning_effort} 未必正确 ——
+     * 但改变它会影响所有「模型名带前缀但库里查不到」的调用，不属于本次改动范围。
      */
-    private String resolveReasoningEffort(String resolvedModel, ProviderRuntimeConfiguration provider) {
+    private ReasoningEffortSetting resolveReasoningEffort(String resolvedModel,
+                                                         ProviderRuntimeConfiguration provider) {
         for (var m : provider.models()) {
             if (resolvedModel.equals(m.modelName())) {
-                String effort = m.reasoningEffort();
-                if (effort == null || effort.isBlank() || "none".equalsIgnoreCase(effort.trim())) {
-                    return null;
-                }
-                return effort.toLowerCase();
+                return ReasoningEffortSetting.parse(m.reasoningEffort(), objectMapper);
             }
         }
-        return "medium";
+        return ReasoningEffortSetting.defaults();
     }
 
     /**

@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.application.provider;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRow;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
@@ -331,7 +332,11 @@ public class ProviderAdminService {
             model.put("maxOutputTokens", value(form, prefix + index + "].maxOutputTokens", "128000").trim());
             model.put("capsTools", "on".equals(form.getFirst(prefix + index + "].capsTools")));
             model.put("capsVision", "on".equals(form.getFirst(prefix + index + "].capsVision")));
-            model.put("reasoningEffort", value(form, prefix + index + "].reasoningEffort", "Medium").trim());
+            // 收敛成规范的 V2 JSON：表单提交的可能是 V2 JSON、旧的裸档位、甚至遗留的 None，
+            // 在入库前统一形态，读取侧才不必长期兼容三种写法。
+            model.put("reasoningEffort", ReasoningEffortSetting
+                    .parse(value(form, prefix + index + "].reasoningEffort", "").trim(), objectMapper)
+                    .serialize());
             models.add(model);
         }
         return models;

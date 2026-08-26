@@ -41,7 +41,15 @@ CREATE TABLE IF NOT EXISTS provider_model (
     max_output_tokens INTEGER    NOT NULL DEFAULT 128000 CHECK (max_output_tokens >= 0), -- 最大输出 token 数
     caps_tools      INTEGER      NOT NULL DEFAULT 0 CHECK (caps_tools IN (0, 1)), -- 是否支持工具调用（0=否，1=是）
     caps_vision     INTEGER      NOT NULL DEFAULT 0 CHECK (caps_vision IN (0, 1)), -- 是否支持视觉（0=否，1=是）
-    reasoning_effort TEXT        NOT NULL DEFAULT 'Medium', -- 思考深度（逗号分隔，如 Low,Medium）
+    -- 思考深度配置（V2 JSON）：{"reasoning_effort":"medium","overwrite_mode":"override|fallback|passthrough|delete"}
+    -- 四种模式的区别只在「下游带了值时用谁的」与「下游没带时是否补」：
+    -- override 一律用配置值；fallback 用下游的、没带才补；passthrough 用下游的、没带也不补；
+    -- delete 连下游自带的也移除（某些上游收到该字段会 400，必须能强制剥离）。
+    reasoning_effort TEXT        NOT NULL DEFAULT '{"reasoning_effort":"medium","overwrite_mode":"fallback"}'
+        CHECK (json_valid(reasoning_effort)),
+    -- 思考深度配置的结构版本。存在的意义是让 V8.9 那次「内容形态变更」成为可判定的结构事实，
+    -- 否则基线判定只能靠翻数据，而空库没有行可翻。
+    reasoning_effort_schema INTEGER NOT NULL DEFAULT 2 CHECK (reasoning_effort_schema >= 1),
     sort_order      INTEGER      NOT NULL DEFAULT 0 CHECK (sort_order >= 0), -- 排序权重
     FOREIGN KEY (provider_id) REFERENCES provider_config(id) ON DELETE CASCADE
 );

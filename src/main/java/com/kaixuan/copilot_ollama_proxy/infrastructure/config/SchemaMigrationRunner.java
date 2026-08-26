@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.config;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService;
 import org.slf4j.Logger;
@@ -38,7 +39,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final double V8_5_VERSION = 8.5;
     private static final double V8_6_VERSION = 8.6;
     private static final double V8_7_VERSION = 8.7;
-    private static final double CURRENT_SCHEMA_VERSION = 8.8;
+    private static final double V8_8_VERSION = 8.8;
+    private static final double CURRENT_SCHEMA_VERSION = 8.9;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -70,6 +72,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
      * 收窄是用户的决定，不是迁移的决定 —— 前端新建表单可以只默认勾 OpenAI。
      */
     private static final String DEFAULT_SUPPORTED_PROTOCOLS_JSON = "[\"OPENAI\",\"ANTHROPIC\"]";
+    /** 当前思考深度配置的结构版本，与 {@code reasoning_effort_schema} 列取值一致。 */
+    private static final int CURRENT_REASONING_EFFORT_VERSION = 2;
 
     private final JdbcTemplate jdbcTemplate;
     private final TransactionTemplate transactionTemplate;
@@ -166,8 +170,10 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         this::migrateToV86AddCallLogProtocols),
                 new MigrationStep(V8_7_VERSION, "请求体规则升级为按线路分组",
                         this::migrateToV87RuleGroups),
-                new MigrationStep(CURRENT_SCHEMA_VERSION, "供应商声明支持的线路协议与 Anthropic 端点",
-                        this::migrateToV88ProviderProtocols));
+                new MigrationStep(V8_8_VERSION, "供应商声明支持的线路协议与 Anthropic 端点",
+                        this::migrateToV88ProviderProtocols),
+                new MigrationStep(CURRENT_SCHEMA_VERSION, "思考深度升级为档位与注入模式",
+                        this::migrateToV89ReasoningEffortModes));
     }
 
     private List<MigrationStep> baselineMigrations() {
@@ -203,7 +209,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
             && columnExists("api_call_log", "upstream_protocol")
             && columnExists("provider_request_transform", "body_rules_schema")
             && columnExists("provider_config", "supported_protocols")
-            && columnExists("provider_config", "anthropic_base_url");
+            && columnExists("provider_config", "anthropic_base_url")
+            && columnExists("provider_model", "reasoning_effort_schema");
     }
 
     /**
@@ -217,8 +224,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         + "description = excluded.description, "
                         + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
                     CURRENT_SCHEMA_VERSION,
-                    "V8.8 架构基线：统一供应商实现、token 用量表、日志载荷瘦身与线路协议、"
-                            + "请求体规则分组、供应商协议支持与 Anthropic 端点"));
+                    "V8.9 架构基线：统一供应商实现、token 用量表、日志载荷瘦身与线路协议、"
+                            + "请求体规则分组、供应商协议支持与 Anthropic 端点、思考深度注入模式"));
         log.info("[SchemaMigration] 已建立 V{} 架构基线", CURRENT_SCHEMA_VERSION);
     }
 
@@ -721,7 +728,86 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
         jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
                 + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
-                CURRENT_SCHEMA_VERSION, "V8.8 增量迁移：供应商声明支持的线路协议与 Anthropic 端点");
+                V8_8_VERSION, "V8.8 增量迁移：供应商声明支持的线路协议与 Anthropic 端点");
+    }
+
+    /**
+     * V8.9：把思考深度从纯档位字符串升为「档位 + 注入模式」的 JSON。
+     *
+     * <p>V2 形态是 {@code {"reasoning_effort":"medium","overwrite_mode":"fallback"}}，
+     * 四种模式的语义见 {@link ReasoningEffortSetting.Mode}。
+     *
+     * <h2>为何走迁移而不是继续运行时收敛</h2>
+     * 读取侧本就兼容旧形态，功能上不迁移也能跑。但「库里长期混着两种形态」有两处实际代价：
+     * 一是每次读取都要判断形态，而那段兼容代码没有任何办法被证明可以删除；
+     * 二是直接查库排查问题时，同一列出现两种写法，无法一眼看出某个模型到底配了什么。
+     * 过一遍 V8.9 后全库同形态，读取端的旧格式兼容就退化为纯粹的向后兜底而非常态路径。
+     *
+     * <h2>为何要加 {@code reasoning_effort_schema} 列</h2>
+     * 与 V8.7 同一个理由：{@link #isCurrentBaseline()} 的判定全部由结构性谓词构成
+     * （列/表/索引是否存在），因为那些谓词与「数据里恰好有什么」无关，空库也成立。
+     * 若本次只改 JSON 内容，唯一可查的证据就是「随便挑一行看它是不是 JSON」——
+     * 而空表或全新库根本没有行，判定会永远为假、迁移每次启动都重跑。
+     *
+     * <h2>转换口径</h2>
+     * 全部委托 {@link ReasoningEffortSetting#parse} 与
+     * {@link ReasoningEffortSetting#serialize}，不在这里重写一份字符串处理 ——
+     * 迁移与运行时读取必须对「旧的 None 是什么意思」给出同一个答案，
+     * 而保证这一点最可靠的办法是共用同一个实现。其中：
+     * <ul>
+     *   <li>{@code "Medium"} → {@code medium} + FALLBACK（等同升级前的行为）</li>
+     *   <li>{@code "Medium,High"} → 取首项 + FALLBACK</li>
+     *   <li>{@code "None"} → {@code medium} + <strong>DELETE</strong>，
+     *       因为旧的 None 表达的正是「不向上游发送」；若回退成 FALLBACK，
+     *       这些模型会在升级后突然开始向上游发送 medium</li>
+     *   <li>已是 JSON 的行照常过一遍解析再序列化，从而收敛掉字段顺序与大小写差异</li>
+     * </ul>
+     *
+     * <p>逐行读改而非一条 UPDATE：转换逻辑在 Java 里，SQL 无法表达
+     * 「按四种历史形态分别解析」。模型行数量级是几十到几百，一次性读进内存无压力。
+     */
+    private void migrateToV89ReasoningEffortModes() {
+        if (tableExists("provider_model")) {
+            addColumnIfNotExists("provider_model", "reasoning_effort_schema",
+                    "INTEGER NOT NULL DEFAULT " + CURRENT_REASONING_EFFORT_VERSION
+                            + " CHECK (reasoning_effort_schema >= 1)");
+            if (columnExists("provider_model", "reasoning_effort")) {
+                upgradeReasoningEffortsToV2();
+            }
+        }
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+                CURRENT_SCHEMA_VERSION, "V8.9 增量迁移：思考深度升级为档位与注入模式");
+    }
+
+    /**
+     * 逐行把 {@code reasoning_effort} 收敛为规范的 V2 JSON。
+     *
+     * <p>无条件重写每一行而非只挑旧形态：已是 JSON 的行经过一次 parse + serialize 后
+     * 字段顺序、档位大小写、模式名都被归一化，于是迁移后全库<strong>逐字节同形态</strong>。
+     * 只挑旧形态会留下「都是 JSON 但写法各异」的状态，而那与迁移的目的相违。
+     *
+     * <p>本方法幂等：规范形态再过一遍 parse + serialize 得到自身。
+     */
+    private void upgradeReasoningEffortsToV2() {
+        var rows = jdbcTemplate.queryForList(
+                "SELECT id, reasoning_effort FROM provider_model ORDER BY id");
+        int converted = 0;
+        for (var row : rows) {
+            int modelId = ((Number) row.get("id")).intValue();
+            String raw = (String) row.get("reasoning_effort");
+            String canonical = ReasoningEffortSetting.parse(raw, objectMapper).serialize();
+            if (canonical.equals(raw)) {
+                continue;
+            }
+            jdbcTemplate.update("UPDATE provider_model SET reasoning_effort = ?, "
+                    + "reasoning_effort_schema = ? WHERE id = ?",
+                    canonical, CURRENT_REASONING_EFFORT_VERSION, modelId);
+            converted++;
+        }
+        if (converted > 0) {
+            log.info("[SchemaMigration] V8.9 已将 {} 个模型的思考深度升级为档位与注入模式", converted);
+        }
     }
 
     /**
