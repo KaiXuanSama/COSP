@@ -1149,15 +1149,38 @@ class AbstractUpstreamChatServiceTests {
         assertThat(prepared).doesNotContainKey("reasoning_effort");
     }
 
-    /** 透传模式与 V2 之前的行为一致：下游没带才注入配置值。 */
+    /** 兜底模式与 V2 之前的行为一致：下游没带才注入配置值。这也是升级后的默认。 */
     @Test
-    void passthroughModeInjectsConfiguredEffortOnlyWhenDownstreamOmitted() {
+    void fallbackModeInjectsConfiguredEffortOnlyWhenDownstreamOmitted() {
         TestOpenAiService service = new TestOpenAiService();
-        String config = "{\"reasoning_effort\":\"high\",\"overwrite_mode\":\"passthrough\"}";
+        String config = "{\"reasoning_effort\":\"high\",\"overwrite_mode\":\"fallback\"}";
 
         Map<String, Object> injected = service.exposePrepareRequestBody(
                 new LinkedHashMap<>(), false, "model-a", providerWithReasoningEffort(config));
         assertThat(injected).containsEntry("reasoning_effort", "high");
+
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("reasoning_effort", "low");
+        Map<String, Object> kept = service.exposePrepareRequestBody(
+                request, false, "model-a", providerWithReasoningEffort(config));
+        assertThat(kept).containsEntry("reasoning_effort", "low");
+    }
+
+    /**
+     * 透传模式一个字段都不碰：下游没带就不发，配置的档位只是界面上的记忆值。
+     *
+     * <p>它与删除模式的差别在下游**带了**值时才显现（透传保留、删除剥离），
+     * 与兜底的差别则在下游**没带**时才显现（兜底补上、透传不补）。因此这两条
+     * 断言合起来才能把 PASSTHROUGH 与另外两档区分开。
+     */
+    @Test
+    void passthroughModeLeavesReasoningEffortEntirelyToDownstream() {
+        TestOpenAiService service = new TestOpenAiService();
+        String config = "{\"reasoning_effort\":\"high\",\"overwrite_mode\":\"passthrough\"}";
+
+        Map<String, Object> omitted = service.exposePrepareRequestBody(
+                new LinkedHashMap<>(), false, "model-a", providerWithReasoningEffort(config));
+        assertThat(omitted).doesNotContainKey("reasoning_effort");
 
         Map<String, Object> request = new LinkedHashMap<>();
         request.put("reasoning_effort", "low");

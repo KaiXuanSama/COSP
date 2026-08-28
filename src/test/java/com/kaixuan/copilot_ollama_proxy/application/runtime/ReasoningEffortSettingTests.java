@@ -40,13 +40,13 @@ class ReasoningEffortSettingTests {
                     .isEqualTo("xhigh");
         }
 
-        /** 旧的纯档位按透传解析 —— 那正是 V2 之前的唯一行为。 */
+        /** 旧的纯档位按兜底解析 —— 那正是 V2 之前的唯一行为（只在下游未携带时注入）。 */
         @Test
-        void legacyPlainEffortDefaultsToPassthrough() {
+        void legacyPlainEffortDefaultsToFallback() {
             ReasoningEffortSetting setting = ReasoningEffortSetting.parse("Medium", objectMapper);
 
             assertThat(setting.effort()).isEqualTo("medium");
-            assertThat(setting.mode()).isEqualTo(ReasoningEffortSetting.Mode.PASSTHROUGH);
+            assertThat(setting.mode()).isEqualTo(ReasoningEffortSetting.Mode.FALLBACK);
         }
 
         @Test
@@ -74,7 +74,7 @@ class ReasoningEffortSettingTests {
             for (String raw : new String[] {null, "", "   "}) {
                 ReasoningEffortSetting setting = ReasoningEffortSetting.parse(raw, objectMapper);
                 assertThat(setting.effort()).isEqualTo("medium");
-                assertThat(setting.mode()).isEqualTo(ReasoningEffortSetting.Mode.PASSTHROUGH);
+                assertThat(setting.mode()).isEqualTo(ReasoningEffortSetting.Mode.FALLBACK);
             }
         }
 
@@ -85,7 +85,7 @@ class ReasoningEffortSettingTests {
                     "{\"reasoning_effort\":", objectMapper);
 
             assertThat(setting.effort()).isEqualTo("medium");
-            assertThat(setting.mode()).isEqualTo(ReasoningEffortSetting.Mode.PASSTHROUGH);
+            assertThat(setting.mode()).isEqualTo(ReasoningEffortSetting.Mode.FALLBACK);
         }
 
         @Test
@@ -94,7 +94,7 @@ class ReasoningEffortSettingTests {
                     "{\"reasoning_effort\":\"low\",\"overwrite_mode\":\"bogus\"}", objectMapper);
 
             assertThat(setting.effort()).isEqualTo("low");
-            assertThat(setting.mode()).isEqualTo(ReasoningEffortSetting.Mode.PASSTHROUGH);
+            assertThat(setting.mode()).isEqualTo(ReasoningEffortSetting.Mode.FALLBACK);
         }
 
         /** 缺 ObjectMapper 时不能崩：非 JSON 形态仍要能解析，JSON 形态退默认。 */
@@ -148,7 +148,44 @@ class ReasoningEffortSettingTests {
             assertThat(body).containsEntry("reasoning_effort", "max");
         }
 
-        /** 透传：下游有意见就听它的。 */
+        /** 兜底：下游有意见就听它的。 */
+        @Test
+        void fallbackKeepsDownstreamValue() {
+            Map<String, Object> body = bodyWith("low");
+
+            new ReasoningEffortSetting("max", ReasoningEffortSetting.Mode.FALLBACK).applyTo(body);
+
+            assertThat(body).containsEntry("reasoning_effort", "low");
+        }
+
+        @Test
+        void fallbackInjectsConfiguredEffortWhenDownstreamOmitted() {
+            Map<String, Object> body = new LinkedHashMap<>();
+
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.FALLBACK).applyTo(body);
+
+            assertThat(body).containsEntry("reasoning_effort", "high");
+        }
+
+        /**
+         * 下游显式传 null 时，兜底模式不该用配置值把它顶掉。
+         *
+         * <p>用 {@code containsKey} 而非判空正是为了这个：显式的 null 是「它表达过意见」。
+         * 那个 null 随后由调用方的 {@code removeIf(Objects::isNull)} 清掉，
+         * 最终等效于不发送 —— 而若这里用配置值填上，结果会与下游的意图相反。
+         */
+        @Test
+        void fallbackRespectsExplicitNullFromDownstream() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("reasoning_effort", null);
+
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.FALLBACK).applyTo(body);
+
+            assertThat(body).containsKey("reasoning_effort");
+            assertThat(body.get("reasoning_effort")).isNull();
+        }
+
+        /** 透传：完全不干预，下游带什么就是什么。 */
         @Test
         void passthroughKeepsDownstreamValue() {
             Map<String, Object> body = bodyWith("low");
@@ -158,31 +195,20 @@ class ReasoningEffortSettingTests {
             assertThat(body).containsEntry("reasoning_effort", "low");
         }
 
-        @Test
-        void passthroughInjectsConfiguredEffortWhenDownstreamOmitted() {
-            Map<String, Object> body = new LinkedHashMap<>();
-
-            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.PASSTHROUGH).applyTo(body);
-
-            assertThat(body).containsEntry("reasoning_effort", "high");
-        }
-
         /**
-         * 下游显式传 null 时，透传模式不该用配置值把它顶掉。
+         * 这一条是透传与兜底的唯一分野，也是四档里最容易被合并掉的一档。
          *
-         * <p>用 {@code containsKey} 而非判空正是为了这个：显式的 null 是「它表达过意见」。
-         * 那个 null 随后由调用方的 {@code removeIf(Objects::isNull)} 清掉，
-         * 最终等效于不发送 —— 而若这里用配置值填上，结果会与下游的意图相反。
+         * <p>兜底会在这里补上配置档位，透传什么都不做 —— 配置的档位只作为界面上的
+         * 记忆值存在。少了这条断言，把 PASSTHROUGH 实现成 FALLBACK 不会有任何用例变红。
          */
         @Test
-        void passthroughRespectsExplicitNullFromDownstream() {
+        void passthroughDoesNotInjectWhenDownstreamOmitted() {
             Map<String, Object> body = new LinkedHashMap<>();
-            body.put("reasoning_effort", null);
+            body.put("model", "m");
 
             new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.PASSTHROUGH).applyTo(body);
 
-            assertThat(body).containsKey("reasoning_effort");
-            assertThat(body.get("reasoning_effort")).isNull();
+            assertThat(body).containsOnlyKeys("model");
         }
 
         /** 删除：连下游自己带的也一并移除。 */

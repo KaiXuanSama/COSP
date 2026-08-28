@@ -21,9 +21,10 @@ describe('parseReasoningEffortConfig', () => {
       .toBe('Xhigh')
   })
 
-  it('旧的纯档位字符串按透传模式解析', () => {
+  // 兜底是 V2 之前的唯一行为（只在下游未携带时注入），所以旧的裸档位升级后行为不变。
+  it('旧的纯档位字符串按兜底模式解析', () => {
     expect(parseReasoningEffortConfig('Medium'))
-      .toEqual({ effort: 'Medium', mode: 'passthrough' })
+      .toEqual({ effort: 'Medium', mode: 'fallback' })
   })
 
   it('更旧的逗号分隔多值只取第一项', () => {
@@ -31,9 +32,9 @@ describe('parseReasoningEffortConfig', () => {
   })
 
   /**
-   * 这是兼容逻辑的主要理由：`None` 表达的是「不发送」。
-   * 若只按认不出的档位回退成 Medium，那些模型会突然开始向上游发送 medium ——
-   * 一次纯粹的读取行为改变了运行时行为，且用户无从察觉。
+   * 这是兼容逻辑的主要理由：`None` 表达的是「不向上游发送」，对应 `delete`。
+   * 若把它当作认不出的档位回退成默认（`fallback`），那些模型会突然开始向上游发送
+   * medium —— 一次纯粹的读取行为改变了运行时行为，且用户无从察觉。
    */
   it('旧的 None 映射为删除模式而非回退档位', () => {
     expect(parseReasoningEffortConfig('None'))
@@ -85,8 +86,11 @@ describe('serializeReasoningEffortConfig', () => {
 })
 
 describe('nextReasoningOverwriteMode', () => {
-  it('按覆写 → 透传 → 删除轮转并回到开头', () => {
-    expect(nextReasoningOverwriteMode('override')).toBe('passthrough')
+  // 顺序按「代理干预程度」递减：覆写接管 → 兜底补缺 → 透传不管；
+  // delete 排末尾是因为它不是「更不干预」而是另一种干预（强制剥离）。
+  it('按覆写 → 兜底 → 透传 → 删除轮转并回到开头', () => {
+    expect(nextReasoningOverwriteMode('override')).toBe('fallback')
+    expect(nextReasoningOverwriteMode('fallback')).toBe('passthrough')
     expect(nextReasoningOverwriteMode('passthrough')).toBe('delete')
     expect(nextReasoningOverwriteMode('delete')).toBe('override')
   })
@@ -96,12 +100,29 @@ describe('nextReasoningOverwriteMode', () => {
     expect(nextReasoningOverwriteMode('bogus' as never)).toBe(REASONING_OVERWRITE_MODES[0])
   })
 
-  it('连续轮转三次回到原点', () => {
+  it('轮转一整圈回到原点', () => {
     let mode = REASONING_OVERWRITE_MODES[0]
     for (let i = 0; i < REASONING_OVERWRITE_MODES.length; i++) {
       mode = nextReasoningOverwriteMode(mode)
     }
     expect(mode).toBe(REASONING_OVERWRITE_MODES[0])
+  })
+
+  /**
+   * 四档必须各不相同且覆盖全部模式。
+   *
+   * 轮转是用户切换模式的唯一入口，少一档就意味着那个模式在界面上无法被选到 ——
+   * 而这类缺失不会让任何其它用例失败。
+   */
+  it('轮转一圈恰好经过全部四种模式', () => {
+    const visited: string[] = []
+    let mode = REASONING_OVERWRITE_MODES[0]
+    for (let i = 0; i < REASONING_OVERWRITE_MODES.length; i++) {
+      visited.push(mode)
+      mode = nextReasoningOverwriteMode(mode)
+    }
+    expect(visited).toEqual([...REASONING_OVERWRITE_MODES])
+    expect(new Set(visited).size).toBe(4)
   })
 })
 

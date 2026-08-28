@@ -67,8 +67,9 @@ describe('buildEditableModel', () => {
       capsVision: false,
     })
     // 表单里该字段始终是序列化后的 V2 JSON，而非裸档位字符串。
+    // 新建模型的默认是 medium + 兜底。
     expect(parseReasoningEffortConfig(model.reasoningEffort))
-      .toEqual({ effort: 'Medium', mode: 'passthrough' })
+      .toEqual({ effort: 'Medium', mode: 'fallback' })
   })
 
   it('保留 source 中的其余字段，便于拉取时带回已有配置', () => {
@@ -89,7 +90,7 @@ describe('buildEditableModel', () => {
     expect(parseReasoningEffortConfig(model.reasoningEffort).effort).toBe('High')
   })
 
-  // 旧的 None 表达的是「不发送」，映射到 delete 模式而非回退成默认档位 ——
+  // 旧的 None 表达的是「不向上游发送」，映射到 delete 而非回退成默认（fallback）——
   // 否则一次纯读取会让这些模型突然开始向上游发送 medium。
   it('旧的 None 升级为删除模式', () => {
     const model = buildEditableModel('m', { reasoningEffort: 'None' })
@@ -124,7 +125,7 @@ describe('toEditableModel', () => {
     expect(model.contextSize).toBe('0')
     expect(model.maxOutputTokens).toBe('128000')
     expect(parseReasoningEffortConfig(model.reasoningEffort))
-      .toEqual({ effort: 'Medium', mode: 'passthrough' })
+      .toEqual({ effort: 'Medium', mode: 'fallback' })
   })
 })
 

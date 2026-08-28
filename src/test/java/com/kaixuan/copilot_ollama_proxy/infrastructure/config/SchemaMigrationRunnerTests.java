@@ -147,6 +147,13 @@ class SchemaMigrationRunnerTests {
         assertThat(columnNames(jdbcTemplate, "api_call_log")).contains("payload_trimmed");
         assertThat(columnNames(jdbcTemplate, "provider_config"))
                 .contains("supported_protocols", "anthropic_base_url");
+        assertThat(columnNames(jdbcTemplate, "provider_model")).contains("reasoning_effort_schema");
+        // 新库的默认思考深度须与迁移后的规范形态一致，否则「全库同形态」只在升级库成立。
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, display_name, enabled, base_url) "
+                + "VALUES ('p', 'P', 1, 'https://p.example/v1')");
+        jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name) VALUES (1, 'm')");
+        assertThat(reasoningEffortOf(jdbcTemplate, "m"))
+                .isEqualTo("{\"reasoning_effort\":\"medium\",\"overwrite_mode\":\"fallback\"}");
     }
 
     @Test
@@ -684,6 +691,117 @@ class SchemaMigrationRunnerTests {
                 .contains("supported_protocols", "anthropic_base_url");
     }
 
+    // ==================== V8.9：思考深度升级为档位与注入模式 ====================
+
+    /**
+     * V8.8 库升到 V8.9：四种历史形态各自收敛为规范 V2 JSON。
+     *
+     * <p>转换口径是本次迁移唯一值得推敲的地方，而 {@code None} 那一行是全部理由所在：
+     * 旧值 {@code None} 表达的是「不向上游发送」，只有映射到 {@code delete} 才保住这个语义。
+     * 若把它当作认不出的档位回退成默认（{@code medium} + {@code fallback}），这些模型会在
+     * 升级后突然开始向上游发送思考深度 —— 用户没做任何操作，行为却变了，且从界面上看不出成因。
+     *
+     * <p>裸档位一律落 {@code fallback} 而非 {@code override}：兜底（只在下游未携带时注入）
+     * 正是 V2 之前的唯一行为，因此升级对这些行是纯粹的表示形式变更。
+     */
+    @Test
+    void v88DatabaseConvertsEveryLegacyReasoningEffortFormDuringV89Migration() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV88ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.8);
+        seedLegacyReasoningEffort(jdbcTemplate, "plain", "Medium");
+        seedLegacyReasoningEffort(jdbcTemplate, "multi", "High,Max");
+        seedLegacyReasoningEffort(jdbcTemplate, "none", "None");
+        seedLegacyReasoningEffort(jdbcTemplate, "garbage", "{\"reasoning_effort\":");
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+        assertThat(columnNames(jdbcTemplate, "provider_model")).contains("reasoning_effort_schema");
+        assertThat(reasoningEffortOf(jdbcTemplate, "plain"))
+                .isEqualTo("{\"reasoning_effort\":\"medium\",\"overwrite_mode\":\"fallback\"}");
+        assertThat(reasoningEffortOf(jdbcTemplate, "multi"))
+                .isEqualTo("{\"reasoning_effort\":\"high\",\"overwrite_mode\":\"fallback\"}");
+        // None 的语义由 delete 承担，档位退回默认只是因为 None 本身不是档位。
+        assertThat(reasoningEffortOf(jdbcTemplate, "none"))
+                .isEqualTo("{\"reasoning_effort\":\"medium\",\"overwrite_mode\":\"delete\"}");
+        // 一行读不懂的数据不该阻断整库升级，退默认即可。
+        assertThat(reasoningEffortOf(jdbcTemplate, "garbage"))
+                .isEqualTo("{\"reasoning_effort\":\"medium\",\"overwrite_mode\":\"fallback\"}");
+    }
+
+    /**
+     * 已是规范 V2 的行原样不动，重跑迁移也不改写。
+     *
+     * <p>幂等在这里不是「跑两遍不报错」而是「跑两遍值不变」：转换是读改写而非一条 UPDATE，
+     * 若解析与序列化不是互逆的，重跑就会让同一行在两种写法之间来回摆动，
+     * 而这种漂移在单次运行里完全看不出来。
+     */
+    @Test
+    void v89MigrationLeavesCanonicalValuesUntouchedAcrossReruns() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV88ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.8);
+        String canonical = "{\"reasoning_effort\":\"max\",\"overwrite_mode\":\"override\"}";
+        seedLegacyReasoningEffort(jdbcTemplate, "canonical", canonical);
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        assertThat(reasoningEffortOf(jdbcTemplate, "canonical")).isEqualTo(canonical);
+        runner.run(null);
+
+        assertThat(reasoningEffortOf(jdbcTemplate, "canonical")).isEqualTo(canonical);
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+    }
+
+    /**
+     * 空库同样要判定成已迁移。
+     *
+     * <p>{@code isCurrentBaseline()} 的谓词全是结构性的（列是否存在），因为那与
+     * 「数据里恰好有什么」无关、空库同样成立。若把判定改成「随便挑一行看它是不是 V2」，
+     * 空表根本没有行、判定永远为假，迁移会在每次启动时重跑。
+     */
+    @Test
+    void v89MigrationIsIdempotentOnDatabaseWithoutAnyModel() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV88ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.8);
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        runner.run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+        assertThat(columnNames(jdbcTemplate, "provider_model")).contains("reasoning_effort_schema");
+    }
+
+    /** 迁移补出的列须与 schema.sql 同样带下界约束，避免新库与升级库的约束分叉。 */
+    @Test
+    void migratedReasoningEffortSchemaColumnRejectsVersionBelowOne() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV88ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.8);
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "INSERT INTO provider_model (provider_id, model_name, reasoning_effort, reasoning_effort_schema) "
+                        + "VALUES (1, 'bad', '{}', 0)"))
+                .isInstanceOf(DataAccessException.class);
+    }
+
     /**
      * V5 不覆盖已存在的请求转换配置；V8.7 只把它升格而不丢内容。
      *
@@ -837,6 +955,39 @@ class SchemaMigrationRunnerTests {
                 jdbcTemplate.execute("CREATE TABLE provider_config (id INTEGER PRIMARY KEY AUTOINCREMENT, "
                                                                 + "provider_key TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0, "
                                 + "base_url TEXT NOT NULL DEFAULT '', updated_at TEXT)");
+        }
+
+        /** 建出 V8.8 时的 provider_config：两列协议字段已就位，是 V8.9 用例的起点。 */
+        private void createV88ProviderConfigTable(JdbcTemplate jdbcTemplate) {
+                createCurrentSchema(jdbcTemplate);
+                jdbcTemplate.execute("ALTER TABLE provider_config ADD COLUMN supported_protocols TEXT NOT NULL "
+                                + "DEFAULT '[\"OPENAI\",\"ANTHROPIC\"]' CHECK (json_valid(supported_protocols))");
+                jdbcTemplate.execute("ALTER TABLE provider_config ADD COLUMN anthropic_base_url TEXT NOT NULL DEFAULT ''");
+        }
+
+        /**
+         * 建出 V8.8 时的 provider_model：{@code reasoning_effort} 存的是裸档位字符串，
+         * <strong>没有</strong> reasoning_effort_schema，那正是 V8.9 要补的结构性标记。
+         */
+        private void createV88ProviderModelTable(JdbcTemplate jdbcTemplate) {
+                jdbcTemplate.execute("CREATE TABLE provider_model (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                                + "provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, "
+                                + "enabled INTEGER NOT NULL DEFAULT 1, context_size INTEGER NOT NULL DEFAULT 8192, "
+                                + "max_output_tokens INTEGER NOT NULL DEFAULT 128000, "
+                                + "caps_tools INTEGER NOT NULL DEFAULT 0, caps_vision INTEGER NOT NULL DEFAULT 0, "
+                                + "reasoning_effort TEXT NOT NULL DEFAULT 'Medium', "
+                                + "sort_order INTEGER NOT NULL DEFAULT 0)");
+        }
+
+        /** 插一行带指定历史形态 reasoning_effort 的模型，模型名即用例里的标签。 */
+        private void seedLegacyReasoningEffort(JdbcTemplate jdbcTemplate, String modelName, String rawEffort) {
+                jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, reasoning_effort) "
+                                + "VALUES (1, ?, ?)", modelName, rawEffort);
+        }
+
+        private String reasoningEffortOf(JdbcTemplate jdbcTemplate, String modelName) {
+                return jdbcTemplate.queryForObject(
+                                "SELECT reasoning_effort FROM provider_model WHERE model_name = ?", String.class, modelName);
         }
 
         /** 建出 V8.7 时的 provider_request_transform（已带 body_rules_schema）。 */
@@ -1003,6 +1154,10 @@ class SchemaMigrationRunnerTests {
                 if (version >= 8.8) {
                         assertThat(columnNames(jdbcTemplate, "provider_config"))
                                 .contains("supported_protocols", "anthropic_base_url");
+                }
+                if (version >= 8.9) {
+                        assertThat(columnNames(jdbcTemplate, "provider_model"))
+                                .contains("reasoning_effort_schema");
                 }
         }
 }
