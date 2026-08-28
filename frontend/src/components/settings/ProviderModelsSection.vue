@@ -75,17 +75,26 @@ function overwriteModeHint(model: EditableModel) {
 }
 
 /**
- * 触发器上显示的文案。
+ * 档位是否真的会被发往上游。
  *
- * 删除模式下不显示档位而显示「删除」：那个模式下档位不会被发送，
- * 把它显示出来会让人以为它仍在生效 —— 触发器是折叠状态下唯一的信息来源，
- * 它必须反映实际行为而非存储内容。
+ * 透传与删除两档都<strong>不使用</strong>此处配置的档位：前者完全不干预、
+ * 后者直接剔除字段，档位只作为界面上的记忆值存在。触发器据此降低存在感，
+ * 否则一个永不生效的档位会与已生效的配置长得一模一样。
+ */
+function effortIsInert(model: EditableModel) {
+    const mode = effortConfigOf(model).mode
+    return mode === 'passthrough' || mode === 'delete'
+}
+
+/**
+ * 触发器文案：「模式: 档位」，例如「兜底: Max」。
+ *
+ * <p>模式必须出现在折叠状态的文案里：它决定了档位到底会不会生效，
+ * 而旧文案只有档位 —— 同一个「Max」在覆写与透传下是两种完全不同的行为，
+ * 而用户必须展开下拉才能分辨。
  */
 function effortTriggerLabel(model: EditableModel) {
-    const config = effortConfigOf(model)
-    return config.mode === 'delete'
-        ? REASONING_OVERWRITE_MODE_LABELS.delete
-        : config.effort
+    return `${overwriteModeLabel(model)}: ${effortConfigOf(model).effort}`
 }
 </script>
 
@@ -142,7 +151,7 @@ function effortTriggerLabel(model: EditableModel) {
                                     </n-form-item>
                                 </div>
                                 <div class="model-form-row model-form-row--details">
-                                    <n-form-item label="上下文" class="model-detail-item model-detail-item--half">
+                                    <n-form-item label="上下文" class="model-detail-item model-detail-item--context">
                                         <n-input v-model:value="model.contextSize" placeholder="4096">
                                             <template #suffix>
                                                 <n-popselect :options="contextPresets" size="small" trigger="click"
@@ -183,7 +192,7 @@ function effortTriggerLabel(model: EditableModel) {
                                                 </button>
                                             </template>
                                             <button type="button" class="effort-trigger"
-                                                :class="{ 'effort-trigger--muted': effortConfigOf(model).mode === 'delete' }"
+                                                :class="{ 'effort-trigger--muted': effortIsInert(model) }"
                                                 :title="overwriteModeHint(model)">
                                                 <span class="effort-trigger__text">{{ effortTriggerLabel(model) }}</span>
                                                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
@@ -417,6 +426,12 @@ function effortTriggerLabel(model: EditableModel) {
         min-width: 0;
     }
 
+    // 与同行的思考深度成 3:2。上下文是五位数字，占大头才不会被截断。
+    &--context {
+        flex: 3 1 0;
+        min-width: 0;
+    }
+
     &--switch {
         flex-shrink: 0;
 
@@ -431,12 +446,19 @@ function effortTriggerLabel(model: EditableModel) {
     }
 }
 
+/**
+ * 思考深度占基础组首行的 2/5（上下文占 3/5）。
+ *
+ * 基准取 `0` 而非 `auto`：触发器文案长度随模式变化（「覆写: Medium」比
+ * 「兜底: Max」宽出一截），若以内容宽为基准，切一下模式两个控件的宽度就会跳变。
+ */
 .model-effort-item {
-    flex: 0 0 auto;
+    flex: 2 1 0;
+    min-width: 0;
     margin-bottom: 0 !important;
 
     :deep(.n-form-item-blank) {
-        flex: 0;
+        flex: 1;
         min-width: 0;
     }
 }
@@ -444,13 +466,17 @@ function effortTriggerLabel(model: EditableModel) {
 /**
  * 思考深度触发器。
  *
- * 自己画一个按钮而非用 n-select：现在触发器要在「删除」模式下显示模式名而非档位，
- * n-select 的显示值与 `value` 绑死，做不到这种分离。
+ * 自己画一个按钮而非用 n-select：显示文案是「模式: 档位」两个维度拼出来的，
+ * 而 n-select 的显示值与 `value` 绑死，只能显示被选中的那一个档位。
  */
 .effort-trigger {
-    display: inline-flex;
+    display: flex;
     align-items: center;
+    // 文案靠左、箭头靠右，与左侧 n-input 的后缀图标位置对应。
+    justify-content: space-between;
     gap: 4px;
+    width: 100%;
+    min-width: 0;
     height: 28px;
     padding: 0 8px;
     border: 1px solid $border;
@@ -474,7 +500,11 @@ function effortTriggerLabel(model: EditableModel) {
     }
 }
 
+/** 模式名一旦变长就截断，而不是把箭头挤出控件。 */
 .effort-trigger__text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-variant-numeric: tabular-nums;
 }
 
