@@ -5,7 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -22,6 +25,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@ExtendWith(OutputCaptureExtension.class)
 class SchemaMigrationRunnerTests {
 
     @TempDir
@@ -762,11 +766,10 @@ class SchemaMigrationRunnerTests {
     }
 
     /**
-     * 空库同样要判定成已迁移。
+     * 一张模型都没有的库也要能升到当前版本并保持幂等。
      *
-     * <p>{@code isCurrentBaseline()} 的谓词全是结构性的（列是否存在），因为那与
-     * 「数据里恰好有什么」无关、空库同样成立。若把判定改成「随便挑一行看它是不是 V2」，
-     * 空表根本没有行、判定永远为假，迁移会在每次启动时重跑。
+     * <p>V8.9 逐行重写 {@code reasoning_effort}，没有行可写时不能因此半途而废 ——
+     * 版本号该照常前移，结构标记列该照常补出。第二次 {@code run} 验证不会重复动作。
      */
     @Test
     void v89MigrationIsIdempotentOnDatabaseWithoutAnyModel() {
@@ -800,6 +803,128 @@ class SchemaMigrationRunnerTests {
                 "INSERT INTO provider_model (provider_id, model_name, reasoning_effort, reasoning_effort_schema) "
                         + "VALUES (1, 'bad', '{}', 0)"))
                 .isInstanceOf(DataAccessException.class);
+    }
+
+    // ==================== 跨版本升级只执行缺失的迁移 ====================
+    //
+    // 以下两个用例锁定同一个不变量：库版本落后于代码版本时，只能执行区间内缺失的迁移，
+    // 不得重跑库里已经应用过的那些。两者分别从「改写字段」与「删除整行」两个方向验证。
+    //
+    // 这曾是一个真实缺陷，成因是两层过滤同时缺下界：
+    //   1. baselineMigrations() 固定按 version > 7.0 过滤，没有「> 库当前版本」的下界；
+    //   2. migrate() 的已应用判定是 COUNT(version = ?)，那是为 V1-V6 多行表设计的。
+    //      V7 起 schema_version 只有一行，于是唯一被跳过的是「恰好等于库当前版本」的那个迁移。
+    //
+    // 稳定状态下两处都不会暴露，因为 migrateThrough() 开头的 isCurrentBaseline() 直接短路了，
+    // 所以缺陷一直隐形；只有升级 jar 后的那一次启动会让它变成实际执行路径。
+    //
+    // 不要把这两个用例当成对 V8 / V8.6 迁移体的测试 —— 它们测的是迁移调度，
+    // 那两个迁移只是「重放后果最容易观察」的取样。
+
+    /**
+     * 8.8 -> 8.9 升级不得重放 V8.6 的协议回填，应用层已写入的日志行保持原样。
+     *
+     * <p>V8.6 的回填语句没有任何「仅存量」限定：
+     * {@code UPDATE api_call_log SET ... = 'ANTHROPIC' WHERE chunks IS NOT NULL AND chunks NOT LIKE '%[DONE]%'}。
+     * 它的前提是「存量日志必为直连，且流式 OpenAI 一定含 [DONE]」，这在 V8.6 那一刻成立。
+     * 但 V8.6 之后的行由应用层直接填协议列，其中因截断、上游异常终止或客户端断连而
+     * 没写到 {@code [DONE]} 的流式 OpenAI 记录，一旦重放就会被误判成 ANTHROPIC。
+     *
+     * <p>选这个场景作样本是因为它不靠构造：AGENTS.md 把截断与空响应列为常见失败模式，
+     * 而恰好是这些失败的记录最需要在日志里保持协议正确。
+     */
+    @Test
+    void crossVersionUpgradeKeepsProtocolOfTruncatedOpenAiLogWrittenAfterV86() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        seedV88Database(jdbcTemplate);
+        // 一条 V8.6 之后写入的流式 OpenAI 调用：上游中途截断，因此 chunks 里没有 [DONE]。
+        // 两个协议列由应用层填写，值是正确的。
+        jdbcTemplate.update("INSERT INTO api_call_log "
+                + "(provider_key, model_name, is_stream, chunks, downstream_protocol, upstream_protocol) "
+                + "VALUES ('gateway', 'gpt-4o', 1, ?, 'OPENAI', 'OPENAI')",
+                "[\"{\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"hi\\\"}}]}\"]");
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+        // 本次升级是 8.8 -> 8.9，与协议列无关，因此两侧协议必须仍是应用层写入的 OPENAI。
+        assertProtocols(jdbcTemplate, "gateway", "OPENAI");
+    }
+
+    /**
+     * 8.8 -> 8.9 升级不得重放 V8，名字以 {@code custom-} 开头的合法供应商不受影响。
+     *
+     * <p>V8 的语义是「把 custom-x 收敛为 x，若 x 已存在则删掉 x 由 custom-x 接管」。
+     * 那次迁移之后 {@code custom-} 前缀不再有任何特殊含义，所以用户完全可以合法地建一个
+     * 叫 {@code custom-gateway} 的供应商并与 {@code gateway} 共存。一旦 V8 被重放，
+     * 它会照旧把 {@code custom-gateway} 当成待收敛的历史键，连带 Key、模型、请求转换
+     * 一起删掉 {@code gateway} 再改名接管。
+     *
+     * <p>用这个场景做第二个样本，是因为它是重放后果里唯一不可恢复的一类：
+     * 其余迁移重放至多改写字段，而这里是整行删除，且删掉的是加密后无法从别处重建的 API Key。
+     */
+    @Test
+    void crossVersionUpgradeKeepsProviderWhoseNameStartsWithCustomPrefix() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        seedV88Database(jdbcTemplate);
+        // 两个都是 V8 之后建的合法供应商：此时 custom- 只是名字的一部分，没有历史含义。
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, display_name, base_url) "
+                + "VALUES ('custom-gateway', '自建网关', 'https://custom.example.com/v1')");
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, display_name, base_url) "
+                + "VALUES ('gateway', '公司网关', 'https://gateway.example.com/v1')");
+        int shadowedProviderId = jdbcTemplate.queryForObject(
+                "SELECT id FROM provider_config WHERE provider_key = 'gateway'", Integer.class);
+        jdbcTemplate.update("INSERT INTO provider_api_key (provider_id, key_uuid) VALUES (?, 'uuid-gateway')",
+                shadowedProviderId);
+        jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, reasoning_effort) "
+                + "VALUES (?, 'gateway-model', 'Medium')", shadowedProviderId);
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        // 两行供应商及其关联数据全部原封不动，键名也不被改写。
+        List<String> providerKeys = jdbcTemplate.queryForList(
+                "SELECT provider_key FROM provider_config ORDER BY id", String.class);
+        assertThat(providerKeys).containsExactly("custom-gateway", "gateway");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT display_name FROM provider_config WHERE provider_key = 'gateway'", String.class))
+                .isEqualTo("公司网关");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT display_name FROM provider_config WHERE provider_key = 'custom-gateway'", String.class))
+                .isEqualTo("自建网关");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM provider_api_key WHERE key_uuid = 'uuid-gateway'", Integer.class))
+                .isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM provider_model WHERE model_name = 'gateway-model'", Integer.class))
+                .isEqualTo(1);
+        // V7.1 同样不得重放：它会 DROP 再重建 provider_config 的校验触发器，
+        // 而该触发器在 fixture 里并不存在 —— 仍不存在即说明 V7.1 没被执行。
+        // 这比看数据更直接：前面那些断言只能证明 V8 没跑，这一条把范围覆盖到 V7.1。
+        assertThat(triggerExists(jdbcTemplate, "trg_provider_config_validate_update")).isFalse();
+    }
+
+    /**
+     * 落后一个版本的库只执行那一个缺失的迁移，日志里不出现任何更早版本。
+     *
+     * <p>前两个用例通过「某个迁移的副作用有没有发生」间接证明它没跑，好处是贴近真实危害，
+     * 代价是一旦那两个迁移体的实现变了，断言就跟着失去意义。这里直接断言执行了哪些版本，
+     * 不依赖任何具体迁移的行为 —— 未来新增迁移时，这个用例仍然守着同一个不变量。
+     *
+     * <p>断言只要求「不出现 V8.9 之前的版本」而非「恰好只有一行 V8.9」：
+     * 加列一类的结构变更也会各写一行日志，把它们算进来会让断言绑定到 V8.9 的实现细节。
+     */
+    @Test
+    void upgradeFromPreviousVersionRunsOnlyTheMissingMigration(CapturedOutput output) {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        seedV88Database(jdbcTemplate);
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        // 版本号后必须带冒号：「已应用 V8」是「已应用 V8.9」的前缀，缺了冒号断言永远失败。
+        assertThat(output).contains("已应用 V8.9:");
+        assertThat(output).doesNotContain("已应用 V7.1:", "已应用 V8:", "已应用 V8.1:", "已应用 V8.2:",
+                "已应用 V8.3:", "已应用 V8.4:", "已应用 V8.5:", "已应用 V8.6:", "已应用 V8.7:", "已应用 V8.8:");
     }
 
     /**
@@ -1039,6 +1164,37 @@ class SchemaMigrationRunnerTests {
                                 + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')))");
         }
 
+        /**
+         * 建出 V8.6 时的 api_call_log：两侧协议列已就位。
+         *
+         * <p>此后写入的行由应用层直接填正确协议，不再依赖 V8.6 那次基于 chunks 的启发式回填。
+         */
+        private void createV86CallLogTable(JdbcTemplate jdbcTemplate) {
+                createV85CallLogTable(jdbcTemplate);
+                jdbcTemplate.execute("ALTER TABLE api_call_log ADD COLUMN downstream_protocol TEXT NOT NULL "
+                                + "DEFAULT 'OPENAI' CHECK (downstream_protocol IN ('OPENAI', 'ANTHROPIC'))");
+                jdbcTemplate.execute("ALTER TABLE api_call_log ADD COLUMN upstream_protocol TEXT NOT NULL "
+                                + "DEFAULT 'OPENAI' CHECK (upstream_protocol IN ('OPENAI', 'ANTHROPIC'))");
+        }
+
+        /**
+         * 建出一个结构完整、版本记录为 8.8 的库：V8.9 是唯一<strong>应当</strong>执行的迁移。
+         *
+         * <p>与各个单版本用例的 fixture 不同，这里把 V8.8 需要的四张表全部备齐并显式建出
+         * {@code provider_api_key}，因为跨版本重放会把 V7.1 起的每个迁移都拉进来执行，
+         * 其中 V8 的冲突处理会去删关联表 —— 表缺失会让用例以 SQL 错误告终，
+         * 而那会掩盖真正要观察的重放行为。
+         */
+        private void seedV88Database(JdbcTemplate jdbcTemplate) {
+                createV88ProviderConfigTable(jdbcTemplate);
+                createV88ProviderModelTable(jdbcTemplate);
+                createV87RequestTransformTable(jdbcTemplate);
+                createV86CallLogTable(jdbcTemplate);
+                jdbcTemplate.execute("CREATE TABLE provider_api_key (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                                + "provider_id INTEGER NOT NULL, key_uuid TEXT NOT NULL UNIQUE)");
+                seedV86SchemaVersion(jdbcTemplate, 8.8);
+        }
+
         private void createCurrentProviderAssociations(JdbcTemplate jdbcTemplate) {
                 jdbcTemplate.execute("CREATE TABLE provider_model (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL)");
                 jdbcTemplate.execute("CREATE TABLE provider_api_key (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL)");
@@ -1112,6 +1268,13 @@ class SchemaMigrationRunnerTests {
         private boolean indexExists(JdbcTemplate jdbcTemplate, String indexName) {
                 Integer count = jdbcTemplate.queryForObject(
                                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", Integer.class, indexName);
+                return count != null && count > 0;
+        }
+
+        private boolean triggerExists(JdbcTemplate jdbcTemplate, String triggerName) {
+                Integer count = jdbcTemplate.queryForObject(
+                                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+                                Integer.class, triggerName);
                 return count != null && count > 0;
         }
 

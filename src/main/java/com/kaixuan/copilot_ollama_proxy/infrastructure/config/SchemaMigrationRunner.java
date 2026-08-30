@@ -74,6 +74,18 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final String DEFAULT_SUPPORTED_PROTOCOLS_JSON = "[\"OPENAI\",\"ANTHROPIC\"]";
     /** 当前思考深度配置的结构版本，与 {@code reasoning_effort_schema} 列取值一致。 */
     private static final int CURRENT_REASONING_EFFORT_VERSION = 2;
+    /**
+     * 版本比较的容差。
+     *
+     * <p>V8.1 至 V8.9 这批 {@code a.b} 版本号作为 double 都是不可精确表示的近似值，
+     * 而它们必须永久留在注册表里供旧库升级。同一个字面量与 SQLite REAL 往返后通常逐位相同，
+     * 因此 {@code >=} 已经够用；容差只是防止某个库里的版本值来自别处（例如手工修过、
+     * 或经由文本转换）而比字面量低了一个尾数位，从而让一个其实已应用的迁移被重放。
+     *
+     * <p>取 1e-6 是因为相邻版本号的最小间隔是 0.1，两者相差五个数量级，
+     * 不存在把两个不同版本判成同一个的风险。V9 起版本号为整数，本容差届时只服务历史版本。
+     */
+    private static final double VERSION_COMPARISON_EPSILON = 1e-6;
 
     private final JdbcTemplate jdbcTemplate;
     private final TransactionTemplate transactionTemplate;
@@ -117,7 +129,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
      * 使用的仍是与生产完全相同的执行路径。
      */
     void migrateThrough(double targetVersion) {
-        if (!registeredMigrationVersions().contains(targetVersion)) {
+        if (!isRegisteredVersion(targetVersion)) {
             throw new IllegalArgumentException("未注册的 Schema 迁移版本: " + targetVersion);
         }
         if (isCurrentBaseline()) {
@@ -129,7 +141,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                 applyMigrationsThrough(baselineMigrations(), targetVersion);
                 return;
             }
-            if (targetVersion != CURRENT_SCHEMA_VERSION) {
+            if (!isSameVersion(targetVersion, CURRENT_SCHEMA_VERSION)) {
                 throw new IllegalStateException("当前 Schema 无版本记录时只能建立最新基线");
             }
             establishCurrentBaseline();
@@ -138,6 +150,20 @@ public class SchemaMigrationRunner implements ApplicationRunner {
 
         prepareHistoricalVersionTracking();
         applyMigrationsThrough(historicalMigrations(), targetVersion);
+    }
+
+    private boolean isRegisteredVersion(double version) {
+        return registeredMigrationVersions().stream().anyMatch(registered -> isSameVersion(registered, version));
+    }
+
+    /**
+     * 按容差比较两个版本号是否同一个。
+     *
+     * <p>历史的 {@code a.b} 版本号作为 double 是近似值，{@code ==} 只在两侧来自同一字面量时可靠。
+     * 相邻版本相差 0.1，与容差差五个数量级，不存在误判为同一版本的可能。
+     */
+    private static boolean isSameVersion(double left, double right) {
+        return Math.abs(left - right) < VERSION_COMPARISON_EPSILON;
     }
 
     static double currentSchemaVersion() {
@@ -176,15 +202,24 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         this::migrateToV89ReasoningEffortModes));
     }
 
+    /**
+     * 已处于 V7 之后的库需要执行的迁移：严格晚于库当前版本的那些。
+     *
+     * <p>下界取自库里记录的版本而非 {@link #V7_BASELINE_VERSION}：后者会把 V7.1 起的全部迁移
+     * 都交给 {@link #migrate} 去逐个判定，一旦那层判定失效就是全量重放。两层各自独立成立，
+     * 是因为「哪些迁移需要跑」本就该由版本区间回答，而不该依赖执行时的兜底。
+     */
     private List<MigrationStep> baselineMigrations() {
+        Double recorded = readBaselineVersion();
+        double lowerBound = recorded != null ? recorded : V7_BASELINE_VERSION;
         return historicalMigrations().stream()
-                .filter(step -> step.version() > V7_BASELINE_VERSION)
+                .filter(step -> step.version() > lowerBound + VERSION_COMPARISON_EPSILON)
                 .toList();
     }
 
     private void applyMigrationsThrough(List<MigrationStep> migrations, double targetVersion) {
         for (MigrationStep migration : migrations) {
-            if (migration.version() <= targetVersion) {
+            if (migration.version() <= targetVersion + VERSION_COMPARISON_EPSILON) {
                 migrate(migration.version(), migration.description(), migration.action());
             }
         }
@@ -192,25 +227,27 @@ public class SchemaMigrationRunner implements ApplicationRunner {
 
     /**
      * 判断数据库是否已处于当前单行基线。
+     *
+     * <h2>为何只看版本号</h2>
+     * 这里曾额外校验十来个表/列/索引是否存在，用意是「版本号说到位了，再要一份结构证据佐证」。
+     * 那层校验在迁移调度按行等值判定的年代确有作用：判定失效时不短路就等于全量重放，
+     * 于是结构谓词顺带承担了「发现结构缺失并重新补齐」的角色。
+     *
+     * <p>调度改为版本区间过滤后，这个角色消失了。假设某个库记录 8.9 但缺了一列：
+     * 结构谓词让本方法返回 false、不短路，接着 {@link #baselineMigrations()} 以 8.9 为下界
+     * 过滤出空列表，一个迁移都不会执行 —— 与短路的结局完全相同，只是白跑十几次 PRAGMA。
+     * 也就是说那些谓词已经无法改变任何结果，只剩启动开销。
+     *
+     * <p>更根本的一点：结构证据本就无法覆盖所有迁移。V8.7 与 V8.9 只改列里的 JSON 形态，
+     * 为了让它们「有结构可查」才额外加了两个 schema 版本列。既然判定退回纯版本比较，
+     * 未来的纯数据迁移不再需要为了被判定而虚构一个结构标记。
+     *
+     * <p>版本号与结构不一致的库（人为改库、迁移中途崩溃）确实不再被本方法发现。
+     * 但那种库原先也只是「不短路」而已，并不会被修复，所以这不是能力上的退步。
      */
     private boolean isCurrentBaseline() {
-        if (!tableExists("schema_version") || !columnExists("schema_version", "id")) {
-            return false;
-        }
-        Double version = jdbcTemplate.query(
-                "SELECT version FROM schema_version WHERE id = 1",
-            resultSet -> resultSet.next() ? resultSet.getDouble("version") : null);
-        return version != null && version >= CURRENT_SCHEMA_VERSION
-            && columnExists("provider_config", "display_name") && !columnExists("provider_config", "api_format")
-            && !hasLegacyProviderConfigColumns() && !tableExists("reasoning_cache")
-            && tableExists("api_call_usage") && indexExists("idx_api_call_usage_created")
-            && columnExists("api_call_log", "payload_trimmed")
-            && columnExists("api_call_log", "downstream_protocol")
-            && columnExists("api_call_log", "upstream_protocol")
-            && columnExists("provider_request_transform", "body_rules_schema")
-            && columnExists("provider_config", "supported_protocols")
-            && columnExists("provider_config", "anthropic_base_url")
-            && columnExists("provider_model", "reasoning_effort_schema");
+        Double version = readBaselineVersion();
+        return version != null && version >= CURRENT_SCHEMA_VERSION - VERSION_COMPARISON_EPSILON;
     }
 
     /**
@@ -224,9 +261,10 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         + "description = excluded.description, "
                         + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')",
                     CURRENT_SCHEMA_VERSION,
-                    "V8.9 架构基线：统一供应商实现、token 用量表、日志载荷瘦身与线路协议、"
+                    formatVersion(CURRENT_SCHEMA_VERSION)
+                            + " 架构基线：统一供应商实现、token 用量表、日志载荷瘦身与线路协议、"
                             + "请求体规则分组、供应商协议支持与 Anthropic 端点、思考深度注入模式"));
-        log.info("[SchemaMigration] 已建立 V{} 架构基线", CURRENT_SCHEMA_VERSION);
+        log.info("[SchemaMigration] 已建立 {} 架构基线", formatVersion(CURRENT_SCHEMA_VERSION));
     }
 
     /**
@@ -273,15 +311,33 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                 && jdbcTemplate.queryForObject("SELECT COUNT(*) FROM schema_version WHERE id = 1", Integer.class) == 1;
     }
 
+    /**
+     * 执行单个迁移，已应用过的直接跳过。
+     *
+     * <p>「是否已应用」在 V7 前后是两种不同的问题，因为版本记录表本身是两种形态：
+     * <ul>
+     *   <li>V1-V6 的多行表逐版本 INSERT，于是「表里有没有这一行」精确等价于「跑过没有」；</li>
+     *   <li>V7 起的单行表只保存当前版本，判定必须是<strong>版本比较</strong> ——
+     *       库停在 8.9 时，8.5 早已应用，尽管表里找不到 {@code version = 8.5} 这一行。</li>
+     * </ul>
+     *
+     * <p>这里的行等值判定曾被无差别用于两种形态，导致跨版本升级时 V7 之后的每个迁移
+     * 都被判成未应用而重放，且唯一被跳过的是恰好等于库当前版本的那一个。重放本应由各迁移体
+     * 的幂等性兜住，但幂等只覆盖 DDL：V8.6 的协议回填会改写应用层已正确写入的日志，
+     * V8 的键收敛会删掉名字以 {@code custom-} 开头的合法供应商及其 API Key。
+     */
     private void migrate(double version, String description, Runnable action) {
+        if (version >= V7_BASELINE_VERSION) {
+            if (isAppliedOnBaseline(version)) {
+                return;
+            }
+            transactionTemplate.executeWithoutResult(status -> action.run());
+            log.info("[SchemaMigration] 已应用 {}: {}", formatVersion(version), description);
+            return;
+        }
         Integer applied = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM schema_version WHERE version = ?", Integer.class, version);
         if (applied != null && applied > 0) {
-            return;
-        }
-        if (version >= V7_BASELINE_VERSION) {
-            transactionTemplate.executeWithoutResult(status -> action.run());
-            log.info("[SchemaMigration] 已应用 V{}: {}", version, description);
             return;
         }
         transactionTemplate.executeWithoutResult(status -> {
@@ -289,7 +345,39 @@ public class SchemaMigrationRunner implements ApplicationRunner {
             jdbcTemplate.update("INSERT INTO schema_version (version, description) VALUES (?, ?)",
                     version, description);
         });
-        log.info("[SchemaMigration] 已应用 V{}: {}", version, description);
+        log.info("[SchemaMigration] 已应用 {}: {}", formatVersion(version), description);
+    }
+
+    /**
+     * 判断单行基线表记录的版本是否已覆盖给定迁移。
+     *
+     * <p>没有记录时返回 false：此时库正沿历史路径升级，V7 迁移体尚未建出单行表，
+     * 该版本自然还没应用过。
+     */
+    private boolean isAppliedOnBaseline(double version) {
+        Double recorded = readBaselineVersion();
+        return recorded != null && recorded >= version - VERSION_COMPARISON_EPSILON;
+    }
+
+    /** 读取单行基线表的当前版本；表或行不存在时返回 null。 */
+    private Double readBaselineVersion() {
+        if (!tableExists("schema_version") || !columnExists("schema_version", "id")) {
+            return null;
+        }
+        return jdbcTemplate.query("SELECT version FROM schema_version WHERE id = 1",
+                resultSet -> resultSet.next() ? resultSet.getDouble("version") : null);
+    }
+
+    /**
+     * 把版本号格式化为日志与描述里的显示形式。
+     *
+     * <p>V9 起版本号是整数值的 double，直接打印会得到 {@code V9.0} —— 那正是本次要摆脱的
+     * {@code a.b} 形态。可无损转为整数时去掉小数部分，历史的 {@code a.b} 版本原样保留。
+     */
+    private static String formatVersion(double version) {
+        return version == Math.rint(version)
+                ? "V" + (long) version
+                : "V" + version;
     }
 
     private record MigrationStep(double version, String description, Runnable action) {
@@ -653,11 +741,15 @@ public class SchemaMigrationRunner implements ApplicationRunner {
      * 而「两种格式并存」正是要消除的状态。过一遍 V8.7 后全库同格式，读取端的 V1 兼容
      * 就退化为纯粹的向后兜底而非常态路径。
      *
-     * <h2>为何要加 {@code body_rules_schema} 列</h2>
-     * {@link #isCurrentBaseline()} 的判定全部由结构性谓词（列/表/索引是否存在）构成，
-     * 因为那些谓词与「数据里恰好有什么」无关，空库也成立。若 V8.7 只改 JSON 内容，
-     * 唯一可查的证据就是「随便挑一行看它是不是 V2」—— 而空表或全新库根本没有行，
-     * 判定会永远为假、迁移每次启动都重跑。加一列把这次变更变成可判定的结构事实。
+     * <h2>为何当时加了 {@code body_rules_schema} 列</h2>
+     * 当时 {@link #isCurrentBaseline()} 除版本号外还要求一排结构性谓词，而迁移调度又是行等值判定：
+     * 不短路就等于全量重放。本次只改列里的 JSON 形态、没有结构变化，唯一可查的证据就是
+     * 「挑一行看它是不是 V2」—— 而空库根本没有行，于是额外加了这一列来凑出结构证据。
+     *
+     * <p><strong>这个理由已不再成立。</strong>调度改为版本区间过滤后，
+     * {@code isCurrentBaseline()} 只看版本号，纯数据迁移不需要为了被判定而虚构结构标记。
+     * 本列保留只为两件事：已入库无法回收，以及直接查库排障时能一眼看出该列按哪个版本解读。
+     * 下一次纯数据迁移不要照搬这个做法。
      *
      * <h2>旧的两个编辑器列</h2>
      * {@code body_template_keys_json} 与 {@code body_preview_json} 保留为 legacy：
@@ -743,11 +835,12 @@ public class SchemaMigrationRunner implements ApplicationRunner {
      * 二是直接查库排查问题时，同一列出现两种写法，无法一眼看出某个模型到底配了什么。
      * 过一遍 V8.9 后全库同形态，读取端的旧格式兼容就退化为纯粹的向后兜底而非常态路径。
      *
-     * <h2>为何要加 {@code reasoning_effort_schema} 列</h2>
-     * 与 V8.7 同一个理由：{@link #isCurrentBaseline()} 的判定全部由结构性谓词构成
-     * （列/表/索引是否存在），因为那些谓词与「数据里恰好有什么」无关，空库也成立。
-     * 若本次只改 JSON 内容，唯一可查的证据就是「随便挑一行看它是不是 JSON」——
-     * 而空表或全新库根本没有行，判定会永远为假、迁移每次启动都重跑。
+     * <h2>为何当时加了 {@code reasoning_effort_schema} 列</h2>
+     * 与 V8.7 同一个理由：当时的基线判定除版本号外还要求结构性证据，
+     * 而迁移调度的行等值判定使得「不短路」等于全量重放，于是纯数据变更也得凑出一列。
+     *
+     * <p><strong>这个理由已不再成立。</strong>详见 {@link #isCurrentBaseline()}：
+     * 基线判定现在只看版本号，本列保留只为已入库无法回收与查库排障时的可读性。
      *
      * <h2>转换口径</h2>
      * 全部委托 {@link ReasoningEffortSetting#parse} 与
@@ -959,12 +1052,6 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
         return jdbcTemplate.queryForList("PRAGMA table_info(" + table + ")").stream()
                 .anyMatch(row -> column.equals(row.get("name")));
-    }
-
-    private boolean indexExists(String index) {
-        Integer count = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", Integer.class, index);
-        return count != null && count > 0;
     }
 
     private void createProviderRequestTransformTable() {
