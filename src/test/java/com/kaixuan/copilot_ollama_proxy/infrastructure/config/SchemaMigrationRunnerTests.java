@@ -766,11 +766,10 @@ class SchemaMigrationRunnerTests {
     }
 
     /**
-     * 空库同样要判定成已迁移。
+     * 一张模型都没有的库也要能升到当前版本并保持幂等。
      *
-     * <p>{@code isCurrentBaseline()} 的谓词全是结构性的（列是否存在），因为那与
-     * 「数据里恰好有什么」无关、空库同样成立。若把判定改成「随便挑一行看它是不是 V2」，
-     * 空表根本没有行、判定永远为假，迁移会在每次启动时重跑。
+     * <p>V8.9 逐行重写 {@code reasoning_effort}，没有行可写时不能因此半途而废 ——
+     * 版本号该照常前移，结构标记列该照常补出。第二次 {@code run} 验证不会重复动作。
      */
     @Test
     void v89MigrationIsIdempotentOnDatabaseWithoutAnyModel() {

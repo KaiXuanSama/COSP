@@ -227,20 +227,27 @@ public class SchemaMigrationRunner implements ApplicationRunner {
 
     /**
      * 判断数据库是否已处于当前单行基线。
+     *
+     * <h2>为何只看版本号</h2>
+     * 这里曾额外校验十来个表/列/索引是否存在，用意是「版本号说到位了，再要一份结构证据佐证」。
+     * 那层校验在迁移调度按行等值判定的年代确有作用：判定失效时不短路就等于全量重放，
+     * 于是结构谓词顺带承担了「发现结构缺失并重新补齐」的角色。
+     *
+     * <p>调度改为版本区间过滤后，这个角色消失了。假设某个库记录 8.9 但缺了一列：
+     * 结构谓词让本方法返回 false、不短路，接着 {@link #baselineMigrations()} 以 8.9 为下界
+     * 过滤出空列表，一个迁移都不会执行 —— 与短路的结局完全相同，只是白跑十几次 PRAGMA。
+     * 也就是说那些谓词已经无法改变任何结果，只剩启动开销。
+     *
+     * <p>更根本的一点：结构证据本就无法覆盖所有迁移。V8.7 与 V8.9 只改列里的 JSON 形态，
+     * 为了让它们「有结构可查」才额外加了两个 schema 版本列。既然判定退回纯版本比较，
+     * 未来的纯数据迁移不再需要为了被判定而虚构一个结构标记。
+     *
+     * <p>版本号与结构不一致的库（人为改库、迁移中途崩溃）确实不再被本方法发现。
+     * 但那种库原先也只是「不短路」而已，并不会被修复，所以这不是能力上的退步。
      */
     private boolean isCurrentBaseline() {
         Double version = readBaselineVersion();
-        return version != null && version >= CURRENT_SCHEMA_VERSION - VERSION_COMPARISON_EPSILON
-            && columnExists("provider_config", "display_name") && !columnExists("provider_config", "api_format")
-            && !hasLegacyProviderConfigColumns() && !tableExists("reasoning_cache")
-            && tableExists("api_call_usage") && indexExists("idx_api_call_usage_created")
-            && columnExists("api_call_log", "payload_trimmed")
-            && columnExists("api_call_log", "downstream_protocol")
-            && columnExists("api_call_log", "upstream_protocol")
-            && columnExists("provider_request_transform", "body_rules_schema")
-            && columnExists("provider_config", "supported_protocols")
-            && columnExists("provider_config", "anthropic_base_url")
-            && columnExists("provider_model", "reasoning_effort_schema");
+        return version != null && version >= CURRENT_SCHEMA_VERSION - VERSION_COMPARISON_EPSILON;
     }
 
     /**
@@ -734,11 +741,15 @@ public class SchemaMigrationRunner implements ApplicationRunner {
      * 而「两种格式并存」正是要消除的状态。过一遍 V8.7 后全库同格式，读取端的 V1 兼容
      * 就退化为纯粹的向后兜底而非常态路径。
      *
-     * <h2>为何要加 {@code body_rules_schema} 列</h2>
-     * {@link #isCurrentBaseline()} 的判定全部由结构性谓词（列/表/索引是否存在）构成，
-     * 因为那些谓词与「数据里恰好有什么」无关，空库也成立。若 V8.7 只改 JSON 内容，
-     * 唯一可查的证据就是「随便挑一行看它是不是 V2」—— 而空表或全新库根本没有行，
-     * 判定会永远为假、迁移每次启动都重跑。加一列把这次变更变成可判定的结构事实。
+     * <h2>为何当时加了 {@code body_rules_schema} 列</h2>
+     * 当时 {@link #isCurrentBaseline()} 除版本号外还要求一排结构性谓词，而迁移调度又是行等值判定：
+     * 不短路就等于全量重放。本次只改列里的 JSON 形态、没有结构变化，唯一可查的证据就是
+     * 「挑一行看它是不是 V2」—— 而空库根本没有行，于是额外加了这一列来凑出结构证据。
+     *
+     * <p><strong>这个理由已不再成立。</strong>调度改为版本区间过滤后，
+     * {@code isCurrentBaseline()} 只看版本号，纯数据迁移不需要为了被判定而虚构结构标记。
+     * 本列保留只为两件事：已入库无法回收，以及直接查库排障时能一眼看出该列按哪个版本解读。
+     * 下一次纯数据迁移不要照搬这个做法。
      *
      * <h2>旧的两个编辑器列</h2>
      * {@code body_template_keys_json} 与 {@code body_preview_json} 保留为 legacy：
@@ -824,11 +835,12 @@ public class SchemaMigrationRunner implements ApplicationRunner {
      * 二是直接查库排查问题时，同一列出现两种写法，无法一眼看出某个模型到底配了什么。
      * 过一遍 V8.9 后全库同形态，读取端的旧格式兼容就退化为纯粹的向后兜底而非常态路径。
      *
-     * <h2>为何要加 {@code reasoning_effort_schema} 列</h2>
-     * 与 V8.7 同一个理由：{@link #isCurrentBaseline()} 的判定全部由结构性谓词构成
-     * （列/表/索引是否存在），因为那些谓词与「数据里恰好有什么」无关，空库也成立。
-     * 若本次只改 JSON 内容，唯一可查的证据就是「随便挑一行看它是不是 JSON」——
-     * 而空表或全新库根本没有行，判定会永远为假、迁移每次启动都重跑。
+     * <h2>为何当时加了 {@code reasoning_effort_schema} 列</h2>
+     * 与 V8.7 同一个理由：当时的基线判定除版本号外还要求结构性证据，
+     * 而迁移调度的行等值判定使得「不短路」等于全量重放，于是纯数据变更也得凑出一列。
+     *
+     * <p><strong>这个理由已不再成立。</strong>详见 {@link #isCurrentBaseline()}：
+     * 基线判定现在只看版本号，本列保留只为已入库无法回收与查库排障时的可读性。
      *
      * <h2>转换口径</h2>
      * 全部委托 {@link ReasoningEffortSetting#parse} 与
@@ -1040,12 +1052,6 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
         return jdbcTemplate.queryForList("PRAGMA table_info(" + table + ")").stream()
                 .anyMatch(row -> column.equals(row.get("name")));
-    }
-
-    private boolean indexExists(String index) {
-        Integer count = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", Integer.class, index);
-        return count != null && count > 0;
     }
 
     private void createProviderRequestTransformTable() {
