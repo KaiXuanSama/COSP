@@ -989,9 +989,12 @@ class SchemaMigrationRunnerTests {
     //
     // 不要把这两个用例当成对 V8 / V8.6 迁移体的测试 —— 它们测的是迁移调度，
     // 那两个迁移只是「重放后果最容易观察」的取样。
+    //
+    // 第三个用例 upgradeFromPreviousVersionRunsOnlyTheMissingMigration 从日志层面覆盖全部
+    // 更早版本，不依赖任何具体迁移的副作用；前两个则贴近真实危害。三者都不含版本号字面量。
 
     /**
-     * 8.8 -> 8.9 升级不得重放 V8.6 的协议回填，应用层已写入的日志行保持原样。
+     * 落后一个版本的库升级时不得重放 V8.6 的协议回填，应用层已写入的日志行保持原样。
      *
      * <p>V8.6 的回填语句没有任何「仅存量」限定：
      * {@code UPDATE api_call_log SET ... = 'ANTHROPIC' WHERE chunks IS NOT NULL AND chunks NOT LIKE '%[DONE]%'}。
@@ -1005,7 +1008,7 @@ class SchemaMigrationRunnerTests {
     @Test
     void crossVersionUpgradeKeepsProtocolOfTruncatedOpenAiLogWrittenAfterV86() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
-        seedV88Database(jdbcTemplate);
+        seedDatabaseAtPreviousVersion(jdbcTemplate);
         // 一条 V8.6 之后写入的流式 OpenAI 调用：上游中途截断，因此 chunks 里没有 [DONE]。
         // 两个协议列由应用层填写，值是正确的。
         jdbcTemplate.update("INSERT INTO api_call_log "
@@ -1017,12 +1020,12 @@ class SchemaMigrationRunnerTests {
 
         assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
                 .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
-        // 本次升级是 8.8 -> 8.9，与协议列无关，因此两侧协议必须仍是应用层写入的 OPENAI。
+        // 本次升级只差一个版本，与协议列无关，因此两侧协议必须仍是应用层写入的 OPENAI。
         assertProtocols(jdbcTemplate, "gateway", "OPENAI");
     }
 
     /**
-     * 8.8 -> 8.9 升级不得重放 V8，名字以 {@code custom-} 开头的合法供应商不受影响。
+     * 落后一个版本的库升级时不得重放 V8，名字以 {@code custom-} 开头的合法供应商不受影响。
      *
      * <p>V8 的语义是「把 custom-x 收敛为 x，若 x 已存在则删掉 x 由 custom-x 接管」。
      * 那次迁移之后 {@code custom-} 前缀不再有任何特殊含义，所以用户完全可以合法地建一个
@@ -1036,7 +1039,7 @@ class SchemaMigrationRunnerTests {
     @Test
     void crossVersionUpgradeKeepsProviderWhoseNameStartsWithCustomPrefix() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
-        seedV88Database(jdbcTemplate);
+        seedDatabaseAtPreviousVersion(jdbcTemplate);
         // 两个都是 V8 之后建的合法供应商：此时 custom- 只是名字的一部分，没有历史含义。
         jdbcTemplate.update("INSERT INTO provider_config (provider_key, display_name, base_url) "
                 + "VALUES ('custom-gateway', '自建网关', 'https://custom.example.com/v1')");
@@ -1044,17 +1047,24 @@ class SchemaMigrationRunnerTests {
                 + "VALUES ('gateway', '公司网关', 'https://gateway.example.com/v1')");
         int shadowedProviderId = jdbcTemplate.queryForObject(
                 "SELECT id FROM provider_config WHERE provider_key = 'gateway'", Integer.class);
-        jdbcTemplate.update("INSERT INTO provider_api_key (provider_id, key_uuid) VALUES (?, 'uuid-gateway')",
+        // 字段给全：fixture 走的是真实迁移路径，这张表带着 V4 的完整非空约束，
+        // 而 Key 的密文与 nonce 正是重放后无法从别处重建的那部分。
+        jdbcTemplate.update("INSERT INTO provider_api_key "
+                + "(key_uuid, provider_id, key_name, encrypted_api_key, nonce, encryption_version, is_active, sort_order) "
+                + "VALUES ('uuid-gateway', ?, 'Default', 'cipher', 'nonce', 1, 1, 0)",
                 shadowedProviderId);
         jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, reasoning_effort) "
-                + "VALUES (?, 'gateway-model', 'Medium')", shadowedProviderId);
+                + "VALUES (?, 'gateway-model', ?)",
+                shadowedProviderId, "{\"reasoning_effort\":\"medium\",\"overwrite_mode\":\"fallback\"}");
 
         newMigrationRunner(jdbcTemplate).run(null);
 
         // 两行供应商及其关联数据全部原封不动，键名也不被改写。
+        // 用 contains 而非 containsExactly：fixture 走真实迁移路径，库里还有历史数据带来的
+        // 其它供应商，而本用例只关心这两个键有没有被 V8 的收敛逻辑动过。
         List<String> providerKeys = jdbcTemplate.queryForList(
                 "SELECT provider_key FROM provider_config ORDER BY id", String.class);
-        assertThat(providerKeys).containsExactly("custom-gateway", "gateway");
+        assertThat(providerKeys).contains("custom-gateway", "gateway");
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT display_name FROM provider_config WHERE provider_key = 'gateway'", String.class))
                 .isEqualTo("公司网关");
@@ -1067,10 +1077,6 @@ class SchemaMigrationRunnerTests {
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM provider_model WHERE model_name = 'gateway-model'", Integer.class))
                 .isEqualTo(1);
-        // V7.1 同样不得重放：它会 DROP 再重建 provider_config 的校验触发器，
-        // 而该触发器在 fixture 里并不存在 —— 仍不存在即说明 V7.1 没被执行。
-        // 这比看数据更直接：前面那些断言只能证明 V8 没跑，这一条把范围覆盖到 V7.1。
-        assertThat(triggerExists(jdbcTemplate, "trg_provider_config_validate_update")).isFalse();
     }
 
     /**
@@ -1078,23 +1084,48 @@ class SchemaMigrationRunnerTests {
      *
      * <p>前两个用例通过「某个迁移的副作用有没有发生」间接证明它没跑，好处是贴近真实危害，
      * 代价是一旦那两个迁移体的实现变了，断言就跟着失去意义。这里直接断言执行了哪些版本，
-     * 不依赖任何具体迁移的行为 —— 未来新增迁移时，这个用例仍然守着同一个不变量。
+     * 不依赖任何具体迁移的行为。
      *
-     * <p>断言只要求「不出现 V9 之前的版本」而非「恰好只有一行 V9」：
-     * 加列一类的结构变更也会各写一行日志，把它们算进来会让断言绑定到 V9 的实现细节。
+     * <h2>不写死版本号</h2>
+     * 这个不变量与版本号无关，所以断言里不出现任何版本号字面量：待执行的那一版取自
+     * {@code currentSchemaVersion()}，不该执行的那些由注册表筛出。新增迁移时本用例无需修改。
+     *
+     * <p>日志按「本次运行输出了什么」截取：fixture 推进阶段自己也会打迁移日志，
+     * 若对全量日志断言，那些行会让「更早版本没跑」永远不成立。记下推进后的日志长度再截尾，
+     * 于是两个阶段天然分开。
+     *
+     * <p>版本号后必须带冒号：{@code 已应用 V8} 是 {@code 已应用 V8.9} 的前缀，
+     * 而 {@code 已应用 V1} 是 {@code 已应用 V10} 的前缀，缺了冒号断言永远失败。
      */
     @Test
     void upgradeFromPreviousVersionRunsOnlyTheMissingMigration(CapturedOutput output) {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
-        seedV89Database(jdbcTemplate);
+        seedDatabaseAtPreviousVersion(jdbcTemplate);
+        int logLengthBeforeUpgrade = output.getAll().length();
 
         newMigrationRunner(jdbcTemplate).run(null);
 
-        // 版本号后必须带冒号：「已应用 V8」是「已应用 V8.9」的前缀，缺了冒号断言永远失败。
-        assertThat(output).contains("已应用 V9:");
-        assertThat(output).doesNotContain("已应用 V7.1:", "已应用 V8:", "已应用 V8.1:", "已应用 V8.2:",
-                "已应用 V8.3:", "已应用 V8.4:", "已应用 V8.5:", "已应用 V8.6:", "已应用 V8.7:",
-                "已应用 V8.8:", "已应用 V8.9:");
+        String upgradeLog = output.getAll().substring(logLengthBeforeUpgrade);
+        double current = SchemaMigrationRunner.currentSchemaVersion();
+        assertThat(upgradeLog).contains(appliedMarker(current));
+        assertThat(upgradeLog).doesNotContain(
+                newMigrationRunner(jdbcTemplate).registeredMigrationVersions().stream()
+                        .filter(version -> version < current)
+                        .map(this::appliedMarker)
+                        .toArray(String[]::new));
+    }
+
+    /**
+     * 拼出迁移日志里「已应用某版本」的那段前缀，格式与 {@code formatVersion()} 一致。
+     *
+     * <p>整数版本渲染成 {@code V9} 而非 {@code V9.0}，历史的 {@code a.b} 原样保留。
+     * 末尾的冒号是断言正确性的前提，见调用方注释。
+     */
+    private String appliedMarker(double version) {
+        String rendered = version == Math.rint(version)
+                ? "V" + (long) version
+                : "V" + version;
+        return "已应用 " + rendered + ":";
     }
 
     /**
@@ -1335,34 +1366,25 @@ class SchemaMigrationRunnerTests {
         }
 
         /**
-         * 建出 V8.6 时的 api_call_log：两侧协议列已就位。
+         * 造出一个恰好落后当前版本一步的库：最新那个迁移是唯一应当执行的。
          *
-         * <p>此后写入的行由应用层直接填正确协议，不再依赖 V8.6 那次基于 chunks 的启发式回填。
-         */
-        private void createV86CallLogTable(JdbcTemplate jdbcTemplate) {
-                createV85CallLogTable(jdbcTemplate);
-                jdbcTemplate.execute("ALTER TABLE api_call_log ADD COLUMN downstream_protocol TEXT NOT NULL "
-                                + "DEFAULT 'OPENAI' CHECK (downstream_protocol IN ('OPENAI', 'ANTHROPIC'))");
-                jdbcTemplate.execute("ALTER TABLE api_call_log ADD COLUMN upstream_protocol TEXT NOT NULL "
-                                + "DEFAULT 'OPENAI' CHECK (upstream_protocol IN ('OPENAI', 'ANTHROPIC'))");
-        }
-
-        /**
-         * 建出一个结构完整、版本记录为 8.8 的库：V8.9 是唯一<strong>应当</strong>执行的迁移。
+         * <p>从历史库出发、用 {@code migrateThrough} 推到<strong>倒数第二个</strong>已注册版本，
+         * 而不手写那一版的建表语句。两个好处：走的是生产的执行路径，因而必然与真实升级后的
+         * 结构一致；且新增迁移时本方法无需修改 —— 旧写法是每加一版就要新增一个
+         * {@code seedV<前一版>Database} 并把上一个改名或删掉。
          *
-         * <p>与各个单版本用例的 fixture 不同，这里把 V8.8 需要的四张表全部备齐并显式建出
-         * {@code provider_api_key}，因为跨版本重放会把 V7.1 起的每个迁移都拉进来执行，
-         * 其中 V8 的冲突处理会去删关联表 —— 表缺失会让用例以 SQL 错误告终，
-         * 而那会掩盖真正要观察的重放行为。
+         * <p>取倒数第二项而非反推「当前版本减一」：版本号间隔不规则（历史上是 0.1，
+         * V9 起是 1），只有注册表的顺序才是「前一版」的权威定义。
          */
-        private void seedV88Database(JdbcTemplate jdbcTemplate) {
-                createV88ProviderConfigTable(jdbcTemplate);
-                createV88ProviderModelTable(jdbcTemplate);
-                createV87RequestTransformTable(jdbcTemplate);
-                createV86CallLogTable(jdbcTemplate);
-                jdbcTemplate.execute("CREATE TABLE provider_api_key (id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                                + "provider_id INTEGER NOT NULL, key_uuid TEXT NOT NULL UNIQUE)");
-                seedV86SchemaVersion(jdbcTemplate, 8.8);
+        private void seedDatabaseAtPreviousVersion(JdbcTemplate jdbcTemplate) {
+                createLegacySchema(jdbcTemplate);
+                seedLegacyData(jdbcTemplate);
+                List<Double> versions = newMigrationRunner(jdbcTemplate).registeredMigrationVersions();
+                double previous = versions.get(versions.size() - 2);
+                newMigrationRunner(jdbcTemplate).migrateThrough(previous);
+                assertThat(jdbcTemplate.queryForObject(
+                                "SELECT version FROM schema_version WHERE id = 1", Double.class))
+                                .isEqualTo(previous);
         }
 
         private void createCurrentProviderAssociations(JdbcTemplate jdbcTemplate) {
@@ -1406,18 +1428,6 @@ class SchemaMigrationRunnerTests {
                 createV88ProviderModelTable(jdbcTemplate);
                 jdbcTemplate.execute("ALTER TABLE provider_model ADD COLUMN reasoning_effort_schema "
                                 + "INTEGER NOT NULL DEFAULT 2 CHECK (reasoning_effort_schema >= 1)");
-        }
-
-        /**
-         * 建出一个结构完整、版本记录为 8.9 的库：V9 是唯一<strong>应当</strong>执行的迁移。
-         *
-         * <p>在 V8.8 库的基础上补上 V8.9 的产物：结构标记列与已收敛为 V2 JSON 的思考深度。
-         */
-        private void seedV89Database(JdbcTemplate jdbcTemplate) {
-                seedV88Database(jdbcTemplate);
-                jdbcTemplate.execute("ALTER TABLE provider_model ADD COLUMN reasoning_effort_schema "
-                                + "INTEGER NOT NULL DEFAULT 2 CHECK (reasoning_effort_schema >= 1)");
-                jdbcTemplate.update("UPDATE schema_version SET version = 8.9, description = 'V8.9' WHERE id = 1");
         }
 
         /** 插一行带指定最大输出值的模型，模型名即用例里的标签。 */
@@ -1480,13 +1490,6 @@ class SchemaMigrationRunnerTests {
         private boolean indexExists(JdbcTemplate jdbcTemplate, String indexName) {
                 Integer count = jdbcTemplate.queryForObject(
                                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", Integer.class, indexName);
-                return count != null && count > 0;
-        }
-
-        private boolean triggerExists(JdbcTemplate jdbcTemplate, String triggerName) {
-                Integer count = jdbcTemplate.queryForObject(
-                                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?",
-                                Integer.class, triggerName);
                 return count != null && count > 0;
         }
 
