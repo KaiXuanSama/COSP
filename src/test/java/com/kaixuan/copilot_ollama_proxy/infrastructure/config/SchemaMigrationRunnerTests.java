@@ -113,15 +113,18 @@ class SchemaMigrationRunnerTests {
                 "idx_api_call_log_created_id",
                 "idx_api_call_log_provider_created_id");
 
+        // V9 起 max_output_tokens 是 JSON，因此这两条测的分别是「context_size 不得为负」
+        // （V3 触发器经 V9 重建后仍在）与「同供应商不得重名」（唯一索引随表重建）。
+        String validMaxOutput = "{\"max_output_tokens\":4000,\"overwrite_mode\":\"fallback\"}";
         assertThatThrownBy(() -> jdbcTemplate.update(
                 "INSERT INTO provider_model "
                         + "(provider_id, model_name, enabled, context_size, max_output_tokens, caps_tools, caps_vision, reasoning_effort, sort_order) "
-                        + "VALUES (1, 'invalid', 1, -1, 128000, 1, 0, 'Medium', 0)"))
+                        + "VALUES (1, 'invalid', 1, -1, ?, 1, 0, 'Medium', 0)", validMaxOutput))
                 .isInstanceOf(DataAccessException.class);
         assertThatThrownBy(() -> jdbcTemplate.update(
                 "INSERT INTO provider_model "
                         + "(provider_id, model_name, enabled, context_size, max_output_tokens, caps_tools, caps_vision, reasoning_effort, sort_order) "
-                        + "VALUES (1, 'duplicate', 1, 1, 1, 1, 0, 'Medium', 1)"))
+                        + "VALUES (1, 'duplicate', 1, 1, ?, 1, 0, 'Medium', 1)", validMaxOutput))
                 .isInstanceOf(DataAccessException.class);
     }
 
@@ -152,12 +155,15 @@ class SchemaMigrationRunnerTests {
         assertThat(columnNames(jdbcTemplate, "provider_config"))
                 .contains("supported_protocols", "anthropic_base_url");
         assertThat(columnNames(jdbcTemplate, "provider_model")).contains("reasoning_effort_schema");
-        // 新库的默认思考深度须与迁移后的规范形态一致，否则「全库同形态」只在升级库成立。
+        // 新库的两个默认 JSON 须与迁移后的规范形态逐字一致，
+        // 否则「全库同形态」只在升级库成立而新库不成立。
         jdbcTemplate.update("INSERT INTO provider_config (provider_key, display_name, enabled, base_url) "
                 + "VALUES ('p', 'P', 1, 'https://p.example/v1')");
         jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name) VALUES (1, 'm')");
         assertThat(reasoningEffortOf(jdbcTemplate, "m"))
                 .isEqualTo("{\"reasoning_effort\":\"medium\",\"overwrite_mode\":\"fallback\"}");
+        assertThat(maxOutputOf(jdbcTemplate, "m"))
+                .isEqualTo("{\"max_output_tokens\":4000,\"overwrite_mode\":\"fallback\"}");
     }
 
     @Test
@@ -805,6 +811,169 @@ class SchemaMigrationRunnerTests {
                 .isInstanceOf(DataAccessException.class);
     }
 
+    // ==================== V9：最大输出升级为上限与注入模式 ====================
+
+    /**
+     * V8.9 库升到 V9：裸整数转为 V9 JSON，档位按新预设重映射。
+     *
+     * <p>重映射口径是本次迁移唯一需要推敲的地方，而 128K 那一行是全部理由所在：
+     * 它<strong>既是</strong>「降为 4K」的源，<strong>又是</strong>「256K/512K 降过来」的靶。
+     * 若写成两条顺序 UPDATE，原本选 512K 的模型会先变 128000 再变 4000 —— 一路滴到 4K，
+     * 而用户以为自己只是从超大档退到了标准档。同时映射让两条规则各自独立。
+     *
+     * <p>4096 与 8192 是二进制值，不在十进制预设表里，属于「非标值」：原样保留。
+     * 这一条钉住的是「迁移不擅自改用户手填的数」——
+     * 只有恰好落在旧预设上的值才被视为「选过某个档位」，其余都是明确的自定义。
+     */
+    @Test
+    void v89DatabaseConvertsMaxOutputAndRemapsPresetsDuringV9Migration() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV89ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.9);
+        seedMaxOutput(jdbcTemplate, "was-128k", 128000);
+        seedMaxOutput(jdbcTemplate, "was-256k", 256000);
+        seedMaxOutput(jdbcTemplate, "was-512k", 512000);
+        seedMaxOutput(jdbcTemplate, "was-64k", 64000);
+        seedMaxOutput(jdbcTemplate, "binary-4k", 4096);
+        seedMaxOutput(jdbcTemplate, "binary-8k", 8192);
+        seedMaxOutput(jdbcTemplate, "odd", 12345);
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+        // 两条重映射规则各自成立，互不影响。
+        assertThat(maxOutputTokensOf(jdbcTemplate, "was-128k")).isEqualTo(4000);
+        assertThat(maxOutputTokensOf(jdbcTemplate, "was-256k")).isEqualTo(128000);
+        assertThat(maxOutputTokensOf(jdbcTemplate, "was-512k")).isEqualTo(128000);
+        // 64K 仍是标准预设，不在重映射表里。
+        assertThat(maxOutputTokensOf(jdbcTemplate, "was-64k")).isEqualTo(64000);
+        // 非标值原样保留。
+        assertThat(maxOutputTokensOf(jdbcTemplate, "binary-4k")).isEqualTo(4096);
+        assertThat(maxOutputTokensOf(jdbcTemplate, "binary-8k")).isEqualTo(8192);
+        assertThat(maxOutputTokensOf(jdbcTemplate, "odd")).isEqualTo(12345);
+        // 全部行都落到兜底模式：V9 之前这个值压根没进过请求体，兜底最接近「什么都没变」。
+        assertThat(maxOutputOf(jdbcTemplate, "was-64k"))
+                .isEqualTo("{\"max_output_tokens\":64000,\"overwrite_mode\":\"fallback\"}");
+    }
+
+    /**
+     * 重跑 V9 不会把已经降过档的值再降一次。
+     *
+     * <p>这是本迁移最容易写错的地方：重映射表把 128000 映到 4000，而首次迁移的结果里
+     * 恰好会出现 {@code max_output_tokens: 128000}（原 256K/512K 降过来的）。
+     * 若转换逻辑对已是 JSON 的行也套用重映射，第二次运行就会把它们再降成 4000 ——
+     * 一个只在「跑两遍」时才显形的缺陷，单次运行的断言完全看不到。
+     */
+    @Test
+    void v9MigrationDoesNotRemapAlreadyConvertedValuesOnRerun() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV89ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.9);
+        seedMaxOutput(jdbcTemplate, "was-512k", 512000);
+        seedMaxOutput(jdbcTemplate, "was-128k", 128000);
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        assertThat(maxOutputTokensOf(jdbcTemplate, "was-512k")).isEqualTo(128000);
+        assertThat(maxOutputTokensOf(jdbcTemplate, "was-128k")).isEqualTo(4000);
+
+        runner.run(null);
+
+        // 第二遍必须一字不变 —— 128000 不再被当作「选了 128K 档」而降到 4000。
+        assertThat(maxOutputTokensOf(jdbcTemplate, "was-512k")).isEqualTo(128000);
+        assertThat(maxOutputTokensOf(jdbcTemplate, "was-128k")).isEqualTo(4000);
+    }
+
+    /**
+     * V9 重建表后列约束换成 json_valid，且其余字段的校验触发器仍然有效。
+     *
+     * <p>后半句是重建表的主要风险：V3 建的两个校验触发器绑在表名上，
+     * {@code DROP TABLE} 会连带删掉它们且<strong>不报错</strong>。
+     * 若重建流程忘了把它们建回来，`enabled`、`caps_tools` 等字段的校验会静默失效 ——
+     * 没有任何现象，直到某天一个非法值进了库。
+     */
+    @Test
+    void v9RebuiltTableEnforcesJsonAndKeepsOtherValidations() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV89ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.9);
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "INSERT INTO provider_model (provider_id, model_name, max_output_tokens) "
+                        + "VALUES (1, 'bad-json', 'not-json')"))
+                .isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "INSERT INTO provider_model (provider_id, model_name, caps_tools) "
+                        + "VALUES (1, 'bad-caps', 7)"))
+                .isInstanceOf(DataAccessException.class);
+        // 唯一索引也必须随表重建，否则同名模型会重复入库。
+        jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name) VALUES (1, 'dup')");
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "INSERT INTO provider_model (provider_id, model_name) VALUES (1, 'dup')"))
+                .isInstanceOf(DataAccessException.class);
+    }
+
+    /**
+     * 重建表必须保住其余列的数据与主键。
+     *
+     * <p>{@code INSERT ... SELECT} 逐列显式列出而非 {@code SELECT *}：这张表历经多次
+     * {@code ADD COLUMN}，物理列顺序不可假定，而 {@code SELECT *} 按顺序对位。
+     * 一旦顺序与新表不一致，数据会串列 —— 而串列后的值往往仍能通过各自的约束。
+     */
+    @Test
+    void v9RebuildPreservesEveryOtherColumn() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV89ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.9);
+        jdbcTemplate.update("INSERT INTO provider_model (id, provider_id, model_name, enabled, context_size, "
+                + "max_output_tokens, caps_tools, caps_vision, reasoning_effort, sort_order) "
+                + "VALUES (77, 5, 'keep-me', 0, 32768, 64000, 1, 1, ?, 3)",
+                "{\"reasoning_effort\":\"high\",\"overwrite_mode\":\"override\"}");
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        Map<String, Object> row = jdbcTemplate.queryForMap(
+                "SELECT * FROM provider_model WHERE model_name = 'keep-me'");
+        assertThat(((Number) row.get("id")).intValue()).isEqualTo(77);
+        assertThat(((Number) row.get("provider_id")).intValue()).isEqualTo(5);
+        assertThat(((Number) row.get("enabled")).intValue()).isZero();
+        assertThat(((Number) row.get("context_size")).intValue()).isEqualTo(32768);
+        assertThat(((Number) row.get("caps_tools")).intValue()).isEqualTo(1);
+        assertThat(((Number) row.get("caps_vision")).intValue()).isEqualTo(1);
+        assertThat(row.get("reasoning_effort"))
+                .isEqualTo("{\"reasoning_effort\":\"high\",\"overwrite_mode\":\"override\"}");
+        assertThat(((Number) row.get("sort_order")).intValue()).isEqualTo(3);
+        assertThat(maxOutputTokensOf(jdbcTemplate, "keep-me")).isEqualTo(64000);
+    }
+
+    /** 空库同样要判定成已迁移：重建表是结构变更，与表里有没有行无关。 */
+    @Test
+    void v9MigrationIsIdempotentOnDatabaseWithoutAnyModel() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV89ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 8.9);
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        runner.run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+    }
+
     // ==================== 跨版本升级只执行缺失的迁移 ====================
     //
     // 以下两个用例锁定同一个不变量：库版本落后于代码版本时，只能执行区间内缺失的迁移，
@@ -911,20 +1080,21 @@ class SchemaMigrationRunnerTests {
      * 代价是一旦那两个迁移体的实现变了，断言就跟着失去意义。这里直接断言执行了哪些版本，
      * 不依赖任何具体迁移的行为 —— 未来新增迁移时，这个用例仍然守着同一个不变量。
      *
-     * <p>断言只要求「不出现 V8.9 之前的版本」而非「恰好只有一行 V8.9」：
-     * 加列一类的结构变更也会各写一行日志，把它们算进来会让断言绑定到 V8.9 的实现细节。
+     * <p>断言只要求「不出现 V9 之前的版本」而非「恰好只有一行 V9」：
+     * 加列一类的结构变更也会各写一行日志，把它们算进来会让断言绑定到 V9 的实现细节。
      */
     @Test
     void upgradeFromPreviousVersionRunsOnlyTheMissingMigration(CapturedOutput output) {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
-        seedV88Database(jdbcTemplate);
+        seedV89Database(jdbcTemplate);
 
         newMigrationRunner(jdbcTemplate).run(null);
 
         // 版本号后必须带冒号：「已应用 V8」是「已应用 V8.9」的前缀，缺了冒号断言永远失败。
-        assertThat(output).contains("已应用 V8.9:");
+        assertThat(output).contains("已应用 V9:");
         assertThat(output).doesNotContain("已应用 V7.1:", "已应用 V8:", "已应用 V8.1:", "已应用 V8.2:",
-                "已应用 V8.3:", "已应用 V8.4:", "已应用 V8.5:", "已应用 V8.6:", "已应用 V8.7:", "已应用 V8.8:");
+                "已应用 V8.3:", "已应用 V8.4:", "已应用 V8.5:", "已应用 V8.6:", "已应用 V8.7:",
+                "已应用 V8.8:", "已应用 V8.9:");
     }
 
     /**
@@ -1228,6 +1398,48 @@ class SchemaMigrationRunnerTests {
                                 version, "V" + version);
         }
 
+        /**
+         * 建出 V8.9 时的 provider_model：{@code max_output_tokens} 仍是 INTEGER，
+         * 那正是 V9 要换成带 {@code json_valid} 约束的 TEXT 的那一列。
+         */
+        private void createV89ProviderModelTable(JdbcTemplate jdbcTemplate) {
+                createV88ProviderModelTable(jdbcTemplate);
+                jdbcTemplate.execute("ALTER TABLE provider_model ADD COLUMN reasoning_effort_schema "
+                                + "INTEGER NOT NULL DEFAULT 2 CHECK (reasoning_effort_schema >= 1)");
+        }
+
+        /**
+         * 建出一个结构完整、版本记录为 8.9 的库：V9 是唯一<strong>应当</strong>执行的迁移。
+         *
+         * <p>在 V8.8 库的基础上补上 V8.9 的产物：结构标记列与已收敛为 V2 JSON 的思考深度。
+         */
+        private void seedV89Database(JdbcTemplate jdbcTemplate) {
+                seedV88Database(jdbcTemplate);
+                jdbcTemplate.execute("ALTER TABLE provider_model ADD COLUMN reasoning_effort_schema "
+                                + "INTEGER NOT NULL DEFAULT 2 CHECK (reasoning_effort_schema >= 1)");
+                jdbcTemplate.update("UPDATE schema_version SET version = 8.9, description = 'V8.9' WHERE id = 1");
+        }
+
+        /** 插一行带指定最大输出值的模型，模型名即用例里的标签。 */
+        private void seedMaxOutput(JdbcTemplate jdbcTemplate, String modelName, int rawMaxOutput) {
+                jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, max_output_tokens) "
+                                + "VALUES (1, ?, ?)", modelName, rawMaxOutput);
+        }
+
+        private String maxOutputOf(JdbcTemplate jdbcTemplate, String modelName) {
+                return jdbcTemplate.queryForObject(
+                                "SELECT max_output_tokens FROM provider_model WHERE model_name = ?",
+                                String.class, modelName);
+        }
+
+        /** 取出 V9 JSON 里的 token 上限，便于断言档位重映射结果。 */
+        private int maxOutputTokensOf(JdbcTemplate jdbcTemplate, String modelName) {
+                return jdbcTemplate.queryForObject(
+                                "SELECT json_extract(max_output_tokens, '$.max_output_tokens') "
+                                                + "FROM provider_model WHERE model_name = ?",
+                                Integer.class, modelName);
+        }
+
         private JsonNode readRuleSet(JdbcTemplate jdbcTemplate, int providerId) throws Exception {
                 return new ObjectMapper().readTree(jdbcTemplate.queryForObject(
                                 "SELECT body_rules_json FROM provider_request_transform WHERE provider_id = ?",
@@ -1321,6 +1533,14 @@ class SchemaMigrationRunnerTests {
                 if (version >= 8.9) {
                         assertThat(columnNames(jdbcTemplate, "provider_model"))
                                 .contains("reasoning_effort_schema");
+                }
+                if (version >= 9) {
+                        // 重建表后该列是 JSON：断言约束而非列名 —— 列名 V9 之前就存在，
+                        // 只有「非 JSON 被拒」才能证明重建真的发生过。
+                        assertThatThrownBy(() -> jdbcTemplate.update(
+                                "INSERT INTO provider_model (provider_id, model_name, max_output_tokens) "
+                                        + "VALUES (999, 'v9-checkpoint-probe', 'not-json')"))
+                                .isInstanceOf(DataAccessException.class);
                 }
         }
 }

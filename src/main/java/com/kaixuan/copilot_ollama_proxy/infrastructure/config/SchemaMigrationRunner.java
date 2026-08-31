@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.config;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService;
@@ -40,7 +41,9 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final double V8_6_VERSION = 8.6;
     private static final double V8_7_VERSION = 8.7;
     private static final double V8_8_VERSION = 8.8;
-    private static final double CURRENT_SCHEMA_VERSION = 8.9;
+    private static final double V8_9_VERSION = 8.9;
+    /** V9 起版本号为整数；{@code a.b} 作为 double 会让 V8.10 碎成 V8.1。 */
+    private static final double CURRENT_SCHEMA_VERSION = 9;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -74,6 +77,44 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final String DEFAULT_SUPPORTED_PROTOCOLS_JSON = "[\"OPENAI\",\"ANTHROPIC\"]";
     /** 当前思考深度配置的结构版本，与 {@code reasoning_effort_schema} 列取值一致。 */
     private static final int CURRENT_REASONING_EFFORT_VERSION = 2;
+    /**
+     * V9 重建 {@code provider_model} 后该表的完整 DDL，与 {@code schema.sql} 逐字对应。
+     *
+     * <p>必须重建而非 {@code ALTER}：{@code max_output_tokens} 原本是
+     * {@code INTEGER ... CHECK (max_output_tokens >= 0)}，SQLite 不允许修改已有列的
+     * 类型与约束。旧的数值约束对 JSON 文本永远为真（SQLite 把非数字文本当 0 比），
+     * 留着就是一条永不生效的约束，而 {@code json_valid} 才是新形态真正需要的校验。
+     */
+    private static final String PROVIDER_MODEL_DDL_V9 = "CREATE TABLE provider_model ("
+            + "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            + "provider_id INTEGER NOT NULL, "
+            + "model_name VARCHAR(100) NOT NULL, "
+            + "enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)), "
+            + "context_size INTEGER NOT NULL DEFAULT 0 CHECK (context_size >= 0), "
+            + "max_output_tokens TEXT NOT NULL DEFAULT "
+            + "'{\"max_output_tokens\":4000,\"overwrite_mode\":\"fallback\"}' "
+            + "CHECK (json_valid(max_output_tokens)), "
+            + "caps_tools INTEGER NOT NULL DEFAULT 0 CHECK (caps_tools IN (0, 1)), "
+            + "caps_vision INTEGER NOT NULL DEFAULT 0 CHECK (caps_vision IN (0, 1)), "
+            + "reasoning_effort TEXT NOT NULL DEFAULT "
+            + "'{\"reasoning_effort\":\"medium\",\"overwrite_mode\":\"fallback\"}' "
+            + "CHECK (json_valid(reasoning_effort)), "
+            + "reasoning_effort_schema INTEGER NOT NULL DEFAULT 2 CHECK (reasoning_effort_schema >= 1), "
+            + "sort_order INTEGER NOT NULL DEFAULT 0 CHECK (sort_order >= 0), "
+            + "FOREIGN KEY (provider_id) REFERENCES provider_config(id) ON DELETE CASCADE)";
+    /**
+     * V9 对存量最大输出值的一次性重映射：旧值 → 新值。
+     *
+     * <p>必须是一次性的同时映射，不能写成两条顺序 UPDATE：128000 既是「降为 4000」
+     * 的源，又是「256000/512000 降过来」的靶。先改后者再改前者，原本选 512K 的模型会
+     * 一路滴到 4K；反之则原 128K 的行会先变 4000 再不变。同时映射让两条规则各自成立。
+     *
+     * <p>未列举的值（包括 4096、8192 这类二进制值、以及用户手填的任意数）原值保留。
+     */
+    private static final Map<Integer, Integer> V9_MAX_OUTPUT_REMAP = Map.of(
+            128_000, 4_000,
+            256_000, 128_000,
+            512_000, 128_000);
     /**
      * 版本比较的容差。
      *
@@ -198,8 +239,10 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         this::migrateToV87RuleGroups),
                 new MigrationStep(V8_8_VERSION, "供应商声明支持的线路协议与 Anthropic 端点",
                         this::migrateToV88ProviderProtocols),
-                new MigrationStep(CURRENT_SCHEMA_VERSION, "思考深度升级为档位与注入模式",
-                        this::migrateToV89ReasoningEffortModes));
+                new MigrationStep(V8_9_VERSION, "思考深度升级为档位与注入模式",
+                        this::migrateToV89ReasoningEffortModes),
+                new MigrationStep(CURRENT_SCHEMA_VERSION, "最大输出升级为上限与注入模式",
+                        this::migrateToV9MaxOutputModes));
     }
 
     /**
@@ -870,7 +913,129 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
         jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
                 + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
-                CURRENT_SCHEMA_VERSION, "V8.9 增量迁移：思考深度升级为档位与注入模式");
+                V8_9_VERSION, "V8.9 增量迁移：思考深度升级为档位与注入模式");
+    }
+
+    /**
+     * V9：最大输出升级为「上限 + 注入模式」的 JSON，并对存量档位做一次性重映射。
+     *
+     * <h2>为何必须重建表</h2>
+     * {@code max_output_tokens} 原本是 {@code INTEGER NOT NULL DEFAULT 128000
+     * CHECK (max_output_tokens >= 0)}。SQLite 的 {@code ALTER TABLE} 改不了已有列的类型、
+     * 默认值或 CHECK 约束，只能整表重建。留着旧约束不是「无害」：SQLite 比较非数字文本时
+     * 当 0 处理，于是 {@code >= 0} 对任何 JSON 串都为真 —— 一条永不生效的约束，
+     * 而新形态真正需要的是 {@code json_valid}。
+     *
+     * <h2>重建顺序</h2>
+     * 先把值转换好再换表，而不是先换表再转换：转换要读旧列的整数语义，
+     * 换表之后那一列已经是 TEXT，还得再判断「这是数字还是 JSON」。
+     *
+     * <p>重建期间必须先摘掉 V3 建的两个校验触发器 —— 它们的条件里有
+     * {@code NEW.max_output_tokens < 0}，对 JSON 文本恒为假因而不会误报，
+     * 但触发器绑在表名上，{@code DROP TABLE} 会连带删掉它们而不报错，
+     * 于是重建后必须显式重建，否则其余几个字段的校验会静默失效。
+     *
+     * <h2>档位重映射</h2>
+     * 见 {@link #V9_MAX_OUTPUT_REMAP}。未列举的值原样保留 —— 用户手填的 4096、8192
+     * 或任何非标值都不该被一次升级悄悄改掉。
+     */
+    private void migrateToV9MaxOutputModes() {
+        if (tableExists("provider_model") && columnExists("provider_model", "max_output_tokens")) {
+            Map<Integer, String> converted = convertMaxOutputTokensToV9();
+            rebuildProviderModelForV9(converted);
+        }
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+                CURRENT_SCHEMA_VERSION, "V9 增量迁移：最大输出升级为上限与注入模式");
+    }
+
+    /**
+     * 读出每一行的最大输出并算出它的 V9 JSON 形态，返回 {@code 模型行 id -> JSON}。
+     *
+     * <p>只计算不写入：写入要等表重建完成，否则旧列的 INTEGER 亲和性会把 JSON 串
+     * 存成 0（SQLite 对 INTEGER 列做类型转换，转不动才保留原文，行为依存储类而异）。
+     *
+     * <p>已是 JSON 的行照原样过一遍 parse + serialize，从而在重跑时收敛到自身 ——
+     * 这是本迁移幂等的根据。重映射<strong>不</strong>作用于已是 JSON 的行：
+     * 那些行的档位调整在首次运行时已经做过，再做一次会把 128000 又降成 4000。
+     */
+    private Map<Integer, String> convertMaxOutputTokensToV9() {
+        var rows = jdbcTemplate.queryForList(
+                "SELECT id, max_output_tokens FROM provider_model ORDER BY id");
+        Map<Integer, String> converted = new LinkedHashMap<>();
+        int remapped = 0;
+        for (var row : rows) {
+            int modelId = ((Number) row.get("id")).intValue();
+            Object raw = row.get("max_output_tokens");
+            String rawText = raw == null ? null : String.valueOf(raw);
+            boolean alreadyJson = rawText != null && rawText.trim().startsWith("{");
+            MaxOutputTokensSetting setting = MaxOutputTokensSetting.parse(rawText, objectMapper);
+            if (!alreadyJson) {
+                Integer target = V9_MAX_OUTPUT_REMAP.get(setting.maxOutputTokens());
+                if (target != null) {
+                    setting = new MaxOutputTokensSetting(target, setting.mode());
+                    remapped++;
+                }
+            }
+            converted.put(modelId, setting.serialize());
+        }
+        if (remapped > 0) {
+            log.info("[SchemaMigration] V9 已按新档位调整 {} 个模型的最大输出", remapped);
+        }
+        return converted;
+    }
+
+    /**
+     * 重建 {@code provider_model}，把最大输出列换成带 {@code json_valid} 约束的 TEXT。
+     *
+     * <p>沿用 SQLite 官方推荐的重建流程：建新表 → 搬数据 → 删旧表 → 改名 → 重建索引与触发器。
+     * 不用 {@code PRAGMA foreign_keys=OFF}：迁移跑在事务里而 SQLite 不允许在事务中改这个
+     * pragma，而这里也不需要 —— 子表只有 {@code provider_model} 自己引用 {@code provider_config}，
+     * 重建的是引用方，被引用方的行没有动过。
+     *
+     * @param converted 模型行 id 到新 JSON 值的映射，来自 {@link #convertMaxOutputTokensToV9()}
+     */
+    private void rebuildProviderModelForV9(Map<Integer, String> converted) {
+        dropTrigger("trg_provider_model_validate_insert");
+        dropTrigger("trg_provider_model_validate_update");
+
+        jdbcTemplate.execute("DROP TABLE IF EXISTS provider_model_v9_new");
+        jdbcTemplate.execute(PROVIDER_MODEL_DDL_V9.replace(
+                "CREATE TABLE provider_model", "CREATE TABLE provider_model_v9_new"));
+        // 逐列显式列出：SELECT * 依赖列顺序，而这张表历经多次 ADD COLUMN，顺序不可假定。
+        //
+        // reasoning_effort 也要过一道 json_valid 兜底：新表对它有约束，而旧表没有。
+        // 正常路径上 V8.9 已把该列收敛成 JSON，但若某一行因手工修改或历史遗留仍是裸档位
+        // （如 'Medium'），整条 INSERT ... SELECT 会因 CHECK 失败而让 V9 整体回滚 ——
+        // 一列与本次迁移无关的脏数据阻断另一列的升级。这里就地兜成默认值，
+        // 而不是让升级失败：那一行的思考深度本来也读不出有效配置。
+        jdbcTemplate.execute("INSERT INTO provider_model_v9_new "
+                + "(id, provider_id, model_name, enabled, context_size, max_output_tokens, "
+                + "caps_tools, caps_vision, reasoning_effort, reasoning_effort_schema, sort_order) "
+                + "SELECT id, provider_id, model_name, enabled, context_size, "
+                + "'{\"max_output_tokens\":4000,\"overwrite_mode\":\"fallback\"}', "
+                + "caps_tools, caps_vision, "
+                + "CASE WHEN json_valid(reasoning_effort) THEN reasoning_effort "
+                + "ELSE '{\"reasoning_effort\":\"medium\",\"overwrite_mode\":\"fallback\"}' END, "
+                + "reasoning_effort_schema, sort_order "
+                + "FROM provider_model");
+        jdbcTemplate.execute("DROP TABLE provider_model");
+        jdbcTemplate.execute("ALTER TABLE provider_model_v9_new RENAME TO provider_model");
+
+        // 搬迁时先填占位默认值，再逐行写入真实值：INSERT ... SELECT 无法表达 Java 侧算出的映射。
+        for (var entry : converted.entrySet()) {
+            jdbcTemplate.update("UPDATE provider_model SET max_output_tokens = ? WHERE id = ?",
+                    entry.getValue(), entry.getKey());
+        }
+
+        jdbcTemplate.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_model_provider_name "
+                + "ON provider_model(provider_id, model_name)");
+        // 重建 V3 的校验触发器，但去掉已由 json_valid 接管的 max_output_tokens 数值条件。
+        String modelInvalid = "NEW.enabled NOT IN (0, 1) OR NEW.caps_tools NOT IN (0, 1) "
+                + "OR NEW.caps_vision NOT IN (0, 1) OR NEW.context_size < 0 "
+                + "OR NEW.sort_order < 0";
+        createTrigger("trg_provider_model_validate_insert", "provider_model", "INSERT", modelInvalid);
+        createTrigger("trg_provider_model_validate_update", "provider_model", "UPDATE", modelInvalid);
     }
 
     /**
@@ -1251,6 +1416,9 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         createTrigger("trg_users_validate_insert", "users", "INSERT", "NEW.enabled NOT IN (0, 1)");
         createTrigger("trg_users_validate_update", "users", "UPDATE", "NEW.enabled NOT IN (0, 1)");
         createProviderConfigValidationTriggers();
+        // 历史条件，含 max_output_tokens 的数值判定 —— V3 时那一列还是 INTEGER。
+        // V9 重建该表后会用不带这一条件的版本覆盖，本处不能跟改：
+        // 历史迁移体必须堆出它当时的结构，否则 V3 检查点的断言与实际不符。
         String modelInvalid = "NEW.enabled NOT IN (0, 1) OR NEW.caps_tools NOT IN (0, 1) "
                 + "OR NEW.caps_vision NOT IN (0, 1) OR NEW.context_size < 0 "
                 + "OR NEW.max_output_tokens < 0 OR NEW.sort_order < 0";

@@ -38,7 +38,11 @@ CREATE TABLE IF NOT EXISTS provider_model (
     model_name      VARCHAR(100) NOT NULL,            -- 模型名称
     enabled         INTEGER      NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)), -- 是否启用（0=禁用，1=启用，默认启用）
     context_size    INTEGER      NOT NULL DEFAULT 0 CHECK (context_size >= 0), -- 上下文大小（token 数）
-    max_output_tokens INTEGER    NOT NULL DEFAULT 128000 CHECK (max_output_tokens >= 0), -- 最大输出 token 数
+    -- 最大输出配置（V9 JSON）：{"max_output_tokens":4000,"overwrite_mode":"override|fallback"}
+    -- 只有两档模式：override 一律用配置值；fallback 用下游的、没带才补。
+    -- 没有 passthrough / delete：Anthropic 侧 max_tokens 缺失会 400，「不补」在那条线路上等于必然失败。
+    max_output_tokens TEXT       NOT NULL DEFAULT '{"max_output_tokens":4000,"overwrite_mode":"fallback"}'
+        CHECK (json_valid(max_output_tokens)),
     caps_tools      INTEGER      NOT NULL DEFAULT 0 CHECK (caps_tools IN (0, 1)), -- 是否支持工具调用（0=否，1=是）
     caps_vision     INTEGER      NOT NULL DEFAULT 0 CHECK (caps_vision IN (0, 1)), -- 是否支持视觉（0=否，1=是）
     -- 思考深度配置（V2 JSON）：{"reasoning_effort":"medium","overwrite_mode":"override|fallback|passthrough|delete"}

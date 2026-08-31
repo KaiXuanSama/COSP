@@ -184,7 +184,8 @@ class ProviderRequestBodyTransformationIntegrationTests {
         jdbcTemplate.execute("CREATE TABLE provider_model ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, "
                 + "enabled INTEGER NOT NULL DEFAULT 0, context_size INTEGER NOT NULL DEFAULT 8192, "
-                + "max_output_tokens INTEGER NOT NULL DEFAULT 4096, caps_tools INTEGER NOT NULL DEFAULT 0, "
+                + "max_output_tokens TEXT NOT NULL DEFAULT '{\"max_output_tokens\":4000,\"overwrite_mode\":\"fallback\"}' "
+                + "CHECK (json_valid(max_output_tokens)), caps_tools INTEGER NOT NULL DEFAULT 0, "
                 + "caps_vision INTEGER NOT NULL DEFAULT 0, reasoning_effort TEXT NOT NULL DEFAULT 'Medium', "
                 + "sort_order INTEGER NOT NULL DEFAULT 0)");
         jdbcTemplate.execute("CREATE TABLE provider_request_transform ("
