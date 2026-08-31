@@ -28,6 +28,7 @@ Previous version fixture -> new migration -> targeted data/structure assertions
 5. Update `schema.sql` to describe only the new final schema. It must not recreate obsolete tables, columns, indexes, triggers, or data.
 6. Leave `isCurrentBaseline()` alone. It compares the recorded version only; no structural predicate belongs there.
 7. Keep blocking JDBC migration work inside the runner's transaction handling. Preserve idempotence with existence checks or SQLite `IF EXISTS` / `IF NOT EXISTS` where appropriate.
+8. Changing a column's type, default, or CHECK constraint requires a **full table rebuild** — SQLite's `ALTER TABLE` cannot do any of the three. See the table-rebuild trap below.
 
 ## Required Test Updates
 
@@ -36,21 +37,24 @@ For every new version `Vnext`, update `SchemaMigrationRunnerTests`:
 1. **Previous-version special case**: construct the real structural precondition for the immediately previous version, run the runner, and assert the new version's precise table/column/index/data behavior. Run it twice and verify idempotence.
 2. **Recursive chain**: do not add a new hardcoded final-version test. Ensure the test iterates `registeredMigrationVersions()` and calls `migrateThrough(version)` for each checkpoint. Add checkpoint assertions when the new version changes a durable invariant.
 3. **Empty database path**: run the actual classpath `schema.sql` against a fresh temporary SQLite file, then run the migration runner. Update assertions for tables and structures added or removed by `Vnext`.
-4. **Dynamic version assertions**: use `SchemaMigrationRunner.currentSchemaVersion()` for current-baseline assertions. Literal version numbers are allowed only when modeling a historical source database, such as `V8.2 -> V8.3`.
+4. **Dynamic version assertions**: use `SchemaMigrationRunner.currentSchemaVersion()` for current-baseline assertions. A literal version number is acceptable only where it names a *fixed historical* source database that will never move — the `seedV86SchemaVersion(jdbcTemplate, 8.2)` style fixture of a single-version upgrade test. It is never acceptable for "the current version" or "the previous version", both of which move on every migration.
 5. **Data migration cases**: add focused fixtures for conflicts, invalid legacy values, data conversion, data preservation, table rebuilds, foreign keys, or indexes whenever the new migration can affect them.
-6. **No-replay guard**: extend `upgradeFromPreviousVersionRunsOnlyTheMissingMigration` so the new version appears in the log and every earlier version does not. Match on `"已应用 V9:"` including the colon — without it, `已应用 V9` is a prefix of `已应用 V9.x` and the assertion can never fail.
+6. **No-replay guard**: leave `upgradeFromPreviousVersionRunsOnlyTheMissingMigration` and the two `crossVersionUpgrade*` tests alone. They are version-agnostic by construction: `seedDatabaseAtPreviousVersion` reaches the previous version by calling `migrateThrough` on the second-to-last entry of `registeredMigrationVersions()`, and the log assertions derive every version string from the registry. A new migration needs no edit here — if you find yourself adding a `seedV<prev>Database`, you are reintroducing the per-version churn these helpers exist to avoid.
 
 ## Version Numbering
 
-The next version is the **integer `V9`**, then V10, V11, and so on. The `a` in `a.b` never carried
-any logic, and `V8.10` as a double *is* `8.1`, which collides with the registered V8.1 and gets
-silently skipped as "already applied". Historical V8.1-V8.9 must stay in the registry verbatim for
-old databases, so the version type remains `double`; only new versions take integral values.
+New versions take **consecutive integer values**: read `CURRENT_SCHEMA_VERSION` and add one. Never
+introduce another `a.b` version. The `a` never carried any logic, and a second decimal digit breaks
+outright — `V8.10` as a double *is* `8.1`, which collides with the registered V8.1 and gets silently
+skipped as "already applied". The `a.b` versions already in the registry must stay verbatim for old
+databases, so the version type remains `double`; only the integral part is meaningful from now on.
 
 All version comparison goes through `VERSION_COMPARISON_EPSILON`. The historical `a.b` values are
 inexact as doubles, so `==` only works when both sides come from the same literal.
 
-`formatVersion()` renders integral values without the decimal part, so V9 logs as `V9`, not `V9.0`.
+`formatVersion()` renders integral values without the decimal part, so version 9 logs as `V9`, not
+`V9.0`. Tests that build log assertions must reproduce that rendering rather than concatenating the
+raw double.
 
 ## Version Boundary Rules
 
@@ -81,6 +85,23 @@ key convergence deletes a legitimate provider whose name starts with `custom-` a
 encrypted API keys. `SchemaMigrationRunnerTests` locks this with
 `crossVersionUpgradeKeeps*` plus `upgradeFromPreviousVersionRunsOnlyTheMissingMigration`.
 
+**A table rebuild silently drops triggers, and the new table may be stricter than the old one.**
+Triggers are bound to the table name, so `DROP TABLE` deletes them **without any error**. V9 rebuilt
+`provider_model` to turn `max_output_tokens` from INTEGER into `json_valid` TEXT; forgetting to
+re-create V3's two validation triggers would have silently disabled the checks on `enabled`,
+`caps_tools`, `caps_vision`, and `context_size` — no symptom until an invalid value lands. The unique
+index needs re-creating too. Separately, the new DDL usually constrains columns the old one did not:
+V9's `json_valid(reasoning_effort)` rejects rows a pre-V8.9 database happily holds, so the
+`INSERT ... SELECT` must coerce that column as well, or one dirty row unrelated to this migration
+aborts the whole upgrade. Use explicit column lists, never `SELECT *` — physical column order after
+repeated `ADD COLUMN` is not predictable, and mis-ordered data often still satisfies every constraint.
+
+**A one-shot value remapping must be simultaneous, and must not apply to already-converted rows.**
+V9 maps 128K→4K and 256K/512K→128K. As two sequential UPDATEs, a model set to 512K slides all the
+way to 4K. And because 128000 is a legitimate *output* of the mapping, re-running the migration over
+an already-converted row would demote it again — a defect visible only on the second run. Keying the
+remap on "was this row still in the legacy format" solves both.
+
 **Do not invent a structural marker column to make a data-only migration "decidable".** This used to
 be required: `isCurrentBaseline()` demanded structural evidence, and failing it meant a full replay,
 so V8.7 and V8.9 each added a schema-version column (`body_rules_schema`,
@@ -107,5 +128,6 @@ schema cannot be reclaimed and they aid manual inspection; do not copy the patte
 - [ ] Previous-version upgrade test covers the new migration and idempotence.
 - [ ] Recursive checkpoint chain still covers every registered version.
 - [ ] Fresh SQLite plus real `schema.sql` reaches the dynamic current baseline.
-- [ ] A database one version behind runs only the new migration and nothing earlier.
+- [ ] The no-replay and cross-version tests still pass **unmodified** — they are version-agnostic, so needing to edit them means something else is wrong.
+- [ ] No new test asserts on a literal version number that means "current" or "previous".
 - [ ] Full Maven tests pass.
