@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.application.provider;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRow;
@@ -329,7 +330,10 @@ public class ProviderAdminService {
             model.put("modelName", value(form, prefix + index + "].name", "").trim());
             model.put("enabled", "on".equals(form.getFirst(prefix + index + "].enabled")));
             model.put("contextSize", value(form, prefix + index + "].contextSize", "0").trim());
-            model.put("maxOutputTokens", value(form, prefix + index + "].maxOutputTokens", "128000").trim());
+            // 与思考深度同样收敛成 V9 JSON：表单可能提交 V9 JSON，也可能是旧前端的裸整数。
+            model.put("maxOutputTokens", MaxOutputTokensSetting
+                    .parse(value(form, prefix + index + "].maxOutputTokens", "").trim(), objectMapper)
+                    .serialize());
             model.put("capsTools", "on".equals(form.getFirst(prefix + index + "].capsTools")));
             model.put("capsVision", "on".equals(form.getFirst(prefix + index + "].capsVision")));
             // 收敛成规范的 V2 JSON：表单提交的可能是 V2 JSON、旧的裸档位、甚至遗留的 None，

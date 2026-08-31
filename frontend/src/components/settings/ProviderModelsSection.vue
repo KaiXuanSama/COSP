@@ -1,11 +1,17 @@
 <script setup lang="ts">
 import { NButton, NCheckbox, NForm, NFormItem, NInput, NPopselect, NSwitch } from 'naive-ui'
 import {
+  MAX_OUTPUT_OVERWRITE_MODE_HINTS,
+  MAX_OUTPUT_OVERWRITE_MODE_LABELS,
+  MAX_OUTPUT_PRESETS,
   REASONING_EFFORT_OPTIONS,
   REASONING_OVERWRITE_MODE_HINTS,
   REASONING_OVERWRITE_MODE_LABELS,
+  nextMaxOutputOverwriteMode,
   nextReasoningOverwriteMode,
+  parseMaxOutputConfig,
   parseReasoningEffortConfig,
+  serializeMaxOutputConfig,
   serializeReasoningEffortConfig,
 } from '@/features/provider-config'
 
@@ -32,12 +38,14 @@ const contextPresets = [
     { label: '64K', value: '64000' },
 ]
 
-const maxOutputPresets = [
-    { label: '512K', value: '512000' },
-    { label: '256K', value: '256000' },
-    { label: '128K', value: '128000' },
-    { label: '64K', value: '64000' },
-]
+/**
+ * 最大输出预设。
+ *
+ * `value` 是数字而非字符串（与上下文预设不同）：这一栏的值要进
+ * `MaxOutputConfig.maxOutputTokens`，而那里是 number。清单定义在
+ * `features/provider-config/maxOutput.ts`，与迁移的档位重映射表共用一套口径。
+ */
+const maxOutputPresets = MAX_OUTPUT_PRESETS.map(preset => ({ ...preset }))
 
 const effortOptions = REASONING_EFFORT_OPTIONS.map(option => ({ label: option, value: option }))
 
@@ -95,6 +103,47 @@ function effortIsInert(model: EditableModel) {
  */
 function effortTriggerLabel(model: EditableModel) {
     return `${overwriteModeLabel(model)}: ${effortConfigOf(model).effort}`
+}
+
+/**
+ * 最大输出配置的读写，与思考深度同构。
+ *
+ * 模型行里 `maxOutputTokens` 存的是序列化后的 V9 JSON，界面要分别编辑「token 上限」
+ * 与「注入模式」，所以每次读取都解一次、写入都序列化回去。
+ */
+function maxOutputConfigOf(model: EditableModel) {
+    return parseMaxOutputConfig(model.maxOutputTokens)
+}
+
+/**
+ * 写入 token 上限。
+ *
+ * 入参是字符串（输入框绑定），交给 `parseMaxOutputConfig` 做归一化 ——
+ * 空值、0、负数都会落到默认值，而非写进一个列约束不接受的形态。
+ */
+function setMaxOutputTokens(model: EditableModel, raw: string) {
+    const current = maxOutputConfigOf(model)
+    model.maxOutputTokens = serializeMaxOutputConfig({
+        ...current,
+        maxOutputTokens: parseMaxOutputConfig(raw).maxOutputTokens,
+    })
+}
+
+/** 轮转注入模式。只有两档，点一次就切换。 */
+function cycleMaxOutputMode(model: EditableModel) {
+    const current = maxOutputConfigOf(model)
+    model.maxOutputTokens = serializeMaxOutputConfig({
+        ...current,
+        mode: nextMaxOutputOverwriteMode(current.mode),
+    })
+}
+
+function maxOutputModeLabel(model: EditableModel) {
+    return MAX_OUTPUT_OVERWRITE_MODE_LABELS[maxOutputConfigOf(model).mode]
+}
+
+function maxOutputModeHint(model: EditableModel) {
+    return MAX_OUTPUT_OVERWRITE_MODE_HINTS[maxOutputConfigOf(model).mode]
 }
 </script>
 
@@ -209,11 +258,37 @@ function effortTriggerLabel(model: EditableModel) {
                             <div class="model-capability-group model-capability-group--ollama">
                                 <div class="model-form-row">
                                     <n-form-item label="最大输出" class="model-detail-item model-detail-item--half">
-                                        <n-input v-model:value="model.maxOutputTokens" placeholder="128000">
+                                        <!--
+                                            输入框直接编辑 token 数，模式藏在预设菜单的 header 里 ——
+                                            与思考深度同构。这里保留可手填的输入框而非只给下拉：
+                                            上游文档里的 4096、8192 那类二进制值不在预设中，
+                                            而迁移把它们当作「非标值」保留，界面也得能填进去。
+                                        -->
+                                        <n-input :value="String(maxOutputConfigOf(model).maxOutputTokens)"
+                                            placeholder="4000"
+                                            @update:value="(value: string) => setMaxOutputTokens(model, value)">
                                             <template #suffix>
                                                 <n-popselect :options="maxOutputPresets" size="small" trigger="click"
-                                                    @update:value="(value: string) => model.maxOutputTokens = value">
-                                                    <span class="context-preset-trigger">
+                                                    :value="maxOutputConfigOf(model).maxOutputTokens"
+                                                    @update:value="(value: number) => setMaxOutputTokens(model, String(value))">
+                                                    <template #header>
+                                                        <button type="button" class="effort-mode-toggle"
+                                                            :title="maxOutputModeHint(model)"
+                                                            @click="cycleMaxOutputMode(model)">
+                                                            <span class="effort-mode-toggle__label">{{ maxOutputModeLabel(model) }}</span>
+                                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                                                stroke="currentColor" stroke-width="2"
+                                                                stroke-linecap="round" stroke-linejoin="round"
+                                                                aria-hidden="true">
+                                                                <path d="M17 1l4 4-4 4" />
+                                                                <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+                                                                <path d="M7 23l-4-4 4-4" />
+                                                                <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+                                                            </svg>
+                                                        </button>
+                                                    </template>
+                                                    <span class="context-preset-trigger"
+                                                        :title="maxOutputModeHint(model)">
                                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
                                                             stroke="currentColor" stroke-width="2"
                                                             stroke-linecap="round" stroke-linejoin="round">

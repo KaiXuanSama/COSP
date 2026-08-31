@@ -6,6 +6,7 @@ import {
   toModelFormParams,
   type EditableModel,
 } from './modelPayload'
+import { parseMaxOutputConfig } from './maxOutput'
 import { parseReasoningEffortConfig } from './reasoningEffort'
 
 describe('extractModelNames', () => {
@@ -62,14 +63,17 @@ describe('buildEditableModel', () => {
       modelName: '',
       enabled: true,
       contextSize: '128000',
-      maxOutputTokens: '128000',
       capsTools: true,
       capsVision: false,
     })
-    // 表单里该字段始终是序列化后的 V2 JSON，而非裸档位字符串。
-    // 新建模型的默认是 medium + 兜底。
+    // 表单里这两个字段始终是序列化后的 JSON，而非裸档位 / 裸整数。
+    // 新建模型的默认是 medium + 兜底、与 4K + 兜底。
     expect(parseReasoningEffortConfig(model.reasoningEffort))
       .toEqual({ effort: 'Medium', mode: 'fallback' })
+    // 4K 而非 128K：V9 迁移把存量 128K 一律下调为 4K，默认值必须跟上——
+    // 否则新建模型会拿到一个迁移刚刚判定为「过大」的值。
+    expect(parseMaxOutputConfig(model.maxOutputTokens))
+      .toEqual({ maxOutputTokens: 4000, mode: 'fallback' })
   })
 
   it('保留 source 中的其余字段，便于拉取时带回已有配置', () => {
@@ -79,10 +83,12 @@ describe('buildEditableModel', () => {
     expect(model.modelName).toBe('m1')
   })
 
-  it('数字型字段统一转成字符串', () => {
+  it('contextSize 统一转成字符串，maxOutputTokens 转成 V9 JSON', () => {
     const model = buildEditableModel('m', { contextSize: 64000, maxOutputTokens: 8192 })
     expect(model.contextSize).toBe('64000')
-    expect(model.maxOutputTokens).toBe('8192')
+    // 8192 是二进制值，不在十进制预设里，作为非标值原样保留。
+    expect(parseMaxOutputConfig(model.maxOutputTokens))
+      .toEqual({ maxOutputTokens: 8192, mode: 'fallback' })
   })
 
   it('逗号分隔的 reasoningEffort 只取第一项', () => {
@@ -123,7 +129,10 @@ describe('toEditableModel', () => {
       reasoningEffort: '',
     })
     expect(model.contextSize).toBe('0')
-    expect(model.maxOutputTokens).toBe('128000')
+    // 最大输出与 contextSize 不同，缺省取 4K 而非 0：
+    // 它的列约束要求 json_valid，“未配置”无法用 0 表达——那个语义已由模式承担。
+    expect(parseMaxOutputConfig(model.maxOutputTokens))
+      .toEqual({ maxOutputTokens: 4000, mode: 'fallback' })
     expect(parseReasoningEffortConfig(model.reasoningEffort))
       .toEqual({ effort: 'Medium', mode: 'fallback' })
   })
@@ -134,7 +143,7 @@ describe('toModelFormParams', () => {
     modelName: 'm1',
     enabled: true,
     contextSize: '128000',
-    maxOutputTokens: '128000',
+    maxOutputTokens: '{"max_output_tokens":4000,"overwrite_mode":"fallback"}',
     capsTools: true,
     capsVision: false,
     reasoningEffort: 'Medium',
@@ -154,10 +163,12 @@ describe('toModelFormParams', () => {
     expect(params['models[0].capsVision']).toBe('')
   })
 
-  it('空 contextSize 回退 0，空 maxOutputTokens 回退 128000', () => {
+  it('空 contextSize 回退 0，空 maxOutputTokens 回退 4K 兜底 JSON', () => {
     const params = toModelFormParams([model({ contextSize: '', maxOutputTokens: '' })])
     expect(params['models[0].contextSize']).toBe('0')
-    expect(params['models[0].maxOutputTokens']).toBe('128000')
+    // 下发的必须是 JSON 而非裸整数：列上有 json_valid 约束。
+    expect(params['models[0].maxOutputTokens'])
+      .toBe('{"max_output_tokens":4000,"overwrite_mode":"fallback"}')
   })
 
   it('reasoningEffort 为空时不下发该键，交由后端取默认值', () => {

@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
+import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -152,7 +153,10 @@ public class ProviderConfigRepository {
             String modelName = (String) m.getOrDefault("modelName", "");
             boolean modelEnabled = Boolean.TRUE.equals(m.get("enabled"));
             int contextSize = parseInt(m.get("contextSize"), 0);
-            int maxOutputTokens = parseInt(m.get("maxOutputTokens"), 128000);
+            // 表单侧已由 ProviderAdminService 收敛成 V9 JSON，原样存下即可。
+            // 但直接调用仓储的路径（测试夹具、将来的导入）可能传裸整数，那时得补成 JSON —— 否则
+            // 违反列上的 json_valid 约束。已是 JSON 的值不解析，避免在这里重复一遍收敛逻辑。
+            String maxOutputTokens = normalizeMaxOutputTokens(m.get("maxOutputTokens"));
             boolean capsTools = Boolean.TRUE.equals(m.get("capsTools"));
             boolean capsVision = Boolean.TRUE.equals(m.get("capsVision"));
             String reasoningEffort = (String) m.getOrDefault("reasoningEffort", "Medium");
@@ -259,7 +263,10 @@ public class ProviderConfigRepository {
                     (String) row.get("model_name"),
                     modelEnabled,
                     ((Number) row.get("context_size")).intValue(),
-                    ((Number) row.get("max_output_tokens")).intValue(),
+                    // V9 起是 TEXT（JSON），但未迁移的库里仍可能是 INTEGER，
+                    // 所以统一转字符串而不强转具体类型。
+                    row.get("max_output_tokens") == null
+                            ? null : String.valueOf(row.get("max_output_tokens")),
                     ((Number) row.get("caps_tools")).intValue() == 1,
                     ((Number) row.get("caps_vision")).intValue() == 1,
                     (String) row.get("reasoning_effort"),
@@ -297,6 +304,22 @@ public class ProviderConfigRepository {
         } catch (NumberFormatException e) {
             return defaultValue;
         }
+    }
+
+    /**
+     * 把最大输出的入参收敛为列上 {@code json_valid} 接受的 V9 JSON。
+     *
+     * <p>已是 JSON 的值原样返回而不解析：本层没有 {@code ObjectMapper}，
+     * 而收敛的职责在 {@code ProviderAdminService.parseModels} —— 表单路径进来的值已经规范。
+     * 这里只负责让裸整数（测试夹具、将来的配置导入）也能满足约束。
+     */
+    private static String normalizeMaxOutputTokens(Object value) {
+        String raw = value == null ? "" : String.valueOf(value).trim();
+        if (raw.startsWith("{")) {
+            return raw;
+        }
+        return new MaxOutputTokensSetting(parseInt(raw, 0), MaxOutputTokensSetting.Mode.FALLBACK)
+                .serialize();
     }
 
     /**

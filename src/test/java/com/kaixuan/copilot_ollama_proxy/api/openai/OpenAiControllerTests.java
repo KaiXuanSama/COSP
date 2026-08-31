@@ -126,11 +126,15 @@ class OpenAiControllerTests {
 
     activeProviders.add(new ProviderConfigRow(
           1, "mimo", "MiMo", true, "", "[\"OPENAI\",\"ANTHROPIC\"]", "", null,
-            List.of(new ProviderModelRow(1, 1, "mimo-v2.5-pro", true, 0, 128000, false, false, "Medium", 0))
+            List.of(new ProviderModelRow(1, 1, "mimo-v2.5-pro", true, 0,
+                    "{\"max_output_tokens\":128000,\"overwrite_mode\":\"fallback\"}",
+                    false, false, "Medium", 0))
     ));
     activeProviders.add(new ProviderConfigRow(
           2, "deepseek", "DeepSeek", true, "", "[\"OPENAI\",\"ANTHROPIC\"]", "", null,
-            List.of(new ProviderModelRow(2, 2, "deepseek-v4-flash", true, 0, 128000, false, false, "Medium", 0))
+            List.of(new ProviderModelRow(2, 2, "deepseek-v4-flash", true, 0,
+                    "{\"max_output_tokens\":128000,\"overwrite_mode\":\"fallback\"}",
+                    false, false, "Medium", 0))
     ));
 
     given(providerConfigRepository.findAllActiveProvidersWithEnabledModels()).willReturn(activeProviders);

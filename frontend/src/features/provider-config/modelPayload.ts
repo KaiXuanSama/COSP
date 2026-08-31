@@ -1,5 +1,9 @@
 import type { ProviderModel } from '@/stores/providers'
 import {
+  parseMaxOutputConfig,
+  serializeMaxOutputConfig,
+} from './maxOutput'
+import {
   parseReasoningEffortConfig,
   serializeReasoningEffortConfig,
 } from './reasoningEffort'
@@ -25,14 +29,13 @@ export interface EditableModel {
   [key: string]: unknown
 }
 
-/** 新建模型行的默认值。上下文与最大输出都按 128K 起步。 */
+/** 新建模型行的上下文默认值。最大输出的默认值在 `maxOutput.ts` 里。 */
 const DEFAULT_CONTEXT_SIZE = '128000'
-const DEFAULT_MAX_OUTPUT_TOKENS = '128000'
 
 /**
  * 归一化 `reasoningEffort` 为 V2 JSON 字符串。
  *
- * 表单里这个字段始终是序列化后的 JSON（`{reasoning_effort, overwrite_mode}`），
+ * 表单里这个字段始终是序列化后的 JSON（`{reasoning_effort, overwrite_mode}`）,
  * 而非拆成两个字段：它要原样回传给后端的同一个表列，拆开后在提交前又得拼回去，
  * 多一道可能与解析侧不一致的工序。组件里需要分开编辑时再解一次。
  *
@@ -40,6 +43,15 @@ const DEFAULT_MAX_OUTPUT_TOKENS = '128000'
  */
 function normalizeReasoningEffort(value: unknown): string {
   return serializeReasoningEffortConfig(parseReasoningEffortConfig(value))
+}
+
+/**
+ * 归一化 `maxOutputTokens` 为 V9 JSON 字符串，与思考深度同理。
+ *
+ * <p>历史形态（裸整数、空值、0）全由 `parseMaxOutputConfig` 处理。
+ */
+function normalizeMaxOutput(value: unknown): string {
+  return serializeMaxOutputConfig(parseMaxOutputConfig(value))
 }
 
 /**
@@ -57,7 +69,7 @@ export function buildEditableModel(
     modelName,
     enabled: (source.enabled as boolean) ?? true,
     contextSize: String(source.contextSize ?? DEFAULT_CONTEXT_SIZE),
-    maxOutputTokens: String(source.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS),
+    maxOutputTokens: normalizeMaxOutput(source.maxOutputTokens),
     capsTools: (source.capsTools as boolean) ?? true,
     capsVision: (source.capsVision as boolean) ?? false,
     reasoningEffort: normalizeReasoningEffort(source.reasoningEffort),
@@ -74,7 +86,7 @@ export function toEditableModel(model: ProviderModel): EditableModel {
   return {
     ...model,
     contextSize: String(model.contextSize ?? '0'),
-    maxOutputTokens: String(model.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS),
+    maxOutputTokens: normalizeMaxOutput(model.maxOutputTokens),
     reasoningEffort: normalizeReasoningEffort(model.reasoningEffort),
   }
 }
@@ -149,7 +161,9 @@ export function toModelFormParams(models: EditableModel[]): Record<string, strin
     params[`${prefix}name`] = model.modelName
     params[`${prefix}enabled`] = model.enabled ? 'on' : ''
     params[`${prefix}contextSize`] = model.contextSize || '0'
-    params[`${prefix}maxOutputTokens`] = model.maxOutputTokens || DEFAULT_MAX_OUTPUT_TOKENS
+    // 空值也走一遍归一化而非直接给字面默认值：后端 parseModels 会再 parse 一次，
+    // 两侧的默认值定义在同一个常量上，不必在这里重复一份。
+    params[`${prefix}maxOutputTokens`] = normalizeMaxOutput(model.maxOutputTokens)
     params[`${prefix}capsTools`] = model.capsTools ? 'on' : ''
     params[`${prefix}capsVision`] = model.capsVision ? 'on' : ''
     if (model.reasoningEffort) {

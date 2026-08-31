@@ -64,6 +64,20 @@ export {
 } from './reasoningEffort'
 
 export {
+  DEFAULT_MAX_OUTPUT_OVERWRITE_MODE,
+  DEFAULT_MAX_OUTPUT_TOKENS,
+  MAX_OUTPUT_OVERWRITE_MODES,
+  MAX_OUTPUT_OVERWRITE_MODE_HINTS,
+  MAX_OUTPUT_OVERWRITE_MODE_LABELS,
+  MAX_OUTPUT_PRESETS,
+  nextMaxOutputOverwriteMode,
+  parseMaxOutputConfig,
+  serializeMaxOutputConfig,
+  type MaxOutputConfig,
+  type MaxOutputOverwriteMode,
+} from './maxOutput'
+
+export {
   ANTHROPIC_ENDPOINT_SUFFIX,
   DEFAULT_NEW_PROVIDER_PROTOCOLS,
   OPENAI_ENDPOINT_SUFFIX,

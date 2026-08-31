@@ -26,7 +26,8 @@ class DatabaseRuntimeProviderCatalogTests {
                 42, "mimo-user", "Mimo User", true, "https://api.example/v1",
                 "[\"OPENAI\",\"ANTHROPIC\"]", "",
                 "2026-07-18T00:00:00", List.of(new ProviderModelRow(
-                        1, 42, "mimo-v2.5-pro", true, 32768, 8192,
+                        1, 42, "mimo-v2.5-pro", true, 32768,
+                        "{\"max_output_tokens\":8192,\"overwrite_mode\":\"fallback\"}",
                         true, false, "Medium", 0)));
         ProviderRequestTransformRow transform = new ProviderRequestTransformRow(
                 42, 1, "[{\"key\":\"X-New\",\"value\":\"new\"}]",
