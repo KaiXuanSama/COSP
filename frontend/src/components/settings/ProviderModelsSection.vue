@@ -95,14 +95,13 @@ function effortIsInert(model: EditableModel) {
 }
 
 /**
- * 触发器文案：「模式: 档位」，例如「兜底: Max」。
+ * 触发器上显示的档位。
  *
- * <p>模式必须出现在折叠状态的文案里：它决定了档位到底会不会生效，
- * 而旧文案只有档位 —— 同一个「Max」在覆写与透传下是两种完全不同的行为，
- * 而用户必须展开下拉才能分辨。
+ * 只给档位、不拼模式：模式已由左侧的前缀标签外显，拼进来会重复一遍。
+ * 折叠状态下「模式 | 档位」两段各司其职，与最大输出那一栏的读法一致。
  */
 function effortTriggerLabel(model: EditableModel) {
-    return `${overwriteModeLabel(model)}: ${effortConfigOf(model).effort}`
+    return effortConfigOf(model).effort
 }
 
 /**
@@ -200,7 +199,8 @@ function maxOutputModeHint(model: EditableModel) {
                                     </n-form-item>
                                 </div>
                                 <div class="model-form-row model-form-row--details">
-                                    <n-form-item label="上下文" class="model-detail-item model-detail-item--context">
+                                    <n-form-item label="上下文"
+                                        class="model-detail-item model-detail-item--context model-detail-item--numeric">
                                         <n-input v-model:value="model.contextSize" placeholder="4096">
                                             <template #suffix>
                                                 <n-popselect :options="contextPresets" size="small" trigger="click"
@@ -218,46 +218,40 @@ function maxOutputModeHint(model: EditableModel) {
                                     </n-form-item>
                                     <n-form-item class="model-effort-item">
                                         <!--
-                                            用 n-popselect 的 header 插槽放模式轮转按钮，而不是把三个模式
-                                            混进选项列表：它们与档位不是同一维度的选择，混排会让用户以为
-                                            「覆写」和「Medium」是互斥的同类项。
+                                            模式做成触发器内的前缀标签，与最大输出同构：模式与档位不是
+                                            同一维度的选择，混进选项列表会让用户以为「覆写」和「Medium」
+                                            是互斥的同类项；而放在下拉的 header 里则折叠状态看不见。
+                                            标签在最左、竖线分隔、档位居右 —— 两栏的读法完全一致。
                                         -->
-                                        <n-popselect :options="effortOptions" size="small" trigger="click"
-                                            :value="effortConfigOf(model).effort"
-                                            @update:value="(value: string) => setEffort(model, value)">
-                                            <template #header>
-                                                <button type="button" class="effort-mode-toggle"
-                                                    :title="overwriteModeHint(model)"
-                                                    @click="cycleOverwriteMode(model)">
-                                                    <span class="effort-mode-toggle__label">{{ overwriteModeLabel(model) }}</span>
+                                        <div class="effort-trigger"
+                                            :class="{ 'effort-trigger--muted': effortIsInert(model) }">
+                                            <button type="button" class="inline-mode-toggle"
+                                                :title="overwriteModeHint(model)"
+                                                @click="cycleOverwriteMode(model)">
+                                                {{ overwriteModeLabel(model) }}
+                                            </button>
+                                            <n-popselect :options="effortOptions" size="small" trigger="click"
+                                                :value="effortConfigOf(model).effort"
+                                                @update:value="(value: string) => setEffort(model, value)">
+                                                <button type="button" class="effort-trigger__value"
+                                                    :title="overwriteModeHint(model)">
+                                                    <span class="effort-trigger__text">{{ effortTriggerLabel(model) }}</span>
                                                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
                                                         stroke="currentColor" stroke-width="2" stroke-linecap="round"
                                                         stroke-linejoin="round" aria-hidden="true">
-                                                        <path d="M17 1l4 4-4 4" />
-                                                        <path d="M3 11V9a4 4 0 0 1 4-4h14" />
-                                                        <path d="M7 23l-4-4 4-4" />
-                                                        <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+                                                        <polyline points="6 9 12 15 18 9" />
                                                     </svg>
                                                 </button>
-                                            </template>
-                                            <button type="button" class="effort-trigger"
-                                                :class="{ 'effort-trigger--muted': effortIsInert(model) }"
-                                                :title="overwriteModeHint(model)">
-                                                <span class="effort-trigger__text">{{ effortTriggerLabel(model) }}</span>
-                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
-                                                    stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                                    stroke-linejoin="round" aria-hidden="true">
-                                                    <polyline points="6 9 12 15 18 9" />
-                                                </svg>
-                                            </button>
-                                        </n-popselect>
+                                            </n-popselect>
+                                        </div>
                                     </n-form-item>
                                 </div>
                             </div>
                             <div class="model-capability-divider"></div>
                             <div class="model-capability-group model-capability-group--ollama">
                                 <div class="model-form-row">
-                                    <n-form-item label="最大输出" class="model-detail-item model-detail-item--half">
+                                    <n-form-item label="最大输出"
+                                        class="model-detail-item model-detail-item--half model-detail-item--numeric">
                                         <!--
                                             输入框直接编辑 token 数，模式藏在预设菜单的 header 里 ——
                                             与思考深度同构。这里保留可手填的输入框而非只给下拉：
@@ -267,28 +261,23 @@ function maxOutputModeHint(model: EditableModel) {
                                         <n-input :value="String(maxOutputConfigOf(model).maxOutputTokens)"
                                             placeholder="4000"
                                             @update:value="(value: string) => setMaxOutputTokens(model, value)">
+                                            <!--
+                                                模式放在输入框前缀而非预设菜单里：它决定这个值到底会不会
+                                                发往上游，折叠状态下必须可见。与思考深度的「兜底: Max」同理，
+                                                只是这一栏的值要能手填，所以模式只能挂在输入框旁边。
+                                            -->
+                                            <template #prefix>
+                                                <button type="button" class="inline-mode-toggle"
+                                                    :title="maxOutputModeHint(model)"
+                                                    @click="cycleMaxOutputMode(model)">
+                                                    {{ maxOutputModeLabel(model) }}
+                                                </button>
+                                            </template>
                                             <template #suffix>
                                                 <n-popselect :options="maxOutputPresets" size="small" trigger="click"
                                                     :value="maxOutputConfigOf(model).maxOutputTokens"
                                                     @update:value="(value: number) => setMaxOutputTokens(model, String(value))">
-                                                    <template #header>
-                                                        <button type="button" class="effort-mode-toggle"
-                                                            :title="maxOutputModeHint(model)"
-                                                            @click="cycleMaxOutputMode(model)">
-                                                            <span class="effort-mode-toggle__label">{{ maxOutputModeLabel(model) }}</span>
-                                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
-                                                                stroke="currentColor" stroke-width="2"
-                                                                stroke-linecap="round" stroke-linejoin="round"
-                                                                aria-hidden="true">
-                                                                <path d="M17 1l4 4-4 4" />
-                                                                <path d="M3 11V9a4 4 0 0 1 4-4h14" />
-                                                                <path d="M7 23l-4-4 4-4" />
-                                                                <path d="M21 13v2a4 4 0 0 1-4 4H3" />
-                                                            </svg>
-                                                        </button>
-                                                    </template>
-                                                    <span class="context-preset-trigger"
-                                                        :title="maxOutputModeHint(model)">
+                                                    <span class="context-preset-trigger">
                                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
                                                             stroke="currentColor" stroke-width="2"
                                                             stroke-linecap="round" stroke-linejoin="round">
@@ -507,6 +496,35 @@ function maxOutputModeHint(model: EditableModel) {
         min-width: 0;
     }
 
+    /**
+     * 纯数值输入框的数字视觉居中补偿。
+     *
+     * <h2>为何需要补偿，以及为何是 1px</h2>
+     * 盒模型本来就是居中的（`line-height` 等于 28px 的容器高），偏下来自字体度量：
+     * 正文字体 Crimson Pro 在 14px 下，数字的 `actualBoundingBoxAscent` 为 9px、
+     * `actualBoundingBoxDescent` 为 1px —— 有一截墨迹落在 baseline 之下，
+     * 于是墨迹中心比盒中心低 1px。
+     *
+     * <p>这个偏移对数字是<strong>恒定</strong>的：`4000`、`4096`、`650000` 实测都是
+     * 9/1，与位数无关（阿拉伯数字在该字体里既无升部也无真正的降部）。所以能用一个
+     * 固定的 1px 上移抵消，不需要换字体 —— 上一版换 mono 是绕过问题而非解决它。
+     *
+     * <p>用 `transform` 而不是 `padding` / `top`：`padding-bottom` 会挤压 content box
+     * 与 28px 的 `line-height` 打架，`position` 要额外声明定位上下文。`transform` 不参与
+     * 布局，光标也跟着一起移动，视觉保持一致。
+     *
+     * <p>占位符不用单独补：这两栏是单行 `n-input`，Naive UI 直接用 input 的原生
+     * `placeholder` 属性，跟着同一个 `transform` 走。（只有 textarea 与 pair 模式才会
+     * 渲染独立的 `.n-input__placeholder` 元素，那时才需要一起补。）
+     *
+     * <p>补偿只给数值栏。文本输入框里的 `g`、`y` 有真正的降部，墨迹本就该压在 baseline 下，
+     * 强行上移反而错。
+     */
+    &--numeric :deep(.n-input__input-el) {
+        transform: translateY(-1px);
+        font-variant-numeric: tabular-nums;
+    }
+
     &--switch {
         flex-shrink: 0;
 
@@ -524,8 +542,8 @@ function maxOutputModeHint(model: EditableModel) {
 /**
  * 思考深度占基础组首行的 2/5（上下文占 3/5）。
  *
- * 基准取 `0` 而非 `auto`：触发器文案长度随模式变化（「覆写: Medium」比
- * 「兜底: Max」宽出一截），若以内容宽为基准，切一下模式两个控件的宽度就会跳变。
+ * 基准取 `0` 而非 `auto`：档位名长度不一（`Medium` 比 `Max` 宽），
+ * 若以内容宽为基准，换一个档位两个控件的宽度就会跳变。
  */
 .model-effort-item {
     flex: 2 1 0;
@@ -547,9 +565,6 @@ function maxOutputModeHint(model: EditableModel) {
 .effort-trigger {
     display: flex;
     align-items: center;
-    // 文案靠左、箭头靠右，与左侧 n-input 的后缀图标位置对应。
-    justify-content: space-between;
-    gap: 4px;
     width: 100%;
     min-width: 0;
     height: 28px;
@@ -560,22 +575,53 @@ function maxOutputModeHint(model: EditableModel) {
     color: $text-body;
     font-family: $font-body;
     font-size: 13px;
-    cursor: pointer;
     white-space: nowrap;
     transition: border-color 0.15s ease, color 0.15s ease;
 
     &:hover {
         border-color: $accent;
-        color: $accent;
     }
 
-    // 删除模式下档位不参与请求，触发器整体降低存在感，与「已生效的配置」区分开。
+    // 透传与删除两档不使用此处配置的档位，整体降低存在感，
+    // 与「已生效的配置」区分开。
     &--muted {
         color: $text-muted;
     }
 }
 
-/** 模式名一旦变长就截断，而不是把箭头挤出控件。 */
+/**
+ * 触发器里的档位部分（前缀标签之右的那一段）。
+ *
+ * 占满剩余宽度并把箭头推到右缘，与最大输出那一栏 n-input 的后缀图标对齐。
+ * 背景与边框由外层容器提供，这里只负责布局与 hover 色。
+ */
+.effort-trigger__value {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
+    cursor: pointer;
+    transition: color 0.15s ease;
+
+    &:hover {
+        color: $accent;
+    }
+
+    svg {
+        flex-shrink: 0;
+    }
+}
+
+/** 档位名一旦变长就截断，而不是把箭头挤出控件。 */
 .effort-trigger__text {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -583,53 +629,6 @@ function maxOutputModeHint(model: EditableModel) {
     font-variant-numeric: tabular-nums;
 }
 
-/**
- * 下拉菜单顶部的模式轮转按钮。
- *
- * <h2>为何用负 margin 而不是直接给内边距</h2>
- * Naive UI 的 `.n-base-select-menu__header` 自带 `padding: 8px 12px` 与
- * `border-bottom`。按钮若再叠一层自己的内边距与下边框，结果是**两条横线**
- * （header 的 + 按钮的）和 45px 的行高 —— 比下方任何一个档位项都高出一倍。
- *
- * <p>那个 header 由 Naive UI 渲染，不带本组件的 scoped 属性，`:deep()` 也无法
- * 从子元素向上选中它，所以改不了它的内边距。用负 margin 抵消掉，再由按钮自己
- * 给内边距：按钮因此撑满整个 header 宽度，hover 高亮能到边，而分隔线只剩
- * header 自带的那一条。
- */
-.effort-mode-toggle {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: $space-sm;
-    // 抵消 header 的 12px 左右内边距后再补回，按钮因此横向撑满整个 header；
-    // 写 `width: 100%` 不行 —— 那是 header 内容区宽度，加上负 margin 后会短 24px。
-    width: calc(100% + 24px);
-    margin: -8px -12px;
-    // 纵向边距刻意比 header 的默认更大：负 margin 抵消了两侧，但按钮仍要保留
-    // 自己的纵向呼吸感 —— 上一版只留 5px，行高比档位项还矮，看起来挤。
-    padding: 10px 12px;
-    border: none;
-    background: transparent;
-    color: $text-body;
-    font-family: $font-body;
-    font-size: 13px;
-    cursor: pointer;
-    transition: background 0.15s ease, color 0.15s ease;
-
-    &:hover {
-        background: $accent-light;
-        color: $accent;
-    }
-
-    svg {
-        flex-shrink: 0;
-        opacity: 0.6;
-    }
-}
-
-.effort-mode-toggle__label {
-    font-weight: 500;
-}
 
 /**
  * Ollama 组的标签比基础组窄。
@@ -727,6 +726,40 @@ function maxOutputModeHint(model: EditableModel) {
     &:hover {
         color: $accent;
         background: $accent-light;
+    }
+}
+
+/**
+ * 控件内嵌的模式轮转标签，思考深度与最大输出共用。
+ *
+ * <h2>为何做成前缀而非独立控件或下拉 header</h2>
+ * 模式决定了旁边那个值到底会不会发往上游，所以它必须在<strong>折叠状态</strong>可见 ——
+ * 放在下拉菜单的 header 里就看不到了。而做成独立控件会再占一份横向空间，
+ * 这一行本来就只有 2/5 或 1/3 的宽度。挂在值的左侧既外显又不额外占位。
+ *
+ * <p>右侧的竖线把它与值分开 —— 没有分隔时它看起来像值的前半段。
+ * 字号比正文小一号：它是标签而非可编辑内容，视觉上要能一眼区分。
+ *
+ * <p>两栏都用同一个类，读法因此完全一致：左边模式、竖线、右边值。
+ */
+.inline-mode-toggle {
+    flex-shrink: 0;
+    padding: 0 6px 0 0;
+    margin-right: 6px;
+    border: none;
+    border-right: 1px solid $border;
+    background: transparent;
+    color: $text-muted;
+    // 模式名是中文，$font-mono 里没有中文字形，声明了也只会回退到系统字体。
+    font-family: $font-body;
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 0.15s ease;
+
+    &:hover {
+        color: $accent;
     }
 }
 
