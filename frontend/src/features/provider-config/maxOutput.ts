@@ -11,7 +11,21 @@
  * 存在 `provider_model.max_output_tokens` 一列里，V9 起是 JSON：
  * `{"max_output_tokens":4000,"overwrite_mode":"fallback"}`。
  * 该列在 V9 之前是 INTEGER，V9 重建表把它换成带 `json_valid` 约束的 TEXT。
+ *
+ * <h2>与基座的分工</h2>
+ * 模式转转、解析与序列化的骨架在 `overwriteMode.ts`；这里只留本字段独有的：
+ * 只支持前两档模式、正整数归一化、预设清单。
  */
+
+import {
+  OVERWRITE_MODE_LABELS,
+  buildOverwriteModeHints,
+  nextOverwriteMode,
+  parseModeScopedValue,
+  serializeModeScopedValue,
+  type ModeScopedCodec,
+  type OverwriteMode,
+} from './overwriteMode'
 
 /**
  * 最大输出的注入模式。
@@ -25,23 +39,23 @@
  * 「下游没带也不补」或「强制剥离」在那条线路上等于必然失败。
  * 少两档不是简化，而是这两档在本字段上没有对应的真实意图。
  */
-export type MaxOutputOverwriteMode = 'override' | 'fallback'
+export type MaxOutputOverwriteMode = Extract<OverwriteMode, 'override' | 'fallback'>
 
-/** 轮转顺序，按代理干预程度递减 —— 与思考深度的前两档一致。 */
+/** 转转顺序，按代理干预程度递减 —— 与思考深度的前两档一致。 */
 export const MAX_OUTPUT_OVERWRITE_MODES: readonly MaxOutputOverwriteMode[] = [
   'override',
   'fallback',
 ]
 
-export const MAX_OUTPUT_OVERWRITE_MODE_LABELS: Record<MaxOutputOverwriteMode, string> = {
-  override: '覆写',
-  fallback: '兜底',
-}
+/**
+ * 标签取基座的全集。
+ *
+ * 不裁成两档：`Record` 多两个用不到的键无害，而这两档的文案必须与思考深度
+ * 完全一致 —— 分两份维护只会让它们漂移。
+ */
+export const MAX_OUTPUT_OVERWRITE_MODE_LABELS = OVERWRITE_MODE_LABELS
 
-export const MAX_OUTPUT_OVERWRITE_MODE_HINTS: Record<MaxOutputOverwriteMode, string> = {
-  override: '无论下游是否携带，都使用此处配置的上限',
-  fallback: '下游携带就用它的值，未携带才使用此处配置的上限',
-}
+export const MAX_OUTPUT_OVERWRITE_MODE_HINTS = buildOverwriteModeHints('上限')
 
 /**
  * 默认模式取 `fallback`。
@@ -80,18 +94,6 @@ export interface MaxOutputConfig {
   mode: MaxOutputOverwriteMode
 }
 
-function isOverwriteMode(value: unknown): value is MaxOutputOverwriteMode {
-  return typeof value === 'string'
-    && (MAX_OUTPUT_OVERWRITE_MODES as readonly string[]).includes(value)
-}
-
-/** 归一化模式名，大小写与两侧空白不敏感。 */
-function canonicalizeMode(value: unknown): MaxOutputOverwriteMode | null {
-  if (typeof value !== 'string') return null
-  const trimmed = value.trim().toLowerCase()
-  return isOverwriteMode(trimmed) ? trimmed : null
-}
-
 /**
  * 归一化 token 上限。
  *
@@ -101,6 +103,24 @@ function canonicalizeMode(value: unknown): MaxOutputOverwriteMode | null {
 function canonicalizeTokens(value: unknown): number | null {
   const parsed = typeof value === 'number' ? value : Number.parseInt(String(value ?? '').trim(), 10)
   return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : null
+}
+
+/**
+ * 交给基座的字段特有规则。
+ *
+ * `parseLegacy` 只需处理裸整数（V9 之前该列是 INTEGER）—— 比思考深度简单得多，
+ * 那一列还背着 `"None"` 与逗号分隔多值两个包袱。
+ */
+const CODEC: ModeScopedCodec<number, MaxOutputOverwriteMode> = {
+  modes: MAX_OUTPUT_OVERWRITE_MODES,
+  defaultMode: DEFAULT_MAX_OUTPUT_OVERWRITE_MODE,
+  defaultValue: DEFAULT_MAX_OUTPUT_TOKENS,
+  valueKey: 'max_output_tokens',
+  canonicalizeValue: canonicalizeTokens,
+  parseLegacy: raw => ({
+    value: canonicalizeTokens(raw) ?? DEFAULT_MAX_OUTPUT_TOKENS,
+    mode: DEFAULT_MAX_OUTPUT_OVERWRITE_MODE,
+  }),
 }
 
 /**
@@ -118,34 +138,8 @@ function canonicalizeTokens(value: unknown): number | null {
  * 一行脏数据不该让整个模型列表无法编辑。
  */
 export function parseMaxOutputConfig(raw: unknown): MaxOutputConfig {
-  const fallback: MaxOutputConfig = {
-    maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
-    mode: DEFAULT_MAX_OUTPUT_OVERWRITE_MODE,
-  }
-  if (typeof raw === 'number') {
-    return { maxOutputTokens: canonicalizeTokens(raw) ?? DEFAULT_MAX_OUTPUT_TOKENS, mode: fallback.mode }
-  }
-  if (typeof raw !== 'string' || !raw.trim()) {
-    return fallback
-  }
-  const trimmed = raw.trim()
-
-  if (trimmed.startsWith('{')) {
-    try {
-      const parsed = JSON.parse(trimmed) as Record<string, unknown>
-      return {
-        maxOutputTokens: canonicalizeTokens(parsed.max_output_tokens) ?? DEFAULT_MAX_OUTPUT_TOKENS,
-        mode: canonicalizeMode(parsed.overwrite_mode) ?? DEFAULT_MAX_OUTPUT_OVERWRITE_MODE,
-      }
-    } catch {
-      return fallback
-    }
-  }
-
-  return {
-    maxOutputTokens: canonicalizeTokens(trimmed) ?? DEFAULT_MAX_OUTPUT_TOKENS,
-    mode: DEFAULT_MAX_OUTPUT_OVERWRITE_MODE,
-  }
+  const { value, mode } = parseModeScopedValue(raw, CODEC)
+  return { maxOutputTokens: value, mode }
 }
 
 /**
@@ -154,10 +148,7 @@ export function parseMaxOutputConfig(raw: unknown): MaxOutputConfig {
  * token 上限写成 JSON 数字而非字符串：迁移与界面都用 `json_extract` 直接取整数。
  */
 export function serializeMaxOutputConfig(config: MaxOutputConfig): string {
-  return JSON.stringify({
-    max_output_tokens: canonicalizeTokens(config.maxOutputTokens) ?? DEFAULT_MAX_OUTPUT_TOKENS,
-    overwrite_mode: config.mode,
-  })
+  return serializeModeScopedValue({ value: config.maxOutputTokens, mode: config.mode }, CODEC)
 }
 
 /**
@@ -166,7 +157,5 @@ export function serializeMaxOutputConfig(config: MaxOutputConfig): string {
  * 认不出的值从头开始而非原地不动 —— 后者会让按钮看起来是坏的。
  */
 export function nextMaxOutputOverwriteMode(current: MaxOutputOverwriteMode): MaxOutputOverwriteMode {
-  const index = MAX_OUTPUT_OVERWRITE_MODES.indexOf(current)
-  if (index < 0) return MAX_OUTPUT_OVERWRITE_MODES[0]
-  return MAX_OUTPUT_OVERWRITE_MODES[(index + 1) % MAX_OUTPUT_OVERWRITE_MODES.length]
+  return nextOverwriteMode(current, MAX_OUTPUT_OVERWRITE_MODES)
 }

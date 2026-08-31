@@ -1,19 +1,22 @@
 <script setup lang="ts">
 import { NButton, NCheckbox, NForm, NFormItem, NInput, NPopselect, NSwitch } from 'naive-ui'
 import {
+  MAX_OUTPUT_OVERWRITE_MODES,
   MAX_OUTPUT_OVERWRITE_MODE_HINTS,
-  MAX_OUTPUT_OVERWRITE_MODE_LABELS,
   MAX_OUTPUT_PRESETS,
   REASONING_EFFORT_OPTIONS,
+  REASONING_OVERWRITE_MODES,
   REASONING_OVERWRITE_MODE_HINTS,
-  REASONING_OVERWRITE_MODE_LABELS,
-  nextMaxOutputOverwriteMode,
-  nextReasoningOverwriteMode,
   parseMaxOutputConfig,
   parseReasoningEffortConfig,
   serializeMaxOutputConfig,
   serializeReasoningEffortConfig,
+  type MaxOutputOverwriteMode,
+  type OverwriteMode,
+  type ReasoningOverwriteMode,
 } from '@/features/provider-config'
+
+import ModeScopedField from './ModeScopedField.vue'
 
 type EditableModel = Record<string, any>
 
@@ -65,43 +68,18 @@ function setEffort(model: EditableModel, effort: string) {
     model.reasoningEffort = serializeReasoningEffortConfig({ ...effortConfigOf(model), effort })
 }
 
-/** 轮转注入模式。三个模式循环切换，无需展开二级菜单。 */
-function cycleOverwriteMode(model: EditableModel) {
-    const current = effortConfigOf(model)
+/**
+ * 写入注入模式。
+ *
+ * 壳层已经算好了下一档（轮转顺序由传给它的模式清单决定），这里只管落库形态。
+ * 断言回 `ReasoningOverwriteMode`：壳层的模型是全集类型，而传进去的清单就是这个
+ * 字段的子集，取出来的值必然在子集内。
+ */
+function setEffortMode(model: EditableModel, mode: OverwriteMode) {
     model.reasoningEffort = serializeReasoningEffortConfig({
-        ...current,
-        mode: nextReasoningOverwriteMode(current.mode),
+        ...effortConfigOf(model),
+        mode: mode as ReasoningOverwriteMode,
     })
-}
-
-function overwriteModeLabel(model: EditableModel) {
-    return REASONING_OVERWRITE_MODE_LABELS[effortConfigOf(model).mode]
-}
-
-function overwriteModeHint(model: EditableModel) {
-    return REASONING_OVERWRITE_MODE_HINTS[effortConfigOf(model).mode]
-}
-
-/**
- * 档位是否真的会被发往上游。
- *
- * 透传与删除两档都<strong>不使用</strong>此处配置的档位：前者完全不干预、
- * 后者直接剔除字段，档位只作为界面上的记忆值存在。触发器据此降低存在感，
- * 否则一个永不生效的档位会与已生效的配置长得一模一样。
- */
-function effortIsInert(model: EditableModel) {
-    const mode = effortConfigOf(model).mode
-    return mode === 'passthrough' || mode === 'delete'
-}
-
-/**
- * 触发器上显示的档位。
- *
- * 只给档位、不拼模式：模式已由左侧的前缀标签外显，拼进来会重复一遍。
- * 折叠状态下「模式 | 档位」两段各司其职，与最大输出那一栏的读法一致。
- */
-function effortTriggerLabel(model: EditableModel) {
-    return effortConfigOf(model).effort
 }
 
 /**
@@ -128,21 +106,12 @@ function setMaxOutputTokens(model: EditableModel, raw: string) {
     })
 }
 
-/** 轮转注入模式。只有两档，点一次就切换。 */
-function cycleMaxOutputMode(model: EditableModel) {
-    const current = maxOutputConfigOf(model)
+/** 写入注入模式。与思考深度同构，只是这个字段的清单只有两档。 */
+function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
     model.maxOutputTokens = serializeMaxOutputConfig({
-        ...current,
-        mode: nextMaxOutputOverwriteMode(current.mode),
+        ...maxOutputConfigOf(model),
+        mode: mode as MaxOutputOverwriteMode,
     })
-}
-
-function maxOutputModeLabel(model: EditableModel) {
-    return MAX_OUTPUT_OVERWRITE_MODE_LABELS[maxOutputConfigOf(model).mode]
-}
-
-function maxOutputModeHint(model: EditableModel) {
-    return MAX_OUTPUT_OVERWRITE_MODE_HINTS[maxOutputConfigOf(model).mode]
 }
 </script>
 
@@ -218,24 +187,20 @@ function maxOutputModeHint(model: EditableModel) {
                                     </n-form-item>
                                     <n-form-item class="model-effort-item">
                                         <!--
-                                            模式做成触发器内的前缀标签，与最大输出同构：模式与档位不是
-                                            同一维度的选择，混进选项列表会让用户以为「覆写」和「Medium」
-                                            是互斥的同类项；而放在下拉的 header 里则折叠状态看不见。
-                                            标签在最左、竖线分隔、档位居右 —— 两栏的读法完全一致。
+                                            档位是枚举，所以值区用 popselect；最大输出那一栏的值要能手填，
+                                            用的是 n-input。两者的「模式 | 值」外壳是同一个组件。
                                         -->
-                                        <div class="effort-trigger"
-                                            :class="{ 'effort-trigger--muted': effortIsInert(model) }">
-                                            <button type="button" class="inline-mode-toggle"
-                                                :title="overwriteModeHint(model)"
-                                                @click="cycleOverwriteMode(model)">
-                                                {{ overwriteModeLabel(model) }}
-                                            </button>
+                                        <mode-scoped-field :modes="REASONING_OVERWRITE_MODES"
+                                            :hints="REASONING_OVERWRITE_MODE_HINTS"
+                                            :mode="effortConfigOf(model).mode"
+                                            @update:mode="(value: OverwriteMode) => setEffortMode(model, value)">
                                             <n-popselect :options="effortOptions" size="small" trigger="click"
                                                 :value="effortConfigOf(model).effort"
                                                 @update:value="(value: string) => setEffort(model, value)">
-                                                <button type="button" class="effort-trigger__value"
-                                                    :title="overwriteModeHint(model)">
-                                                    <span class="effort-trigger__text">{{ effortTriggerLabel(model) }}</span>
+                                                <button type="button" class="effort-value">
+                                                    <span class="effort-value__text">
+                                                        {{ effortConfigOf(model).effort }}
+                                                    </span>
                                                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
                                                         stroke="currentColor" stroke-width="2" stroke-linecap="round"
                                                         stroke-linejoin="round" aria-hidden="true">
@@ -243,7 +208,7 @@ function maxOutputModeHint(model: EditableModel) {
                                                     </svg>
                                                 </button>
                                             </n-popselect>
-                                        </div>
+                                        </mode-scoped-field>
                                     </n-form-item>
                                 </div>
                             </div>
@@ -253,40 +218,33 @@ function maxOutputModeHint(model: EditableModel) {
                                     <n-form-item label="最大输出"
                                         class="model-detail-item model-detail-item--half model-detail-item--numeric">
                                         <!--
-                                            输入框直接编辑 token 数，模式藏在预设菜单的 header 里 ——
-                                            与思考深度同构。这里保留可手填的输入框而非只给下拉：
-                                            上游文档里的 4096、8192 那类二进制值不在预设中，
-                                            而迁移把它们当作「非标值」保留，界面也得能填进去。
+                                            值区保留可手填的输入框而非只给下拉：上游文档里的 4096、8192
+                                            那类二进制值不在预设中，而迁移把它们当作「非标值」保留，
+                                            界面也得能填进去。预设收在后缀的下拉里。
                                         -->
-                                        <n-input :value="String(maxOutputConfigOf(model).maxOutputTokens)"
-                                            placeholder="4000"
-                                            @update:value="(value: string) => setMaxOutputTokens(model, value)">
-                                            <!--
-                                                模式放在输入框前缀而非预设菜单里：它决定这个值到底会不会
-                                                发往上游，折叠状态下必须可见。与思考深度的「兜底: Max」同理，
-                                                只是这一栏的值要能手填，所以模式只能挂在输入框旁边。
-                                            -->
-                                            <template #prefix>
-                                                <button type="button" class="inline-mode-toggle"
-                                                    :title="maxOutputModeHint(model)"
-                                                    @click="cycleMaxOutputMode(model)">
-                                                    {{ maxOutputModeLabel(model) }}
-                                                </button>
-                                            </template>
-                                            <template #suffix>
-                                                <n-popselect :options="maxOutputPresets" size="small" trigger="click"
-                                                    :value="maxOutputConfigOf(model).maxOutputTokens"
-                                                    @update:value="(value: number) => setMaxOutputTokens(model, String(value))">
-                                                    <span class="context-preset-trigger">
-                                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                                                            stroke="currentColor" stroke-width="2"
-                                                            stroke-linecap="round" stroke-linejoin="round">
-                                                            <polyline points="6 9 12 15 18 9" />
-                                                        </svg>
-                                                    </span>
-                                                </n-popselect>
-                                            </template>
-                                        </n-input>
+                                        <mode-scoped-field :modes="MAX_OUTPUT_OVERWRITE_MODES"
+                                            :hints="MAX_OUTPUT_OVERWRITE_MODE_HINTS"
+                                            :mode="maxOutputConfigOf(model).mode"
+                                            @update:mode="(value: OverwriteMode) => setMaxOutputMode(model, value)">
+                                            <n-input :value="String(maxOutputConfigOf(model).maxOutputTokens)"
+                                                placeholder="4000"
+                                                @update:value="(value: string) => setMaxOutputTokens(model, value)">
+                                                <template #suffix>
+                                                    <n-popselect :options="maxOutputPresets" size="small"
+                                                        trigger="click"
+                                                        :value="maxOutputConfigOf(model).maxOutputTokens"
+                                                        @update:value="(value: number) => setMaxOutputTokens(model, String(value))">
+                                                        <span class="context-preset-trigger">
+                                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                                                stroke="currentColor" stroke-width="2"
+                                                                stroke-linecap="round" stroke-linejoin="round">
+                                                                <polyline points="6 9 12 15 18 9" />
+                                                            </svg>
+                                                        </span>
+                                                    </n-popselect>
+                                                </template>
+                                            </n-input>
+                                        </mode-scoped-field>
                                     </n-form-item>
                                 </div>
                                 <div class="model-form-row model-form-row--details">
@@ -557,45 +515,15 @@ function maxOutputModeHint(model: EditableModel) {
 }
 
 /**
- * 思考深度触发器。
+ * 思考深度的值区（`ModeScopedField` 插槽里的那个按钮）。
  *
- * 自己画一个按钮而非用 n-select：显示文案是「模式: 档位」两个维度拼出来的，
- * 而 n-select 的显示值与 `value` 绑死，只能显示被选中的那一个档位。
- */
-.effort-trigger {
-    display: flex;
-    align-items: center;
-    width: 100%;
-    min-width: 0;
-    height: 28px;
-    padding: 0 8px;
-    border: 1px solid $border;
-    border-radius: $radius;
-    background: $surface;
-    color: $text-body;
-    font-family: $font-body;
-    font-size: 13px;
-    white-space: nowrap;
-    transition: border-color 0.15s ease, color 0.15s ease;
-
-    &:hover {
-        border-color: $accent;
-    }
-
-    // 透传与删除两档不使用此处配置的档位，整体降低存在感，
-    // 与「已生效的配置」区分开。
-    &--muted {
-        color: $text-muted;
-    }
-}
-
-/**
- * 触发器里的档位部分（前缀标签之右的那一段）。
+ * 自己画一个按钮而非用 n-select：n-select 自带边框与高度，而这两样由外壳提供，
+ * 抹掉它的框比画一个按钮更费事；这里要的只是「文案 + 箭头」。
  *
- * 占满剩余宽度并把箭头推到右缘，与最大输出那一栏 n-input 的后缀图标对齐。
- * 背景与边框由外层容器提供，这里只负责布局与 hover 色。
+ * <p>占满剩余宽度并把箭头推到右缘，与最大输出那一栏 n-input 的后缀图标对齐。
+ * 颜色继承外壳 —— inert 态的变灰因此自动生效。
  */
-.effort-trigger__value {
+.effort-value {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -622,11 +550,10 @@ function maxOutputModeHint(model: EditableModel) {
 }
 
 /** 档位名一旦变长就截断，而不是把箭头挤出控件。 */
-.effort-trigger__text {
+.effort-value__text {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-variant-numeric: tabular-nums;
 }
 
 
@@ -726,40 +653,6 @@ function maxOutputModeHint(model: EditableModel) {
     &:hover {
         color: $accent;
         background: $accent-light;
-    }
-}
-
-/**
- * 控件内嵌的模式轮转标签，思考深度与最大输出共用。
- *
- * <h2>为何做成前缀而非独立控件或下拉 header</h2>
- * 模式决定了旁边那个值到底会不会发往上游，所以它必须在<strong>折叠状态</strong>可见 ——
- * 放在下拉菜单的 header 里就看不到了。而做成独立控件会再占一份横向空间，
- * 这一行本来就只有 2/5 或 1/3 的宽度。挂在值的左侧既外显又不额外占位。
- *
- * <p>右侧的竖线把它与值分开 —— 没有分隔时它看起来像值的前半段。
- * 字号比正文小一号：它是标签而非可编辑内容，视觉上要能一眼区分。
- *
- * <p>两栏都用同一个类，读法因此完全一致：左边模式、竖线、右边值。
- */
-.inline-mode-toggle {
-    flex-shrink: 0;
-    padding: 0 6px 0 0;
-    margin-right: 6px;
-    border: none;
-    border-right: 1px solid $border;
-    background: transparent;
-    color: $text-muted;
-    // 模式名是中文，$font-mono 里没有中文字形，声明了也只会回退到系统字体。
-    font-family: $font-body;
-    font-size: 11px;
-    line-height: 1.4;
-    white-space: nowrap;
-    cursor: pointer;
-    transition: color 0.15s ease;
-
-    &:hover {
-        color: $accent;
     }
 }
 

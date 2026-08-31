@@ -9,7 +9,22 @@
  * <p>旧形态是纯档位字符串（如 `"Medium"`），其中 `"None"` 被借用来表达「不发送」——
  * 一个取值同时承担了「档位」与「是否发送」两件事。拆成 `{effort, mode}` 后，
  * 档位在四种模式下都保持有意义（`delete` 时它是备选值，用户切回其它模式时无需重新选）。
+ *
+ * <h2>与基座的分工</h2>
+ * 模式清单、轮转、解析与序列化的骨架在 `overwriteMode.ts`；
+ * 这里只留思考深度真正独有的东西：档位清单、大小写归一化、
+ * `"None"` 与逗号分隔多值那两个历史包袍，以及出站时转小写。
  */
+
+import {
+  OVERWRITE_MODE_LABELS,
+  buildOverwriteModeHints,
+  nextOverwriteMode,
+  parseModeScopedValue,
+  serializeModeScopedValue,
+  type ModeScopedCodec,
+  type OverwriteMode,
+} from './overwriteMode'
 
 /**
  * 思考深度的注入模式。
@@ -27,13 +42,15 @@
  * 后者是必要的 —— 某些上游收到不认识的 `reasoning_effort` 会直接 400，
  * 那时候必须能强制剥离，而不是指望下游不发。
  */
-export type ReasoningOverwriteMode = 'override' | 'fallback' | 'passthrough' | 'delete'
+export type ReasoningOverwriteMode = OverwriteMode
 
 /**
  * 轮转顺序。
  *
  * 按「代理干预程度」递减排列：覆写完全接管、兜底只补缺、透传完全不管、删除强制剥离。
  * 前三档的语义变化因此是连续的；delete 排在末尾，因为它不是「更不干预」而是另一种干预。
+ *
+ * <p>这是唯一用满四档的字段 —— 最大输出只有前两档，见 `maxOutput.ts`。
  */
 export const REASONING_OVERWRITE_MODES: readonly ReasoningOverwriteMode[] = [
   'override',
@@ -42,20 +59,11 @@ export const REASONING_OVERWRITE_MODES: readonly ReasoningOverwriteMode[] = [
   'delete',
 ]
 
-export const REASONING_OVERWRITE_MODE_LABELS: Record<ReasoningOverwriteMode, string> = {
-  override: '覆写',
-  fallback: '兜底',
-  passthrough: '透传',
-  delete: '删除',
-}
+/** 标签全局统一，直接取基座的那一份。 */
+export const REASONING_OVERWRITE_MODE_LABELS = OVERWRITE_MODE_LABELS
 
 /** 悬停说明。四个模式的差别只在两问上，文案必须同时点明。 */
-export const REASONING_OVERWRITE_MODE_HINTS: Record<ReasoningOverwriteMode, string> = {
-  override: '无论下游是否携带，都使用此处配置的档位',
-  fallback: '下游携带就用它的值，未携带才使用此处配置的档位',
-  passthrough: '下游携带就用它的值，未携带也不添加该字段',
-  delete: '始终不向上游发送该字段，连下游自带的也一并移除',
-}
+export const REASONING_OVERWRITE_MODE_HINTS = buildOverwriteModeHints('档位')
 
 /**
  * 默认模式取 `fallback`。
@@ -83,18 +91,6 @@ export interface ReasoningEffortConfig {
   mode: ReasoningOverwriteMode
 }
 
-function isOverwriteMode(value: unknown): value is ReasoningOverwriteMode {
-  return typeof value === 'string'
-    && (REASONING_OVERWRITE_MODES as readonly string[]).includes(value)
-}
-
-/** 归一化模式名，大小写与两侧空白不敏感。 */
-function canonicalizeMode(value: unknown): ReasoningOverwriteMode | null {
-  if (typeof value !== 'string') return null
-  const trimmed = value.trim().toLowerCase()
-  return isOverwriteMode(trimmed) ? trimmed : null
-}
-
 /**
  * 把任意大小写的档位映射回选项形态。
  *
@@ -110,6 +106,30 @@ function canonicalizeEffort(value: unknown): string | null {
     option => option.toLowerCase() === trimmed.toLowerCase(),
   )
   return matched ?? null
+}
+
+/**
+ * 交给基座的字段特有规则。
+ *
+ * `parseLegacy` 处理这一列的两个历史包袱：逗号分隔多值（只取第一项，表单不支持多选）
+ * 与 `"None"`（映射为 `delete`）。后者是必须的 —— 详见 {@link parseReasoningEffortConfig}。
+ */
+const CODEC: ModeScopedCodec<string, ReasoningOverwriteMode> = {
+  modes: REASONING_OVERWRITE_MODES,
+  defaultMode: DEFAULT_REASONING_OVERWRITE_MODE,
+  defaultValue: DEFAULT_REASONING_EFFORT,
+  valueKey: 'reasoning_effort',
+  canonicalizeValue: canonicalizeEffort,
+  parseLegacy: raw => {
+    const first = raw.split(',')[0].trim()
+    if (first.toLowerCase() === 'none') {
+      return { value: DEFAULT_REASONING_EFFORT, mode: 'delete' }
+    }
+    return {
+      value: canonicalizeEffort(first) ?? DEFAULT_REASONING_EFFORT,
+      mode: DEFAULT_REASONING_OVERWRITE_MODE,
+    }
+  },
 }
 
 /**
@@ -130,35 +150,8 @@ function canonicalizeEffort(value: unknown): string | null {
  * 一行脏数据不该让整个模型列表无法编辑。
  */
 export function parseReasoningEffortConfig(raw: unknown): ReasoningEffortConfig {
-  const fallback: ReasoningEffortConfig = {
-    effort: DEFAULT_REASONING_EFFORT,
-    mode: DEFAULT_REASONING_OVERWRITE_MODE,
-  }
-  if (typeof raw !== 'string' || !raw.trim()) {
-    return fallback
-  }
-  const trimmed = raw.trim()
-
-  if (trimmed.startsWith('{')) {
-    try {
-      const parsed = JSON.parse(trimmed) as Record<string, unknown>
-      return {
-        effort: canonicalizeEffort(parsed.reasoning_effort) ?? DEFAULT_REASONING_EFFORT,
-        mode: canonicalizeMode(parsed.overwrite_mode) ?? DEFAULT_REASONING_OVERWRITE_MODE,
-      }
-    } catch {
-      return fallback
-    }
-  }
-
-  const first = trimmed.split(',')[0].trim()
-  if (first.toLowerCase() === 'none') {
-    return { effort: DEFAULT_REASONING_EFFORT, mode: 'delete' }
-  }
-  return {
-    effort: canonicalizeEffort(first) ?? DEFAULT_REASONING_EFFORT,
-    mode: DEFAULT_REASONING_OVERWRITE_MODE,
-  }
+  const { value, mode } = parseModeScopedValue(raw, CODEC)
+  return { effort: value, mode }
 }
 
 /**
@@ -168,16 +161,14 @@ export function parseReasoningEffortConfig(raw: unknown): ReasoningEffortConfig 
  * 直接取用而不必再转一次 —— 少一个转换点就少一处可能漏掉的地方。
  */
 export function serializeReasoningEffortConfig(config: ReasoningEffortConfig): string {
-  return JSON.stringify({
-    reasoning_effort: config.effort.toLowerCase(),
-    overwrite_mode: config.mode,
-  })
+  return serializeModeScopedValue(
+    { value: config.effort, mode: config.mode },
+    CODEC,
+    effort => effort.toLowerCase(),
+  )
 }
 
 /** 轮转到下一个模式，到末尾回到开头。 */
 export function nextReasoningOverwriteMode(mode: ReasoningOverwriteMode): ReasoningOverwriteMode {
-  const index = REASONING_OVERWRITE_MODES.indexOf(mode)
-  // 认不出的值当作从头开始，而不是原地不动 —— 后者会让按钮看起来是坏的。
-  if (index < 0) return REASONING_OVERWRITE_MODES[0]
-  return REASONING_OVERWRITE_MODES[(index + 1) % REASONING_OVERWRITE_MODES.length]
+  return nextOverwriteMode(mode, REASONING_OVERWRITE_MODES)
 }

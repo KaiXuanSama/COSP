@@ -50,6 +50,19 @@ export {
 export { resolvePullModelsErrorMessage } from './errorMessage'
 
 export {
+  OVERWRITE_MODE_LABELS,
+  buildOverwriteModeHints,
+  canonicalizeOverwriteMode,
+  modeUsesConfiguredValue,
+  nextOverwriteMode,
+  parseModeScopedValue,
+  serializeModeScopedValue,
+  type ModeScopedCodec,
+  type ModeScopedValue,
+  type OverwriteMode,
+} from './overwriteMode'
+
+export {
   DEFAULT_REASONING_EFFORT,
   DEFAULT_REASONING_OVERWRITE_MODE,
   REASONING_EFFORT_OPTIONS,
