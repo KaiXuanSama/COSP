@@ -14,7 +14,6 @@ import {
   serializeMaxOutputConfig,
   serializeReasoningEffortConfig,
   stepInSequence,
-  stepNumericPreset,
   type MaxOutputOverwriteMode,
   type OverwriteMode,
   type ReasoningOverwriteMode,
@@ -23,13 +22,15 @@ import {
 
 import ModeScopedField from './ModeScopedField.vue'
 import SlidingValue from './SlidingValue.vue'
-import { useTransientFlags } from './useTransientFlags'
+import { useWheelStep } from './useWheelStep'
 
 /**
- * 数值段位移动画的时长（毫秒），必须与 SCSS 里 `max-output-nudge-*` 的
- * animation-duration 一致 —— 标记提前过期会打断动画。
+ * 数值栏位移动画的时长（毫秒）。
+ *
+ * 必须与 SCSS 里 `numeric-nudge-*` 的 animation-duration 一致 ——
+ * 标记提前过期会把动画在中途打断。
  */
-const MAX_OUTPUT_NUDGE_MS = 180
+const NUDGE_MS = 180
 
 type EditableModel = Record<string, any>
 
@@ -46,6 +47,12 @@ const emit = defineEmits<{
     (e: 'remove-model', index: number): void
 }>()
 
+/**
+ * 上下文预设。
+ *
+ * `value` 是字符串：这一栏直接双向绑定 `model.contextSize`，而那是字符串
+ * （表单原样提交，没有 JSON 包装）。与最大输出的数字预设不同，见下方注释。
+ */
 const contextPresets = [
     { label: '1M', value: '1000000' },
     { label: '512K', value: '512000' },
@@ -53,6 +60,9 @@ const contextPresets = [
     { label: '128K', value: '128000' },
     { label: '64K', value: '64000' },
 ]
+
+/** 滚轮步进只关心数值，从展示用的预设里取一份数字清单。 */
+const contextPresetValues = contextPresets.map(preset => Number(preset.value))
 
 /**
  * 最大输出预设。
@@ -62,6 +72,9 @@ const contextPresets = [
  * `features/provider-config/maxOutput.ts`，与迁移的档位重映射表共用一套口径。
  */
 const maxOutputPresets = MAX_OUTPUT_PRESETS.map(preset => ({ ...preset }))
+
+/** 滚轮步进只关心数值，从展示用的预设里取一份数字清单。 */
+const maxOutputPresetValues = MAX_OUTPUT_PRESETS.map(preset => preset.value)
 
 const effortOptions = REASONING_EFFORT_OPTIONS.map(option => ({ label: option, value: option }))
 
@@ -82,21 +95,26 @@ function setEffort(model: EditableModel, effort: string) {
 }
 
 /**
- * 值段最近一次滚动的方向，按模型下标分别记。
+ * 档位段最近一次滚动的方向，按模型下标分别记。
  *
- * 每行的两个值段各自独立：在 A 行滚了档位，B 行的动画不该跟着有方向。
+ * 每行各自独立：在 A 行滚了档位，B 行的动画不该跟着有方向。
  *
- * <h2>两栏用了不同的机制</h2>
- * 档位段是只读按钮，方向直接喂给 `SlidingValue` 做进出过渡，因此方向可以长期存在
- * —— 它描述的是「当前显示的这个值是从哪个方向来的」。
- *
- * <p>数值段是可编辑输入框，套不了 `<Transition>`（过渡期间存在两份内容，
- * 光标与选区会错乱）。改成挂一个短暂的 class 播 CSS 位移，因此需要
- * {@link useTransientFlags} 的自动过期语义：标记表示「刚刚滚了一下」，
- * 不是「当前方向是」。
+ * <h2>为何不用 useWheelStep</h2>
+ * 那个是给**数值**栏用的（预设按大小吸附，反馈是短暂的 CSS 位移）。
+ * 档位是枚丙而非数值，且它的值段是**只读按钮**，因此可以用
+ * `SlidingValue` 做完整的进出过渡 —— 方向也因此可以长期存在，
+ * 它描述的是「当前显示的这个值从哪个方向来」，而不是「刚刚滚了一下」。
  */
 const effortDirections = ref<Record<number, StepDirection | null>>({})
-const maxOutputNudges = useTransientFlags<StepDirection>(MAX_OUTPUT_NUDGE_MS)
+
+/**
+ * 两个数值栏的滚轮步进。
+ *
+ * 各自一份实例：预设清单不同（上下文到 1M，最大输出到 128K），
+ * 而动画标记也必须分开 —— 否则在上下文栏滚动会让同一行的最大输出也抖一下。
+ */
+const contextWheel = useWheelStep(contextPresetValues, NUDGE_MS)
+const maxOutputWheel = useWheelStep(maxOutputPresetValues, NUDGE_MS)
 
 /**
  * 滚轮步进思考深度档位。
@@ -105,7 +123,7 @@ const maxOutputNudges = useTransientFlags<StepDirection>(MAX_OUTPUT_NUDGE_MS)
  * （`direction === -1`）会走到更低的档位。这与最大输出那一栏相反 ——
  * 那边预设按降序声明，向上滚得到更大的值。
  *
- * <p>两栏方向语义不一致会很别扭，所以这里把档位清单**反转**后再步进：
+ * <p>三栏方向语义不一致会很别扭，所以这里把档位清单**反转**后再步进：
  * 反转后首项是 `Max`，向上滚（取前一项）因此走向更高的档位，与数值段一致。
  */
 function onEffortWheel(model: EditableModel, index: number, event: WheelEvent) {
@@ -127,25 +145,34 @@ function onEffortWheel(model: EditableModel, index: number, event: WheelEvent) {
  */
 const descendingEffortOptions = [...REASONING_EFFORT_OPTIONS].reverse()
 
-/**
- * 滚轮步进最大输出上限。
- *
- * 用 `stepNumericPreset` 而非 `stepInSequence`：这一栏的值可能是手填的非标值
- * （6000、4096），不在预设清单里，`indexOf` 找不到就会跳到首项。
- * 数值版按大小关系吸附到该方向最近的预设。
- */
+/** 滚轮步进最大输出上限。接线细节在 `useWheelStep`。 */
 function onMaxOutputWheel(model: EditableModel, index: number, event: WheelEvent) {
-    const direction = directionFromWheel(event.deltaY)
-    if (direction === null) return
-    const current = maxOutputConfigOf(model).maxOutputTokens
-    const next = stepNumericPreset(current, maxOutputPresetValues, direction)
-    if (next === current) return
-    maxOutputNudges.trigger(index, direction)
-    setMaxOutputTokens(model, String(next))
+    maxOutputWheel.onWheel(
+        index,
+        event,
+        () => maxOutputConfigOf(model).maxOutputTokens,
+        next => setMaxOutputTokens(model, String(next)),
+    )
 }
 
-/** 预设的纯数值清单，`stepNumericPreset` 只关心数值。 */
-const maxOutputPresetValues = MAX_OUTPUT_PRESETS.map(preset => preset.value)
+/**
+ * 滚轮步进上下文窗口。
+ *
+ * 这一栏直接绑定 `model.contextSize`（字符串），没有 JSON 包装也没有注入模式 ——
+ * 它只向 Ollama 发现接口上报能力，不进上游请求体，因此不需要「下游带了怎么办」那一维。
+ * 也正因为没有模式，它不套 `ModeScopedField`，仅复用滚轮行为。
+ *
+ * <p>手填的非标值（如 650000）同样按方向吸附到最近预设。
+ */
+function onContextWheel(model: EditableModel, index: number, event: WheelEvent) {
+    contextWheel.onWheel(
+        index,
+        event,
+        // 解析失败当作 0：那样向上滚会进入清单最小档，而不是原地不动。
+        () => Number.parseInt(String(model.contextSize ?? '').trim(), 10) || 0,
+        next => { model.contextSize = String(next) },
+    )
+}
 
 /**
  * 写入注入模式。
@@ -192,7 +219,7 @@ function setMaxOutputTokens(model: EditableModel, raw: string) {
  * 用户明明是打字，画面却像是滚了一下。
  */
 function clearMaxOutputDirection(index: number) {
-    maxOutputNudges.clear(index)
+    maxOutputWheel.clear(index)
 }
 
 function clearEffortDirection(index: number) {
@@ -263,10 +290,28 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                                 <div class="model-form-row model-form-row--details">
                                     <n-form-item label="上下文"
                                         class="model-detail-item model-detail-item--context model-detail-item--numeric">
-                                        <n-input v-model:value="model.contextSize" placeholder="4096">
+                                        <!--
+                                            这一栏是裸 n-input，没有套 ModeScopedField ——
+                                            上下文只向发现接口上报能力、不进上游请求体，因此没有注入模式
+                                            那一维。滚轮步进与位移动画是与模式无关的能力，两者共用
+                                            useWheelStep，但 DOM 结构各自保持最简形态。
+                                        -->
+                                        <n-input :value="model.contextSize" placeholder="4096"
+                                            class="numeric-nudge" :class="{
+                                                'numeric-nudge--from-below': contextWheel.nudges.value[index] === 1,
+                                                'numeric-nudge--from-above': contextWheel.nudges.value[index] === -1,
+                                            }" @wheel.prevent="onContextWheel(model, index, $event)"
+                                            @update:value="(value: string) => {
+                                                contextWheel.clear(index)
+                                                model.contextSize = value
+                                            }">
                                             <template #suffix>
                                                 <n-popselect :options="contextPresets" size="small" trigger="click"
-                                                    @update:value="(value: string) => model.contextSize = value">
+                                                    :value="model.contextSize"
+                                                    @update:value="(value: string) => {
+                                                        contextWheel.clear(index)
+                                                        model.contextSize = value
+                                                    }">
                                                     <span class="context-preset-trigger">
                                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
                                                             stroke="currentColor" stroke-width="2"
@@ -332,10 +377,10 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                                                 所以只接滚轮步进。手填时清掉方向，见 setMaxOutputTokens 旁的注释。
                                             -->
                                             <n-input :value="String(maxOutputConfigOf(model).maxOutputTokens)"
-                                                placeholder="4000" class="max-output-input"
+                                                placeholder="4000" class="numeric-nudge"
                                                 :class="{
-                                                    'max-output-input--from-below': maxOutputNudges.flags.value[index] === 1,
-                                                    'max-output-input--from-above': maxOutputNudges.flags.value[index] === -1,
+                                                    'numeric-nudge--from-below': maxOutputWheel.nudges.value[index] === 1,
+                                                    'numeric-nudge--from-above': maxOutputWheel.nudges.value[index] === -1,
                                                 }"
                                                 @wheel.prevent="onMaxOutputWheel(model, index, $event)"
                                                 @update:value="(value: string) => {
@@ -678,30 +723,30 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
 }
 
 /**
- * 数值段的滚轮位移反馈。
+ * 数值输入框的滚轮位移反馈，上下文与最大输出共用。
  *
  * <h2>为何是 animation 而不是 transition</h2>
- * 这是一次**一次性的往复运动**（推一下、弹回），而不是两个状态之间的过渡。
+ * 这是一次**一次性的往复运动**（推一下、落定），而不是两个状态之间的过渡。
  * 用 transition 需要「设值 → 等一帧 → 清值」两次状态变更才能回弹，
  * keyframes 一条声明就够。
  *
  * <h2>为何位移量这么小</h2>
- * 4px 只是一个「被推了一下」的暗示。数值段与档位段不同：这里的值是用户可能
- * 正在编辑的内容，大幅位移会让人以为控件出了问题。档位段那种整行滑过
- * （`SlidingValue`）在这里不适用 —— 输入框套过渡会让光标错乱。
+ * 几个像素只是一个「被推了一下」的暗示。这里的值是用户可能正在编辑的内容，
+ * 大幅位移会让人以为控件出了问题。档位段那种整行滑过（`SlidingValue`）
+ * 在这里不适用 —— 输入框套过渡会让光标与选区错乱。
  *
- * <p>时长与 `MAX_OUTPUT_NUDGE_MS` 必须一致，否则标记会在动画播完前摘掉。
+ * <p>时长与脚本里的 `NUDGE_MS` 必须一致，否则标记会在动画播完前摘掉。
  */
-.max-output-input {
+.numeric-nudge {
 
     // 向下滚（下标增量 +1，取更小的值）：新值从下方进入，
     // 与「列表往下走，内容整体上移」一致。
     &--from-below :deep(.n-input__input-el) {
-        animation: max-output-from-below 0.18s ease-out;
+        animation: numeric-nudge-from-below 0.18s ease-out;
     }
 
     &--from-above :deep(.n-input__input-el) {
-        animation: max-output-from-above 0.18s ease-out;
+        animation: numeric-nudge-from-above 0.18s ease-out;
     }
 }
 
@@ -709,7 +754,7 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
  * 终点是 `-1px` 而非 `0`：那是 `--numeric` 的基线补偿量（见那块注释）。
  * 写 `0` 会让动画结束的那一帧跳回补偿后的位置，看起来像多抖了一下。
  */
-@keyframes max-output-from-below {
+@keyframes numeric-nudge-from-below {
     from {
         transform: translateY(3px);
         opacity: 0.35;
@@ -721,7 +766,7 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
     }
 }
 
-@keyframes max-output-from-above {
+@keyframes numeric-nudge-from-above {
     from {
         transform: translateY(-5px);
         opacity: 0.35;
@@ -738,8 +783,8 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
  */
 @media (prefers-reduced-motion: reduce) {
 
-    .max-output-input--from-below :deep(.n-input__input-el),
-    .max-output-input--from-above :deep(.n-input__input-el) {
+    .numeric-nudge--from-below :deep(.n-input__input-el),
+    .numeric-nudge--from-above :deep(.n-input__input-el) {
         animation: none;
     }
 }
