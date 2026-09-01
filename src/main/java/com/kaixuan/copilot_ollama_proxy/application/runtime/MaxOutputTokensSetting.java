@@ -27,10 +27,14 @@ import java.util.Map;
  * <pre>{@code {"max_output_tokens":4000,"overwrite_mode":"fallback"}}</pre>
  * 该列在 V9 之前是 INTEGER，V9 重建表把它换成带 {@code json_valid} 约束的 TEXT。
  *
- * <h2>尚未接线</h2>
- * 当前没有任何调用方使用 {@link #applyTo}：{@code ProviderRuntimeModel} 还没有这个字段，
- * 聊天链路取不到模型配置的输出上限，Anthropic 侧仍在用固定兜底值 4096。
- * 本类先把持久化形态与语义定下来，接线属于那个 TODO 的范围。
+ * <h2>接线范围</h2>
+ * 目前只有 <strong>Anthropic</strong> 线路消费本设置
+ * （{@code GenericAnthropicChatService.ensureMaxTokens}）—— 那条线路上
+ * {@code max_tokens} 必填，不补就发不出去。
+ *
+ * <p>OpenAI 线路<strong>刻意不接</strong>：那边该字段可选，接上去会改变所有现存
+ * OpenAI 供应商的出站请求体（默认兜底档会给「下游没带」的调用凭空补一个上限，
+ * 而 Copilot 通常就是不带）。要接需要单独评估影响面。
  */
 public record MaxOutputTokensSetting(int maxOutputTokens, Mode mode) {
 

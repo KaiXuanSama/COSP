@@ -6,6 +6,7 @@ import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -237,16 +238,25 @@ class GenericAnthropicChatServiceTests {
                 .isEqualTo("原有指令\n\n追加指令");
     }
 
-    /** {@code max_tokens} 必填 —— 下游没带时要补，否则上游 400。 */
+    /**
+     * {@code max_tokens} 必填 —— 下游没带时要补，否则上游 400。
+     *
+     * <p>这个路由的模型列表是空的，因此走「模型未配置 → {@code defaults()}」那条分支，
+     * 补的是 4K。钉具体值而非只判 {@code > 0}：默认值变了应当有用例提醒。
+     */
     @Test
     void maxTokensIsAlwaysPresent() throws Exception {
         realService().exposeMessages(newRequest(), routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
 
         assertThat(objectMapper.readTree(capturedBody.get()).path("max_tokens").asInt())
-                .isGreaterThan(0);
+                .isEqualTo(4000);
     }
 
-    /** 下游显式给了就用它，不被兜底值覆盖。 */
+    /**
+     * 下游显式给了就用它，不被兜底值覆盖。
+     *
+     * <p>默认档是兜底而非覆写，所以未配置的模型不会改动下游的值。
+     */
     @Test
     void explicitMaxTokensIsPreserved() throws Exception {
         Map<String, Object> request = newRequest();
@@ -268,6 +278,117 @@ class GenericAnthropicChatServiceTests {
         JsonNode body = objectMapper.readTree(capturedBody.get());
         assertThat(body.path("max_tokens").asInt()).isEqualTo(555);
         assertThat(body.has("max_completion_tokens")).isFalse();
+    }
+
+    /**
+     * 别名无论合法与否都要被移除 —— 它不是 Anthropic 协议的字段。
+     *
+     * <p>这一条钉的是别名归一化与注入的<strong>顺序</strong>：若归一化放在注入之后，
+     * 覆写档会写好 {@code max_tokens} 而别名仍留在体里一起发给上游。
+     */
+    @Test
+    void openAiAliasIsRemovedEvenWhenMaxTokensAlreadyPresent() throws Exception {
+        Map<String, Object> request = newRequest();
+        request.put("max_tokens", 1234);
+        request.put("max_completion_tokens", 555);
+
+        realService().exposeMessages(request, routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
+
+        JsonNode body = objectMapper.readTree(capturedBody.get());
+        assertThat(body.path("max_tokens").asInt()).isEqualTo(1234);
+        assertThat(body.has("max_completion_tokens")).isFalse();
+    }
+
+    /**
+     * 覆写档无条件用配置的上限，下游带了也换掉。
+     *
+     * <p>这是最大输出配置在 Anthropic 直连场景下<strong>唯一真正生效</strong>的档位 ——
+     * 那条线路的客户端几乎总会自带 {@code max_tokens}（协议必填），兜底档因此很少触发。
+     */
+    @Test
+    void overrideModeReplacesDownstreamMaxTokens() throws Exception {
+        Map<String, Object> request = newRequest();
+        request.put("max_tokens", 1234);
+
+        realService().exposeMessages(request,
+                        routeWithMaxOutput(baseUrlWithV1(),
+                                "{\"max_output_tokens\":8000,\"overwrite_mode\":\"override\"}"))
+                .block(Duration.ofSeconds(10));
+
+        assertThat(objectMapper.readTree(capturedBody.get()).path("max_tokens").asInt()).isEqualTo(8000);
+    }
+
+    /** 兜底档尊重下游带的值。 */
+    @Test
+    void fallbackModeKeepsDownstreamMaxTokens() throws Exception {
+        Map<String, Object> request = newRequest();
+        request.put("max_tokens", 1234);
+
+        realService().exposeMessages(request,
+                        routeWithMaxOutput(baseUrlWithV1(),
+                                "{\"max_output_tokens\":8000,\"overwrite_mode\":\"fallback\"}"))
+                .block(Duration.ofSeconds(10));
+
+        assertThat(objectMapper.readTree(capturedBody.get()).path("max_tokens").asInt()).isEqualTo(1234);
+    }
+
+    /** 兜底档在下游没带时补上配置的上限 —— 跨协议来的请求靠这条活着。 */
+    @Test
+    void fallbackModeFillsConfiguredLimitWhenDownstreamOmitsIt() throws Exception {
+        realService().exposeMessages(newRequest(),
+                        routeWithMaxOutput(baseUrlWithV1(),
+                                "{\"max_output_tokens\":8000,\"overwrite_mode\":\"fallback\"}"))
+                .block(Duration.ofSeconds(10));
+
+        assertThat(objectMapper.readTree(capturedBody.get()).path("max_tokens").asInt()).isEqualTo(8000);
+    }
+
+    /**
+     * 非法值视为「没带」。
+     *
+     * <p>{@code applyTo} 的兜底档只看键是否存在，留着一个 {@code 0} 会让它认为
+     * 下游表达过意见而放行 —— 然后上游因 {@code max_tokens} 非正数返回 400。
+     * 所以归一化那一步必须把非法值清掉。
+     */
+    @Test
+    void nonPositiveMaxTokensIsTreatedAsAbsent() throws Exception {
+        Map<String, Object> request = newRequest();
+        request.put("max_tokens", 0);
+
+        realService().exposeMessages(request,
+                        routeWithMaxOutput(baseUrlWithV1(),
+                                "{\"max_output_tokens\":8000,\"overwrite_mode\":\"fallback\"}"))
+                .block(Duration.ofSeconds(10));
+
+        assertThat(objectMapper.readTree(capturedBody.get()).path("max_tokens").asInt()).isEqualTo(8000);
+    }
+
+    /** 迁移前的裸整数形态仍能读出来，按兜底档处理。 */
+    @Test
+    void legacyPlainIntegerMaxOutputIsHonored() throws Exception {
+        realService().exposeMessages(newRequest(), routeWithMaxOutput(baseUrlWithV1(), "16000"))
+                .block(Duration.ofSeconds(10));
+
+        assertThat(objectMapper.readTree(capturedBody.get()).path("max_tokens").asInt()).isEqualTo(16000);
+    }
+
+    /**
+     * 模型名对不上时落到默认值，而不是取第一个模型的配置。
+     *
+     * <p>路由给的上游模型名是 {@code claude-x}，这里刻意配一个别的名字。
+     */
+    @Test
+    void unknownModelFallsBackToDefaultLimit() throws Exception {
+        ResolvedProviderRoute route = new ResolvedProviderRoute(
+                new ProviderRuntimeConfiguration("anthro", baseUrlWithV1(), "test-key", List.of(
+                        new ProviderRuntimeModel("some-other-model", 200000, true, true, "Medium",
+                                "{\"max_output_tokens\":8000,\"overwrite_mode\":\"override\"}"))),
+                "claude-x", "[anthro] claude-x");
+
+        realService().exposeMessages(newRequest(), route).block(Duration.ofSeconds(10));
+
+        // 默认是 4K + 兜底，下游没带所以补默认值；关键是没有用那个 8000。
+        assertThat(objectMapper.readTree(capturedBody.get()).path("max_tokens").asInt()).isEqualTo(4000);
     }
 
     /** {@code reasoning_effort} 是 OpenAI 概念，必须剥掉否则上游 400。 */
@@ -696,6 +817,23 @@ class GenericAnthropicChatServiceTests {
         return new ResolvedProviderRoute(
                 new ProviderRuntimeConfiguration("anthro", baseUrl, "test-key", List.of(),
                         "[]", bodyRulesJson),
+                "claude-x", "[anthro] claude-x");
+    }
+
+    /**
+     * 带模型最大输出配置的路由。
+     *
+     * <p>模型名必须是 {@code claude-x} —— 那是 {@link #routeTo} 解析出的上游模型名，
+     * 而查找是按名字精确匹配的。名字不对就会落到「模型未配置」那条分支，
+     * 用例看起来通过了却什么都没验到。
+     *
+     * @param maxOutputJson 持久化原文，形如
+     *                      {@code {"max_output_tokens":8000,"overwrite_mode":"override"}}
+     */
+    private static ResolvedProviderRoute routeWithMaxOutput(String baseUrl, String maxOutputJson) {
+        return new ResolvedProviderRoute(
+                new ProviderRuntimeConfiguration("anthro", baseUrl, "test-key", List.of(
+                        new ProviderRuntimeModel("claude-x", 200000, true, true, "Medium", maxOutputJson))),
                 "claude-x", "[anthro] claude-x");
     }
 

@@ -52,13 +52,22 @@ public class DatabaseRuntimeProviderCatalog implements RuntimeProviderCatalog {
         );
     }
 
+    /**
+     * 数据库行到运行时快照。
+     *
+     * <p>{@code maxOutputTokens} 原样搬运、{@code null} 也原样传下去：这一列在 V9 之前可能
+     * 为空，而「空」的含义由消费侧的 {@link MaxOutputTokensSetting#parse} 决定（落到默认值）。
+     * 这里不做字面量兜底 —— 与上一行 {@code reasoningEffort} 的 {@code "Medium"} 不同，
+     * 那个字面量是历史遗留，在此不必照抄。
+     */
     private ProviderRuntimeModel toModel(ProviderModelRow source) {
         return new ProviderRuntimeModel(
                 source.modelName() != null ? source.modelName() : "",
                 source.contextSize(),
                 source.capsTools(),
                 source.capsVision(),
-                source.reasoningEffort() != null ? source.reasoningEffort() : "Medium"
+                source.reasoningEffort() != null ? source.reasoningEffort() : "Medium",
+                source.maxOutputTokens()
         );
     }
 }

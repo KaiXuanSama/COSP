@@ -8,8 +8,8 @@ import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
@@ -92,14 +92,6 @@ public class GenericAnthropicChatService {
     private static final String ANTHROPIC_VERSION_HEADER = "anthropic-version";
     private static final String ANTHROPIC_VERSION_VALUE = "2023-06-01";
 
-    /**
-     * {@code max_tokens} 缺失时的兜底值。
-     *
-     * <p>Anthropic 要求该字段必填，而 OpenAI 侧它是可选的 —— 下游若不带，
-     * 直接转发会被上游拒绝。优先取模型配置的 {@code max_output_tokens}，
-     * 都拿不到才用此值。
-     */
-    private static final int FALLBACK_MAX_TOKENS = 4096;
 
     private final ObjectMapper objectMapper;
     private final ProviderRequestHeaderService providerRequestHeaderService;
@@ -524,8 +516,8 @@ public class GenericAnthropicChatService {
      *       {@code messages} 里 {@code role: system} 的一条，Anthropic 不接受那种形态，
      *       必须提取出来。多条 system 消息按顺序拼接。</li>
      *   <li><strong>{@code max_tokens} 必填</strong> —— 缺失时上游返回 400。
-     *       优先取模型配置的 {@code max_output_tokens}，再退到
-     *       {@link #FALLBACK_MAX_TOKENS}。</li>
+     *       按模型配置的 {@code max_output_tokens} 注入（覆写 / 兜底两档），
+     *       模型未配置时用 {@link MaxOutputTokensSetting#defaults()}。</li>
      *   <li><strong>思考深度用 {@code thinking} 对象</strong> ——
      *       而非 OpenAI 的 {@code reasoning_effort} 字符串。当前只做剥离，
      *       不做映射（见下方 TODO）。</li>
@@ -645,27 +637,66 @@ public class GenericAnthropicChatService {
     }
 
     /**
-     * 确保 {@code max_tokens} 存在 —— Anthropic 要求必填，缺失时上游返回 400。
+     * 按模型配置的注入模式落定 {@code max_tokens}。
      *
-     * <p>TODO 取不到模型配置的输出上限，只能用固定兜底值 {@link #FALLBACK_MAX_TOKENS}。
-     *  {@code provider_model.max_output_tokens} 这一列在数据库里是有的（默认 128000），
-     *  但没进 {@link ProviderRuntimeModel} 运行时快照（它只带 contextSize / caps / effort）。
-     *  待往快照里补上该字段后，改为优先取模型自己的上限。
-     *  影响：配置了较大输出上限的模型，走 Anthropic 协议时会被限制在 4096，
-     *  长回复可能被截断（{@code stop_reason: "max_tokens"}）—— 这在日志里可见，不会静默。
+     * <h2>为何这一步不能省</h2>
+     * Anthropic 把 {@code max_tokens} 列为<strong>必填</strong>，缺失时上游直接 400。
+     * 而 OpenAI 侧它是可选的，Copilot 之类的下游通常不带 —— 于是必须在这里补齐。
+     *
+     * <h2>三个步骤的顺序有讲究</h2>
+     * <ol>
+     *   <li><strong>别名归一化</strong>：下游可能用 OpenAI 的 {@code max_completion_tokens}。
+     *       必须在注入之前搬到正名上，否则 {@code OVERRIDE} 模式写好 {@code max_tokens} 后，
+     *       那个别名字段仍会留在请求体里一起发给上游。</li>
+     *   <li><strong>清掉非法值</strong>：{@code 0}、负数、非数字都视为「没带」。
+     *       {@link MaxOutputTokensSetting#applyTo} 的兜底档只看 {@code containsKey}，
+     *       留着一个 {@code "max_tokens": 0} 会让它认为下游表达过意见而放行 —— 然后上游 400。</li>
+     *   <li><strong>按模式注入</strong>：交给 {@code applyTo}，覆写档无条件写、兜底档只补缺。</li>
+     * </ol>
+     *
+     * <h2>兜底档在这条线路上的实际作用</h2>
+     * Anthropic 客户端直连时几乎总会自带 {@code max_tokens}（协议必填），因此兜底档很少触发；
+     * 真正有用的是<strong>覆写档</strong> —— 它能把下游请求的上限统一压到这里配置的值。
+     * 但兜底档仍不能省：跨协议来的请求（OpenAI 形态的下游打到 Anthropic 供应商）就是靠它补齐的。
      */
-    @SuppressWarnings("unused") // resolvedModel / provider 留待上述 TODO 落地后用于查模型上限
     private void ensureMaxTokens(Map<String, Object> body, String resolvedModel,
                                  ProviderRuntimeConfiguration provider) {
-        if (body.get("max_tokens") instanceof Number existing && existing.intValue() > 0) {
-            return;
+        normalizeMaxTokensAlias(body);
+        resolveMaxOutputTokens(resolvedModel, provider).applyTo(body);
+    }
+
+    /**
+     * 把 OpenAI 的 {@code max_completion_tokens} 搬到 Anthropic 的正名上，并清掉非法值。
+     *
+     * <p>别名无论合法与否都会被移除：它不是 Anthropic 协议的字段，留着只会让上游困惑。
+     */
+    private void normalizeMaxTokensAlias(Map<String, Object> body) {
+        Object alias = body.remove("max_completion_tokens");
+        if (!(body.get("max_tokens") instanceof Number existing) || existing.intValue() <= 0) {
+            body.remove("max_tokens");
+            if (alias instanceof Number aliasValue && aliasValue.intValue() > 0) {
+                body.put("max_tokens", aliasValue.intValue());
+            }
         }
-        // OpenAI 侧的同义字段，下游可能用它。
-        if (body.remove("max_completion_tokens") instanceof Number alias && alias.intValue() > 0) {
-            body.put("max_tokens", alias.intValue());
-            return;
+    }
+
+    /**
+     * 从运行时模型配置中读取最大输出设置。
+     *
+     * <p>找不到匹配的模型时返回 {@link MaxOutputTokensSetting#defaults()}（4K + 兜底），
+     * 与 OpenAI 侧 {@code resolveReasoningEffort} 同一形状。这里的兜底比思考深度那个安全得多 ——
+     * 给一个未配置的模型注入 {@code max_tokens} 不会改变语义，而缺了它这条线路根本发不出去。
+     *
+     * <p>线性查找而非建 Map：模型数量是个位到几十的量级，且这个方法每轮请求只调一次。
+     */
+    private MaxOutputTokensSetting resolveMaxOutputTokens(String resolvedModel,
+                                                         ProviderRuntimeConfiguration provider) {
+        for (var model : provider.models()) {
+            if (resolvedModel.equals(model.modelName())) {
+                return MaxOutputTokensSetting.parse(model.maxOutputTokens(), objectMapper);
+            }
         }
-        body.put("max_tokens", FALLBACK_MAX_TOKENS);
+        return MaxOutputTokensSetting.defaults();
     }
 
     /** 剥离供应商前缀，取真实上游模型名。与 OpenAI 侧同一工具。 */
