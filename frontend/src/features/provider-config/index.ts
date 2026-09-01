@@ -63,6 +63,20 @@ export {
 } from './overwriteMode'
 
 export {
+  directionFromWheel,
+  stepInSequence,
+  stepNumericPreset,
+  type StepDirection,
+} from './wheelStep'
+
+export {
+  browserScheduleHooks,
+  createTransientFlagScheduler,
+  type ScheduleHooks,
+  type TransientFlagScheduler,
+} from './transientFlag'
+
+export {
   DEFAULT_REASONING_EFFORT,
   DEFAULT_REASONING_OVERWRITE_MODE,
   REASONING_EFFORT_OPTIONS,

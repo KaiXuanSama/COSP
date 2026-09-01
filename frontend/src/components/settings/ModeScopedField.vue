@@ -30,17 +30,22 @@
  * <p>也不管数字字体与那 1px 的视觉居中补偿：上下文那一栏是纯数字但没有模式，
  * 补偿因此属于「数值输入框」这个正交维度，留在调用方的 `--numeric` 类里。
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 import {
   OVERWRITE_MODE_LABELS,
+  directionFromWheel,
   modeUsesConfiguredValue,
   nextOverwriteMode,
+  stepInSequence,
   type OverwriteMode,
+  type StepDirection,
 } from '@/features/provider-config'
 
+import SlidingValue from './SlidingValue.vue'
+
 const props = defineProps<{
-    /** 该字段支持的模式子集，顺序即点击轮转的顺序。 */
+    /** 该字段支持的模式子集，顺序即点击轮转与滚轮步进的顺序。 */
     modes: readonly OverwriteMode[]
     /** 各模式的悬停说明。文案随字段变化（「此处配置的档位 / 上限」），故由调用方给出。 */
     hints: Record<OverwriteMode, string>
@@ -58,15 +63,45 @@ const label = computed(() => OVERWRITE_MODE_LABELS[mode.value])
 const hint = computed(() => props.hints[mode.value])
 const inert = computed(() => !modeUsesConfiguredValue(mode.value))
 
+/**
+ * 最近一次模式变化的方向，供滑动动画决定往哪边滑。
+ *
+ * 点击轮转时置 `null` —— 点击没有方向语义（它是「换一个」），
+ * 硬给一个方向会让同一个操作每次都朝同一边滑，看起来像滚了一下。
+ */
+const modeDirection = ref<StepDirection | null>(null)
+
+/** 点击轮转。循环，与滚轮的「端点停住」刻意不同 —— 见 `wheelStep.ts`。 */
 function cycle() {
+    modeDirection.value = null
     mode.value = nextOverwriteMode(mode.value, props.modes)
+}
+
+/**
+ * 滚轮步进模式。
+ *
+ * `preventDefault` 是必须的：这些控件在抽屉里，不拦截的话滚轮会同时滚动抽屉，
+ * 值变了但控件已经移出视野。事件在模板上用 `.prevent` 声明，
+ * 因此这里只处理逻辑。
+ *
+ * <p>到端点时不写回：`stepInSequence` 返回原值，赋值虽无害但会让
+ * `SlidingValue` 的 watch 空跑一次；这里显式判等，语义更清楚。
+ */
+function onWheel(event: WheelEvent) {
+    const direction = directionFromWheel(event.deltaY)
+    if (direction === null) return
+    const next = stepInSequence(mode.value, props.modes, direction)
+    if (next === mode.value) return
+    modeDirection.value = direction
+    mode.value = next
 }
 </script>
 
 <template>
     <div class="mode-scoped-field" :class="{ 'mode-scoped-field--inert': inert }">
-        <button type="button" class="mode-scoped-field__mode" :title="hint" @click="cycle">
-            {{ label }}
+        <button type="button" class="mode-scoped-field__mode" :title="hint" @click="cycle"
+            @wheel.prevent="onWheel">
+            <sliding-value :value="label" :direction="modeDirection" />
         </button>
         <div class="mode-scoped-field__value">
             <slot />
@@ -124,6 +159,8 @@ function cycle() {
  * <p>字体用正文而非 mono：标签是中文，mono 字族里没有中文字形，声明了也只会回退。
  */
 .mode-scoped-field__mode {
+    display: flex;
+    align-items: center;
     flex-shrink: 0;
     padding: 0 6px 0 0;
     margin-right: 6px;
@@ -140,6 +177,18 @@ function cycle() {
 
     &:hover {
         color: $accent;
+    }
+
+    /**
+     * 标签宽度固定，滑动时不跟着文案宽度跳。
+     *
+     * 四档标签都是两个汉字，`2em` 正好容纳。不写死 px：字号变了宽度自动跟随。
+     * 缺了这个，「覆写」换「透传」时宽度虽相同，但 `inline-grid` 在过渡的两帧里
+     * 会按两份内容的并集算宽，控件整体会抖一下。
+     */
+    :deep(.sliding-value) {
+        width: 2em;
+        justify-items: start;
     }
 }
 
