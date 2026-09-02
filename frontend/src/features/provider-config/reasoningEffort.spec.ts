@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_REASONING_EFFORT,
   DEFAULT_REASONING_OVERWRITE_MODE,
+  EFFORT_OFF,
   REASONING_EFFORT_OPTIONS,
   REASONING_OVERWRITE_MODES,
   nextReasoningOverwriteMode,
@@ -10,10 +11,54 @@ import {
   serializeReasoningEffortConfig,
 } from './reasoningEffort'
 
+describe('REASONING_EFFORT_OPTIONS', () => {
+  /**
+   * 顺序即滚轮步进顺序，必须按强度升序。
+   *
+   * `Off` 排首位而非末尾：它在强度上就是最低的一档，放末尾会让向下滚动
+   * 从 `Low` 跳到序列之外。
+   */
+  it('按强度升序，Off 在首位', () => {
+    expect(REASONING_EFFORT_OPTIONS).toEqual([
+      'Off', 'Minimal', 'Low', 'Medium', 'High', 'Xhigh', 'Max',
+    ])
+  })
+})
+
+describe('EFFORT_OFF', () => {
+  /**
+   * 持久化标识是 `off`，不是 `none`。
+   *
+   * `reasoning_effort` 在 OpenAI Chat Completions 协议里没有 `none` 这一档（DeepSeek
+   * 只认 low/high/max），那个值属于 Responses 协议的 `reasoning.effort`。
+   * 这个档位的出站形态由后端翻译成 `thinking: {"type": "disabled"}`。
+   */
+  it('与后端的 EFFORT_OFF 同一口径', () => {
+    expect(EFFORT_OFF).toBe('off')
+  })
+})
+
 describe('parseReasoningEffortConfig', () => {
   it('解析 V2 JSON 形态', () => {
     expect(parseReasoningEffortConfig('{"reasoning_effort":"high","overwrite_mode":"override"}'))
       .toEqual({ effort: 'High', mode: 'override' })
+  })
+
+  /**
+   * 库里存的 `off` 要显示成 `Off`，而且**不能**被当成 delete 模式。
+   *
+   * 两者语义相反：旧的裸 `"None"` 是「两个字段都不发」（delete），
+   * `Off` 档是「发送 thinking:disabled 明确要求不思考」。
+   * 混淆会让一个明确的要求退化成沉默 —— 对默认开启思考的模型，结果完全相反。
+   */
+  it('JSON 里的 off 解析为 Off 档并保留其模式', () => {
+    expect(parseReasoningEffortConfig('{"reasoning_effort":"off","overwrite_mode":"override"}'))
+      .toEqual({ effort: 'Off', mode: 'override' })
+  })
+
+  it('新增的 Minimal 档位可被解析', () => {
+    expect(parseReasoningEffortConfig('{"reasoning_effort":"minimal","overwrite_mode":"fallback"}'))
+      .toEqual({ effort: 'Minimal', mode: 'fallback' })
   })
 
   it('档位大小写归一化为选项形态', () => {
@@ -75,6 +120,18 @@ describe('serializeReasoningEffortConfig', () => {
       .toBe('{"reasoning_effort":"high","overwrite_mode":"override"}')
   })
 
+  /**
+   * Off 档存为 `off`。
+   *
+   * 不存 `none`：那不是 `reasoning_effort` 的合法取值（见 {@link EFFORT_OFF}）。
+   * 出站形态的翻译在后端，前端只负责把档位名持久化。
+   */
+  it('Off 档存为 off', () => {
+    expect(serializeReasoningEffortConfig({ effort: 'Off', mode: 'override' }))
+      .toBe('{"reasoning_effort":"off","overwrite_mode":"override"}')
+  })
+
+  /** 遍历全部档位 × 全部模式，含新增的 Off / Minimal。 */
   it('往返一致', () => {
     for (const effort of REASONING_EFFORT_OPTIONS) {
       for (const mode of REASONING_OVERWRITE_MODES) {

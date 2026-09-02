@@ -73,14 +73,49 @@ export const REASONING_OVERWRITE_MODE_HINTS = buildOverwriteModeHints('档位')
  */
 export const DEFAULT_REASONING_OVERWRITE_MODE: ReasoningOverwriteMode = 'fallback'
 
-/** 可选档位。不含 `None` —— 它的语义已由 `delete` 模式承担。 */
+/**
+ * 可选档位，按强度升序。
+ *
+ * <h2>`Off` 与 `delete` 模式是两个维度，不要混淆</h2>
+ * - `Off` 档 = **发送** `thinking: {"type": "disabled"}`，明确要求上游不要思考。
+ *   对「默认开启思考」的模型才有意义 —— 什么都不发它就会自己思考。
+ * - `delete` 模式 = **两个字段都不发**，上游按自己的默认行为走。
+ *   用于那些收到这些字段会 400 的上游。
+ *
+ * <p>出站形态的翻译在后端 `ReasoningEffortSetting.applyTo`：`thinking.type` 管开关、
+ * `reasoning_effort` 管深度，两者在 OpenAI 协议里是正交字段。
+ *
+ * <p>`Off` 排在首位而非末尾：滚轮按清单顺序步进，而「不思考」在强度上就是最低的一档，
+ * 放末尾会让向下滚动从 `Low` 跳到序列之外。
+ *
+ * <h2>为何有 `Minimal`</h2>
+ * 用得少但不能没有：上游确实有这一档（cc-switch 的档位清单、sub2api 的
+ * `openAIReasoningEffortValues` 都有），缺了它用户就无法表达那个意图。
+ */
 export const REASONING_EFFORT_OPTIONS: readonly string[] = [
+  'Off',
+  'Minimal',
   'Low',
   'Medium',
   'High',
   'Xhigh',
   'Max',
 ]
+
+/**
+ * 「不思考」档位的持久化标识。
+ *
+ * 与后端 `ReasoningEffortSetting.EFFORT_OFF` 同一口径。
+ *
+ * <h2>它不是一个 `reasoning_effort` 取值</h2>
+ * OpenAI Chat Completions 协议里 `reasoning_effort` **没有** `none` 这一档
+ * （DeepSeek 只认 `low`/`high`/`max`）。`none` 属于 **Responses** 协议，
+ * 形态是 `reasoning: {effort: "none"}` —— 不同的协议、不同的字段。
+ *
+ * <p>所以这个档位在出站时由后端翻译成 `thinking: {"type": "disabled"}`，
+ * 而不是写进 `reasoning_effort`。前端只负责把它存成 `off`。
+ */
+export const EFFORT_OFF = 'off'
 
 export const DEFAULT_REASONING_EFFORT = 'Medium'
 
@@ -113,6 +148,10 @@ function canonicalizeEffort(value: unknown): string | null {
  *
  * `parseLegacy` 处理这一列的两个历史包袱：逗号分隔多值（只取第一项，表单不支持多选）
  * 与 `"None"`（映射为 `delete`）。后者是必须的 —— 详见 {@link parseReasoningEffortConfig}。
+ *
+ * <p>注意 `parseLegacy` 只在**非 JSON** 分支被调用，所以新增的 `Off` 档
+ * （序列化后是 `{"reasoning_effort":"none",...}`）不会撞上那条 `none → delete` 规则。
+ * 两者语义相反：旧的裸 `"None"` 是「不发送」，`Off` 档是「发送 none」。
  */
 const CODEC: ModeScopedCodec<string, ReasoningOverwriteMode> = {
   modes: REASONING_OVERWRITE_MODES,

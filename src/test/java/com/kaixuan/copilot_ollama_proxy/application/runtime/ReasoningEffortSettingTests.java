@@ -69,6 +69,49 @@ class ReasoningEffortSettingTests {
                     .isEqualTo(ReasoningEffortSetting.Mode.DELETE);
         }
 
+        /**
+         * 新的 off 档位不能被上面那条兼容规则吞掉。
+         *
+         * <p>两者语义相反：旧的裸 {@code "None"} 是「两个字段都不发」（DELETE），
+         * 而 off 档是「发送 {@code thinking:{"type":"disabled"}} 明确要求不思考」。
+         * V2 JSON 走独立的解析分支，因此不会撞上那条规则 —— 这条用例钉住这个边界，
+         * 混淆会让一个明确的要求退化成沉默。
+         */
+        @Test
+        void v2JsonWithOffEffortKeepsItsModeInsteadOfBecomingDelete() {
+            ReasoningEffortSetting setting = ReasoningEffortSetting.parse(
+                    "{\"reasoning_effort\":\"off\",\"overwrite_mode\":\"override\"}", objectMapper);
+
+            assertThat(setting.effort()).isEqualTo(ReasoningEffortSetting.EFFORT_OFF);
+            assertThat(setting.mode()).isEqualTo(ReasoningEffortSetting.Mode.OVERRIDE);
+        }
+
+        /** 新增的两个档位不被改写 —— 本类不校验档位取值，用户配了什么就是什么。 */
+        @Test
+        void newEffortTiersArePreservedVerbatim() {
+            for (String effort : new String[] {"off", "minimal", "xhigh", "max"}) {
+                assertThat(ReasoningEffortSetting.parse(
+                        "{\"reasoning_effort\":\"" + effort + "\",\"overwrite_mode\":\"override\"}",
+                        objectMapper).effort())
+                        .isEqualTo(effort);
+            }
+        }
+
+        /**
+         * 上游不认识的档位也原样保留，不做任何降级。
+         *
+         * <p>参考实现（new-api）会把 {@code xhigh} 在不支持的模型上退成 {@code max} 或
+         * {@code high}。本服务刻意不做 —— 用户配了什么就发什么，
+         * 「上游认不认」由上游用错误码回答，而不是本服务替它猜。
+         */
+        @Test
+        void unknownEffortTierIsNotDowngraded() {
+            assertThat(ReasoningEffortSetting.parse(
+                    "{\"reasoning_effort\":\"ultra\",\"overwrite_mode\":\"override\"}",
+                    objectMapper).effort())
+                    .isEqualTo("ultra");
+        }
+
         @Test
         void blankAndNullFallBackToDefaults() {
             for (String raw : new String[] {null, "", "   "}) {
@@ -156,6 +199,137 @@ class ReasoningEffortSettingTests {
             new ReasoningEffortSetting("max", ReasoningEffortSetting.Mode.FALLBACK).applyTo(body);
 
             assertThat(body).containsEntry("reasoning_effort", "low");
+        }
+
+        /**
+         * 下游只发了 {@code thinking:{"type":"disabled"}} 时，兜底档必须尊重它。
+         *
+         * <p>这是本组用例里最关键的一条。{@code thinking} 与 {@code reasoning_effort}
+         * 是正交字段，只看后者会漏掉这种表态 —— 结果是给一个明确要求「别思考」的请求
+         * 又补了一个「思考要多深」，两个矛盾指令一起发给上游。
+         */
+        @Test
+        void fallbackRespectsDownstreamThinkingDisabled() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("thinking", Map.of("type", "disabled"));
+
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.FALLBACK).applyTo(body);
+
+            assertThat(body).containsOnlyKeys("thinking");
+            assertThat(body).doesNotContainKey("reasoning_effort");
+        }
+
+        /** 下游发的是 enabled 也算表态 —— 兜底档一样不干预。 */
+        @Test
+        void fallbackRespectsDownstreamThinkingEnabled() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("thinking", Map.of("type", "enabled"));
+
+            new ReasoningEffortSetting("low", ReasoningEffortSetting.Mode.FALLBACK).applyTo(body);
+
+            assertThat(body).containsOnlyKeys("thinking");
+        }
+
+        /**
+         * off 档写出的是 {@code thinking:{"type":"disabled"}}，不是一个档位值。
+         *
+         * <p>{@code reasoning_effort} 在 OpenAI Chat Completions 协议里没有 {@code none}
+         * 这一档（DeepSeek 只认 low/high/max），那个值属于 Responses 协议的
+         * {@code reasoning.effort}。写错会让上游拒绝请求。
+         */
+        @Test
+        void offTierWritesThinkingDisabledRatherThanAnEffortValue() {
+            Map<String, Object> body = new LinkedHashMap<>();
+
+            new ReasoningEffortSetting(ReasoningEffortSetting.EFFORT_OFF,
+                    ReasoningEffortSetting.Mode.OVERRIDE).applyTo(body);
+
+            assertThat(body).containsOnlyKeys("thinking");
+            assertThat(body).containsEntry("thinking", Map.of("type", "disabled"));
+            assertThat(body).doesNotContainKey("reasoning_effort");
+        }
+
+        /**
+         * 覆写档配成 off 时，要清掉下游的档位再写开关。
+         *
+         * <p>只写 {@code thinking} 而不删 {@code reasoning_effort} 会让请求体同时含有
+         * 「不要思考」和「思考要多深」—— 这正是覆写档最容易出错的地方。
+         */
+        @Test
+        void overrideWithOffClearsDownstreamEffort() {
+            Map<String, Object> body = bodyWith("high");
+
+            new ReasoningEffortSetting(ReasoningEffortSetting.EFFORT_OFF,
+                    ReasoningEffortSetting.Mode.OVERRIDE).applyTo(body);
+
+            assertThat(body).containsOnlyKeys("thinking");
+            assertThat(body).containsEntry("thinking", Map.of("type", "disabled"));
+        }
+
+        /**
+         * 反方向：覆写档配成具体档位时，要清掉下游的 thinking 开关。
+         *
+         * <p>下游说「别思考」而配置说「思考到 high」—— 尊重用户配置优先于下游意图，
+         * 这正是覆写档的定义。留着那个 disabled 会让配置的档位形同虚设。
+         */
+        @Test
+        void overrideWithTierClearsDownstreamThinkingDisabled() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("thinking", Map.of("type", "disabled"));
+
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.OVERRIDE).applyTo(body);
+
+            assertThat(body).containsOnlyKeys("reasoning_effort");
+            assertThat(body).containsEntry("reasoning_effort", "high");
+        }
+
+        /** 覆写档同时清掉两个字段再重建，不留任何下游残留。 */
+        @Test
+        void overrideClearsBothFieldsBeforeWriting() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("reasoning_effort", "low");
+            body.put("thinking", Map.of("type", "enabled"));
+
+            new ReasoningEffortSetting("max", ReasoningEffortSetting.Mode.OVERRIDE).applyTo(body);
+
+            assertThat(body).containsOnlyKeys("reasoning_effort");
+            assertThat(body).containsEntry("reasoning_effort", "max");
+        }
+
+        /** 删除档检测到哪个删哪个，两个都在就都删。 */
+        @Test
+        void deleteRemovesBothFields() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("reasoning_effort", "low");
+            body.put("thinking", Map.of("type", "enabled"));
+            body.put("model", "keep-me");
+
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.DELETE).applyTo(body);
+
+            assertThat(body).containsOnlyKeys("model");
+        }
+
+        /** 删除档只有 thinking 时也要删掉它。 */
+        @Test
+        void deleteRemovesThinkingAlone() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("thinking", Map.of("type", "disabled"));
+
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.DELETE).applyTo(body);
+
+            assertThat(body).isEmpty();
+        }
+
+        /** 透传档两个字段都不碰。 */
+        @Test
+        void passthroughLeavesThinkingUntouched() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("thinking", Map.of("type", "disabled"));
+
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.PASSTHROUGH).applyTo(body);
+
+            assertThat(body).containsOnlyKeys("thinking");
+            assertThat(body).containsEntry("thinking", Map.of("type", "disabled"));
         }
 
         @Test

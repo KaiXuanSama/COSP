@@ -57,6 +57,59 @@ public record ReasoningEffortSetting(String effort, Mode mode) {
     /** 上游请求体里思考深度的字段名（OpenAI 协议）。 */
     public static final String REQUEST_FIELD = "reasoning_effort";
 
+    /**
+     * 思考开关字段名。
+     *
+     * <h2>它属于 OpenAI 协议，不是 Anthropic 独有</h2>
+     * 这一点容易搞反。实测两家 OpenAI 兼容上游都用它，且与
+     * {@link #REQUEST_FIELD} <strong>并列存在</strong>而非二选一：
+     * <ul>
+     *   <li>DeepSeek {@code /chat/completions} 的官方示例同时给出
+     *       {@code "thinking": {"type": "enabled"}} 与 {@code "reasoning_effort": "low"}。</li>
+     *   <li>小米 MiMo {@code /v1/chat/completions} 把 {@code thinking.type} 列为必选，
+     *       取值 {@code enabled} / {@code disabled}，旗舰模型默认 {@code enabled}。</li>
+     * </ul>
+     *
+     * <p>两个字段是<strong>正交</strong>的：本字段管「开不开思考」，
+     * {@link #REQUEST_FIELD} 管「思考多深」。
+     *
+     * <p>Anthropic 侧也有同名字段但形态不同（带 {@code budget_tokens} 或
+     * {@code type: "adaptive"}），那条线路的处理见 {@code GenericAnthropicChatService}。
+     */
+    public static final String THINKING_FIELD = "thinking";
+
+    /** {@code thinking} 对象里表示开关状态的键名。 */
+    public static final String THINKING_TYPE_KEY = "type";
+
+    /** {@code thinking.type} 的关闭值。 */
+    public static final String THINKING_DISABLED = "disabled";
+
+    /**
+     * 「不思考」档位的界面标识。
+     *
+     * <h2>它不是一个 {@code reasoning_effort} 取值</h2>
+     * OpenAI Chat Completions 协议里 {@code reasoning_effort} <strong>没有</strong>
+     * {@code none} 这一档（DeepSeek 只认 {@code low}/{@code high}/{@code max}）。
+     * {@code none} 属于 <strong>Responses</strong> 协议，形态是
+     * {@code reasoning: {effort: "none"}} —— 不同的协议、不同的字段。
+     *
+     * <p>所以本档位出站时写的是 {@link #THINKING_FIELD}
+     * （{@code {"type": "disabled"}}）而非一个档位值。见 {@link #applyTo}。
+     *
+     * <h2>它与 {@link Mode#DELETE} 的区别</h2>
+     * <ul>
+     *   <li>本档位 = <strong>发送</strong> {@code thinking: {"type": "disabled"}}，
+     *       明确要求上游不要思考。对「默认开启思考」的模型才有意义 ——
+     *       什么都不发它就会自己思考。</li>
+     *   <li>{@link Mode#DELETE} = <strong>两个字段都不发</strong>，
+     *       上游按自己的默认行为走。用于收到这些字段会 400 的上游。</li>
+     * </ul>
+     *
+     * <p>本类不校验档位取值 —— 用户配了什么就发什么，包括上游可能不认识的档位。
+     * 这是刻意的：本服务不做自动降级，「上游认不认」由上游用错误码回答。
+     */
+    public static final String EFFORT_OFF = "off";
+
     private static final String DEFAULT_EFFORT = "medium";
 
     /**
@@ -121,6 +174,10 @@ public record ReasoningEffortSetting(String effort, Mode mode) {
         }
 
         String first = trimmed.split(",")[0].trim();
+        // 只有**旧的裸字符串**形态里的 None 才映射为 DELETE，V2 JSON 走上面那个分支。
+        // 新增的 off 档序列化为 {"reasoning_effort":"off",...}，因此不会撞上这条规则 ——
+        // 两者语义不同：旧 None 是「不发送任何字段」，off 档是「发送 thinking:disabled
+        // 明确要求不思考」。混淆会让一个明确的要求退化成沉默。
         if ("none".equalsIgnoreCase(first)) {
             return new ReasoningEffortSetting(DEFAULT_EFFORT, Mode.DELETE);
         }
@@ -156,32 +213,82 @@ public record ReasoningEffortSetting(String effort, Mode mode) {
     }
 
     /**
-     * 按当前模式把思考深度写入（或移出、或保留原样）请求体。
+     * 按当前模式把思考配置写入（或移出、或保留原样）请求体。
+     *
+     * <h2>为何要同时操作两个字段</h2>
+     * {@link #THINKING_FIELD} 与 {@link #REQUEST_FIELD} 在 OpenAI 协议里是<strong>正交</strong>的
+     * 两个字段（前者管开关、后者管深度），而界面把它们压成了一个档位选择器 ——
+     * {@code off} 档对应「关」、其余档位对应「开 + 该深度」。
+     *
+     * <p>于是每个模式都必须成对处理，否则会产出自相矛盾的请求体。最典型的错误是
+     * 只写 {@code reasoning_effort} 而不清掉下游的 {@code thinking:{"type":"disabled"}}：
+     * 上游收到「不要思考」和「思考要多深」两个矛盾指令。
+     *
+     * <h2>「下游已表态」的判据是两个字段的并集</h2>
+     * {@link Mode#FALLBACK} 只在下游<strong>两个字段都没带</strong>时才注入。
+     * 下游只发了 {@code thinking:{"type":"disabled"}} 也算表态过 ——
+     * 那时再补一个思考深度，等于无视它明确的「别思考」。
+     *
+     * <p>判据用 {@code containsKey} 而非判空：下游显式传 {@code null} 也算表达过意见；
+     * 那个 null 随后由调用方的 {@code removeIf(Objects::isNull)} 清掉，等效于不发送。
      *
      * <p>原地修改传入的 Map 而非返回新 Map：调用方
      * （{@code AbstractUpstreamChatService.prepareRequestBody}）已经持有一份可变副本，
      * 再造一个只会让「哪一份才是最终请求体」变得不明确。
-     *
-     * <p>{@link Mode#FALLBACK} 用 {@code containsKey} 而非判空：下游显式传
-     * {@code "reasoning_effort": null} 时应视为「它表达过意见」，不该被配置值顶掉；
-     * 那个 null 随后由 {@code removeIf(Objects::isNull)} 清掉，最终等效于不发送。
-     *
-     * <p>{@link Mode#PASSTHROUGH} 不做任何事 —— 它的语义正是「不干预」。
-     * 显式写出这个空分支而不让它落到 default，是为了让四种模式在代码里一一对应，
-     * 将来新增模式时不会有一个分支被静默吞掉。
      */
     public void applyTo(Map<String, Object> body) {
         switch (mode) {
-            case OVERRIDE -> body.put(REQUEST_FIELD, effort);
+            case OVERRIDE -> {
+                // 覆写：下游说什么都不算，两个字段都按配置重建。
+                // 先清干净再写，避免遗留一个与新配置矛盾的字段。
+                body.remove(REQUEST_FIELD);
+                body.remove(THINKING_FIELD);
+                writeConfiguredThinking(body);
+            }
             case FALLBACK -> {
-                if (!body.containsKey(REQUEST_FIELD)) {
-                    body.put(REQUEST_FIELD, effort);
+                if (!downstreamHasOpinion(body)) {
+                    writeConfiguredThinking(body);
                 }
             }
             case PASSTHROUGH -> {
-                // 下游带什么就是什么，没带也不补。
+                // 下游带什么就是什么，没带也不补。显式写出这个空分支而不让它落到
+                // default，是为了让四种模式一一对应，将来新增模式时不会被静默吞掉。
             }
-            case DELETE -> body.remove(REQUEST_FIELD);
+            case DELETE -> {
+                // 检测到哪个删哪个 —— 用于收到任一字段就 400 的上游。
+                body.remove(REQUEST_FIELD);
+                body.remove(THINKING_FIELD);
+            }
         }
+    }
+
+    /**
+     * 下游是否已就「要不要思考 / 思考多深」表达过意见。
+     *
+     * <p>两个字段任一存在即算表态。少看一个会让兜底档在下游明确要求关闭思考时
+     * 仍去补一个深度值。
+     */
+    private static boolean downstreamHasOpinion(Map<String, Object> body) {
+        return body.containsKey(REQUEST_FIELD) || body.containsKey(THINKING_FIELD);
+    }
+
+    /**
+     * 把配置的档位写成上游能懂的形态。
+     *
+     * <p>{@code off} 档写 {@code thinking:{"type":"disabled"}} —— 那是这个协议里
+     * 表达「不要思考」的方式；{@code reasoning_effort} 压根没有 {@code none} 这一档
+     * （见 {@link #EFFORT_OFF}）。
+     *
+     * <p>其余档位只写 {@code reasoning_effort}，<strong>不</strong>额外补一个
+     * {@code thinking:{"type":"enabled"}}：那两个字段虽可共存，但只发深度已足够表达意图，
+     * 而多发一个字段会让只认识其中一个的上游收到意外内容。本服务的原则是发出用户
+     * 配置的东西，不替他添。
+     */
+    private void writeConfiguredThinking(Map<String, Object> body) {
+        if (EFFORT_OFF.equals(effort)) {
+            body.put(THINKING_FIELD, Map.of(THINKING_TYPE_KEY, THINKING_DISABLED));
+            return;
+        }
+        body.put(REQUEST_FIELD, effort);
     }
 }

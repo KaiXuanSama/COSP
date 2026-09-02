@@ -83,6 +83,7 @@ export {
   REASONING_OVERWRITE_MODES,
   REASONING_OVERWRITE_MODE_HINTS,
   REASONING_OVERWRITE_MODE_LABELS,
+  EFFORT_OFF,
   nextReasoningOverwriteMode,
   parseReasoningEffortConfig,
   serializeReasoningEffortConfig,

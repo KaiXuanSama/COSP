@@ -544,12 +544,10 @@ public class GenericAnthropicChatService {
         extractSystemPrompt(body);
         ensureMaxTokens(body, resolvedModel, provider);
 
-        // TODO reasoning_effort → thinking 的映射尚未实现。Anthropic 用
-        //  {"thinking": {"type": "enabled", "budget_tokens": N}} 而非字符串档位，
-        //  且 budget_tokens 必须小于 max_tokens。本阶段先剥掉该字段避免上游 400，
-        //  待确认各中转站是否支持 thinking 参数后再补映射。
-        //  影响：配置了思考深度的模型，走 Anthropic 协议时该设置暂时不生效。
+        // TODO 四档注入模式在本线路尚未生效 —— 当前无条件剥掉 reasoning_effort。
+        //  影响：配置了思考深度的模型，走 Anthropic 协议时该设置不生效。
         //  变通办法：用一条仅适用 ANTHROPIC 的请求体规则手工设置 thinking 字段。
+        //  实现规格见下方 {@code applyThinkingModes} 的 Javadoc。
         body.remove("reasoning_effort");
 
         applyBodyRules(body, provider);
@@ -698,6 +696,86 @@ public class GenericAnthropicChatService {
         }
         return MaxOutputTokensSetting.defaults();
     }
+
+    /*
+     * ========================================================================
+     * 待实现：思考深度四档注入模式在 Anthropic 线路上的语义
+     * ========================================================================
+     *
+     * 当前 prepareRequestBody 无条件剥掉 reasoning_effort，四个模式一个都没生效。
+     * 下面是规格，实现时照此办理。
+     *
+     * ## 与 OpenAI 侧的真实差异
+     *
+     * 注意 thinking 字段**两条线路都有**，不是 Anthropic 独有 —— OpenAI 兼容上游
+     * （DeepSeek、小米 MiMo）也用 thinking:{"type":"enabled"|"disabled"} 管思考开关，
+     * 且与 reasoning_effort 并列存在。那一侧的四模式语义已实现，见
+     * {@code ReasoningEffortSetting.applyTo}。
+     *
+     * 真正的差异在**取值形态**：
+     *
+     *   OpenAI 侧：thinking:{"type":"enabled"|"disabled"} + reasoning_effort 档位字符串
+     *   Anthropic：thinking:{"type":"disabled"}
+     *              thinking:{"type":"adaptive"}                    —— 4.6+ 新形态
+     *              thinking:{"type":"enabled","budget_tokens":N}    —— 4.7+ 返回 400
+     *              output_config:{"effort":"..."}                   —— 顶层字段，4.6+
+     *
+     * 所以本线路的四模式**判据可以照搬** OpenAI 侧（两个字段任一存在即「下游已表态」），
+     * 只有「配置的档位写成什么」需要另做决定 —— 见下一节。
+     *
+     * ## 四个模式的规格
+     *
+     * 记「下游已表态」= 请求体里存在 reasoning_effort 或 thinking 之一。
+     *
+     *   PASSTHROUGH：什么都不做。下游发 disabled 也好、发 adaptive 也好，原样出站。
+     *                这一档唯一要注意的是不能像现在这样无条件 remove。
+     *
+     *   FALLBACK：   下游已表态则不干预（含 thinking:{type:"disabled"}）；
+     *                未表态才注入配置的档位。
+     *                关键点：不能只看 reasoning_effort —— 那样会给一个明确要求
+     *                「关闭思考」的请求再补一个思考强度，语义自相矛盾。
+     *
+     *   OVERRIDE：   无论下游表态与否，都按配置的档位重建，并清掉冲突的表达。
+     *                两个方向都要处理：
+     *                  a) 配置为 off 档：删掉 reasoning_effort 与既有 thinking，
+     *                     写入 thinking:{"type":"disabled"}；
+     *                  b) 配置为具体档位：删掉下游的 thinking:{"type":"disabled"}，
+     *                     写入该档位（形态见下）。
+     *                「删掉下游明确的 disabled」是刻意的 —— 尊重用户配置优先于
+     *                下游意图，这正是覆写档的定义。
+     *
+     *   DELETE：     同时检测并删除 reasoning_effort 与 thinking，检测到哪个删哪个。
+     *                用于那些收到任一字段就 400 的上游。
+     *
+     * ## 档位该写成什么形态，取决于上游认哪个
+     *
+     * 这是本规格唯一的未决问题，且**不能由本服务猜**：
+     *
+     *   - output_config.effort 是顶层字段，五档 low/medium/high/xhigh/max，
+     *     与 thinking.type 无关、可共存。但 4.5 及更早的模型不认识它。
+     *   - thinking.budget_tokens 在 4.6 弃用、4.7+ 直接 400。
+     *
+     * 另外注意 off 档在本线路上**不能**映射成 output_config.effort 的某个值 ——
+     * 那五档里没有「不思考」，关闭思考只能靠 thinking:{"type":"disabled"}。
+     * （顺带一提：OpenAI 的 Responses 协议里 reasoning.effort 确实有 none 这一档，
+     *   但那是第三种协议，与这里的 Chat Completions / Messages 都不是一回事。）
+     *
+     * 参考实现（new-api relaykit/relayconvert/reasoning/claude.go）按模型名前缀
+     * 硬编码了八个能力维度来选形态。**本服务刻意不这么做**：
+     *   1. 中转站会改模型名，前缀匹配大面积失效；
+     *   2. 那套方案内含自动降级（xhigh 不支持就退 max 再退 high），
+     *      而本服务的原则是尊重用户配置、不做任何「自动」行为。
+     *
+     * 因此形态选择应当是**用户可配置的**（参考 cc-switch 的 thinkingLevelMap：
+     * 字符串=实际发送值 / null=该档明确不可用 / 键缺失=用上游默认），
+     * 而不是从模型名推导。这需要一列新的模型配置，属于后续版本。
+     *
+     * ## 不要顺手做的事
+     *
+     * new-api 在思考开启时会清掉采样参数（temperature/top_p/top_k），因为
+     * Anthropic 对此有硬约束。那是它的选择；本服务若要做，也应当是显式配置项，
+     * 而不是在翻译过程里静默改写用户的请求。
+     */
 
     /** 剥离供应商前缀，取真实上游模型名。与 OpenAI 侧同一工具。 */
     private String resolveModel(Object requestModel, String fallbackModel) {

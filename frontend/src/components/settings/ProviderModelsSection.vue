@@ -119,12 +119,13 @@ const maxOutputWheel = useWheelStep(maxOutputPresetValues, NUDGE_MS)
 /**
  * 滚轮步进思考深度档位。
  *
- * 档位清单是升序（`Low → Max`），而方向是下标增量，因此向上滚
+ * 档位清单是升序（`Off → Max`），而方向是下标增量，因此向上滚
  * （`direction === -1`）会走到更低的档位。这与最大输出那一栏相反 ——
  * 那边预设按降序声明，向上滚得到更大的值。
  *
  * <p>三栏方向语义不一致会很别扭，所以这里把档位清单**反转**后再步进：
  * 反转后首项是 `Max`，向上滚（取前一项）因此走向更高的档位，与数值段一致。
+ * `Off` 在升序清单里排首位，因此向下滚到底就是它 —— 不思考确实是强度最低的一档。
  */
 function onEffortWheel(model: EditableModel, index: number, event: WheelEvent) {
     const direction = directionFromWheel(event.deltaY)
@@ -139,7 +140,7 @@ function onEffortWheel(model: EditableModel, index: number, event: WheelEvent) {
 /**
  * 档位清单的降序副本，供滚轮使用。
  *
- * `REASONING_EFFORT_OPTIONS` 是升序的（下拉菜单里从 Low 排到 Max，符合阅读习惯），
+ * `REASONING_EFFORT_OPTIONS` 是升序的（下拉菜单里从 Off 排到 Max，符合阅读习惯），
  * 但滚轮需要「向上滚 = 更高档位」，即清单前面是高档位。反转一份而非改原清单：
  * 下拉的展示顺序不该被滚轮的方向约定牵动。
  */
