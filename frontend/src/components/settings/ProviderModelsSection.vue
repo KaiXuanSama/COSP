@@ -5,6 +5,7 @@ import {
   ANTHROPIC_THINKING_OVERWRITE_MODES,
   ANTHROPIC_THINKING_TYPE_OPTIONS,
   DEFAULT_ANTHROPIC_THINKING_CONFIG,
+  anthropicThinkingLockedByEffort,
   anthropicThinkingUsesBudget,
   MAX_OUTPUT_OVERWRITE_MODES,
   MAX_OUTPUT_OVERWRITE_MODE_HINTS,
@@ -167,6 +168,18 @@ function setAnthropicThinkingMode(index: number, mode: OverwriteMode) {
 
 function setAnthropicThinkingBudget(index: number, budgetTokens: string) {
     anthropicThinkingRows.value[index] = { ...anthropicThinkingOf(index), budgetTokens }
+}
+
+/**
+ * 思考深度已经表达「不思考」时，第二层整组锁定。
+ *
+ * 关闭思考只有思考深度的 Off 一个入口（思考方式已去掉 disabled），
+ * 因此这里不会产生两个相互矛盾的开关，只需把不再适用的预算与方式置为不可编辑。
+ * 判定本体在 `features/provider-config/anthropicThinking.ts`，组件只负责传入当前两个维度。
+ */
+function anthropicThinkingLocked(model: EditableModel): boolean {
+    const effort = effortConfigOf(model)
+    return anthropicThinkingLockedByEffort(effort.effort, effort.mode)
 }
 
 function toggleRow(index: number) {
@@ -546,14 +559,17 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                                             passthrough: '下游携带就用它的值，未携带也不添加 thinking 字段',
                                             delete: '不在此处使用',
                                         }"
+                                        :disabled="anthropicThinkingLocked(model)"
                                         :mode="anthropicThinkingOf(index).mode"
                                         @update:mode="(value: OverwriteMode) => setAnthropicThinkingMode(index, value)">
                                         <n-tooltip placement="top">
                                             <template #trigger>
                                                 <n-popselect :options="anthropicThinkingTypeOptions" size="small" trigger="click"
+                                                    :disabled="anthropicThinkingLocked(model)"
                                                     :value="anthropicThinkingOf(index).type"
                                                     @update:value="(value: AnthropicThinkingType) => setAnthropicThinkingType(index, value)">
-                                                    <button type="button" class="effort-value">
+                                                    <button type="button" class="effort-value"
+                                                        :disabled="anthropicThinkingLocked(model)">
                                                         <span class="effort-value__text">{{ anthropicThinkingOf(index).type }}</span>
                                                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
                                                             stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -563,29 +579,40 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                                                     </button>
                                                 </n-popselect>
                                             </template>
-                                            <div>Anthropic 参数：选择思考方式。</div>
-                                            <div><code> - adaptive</code>：由模型自动决定。</div>
-                                            <div><code> - enabled</code>：启用旧版思考方式，需设置思考预算。</div>
-                                            <div><code> - disabled</code>：禁用思考。</div>
+                                            <template v-if="anthropicThinkingLocked(model)">
+                                                思考深度已选 <code>Off</code>，本组配置不适用。
+                                            </template>
+                                            <template v-else>
+                                                <div>Anthropic 参数：选择思考方式。</div>
+                                                <div><code> - adaptive</code>：由模型自动决定。</div>
+                                                <div><code> - enabled</code>：启用旧版思考方式，需设置思考预算。</div>
+                                                <div>关闭思考请将思考深度设为 <code>Off</code>。</div>
+                                            </template>
                                         </n-tooltip>
                                     </mode-scoped-field>
                                 </n-form-item>
 
                                 <n-form-item label="思考预算" class="model-detail-item model-secondary-budget-item">
                                     <!--
-                                        预算只属于 enabled + budget_tokens 的手动形态。
-                                        adaptive 交由上游自动匹配，disabled 明确关闭思考；两者输入预算
-                                        都会制造无意义且可能与上游约束冲突的配置，故禁用而不隐藏。
-                                        禁用仍显示当前草稿，用户切回 enabled 不会丢值。
+                                        预算只属于 enabled + budget_tokens 的手动形态：
+                                        adaptive 把预算交给上游，思考深度 Off 时整组不适用。
+                                        两种情况都禁用而不隐藏 —— 禁用仍显示当前草稿，
+                                        用户切回 enabled 不会丢值。
                                     -->
                                     <n-tooltip placement="top">
                                         <template #trigger>
                                             <n-input :value="anthropicThinkingOf(index).budgetTokens"
                                                 placeholder="预算 token 数"
-                                                :disabled="!anthropicThinkingUsesBudget(anthropicThinkingOf(index).type)"
+                                                :disabled="anthropicThinkingLocked(model)
+                                                    || !anthropicThinkingUsesBudget(anthropicThinkingOf(index).type)"
                                                 @update:value="(value: string) => setAnthropicThinkingBudget(index, value)" />
                                         </template>
-                                        Anthropic 参数：仅在思考方式为 <code>enabled</code> 时使用。输入 <code>-1</code> 表示最大输出长度减 1。
+                                        <template v-if="anthropicThinkingLocked(model)">
+                                            思考深度已选 <code>Off</code>，本组配置不适用。
+                                        </template>
+                                        <template v-else>
+                                            Anthropic 参数：仅在思考方式为 <code>enabled</code> 时使用。输入 <code>-1</code> 表示最大输出长度减 1。
+                                        </template>
                                     </n-tooltip>
                                 </n-form-item>
                             </n-form>
@@ -992,6 +1019,20 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
 
     &:hover {
         color: $accent;
+    }
+
+    /**
+     * 禁用态不再 hover 变色。
+     *
+     * 颜色继承外壳（`--disabled` 已把整块置灰），这里只需要撤掉那个「可点」的暗示 ——
+     * 留着 accent 色的 hover 会让一个点不动的控件看起来像坏了。
+     */
+    &:disabled {
+        cursor: not-allowed;
+
+        &:hover {
+            color: inherit;
+        }
     }
 
     svg {

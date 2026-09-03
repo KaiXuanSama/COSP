@@ -49,8 +49,14 @@ const props = defineProps<{
     /** 该字段支持的模式子集，顺序即点击轮转与滚轮步进的顺序。 */
     modes: readonly OverwriteMode[]
     /** 各模式的悬停说明。文案随字段变化（「此处配置的档位 / 上限」），故由调用方给出。 */
-    hints: Record<OverwriteMode, string>
-}>()
+    hints: Record<OverwriteMode, string>    /**
+     * 整个字段不可用（含模式段）。
+     *
+     * 与 {@code inert} 不同：`inert` 是「本次不会出站但仍可编辑」，
+     * 而这个是「在当前上文里根本无法表达任何意图」—— 模式也不应该能改，
+     * 否则用户会在一个不生效的字段上转不同的注入模式。
+     */
+    disabled?: boolean}>()
 
 const mode = defineModel<OverwriteMode>('mode', { required: true })
 
@@ -74,6 +80,7 @@ const modeDirection = ref<StepDirection | null>(null)
 
 /** 点击轮转。循环，与滚轮的「端点停住」刻意不同 —— 见 `wheelStep.ts`。 */
 function cycle() {
+    if (props.disabled) return
     modeDirection.value = null
     mode.value = nextOverwriteMode(mode.value, props.modes)
 }
@@ -89,6 +96,7 @@ function cycle() {
  * `SlidingValue` 的 watch 空跑一次；这里显式判等，语义更清楚。
  */
 function onWheel(event: WheelEvent) {
+    if (props.disabled) return
     const direction = directionFromWheel(event.deltaY)
     if (direction === null) return
     const next = stepInSequence(mode.value, props.modes, direction)
@@ -99,10 +107,12 @@ function onWheel(event: WheelEvent) {
 </script>
 
 <template>
-    <div class="mode-scoped-field" :class="{ 'mode-scoped-field--inert': inert }">
+    <div class="mode-scoped-field"
+        :class="{ 'mode-scoped-field--inert': inert, 'mode-scoped-field--disabled': disabled }">
         <n-tooltip placement="top">
             <template #trigger>
-                <button type="button" class="mode-scoped-field__mode" @click="cycle" @wheel.prevent="onWheel">
+                <button type="button" class="mode-scoped-field__mode" :disabled="disabled" @click="cycle"
+                    @wheel.prevent="onWheel">
                     <sliding-value :value="label" :direction="modeDirection" />
                 </button>
             </template>
@@ -152,6 +162,33 @@ function onWheel(event: WheelEvent) {
      */
     &--inert {
         color: $text-muted;
+    }
+
+    /**
+     * 整个字段在当前上文里无意义（如思考深度已表达不思考）。
+     *
+     * 与 Naive UI 的禁用态对齐：添底色 + 降低对比，而非仅仅变灰 ——
+     * 插槽里的 `n-input` 会自己变成禁用底色，外壳不跟上会看起来像只禁了一半。
+     * hover 不再变色，因此鼠标移上来不会暗示可交互。
+     */
+    &--disabled {
+        border-color: $border-light;
+        background: $bg;
+        color: $text-muted;
+        cursor: not-allowed;
+
+        &:hover,
+        &:focus-within {
+            border-color: $border-light;
+        }
+
+        .mode-scoped-field__mode {
+            cursor: not-allowed;
+
+            &:hover {
+                color: $text-muted;
+            }
+        }
     }
 }
 

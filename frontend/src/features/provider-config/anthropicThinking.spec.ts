@@ -4,12 +4,17 @@ import {
   ANTHROPIC_THINKING_OVERWRITE_MODES,
   ANTHROPIC_THINKING_TYPE_OPTIONS,
   DEFAULT_ANTHROPIC_THINKING_CONFIG,
+  anthropicThinkingLockedByEffort,
   anthropicThinkingUsesBudget,
 } from './anthropicThinking'
 
 describe('Anthropic thinking UI model', () => {
-  it('支持三个协议 type', () => {
-    expect(ANTHROPIC_THINKING_TYPE_OPTIONS).toEqual(['adaptive', 'enabled', 'disabled'])
+  /**
+   * 没有 disabled：关闭思考统一由思考深度的 Off 档表达。
+   * 两处都能关思考且各自带注入模式时，会产出自相矛盾的请求体。
+   */
+  it('只提供 adaptive 与 enabled，不重复提供关闭思考', () => {
+    expect(ANTHROPIC_THINKING_TYPE_OPTIONS).toEqual(['adaptive', 'enabled'])
   })
 
   /**
@@ -34,6 +39,27 @@ describe('Anthropic thinking UI model', () => {
   it('只有 enabled 允许编辑预算', () => {
     expect(anthropicThinkingUsesBudget('enabled')).toBe(true)
     expect(anthropicThinkingUsesBudget('adaptive')).toBe(false)
-    expect(anthropicThinkingUsesBudget('disabled')).toBe(false)
+  })
+
+  describe('思考深度 Off 时锁定本组', () => {
+    it('覆写与兜底档下的 Off 会锁定', () => {
+      expect(anthropicThinkingLockedByEffort('Off', 'override')).toBe(true)
+      expect(anthropicThinkingLockedByEffort('Off', 'fallback')).toBe(true)
+    })
+
+    /**
+     * 透传与删除不使用此处配置的档位，那时 Off 只是备选值、不会出站，
+     * 据此锁定等于把一个未生效的配置当成了事实。
+     */
+    it('透传与删除档下不锁定', () => {
+      expect(anthropicThinkingLockedByEffort('Off', 'passthrough')).toBe(false)
+      expect(anthropicThinkingLockedByEffort('Off', 'delete')).toBe(false)
+    })
+
+    it('其余档位不锁定，档位大小写不敏感', () => {
+      expect(anthropicThinkingLockedByEffort('Medium', 'override')).toBe(false)
+      expect(anthropicThinkingLockedByEffort('off', 'override')).toBe(true)
+      expect(anthropicThinkingLockedByEffort(' OFF ', 'override')).toBe(true)
+    })
   })
 })

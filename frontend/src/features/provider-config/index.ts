@@ -53,6 +53,7 @@ export {
   ANTHROPIC_THINKING_OVERWRITE_MODES,
   ANTHROPIC_THINKING_TYPE_OPTIONS,
   DEFAULT_ANTHROPIC_THINKING_CONFIG,
+  anthropicThinkingLockedByEffort,
   anthropicThinkingUsesBudget,
   type AnthropicThinkingConfig,
   type AnthropicThinkingOverwriteMode,
