@@ -544,21 +544,37 @@ public class GenericAnthropicChatService {
         extractSystemPrompt(body);
         ensureMaxTokens(body, resolvedModel, provider);
 
-        // TODO 四档注入模式在本线路尚未生效 —— 当前无条件剥掉 reasoning_effort。
-        //  影响：配置了思考深度的模型，走 Anthropic 协议时该设置不生效。
-        //  变通办法：用一条仅适用 ANTHROPIC 的请求体规则手工设置 thinking 字段。
-        //  实现规格见下方 {@code applyThinkingModes} 的 Javadoc。
-        //
-        //  【翻译层落地时必须删掉下面这行】翻译在设置层之前，而本行在设置层位置，
-        //  会把翻译器搬过来的深度先杀掉 —— 于是一个明确要求 low 的下游请求会被判成
-        //  「没表态」，兜底档静默退化成覆写档。详见
-        //  docs/PROTOCOL_TRANSLATION_CONTRACT.md 第 2 节。
+        // reasoning_effort 是 OpenAI 的字段名；O2A 翻译器已把它映射到
+        // output_config.effort。此处只在所有设置层逻辑结束后剥离这个兼容副本，
+        // 不能在翻译器之前剥掉，否则会让兜底的「下游是否已表态」判定失真。
         body.remove("reasoning_effort");
+
+        // TODO 思考方式 / 预算接入 provider_model 的真实持久化字段后，改为读取并应用
+        // 该配置（override / fallback / passthrough 等模式）。当前第二层 UI 尚未提交这些字段，
+        // 约定的临时语义是「兜底 adaptive」：下游未携带 thinking 时才注入，携带时完全尊重。
+        applyFallbackAdaptiveThinking(body);
 
         applyBodyRules(body, provider);
 
         body.values().removeIf(Objects::isNull);
         return body;
+    }
+
+    /**
+     * 临时的 Anthropic 思考方式默认值：兜底注入 {@code thinking: {type: "adaptive"}}。
+     *
+     * <p>只看 {@code thinking} 是否存在，不看 {@code output_config.effort}：深度仅表达
+     * 「想多想一点」，不表达选用 adaptive 还是旧版 enabled + budget_tokens 的方式。
+     * 所以 O2A 请求只带 {@code reasoning_effort} 时，翻译后会同时得到
+     * {@code output_config.effort} 与本方法补上的 {@code thinking: adaptive}，两者正交。
+     *
+     * <p>用 {@code containsKey} 而非检查值：下游显式发 {@code thinking: null} 也属于表态，
+     * 应由规则 / 上游去处理，兜底层不能越权改成 adaptive。最终 null 清洗仍在规则之后统一执行。
+     */
+    private void applyFallbackAdaptiveThinking(Map<String, Object> body) {
+        if (!body.containsKey("thinking")) {
+            body.put("thinking", Map.of("type", "adaptive"));
+        }
     }
 
     /**

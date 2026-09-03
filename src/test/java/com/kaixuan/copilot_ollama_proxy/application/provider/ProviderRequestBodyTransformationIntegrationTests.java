@@ -128,8 +128,11 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 org.mockito.ArgumentMatchers.anyMap(), org.mockito.ArgumentMatchers.anyInt(),
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyLong());
         genericChatService.setApiCallLog(callLogService);
+        // O2A 翻译落地后，ChatCompletionService 需要两个上游服务与翻译器。
+        // 本测试只关注 OpenAI 直连路径，不走翻译，用 null 占位。
         ChatCompletionService chatCompletionService = new ChatCompletionService(
-                new ProviderRouteResolver(catalog), new ProtocolDispatchManager(), genericChatService);
+                new ProviderRouteResolver(catalog), new ProtocolDispatchManager(),
+                genericChatService, null, null);
 
         HttpHeaders downstreamHeaders = new HttpHeaders();
         downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-token");

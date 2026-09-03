@@ -399,7 +399,47 @@ class GenericAnthropicChatServiceTests {
 
         realService().exposeMessages(request, routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
 
-        assertThat(objectMapper.readTree(capturedBody.get()).has("reasoning_effort")).isFalse();
+        JsonNode body = objectMapper.readTree(capturedBody.get());
+        assertThat(body.has("reasoning_effort")).isFalse();
+        // 只带深度、没带 thinking 时，现阶段硬编码兜底 adaptive。
+        assertThat(body.path("thinking").path("type").asText()).isEqualTo("adaptive");
+    }
+
+    /**
+     * 第二层思考方式尚未入库，运行时硬编码「兜底 adaptive」：
+     * 下游没带 thinking 才补，带了就完全尊重。
+     */
+    @Test
+    void missingThinkingFallsBackToAdaptive() throws Exception {
+        realService().exposeMessages(newRequest(), routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
+
+        JsonNode body = objectMapper.readTree(capturedBody.get());
+        assertThat(body.path("thinking").path("type").asText()).isEqualTo("adaptive");
+        assertThat(body.path("thinking").has("budget_tokens")).isFalse();
+    }
+
+    @Test
+    void existingThinkingIsRespectedAndNotOverwritten() throws Exception {
+        Map<String, Object> request = newRequest();
+        request.put("thinking", Map.of("type", "enabled", "budget_tokens", 2048));
+
+        realService().exposeMessages(request, routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
+
+        JsonNode body = objectMapper.readTree(capturedBody.get());
+        assertThat(body.path("thinking").path("type").asText()).isEqualTo("enabled");
+        assertThat(body.path("thinking").path("budget_tokens").asInt()).isEqualTo(2048);
+    }
+
+    @Test
+    void explicitNullThinkingIsNotReplacedWithAdaptive() throws Exception {
+        Map<String, Object> request = newRequest();
+        request.put("thinking", null);
+
+        realService().exposeMessages(request, routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
+
+        JsonNode body = objectMapper.readTree(capturedBody.get());
+        // 显式 null 属于下游表态；最终清洗会去掉该字段，而不是改成 adaptive。
+        assertThat(body.has("thinking")).isFalse();
     }
 
     /** 模型名的供应商前缀要剥掉，上游只认真实模型名。 */
