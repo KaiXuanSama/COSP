@@ -21,6 +21,15 @@ public interface ProtocolTranslator {
 
     // TODO 翻译方法尚未定义，本接口当前只有协议标识。补充时需要三个方法：
     //  请求体改写（下游协议 → 上游协议）、非流式响应改写、流式帧改写（回下游协议）。
+    //
+    //  请求侧的字段映射、丢弃清单与错误处置已定契约，见
+    //  docs/PROTOCOL_TRANSLATION_CONTRACT.md。两条必须先钉测试的不变式：
+    //   1. 无损搬运「下游已表态」—— 丢了 reasoning_effort 会让设置层的兜底档
+    //      静默退化成覆写档（该文档第 2 节）；
+    //   2. tool_use / tool_result 配对修复的 merge → pair → merge 三步顺序（第 3.5 节）。
+    //  请求侧改写的返回类型不能只是 Map：响应侧需要请求期上下文（下游要流式还是非流式、
+    //  思考是下游要求的还是设置层注入的），故返回 {body, translationContext}（第 7 节）。
+    //
     //  流式那个的签名要等 Anthropic 事件解析落地后再定 —— 它不是「一帧进一帧出」：
     //  message_start / content_block_start 不产出下游帧，而一个 message_delta
     //  可能同时产出正文 chunk 与 finish chunk，故返回类型至少是 List/Flux 而非单个 String。

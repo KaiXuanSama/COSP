@@ -548,6 +548,11 @@ public class GenericAnthropicChatService {
         //  影响：配置了思考深度的模型，走 Anthropic 协议时该设置不生效。
         //  变通办法：用一条仅适用 ANTHROPIC 的请求体规则手工设置 thinking 字段。
         //  实现规格见下方 {@code applyThinkingModes} 的 Javadoc。
+        //
+        //  【翻译层落地时必须删掉下面这行】翻译在设置层之前，而本行在设置层位置，
+        //  会把翻译器搬过来的深度先杀掉 —— 于是一个明确要求 low 的下游请求会被判成
+        //  「没表态」，兜底档静默退化成覆写档。详见
+        //  docs/PROTOCOL_TRANSLATION_CONTRACT.md 第 2 节。
         body.remove("reasoning_effort");
 
         applyBodyRules(body, provider);

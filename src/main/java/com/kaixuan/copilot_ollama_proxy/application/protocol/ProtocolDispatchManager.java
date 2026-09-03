@@ -60,7 +60,8 @@ public class ProtocolDispatchManager {
         // TODO 调用方（ChatCompletionService 等）收到 translationNeeded=true 时抛
         //  ProtocolTranslationNotSupportedException；待 ProtocolTranslator 有实现后，
         //  改为按本结论挑选对应翻译器并把它套在上游服务外侧（装饰器，不进重试内侧）。
-        //  翻译实现不必从零推导：cc switch / sub2api / new api 等开源项目已有成熟的帧映射方案。
+        //  请求侧的字段映射、丢弃清单与两条不变式见
+        //  docs/PROTOCOL_TRANSLATION_CONTRACT.md（已调研 cc-switch / sub2api / new-api 三家实现）。
         for (WireProtocol candidate : WireProtocol.values()) {
             if (supported.contains(candidate)) {
                 log.info("供应商 {} 不支持下游协议 {}，改用 {} 并需要翻译",
