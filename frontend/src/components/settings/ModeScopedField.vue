@@ -31,6 +31,7 @@
  * 补偿因此属于「数值输入框」这个正交维度，留在调用方的 `--numeric` 类里。
  */
 import { computed, ref } from 'vue'
+import { NTooltip } from 'naive-ui'
 
 import {
   OVERWRITE_MODE_LABELS,
@@ -99,10 +100,14 @@ function onWheel(event: WheelEvent) {
 
 <template>
     <div class="mode-scoped-field" :class="{ 'mode-scoped-field--inert': inert }">
-        <button type="button" class="mode-scoped-field__mode" :title="hint" @click="cycle"
-            @wheel.prevent="onWheel">
-            <sliding-value :value="label" :direction="modeDirection" />
-        </button>
+        <n-tooltip placement="top">
+            <template #trigger>
+                <button type="button" class="mode-scoped-field__mode" @click="cycle" @wheel.prevent="onWheel">
+                    <sliding-value :value="label" :direction="modeDirection" />
+                </button>
+            </template>
+            {{ hint }}
+        </n-tooltip>
         <div class="mode-scoped-field__value">
             <slot />
         </div>

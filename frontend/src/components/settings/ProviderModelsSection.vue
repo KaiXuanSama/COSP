@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { NButton, NCheckbox, NForm, NFormItem, NInput, NPopselect, NSwitch } from 'naive-ui'
+import { NButton, NCheckbox, NForm, NFormItem, NInput, NPopselect, NSwitch, NTooltip } from 'naive-ui'
 import { ref } from 'vue'
 import {
+  ANTHROPIC_THINKING_OVERWRITE_MODES,
+  ANTHROPIC_THINKING_TYPE_OPTIONS,
+  DEFAULT_ANTHROPIC_THINKING_CONFIG,
+  anthropicThinkingUsesBudget,
   MAX_OUTPUT_OVERWRITE_MODES,
   MAX_OUTPUT_OVERWRITE_MODE_HINTS,
   MAX_OUTPUT_PRESETS,
@@ -14,6 +18,9 @@ import {
   serializeMaxOutputConfig,
   serializeReasoningEffortConfig,
   stepInSequence,
+  type AnthropicThinkingConfig,
+  type AnthropicThinkingOverwriteMode,
+  type AnthropicThinkingType,
   type MaxOutputOverwriteMode,
   type OverwriteMode,
   type ReasoningOverwriteMode,
@@ -78,6 +85,9 @@ const maxOutputPresetValues = MAX_OUTPUT_PRESETS.map(preset => preset.value)
 
 const effortOptions = REASONING_EFFORT_OPTIONS.map(option => ({ label: option, value: option }))
 
+/** Anthropic thinking.type 的下拉选项，标签保留协议字面量避免引入第二套术语。 */
+const anthropicThinkingTypeOptions = ANTHROPIC_THINKING_TYPE_OPTIONS.map(type => ({ label: type, value: type }))
+
 /**
  * 思考深度配置的读写。
  *
@@ -130,6 +140,34 @@ const maxOutputWheel = useWheelStep(maxOutputPresetValues, NUDGE_MS)
  * 那是可接受的：展开的是第几行而非哪个模型，与滚轮方向那两份状态同一口径。
  */
 const expandedRows = ref<Record<number, boolean>>({})
+
+/**
+ * Anthropic 思考形态的临时 UI 状态，尚未进模型提交体。
+ *
+ * 以行下标隔离，与展开状态同一口径；用户切换 type / mode / budget 会立即保留在
+ * 当前抽屉会话里，但本轮保存时不会提交到后端。等后端契约确定后，把这里接到
+ * EditableModel 的 parse / serialize 即可，不必再改 UI 结构。
+ */
+const anthropicThinkingRows = ref<Record<number, AnthropicThinkingConfig>>({})
+
+function anthropicThinkingOf(index: number): AnthropicThinkingConfig {
+    return anthropicThinkingRows.value[index] ?? DEFAULT_ANTHROPIC_THINKING_CONFIG
+}
+
+function setAnthropicThinkingType(index: number, type: AnthropicThinkingType) {
+    anthropicThinkingRows.value[index] = { ...anthropicThinkingOf(index), type }
+}
+
+function setAnthropicThinkingMode(index: number, mode: OverwriteMode) {
+    anthropicThinkingRows.value[index] = {
+        ...anthropicThinkingOf(index),
+        mode: mode as AnthropicThinkingOverwriteMode,
+    }
+}
+
+function setAnthropicThinkingBudget(index: number, budgetTokens: string) {
+    anthropicThinkingRows.value[index] = { ...anthropicThinkingOf(index), budgetTokens }
+}
 
 function toggleRow(index: number) {
     expandedRows.value[index] = !expandedRows.value[index]
@@ -304,7 +342,12 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                             <div class="model-capability-group model-capability-group--basic">
                                 <div class="model-form-row">
                                     <n-form-item label="模型id" class="model-name-item">
-                                        <n-input v-model:value="model.modelName" placeholder="模型名称" />
+                                        <n-tooltip placement="top">
+                                            <template #trigger>
+                                                <n-input v-model:value="model.modelName" placeholder="模型名称" />
+                                            </template>
+                                            向上游发起请求时使用的模型名称。
+                                        </n-tooltip>
                                     </n-form-item>
                                 </div>
                                 <div class="model-form-row model-form-row--details">
@@ -316,32 +359,37 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                                             那一维。滚轮步进与位移动画是与模式无关的能力，两者共用
                                             useWheelStep，但 DOM 结构各自保持最简形态。
                                         -->
-                                        <n-input :value="model.contextSize" placeholder="4096"
-                                            class="numeric-nudge" :class="{
-                                                'numeric-nudge--from-below': contextWheel.nudges.value[index] === 1,
-                                                'numeric-nudge--from-above': contextWheel.nudges.value[index] === -1,
-                                            }" @wheel.prevent="onContextWheel(model, index, $event)"
-                                            @update:value="(value: string) => {
-                                                contextWheel.clear(index)
-                                                model.contextSize = value
-                                            }">
-                                            <template #suffix>
-                                                <n-popselect :options="contextPresets" size="small" trigger="click"
-                                                    :value="model.contextSize"
+                                        <n-tooltip placement="top">
+                                            <template #trigger>
+                                                <n-input :value="model.contextSize" placeholder="4096"
+                                                    class="numeric-nudge" :class="{
+                                                        'numeric-nudge--from-below': contextWheel.nudges.value[index] === 1,
+                                                        'numeric-nudge--from-above': contextWheel.nudges.value[index] === -1,
+                                                    }" @wheel.prevent="onContextWheel(model, index, $event)"
                                                     @update:value="(value: string) => {
                                                         contextWheel.clear(index)
                                                         model.contextSize = value
                                                     }">
-                                                    <span class="context-preset-trigger">
-                                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                                                            stroke="currentColor" stroke-width="2"
-                                                            stroke-linecap="round" stroke-linejoin="round">
-                                                            <polyline points="6 9 12 15 18 9" />
-                                                        </svg>
-                                                    </span>
-                                                </n-popselect>
+                                                    <template #suffix>
+                                                        <n-popselect :options="contextPresets" size="small" trigger="click"
+                                                            :value="model.contextSize"
+                                                            @update:value="(value: string) => {
+                                                                contextWheel.clear(index)
+                                                                model.contextSize = value
+                                                            }">
+                                                            <span class="context-preset-trigger">
+                                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                                                    stroke="currentColor" stroke-width="2"
+                                                                    stroke-linecap="round" stroke-linejoin="round">
+                                                                    <polyline points="6 9 12 15 18 9" />
+                                                                </svg>
+                                                            </span>
+                                                        </n-popselect>
+                                                    </template>
+                                                </n-input>
                                             </template>
-                                        </n-input>
+                                            Ollama 参数：向模型目录上报上下文窗口长度，供 Copilot 发现模型能力。
+                                        </n-tooltip>
                                     </n-form-item>
                                     <n-form-item class="model-effort-item">
                                         <!--
@@ -352,28 +400,34 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                                             :hints="REASONING_OVERWRITE_MODE_HINTS"
                                             :mode="effortConfigOf(model).mode"
                                             @update:mode="(value: OverwriteMode) => setEffortMode(model, value)">
-                                            <n-popselect :options="effortOptions" size="small" trigger="click"
-                                                :value="effortConfigOf(model).effort"
-                                                @update:value="(value: string) => {
-                                                    clearEffortDirection(index)
-                                                    setEffort(model, value)
-                                                }">
-                                                <!--
-                                                    滚轮绑在这个按钮上而非整个控件：值段与模式段各自响应
-                                                    自己位置上的滚动，鼠标在哪一段就推哪一段。
-                                                -->
-                                                <button type="button" class="effort-value"
-                                                    @wheel.prevent="onEffortWheel(model, index, $event)">
-                                                    <sliding-value class="effort-value__text"
+                                            <n-tooltip placement="top">
+                                                <template #trigger>
+                                                    <n-popselect :options="effortOptions" size="small" trigger="click"
                                                         :value="effortConfigOf(model).effort"
-                                                        :direction="effortDirections[index]" />
-                                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
-                                                        stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                                        stroke-linejoin="round" aria-hidden="true">
-                                                        <polyline points="6 9 12 15 18 9" />
-                                                    </svg>
-                                                </button>
-                                            </n-popselect>
+                                                        @update:value="(value: string) => {
+                                                            clearEffortDirection(index)
+                                                            setEffort(model, value)
+                                                        }">
+                                                        <!--
+                                                            滚轮绑在这个按钮上而非整个控件：值段与模式段各自响应
+                                                            自己位置上的滚动，鼠标在哪一段就推哪一段。
+                                                        -->
+                                                        <button type="button" class="effort-value"
+                                                            @wheel.prevent="onEffortWheel(model, index, $event)">
+                                                            <sliding-value class="effort-value__text"
+                                                                :value="effortConfigOf(model).effort"
+                                                                :direction="effortDirections[index]" />
+                                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                                                stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                                                stroke-linejoin="round" aria-hidden="true">
+                                                                <polyline points="6 9 12 15 18 9" />
+                                                            </svg>
+                                                        </button>
+                                                    </n-popselect>
+                                                </template>
+                                                <div>OpenAI 参数：选择模型的思考深度。</div>
+                                                <div>Anthropic 参数：选择模型的思考深度。</div>
+                                            </n-tooltip>
                                         </mode-scoped-field>
                                     </n-form-item>
                                 </div>
@@ -396,44 +450,60 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                                                 值段是可编辑输入框，套不了滑动动画（那会遮住光标与选区），
                                                 所以只接滚轮步进。手填时清掉方向，见 setMaxOutputTokens 旁的注释。
                                             -->
-                                            <n-input :value="String(maxOutputConfigOf(model).maxOutputTokens)"
-                                                placeholder="4000" class="numeric-nudge"
-                                                :class="{
-                                                    'numeric-nudge--from-below': maxOutputWheel.nudges.value[index] === 1,
-                                                    'numeric-nudge--from-above': maxOutputWheel.nudges.value[index] === -1,
-                                                }"
-                                                @wheel.prevent="onMaxOutputWheel(model, index, $event)"
-                                                @update:value="(value: string) => {
-                                                    clearMaxOutputDirection(index)
-                                                    setMaxOutputTokens(model, value)
-                                                }">
-                                                <template #suffix>
-                                                    <n-popselect :options="maxOutputPresets" size="small"
-                                                        trigger="click"
-                                                        :value="maxOutputConfigOf(model).maxOutputTokens"
-                                                        @update:value="(value: number) => {
+                                            <n-tooltip placement="top">
+                                                <template #trigger>
+                                                    <n-input :value="String(maxOutputConfigOf(model).maxOutputTokens)"
+                                                        placeholder="4000" class="numeric-nudge"
+                                                        :class="{
+                                                            'numeric-nudge--from-below': maxOutputWheel.nudges.value[index] === 1,
+                                                            'numeric-nudge--from-above': maxOutputWheel.nudges.value[index] === -1,
+                                                        }"
+                                                        @wheel.prevent="onMaxOutputWheel(model, index, $event)"
+                                                        @update:value="(value: string) => {
                                                             clearMaxOutputDirection(index)
-                                                            setMaxOutputTokens(model, String(value))
+                                                            setMaxOutputTokens(model, value)
                                                         }">
-                                                        <span class="context-preset-trigger">
-                                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                                                                stroke="currentColor" stroke-width="2"
-                                                                stroke-linecap="round" stroke-linejoin="round">
-                                                                <polyline points="6 9 12 15 18 9" />
-                                                            </svg>
-                                                        </span>
-                                                    </n-popselect>
+                                                        <template #suffix>
+                                                            <n-popselect :options="maxOutputPresets" size="small"
+                                                                trigger="click"
+                                                                :value="maxOutputConfigOf(model).maxOutputTokens"
+                                                                @update:value="(value: number) => {
+                                                                    clearMaxOutputDirection(index)
+                                                                    setMaxOutputTokens(model, String(value))
+                                                                }">
+                                                                <span class="context-preset-trigger">
+                                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                                                        stroke="currentColor" stroke-width="2"
+                                                                        stroke-linecap="round" stroke-linejoin="round">
+                                                                        <polyline points="6 9 12 15 18 9" />
+                                                                    </svg>
+                                                                </span>
+                                                            </n-popselect>
+                                                        </template>
+                                                    </n-input>
                                                 </template>
-                                            </n-input>
+                                                <div>Anthropic 参数：限制单次响应允许生成的最大 token 数。</div>
+                                                <div>Ollama 参数：上报模型的最大输出长度，供 Copilot 发现模型能力。</div>
+                                            </n-tooltip>
                                         </mode-scoped-field>
                                     </n-form-item>
                                 </div>
                                 <div class="model-form-row model-form-row--details">
                                     <n-form-item label="工具" class="model-detail-item model-detail-item--switch">
-                                        <n-switch v-model:value="model.capsTools" size="small" />
+                                        <n-tooltip placement="top">
+                                            <template #trigger>
+                                                <n-switch v-model:value="model.capsTools" size="small" />
+                                            </template>
+                                            Ollama 参数：上报模型是否具有工具调用能力，供 Copilot 发现模型能力。
+                                        </n-tooltip>
                                     </n-form-item>
                                     <n-form-item label="视觉" class="model-detail-item model-detail-item--switch">
-                                        <n-switch v-model:value="model.capsVision" size="small" />
+                                        <n-tooltip placement="top">
+                                            <template #trigger>
+                                                <n-switch v-model:value="model.capsVision" size="small" />
+                                            </template>
+                                            Ollama 参数：上报模型是否具有多模态视觉能力，供 Copilot 发现模型能力。
+                                        </n-tooltip>
                                     </n-form-item>
                                 </div>
                             </div>
@@ -453,9 +523,72 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                         :class="{ 'model-card-secondary--open': expandedRows[index] }">
                         <div class="model-card-secondary__inner">
                             <div class="model-secondary-divider"></div>
-                            <div class="model-secondary-placeholder">
-                                更多配置（待实现）
-                            </div>
+                            <!--
+                                与第一层同构的一行两项：标签在左、控件在右。
+                                本轮先优先保持视觉与阅读方式一致；「思考方式」与「思考预算」
+                                之间更细的语义区分留到下一轮再设计。
+
+                                这里必须自带 n-form：第二层在上方那个 n-form 之外，
+                                label-placement 是通过 form 的 provide 下发的，
+                                缺了外壳两个 form-item 会退回默认的顶部标签。
+                            -->
+                            <n-form :model="model" label-placement="left" :show-feedback="false" size="small"
+                                class="model-form-row model-form-row--details model-secondary-row">
+                                <n-form-item label="思考方式" class="model-detail-item model-secondary-thinking-item">
+                                    <!--
+                                        复用一层的 ModeScopedField：这里同样是「下游已有字段时怎么办」
+                                        的二元组，只是值从思考深度换成了 thinking.type。
+                                    -->
+                                    <mode-scoped-field :modes="ANTHROPIC_THINKING_OVERWRITE_MODES"
+                                        :hints="{
+                                            override: '无论下游是否携带，都使用此处配置的 thinking.type',
+                                            fallback: '下游携带就用它的值，未携带才使用此处配置的 thinking.type',
+                                            passthrough: '下游携带就用它的值，未携带也不添加 thinking 字段',
+                                            delete: '不在此处使用',
+                                        }"
+                                        :mode="anthropicThinkingOf(index).mode"
+                                        @update:mode="(value: OverwriteMode) => setAnthropicThinkingMode(index, value)">
+                                        <n-tooltip placement="top">
+                                            <template #trigger>
+                                                <n-popselect :options="anthropicThinkingTypeOptions" size="small" trigger="click"
+                                                    :value="anthropicThinkingOf(index).type"
+                                                    @update:value="(value: AnthropicThinkingType) => setAnthropicThinkingType(index, value)">
+                                                    <button type="button" class="effort-value">
+                                                        <span class="effort-value__text">{{ anthropicThinkingOf(index).type }}</span>
+                                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                                            stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                                            stroke-linejoin="round" aria-hidden="true">
+                                                            <polyline points="6 9 12 15 18 9" />
+                                                        </svg>
+                                                    </button>
+                                                </n-popselect>
+                                            </template>
+                                            <div>Anthropic 参数：选择思考方式。</div>
+                                            <div><code> - adaptive</code>：由模型自动决定。</div>
+                                            <div><code> - enabled</code>：启用旧版思考方式，需设置思考预算。</div>
+                                            <div><code> - disabled</code>：禁用思考。</div>
+                                        </n-tooltip>
+                                    </mode-scoped-field>
+                                </n-form-item>
+
+                                <n-form-item label="思考预算" class="model-detail-item model-secondary-budget-item">
+                                    <!--
+                                        预算只属于 enabled + budget_tokens 的手动形态。
+                                        adaptive 交由上游自动匹配，disabled 明确关闭思考；两者输入预算
+                                        都会制造无意义且可能与上游约束冲突的配置，故禁用而不隐藏。
+                                        禁用仍显示当前草稿，用户切回 enabled 不会丢值。
+                                    -->
+                                    <n-tooltip placement="top">
+                                        <template #trigger>
+                                            <n-input :value="anthropicThinkingOf(index).budgetTokens"
+                                                placeholder="预算 token 数"
+                                                :disabled="!anthropicThinkingUsesBudget(anthropicThinkingOf(index).type)"
+                                                @update:value="(value: string) => setAnthropicThinkingBudget(index, value)" />
+                                        </template>
+                                        Anthropic 参数：仅在思考方式为 <code>enabled</code> 时使用。输入 <code>-1</code> 表示最大输出长度减 1。
+                                    </n-tooltip>
+                                </n-form-item>
+                            </n-form>
                         </div>
                     </div>
                 </div>
@@ -592,14 +725,29 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
     background: $border-light;
 }
 
-/** 占位容器，等真实配置项进来后替换。 */
-.model-secondary-placeholder {
-    padding: $space-sm;
-    border: 1px dashed $border;
-    border-radius: $radius;
-    color: $text-muted;
-    font-size: 13px;
-    text-align: center;
+/**
+ * 第二层沿用第一层的左右标签 + 控件形式。
+ *
+ * 两项等宽；标签宽度沿用 n-form-item 的既有规则，因而展开前后视觉语言一致。
+ * 本轮刻意不突出 Anthropic 协议归属，先保证结构统一；更细的语义区分留到后续设计。
+ */
+.model-secondary-row {
+    .model-secondary-thinking-item,
+    .model-secondary-budget-item {
+        flex: 1 1 0;
+        min-width: 0;
+        margin-bottom: 0 !important;
+
+        :deep(.n-form-item-blank) {
+            flex: 1;
+            min-width: 0;
+        }
+    }
+}
+
+/** 二层 ModeScopedField 的值仍是一层同款弹出选择按钮。 */
+.model-secondary-thinking-item :deep(.mode-scoped-field) {
+    min-width: 0;
 }
 
 /**
@@ -706,10 +854,11 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
         letter-spacing: 0.1em;
         text-transform: uppercase;
         color: $text-muted;
-        width: 52px;
+        width: 50px;
         flex-shrink: 0;
         padding-right: 8px;
         text-align: left;
+        white-space: nowrap;
     }
 
     :deep(.n-form-item-blank) {
@@ -727,10 +876,12 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
         letter-spacing: 0.1em;
         text-transform: uppercase;
         color: $text-muted;
-        width: 52px;
+        // 三字与四字字段都占固定的同一标签列，保证右侧选框/输入框起点对齐。
+        width: 50px;
         flex-shrink: 0;
         padding-right: 6px;
         text-align: left;
+        white-space: nowrap;
     }
 
     :deep(.n-form-item-blank) {
@@ -937,17 +1088,12 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
 
 
 /**
- * Ollama 组的标签比基础组窄。
+ * Ollama 组的开关项需要独立处理标签宽度，详情项已统一为 60px。
  *
- * 「最大输出」四个字在 52px 内会被挤压换行，而这一组只占中部三分之一宽度，
- * 输入框本就吃紧；标签放宽到 60px 并允许不换行，代价是与左侧的标签列不再严格
- * 对齐 —— 但两组之间有分隔线，视觉上本就是两个独立的对齐域。
+ * 「工具 / 视觉」若继承详情项的 60px 标签列，「工具」二字右侧会多出空白，
+ * 看起来像没对齐而不是居中，所以开关项把标签宽度改回 `auto`。
  */
 .model-capability-group--ollama {
-    .model-detail-item :deep(.n-form-item-label) {
-        width: 60px;
-        white-space: nowrap;
-    }
 
     /**
      * 工具 / 视觉两个开关平分该组横向空间，并各自在自己那一半里居中。

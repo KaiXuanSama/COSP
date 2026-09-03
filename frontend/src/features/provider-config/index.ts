@@ -50,6 +50,16 @@ export {
 export { resolvePullModelsErrorMessage } from './errorMessage'
 
 export {
+  ANTHROPIC_THINKING_OVERWRITE_MODES,
+  ANTHROPIC_THINKING_TYPE_OPTIONS,
+  DEFAULT_ANTHROPIC_THINKING_CONFIG,
+  anthropicThinkingUsesBudget,
+  type AnthropicThinkingConfig,
+  type AnthropicThinkingOverwriteMode,
+  type AnthropicThinkingType,
+} from './anthropicThinking'
+
+export {
   OVERWRITE_MODE_LABELS,
   buildOverwriteModeHints,
   canonicalizeOverwriteMode,
