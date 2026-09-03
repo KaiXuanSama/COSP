@@ -101,7 +101,7 @@ function setEffort(model: EditableModel, effort: string) {
  *
  * <h2>为何不用 useWheelStep</h2>
  * 那个是给**数值**栏用的（预设按大小吸附，反馈是短暂的 CSS 位移）。
- * 档位是枚丙而非数值，且它的值段是**只读按钮**，因此可以用
+ * 档位是枚举而非数值，且它的值段是**只读按钮**，因此可以用
  * `SlidingValue` 做完整的进出过渡 —— 方向也因此可以长期存在，
  * 它描述的是「当前显示的这个值从哪个方向来」，而不是「刚刚滚了一下」。
  */
@@ -115,6 +115,25 @@ const effortDirections = ref<Record<number, StepDirection | null>>({})
  */
 const contextWheel = useWheelStep(contextPresetValues, NUDGE_MS)
 const maxOutputWheel = useWheelStep(maxOutputPresetValues, NUDGE_MS)
+
+/**
+ * 哪些模型卡片已展开第二层，按下标记。
+ *
+ * <h2>为何不存在 model 对象里</h2>
+ * 展开与否是纯界面状态，而 `models` 里的对象会被提交给后端 ——
+ * 挂在那上面会多一个需要在序列化时剔除的字段。
+ *
+ * <p>用对象而非 `Set`：模板里直接读 `expandedRows[index]`，
+ * Vue 的深响应式会跟踪属性访问；`Set` 需要 `.has()`，模板里更啰唷。
+ *
+ * <p>模型列表被拉取整体替换时这份状态不跟着重置（下标复用）——
+ * 那是可接受的：展开的是第几行而非哪个模型，与滚轮方向那两份状态同一口径。
+ */
+const expandedRows = ref<Record<number, boolean>>({})
+
+function toggleRow(index: number) {
+    expandedRows.value[index] = !expandedRows.value[index]
+}
 
 /**
  * 滚轮步进思考深度档位。
@@ -420,9 +439,28 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                             </div>
                         </div>
                     </n-form>
+
+                    <!--
+                        第二层在中间列内部，与主体上下相邻 —— 左右两侧的复选框与操作按钮
+                        因此能被拉伸后的卡片高度撑满（它们是 model-card-inner 的 flex 子项，
+                        默认 align-items: stretch）。
+
+                        默认收纳，靠 grid-template-rows 从 0fr 过渡到 1fr 展开；
+                        元素始终在文档流里（不用 v-if / v-show），否则过渡起点会丢失。
+                        见样式里对「为何不用 height」的说明。
+                    -->
+                    <div class="model-card-secondary"
+                        :class="{ 'model-card-secondary--open': expandedRows[index] }">
+                        <div class="model-card-secondary__inner">
+                            <div class="model-secondary-divider"></div>
+                            <div class="model-secondary-placeholder">
+                                更多配置（待实现）
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 <div class="model-divider"></div>
-                <div class="model-remove-col">
+                <div class="model-action-col">
                     <n-button tertiary circle size="small" @click="emit('remove-model', index)" class="model-remove-btn"
                         title="删除此模型">
                         <template #icon>
@@ -431,6 +469,21 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                                 <polyline points="3 6 5 6 21 6" />
                                 <path
                                     d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                            </svg>
+                        </template>
+                    </n-button>
+                    <!--
+                        展开第二层。图标是静态的，靠 CSS 旋转表达状态 ——
+                        换图标会让过渡无从下手（两个不同的 path 无法插值）。
+                    -->
+                    <n-button tertiary circle size="small" class="model-expand-btn"
+                        :class="{ 'model-expand-btn--open': expandedRows[index] }"
+                        :title="expandedRows[index] ? '收起更多配置' : '展开更多配置'"
+                        :aria-expanded="!!expandedRows[index]" @click="toggleRow(index)">
+                        <template #icon>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <polyline points="6 9 12 15 18 9" />
                             </svg>
                         </template>
                     </n-button>
@@ -483,6 +536,79 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
     gap: $space-sm;
 }
 
+/**
+ * 卡片第二层，默认收纳。
+ *
+ * <h2>为何用 grid-template-rows 而不是 height</h2>
+ * `height: auto` 不是一个可插值的值，所以 `transition: height` 在
+ * `0 → auto` 之间不会播放任何动画 —— 内容会直接跳出来。
+ *
+ * <p>常见的绕法是写死一个 `max-height`，但那要求预先知道内容高度：写小了会截断、
+ * 写大了收起时前半段过渡是空跑（从一个不存在的高度开始降），手感变成「延迟一下才动」。
+ * 第二层将来要放多少配置项还不确定，写死高度必然会踩这个坑。
+ *
+ * <p>`grid-template-rows: 0fr → 1fr` 没有这个问题：`fr` 是可插值的，而 `1fr`
+ * 由内容自然高度决定。代价是需要一层额外的 `__inner` 承担 `overflow: hidden`
+ * （grid 轨道本身不裁剪内容）。
+ *
+ * <p>不用 `v-show`：那会在展开瞬间把 `display` 从 `none` 切回来，过渡起点丢失。
+ * 收纳态靠 `0fr` + `overflow: hidden` 实现，元素始终在文档流里。
+ */
+.model-card-secondary {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+
+    &--open {
+        grid-template-rows: 1fr;
+    }
+}
+
+/**
+ * 裁剪层。
+ *
+ * `min-height: 0` 是必需的：grid 子项的默认 `min-height: auto` 会以内容高度为下界，
+ * 那样 `0fr` 压根压不下去 —— 收纳态会露出全部内容。
+ */
+.model-card-secondary__inner {
+    min-height: 0;
+    overflow: hidden;
+}
+
+/**
+ * 一层与二层之间的视觉分割线。
+ *
+ * 放在裁剪层内部而非外层：外层在收纳态必须能压到 0，
+ * 任何在那上面的边框或间距都会留下一条永久可见的缝。
+ * 写在这里它会跟着内容一起被裁掉，展开时才浮现。
+ *
+ * <p>用 $border-light 与左右两条 model-divider 保持同一视觉层级：它们都是
+ * 同一张卡片内的分隔，而非卡片边界。横线面积大但高度只有 1px，
+ * 即使比 $border 浅也足够作为层次提示，不会把两层看成两张独立卡片。
+ */
+.model-secondary-divider {
+    height: 1px;
+    margin: $space-sm 0;
+    background: $border-light;
+}
+
+/** 占位容器，等真实配置项进来后替换。 */
+.model-secondary-placeholder {
+    padding: $space-sm;
+    border: 1px dashed $border;
+    border-radius: $radius;
+    color: $text-muted;
+    font-size: 13px;
+    text-align: center;
+}
+
+/**
+ * 左侧启用复选框列。
+ *
+ * 第二层展开后本列会被拉伸（flex 默认 align-items: stretch），
+ * 复选框作为整张模型卡片的启用开关，应当在拉伸后的高度里垂直居中 ——
+ * 它不属于某一层，而是作用于两层整体。
+ */
 .model-checkbox-col {
     display: flex;
     align-items: center;
@@ -504,10 +630,21 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
     min-width: 0;
 }
 
-.model-remove-col {
+/**
+ * 右侧操作列：删除 + 展开第二层。
+ *
+ * 本列会被第二层拉伸（flex 默认 align-items: stretch），两个按钮作为整张卡片的
+ * 操作（删除、展开），应当在拉伸后的完整高度里垂直居中。
+ *
+ * <p>竖排按钮自身的 4px 间距不变；只把列的主轴分配从 `flex-start` 改成 `center`，
+ * 因而收纳态仍然自然居中、展开态也不会偏在第一层顶部。
+ */
+.model-action-col {
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 4px;
     flex-shrink: 0;
     width: 28px;
 }
@@ -780,13 +917,21 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
 }
 
 /**
- * 尊重系统的「减少动态效果」偏好 —— 这个动画纯装饰，关掉不影响功能。
+ * 尊重系统的「减少动态效果」偏好 —— 这些动画纯装饰，关掉不影响功能。
+ *
+ * <p>第二层的展开只去掉过渡，不去掉 `grid-template-rows` 本身 ——
+ * 那是收纳态成立的机制，去掉会让第二层永远展开。
  */
 @media (prefers-reduced-motion: reduce) {
 
     .numeric-nudge--from-below :deep(.n-input__input-el),
     .numeric-nudge--from-above :deep(.n-input__input-el) {
         animation: none;
+    }
+
+    .model-card-secondary,
+    .model-expand-btn :deep(svg) {
+        transition: none;
     }
 }
 
@@ -859,6 +1004,34 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
 
     &:hover {
         color: $danger !important;
+    }
+}
+
+/**
+ * 展开第二层的按钮。
+ *
+ * 图标是静态的箭头，靠旋转表达开合状态 —— 换成两个不同的图标会让过渡无从下手
+ * （两条不同的 path 无法插值），而旋转是连续的。
+ *
+ * <p>hover 用 accent 而非 danger：它与删除按钮同列，颜色是唯一能一眼区分
+ * 「安全操作」与「破坏性操作」的线索。
+ */
+.model-expand-btn {
+    flex-shrink: 0;
+    color: $text-muted !important;
+
+    &:hover {
+        color: $accent !important;
+    }
+
+    // 旋转作用在 svg 上而非按钮本身：按钮带 Naive UI 的波纹与背景，
+    // 整体旋转会让那个圆形背景也跟着转（视觉上看不出，但 hover 区域会歪）。
+    :deep(svg) {
+        transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    &--open :deep(svg) {
+        transform: rotate(180deg);
     }
 }
 
