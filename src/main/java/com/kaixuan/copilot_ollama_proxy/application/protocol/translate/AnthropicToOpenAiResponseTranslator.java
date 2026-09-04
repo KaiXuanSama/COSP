@@ -129,15 +129,22 @@ public class AnthropicToOpenAiResponseTranslator implements ProtocolTranslator {
      * @param upstreamEvents 该轮完整的上游事件列表
      * @param upstreamModel  上游模型名，作为 {@code message_start} 到达前的占位值
      * @param includeUsage   与出站保持一致，否则日志里的帧数与实际下发不符
+     * @return 翻译结果与逐事件产帧数，后者供日志页做两栏对齐
      */
-    public List<String> translateChunksForLog(List<String> upstreamEvents, String upstreamModel,
-                                              boolean includeUsage) {
+    public TranslatedChunkLog translateChunksForLog(List<String> upstreamEvents, String upstreamModel,
+                                                    boolean includeUsage) {
         A2OStreamState state = new A2OStreamState(placeholderId(), upstreamModel, includeUsage);
         List<String> translated = new ArrayList<>();
+        List<Integer> frameCounts = new ArrayList<>(upstreamEvents.size());
         for (String event : upstreamEvents) {
-            translated.addAll(streamTranslator.translateEvent(event, state));
+            List<String> frames = streamTranslator.translateEvent(event, state);
+            // 逐事件记下产帧数。这是两栏对齐的唯一依据 ——
+            // 事后从两个数组反推不出「第 5 帧来自第 9 个事件」。
+            frameCounts.add(frames.size());
+            translated.addAll(frames);
         }
+        // 收尾帧不计入 frameCounts：它们由流结束触发，不属于任何上游事件。
         translated.addAll(streamTranslator.finalizeStream(state));
-        return translated;
+        return new TranslatedChunkLog(translated, frameCounts);
     }
 }

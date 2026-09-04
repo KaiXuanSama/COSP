@@ -40,6 +40,8 @@ const chunksModal = ref({
   chunks: [] as string[],
   /** 上游原始事件；仅跨协议翻译时存在，null 表示直连。 */
   upstreamChunks: null as string[] | null,
+  /** 逐事件产帧数，两栗对齐的唯一依据。 */
+  frameCounts: null as number[] | null,
   // 解析规则跟**下游**协议：落库的 chunk 是下游实际收到的形态。
   downstreamProtocol: 'OPENAI' as DetailItem['downstream_protocol'],
 })
@@ -279,6 +281,7 @@ function openChunksModal(rawChunks: string | null) {
     show: true,
     chunks: views.downstream,
     upstreamChunks: views.upstream,
+    frameCounts: views.frameCounts,
     downstreamProtocol: props.detail.downstream_protocol,
   }
 }
@@ -447,6 +450,7 @@ onUnmounted(() => {
       :chunks="chunksModal.chunks"
       :downstream-protocol="chunksModal.downstreamProtocol"
       :upstream-chunks="chunksModal.upstreamChunks"
+      :frame-counts="chunksModal.frameCounts"
     />
 
     <!--

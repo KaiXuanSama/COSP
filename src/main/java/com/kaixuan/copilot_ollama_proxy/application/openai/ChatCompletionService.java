@@ -9,6 +9,7 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.Anthropic
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.OpenAiToAnthropicRequestTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
+import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.provider.DownstreamLogView;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
@@ -152,10 +153,14 @@ public class ChatCompletionService {
             // 落库视图：下游协议记 OPENAI，且 chunk 记翻译后的形态。
             // 流式必须重译而不能只记上游事件：帧数不对等（零帧/一帧/多帧），
             // 从上游事件反推不出下游到底收到了几帧、长什么样。
+            // frameCounts 让日志页能把两栏按事件对齐 —— 零帧事件右侧留占位。
             DownstreamLogView logView = new DownstreamLogView(
                     DOWNSTREAM_PROTOCOL.name(),
-                    chunks -> a2oTranslator.translateChunksForLog(
-                            chunks, route.model(), translated.context().includeUsage()));
+                    chunks -> {
+                        var log = a2oTranslator.translateChunksForLog(
+                                chunks, route.model(), translated.context().includeUsage());
+                        return ChunkLogPayload.translated(log.translated(), chunks, log.frameCounts());
+                    });
             Flux<String> upstream = genericAnthropicChatService.messagesStream(
                     translated.body(), route, downstreamHeaders, requestId, logView);
             return a2oTranslator.translateStream(upstream, route.model(), translated.context());

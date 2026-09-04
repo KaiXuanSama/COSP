@@ -27,23 +27,32 @@ import java.util.List;
  * 但排查翻译问题时往往正是要看这些碎片如何被合并，折叠会把最有用的部分丢掉。
  * 保留任务按条数裁剪且行数上限可配，本地 SQLite 承受得住。
  *
- * @param translated 下游实际收到的 chunk
- * @param upstream   上游原始事件；{@code null} 表示直连（无翻译，两份相同）
+ * <h2>frameCounts 是两栏对齐的唯一依据</h2>
+ * 帧数不对等是常态（实测 26 个上游事件 → 20 个下游 chunk）。
+ * {@code frameCounts[i]} 是第 i 个上游事件产出的下游帧数，前端据此让零帧事件
+ * 右侧留占位，两栏头部因此对齐。事后从两个数组反推不出这个关系。
+ *
+ * @param translated  下游实际收到的 chunk
+ * @param upstream    上游原始事件；{@code null} 表示直连（无翻译，两份相同）
+ * @param frameCounts 逐上游事件的产帧数，长度等于 {@code upstream}；直连时为 null
  */
-public record ChunkLogPayload(List<String> translated, List<String> upstream) {
+public record ChunkLogPayload(List<String> translated, List<String> upstream,
+                              List<Integer> frameCounts) {
 
     /** JSON 对象形态里的键名，前端解析需与此一致。 */
     public static final String KEY_TRANSLATED = "translated";
     public static final String KEY_UPSTREAM = "upstream";
+    public static final String KEY_FRAME_COUNTS = "frameCounts";
 
     /** 直连：只有一份 chunk，落库为裸数组。 */
     public static ChunkLogPayload direct(List<String> chunks) {
-        return new ChunkLogPayload(chunks, null);
+        return new ChunkLogPayload(chunks, null, null);
     }
 
-    /** 跨协议：两份都留，落库为带标记的对象。 */
-    public static ChunkLogPayload translated(List<String> translated, List<String> upstream) {
-        return new ChunkLogPayload(translated, upstream);
+    /** 跨协议：两份加对齐信息都留，落库为带标记的对象。 */
+    public static ChunkLogPayload translated(List<String> translated, List<String> upstream,
+                                             List<Integer> frameCounts) {
+        return new ChunkLogPayload(translated, upstream, frameCounts);
     }
 
     /** 是否需要落成对象形态。 */
@@ -63,6 +72,7 @@ public record ChunkLogPayload(List<String> translated, List<String> upstream) {
         }
         return java.util.Map.of(
                 KEY_TRANSLATED, translated == null ? List.of() : translated,
-                KEY_UPSTREAM, upstream);
+                KEY_UPSTREAM, upstream,
+                KEY_FRAME_COUNTS, frameCounts == null ? List.<Integer>of() : frameCounts);
     }
 }

@@ -693,7 +693,7 @@ class AnthropicToOpenAiResponseTranslatorTests {
                     """);
 
             List<String> logged = translator.translateChunksForLog(
-                    upstreamEvents, UPSTREAM_MODEL, false);
+                    upstreamEvents, UPSTREAM_MODEL, false).translated();
 
             // 记的是 OpenAI 形态。
             assertThat(logged).allSatisfy(chunk ->
@@ -717,10 +717,66 @@ class AnthropicToOpenAiResponseTranslatorTests {
                     {"type":"message_delta","delta":{"stop_reason":"end_turn"}}
                     """);
 
-            int first = translator.translateChunksForLog(upstreamEvents, UPSTREAM_MODEL, false).size();
-            int second = translator.translateChunksForLog(upstreamEvents, UPSTREAM_MODEL, false).size();
+            int first = translator.translateChunksForLog(upstreamEvents, UPSTREAM_MODEL, false)
+                    .translated().size();
+            int second = translator.translateChunksForLog(upstreamEvents, UPSTREAM_MODEL, false)
+                    .translated().size();
 
             assertThat(second).isEqualTo(first);
+        }
+
+        /**
+         * {@code frameCounts} 与上游事件<strong>逐项等长</strong>，是日志页两栏对齐的唯一依据。
+         *
+         * <p>事后从两个数组反推不出映射关系：帧数不对等（零帧/一帧/多帧），
+         * 只有翻译当时的循环知道每个事件产出了几帧。
+         */
+        @Test
+        void frameCountsHasOneEntryPerUpstreamEvent() {
+            List<String> upstreamEvents = List.of(
+                    """
+                    {"type":"message_start","message":{"id":"msg_1","model":"deepseek-v4-flash"}}
+                    """,
+                    """
+                    {"type":"content_block_start","index":0,"content_block":{"type":"text"}}
+                    """,
+                    """
+                    {"type":"ping"}
+                    """,
+                    """
+                    {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"好"}}
+                    """,
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"end_turn"}}
+                    """);
+
+            TranslatedChunkLog log = translator.translateChunksForLog(
+                    upstreamEvents, UPSTREAM_MODEL, false);
+
+            assertThat(log.frameCounts()).hasSameSizeAs(upstreamEvents);
+            // 不产帧的事件记 0，而不是被跳过 —— 否则下标就错位了。
+            assertThat(log.frameCounts().get(1)).isZero();
+            assertThat(log.frameCounts().get(2)).isZero();
+            // 收尾帧不计入 frameCounts，差额即收尾帧数。
+            int mapped = log.frameCounts().stream().mapToInt(Integer::intValue).sum();
+            assertThat(log.translated()).hasSizeGreaterThan(mapped);
+        }
+
+        /** 零帧不能被折叠：全是不产帧的事件时，{@code frameCounts} 仍要逐项记 0。 */
+        @Test
+        void zeroFrameEventsStillOccupyASlot() {
+            List<String> upstreamEvents = List.of(
+                    """
+                    {"type":"ping"}
+                    """,
+                    """
+                    {"type":"ping"}
+                    """);
+
+            TranslatedChunkLog log = translator.translateChunksForLog(
+                    upstreamEvents, UPSTREAM_MODEL, false);
+
+            assertThat(log.frameCounts()).containsExactly(0, 0);
         }
     }
 

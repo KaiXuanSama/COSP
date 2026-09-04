@@ -64,7 +64,7 @@ class ApiCallLogChunkPayloadTests {
         assertThat(stored.get(1).asText()).isEqualTo("[DONE]");
     }
 
-    /** 跨协议：两份都留，供日志页做上下游对照。 */
+    /** 跨协议：两份加对齐信息都留，供日志页做上下游对照。 */
     @Test
     void translatedCallStoresBothViews() throws Exception {
         List<String> upstream = List.of(
@@ -74,7 +74,7 @@ class ApiCallLogChunkPayloadTests {
 
         Long id = repository.saveStream("deepseek", "model-x", "OPENAI", "ANTHROPIC",
                 Map.of(), Map.of(), Map.of(), 200,
-                ChunkLogPayload.translated(translated, upstream), 100L);
+                ChunkLogPayload.translated(translated, upstream, List.of(1, 1)), 100L);
 
         JsonNode stored = readChunks(id);
 
@@ -88,12 +88,43 @@ class ApiCallLogChunkPayloadTests {
                 .contains("chat.completion.chunk");
     }
 
+    /**
+     * {@code frameCounts} 是两栗对齐的唯一依据，必须与上游事件等长。
+     *
+     * <p>零帧事件（{@code content_block_start} / {@code ping} /
+     * {@code signature_delta}）在这里记 0，前端据此给右侧留占位。
+     */
+    @Test
+    void frameCountsAlignsWithUpstreamEvents() throws Exception {
+        List<String> upstream = List.of(
+                "{\"type\":\"message_start\"}",
+                "{\"type\":\"content_block_start\"}",
+                "{\"type\":\"ping\"}",
+                "{\"type\":\"content_block_delta\"}");
+        List<Integer> frameCounts = List.of(1, 0, 0, 1);
+
+        Long id = repository.saveStream("deepseek", "model-x", "OPENAI", "ANTHROPIC",
+                Map.of(), Map.of(), Map.of(), 200,
+                ChunkLogPayload.translated(List.of("a", "b", "[DONE]"), upstream, frameCounts),
+                100L);
+
+        JsonNode stored = readChunks(id);
+        JsonNode counts = stored.get(ChunkLogPayload.KEY_FRAME_COUNTS);
+
+        assertThat(counts).hasSize(upstream.size());
+        assertThat(counts.get(0).asInt()).isEqualTo(1);
+        assertThat(counts.get(1).asInt()).isZero();
+        assertThat(counts.get(2).asInt()).isZero();
+        assertThat(counts.get(3).asInt()).isEqualTo(1);
+    }
+
     /** 错误路径同样支持两形，否则失败调用会丢掉上游证据。 */
     @Test
     void errorPathAlsoStoresBothViews() throws Exception {
         Long id = repository.saveStreamWithError("deepseek", "model-x", "OPENAI", "ANTHROPIC",
                 Map.of(), Map.of(), Map.of(), 200,
-                ChunkLogPayload.translated(List.of("{\"x\":1}"), List.of("{\"type\":\"ping\"}")),
+                ChunkLogPayload.translated(List.of("{\"x\":1}"), List.of("{\"type\":\"ping\"}"),
+                        List.of(0)),
                 Map.of(), 500, "boom", 100L);
 
         JsonNode stored = readChunks(id);
@@ -109,10 +140,12 @@ class ApiCallLogChunkPayloadTests {
     void trimClearsBothViewsBecauseTheyShareOneColumn() {
         repository.saveStream("deepseek", "model-x", "OPENAI", "ANTHROPIC",
                 Map.of(), Map.of(), Map.of(), 200,
-                ChunkLogPayload.translated(List.of("{\"x\":1}"), List.of("{\"y\":2}")), 100L);
+                ChunkLogPayload.translated(List.of("{\"x\":1}"), List.of("{\"y\":2}"), List.of(1)),
+                100L);
         repository.saveStream("deepseek", "model-x", "OPENAI", "ANTHROPIC",
                 Map.of(), Map.of(), Map.of(), 200,
-                ChunkLogPayload.translated(List.of("{\"x\":2}"), List.of("{\"y\":3}")), 100L);
+                ChunkLogPayload.translated(List.of("{\"x\":2}"), List.of("{\"y\":3}"), List.of(1)),
+                100L);
 
         int trimmed = repository.trimPayloadToLatest(1);
 

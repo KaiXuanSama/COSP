@@ -24,12 +24,12 @@ import java.util.function.Function;
  * 也上移，代价远大于注入一个改写器。
  *
  * @param downstreamProtocol 下游协议标识，写入 {@code api_call_log.downstream_protocol}
- * @param chunkRewriter      把上游原生 chunk 列表改写成下游实际收到的形态；
- *                           {@code null} 表示不改写（直连路线）
+ * @param chunkRewriter      把上游原生 chunk 列表改写成下游实际收到的形态，并给出
+ *                           逐事件产帧数；{@code null} 表示不改写（直连路线）
  */
 public record DownstreamLogView(
         String downstreamProtocol,
-        Function<List<String>, List<String>> chunkRewriter) {
+        Function<List<String>, ChunkLogPayload> chunkRewriter) {
 
     /**
      * 直连视图：下游协议与上游一致，chunk 不改写。
@@ -43,7 +43,7 @@ public record DownstreamLogView(
     /**
      * 产出落库用的 chunk 载荷。
      *
-     * <p>直连时只有一份（裸数组）；跨协议时两份都留（对象形态），
+     * <p>直连时只有一份（裸数组）；跨协议时两份加对齐信息都留（对象形态），
      * 因为排查「客户端为何解析失败」需要同时看上游发了什么与客户端收到了什么。
      *
      * <p>改写器抛异常时退回直连形态：日志是观测手段，不该因为改写失败而丢掉
@@ -54,11 +54,8 @@ public record DownstreamLogView(
             return ChunkLogPayload.direct(upstreamChunks);
         }
         try {
-            List<String> rewritten = chunkRewriter.apply(upstreamChunks);
-            if (rewritten == null) {
-                return ChunkLogPayload.direct(upstreamChunks);
-            }
-            return ChunkLogPayload.translated(rewritten, upstreamChunks);
+            ChunkLogPayload rewritten = chunkRewriter.apply(upstreamChunks);
+            return rewritten == null ? ChunkLogPayload.direct(upstreamChunks) : rewritten;
         } catch (Exception exception) {
             return ChunkLogPayload.direct(upstreamChunks);
         }
