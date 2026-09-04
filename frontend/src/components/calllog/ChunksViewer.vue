@@ -3,8 +3,14 @@
  * ChunksViewer — 流式响应 chunks 查看器模态框。
  *
  * 支持两种显示模式：
- * - 块显示: 每个 chunk 以卡片形式逐条展示
+ * - 块显示: 每个 chunk 以卡片形式逐条展示；跨协议时并排两列对照
  * - 规整显示: 将 chunks 聚合为对话片段（思考过程 / 工具调用 / 正文回复）
+ *
+ * <h2>为何只有块显示并排，规整显示不并排</h2>
+ * 并排的价值在于看<strong>帧数不对等</strong>（实测 26 个上游事件 → 20 个下游 chunk），
+ * 而规整显示展示的是<strong>语义内容</strong> —— 翻译不应改变语义，
+ * 两侧规整后本应完全一致。并排两份相同内容没有信息量，反而挤占宽度；
+ * 真正有价值的是一致性提示（不一致就是翻译 bug）。
  */
 import { ref, computed, watch } from 'vue'
 import { NModal, NRadioGroup, NRadio, NScrollbar, NTooltip, useMessage } from 'naive-ui'
@@ -12,6 +18,7 @@ import { marked } from 'marked'
 import JsonNode from './JsonNode.vue'
 import { copyToClipboard } from '@/utils/clipboard'
 import { aggregateChunks, type ChunkSegment, type WireProtocol } from './chunkAggregation'
+import { upstreamProtocolOf } from './chunkViews'
 
 const props = defineProps<{
   show: boolean
@@ -23,6 +30,12 @@ const props = defineProps<{
    * 跨协议翻译时它已被译成下游协议的形状（见 `aggregateChunks` 的注释）。
    */
   downstreamProtocol: WireProtocol
+  /**
+   * 上游原始事件；仅跨协议翻译时存在。
+   *
+   * `null` 表示直连 —— 两侧协议相同，没有可对照的第二份。
+   */
+  upstreamChunks?: string[] | null
 }>()
 
 const emit = defineEmits<{
@@ -30,6 +43,14 @@ const emit = defineEmits<{
 }>()
 
 const displayMode = ref<'block' | 'clean'>('clean')
+
+/** 是否存在可对照的上游视图（跨协议翻译）。 */
+const hasComparison = computed(() =>
+  Array.isArray(props.upstreamChunks) && props.upstreamChunks.length > 0,
+)
+
+/** 上游那一侧的解析协议，用于规整视图的一致性校验。 */
+const upstreamProtocol = computed(() => upstreamProtocolOf(props.downstreamProtocol))
 
 /**
  * 块显示模式的分批渲染。
@@ -48,21 +69,41 @@ const visibleBlockCount = ref(BLOCK_PAGE_SIZE)
  * 解析在此处一次完成并缓存，避免模板中 v-if 判断与传值各调一次 parseChunk
  * 导致每次重渲染都重复解析 JSON。
  */
-const visibleBlocks = computed(() =>
-  props.chunks.slice(0, visibleBlockCount.value).map((chunk, index) => {
+const visibleBlocks = computed(() => toBlocks(props.chunks))
+
+/** 对照视图里上游那一侧的块。 */
+const visibleUpstreamBlocks = computed(() => toBlocks(props.upstreamChunks ?? []))
+
+/**
+ * 分批截取并预解析。
+ *
+ * 两侧共用同一个 `visibleBlockCount`：分别计数会让「展示更多」在两栏之间
+ * 产生错位，而对照的前提是两栏进度一致。
+ */
+function toBlocks(source: string[]) {
+  return source.slice(0, visibleBlockCount.value).map((chunk, index) => {
     const { isJson, parsed } = parseChunk(chunk)
     return { chunk, index, isJson, parsed }
-  }),
+  })
+}
+
+/**
+ * 是否还有未渲染的块。
+ *
+ * 取两侧的较大值：翻译路线下上游事件通常更多，只看下游会让上游那栏
+ * 提前显示「到底了」而实际还有内容。
+ */
+const totalBlockCount = computed(() =>
+  Math.max(props.chunks.length, props.upstreamChunks?.length ?? 0),
 )
 
-/** 是否还有未渲染的块。 */
-const hasMoreBlocks = computed(() => visibleBlockCount.value < props.chunks.length)
+const hasMoreBlocks = computed(() => visibleBlockCount.value < totalBlockCount.value)
 
 /** 追加渲染下一批块。 */
 function showMoreBlocks() {
   visibleBlockCount.value = Math.min(
     visibleBlockCount.value + BLOCK_PAGE_SIZE,
-    props.chunks.length,
+    totalBlockCount.value,
   )
 }
 
@@ -73,7 +114,7 @@ function showMoreBlocks() {
  * 否则会残留上次展开的数量，等于没有分批效果。
  */
 watch(
-  () => [props.show, props.chunks] as const,
+  () => [props.show, props.chunks, props.upstreamChunks] as const,
   () => {
     visibleBlockCount.value = BLOCK_PAGE_SIZE
   },
@@ -100,9 +141,11 @@ async function handleCopy(text: string, key: string) {
 
 /**
  * 块显示模式：复制当前 chunk 的原始字符串（[DONE] 也按原文复制）
+ *
+ * @param side 对照视图下区分两栏，避免两侧同下标的按钮共用「已复制」状态
  */
-function copyBlockChunk(chunk: string, index: number) {
-  return () => handleCopy(chunk, `block-${index}`)
+function copyBlockChunk(chunk: string, index: number, side: 'down' | 'up' = 'down') {
+  return () => handleCopy(chunk, `block-${side}-${index}`)
 }
 
 /**
@@ -117,6 +160,36 @@ function copySegment(seg: ChunkSegment, index: number) {
 }
 
 const segments = computed(() => aggregateChunks(props.chunks, props.downstreamProtocol))
+
+/** 上游侧规整结果，仅用于一致性校验，不单独展示。 */
+const upstreamSegments = computed(() =>
+  hasComparison.value
+    ? aggregateChunks(props.upstreamChunks ?? [], upstreamProtocol.value)
+    : [],
+)
+
+/**
+ * 两侧规整后的语义是否一致。
+ *
+ * 翻译不应改变语义，因此这里不一致就说明翻译丢了或改了内容 —— 这比并排展示
+ * 两份相同的内容更能直接回答「翻译有没有问题」。
+ *
+ * <p>只比较文本，不比较工具调用的 JSON：`arguments` 在两侧的序列化形态本就不同
+ * （Anthropic 是对象、OpenAI 是字符串），逐字比较必然不等。
+ */
+const semanticConsistency = computed(() => {
+  if (!hasComparison.value) return null
+  const left = textOf(upstreamSegments.value)
+  const right = textOf(segments.value)
+  return left === right ? 'match' : 'differ'
+})
+
+function textOf(list: ChunkSegment[]): string {
+  return list
+    .filter(seg => seg.type !== 'tool_calls')
+    .map(seg => `${seg.type}:${seg.text}`)
+    .join('\n')
+}
 
 /**
  * 渲染 Markdown
@@ -150,7 +223,7 @@ function parseChunk(chunk: string): { parsed: unknown; isJson: boolean } {
     :show="show"
     preset="card"
     title="流式响应"
-    :style="{ maxWidth: '720px', width: '90vw' }"
+    :style="{ maxWidth: hasComparison && displayMode === 'block' ? '1180px' : '720px', width: '90vw' }"
     closable
     :mask-closable="true"
     @update:show="(val: boolean) => emit('update:show', val)"
@@ -162,13 +235,106 @@ function parseChunk(chunk: string): { parsed: unknown; isJson: boolean } {
       </n-radio-group>
     </template>
 
-    <!-- 块显示模式：分批渲染，避免 chunk 过多时一次性渲染造成卡顿 -->
+    <!--
+      块显示模式：分批渲染，避免 chunk 过多时一次性渲染造成卡顿。
+      跨协议翻译时并排两列，因为这里的核心价值是看帧数不对等。
+    -->
     <div v-if="displayMode === 'block'" class="chunks-block">
-      <n-scrollbar style="max-height: 65vh">
+      <!-- 并排对照：左上游、右下游 -->
+      <div v-if="hasComparison" class="chunks-compare">
+        <div class="chunks-compare-head">
+          <div class="chunks-compare-col-title">
+            <span class="protocol-tag protocol-tag--upstream">{{ upstreamProtocol }}</span>
+            <span class="chunks-compare-hint">上游原始事件 · {{ upstreamChunks?.length ?? 0 }} 条</span>
+          </div>
+          <div class="chunks-compare-col-title">
+            <span class="protocol-tag protocol-tag--downstream">{{ downstreamProtocol }}</span>
+            <span class="chunks-compare-hint">下游实际收到 · {{ chunks.length }} 条</span>
+          </div>
+        </div>
+        <n-scrollbar style="max-height: 62vh">
+          <div class="chunks-compare-body">
+            <!-- 两栏各自独立成列，不做逐帧对齐：帧数不对等是常态，
+                 强行对齐需要后端给出映射关系，当前先让两侧可比对总量与顺序。 -->
+            <div class="chunks-compare-col">
+              <div v-for="block in visibleUpstreamBlocks" :key="`up-${block.index}`" class="chunk-item">
+                <div class="chunk-header">
+                  <span class="chunk-index">#{{ block.index + 1 }}</span>
+                  <button
+                    class="copy-btn"
+                    type="button"
+                    aria-label="复制此上游事件内容"
+                    @click="copyBlockChunk(block.chunk, block.index, 'up')()"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                    <span class="copy-btn-label">
+                      {{ copiedKeys.has(`block-up-${block.index}`) ? '已复制' : '复制' }}
+                    </span>
+                  </button>
+                </div>
+                <div class="chunk-content">
+                  <JsonNode v-if="block.isJson" :value="block.parsed" :depth="0" />
+                  <pre v-else class="chunk-raw">{{ block.chunk }}</pre>
+                </div>
+              </div>
+            </div>
+            <div class="chunks-compare-col">
+              <div v-for="block in visibleBlocks" :key="`down-${block.index}`" class="chunk-item">
+                <div class="chunk-header">
+                  <span class="chunk-index">#{{ block.index + 1 }}</span>
+                  <button
+                    class="copy-btn"
+                    type="button"
+                    aria-label="复制此 chunk 内容"
+                    @click="copyBlockChunk(block.chunk, block.index, 'down')()"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                    <span class="copy-btn-label">
+                      {{ copiedKeys.has(`block-down-${block.index}`) ? '已复制' : '复制' }}
+                    </span>
+                  </button>
+                </div>
+                <div class="chunk-content">
+                  <JsonNode v-if="block.isJson" :value="block.parsed" :depth="0" />
+                  <pre v-else class="chunk-raw">{{ block.chunk }}</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="chunks-load-more">
+            <div
+              v-if="hasMoreBlocks"
+              class="chunks-load-more-btn"
+              role="button"
+              tabindex="0"
+              @click="showMoreBlocks"
+              @keydown.enter.prevent="showMoreBlocks"
+              @keydown.space.prevent="showMoreBlocks"
+            >
+              展示更多（{{ Math.min(visibleBlockCount, totalBlockCount) }} / {{ totalBlockCount }}）
+            </div>
+            <div v-else class="chunks-load-more-end">
+              到底了（上游 {{ upstreamChunks?.length ?? 0 }} · 下游 {{ chunks.length }}）
+            </div>
+          </div>
+        </n-scrollbar>
+      </div>
+
+      <!-- 单栏：直连路线，两侧协议相同，没有可对照的第二份 -->
+      <n-scrollbar v-else style="max-height: 65vh">
         <div v-for="block in visibleBlocks" :key="block.index" class="chunk-item">
           <div class="chunk-header">
             <span class="chunk-index">#{{ block.index + 1 }}</span>
-            <n-tooltip :show="copiedKeys.has(`block-${block.index}`)" placement="bottom" :duration="0">
+            <n-tooltip :show="copiedKeys.has(`block-down-${block.index}`)" placement="bottom" :duration="0">
               <template #trigger>
                 <button
                   class="copy-btn"
@@ -211,8 +377,22 @@ function parseChunk(chunk: string): { parsed: unknown; isJson: boolean } {
       </n-scrollbar>
     </div>
 
-    <!-- 规整显示模式 -->
+    <!--
+      规整显示模式：单栏。
+
+      不并排两侧 —— 翻译不改变语义，两侧规整后本应完全一致，并排两份相同内容
+      没有信息量。真正有价值的是下面那条一致性提示：不一致就说明翻译丢了内容。
+    -->
     <div v-else-if="segments.length > 0" class="chunks-clean">
+      <div v-if="semanticConsistency" class="consistency-banner"
+        :class="`consistency-banner--${semanticConsistency}`">
+        <template v-if="semanticConsistency === 'match'">
+          ✓ 上下游语义一致（{{ upstreamProtocol }} → {{ downstreamProtocol }} 翻译无损）
+        </template>
+        <template v-else>
+          ⚠ 上下游语义不一致，翻译可能丢失或改写了内容 —— 切到块显示可并排对照
+        </template>
+      </div>
       <n-scrollbar style="max-height: 65vh">
         <div class="segments">
           <div v-for="(seg, i) in segments" :key="i" class="segment" :class="'segment-' + seg.type">
@@ -272,6 +452,110 @@ function parseChunk(chunk: string): { parsed: unknown; isJson: boolean } {
     flex-direction: column;
     gap: $space-sm;
     padding: 2px;
+  }
+}
+
+// ── 并排对照（仅跨协议翻译） ──
+
+/**
+ * 两栏等宽。
+ *
+ * 用 grid 而非 flex：两栏必须严格等宽才好对照，而 flex 子项会按内容宽度
+ * 产生细微差异（上游的 JSON 通常更短）。
+ */
+.chunks-compare-head,
+.chunks-compare-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: $space-md;
+}
+
+.chunks-compare-head {
+  padding: 0 2px $space-sm;
+  border-bottom: 1px solid $border-light;
+  margin-bottom: $space-sm;
+}
+
+.chunks-compare-col-title {
+  display: flex;
+  align-items: center;
+  gap: $space-sm;
+  min-width: 0;
+}
+
+/** 协议标签：用色彩区分两侧，避免只靠文字辨认。 */
+.protocol-tag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: $font-mono;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+
+  &--upstream {
+    background: $border-light;
+    color: $text-muted;
+  }
+
+  &--downstream {
+    background: $accent-light;
+    color: $accent;
+  }
+}
+
+.chunks-compare-hint {
+  font-size: 11px;
+  color: $text-muted;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/**
+ * 单栏内部纵向排列。
+ *
+ * 两栏各自独立成列、不做逐帧对齐 —— 帧数不对等是常态（实测 26 → 20），
+ * 强行对齐需要后端给出「第 i 个上游事件产出了哪几帧」的映射关系。
+ * 当前先让两侧可比对总量与顺序。
+ */
+.chunks-compare-col {
+  display: flex;
+  flex-direction: column;
+  gap: $space-sm;
+  min-width: 0;
+}
+
+/** 对照模式下外层 scrollbar 不再纵向排列（改由 grid 接管）。 */
+.chunks-compare {
+  :deep(.n-scrollbar-content) {
+    display: block;
+    padding: 2px;
+  }
+}
+
+// ── 语义一致性提示 ──
+
+/**
+ * 规整视图顶部的翻译校验横幅。
+ *
+ * 翻译不应改变语义，因此这条提示比并排展示两份相同内容更能直接回答
+ * 「翻译有没有问题」。
+ */
+.consistency-banner {
+  margin-bottom: $space-sm;
+  padding: $space-xs $space-md;
+  border-radius: $radius;
+  font-size: 12px;
+  line-height: 1.6;
+
+  &--match {
+    background: $accent-light;
+    color: $accent;
+  }
+
+  &--differ {
+    background: rgba($danger, 0.08);
+    color: $danger;
   }
 }
 

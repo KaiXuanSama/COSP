@@ -15,6 +15,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import JsonViewer from './JsonViewer.vue'
 import ChunksViewer from './ChunksViewer.vue'
 import type { CollapseRule } from './JsonNode.vue'
+import { parseChunkViews } from './chunkViews'
 import type { DetailItem, UsageDetail } from '@/types/calllog'
 
 const props = withDefaults(
@@ -37,6 +38,8 @@ const jsonModal = ref({ show: false, title: '', content: null as unknown, collap
 const chunksModal = ref({
   show: false,
   chunks: [] as string[],
+  /** 上游原始事件；仅跨协议翻译时存在，null 表示直连。 */
+  upstreamChunks: null as string[] | null,
   // 解析规则跟**下游**协议：落库的 chunk 是下游实际收到的形态。
   downstreamProtocol: 'OPENAI' as DetailItem['downstream_protocol'],
 })
@@ -264,19 +267,18 @@ function openJsonModal(title: string, content: unknown, collapseRule: CollapseRu
 }
 
 /**
- * 打开 chunks 查看器
+ * 打开 chunks 查看器。
+ *
+ * 落库的 chunks 列有两种形状（直连的裸数组、跨协议的带标记对象），
+ * 形状分派在 `parseChunkViews` 里，这里只负责传给查看器。
  */
 function openChunksModal(rawChunks: string | null) {
   if (!rawChunks) return
-  let parsed: string[] = []
-  try {
-    parsed = JSON.parse(rawChunks)
-  } catch {
-    parsed = [rawChunks]
-  }
+  const views = parseChunkViews(rawChunks)
   chunksModal.value = {
     show: true,
-    chunks: parsed,
+    chunks: views.downstream,
+    upstreamChunks: views.upstream,
     downstreamProtocol: props.detail.downstream_protocol,
   }
 }
@@ -444,6 +446,7 @@ onUnmounted(() => {
       v-model:show="chunksModal.show"
       :chunks="chunksModal.chunks"
       :downstream-protocol="chunksModal.downstreamProtocol"
+      :upstream-chunks="chunksModal.upstreamChunks"
     />
 
     <!--
