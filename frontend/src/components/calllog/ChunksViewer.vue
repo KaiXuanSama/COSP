@@ -16,7 +16,13 @@ import { aggregateChunks, type ChunkSegment, type WireProtocol } from './chunkAg
 const props = defineProps<{
   show: boolean
   chunks: string[]
-  upstreamProtocol: WireProtocol
+  /**
+   * 决定 chunk 解析规则的协议。
+   *
+   * 用**下游**协议而非上游：落库的 chunk 是下游实际收到的形态，
+   * 跨协议翻译时它已被译成下游协议的形状（见 `aggregateChunks` 的注释）。
+   */
+  downstreamProtocol: WireProtocol
 }>()
 
 const emit = defineEmits<{
@@ -110,7 +116,7 @@ function copySegment(seg: ChunkSegment, index: number) {
   return () => handleCopy(text, `segment-${index}`)
 }
 
-const segments = computed(() => aggregateChunks(props.chunks, props.upstreamProtocol))
+const segments = computed(() => aggregateChunks(props.chunks, props.downstreamProtocol))
 
 /**
  * 渲染 Markdown

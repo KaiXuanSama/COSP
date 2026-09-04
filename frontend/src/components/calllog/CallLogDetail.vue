@@ -37,7 +37,8 @@ const jsonModal = ref({ show: false, title: '', content: null as unknown, collap
 const chunksModal = ref({
   show: false,
   chunks: [] as string[],
-  upstreamProtocol: 'OPENAI' as DetailItem['upstream_protocol'],
+  // 解析规则跟**下游**协议：落库的 chunk 是下游实际收到的形态。
+  downstreamProtocol: 'OPENAI' as DetailItem['downstream_protocol'],
 })
 
 // ── 格式化 ──────────────────────────────────────────────
@@ -276,7 +277,7 @@ function openChunksModal(rawChunks: string | null) {
   chunksModal.value = {
     show: true,
     chunks: parsed,
-    upstreamProtocol: props.detail.upstream_protocol,
+    downstreamProtocol: props.detail.downstream_protocol,
   }
 }
 
@@ -442,7 +443,7 @@ onUnmounted(() => {
     <ChunksViewer
       v-model:show="chunksModal.show"
       :chunks="chunksModal.chunks"
-      :upstream-protocol="chunksModal.upstreamProtocol"
+      :downstream-protocol="chunksModal.downstreamProtocol"
     />
 
     <!--

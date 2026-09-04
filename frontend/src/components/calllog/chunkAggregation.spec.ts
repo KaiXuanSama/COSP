@@ -110,4 +110,34 @@ describe('aggregateChunks', () => {
       JSON.stringify({ type: 'message_stop' }),
     ], 'ANTHROPIC')).toEqual([])
   })
+
+  /**
+   * 跨协议翻译（A→O）路线下，落库的 chunk 已经是 OpenAI 形态，
+   * 因此必须按**下游**协议解析。
+   *
+   * 早先这里传的是上游协议，导致 A→O 的日志按 Anthropic 规则去解析
+   * 已经翻译好的 OpenAI chunk，所有事件都匹配不上，规整视图显示「无可解析的响应数据」。
+   */
+  it('parses translated OpenAI chunks from a cross-protocol call by downstream protocol', () => {
+    const translatedChunks = [
+      JSON.stringify({
+        choices: [{ delta: { role: 'assistant', content: '' } }],
+      }),
+      JSON.stringify({
+        choices: [{ delta: { reasoning_content: '先想一下' } }],
+      }),
+      JSON.stringify({
+        choices: [{ delta: { content: '好' } }],
+      }),
+      JSON.stringify({
+        choices: [{ delta: { content: '' }, finish_reason: 'stop' }],
+      }),
+      '[DONE]',
+    ]
+
+    expect(aggregateChunks(translatedChunks, 'OPENAI')).toEqual([
+      { type: 'thinking', text: '先想一下' },
+      { type: 'content', text: '好' },
+    ])
+  })
 })

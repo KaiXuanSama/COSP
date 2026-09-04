@@ -33,12 +33,17 @@ interface AnthropicBlock {
 /**
  * 将流式响应的原始 data 载荷规整为可读的语义片段。
  *
- * 日志保存的是上游 SSE 的 data JSON；Anthropic 的 event 名未单独保存，但每个事件
- * 自身的顶层 type 足以恢复 content block 的生命周期。协议必须以实际上游协议为准：
- * 未来跨协议转发时，chunks 仍是上游原始形状。
+ * Anthropic 的 event 名未单独保存，但每个事件自身的顶层 type 足以恢复
+ * content block 的生命周期。
+ *
+ * <h2>为何按下游协议而非上游协议判定</h2>
+ * 落库的 chunk 是「下游实际收到的形态」：直连时它就是上游原文（两侧协议相同，
+ * 怎么判都一样）；跳协议翻译时它是翻译<strong>后</strong>的形态 ——
+ * A→O 路线下存的是 OpenAI chunk，若按上游的 ANTHROPIC 去解析，
+ * 所有事件都匹配不上，规整视图会空掉。
  */
-export function aggregateChunks(chunks: string[], upstreamProtocol: WireProtocol): ChunkSegment[] {
-  return upstreamProtocol === 'ANTHROPIC'
+export function aggregateChunks(chunks: string[], downstreamProtocol: WireProtocol): ChunkSegment[] {
+  return downstreamProtocol === 'ANTHROPIC'
     ? aggregateAnthropicChunks(chunks)
     : aggregateOpenAiChunks(chunks)
 }
