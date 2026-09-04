@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -60,11 +61,13 @@ public class AnthropicToOpenAiResponseTranslator implements ProtocolTranslator {
     /**
      * 翻译非流式响应。
      *
-     * @param upstreamBody    上游原始响应体
-     * @param downstreamModel 下游原始请求里的模型名（含供应商前缀）
+     * <p>模型名从上游响应里取，不需要调用方传入 ——
+     * 与 OpenAI 直连路径一致（那条路径也不改写响应里的 model）。
+     *
+     * @param upstreamBody 上游原始响应体
      */
-    public Mono<String> translateResponse(Mono<String> upstreamBody, String downstreamModel) {
-        return upstreamBody.map(body -> nonStreamTranslator.translate(body, downstreamModel));
+    public Mono<String> translateResponse(Mono<String> upstreamBody) {
+        return upstreamBody.map(nonStreamTranslator::translate);
     }
 
     /**
@@ -79,15 +82,16 @@ public class AnthropicToOpenAiResponseTranslator implements ProtocolTranslator {
      * {@code retryWhen} 会重订阅，若状态跨轮复用，第二轮的 role 帧会缺失、
      * tool index 会从非零开始。
      *
-     * @param upstreamEvents  上游 SSE data 流
-     * @param downstreamModel 下游原始请求里的模型名（含供应商前缀）
-     * @param context         请求期上下文，提供 {@code include_usage}
+     * @param upstreamEvents 上游 SSE data 流
+     * @param upstreamModel  上游真实模型名（不含供应商前缀），作为 {@code message_start}
+     *                       到达前的占位值
+     * @param context        请求期上下文，提供 {@code include_usage}
      */
-    public Flux<String> translateStream(Flux<String> upstreamEvents, String downstreamModel,
+    public Flux<String> translateStream(Flux<String> upstreamEvents, String upstreamModel,
                                         TranslationContext context) {
         return Flux.defer(() -> {
             A2OStreamState state = new A2OStreamState(
-                    placeholderId(), downstreamModel, context.includeUsage());
+                    placeholderId(), upstreamModel, context.includeUsage());
             return upstreamEvents
                     .concatMapIterable(event -> streamTranslator.translateEvent(event, state))
                     // 收尾必须在流正常结束后追加，而不是放在 doFinally ——
@@ -108,8 +112,32 @@ public class AnthropicToOpenAiResponseTranslator implements ProtocolTranslator {
         return "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
     }
 
-    /** 供测试断言收尾帧的形态。 */
-    List<String> finalizeForTest(A2OStreamState state) {
-        return streamTranslator.finalizeStream(state);
+    /**
+     * 把一整轮上游事件批量翻译成下游 chunk，供<strong>落库</strong>使用。
+     *
+     * <h2>为何落库要单独走一遍翻译</h2>
+     * 落库发生在上游服务内部（那里才有请求头、状态码、TTFB 与每轮起止时间），
+     * 而翻译套在服务外侧。若不重译一遍，日志记的就是上游的 Anthropic 事件，
+     * 而下游实际收到的是 OpenAI chunk —— 排查「客户端为什么解析失败」时，
+     * 日志里没有客户端真正看到的东西。
+     *
+     * <h2>为何用独立状态而非复用出站那份</h2>
+     * 出站状态在 {@code Flux.defer} 内、随订阅生命周期走；落库可能发生在
+     * 出站流已经结束之后（{@code doFinally}），那时复用同一份状态会因为
+     * {@code finalized} 已置位而产出不完整的帧序列。用新状态重放一遍是幂等的。
+     *
+     * @param upstreamEvents 该轮完整的上游事件列表
+     * @param upstreamModel  上游模型名，作为 {@code message_start} 到达前的占位值
+     * @param includeUsage   与出站保持一致，否则日志里的帧数与实际下发不符
+     */
+    public List<String> translateChunksForLog(List<String> upstreamEvents, String upstreamModel,
+                                              boolean includeUsage) {
+        A2OStreamState state = new A2OStreamState(placeholderId(), upstreamModel, includeUsage);
+        List<String> translated = new ArrayList<>();
+        for (String event : upstreamEvents) {
+            translated.addAll(streamTranslator.translateEvent(event, state));
+        }
+        translated.addAll(streamTranslator.finalizeStream(state));
+        return translated;
     }
 }

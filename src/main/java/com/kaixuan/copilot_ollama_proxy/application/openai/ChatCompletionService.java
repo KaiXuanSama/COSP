@@ -9,6 +9,7 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.Anthropic
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.OpenAiToAnthropicRequestTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
+import com.kaixuan.copilot_ollama_proxy.provider.DownstreamLogView;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
 import org.springframework.http.HttpHeaders;
@@ -97,9 +98,13 @@ public class ChatCompletionService {
         // 本服务按前缀路由，把裸名透给下游会让它下一轮路由失败（第 7 节）。
         if (decision.upstreamProtocol() == WireProtocol.ANTHROPIC) {
             TranslatedRequest translated = o2aTranslator.translateRequest(openAiRequest);
+            // 非流式只需告知下游协议：响应体是单一字符串，日志里记上游原文
+            // 比记翻译后的更有用 —— 后者可以由前者推导，反之不行。
+            // 流式不同：帧序列的切分方式无法从上游事件反推，见下方流式分支。
             Mono<String> upstream = genericAnthropicChatService.messages(
-                    translated.body(), route, downstreamHeaders, requestId);
-            return a2oTranslator.translateResponse(upstream, model);
+                    translated.body(), route, downstreamHeaders, requestId,
+                    DownstreamLogView.direct(DOWNSTREAM_PROTOCOL.name()));
+            return a2oTranslator.translateResponse(upstream);
         }
         
         // 其它协议组合：当前只有 OPENAI 与 ANTHROPIC 两种，走不到这里。
@@ -144,9 +149,16 @@ public class ChatCompletionService {
         // 而 [DONE] 由流结束触发而非 message_stop。
         if (decision.upstreamProtocol() == WireProtocol.ANTHROPIC) {
             TranslatedRequest translated = o2aTranslator.translateRequest(openAiRequest);
+            // 落库视图：下游协议记 OPENAI，且 chunk 记翻译后的形态。
+            // 流式必须重译而不能只记上游事件：帧数不对等（零帧/一帧/多帧），
+            // 从上游事件反推不出下游到底收到了几帧、长什么样。
+            DownstreamLogView logView = new DownstreamLogView(
+                    DOWNSTREAM_PROTOCOL.name(),
+                    chunks -> a2oTranslator.translateChunksForLog(
+                            chunks, route.model(), translated.context().includeUsage()));
             Flux<String> upstream = genericAnthropicChatService.messagesStream(
-                    translated.body(), route, downstreamHeaders, requestId);
-            return a2oTranslator.translateStream(upstream, model, translated.context());
+                    translated.body(), route, downstreamHeaders, requestId, logView);
+            return a2oTranslator.translateStream(upstream, route.model(), translated.context());
         }
         
         return Flux.error(new ProtocolTranslationNotSupportedException(

@@ -15,6 +15,7 @@ import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
+import com.kaixuan.copilot_ollama_proxy.provider.DownstreamLogView;
 import com.kaixuan.copilot_ollama_proxy.provider.EmptyUpstreamResponseException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -148,16 +149,43 @@ public class GenericAnthropicChatService {
 
     // ==================== 对外入口 ====================
 
-    /** 非流式，接受应用层已解析的路由。 */
+    /**
+     * 本次调用的落库视图。
+     *
+     * <h2>为何用 ThreadLocal 而不是方法参数
+     * —— 并不是，看下面</h2>
+     * 并非 ThreadLocal。视图通过重载方法传入，默认值为直连视图，
+     * 因此现有调用方（包括测试）无需改动。
+     */
+    private static final DownstreamLogView DIRECT_VIEW =
+            DownstreamLogView.direct(WireProtocol.ANTHROPIC.name());
+
+    /** 非流式，接受应用层已解析的路由。直连路线。 */
     public Mono<String> messages(Map<String, Object> request, ResolvedProviderRoute route,
                                  HttpHeaders downstreamHeaders, String requestId) {
-        return messages(request, route.model(), route.provider(), downstreamHeaders, requestId);
+        return messages(request, route, downstreamHeaders, requestId, DIRECT_VIEW);
     }
 
-    /** 流式，接受应用层已解析的路由。 */
+    /**
+     * 非流式，带落库视图。翻译路线用这个重载告知「下游其实是另一个协议」。
+     */
+    public Mono<String> messages(Map<String, Object> request, ResolvedProviderRoute route,
+                                 HttpHeaders downstreamHeaders, String requestId,
+                                 DownstreamLogView logView) {
+        return messages(request, route.model(), route.provider(), downstreamHeaders, requestId, logView);
+    }
+
+    /** 流式，接受应用层已解析的路由。直连路线。 */
     public Flux<String> messagesStream(Map<String, Object> request, ResolvedProviderRoute route,
                                        HttpHeaders downstreamHeaders, String requestId) {
-        return messagesStream(request, route.model(), route.provider(), downstreamHeaders, requestId);
+        return messagesStream(request, route, downstreamHeaders, requestId, DIRECT_VIEW);
+    }
+
+    /** 流式，带落库视图。 */
+    public Flux<String> messagesStream(Map<String, Object> request, ResolvedProviderRoute route,
+                                       HttpHeaders downstreamHeaders, String requestId,
+                                       DownstreamLogView logView) {
+        return messagesStream(request, route.model(), route.provider(), downstreamHeaders, requestId, logView);
     }
 
     // ==================== 非流式 ====================
@@ -181,6 +209,12 @@ public class GenericAnthropicChatService {
     protected Mono<String> messages(Map<String, Object> request, String model,
                                     ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                     String requestId) {
+        return messages(request, model, provider, downstreamHeaders, requestId, DIRECT_VIEW);
+    }
+
+    protected Mono<String> messages(Map<String, Object> request, String model,
+                                    ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                    String requestId, DownstreamLogView logView) {
         Map<String, Object> requestBody = prepareRequestBody(request, false, model, provider);
         log.info("{} Anthropic 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
 
@@ -203,7 +237,7 @@ public class GenericAnthropicChatService {
                     Map<String, String> respHeaders = new LinkedHashMap<>();
                     entity.getHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
                     Long logId = saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, respHeaders,
-                            entity.getStatusCode().value(), entity.getBody(), attemptStart.get());
+                            entity.getStatusCode().value(), entity.getBody(), attemptStart.get(), logView);
                     // ttfb 传 null：非流式没有首字概念，与 OpenAI 侧一致。
                     saveUsage(logId, providerKey, modelName, false,
                             AnthropicUsageParser.extractUsageRawJson(objectMapper, entity.getBody()), null);
@@ -216,12 +250,12 @@ public class GenericAnthropicChatService {
                         responseException.getHeaders().forEach((k, v) -> errHeaders.put(k, String.join(", ", v)));
                         saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, errHeaders,
                                 responseException.getStatusCode().value(),
-                                responseException.getResponseBodyAsString(), attemptStart.get());
+                                responseException.getResponseBodyAsString(), attemptStart.get(), logView);
                         publishCallRecorded();
                     } else {
                         // 状态码 -1：非 HTTP 异常的占位值，与 OpenAI 侧同一约定。
                         saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, Map.of(), -1, null,
-                                attemptStart.get());
+                                attemptStart.get(), logView);
                         publishCallRecorded();
                     }
                 })
@@ -274,6 +308,12 @@ public class GenericAnthropicChatService {
     protected Flux<String> messagesStream(Map<String, Object> request, String model,
                                           ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                           String requestId) {
+        return messagesStream(request, model, provider, downstreamHeaders, requestId, DIRECT_VIEW);
+    }
+
+    protected Flux<String> messagesStream(Map<String, Object> request, String model,
+                                          ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                          String requestId, DownstreamLogView logView) {
         Map<String, Object> requestBody = prepareRequestBody(request, true, model, provider);
         log.info("{} Anthropic 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
 
@@ -319,7 +359,7 @@ public class GenericAnthropicChatService {
                                         saveStreamLogWithError(providerKey, modelName, reqHeaders, requestBody,
                                                 respHeaders, response.statusCode().value(), List.of(),
                                                 respHeaders, response.statusCode().value(), errorBody,
-                                                attemptStart.get());
+                                                attemptStart.get(), logView);
                                         publishCallRecorded();
                                         return Flux.error(new WebClientResponseException(
                                                 response.statusCode().value(), "上游错误响应", null,
@@ -369,14 +409,15 @@ public class GenericAnthropicChatService {
                     if (emptyResponse != null) {
                         saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
                                 capturedRespHeaders.get(), capturedStatusCode.get(),
-                                emptyResponse.bufferedFrames(), attemptStart.get());
+                                emptyResponse.bufferedFrames(), attemptStart.get(), logView);
                         publishCallRecorded();
                         return;
                     }
                     if (findWebResponseException(e) == null) {
                         int statusCode = capturedStatusCode.get() == 0 ? -1 : capturedStatusCode.get();
                         saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
-                                capturedRespHeaders.get(), statusCode, List.copyOf(logChunks), attemptStart.get());
+                                capturedRespHeaders.get(), statusCode, List.copyOf(logChunks),
+                                attemptStart.get(), logView);
                         publishCallRecorded();
                     }
                 })
@@ -405,7 +446,7 @@ public class GenericAnthropicChatService {
                             statusCode = -1;
                         }
                         Long logId = saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
-                                capturedRespHeaders.get(), statusCode, logChunks, attemptStart.get());
+                                capturedRespHeaders.get(), statusCode, logChunks, attemptStart.get(), logView);
                         long ttfb = ttfbMs.get();
                         saveUsage(logId, providerKey, modelName, true, lastUsageRaw.get(),
                                 ttfb < 0 ? null : (int) ttfb, usageAccumulator.get());
@@ -925,34 +966,55 @@ public class GenericAnthropicChatService {
 
     // ==================== 落库与观测 ====================
 
+    /**
+     * 落库。
+     *
+     * <h2>上游协议恒为 ANTHROPIC，下游协议由视图给出</h2>
+     * 直连时两者相同；翻译路线下游是 OPENAI，因此日志里能看出
+     * 这是一次跳协议调用。
+     */
     private Long saveNonStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders,
                                   Map<String, Object> requestBody, Map<String, String> respHeaders,
-                                  int statusCode, String responseBody, long startTime) {
+                                  int statusCode, String responseBody, long startTime,
+                                  DownstreamLogView logView) {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        return apiCallLog.saveNonStream(providerKey, modelName, "ANTHROPIC", "ANTHROPIC",
+        return apiCallLog.saveNonStream(providerKey, modelName,
+                logView.downstreamProtocol(), WireProtocol.ANTHROPIC.name(),
                 reqHeaders, requestBody, respHeaders,
                 statusCode, responseBody, duration);
     }
 
+    /**
+     * 流式落库。
+     *
+     * <p>chunk 过一道视图改写：翻译路线下日志要记<strong>下游实际收到的</strong>
+     * OpenAI chunk，而不是上游的 Anthropic 事件 —— 否则排查「客户端为何解析失败」
+     * 时，日志里没有客户端真正看到的东西。
+     */
     private Long saveStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders,
                                Map<String, Object> requestBody, Map<String, String> respHeaders,
-                               int statusCode, List<String> chunks, long startTime) {
+                               int statusCode, List<String> chunks, long startTime,
+                               DownstreamLogView logView) {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        return apiCallLog.saveStream(providerKey, modelName, "ANTHROPIC", "ANTHROPIC",
+        return apiCallLog.saveStream(providerKey, modelName,
+                logView.downstreamProtocol(), WireProtocol.ANTHROPIC.name(),
                 reqHeaders, requestBody, respHeaders,
-                statusCode, chunks, duration);
+                statusCode, logView.viewChunks(chunks), duration);
     }
 
     private Long saveStreamLogWithError(String providerKey, String modelName, Map<String, String> reqHeaders,
                                         Map<String, Object> requestBody, Map<String, String> respHeaders,
                                         int statusCode, List<String> chunks, Map<String, String> errorHeaders,
-                                        int errorCode, String errorBody, long startTime) {
+                                        int errorCode, String errorBody, long startTime,
+                                        DownstreamLogView logView) {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        return apiCallLog.saveStreamWithError(providerKey, modelName, "ANTHROPIC", "ANTHROPIC",
-                reqHeaders, requestBody, respHeaders, statusCode, chunks, errorHeaders,
+        return apiCallLog.saveStreamWithError(providerKey, modelName,
+                logView.downstreamProtocol(), WireProtocol.ANTHROPIC.name(),
+                reqHeaders, requestBody, respHeaders, statusCode,
+                logView.viewChunks(chunks), errorHeaders,
                 errorCode, errorBody, duration);
     }
 

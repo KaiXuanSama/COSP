@@ -101,6 +101,7 @@ final class AnthropicToOpenAiStreamTranslator {
         JsonNode message = root.get("message");
         if (message != null) {
             state.adoptUpstreamId(text(message, "id"));
+            state.adoptUpstreamModel(text(message, "model"));
             state.usage().merge(message.get("usage"));
         }
         if (!state.claimRoleFrame()) {

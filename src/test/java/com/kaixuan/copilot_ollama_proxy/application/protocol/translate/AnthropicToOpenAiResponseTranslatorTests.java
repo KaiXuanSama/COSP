@@ -25,7 +25,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  */
 class AnthropicToOpenAiResponseTranslatorTests {
 
-    private static final String DOWNSTREAM_MODEL = "[deepseek] deepseek-v4-flash";
+    /** 上游真实模型名（不含供应商前缀）。 */
+    private static final String UPSTREAM_MODEL = "deepseek-v4-flash";
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final AnthropicToOpenAiResponseTranslator translator =
@@ -117,16 +118,20 @@ class AnthropicToOpenAiResponseTranslatorTests {
                     .path("function").path("arguments").asText()).isEqualTo("{}");
         }
 
-        /** 模型名必须回显下游带前缀的原始名，否则下游下一轮路由会失败。 */
+        /**
+         * 模型名原样透传上游返回的值。
+         *
+         * <p>不换成下游带前缀的请求名 —— OpenAI 直连路径下代理也不改写响应里的
+         * {@code model}，两条路必须同口径。
+         */
         @Test
-        void downstreamPrefixedModelNameIsEchoedNotUpstreamBareName() throws Exception {
+        void upstreamModelNameIsPassedThroughVerbatim() throws Exception {
             String upstream = """
                     {"id":"msg_1","model":"claude-x","stop_reason":"end_turn",
                      "content":[{"type":"text","text":"好"}]}
                     """;
 
-            assertThat(translateNonStream(upstream).path("model").asText())
-                    .isEqualTo(DOWNSTREAM_MODEL);
+            assertThat(translateNonStream(upstream).path("model").asText()).isEqualTo("claude-x");
         }
 
         @Test
@@ -587,7 +592,7 @@ class AnthropicToOpenAiResponseTranslatorTests {
                     {"type":"message_start","message":{"id":"msg_1","model":"claude-x"}}
                     """);
             Flux<String> translated = translator.translateStream(
-                    upstream, DOWNSTREAM_MODEL, new TranslationContext(true, false));
+                    upstream, UPSTREAM_MODEL, new TranslationContext(true, false));
 
             List<String> first = translated.collectList().block(Duration.ofSeconds(5));
             List<String> second = translated.collectList().block(Duration.ofSeconds(5));
@@ -658,9 +663,65 @@ class AnthropicToOpenAiResponseTranslatorTests {
 
         // signature 没有以任何形式出现在下游。
         assertThat(chunks).noneMatch(chunk -> chunk.contains("signature"));
-        // 每帧都回显下游带前缀的模型名。
+        // 每帧都回显上游返回的模型名。
         assertThat(chunks.stream().filter(chunk -> !"[DONE]".equals(chunk)))
-                .allMatch(chunk -> chunk.contains(DOWNSTREAM_MODEL));
+                .allMatch(chunk -> chunk.contains(UPSTREAM_MODEL));
+    }
+
+    // ==================== 落库用的批量翻译 ====================
+
+    @Nested
+    @DisplayName("落库 chunk 改写")
+    class LogChunkRewrite {
+
+        /**
+         * 落库要记<strong>下游实际收到的</strong> OpenAI chunk，而非上游的 Anthropic 事件。
+         *
+         * <p>否则排查「客户端为什么解析失败」时，日志里没有客户端真正看到的东西。
+         */
+        @Test
+        void logChunksAreTranslatedNotRawUpstreamEvents() {
+            List<String> upstreamEvents = List.of(
+                    """
+                    {"type":"message_start","message":{"id":"msg_1","model":"deepseek-v4-flash"}}
+                    """,
+                    """
+                    {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"好"}}
+                    """,
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"end_turn"}}
+                    """);
+
+            List<String> logged = translator.translateChunksForLog(
+                    upstreamEvents, UPSTREAM_MODEL, false);
+
+            // 记的是 OpenAI 形态。
+            assertThat(logged).allSatisfy(chunk ->
+                    assertThat(chunk).satisfiesAnyOf(
+                            c -> assertThat(c).contains("chat.completion.chunk"),
+                            c -> assertThat(c).isEqualTo("[DONE]")));
+            // 上游的事件类型不应出现在日志里。
+            assertThat(logged).noneMatch(chunk -> chunk.contains("message_start"));
+            assertThat(logged).noneMatch(chunk -> chunk.contains("content_block_delta"));
+            assertThat(logged.get(logged.size() - 1)).isEqualTo("[DONE]");
+        }
+
+        /** 重放用独立状态，因此可以多次调用而结果一致（幂等）。 */
+        @Test
+        void repeatedRewriteYieldsSameFrameCount() {
+            List<String> upstreamEvents = List.of(
+                    """
+                    {"type":"message_start","message":{"id":"msg_1","model":"deepseek-v4-flash"}}
+                    """,
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"end_turn"}}
+                    """);
+
+            int first = translator.translateChunksForLog(upstreamEvents, UPSTREAM_MODEL, false).size();
+            int second = translator.translateChunksForLog(upstreamEvents, UPSTREAM_MODEL, false).size();
+
+            assertThat(second).isEqualTo(first);
+        }
     }
 
     // ==================== 辅助 ====================
@@ -670,13 +731,13 @@ class AnthropicToOpenAiResponseTranslatorTests {
     }
 
     private String translateNonStreamRaw(String upstreamBody) {
-        return translator.translateResponse(Mono.just(upstreamBody), DOWNSTREAM_MODEL)
+        return translator.translateResponse(Mono.just(upstreamBody))
                 .block(Duration.ofSeconds(5));
     }
 
     private List<String> collectStream(List<String> events, boolean includeUsage) {
         List<String> collected = translator.translateStream(
-                        Flux.fromIterable(events), DOWNSTREAM_MODEL,
+                        Flux.fromIterable(events), UPSTREAM_MODEL,
                         new TranslationContext(true, includeUsage))
                 .collectList()
                 .block(Duration.ofSeconds(5));

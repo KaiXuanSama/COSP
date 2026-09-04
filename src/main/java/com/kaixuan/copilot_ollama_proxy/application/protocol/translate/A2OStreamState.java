@@ -29,7 +29,13 @@ final class A2OStreamState {
 
     /** 每帧都要回显的身份三元组。 */
     private String id;
-    private final String model;
+    /**
+     * 上游返回的模型名。
+     *
+     * <p>不用下游带前缀的请求名：OpenAI 直连路径下代理也不改写响应里的 model，
+     * 两条路必须同口径，否则同一个客户端会因为走了哪条路而看到不同的模型名。
+     */
+    private String model;
     private final long created;
 
     /** role 帧只发一次。 */
@@ -67,9 +73,14 @@ final class A2OStreamState {
     /** 收尾幂等：finish chunk 已发出。 */
     private boolean finalized;
 
-    A2OStreamState(String fallbackId, String model, boolean includeUsage) {
+    /**
+     * @param fallbackId    上游给出 message id 之前的占位值
+     * @param fallbackModel 上游给出模型名之前的占位值（取上游真实模型名，
+     *                      不含供应商前缀）
+     */
+    A2OStreamState(String fallbackId, String fallbackModel, boolean includeUsage) {
         this.id = fallbackId;
-        this.model = model;
+        this.model = fallbackModel;
         this.includeUsage = includeUsage;
         this.created = System.currentTimeMillis() / 1000;
     }
@@ -92,6 +103,18 @@ final class A2OStreamState {
 
     String model() {
         return model;
+    }
+
+    /**
+     * 采纳上游 {@code message_start} 里的模型名。
+     *
+     * <p>只在非空时替换：上游若不给，保留构造时的占位值，
+     * 而不是让下游收到 null。
+     */
+    void adoptUpstreamModel(String upstreamModel) {
+        if (upstreamModel != null && !upstreamModel.isBlank()) {
+            this.model = upstreamModel;
+        }
     }
 
     long created() {

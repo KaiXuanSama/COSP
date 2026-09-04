@@ -21,7 +21,8 @@ import java.util.Map;
  *   <li><strong>不重建 thinking 块的 signature</strong>。它由 Anthropic 自己签发，
  *       跨协议造不出来。契约第 5.1 节。</li>
  *   <li><strong>不凭空估算 reasoning_tokens</strong>。Anthropic 不上报这个数字。</li>
- *   <li><strong>不改写模型名</strong>。用下游原始请求里的带前缀名，见 {@link #translate}。</li>
+ *   <li><strong>不改写模型名</strong>。原样透传上游返回的值，
+     *       与 OpenAI 直连路径一致（那条路径也不改写响应里的 model）。</li>
  * </ul>
  *
  * @see <a href="file:../../../../../../../../../docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md">
@@ -39,13 +40,10 @@ final class AnthropicToOpenAiNonStreamTranslator {
      * 翻译完整响应体。
      *
      * @param anthropicBody 上游原始响应体
-     * @param downstreamModel <strong>下游原始请求</strong>里的模型名（含 {@code [provider-key]}
-     *                        前缀）。不能用上游返回的裸名——本服务按前缀路由，
-     *                        把裸名透给下游会让它下一轮路由失败（契约第 7 节）
      * @return OpenAI 形态的响应 JSON 字符串
      * @throws ResponseTranslationException 上游响应无法解析
      */
-    String translate(String anthropicBody, String downstreamModel) {
+    String translate(String anthropicBody) {
         JsonNode root = parse(anthropicBody);
 
         Map<String, Object> message = new LinkedHashMap<>();
@@ -85,7 +83,10 @@ final class AnthropicToOpenAiNonStreamTranslator {
         response.put("object", OpenAiResponseShapes.OBJECT_COMPLETION);
         // Anthropic 没有 created 字段，只能用本地时间。注意它不是上游耗时基准。
         response.put("created", System.currentTimeMillis() / 1000);
-        response.put("model", downstreamModel);
+        // 模型名原样透传上游返回的值。不换成下游带前缀的请求名 ——
+        // OpenAI 直连路径下代理也不改写响应里的 model，两条路必须同口径，
+        // 否则同一个客户端会因为走了哪条路而看到不同的模型名。
+        response.put("model", text(root, "model"));
         response.put("choices", List.of(choice));
 
         AnthropicUsageAccumulator usage = new AnthropicUsageAccumulator();
