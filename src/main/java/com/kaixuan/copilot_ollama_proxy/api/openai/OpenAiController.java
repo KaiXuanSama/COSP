@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.ResponseTranslationException;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
@@ -213,6 +214,14 @@ public class OpenAiController {
                         return Mono.just(ResponseEntity.status(responseException.getStatusCode().value())
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .body(responseException.getResponseBodyAsString()));
+                    }
+                    // 响应翻译失败：请求发出去了、上游也给了 2xx，但报文解析不了。
+                    // 不能译成「无法连接到上游」—— 那会把排查方向引到网络上。
+                    ResponseTranslationException translationException = findResponseTranslationException(ex);
+                    if (translationException != null) {
+                        log.warn("响应翻译失败 [{}]: {}", model, translationException.getMessage());
+                        return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
+                                .body(openAiErrorBody(translationException.getMessage(), "upstream_error")));
                     }
                     log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(ex), extractRequestUrl(ex));
                     return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
@@ -621,6 +630,23 @@ public class OpenAiController {
      * <p>用 400 而非 502：失败源于本地配置与请求的组合，不是网关上游故障，
      * 且重试多少次结果都一样 —— 5xx 会诱导客户端重试。
      */
+    /**
+     * 从异常链里找出响应翻译异常。
+     *
+     * <p>与 {@link #findProtocolException} 同一个理由需要解包：
+     * 重试耗尽时真正的异常会被包在 {@code RetryExhaustedException} 里。
+     */
+    private ResponseTranslationException findResponseTranslationException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof ResponseTranslationException translationException) {
+                return translationException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
     private ProtocolTranslationNotSupportedException findProtocolException(Throwable throwable) {
         Throwable current = throwable;
         while (current != null) {

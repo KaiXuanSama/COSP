@@ -1,0 +1,716 @@
+package com.kaixuan.copilot_ollama_proxy.application.protocol.translate;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.ResponseTranslationException;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslationContext;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.time.Duration;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
+
+/**
+ * A2O 响应翻译。
+ *
+ * <p>重点覆盖契约第 13.1 节点名的、三个参考项目<strong>都没有测试覆盖</strong>的路径：
+ * tool index 双索引域重映射、多个 thinking 块的累积、signature 不产帧、
+ * usage 两事件合并且 0 不覆盖、流结束三档收尾、重试重订阅后状态重置。
+ */
+class AnthropicToOpenAiResponseTranslatorTests {
+
+    private static final String DOWNSTREAM_MODEL = "[deepseek] deepseek-v4-flash";
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final AnthropicToOpenAiResponseTranslator translator =
+            new AnthropicToOpenAiResponseTranslator(objectMapper);
+
+    // ==================== 非流式 ====================
+
+    @Nested
+    @DisplayName("非流式映射")
+    class NonStream {
+
+        @Test
+        void textBlocksAreConcatenatedIntoContent() throws Exception {
+            String upstream = """
+                    {"id":"msg_1","model":"claude-x","stop_reason":"end_turn",
+                     "content":[{"type":"text","text":"前半"},{"type":"text","text":"后半"}]}
+                    """;
+
+            JsonNode result = translateNonStream(upstream);
+
+            assertThat(result.path("choices").get(0).path("message").path("content").asText())
+                    .isEqualTo("前半后半");
+            assertThat(result.path("object").asText()).isEqualTo("chat.completion");
+        }
+
+        /**
+         * 多个 thinking 块必须<strong>累积</strong>。
+         *
+         * <p>参考实现 new-api 这里用的是赋值而非追加，多块只剩最后一个、前面静默丢失。
+         */
+        @Test
+        void multipleThinkingBlocksAreAccumulatedNotOverwritten() throws Exception {
+            String upstream = """
+                    {"id":"msg_1","model":"claude-x","stop_reason":"end_turn",
+                     "content":[{"type":"thinking","thinking":"第一段"},
+                                {"type":"thinking","thinking":"第二段"},
+                                {"type":"text","text":"答案"}]}
+                    """;
+
+            JsonNode message = translateNonStream(upstream).path("choices").get(0).path("message");
+
+            assertThat(message.path("reasoning_content").asText()).isEqualTo("第一段第二段");
+            assertThat(message.path("content").asText()).isEqualTo("答案");
+        }
+
+        /** 思考内容无条件给出，不看有没有 tool_calls。 */
+        @Test
+        void thinkingIsEmittedEvenWithoutToolCalls() throws Exception {
+            String upstream = """
+                    {"id":"msg_1","model":"claude-x","stop_reason":"end_turn",
+                     "content":[{"type":"thinking","thinking":"想一下"},{"type":"text","text":"好"}]}
+                    """;
+
+            assertThat(translateNonStream(upstream).path("choices").get(0)
+                    .path("message").path("reasoning_content").asText()).isEqualTo("想一下");
+        }
+
+        @Test
+        void toolUseBlocksBecomeToolCallsWithStringifiedArguments() throws Exception {
+            String upstream = """
+                    {"id":"msg_1","model":"claude-x","stop_reason":"tool_use",
+                     "content":[{"type":"tool_use","id":"toolu_1","name":"get_weather",
+                                 "input":{"city":"北京"}}]}
+                    """;
+
+            JsonNode toolCall = translateNonStream(upstream).path("choices").get(0)
+                    .path("message").path("tool_calls").get(0);
+
+            assertThat(toolCall.path("id").asText()).isEqualTo("toolu_1");
+            assertThat(toolCall.path("type").asText()).isEqualTo("function");
+            assertThat(toolCall.path("function").path("name").asText()).isEqualTo("get_weather");
+            // arguments 是 JSON 字符串而非对象。
+            assertThat(objectMapper.readTree(
+                    toolCall.path("function").path("arguments").asText())
+                    .path("city").asText()).isEqualTo("北京");
+            assertThat(translateNonStreamRaw(upstream)).contains("\"finish_reason\":\"tool_calls\"");
+        }
+
+        /** 无参工具调用是合法形态，input 缺失映射成空对象而非报错。 */
+        @Test
+        void missingToolInputBecomesEmptyObject() throws Exception {
+            String upstream = """
+                    {"id":"msg_1","model":"claude-x","stop_reason":"tool_use",
+                     "content":[{"type":"tool_use","id":"toolu_1","name":"ping"}]}
+                    """;
+
+            assertThat(translateNonStream(upstream).path("choices").get(0)
+                    .path("message").path("tool_calls").get(0)
+                    .path("function").path("arguments").asText()).isEqualTo("{}");
+        }
+
+        /** 模型名必须回显下游带前缀的原始名，否则下游下一轮路由会失败。 */
+        @Test
+        void downstreamPrefixedModelNameIsEchoedNotUpstreamBareName() throws Exception {
+            String upstream = """
+                    {"id":"msg_1","model":"claude-x","stop_reason":"end_turn",
+                     "content":[{"type":"text","text":"好"}]}
+                    """;
+
+            assertThat(translateNonStream(upstream).path("model").asText())
+                    .isEqualTo(DOWNSTREAM_MODEL);
+        }
+
+        @Test
+        void redactedThinkingAndHostedBlocksAreDropped() throws Exception {
+            String upstream = """
+                    {"id":"msg_1","model":"claude-x","stop_reason":"end_turn",
+                     "content":[{"type":"redacted_thinking","data":"加密"},
+                                {"type":"server_tool_use","id":"srv_1","name":"web_search"},
+                                {"type":"text","text":"好"}]}
+                    """;
+
+            JsonNode message = translateNonStream(upstream).path("choices").get(0).path("message");
+
+            assertThat(message.path("content").asText()).isEqualTo("好");
+            assertThat(message.has("reasoning_content")).isFalse();
+            assertThat(message.has("tool_calls")).isFalse();
+        }
+
+        @Test
+        void unparsableUpstreamBodyRaisesTranslationException() {
+            Throwable thrown = catchThrowable(() -> translateNonStreamRaw("不是 JSON"));
+
+            assertThat(thrown).isInstanceOf(ResponseTranslationException.class);
+        }
+
+        @Test
+        void blankUpstreamBodyRaisesTranslationException() {
+            assertThat(catchThrowable(() -> translateNonStreamRaw("")))
+                    .isInstanceOf(ResponseTranslationException.class);
+        }
+    }
+
+    // ==================== usage 换算 ====================
+
+    @Nested
+    @DisplayName("usage 换算")
+    class Usage {
+
+        /**
+         * Anthropic 的 input_tokens 不含缓存，OpenAI 的 prompt_tokens 含缓存。
+         * 不加回去会让计费少记。
+         */
+        @Test
+        void cacheTokensAreAddedBackIntoPromptTokens() throws Exception {
+            String upstream = """
+                    {"id":"msg_1","model":"claude-x","stop_reason":"end_turn",
+                     "content":[{"type":"text","text":"好"}],
+                     "usage":{"input_tokens":10,"output_tokens":5,
+                              "cache_read_input_tokens":3,"cache_creation_input_tokens":2}}
+                    """;
+
+            JsonNode usage = translateNonStream(upstream).path("usage");
+
+            assertThat(usage.path("prompt_tokens").asInt()).isEqualTo(15);
+            assertThat(usage.path("completion_tokens").asInt()).isEqualTo(5);
+            assertThat(usage.path("total_tokens").asInt()).isEqualTo(20);
+            assertThat(usage.path("prompt_tokens_details").path("cached_tokens").asInt()).isEqualTo(3);
+        }
+
+        /** 没有缓存时不产出 details 对象，避免让下游误以为上游支持缓存统计。 */
+        @Test
+        void promptTokenDetailsOmittedWhenNoCacheUsed() throws Exception {
+            String upstream = """
+                    {"id":"msg_1","model":"claude-x","stop_reason":"end_turn",
+                     "content":[{"type":"text","text":"好"}],
+                     "usage":{"input_tokens":10,"output_tokens":5}}
+                    """;
+
+            assertThat(translateNonStream(upstream).path("usage").has("prompt_tokens_details"))
+                    .isFalse();
+        }
+
+        /** Anthropic 不上报思考 token，不能凭空估算。 */
+        @Test
+        void reasoningTokensAreNeverSynthesized() throws Exception {
+            String upstream = """
+                    {"id":"msg_1","model":"claude-x","stop_reason":"end_turn",
+                     "content":[{"type":"thinking","thinking":"很长的思考过程"}],
+                     "usage":{"input_tokens":10,"output_tokens":50}}
+                    """;
+
+            assertThat(translateNonStream(upstream).path("usage")
+                    .has("completion_tokens_details")).isFalse();
+        }
+
+        @Test
+        void usageOmittedEntirelyWhenUpstreamGivesNone() throws Exception {
+            String upstream = """
+                    {"id":"msg_1","model":"claude-x","stop_reason":"end_turn",
+                     "content":[{"type":"text","text":"好"}]}
+                    """;
+
+            assertThat(translateNonStream(upstream).has("usage")).isFalse();
+        }
+
+        /**
+         * usage 分两个事件到达，合并时 0 不能覆盖已有值。
+         *
+         * <p>message_delta 的 usage 里 input_tokens 常常是 0，无条件覆盖会抹掉
+         * message_start 记下的输入 token。
+         */
+        @Test
+        void zeroDoesNotOverwriteAccumulatedUsageAcrossEvents() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"message_start","message":{"id":"msg_1","model":"claude-x",
+                     "usage":{"input_tokens":88,"output_tokens":0,"cache_read_input_tokens":7}}}
+                    """,
+                    """
+                    {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+                    """,
+                    """
+                    {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"好"}}
+                    """,
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"end_turn"},
+                     "usage":{"input_tokens":0,"output_tokens":20}}
+                    """), true);
+
+            String usageChunk = chunks.stream()
+                    .filter(chunk -> chunk.contains("\"usage\""))
+                    .findFirst().orElseThrow();
+
+            // 88 + 7 = 95，不能被 message_delta 的 input_tokens:0 抹成 0。
+            assertThat(usageChunk).contains("\"prompt_tokens\":95");
+            assertThat(usageChunk).contains("\"completion_tokens\":20");
+        }
+    }
+
+    // ==================== 流式：帧数不对等 ====================
+
+    @Nested
+    @DisplayName("流式帧数不对等")
+    class FrameCardinality {
+
+        /** message_start 是唯一带 role 的帧。 */
+        @Test
+        void messageStartEmitsTheOnlyRoleFrame() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"message_start","message":{"id":"msg_1","model":"claude-x"}}
+                    """,
+                    """
+                    {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"好"}}
+                    """), false);
+
+            assertThat(chunks.get(0)).contains("\"role\":\"assistant\"");
+            assertThat(chunks.stream().filter(c -> c.contains("\"role\"")).count()).isEqualTo(1);
+        }
+
+        /**
+         * 这些事件产出零帧。Chat 协议没有块生命周期概念，
+         * 产出空 delta 帧只是噪声（参考实现 new-api 会因 fall-through 发出噪声帧）。
+         */
+        @Test
+        void blockLifecycleAndPingEmitNoFrames() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+                    """,
+                    "{\"type\":\"ping\"}",
+                    """
+                    {"type":"content_block_stop","index":0}
+                    """,
+                    "{\"type\":\"message_stop\"}"), false);
+
+            // 只有收尾产出的帧，没有任何来自上述事件的帧。
+            assertThat(chunks).noneMatch(chunk -> chunk.contains("\"delta\":{}"));
+        }
+
+        /** [DONE] 由流结束触发，不由 message_stop 触发。 */
+        @Test
+        void doneSentinelIsAlwaysLastFrame() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"message_start","message":{"id":"msg_1","model":"claude-x"}}
+                    """,
+                    """
+                    {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"好"}}
+                    """,
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"end_turn"}}
+                    """,
+                    "{\"type\":\"message_stop\"}"), false);
+
+            assertThat(chunks.get(chunks.size() - 1)).isEqualTo("[DONE]");
+            assertThat(chunks.stream().filter("[DONE]"::equals).count()).isEqualTo(1);
+        }
+    }
+
+    // ==================== 流式：思考 ====================
+
+    @Nested
+    @DisplayName("流式思考内容")
+    class Thinking {
+
+        @Test
+        void thinkingDeltaBecomesReasoningContent() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"content_block_delta","index":0,
+                     "delta":{"type":"thinking_delta","thinking":"我们"}}
+                    """), false);
+
+            assertThat(chunks.get(0)).contains("\"reasoning_content\":\"我们\"");
+            // 不能同时写 content —— 那会让思考内容混进正文。
+            assertThat(chunks.get(0)).doesNotContain("\"content\":\"我们\"");
+        }
+
+        /**
+         * signature_delta 吸收但不产帧，也不注入替代内容。
+         *
+         * <p>参考实现 new-api 把它映射成 reasoning_content = "\n"，
+         * 那个换行会成为下游看到的真实内容，是凭空多出来的。
+         */
+        @Test
+        void signatureDeltaEmitsNothingAndInjectsNoSubstitute() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"content_block_delta","index":0,
+                     "delta":{"type":"thinking_delta","thinking":"想"}}
+                    """,
+                    """
+                    {"type":"content_block_delta","index":0,
+                     "delta":{"type":"signature_delta","signature":"abc123"}}
+                    """), false);
+
+            assertThat(chunks).noneMatch(chunk -> chunk.contains("abc123"));
+            assertThat(chunks).noneMatch(chunk -> chunk.contains("\\n"));
+            // 只有思考帧与收尾帧，signature 没有贡献任何帧。
+            assertThat(chunks.stream()
+                    .filter(chunk -> chunk.contains("reasoning_content")).count()).isEqualTo(1);
+        }
+    }
+
+    // ==================== 流式：tool index 双索引域 ====================
+
+    @Nested
+    @DisplayName("tool index 是独立索引域")
+    class ToolIndexDomain {
+
+        /**
+         * 这是本轮最容易错、且三个参考项目都没测的路径。
+         *
+         * <p>实测序列里 thinking 占 Anthropic index 0、tool_use 占 index 1 与 2。
+         * OpenAI 的 tool_calls[].index 必须从 0 起稠密递增，
+         * 直接用 Anthropic index 会产出从 1 开始的稀疏数组，下游拼不出参数。
+         */
+        @Test
+        void toolIndexIsDenseFromZeroEvenWhenThinkingOccupiesAnthropicIndexZero() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"content_block_start","index":0,
+                     "content_block":{"type":"thinking","thinking":""}}
+                    """,
+                    """
+                    {"type":"content_block_delta","index":0,
+                     "delta":{"type":"thinking_delta","thinking":"想"}}
+                    """,
+                    """
+                    {"type":"content_block_start","index":1,
+                     "content_block":{"type":"tool_use","id":"toolu_a","name":"tool_a"}}
+                    """,
+                    """
+                    {"type":"content_block_start","index":2,
+                     "content_block":{"type":"tool_use","id":"toolu_b","name":"tool_b"}}
+                    """), false);
+
+            String firstTool = chunkContaining(chunks, "toolu_a");
+            String secondTool = chunkContaining(chunks, "toolu_b");
+
+            // Anthropic index 1 → OpenAI tool index 0
+            assertThat(firstTool).contains("\"index\":0");
+            // Anthropic index 2 → OpenAI tool index 1
+            assertThat(secondTool).contains("\"index\":1");
+        }
+
+        /** 参数增量必须按 Anthropic index 查表，落到正确的 OpenAI tool index 上。 */
+        @Test
+        void argumentDeltasAreRoutedToTheMappedToolIndex() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"content_block_start","index":0,
+                     "content_block":{"type":"thinking","thinking":""}}
+                    """,
+                    """
+                    {"type":"content_block_start","index":1,
+                     "content_block":{"type":"tool_use","id":"toolu_a","name":"tool_a"}}
+                    """,
+                    """
+                    {"type":"content_block_delta","index":1,
+                     "delta":{"type":"input_json_delta","partial_json":"{\\"x\\":"}}
+                    """,
+                    """
+                    {"type":"content_block_delta","index":1,
+                     "delta":{"type":"input_json_delta","partial_json":"1}"}}
+                    """), false);
+
+            List<String> argumentChunks = chunks.stream()
+                    .filter(chunk -> chunk.contains("arguments") && !chunk.contains("toolu_a"))
+                    .toList();
+
+            assertThat(argumentChunks).hasSize(2);
+            assertThat(argumentChunks).allMatch(chunk -> chunk.contains("\"index\":0"));
+        }
+
+        /** 没见过声明的块，参数增量必须丢弃而不是猜一个序号。 */
+        @Test
+        void argumentDeltaWithoutPriorDeclarationIsDropped() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"content_block_delta","index":7,
+                     "delta":{"type":"input_json_delta","partial_json":"{}"}}
+                    """), false);
+
+            assertThat(chunks).noneMatch(chunk -> chunk.contains("tool_calls"));
+        }
+    }
+
+    // ==================== 流式：收尾三档 ====================
+
+    @Nested
+    @DisplayName("流结束的三档收尾")
+    class Finalization {
+
+        /** 第一档：message_delta 给了 stop_reason，正常映射。 */
+        @Test
+        void stopReasonFromMessageDeltaIsMapped() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}
+                    """), false);
+
+            assertThat(finishChunk(chunks)).contains("\"finish_reason\":\"length\"");
+        }
+
+        /**
+         * 第二档：上游没给 stop_reason 但有实质输出 —— 按截断处理。
+         *
+         * <p>不能报成正常完成：那会让下游把一个被切断的回答当作完整答案。
+         */
+        @Test
+        void truncatedStreamWithOutputIsReportedAsLength() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"半句"}}
+                    """), false);
+
+            assertThat(finishChunk(chunks)).contains("\"finish_reason\":\"length\"");
+        }
+
+        /** 第二档变体：截断但见过工具调用，finish_reason 用 tool_calls。 */
+        @Test
+        void truncatedStreamWithToolCallIsReportedAsToolCalls() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"content_block_start","index":0,
+                     "content_block":{"type":"tool_use","id":"toolu_a","name":"tool_a"}}
+                    """), false);
+
+            assertThat(finishChunk(chunks)).contains("\"finish_reason\":\"tool_calls\"");
+        }
+
+        /** 第三档：什么都没有，仍要发终止帧，否则下游会一直等。 */
+        @Test
+        void emptyStreamStillEmitsTerminationFrames() {
+            List<String> chunks = collectStream(List.of(), false);
+
+            assertThat(finishChunk(chunks)).contains("\"finish_reason\":\"stop\"");
+            assertThat(chunks.get(chunks.size() - 1)).isEqualTo("[DONE]");
+        }
+
+        /** finish_reason 只能发一次，上游重复发 message_delta 不产生第二个。 */
+        @Test
+        void finishReasonIsEmittedExactlyOnce() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"end_turn"}}
+                    """,
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"end_turn"}}
+                    """), false);
+
+            assertThat(chunks.stream()
+                    .filter(chunk -> chunk.contains("\"finish_reason\":")
+                            && !chunk.contains("\"finish_reason\":null")).count())
+                    .isEqualTo(1);
+        }
+
+        /** 未知 stop_reason 原样透传，不强行归一到 stop。 */
+        @Test
+        void unknownStopReasonIsPassedThroughVerbatim() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"some_new_reason"}}
+                    """), false);
+
+            assertThat(finishChunk(chunks)).contains("\"finish_reason\":\"some_new_reason\"");
+        }
+    }
+
+    // ==================== usage chunk 的发出条件 ====================
+
+    @Nested
+    @DisplayName("usage chunk 依赖 include_usage")
+    class UsageChunkGating {
+
+        @Test
+        void usageChunkOmittedWhenDownstreamDidNotAskForIt() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"message_start","message":{"id":"msg_1",
+                     "usage":{"input_tokens":10,"output_tokens":0}}}
+                    """,
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"end_turn"},
+                     "usage":{"output_tokens":5}}
+                    """), false);
+
+            assertThat(chunks).noneMatch(chunk -> chunk.contains("\"usage\""));
+        }
+
+        @Test
+        void usageChunkHasEmptyChoicesArrayAndFollowsFinishChunk() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"message_start","message":{"id":"msg_1",
+                     "usage":{"input_tokens":10,"output_tokens":0}}}
+                    """,
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"end_turn"},
+                     "usage":{"output_tokens":5}}
+                    """), true);
+
+            int finishIndex = chunks.indexOf(finishChunk(chunks));
+            int usageIndex = indexOfChunkContaining(chunks, "\"usage\"");
+
+            assertThat(usageIndex).isGreaterThan(finishIndex);
+            assertThat(chunks.get(usageIndex)).contains("\"choices\":[]");
+        }
+    }
+
+    // ==================== 状态隔离 ====================
+
+    @Nested
+    @DisplayName("状态按订阅隔离")
+    class StateIsolation {
+
+        /**
+         * 重试会重订阅同一个 Flux，状态必须重建。
+         *
+         * <p>若状态跨订阅复用，第二轮的 role 帧会缺失（sentRole 已置位）、
+         * tool index 会从非零开始。
+         */
+        @Test
+        void eachSubscriptionGetsFreshState() {
+            Flux<String> upstream = Flux.just("""
+                    {"type":"message_start","message":{"id":"msg_1","model":"claude-x"}}
+                    """);
+            Flux<String> translated = translator.translateStream(
+                    upstream, DOWNSTREAM_MODEL, new TranslationContext(true, false));
+
+            List<String> first = translated.collectList().block(Duration.ofSeconds(5));
+            List<String> second = translated.collectList().block(Duration.ofSeconds(5));
+
+            assertThat(first).isNotNull();
+            assertThat(second).isNotNull();
+            // 两次订阅都必须拿到 role 帧。
+            assertThat(first.get(0)).contains("\"role\":\"assistant\"");
+            assertThat(second.get(0)).contains("\"role\":\"assistant\"");
+        }
+    }
+
+    // ==================== 端到端：实测事件序列 ====================
+
+    /**
+     * 用实测抓包的完整事件序列做一次端到端断言。
+     *
+     * <p>序列来自 O2A 落地后对 DeepSeek Anthropic 端点的真实调用，
+     * 含 thinking 块占 index 0、signature_delta、text 块占 index 1。
+     */
+    @Test
+    @DisplayName("端到端：实测的 thinking + text 序列")
+    void realWorldThinkingThenTextSequence() {
+        List<String> chunks = collectStream(List.of(
+                """
+                {"type":"message_start","message":{"id":"01fd0b35","type":"message",
+                 "role":"assistant","model":"deepseek-v4-flash","content":[],
+                 "stop_reason":null,"usage":{"input_tokens":88,"output_tokens":0}}}
+                """,
+                """
+                {"type":"content_block_start","index":0,
+                 "content_block":{"type":"thinking","thinking":"","signature":""}}
+                """,
+                "{\"type\":\"ping\"}",
+                """
+                {"type":"content_block_delta","index":0,
+                 "delta":{"type":"thinking_delta","thinking":"只需回复一个字"}}
+                """,
+                """
+                {"type":"content_block_delta","index":0,
+                 "delta":{"type":"signature_delta","signature":"01fd0b35"}}
+                """,
+                """
+                {"type":"content_block_stop","index":0}
+                """,
+                """
+                {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+                """,
+                """
+                {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"好"}}
+                """,
+                """
+                {"type":"content_block_stop","index":1}
+                """,
+                """
+                {"type":"message_delta","delta":{"stop_reason":"end_turn"},
+                 "usage":{"input_tokens":88,"output_tokens":20}}
+                """,
+                "{\"type\":\"message_stop\"}"), true);
+
+        // 首帧 role、思考帧、正文帧、finish 帧、usage 帧、[DONE]
+        assertThat(chunks.get(0)).contains("\"role\":\"assistant\"");
+        assertThat(chunkContaining(chunks, "reasoning_content")).contains("只需回复一个字");
+        assertThat(chunkContaining(chunks, "\"content\":\"好\"")).contains("\"content\":\"好\"");
+        assertThat(finishChunk(chunks)).contains("\"finish_reason\":\"stop\"");
+        assertThat(chunkContaining(chunks, "\"usage\"")).contains("\"prompt_tokens\":88");
+        assertThat(chunks.get(chunks.size() - 1)).isEqualTo("[DONE]");
+
+        // signature 没有以任何形式出现在下游。
+        assertThat(chunks).noneMatch(chunk -> chunk.contains("signature"));
+        // 每帧都回显下游带前缀的模型名。
+        assertThat(chunks.stream().filter(chunk -> !"[DONE]".equals(chunk)))
+                .allMatch(chunk -> chunk.contains(DOWNSTREAM_MODEL));
+    }
+
+    // ==================== 辅助 ====================
+
+    private JsonNode translateNonStream(String upstreamBody) throws Exception {
+        return objectMapper.readTree(translateNonStreamRaw(upstreamBody));
+    }
+
+    private String translateNonStreamRaw(String upstreamBody) {
+        return translator.translateResponse(Mono.just(upstreamBody), DOWNSTREAM_MODEL)
+                .block(Duration.ofSeconds(5));
+    }
+
+    private List<String> collectStream(List<String> events, boolean includeUsage) {
+        List<String> collected = translator.translateStream(
+                        Flux.fromIterable(events), DOWNSTREAM_MODEL,
+                        new TranslationContext(true, includeUsage))
+                .collectList()
+                .block(Duration.ofSeconds(5));
+        assertThat(collected).isNotNull();
+        return collected;
+    }
+
+    /**
+     * 找出真正带终止原因的那一帧。
+     *
+     * <p>不能用 {@code contains("finish_reason")} —— 每一帧都有这个键，
+     * 只是中间帧的值是 JSON null。要找的是值非 null 的那一帧。
+     */
+    private static String finishChunk(List<String> chunks) {
+        return chunks.stream()
+                .filter(chunk -> !chunk.contains("\"finish_reason\":null"))
+                .filter(chunk -> chunk.contains("\"finish_reason\":"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("没有带终止原因的 chunk，实际: " + chunks));
+    }
+
+    private static String chunkContaining(List<String> chunks, String needle) {
+        return chunks.stream()
+                .filter(chunk -> chunk.contains(needle))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("没有 chunk 含: " + needle + "，实际: " + chunks));
+    }
+
+    private static int indexOfChunkContaining(List<String> chunks, String needle) {
+        for (int i = 0; i < chunks.size(); i++) {
+            if (chunks.get(i).contains(needle)) {
+                return i;
+            }
+        }
+        throw new AssertionError("没有 chunk 含: " + needle + "，实际: " + chunks);
+    }
+}

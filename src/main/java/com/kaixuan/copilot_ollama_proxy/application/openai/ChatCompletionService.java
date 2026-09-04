@@ -5,6 +5,7 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchMan
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslatedRequest;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.AnthropicToOpenAiResponseTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.OpenAiToAnthropicRequestTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
@@ -38,6 +39,7 @@ public class ChatCompletionService {
     private final GenericOpenAiChatService genericOpenAiChatService;
     private final GenericAnthropicChatService genericAnthropicChatService;
     private final OpenAiToAnthropicRequestTranslator o2aTranslator;
+    private final AnthropicToOpenAiResponseTranslator a2oTranslator;
 
     /**
      * 创建聊天补全应用服务。
@@ -46,18 +48,21 @@ public class ChatCompletionService {
      * @param protocolDispatchManager 协议调度管理器
      * @param genericOpenAiChatService OpenAI 上游执行器
      * @param genericAnthropicChatService Anthropic 上游执行器
-     * @param o2aTranslator O2A 请求翻译器
+     * @param o2aTranslator O2A 请求翻译器（去程）
+     * @param a2oTranslator A2O 响应翻译器（回程）
      */
     public ChatCompletionService(ProviderRouteResolver providerRouteResolver,
                                  ProtocolDispatchManager protocolDispatchManager,
                                  GenericOpenAiChatService genericOpenAiChatService,
                                  GenericAnthropicChatService genericAnthropicChatService,
-                                 OpenAiToAnthropicRequestTranslator o2aTranslator) {
+                                 OpenAiToAnthropicRequestTranslator o2aTranslator,
+                                 AnthropicToOpenAiResponseTranslator a2oTranslator) {
         this.providerRouteResolver = providerRouteResolver;
         this.protocolDispatchManager = protocolDispatchManager;
         this.genericOpenAiChatService = genericOpenAiChatService;
         this.genericAnthropicChatService = genericAnthropicChatService;
         this.o2aTranslator = o2aTranslator;
+        this.a2oTranslator = a2oTranslator;
     }
 
     /**
@@ -81,12 +86,20 @@ public class ChatCompletionService {
             return genericOpenAiChatService.chatCompletion(openAiRequest, route, downstreamHeaders, requestId);
         }
         
-        // 跨协议翻译：O2A 请求侧已实现，响应侧后续补充。
-        // TODO 响应侧翻译（A2O）尚未实现，当前只能在「上游也恰好返回 OpenAI 格式」时工作。
-        //  响应翻译落地后，这里需要把翻译器也套在响应链路上。
+        // 跨协议翻译：去程改写请求体、回程改写响应体。
+        //
+        // 翻译套在上游服务外侧，因而天然在 retryWhen 之外 ——
+        // 空响应判定（AnthropicContentDetector）与 api_call_log 落库用的都是
+        // 上游原生形态，若翻译进了重试内侧，判定器会把每一轮都当成空响应。
+        // 见 docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md 第 12 节。
+        //
+        // 模型名传下游原始的 model（含 [provider-key] 前缀）而非上游返回的裸名：
+        // 本服务按前缀路由，把裸名透给下游会让它下一轮路由失败（第 7 节）。
         if (decision.upstreamProtocol() == WireProtocol.ANTHROPIC) {
             TranslatedRequest translated = o2aTranslator.translateRequest(openAiRequest);
-            return genericAnthropicChatService.messages(translated.body(), route, downstreamHeaders, requestId);
+            Mono<String> upstream = genericAnthropicChatService.messages(
+                    translated.body(), route, downstreamHeaders, requestId);
+            return a2oTranslator.translateResponse(upstream, model);
         }
         
         // 其它协议组合：当前只有 OPENAI 与 ANTHROPIC 两种，走不到这里。
@@ -124,12 +137,16 @@ public class ChatCompletionService {
             return genericOpenAiChatService.chatCompletionStream(openAiRequest, route, downstreamHeaders, requestId);
         }
         
-        // 跨协议翻译：O2A 请求侧已实现，响应侧后续补充。
-        // TODO 流式响应翻译尤其要注意帧数不对等：Anthropic 的 message_start / content_block_start
-        //  不产出下游帧，而一个 message_delta 可能产出正文与 finish 两个 chunk。
+        // 跨协议翻译：去程改写请求体、回程把 Anthropic 事件翻回 OpenAI chunk。
+        //
+        // 帧数不对等（第 2 节）：message_start 产 1 帧（唯一带 role），
+        // content_block_start/stop 与 signature_delta 产 0 帧，
+        // 而 [DONE] 由流结束触发而非 message_stop。
         if (decision.upstreamProtocol() == WireProtocol.ANTHROPIC) {
             TranslatedRequest translated = o2aTranslator.translateRequest(openAiRequest);
-            return genericAnthropicChatService.messagesStream(translated.body(), route, downstreamHeaders, requestId);
+            Flux<String> upstream = genericAnthropicChatService.messagesStream(
+                    translated.body(), route, downstreamHeaders, requestId);
+            return a2oTranslator.translateStream(upstream, model, translated.context());
         }
         
         return Flux.error(new ProtocolTranslationNotSupportedException(

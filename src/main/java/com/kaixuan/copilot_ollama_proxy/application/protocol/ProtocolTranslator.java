@@ -30,11 +30,19 @@ public interface ProtocolTranslator {
     //  请求侧改写的返回类型不能只是 Map：响应侧需要请求期上下文（下游要流式还是非流式、
     //  思考是下游要求的还是设置层注入的），故返回 {body, translationContext}（第 7 节）。
     //
-    //  流式那个的签名要等 Anthropic 事件解析落地后再定 —— 它不是「一帧进一帧出」：
-    //  message_start / content_block_start 不产出下游帧，而一个 message_delta
-    //  可能同时产出正文 chunk 与 finish chunk，故返回类型至少是 List/Flux 而非单个 String。
-    //  另需注意翻译必须在重试边界之外：判定与重试用的是上游原生形态，
-    //  若翻译发生在 retryWhen 内侧，空响应判定看到的就是合成出来的形状。
+    //  响应侧（A2O）的契约已定，见 docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md。
+    //  「不是一帧进一帧出」已由实测事件序列证实（该文档第 1、2 节）：
+    //   零帧：content_block_start / content_block_stop / signature_delta / message_stop / ping
+    //   一帧：message_start（唯一带 role）/ text_delta / thinking_delta / message_delta
+    //   多帧：流结束时的 finish chunk + usage chunk + [DONE]
+    //  故流式方法的返回类型必须是 List/Flux 而非单个 String。
+    //  非流式方法要做 usage 的缓存换算（Anthropic input_tokens 不含缓存、
+    //  OpenAI prompt_tokens 含缓存，第 9 节），并回显下游带前缀的模型名（第 7 节）。
+    //
+    //  两侧翻译都必须在重试边界之外：判定与重试用的是上游原生形态，
+    //  若翻译发生在 retryWhen 内侧，AnthropicContentDetector 看到的就是合成出来的
+    //  OpenAI chunk，而它的取值路径是照 Anthropic 的 content[] 结构写的，
+    //  会把每一轮都判成空并耗尽预算（第 12 节）。
 
     /** 本翻译器接受的下游协议。 */
     WireProtocol downstreamProtocol();
