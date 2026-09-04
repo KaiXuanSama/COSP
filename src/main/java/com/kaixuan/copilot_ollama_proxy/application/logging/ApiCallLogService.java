@@ -1,5 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.application.logging;
 
+import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
+
 import java.util.List;
 import java.util.Map;
 
@@ -73,6 +75,24 @@ public interface ApiCallLogService {
     }
 
     /**
+     * 保存一条流式调用日志，chunk 以 {@link ChunkLogPayload} 给出。
+     *
+     * <p>跨协议翻译时该载荷同时带上游原始事件与下游实际收到的 chunk；
+     * 直连时只有一份，落库形态与历史数据完全一致。
+     *
+     * <p>默认实现只取下游那一份，使未升级的实现行为不变。
+     */
+    default Long saveStream(String providerKey, String modelName,
+                            String downstreamProtocol, String upstreamProtocol,
+                            Map<String, String> requestHeaders, Map<String, Object> requestBody,
+                            Map<String, String> responseHeaders, int statusCode,
+                            ChunkLogPayload chunks, long durationMs) {
+        return saveStream(providerKey, modelName, downstreamProtocol, upstreamProtocol,
+                requestHeaders, requestBody, responseHeaders, statusCode,
+                chunks == null ? null : chunks.translated(), durationMs);
+    }
+
+    /**
      * 保存一条流式调用日志（含错误信息）。
      * 当流式响应过程中发生错误且重试耗尽时，将错误响应体保存到非流式响应列。
      *
@@ -104,6 +124,21 @@ public interface ApiCallLogService {
                                      Map<String, String> errorHeaders, int errorCode, String errorBody, long durationMs) {
         return saveStreamWithError(providerKey, modelName, requestHeaders, requestBody, responseHeaders,
                 statusCode, chunks, errorHeaders, errorCode, errorBody, durationMs);
+    }
+
+    /**
+     * 保存一条流式错误调用日志，chunk 以 {@link ChunkLogPayload} 给出。
+     */
+    default Long saveStreamWithError(String providerKey, String modelName,
+                                     String downstreamProtocol, String upstreamProtocol,
+                                     Map<String, String> requestHeaders, Map<String, Object> requestBody,
+                                     Map<String, String> responseHeaders, int statusCode,
+                                     ChunkLogPayload chunks,
+                                     Map<String, String> errorHeaders, int errorCode, String errorBody, long durationMs) {
+        return saveStreamWithError(providerKey, modelName, downstreamProtocol, upstreamProtocol,
+                requestHeaders, requestBody, responseHeaders, statusCode,
+                chunks == null ? null : chunks.translated(),
+                errorHeaders, errorCode, errorBody, durationMs);
     }
 
     /**

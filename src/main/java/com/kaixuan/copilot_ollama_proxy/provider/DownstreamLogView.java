@@ -41,20 +41,26 @@ public record DownstreamLogView(
     }
 
     /**
-     * 应用 chunk 改写。
+     * 产出落库用的 chunk 载荷。
      *
-     * <p>改写器抛异常时回退到原始 chunk：日志是观测手段，不该因为改写失败而丢掉
+     * <p>直连时只有一份（裸数组）；跨协议时两份都留（对象形态），
+     * 因为排查「客户端为何解析失败」需要同时看上游发了什么与客户端收到了什么。
+     *
+     * <p>改写器抛异常时退回直连形态：日志是观测手段，不该因为改写失败而丢掉
      * 「上游到底返回了什么」这个更基础的事实。
      */
-    public List<String> viewChunks(List<String> upstreamChunks) {
+    public ChunkLogPayload viewChunks(List<String> upstreamChunks) {
         if (chunkRewriter == null || upstreamChunks == null) {
-            return upstreamChunks;
+            return ChunkLogPayload.direct(upstreamChunks);
         }
         try {
             List<String> rewritten = chunkRewriter.apply(upstreamChunks);
-            return rewritten == null ? upstreamChunks : rewritten;
+            if (rewritten == null) {
+                return ChunkLogPayload.direct(upstreamChunks);
+            }
+            return ChunkLogPayload.translated(rewritten, upstreamChunks);
         } catch (Exception exception) {
-            return upstreamChunks;
+            return ChunkLogPayload.direct(upstreamChunks);
         }
     }
 }
