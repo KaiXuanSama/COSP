@@ -20,10 +20,14 @@ import java.util.Map;
  *   <tr><td>0</td><td>{@code content_block_start}（非 tool）、{@code content_block_stop}、
  *       {@code signature_delta}、{@code message_stop}、{@code ping}</td></tr>
  *   <tr><td>1</td><td>{@code message_start}（唯一带 role）、{@code text_delta}、
- *       {@code thinking_delta}、{@code input_json_delta}、{@code message_delta}</td></tr>
- *   <tr><td>多</td><td>流结束时的收尾（finish chunk + usage chunk + {@code [DONE]}）</td></tr>
+ *       {@code thinking_delta}、{@code input_json_delta}、{@code message_delta}
+ *       （只产 finish chunk）</td></tr>
+ *   <tr><td>多</td><td>流结束时的收尾（可能的 finish chunk + usage chunk + {@code [DONE]}）</td></tr>
  * </table>
  * 因此每个方法都返回 {@code List}，空列表是完全正常的返回值。
+ *
+ * <p><strong>usage chunk 只由 {@link #finalizeStream} 发出</strong>，
+ * 不跟着 finish chunk 走 —— 那样正常路径会发出两个。见 {@code usageFrame} 的说明。
  *
  * <h2>[DONE] 不由 message_stop 触发</h2>
  * 它由<strong>流结束</strong>触发。上游可能在发完 {@code message_stop} 后才真正关闭连接，
@@ -242,7 +246,9 @@ final class AnthropicToOpenAiStreamTranslator {
             // 上游重复发了带 stop_reason 的 message_delta。finish_reason 只能发一次。
             return List.of();
         }
-        return finishFrames(state, finishReason);
+        // 只发 finish chunk，不在这里带 usage —— usage 由 finalizeStream 统一发出，
+        // 否则正常路径会产出两个 usage chunk（见 usageFrame 的说明）。
+        return List.of(finishChunk(state, finishReason));
     }
 
     private List<String> onError(JsonNode root) {
@@ -284,35 +290,48 @@ final class AnthropicToOpenAiStreamTranslator {
                 finishReason = "stop";
                 log.warn("A2O 翻译收尾：上游未产出任何实质内容，发出空的终止帧");
             }
-            frames.addAll(finishFrames(state, finishReason));
-        } else {
-            // finish chunk 已发，只需补 usage 与 [DONE]。
-            frames.addAll(usageFrames(state));
+            frames.add(finishChunk(state, finishReason));
         }
-
+        // usage 帧无条件在这里发（而非跟着 finish chunk 走），见 usageFrame 的说明。
+        frames.addAll(usageFrame(state));
         frames.add(OpenAiResponseShapes.DONE_SENTINEL);
         return frames;
     }
 
     /**
-     * finish chunk 与紧随其后的 usage chunk。
+     * finish chunk —— 唯一带非 null {@code finish_reason} 的帧。
      *
-     * <p>顺序固定：finish 在前、usage 在后。反过来会让按 finish_reason 判断流结束的
-     * 客户端提前收尾，漏掉 usage。
+     * <p>它可能来自 {@code message_delta}（正常路径），也可能来自
+     * {@link #finalizeStream} 的截断兜底，两处共用同一形态。
      */
-    private List<String> finishFrames(A2OStreamState state, String finishReason) {
-        List<String> frames = new ArrayList<>(2);
-        frames.add(chunk(state, OpenAiResponseShapes.finishDelta(), finishReason));
-        frames.addAll(usageFrames(state));
-        return frames;
+    private String finishChunk(A2OStreamState state, String finishReason) {
+        return chunk(state, OpenAiResponseShapes.finishDelta(), finishReason);
     }
 
     /**
      * usage chunk —— 独立一帧，{@code choices} 为空数组。
      *
+     * <h2>唯一发出点是 finalizeStream</h2>
+     * 曾经这一帧跟在 finish chunk 后面一起产出，于是正常路径会发出<strong>两个</strong>
+     * usage chunk：{@code message_delta} 带 {@code stop_reason} 时发第一个，
+     * 流结束时 {@link #finalizeStream} 又补第二个。宽容的客户端会拿后一个覆盖前一个
+     * 因而看不出问题，但那是两条相同的计费记录。
+     *
+     * <p>收敛到收尾一处还顺带修正了<strong>完整性</strong>：Anthropic 允许在带
+     * {@code stop_reason} 的 {@code message_delta} 之后再发只携带 usage 的
+     * {@code message_delta}。跟着 finish chunk 发意味着用「那一刻」的累积值抢跑，
+     * 之后到达的 usage 只能进第二帧 —— 于是两帧数字还不一样。放在收尾发出的必然是
+     * 最完整的一份。
+     *
+     * <h2>顺序仍然固定：finish 在前、usage 在后</h2>
+     * 反过来会让按 {@code finish_reason} 判断流结束的客户端提前收尾，漏掉 usage。
+     * 正常路径下 finish chunk 由 {@code message_delta} 在更早的位置发出，
+     * 截断路径下由上面的 {@code frames.add(finishChunk(...))} 发出，两种情况都在
+     * usage 之前 —— 这个不变量由测试钉住。
+     *
      * <p>只在下游明确要求（{@code stream_options.include_usage}）且真的有 usage 时发出。
      */
-    private List<String> usageFrames(A2OStreamState state) {
+    private List<String> usageFrame(A2OStreamState state) {
         if (!state.includeUsage() || !state.usage().hasUsage()) {
             return List.of();
         }

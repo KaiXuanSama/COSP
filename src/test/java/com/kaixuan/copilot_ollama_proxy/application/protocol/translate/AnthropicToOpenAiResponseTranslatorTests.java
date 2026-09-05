@@ -735,6 +735,101 @@ class AnthropicToOpenAiResponseTranslatorTests {
             assertThat(usageIndex).isGreaterThan(finishIndex);
             assertThat(chunks.get(usageIndex)).contains("\"choices\":[]");
         }
+
+        /**
+         * usage chunk 只能有<strong>一个</strong>。
+         *
+         * <p>曾经的缺陷：{@code message_delta} 带 {@code stop_reason} 时跟着 finish chunk
+         * 发一个，流结束时 {@link AnthropicToOpenAiStreamTranslator#finalizeStream}
+         * 又补一个。宽容的客户端拿后者覆盖前者所以看不出问题，但那是两条相同的计费记录。
+         *
+         * <p>原先的 {@code usageChunkHasEmptyChoicesArrayAndFollowsFinishChunk} 抓不到 ——
+         * 它用 {@code indexOfChunkContaining} 只取第一个匹配，从未数过个数。
+         */
+        @Test
+        void usageChunkIsEmittedExactlyOnceOnTheNormalPath() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"message_start","message":{"id":"msg_1",
+                     "usage":{"input_tokens":10,"output_tokens":0}}}
+                    """,
+                    """
+                    {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"好"}}
+                    """,
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"end_turn"},
+                     "usage":{"output_tokens":5}}
+                    """,
+                    """
+                    {"type":"message_stop"}
+                    """), true);
+
+            assertThat(usageChunkCount(chunks)).isEqualTo(1);
+        }
+
+        /** 截断路径（上游没发 message_delta）同样只发一个。 */
+        @Test
+        void usageChunkIsEmittedExactlyOnceOnTheTruncatedPath() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"message_start","message":{"id":"msg_1",
+                     "usage":{"input_tokens":10,"output_tokens":3}}}
+                    """,
+                    """
+                    {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"半句"}}
+                    """), true);
+
+            assertThat(usageChunkCount(chunks)).isEqualTo(1);
+        }
+
+        /**
+         * 唯一那帧携带的必须是<strong>最完整</strong>的累积值。
+         *
+         * <p>Anthropic 允许在带 {@code stop_reason} 的 {@code message_delta} 之后
+         * 再发只携带 usage 的 {@code message_delta}。旧实现跟着 finish chunk 抢跑，
+         * 后到的 output_tokens 只能进第二帧 —— 两帧数字还不一样。
+         */
+        @Test
+        void theSingleUsageChunkCarriesTheLatestAccumulatedValues() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"message_start","message":{"id":"msg_1",
+                     "usage":{"input_tokens":10,"output_tokens":0}}}
+                    """,
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"end_turn"},
+                     "usage":{"output_tokens":5}}
+                    """,
+                    // stop_reason 之后到达的 usage 修正。
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":null},
+                     "usage":{"output_tokens":42}}
+                    """), true);
+
+            assertThat(usageChunkCount(chunks)).isEqualTo(1);
+            assertThat(chunks.get(indexOfChunkContaining(chunks, "\"usage\"")))
+                    .contains("\"completion_tokens\":42");
+        }
+
+        /** 落库那份重放同样只有一个 usage chunk —— 否则日志里的帧序列与实际下发不符。 */
+        @Test
+        void loggedChunksAlsoContainExactlyOneUsageChunk() {
+            List<String> upstreamEvents = List.of(
+                    """
+                    {"type":"message_start","message":{"id":"msg_1",
+                     "usage":{"input_tokens":10,"output_tokens":0}}}
+                    """,
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"end_turn"},
+                     "usage":{"output_tokens":5}}
+                    """);
+
+            List<String> logged = translator
+                    .translateChunksForLog(upstreamEvents, UPSTREAM_MODEL, true)
+                    .translated();
+
+            assertThat(usageChunkCount(logged)).isEqualTo(1);
+        }
     }
 
     // ==================== 状态隔离 ====================
@@ -992,5 +1087,15 @@ class AnthropicToOpenAiResponseTranslatorTests {
             }
         }
         throw new AssertionError("没有 chunk 含: " + needle + "，实际: " + chunks);
+    }
+
+    /**
+     * 数 usage chunk 的个数。
+     *
+     * <p>「找第一个」与「数个数」是两种断言，混用会漏掉重复发出这类缺陷 ——
+     * 那正是双 usage chunk 长期没被发现的原因。
+     */
+    private static long usageChunkCount(List<String> chunks) {
+        return chunks.stream().filter(chunk -> chunk.contains("\"usage\"")).count();
     }
 }
