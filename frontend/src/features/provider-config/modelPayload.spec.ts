@@ -6,6 +6,7 @@ import {
   toModelFormParams,
   type EditableModel,
 } from './modelPayload'
+import { parseAnthropicThinkingConfig } from './anthropicThinking'
 import { parseMaxOutputConfig } from './maxOutput'
 import { parseReasoningEffortConfig } from './reasoningEffort'
 
@@ -74,6 +75,10 @@ describe('buildEditableModel', () => {
     // 否则新建模型会拿到一个迁移刚刚判定为「过大」的值。
     expect(parseMaxOutputConfig(model.maxOutputTokens))
       .toEqual({ maxOutputTokens: 4000, mode: 'fallback' })
+    // 新建行的思考方式与预算与列默认值逐一对应：adaptive + 兜底 + 哨兵。
+    // 预算展示成 -1 而非空串：那就是提交后存进库里的值，两边应当一致。
+    expect(parseAnthropicThinkingConfig(model.thinkingMode, model.thinkingBudgetTokens))
+      .toEqual({ type: 'adaptive', mode: 'fallback', budgetTokens: '-1' })
   })
 
   it('保留 source 中的其余字段，便于拉取时带回已有配置', () => {

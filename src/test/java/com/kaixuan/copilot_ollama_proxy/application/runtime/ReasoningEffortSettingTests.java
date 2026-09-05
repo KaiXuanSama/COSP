@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -409,6 +410,258 @@ class ReasoningEffortSettingTests {
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("reasoning_effort", effort);
             return body;
+        }
+    }
+
+    /**
+     * Anthropic 线路的注入。
+     *
+     * <p>与上一组是<strong>同一份配置、同一套四档语义</strong>，只有出站字段名与形态不同：
+     * 深度写顶层 {@code output_config.effort} 而非 {@code reasoning_effort}。
+     * 因此这里不重复验证模式语义，只钉住三件本线路独有的事：
+     * <ol>
+     *   <li>写的是 {@code output_config.effort}；</li>
+     *   <li>{@code off} 档借 {@code thinking:{"type":"disabled"}} 表达，并返回 true
+     *       让调用方跳过思考方式那一维；</li>
+     *   <li>不越权改写 {@code adaptive} / {@code enabled} 形态的 {@code thinking}。</li>
+     * </ol>
+     */
+    @Nested
+    class Anthropic注入模式 {
+
+        @Test
+        void overrideWritesOutputConfigEffort() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("model", "claude-x");
+
+            boolean disabled = new ReasoningEffortSetting("high",
+                    ReasoningEffortSetting.Mode.OVERRIDE).applyToAnthropic(body);
+
+            assertThat(disabled).isFalse();
+            assertThat(effortOf(body)).isEqualTo("high");
+            // 绝不写 OpenAI 的字段名 —— 上游认不出来，等于这一维没生效。
+            assertThat(body).doesNotContainKey("reasoning_effort");
+        }
+
+        /** 覆写档要清掉下游那个与档位直接冲突的 disabled。 */
+        @Test
+        void overrideClearsDownstreamDisabledThinking() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("thinking", Map.of("type", "disabled"));
+
+            new ReasoningEffortSetting("max", ReasoningEffortSetting.Mode.OVERRIDE).applyToAnthropic(body);
+
+            assertThat(body).doesNotContainKey("thinking");
+            assertThat(effortOf(body)).isEqualTo("max");
+        }
+
+        /**
+         * 但**只**清 disabled。
+         *
+         * <p>{@code adaptive} 与 {@code enabled+budget_tokens} 属于思考<strong>方式</strong>
+         * 那一维、与深度正交，顺手清掉等于替另一个维度做决定。
+         */
+        @Test
+        void overrideKeepsAdaptiveAndEnabledThinking() {
+            for (Map<String, Object> thinking : List.<Map<String, Object>>of(
+                    Map.of("type", "adaptive"),
+                    Map.of("type", "enabled", "budget_tokens", 4096))) {
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("thinking", thinking);
+
+                new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.OVERRIDE)
+                        .applyToAnthropic(body);
+
+                assertThat(body.get("thinking")).isEqualTo(thinking);
+                assertThat(effortOf(body)).isEqualTo("high");
+            }
+        }
+
+        /**
+         * {@code off} 档只能靠 {@code thinking} 表达 —— 五档里没有「不思考」。
+         *
+         * <p>返回 true 是给调用方的信号：这次调用不思考，思考方式那一组整体失去意义。
+         * 不跳过的话，方式的覆写档会把 disabled 改写成 adaptive，用户配的「关闭思考」
+         * 就被静默丢弃了。
+         */
+        @Test
+        void offTierWritesDisabledThinkingAndReportsIt() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("model", "claude-x");
+
+            boolean disabled = new ReasoningEffortSetting(ReasoningEffortSetting.EFFORT_OFF,
+                    ReasoningEffortSetting.Mode.OVERRIDE).applyToAnthropic(body);
+
+            assertThat(disabled).isTrue();
+            assertThat(thinkingTypeOf(body)).isEqualTo("disabled");
+            // 「别思考」与「想这么深」并存是自相矛盾的请求体。
+            assertThat(body).doesNotContainKey("output_config");
+        }
+
+        /** off 档遇到下游残留的档位时也要清掉，理由同上。 */
+        @Test
+        void offTierClearsDownstreamEffort() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("output_config", new LinkedHashMap<>(Map.of("effort", "max")));
+
+            new ReasoningEffortSetting(ReasoningEffortSetting.EFFORT_OFF,
+                    ReasoningEffortSetting.Mode.OVERRIDE).applyToAnthropic(body);
+
+            assertThat(body).doesNotContainKey("output_config");
+            assertThat(thinkingTypeOf(body)).isEqualTo("disabled");
+        }
+
+        /** 摘掉 effort 后容器里还有别的键时，保留容器与那些键。 */
+        @Test
+        void removingEffortPreservesOtherOutputConfigKeys() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            Map<String, Object> outputConfig = new LinkedHashMap<>();
+            outputConfig.put("effort", "low");
+            outputConfig.put("verbosity", "high");
+            body.put("output_config", outputConfig);
+
+            new ReasoningEffortSetting(ReasoningEffortSetting.EFFORT_OFF,
+                    ReasoningEffortSetting.Mode.OVERRIDE).applyToAnthropic(body);
+
+            assertThat(outputConfigOf(body)).containsOnlyKeys("verbosity");
+        }
+
+        /** 覆写档写入档位时同样保留容器里的其它键。 */
+        @Test
+        void writingEffortPreservesOtherOutputConfigKeys() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("output_config", new LinkedHashMap<>(Map.of("verbosity", "low")));
+
+            new ReasoningEffortSetting("xhigh", ReasoningEffortSetting.Mode.OVERRIDE)
+                    .applyToAnthropic(body);
+
+            assertThat(outputConfigOf(body))
+                    .containsEntry("effort", "xhigh")
+                    .containsEntry("verbosity", "low");
+        }
+
+        @Test
+        void fallbackInjectsWhenDownstreamSilent() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("model", "claude-x");
+
+            new ReasoningEffortSetting("low", ReasoningEffortSetting.Mode.FALLBACK).applyToAnthropic(body);
+
+            assertThat(effortOf(body)).isEqualTo("low");
+        }
+
+        /**
+         * 「下游已表态」的三个来源都要认。
+         *
+         * <p>漏掉 {@code thinking} 会让兜底档给一个明确要求「别思考」的请求再补一个深度；
+         * 漏掉 {@code reasoning_effort} 会在直连线路上忽略下游发错字段名的表态。
+         */
+        @Test
+        void fallbackRespectsEveryFormOfDownstreamOpinion() {
+            for (Map.Entry<String, Object> opinion : List.<Map.Entry<String, Object>>of(
+                    Map.entry("thinking", Map.of("type", "disabled")),
+                    Map.entry("thinking", Map.of("type", "adaptive")),
+                    Map.entry("reasoning_effort", "low"),
+                    Map.entry("output_config", Map.of("effort", "low")))) {
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put(opinion.getKey(), opinion.getValue());
+
+                new ReasoningEffortSetting("max", ReasoningEffortSetting.Mode.FALLBACK)
+                        .applyToAnthropic(body);
+
+                assertThat(body).as("表态来源 %s 应阻止兜底注入", opinion.getKey())
+                        .containsExactlyEntriesOf(Map.of(opinion.getKey(), opinion.getValue()));
+            }
+        }
+
+        /**
+         * 空的 {@code output_config} 不算深度表态。
+         *
+         * <p>那个容器还承载别的设置，仅仅出现它不代表下游对深度有意见 ——
+         * 据此跳过注入会让兜底档在用户什么都没说时失效。
+         */
+        @Test
+        void fallbackStillInjectsWhenOutputConfigCarriesNoEffort() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("output_config", new LinkedHashMap<>(Map.of("verbosity", "low")));
+
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.FALLBACK).applyToAnthropic(body);
+
+            assertThat(outputConfigOf(body)).containsEntry("effort", "high");
+        }
+
+        @Test
+        void passthroughNeverTouchesTheBody() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("model", "claude-x");
+
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.PASSTHROUGH)
+                    .applyToAnthropic(body);
+
+            assertThat(body).containsOnlyKeys("model");
+        }
+
+        /** 删除档要同时清掉原生字段与 O2A 留下的兼容副本。 */
+        @Test
+        void deleteRemovesBothEffortForms() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("output_config", new LinkedHashMap<>(Map.of("effort", "max")));
+            body.put("reasoning_effort", "max");
+            body.put("model", "claude-x");
+
+            boolean disabled = new ReasoningEffortSetting("high",
+                    ReasoningEffortSetting.Mode.DELETE).applyToAnthropic(body);
+
+            assertThat(disabled).isFalse();
+            assertThat(body).containsOnlyKeys("model");
+        }
+
+        /**
+         * 删除档不碰 {@code thinking}。
+         *
+         * <p>这是与 OpenAI 侧 {@code applyTo} 的刻意差异：那边界面把开关与深度压成一个
+         * 选择器，所以删除要清两个字段；这边思考方式是独立控件、有自己的注入模式，
+         * 深度的删除档无权替它做决定。要强制剥离 {@code thinking} 用仅适用 ANTHROPIC
+         * 的请求体规则。
+         */
+        @Test
+        void deleteLeavesThinkingToItsOwnDimension() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("thinking", Map.of("type", "adaptive"));
+
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.DELETE).applyToAnthropic(body);
+
+            assertThat(thinkingTypeOf(body)).isEqualTo("adaptive");
+        }
+
+        /**
+         * 不校验档位是否落在 Anthropic 的五档内。
+         *
+         * <p>{@code minimal} 在那边无对应档，原样发出由上游用错误码回答 ——
+         * 与「不做自动降级」一致，也与 OpenAI 侧的口径一致。
+         */
+        @Test
+        void tierOutsideAnthropicRangeIsSentVerbatim() {
+            Map<String, Object> body = new LinkedHashMap<>();
+
+            new ReasoningEffortSetting("minimal", ReasoningEffortSetting.Mode.OVERRIDE)
+                    .applyToAnthropic(body);
+
+            assertThat(effortOf(body)).isEqualTo("minimal");
+        }
+
+        @SuppressWarnings("unchecked")
+        private Map<String, Object> outputConfigOf(Map<String, Object> body) {
+            return (Map<String, Object>) body.get("output_config");
+        }
+
+        private Object effortOf(Map<String, Object> body) {
+            return outputConfigOf(body).get("effort");
+        }
+
+        @SuppressWarnings("unchecked")
+        private Object thinkingTypeOf(Map<String, Object> body) {
+            return ((Map<String, Object>) body.get("thinking")).get("type");
         }
     }
 }

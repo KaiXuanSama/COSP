@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.application.runtime;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 
@@ -83,6 +84,28 @@ public record ReasoningEffortSetting(String effort, Mode mode) {
 
     /** {@code thinking.type} 的关闭值。 */
     public static final String THINKING_DISABLED = "disabled";
+
+    /**
+     * Anthropic Messages 的深度字段容器（顶层）。
+     *
+     * <h2>为何 Anthropic 侧的深度不是 {@link #REQUEST_FIELD}</h2>
+     * {@code reasoning_effort} 是 OpenAI 的名字，Anthropic 认的是顶层
+     * {@code output_config.effort}（4.6+ 引入，五档 low/medium/high/xhigh/max）。
+     * 名字不换上游认不出来，等于这一维没生效。
+     *
+     * <h2>为何不用 thinking.budget_tokens 表达深度</h2>
+     * 那是 Anthropic 4.6 之前唯一能表达「想多深」的位置，但把档位换算成
+     * token 预算需要一张查表，而三个参考项目的表互不相同、反向阈值也互不相同 ——
+     * 请求侧契约第 4.4 节据此决定<strong>不做</strong>这个换算。既然换算被排除，
+     * {@code output_config.effort} 就是这条线路上唯一自洽的落点。
+     *
+     * <p>代价是 4.5 及更早的模型不认识这个字段，会以错误码回答。这与
+     * 「不做自动降级、不按模型名猜能力」一致：本服务发出用户配置的东西。
+     */
+    public static final String OUTPUT_CONFIG_FIELD = "output_config";
+
+    /** {@link #OUTPUT_CONFIG_FIELD} 里承载档位的键名。 */
+    public static final String OUTPUT_CONFIG_EFFORT_KEY = "effort";
 
     /**
      * 「不思考」档位的界面标识。
@@ -290,5 +313,167 @@ public record ReasoningEffortSetting(String effort, Mode mode) {
             return;
         }
         body.put(REQUEST_FIELD, effort);
+    }
+
+    // ==================== Anthropic Messages 线路 ====================
+
+    /**
+     * 按当前模式把思考深度写入 <strong>Anthropic Messages</strong> 请求体。
+     *
+     * <h2>与 {@link #applyTo} 的关系：同一份配置，两种线格式</h2>
+     * 持久化的 {@code {effort, mode}} 只有一份，两条线路的<strong>字段名与形态不同</strong>：
+     * <pre>
+     * OpenAI     深度 → reasoning_effort: "high"
+     * Anthropic  深度 → output_config: {"effort": "high"}
+     * </pre>
+     * 模式语义（覆写 / 兜底 / 透传 / 删除）两侧完全一致，因此这里只重写映射、不重定义语义。
+     *
+     * <h2>与思考方式（{@link AnthropicThinkingSetting}）的分工</h2>
+     * 这是本方法与 {@link #applyTo} 最大的行为差异。OpenAI 侧界面把「开关」与「深度」
+     * 压成了一个档位选择器，所以那边必须成对操作 {@code thinking} 与
+     * {@code reasoning_effort}。Anthropic 侧不是：思考<strong>方式</strong>
+     * （adaptive / enabled+budget）是另一个独立控件、有自己的注入模式。
+     *
+     * <p>因此本方法<strong>只拥有</strong> {@code output_config.effort} 这一个字段，
+     * 不越权改写 {@code thinking} —— 只有两个例外，两者都源于「五档里没有不思考」：
+     * <ol>
+     *   <li>{@code off} 档必须写 {@code thinking:{"type":"disabled"}}，
+     *       因为 {@code output_config.effort} 没有表达「别思考」的取值。
+     *       此时同步清掉档位 —— 「别思考」与「想这么深」并存是自相矛盾的请求体。</li>
+     *   <li>覆写档遇到下游的 {@code thinking:{"type":"disabled"}} 时清掉它。
+     *       只清这一个取值，不整字段清空 —— {@code adaptive} 与
+     *       {@code enabled+budget_tokens} 与深度正交，清掉它们等于替另一个维度做决定。</li>
+     * </ol>
+     *
+     * <p>返回值就是给调用方用来协调这两个维度的：写了 {@code disabled} 意味着
+     * 「这次调用不思考」，思考方式那一组随之整体失去意义，调用方应跳过它。
+     * 若不跳过，方式的覆写档会把 {@code disabled} 改写成 {@code adaptive}，
+     * 用户配的「关闭思考」就被静默丢弃了 —— 前端
+     * {@code anthropicThinkingLockedByEffort} 的置灰就是同一条规则的界面表达。
+     *
+     * @param body 请求体，原地修改
+     * @return 是否写入了 {@code thinking:{"type":"disabled"}}
+     */
+    public boolean applyToAnthropic(Map<String, Object> body) {
+        return switch (mode) {
+            case OVERRIDE -> {
+                // 下游明确的「别思考」与覆写档的档位直接冲突，先清掉再重建。
+                // 尊重用户配置优先于下游意图，这正是覆写档的定义。
+                removeDisabledThinking(body);
+                removeAnthropicEffort(body);
+                yield writeConfiguredAnthropicEffort(body);
+            }
+            case FALLBACK -> {
+                if (downstreamHasAnthropicOpinion(body)) {
+                    yield false;
+                }
+                yield writeConfiguredAnthropicEffort(body);
+            }
+            // 下游带什么就是什么，没带也不补。显式写出这个分支的理由同 applyTo。
+            case PASSTHROUGH -> false;
+            case DELETE -> {
+                removeAnthropicEffort(body);
+                // 兼容副本一并删掉。调用方稍后还会无条件剥一次，这里重复是为了让本方法
+                // 自身的语义完整 —— 「删除档过后请求体里没有任何深度表达」。
+                body.remove(REQUEST_FIELD);
+                yield false;
+            }
+        };
+    }
+
+    /**
+     * 下游是否已就「要不要思考 / 思考多深」表达过意见（Anthropic 形态）。
+     *
+     * <p>三个来源，任一存在即算表态：
+     * <ul>
+     *   <li>{@code thinking} —— 与 OpenAI 侧同一判据，含显式 {@code disabled}；</li>
+     *   <li>{@code output_config.effort} —— Anthropic 的原生深度字段；</li>
+     *   <li>{@code reasoning_effort} —— O2A 翻译器刻意保留的兼容副本。
+     *       翻译路线上它与 {@code output_config.effort} 必然同时存在，所以这一条只在
+     *       <strong>直连</strong>线路上才单独起作用：那时下游把 OpenAI 的字段发给了
+     *       Anthropic 端点，属于畸形请求。仍按「表过态」处理 —— 兜底档的含义是
+     *       「下游开口了就不插手」，而那个字段随后会被剥离，净效果是这次不发深度。
+     *       这比替一个已经开口的下游改主意更保守。</li>
+     * </ul>
+     */
+    private static boolean downstreamHasAnthropicOpinion(Map<String, Object> body) {
+        if (body.containsKey(THINKING_FIELD) || body.containsKey(REQUEST_FIELD)) {
+            return true;
+        }
+        if (!body.containsKey(OUTPUT_CONFIG_FIELD)) {
+            return false;
+        }
+        // 显式 null 也算表态（与另外两个字段的 containsKey 判据一致，那个 null 由调用方
+        // 末尾的清洗移除）；对象形态则要求真的带了 effort —— output_config 还承载其它设置，
+        // 仅仅出现这个容器不代表下游对深度有意见。
+        return !(body.get(OUTPUT_CONFIG_FIELD) instanceof Map<?, ?> outputConfig)
+                || outputConfig.containsKey(OUTPUT_CONFIG_EFFORT_KEY);
+    }
+
+    /**
+     * 把配置的档位写成 Anthropic 能懂的形态。
+     *
+     * <p>不校验档位是否落在 Anthropic 的五档内：{@code minimal} 之类在那边无对应档，
+     * <strong>原样发出</strong>由上游用错误码回答（请求侧契约第 4.5 节）。
+     *
+     * @return 是否写入了 {@code thinking:{"type":"disabled"}}
+     */
+    private boolean writeConfiguredAnthropicEffort(Map<String, Object> body) {
+        if (EFFORT_OFF.equals(effort)) {
+            // 五档里没有「不思考」，只能靠 thinking 表达；同时确保没有残留的档位与它冲突。
+            removeAnthropicEffort(body);
+            body.put(THINKING_FIELD, Map.of(THINKING_TYPE_KEY, THINKING_DISABLED));
+            return true;
+        }
+        Map<String, Object> outputConfig = mutableOutputConfig(body);
+        outputConfig.put(OUTPUT_CONFIG_EFFORT_KEY, effort);
+        body.put(OUTPUT_CONFIG_FIELD, outputConfig);
+        return false;
+    }
+
+    /**
+     * 只摘掉 {@code output_config.effort}，保留容器里的其它键。
+     *
+     * <p>摘完为空则连容器一起移除 —— 一个空的 {@code output_config} 是纯噪声，
+     * 而某些上游对多余字段并不宽容。
+     */
+    private static void removeAnthropicEffort(Map<String, Object> body) {
+        if (!(body.get(OUTPUT_CONFIG_FIELD) instanceof Map<?, ?> existing)) {
+            return;
+        }
+        Map<String, Object> outputConfig = copyStringKeyed(existing);
+        outputConfig.remove(OUTPUT_CONFIG_EFFORT_KEY);
+        if (outputConfig.isEmpty()) {
+            body.remove(OUTPUT_CONFIG_FIELD);
+        } else {
+            body.put(OUTPUT_CONFIG_FIELD, outputConfig);
+        }
+    }
+
+    /**
+     * 只在 {@code thinking.type} 确实是 {@code disabled} 时移除该字段。
+     *
+     * <p>{@code adaptive} 与 {@code enabled+budget_tokens} 属于思考<strong>方式</strong>
+     * 那一维，与深度正交，不能顺手清掉。
+     */
+    private static void removeDisabledThinking(Map<String, Object> body) {
+        if (body.get(THINKING_FIELD) instanceof Map<?, ?> thinking
+                && THINKING_DISABLED.equals(thinking.get(THINKING_TYPE_KEY))) {
+            body.remove(THINKING_FIELD);
+        }
+    }
+
+    /** 取一份可写的 {@code output_config}，下游已有则保留其它键。 */
+    private static Map<String, Object> mutableOutputConfig(Map<String, Object> body) {
+        return body.get(OUTPUT_CONFIG_FIELD) instanceof Map<?, ?> existing
+                ? copyStringKeyed(existing)
+                : new LinkedHashMap<>();
+    }
+
+    /** 复制成 String 键的可变 Map。下游传来的嵌套对象键类型无法静态保证。 */
+    private static Map<String, Object> copyStringKeyed(Map<?, ?> raw) {
+        Map<String, Object> copy = new LinkedHashMap<>();
+        raw.forEach((key, value) -> copy.put(String.valueOf(key), value));
+        return copy;
     }
 }

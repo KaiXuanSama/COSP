@@ -392,7 +392,22 @@ class GenericAnthropicChatServiceTests {
         assertThat(objectMapper.readTree(capturedBody.get()).path("max_tokens").asInt()).isEqualTo(4000);
     }
 
-    /** {@code reasoning_effort} 是 OpenAI 概念，必须剥掉否则上游 400。 */
+    /**
+     * {@code reasoning_effort} 是 OpenAI 的字段名，发往 Anthropic 必须剥掉否则上游 400。
+     *
+     * <h2>直连线路上这个字段携带的深度意图会丢失，而且是刻意的</h2>
+     * 下游把 OpenAI 的字段发给了 Anthropic 端点，本属畸形请求。兜底档仍把它认作
+     * 「下游已表态」而不注入自己的档位，随后那个字段被剥离 —— 净效果是这次不发深度。
+     * 这比把它改写成 {@code output_config.effort}（替下游猜意图）或忽略表态直接覆写
+     * （兜底静默退化成覆写）都更保守。翻译线路不受影响：O2A 翻译器已经把档位
+     * 写进 {@code output_config.effort}，这一份只是供判定的兼容副本。
+     *
+     * <h2>思考方式不受这个字段影响</h2>
+     * 方式的判据只看 {@code thinking}：{@code reasoning_effort} 说的是「想多深」，
+     * 对「预算怎么算」没有表达任何意见，据此跳过方式的兜底档会让一个无关字段
+     * 封住另一个维度。这与 OpenAI 侧共用两字段并集的判据不同 —— 那边界面把开关与
+     * 深度压成了一个选择器，这边是两个独立控件。
+     */
     @Test
     void openAiReasoningEffortIsStripped() throws Exception {
         Map<String, Object> request = newRequest();
@@ -402,8 +417,85 @@ class GenericAnthropicChatServiceTests {
 
         JsonNode body = objectMapper.readTree(capturedBody.get());
         assertThat(body.has("reasoning_effort")).isFalse();
-        // 只带深度、没带 thinking 时，按默认的「兜底 adaptive」补。
+        // 下游已表态，默认的兜底档不得再写一个档位；加上剥离，这次不发深度。
+        assertThat(body.has("output_config")).isFalse();
+        // 但思考方式照常生效 —— 那是另一个维度，下游并未对它表态。
         assertThat(body.path("thinking").path("type").asText()).isEqualTo("adaptive");
+    }
+
+    /** 下游完全没表态时，默认的兜底档把 medium 写成 Anthropic 的形态。 */
+    @Test
+    void defaultDepthIsWrittenAsOutputConfigEffort() throws Exception {
+        realService().exposeMessages(newRequest(), routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
+
+        JsonNode body = objectMapper.readTree(capturedBody.get());
+        assertThat(body.path("output_config").path("effort").asText()).isEqualTo("medium");
+        assertThat(body.has("reasoning_effort")).isFalse();
+    }
+
+    /** 模型配置的档位要真的出站，而不只是存在库里。 */
+    @Test
+    void configuredDepthOverrideReachesOutboundBody() throws Exception {
+        realService().exposeMessages(newRequest(), routeWithEffort(baseUrlWithV1(),
+                "{\"reasoning_effort\":\"xhigh\",\"overwrite_mode\":\"override\"}"))
+                .block(Duration.ofSeconds(10));
+
+        assertThat(objectMapper.readTree(capturedBody.get())
+                .path("output_config").path("effort").asText()).isEqualTo("xhigh");
+    }
+
+    /**
+     * {@code Off} 档写 {@code thinking:{"type":"disabled"}}，而且思考方式不得把它改写。
+     *
+     * <p>这是两个维度共用 {@code thinking} 字段带来的唯一真正冲突：方式的覆写档
+     * 本来会无条件重建那个字段，若不跳过，用户配的「关闭思考」会被静默改成
+     * {@code adaptive}。前端对应的表达是 {@code anthropicThinkingLockedByEffort} 的置灰。
+     */
+    @Test
+    void offTierDisablesThinkingAndSuppressesThinkingMode() throws Exception {
+        ResolvedProviderRoute route = new ResolvedProviderRoute(
+                new ProviderRuntimeConfiguration("anthro", baseUrlWithV1(), "test-key", List.of(
+                        new ProviderRuntimeModel("claude-x", 200000, true, true,
+                                "{\"reasoning_effort\":\"off\",\"overwrite_mode\":\"override\"}", null,
+                                "{\"thinking_type\":\"enabled\",\"overwrite_mode\":\"override\"}", 8192))),
+                "claude-x", "[anthro] claude-x");
+
+        realService().exposeMessages(newRequest(), route).block(Duration.ofSeconds(10));
+
+        JsonNode body = objectMapper.readTree(capturedBody.get());
+        assertThat(body.path("thinking").path("type").asText()).isEqualTo("disabled");
+        assertThat(body.path("thinking").has("budget_tokens")).isFalse();
+        // 「别思考」与「想这么深」不能并存。
+        assertThat(body.has("output_config")).isFalse();
+    }
+
+    /**
+     * 深度的删除档不得连带剥掉思考方式。
+     *
+     * <p>与 OpenAI 侧的删除档刻意不同：那边开关与深度压成一个选择器所以要清两个字段；
+     * 这边思考方式是独立控件、有自己的注入模式。
+     */
+    @Test
+    void depthDeleteModeStillLetsThinkingModeApply() throws Exception {
+        realService().exposeMessages(newRequest(), routeWithEffort(baseUrlWithV1(),
+                "{\"reasoning_effort\":\"high\",\"overwrite_mode\":\"delete\"}"))
+                .block(Duration.ofSeconds(10));
+
+        JsonNode body = objectMapper.readTree(capturedBody.get());
+        assertThat(body.has("output_config")).isFalse();
+        assertThat(body.has("reasoning_effort")).isFalse();
+        // 思考方式那一组仍照常生效（模型未配置方式 → 默认兜底 adaptive）。
+        assertThat(body.path("thinking").path("type").asText()).isEqualTo("adaptive");
+    }
+
+    /** 透传档既不改也不补，下游什么都没带时出站就不带深度。 */
+    @Test
+    void depthPassthroughLeavesOutputConfigAbsent() throws Exception {
+        realService().exposeMessages(newRequest(), routeWithEffort(baseUrlWithV1(),
+                "{\"reasoning_effort\":\"high\",\"overwrite_mode\":\"passthrough\"}"))
+                .block(Duration.ofSeconds(10));
+
+        assertThat(objectMapper.readTree(capturedBody.get()).has("output_config")).isFalse();
     }
 
     /**
@@ -956,6 +1048,23 @@ class GenericAnthropicChatServiceTests {
                 new ProviderRuntimeConfiguration("anthro", baseUrl, "test-key", List.of(
                         new ProviderRuntimeModel("claude-x", 200000, true, true, "Medium", null,
                                 thinkingModeJson, budgetTokens))),
+                "claude-x", "[anthro] claude-x");
+    }
+
+    /**
+     * 带模型思考深度配置的路由。
+     *
+     * <p>深度与 OpenAI 侧读的是同一列（{@code provider_model.reasoning_effort}），
+     * 所以这里传的就是那一列的持久化原文。模型名必须是 {@code claude-x}，
+     * 理由见 {@link #routeWithMaxOutput}。
+     *
+     * @param effortJson 持久化原文，形如
+     *                   {@code {"reasoning_effort":"high","overwrite_mode":"override"}}
+     */
+    private static ResolvedProviderRoute routeWithEffort(String baseUrl, String effortJson) {
+        return new ResolvedProviderRoute(
+                new ProviderRuntimeConfiguration("anthro", baseUrl, "test-key", List.of(
+                        new ProviderRuntimeModel("claude-x", 200000, true, true, effortJson))),
                 "claude-x", "[anthro] claude-x");
     }
 

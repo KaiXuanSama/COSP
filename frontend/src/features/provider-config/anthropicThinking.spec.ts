@@ -7,6 +7,7 @@ import {
   UNSET_THINKING_BUDGET_TOKENS,
   anthropicThinkingLockedByEffort,
   anthropicThinkingUsesBudget,
+  isAnthropicThinkingBudgetInputAllowed,
   nextAnthropicThinkingOverwriteMode,
   parseAnthropicThinkingConfig,
   serializeAnthropicThinkingBudget,
@@ -91,16 +92,46 @@ describe('Anthropic thinking UI model', () => {
     })
 
     /**
-     * 哨兵、0、负数都表达「没有可用预算」，输入框显示 -1 会让用户以为那是个要理解的配置。
+     * 哨兵是库里真实存着的值，隐成空框会让对着数据库看的人以为保存失败了。
      */
-    it('哨兵与非正数预算渲染成空输入框', () => {
-      for (const raw of [UNSET_THINKING_BUDGET_TOKENS, 0, -8, 'abc', null, undefined]) {
+    it('哨兵预算原样展示为 -1', () => {
+      expect(parseAnthropicThinkingConfig('{}', UNSET_THINKING_BUDGET_TOKENS).budgetTokens).toBe('-1')
+      expect(parseAnthropicThinkingConfig('{}', '-1').budgetTokens).toBe('-1')
+    })
+
+    /**
+     * 列约束只放行正数与 -1，所以其余取值都是脏数据；展示它们等于把脏数据当成配置。
+     */
+    it('0、其余负数与非数字渲染成空输入框', () => {
+      for (const raw of [0, -8, 'abc', null, undefined]) {
         expect(parseAnthropicThinkingConfig('{}', raw).budgetTokens).toBe('')
       }
     })
 
     it('字符串形态的正数预算同样能读出来', () => {
       expect(parseAnthropicThinkingConfig('{}', ' 2048 ').budgetTokens).toBe('2048')
+    })
+  })
+
+  /**
+   * 过滤而非提交时默默修正：`abc` 敲下去看着像没反应、存下去又变成了另一个值。
+   */
+  describe('输入框字符过滤', () => {
+    it('接受数字与带前导负号的数字', () => {
+      for (const value of ['', '0', '4096', '-1', '-4096']) {
+        expect(isAnthropicThinkingBudgetInputAllowed(value)).toBe(true)
+      }
+    })
+
+    /** 孤立的 `-` 必须放行，否则没法输入负数的第一个字符。 */
+    it('孤立的负号放行，作为输入中间态', () => {
+      expect(isAnthropicThinkingBudgetInputAllowed('-')).toBe(true)
+    })
+
+    it('拒绝字母、小数点、空格与多余的负号', () => {
+      for (const value of ['abc', '4o96', '1.5', '4 096', '--1', '1-', '+1']) {
+        expect(isAnthropicThinkingBudgetInputAllowed(value)).toBe(false)
+      }
     })
   })
 
@@ -121,11 +152,23 @@ describe('Anthropic thinking UI model', () => {
 
     /** 列约束只放行正数与 -1，所以空值与任何非正数都必须折成哨兵。 */
     it('空值与非正数预算折成哨兵', () => {
-      for (const raw of ['', '   ', '0', '-3', 'abc']) {
+      for (const raw of ['', '   ', '-', '0', '-3', 'abc']) {
         expect(
           serializeAnthropicThinkingBudget({ type: 'enabled', mode: 'override', budgetTokens: raw }),
         ).toBe(UNSET_THINKING_BUDGET_TOKENS)
       }
+    })
+
+    /** 手输 -1 与清空表达的是同一个意图，应得到同一个出站值。 */
+    it('手输 -1 与清空等价', () => {
+      const typed = serializeAnthropicThinkingBudget({
+        type: 'enabled', mode: 'override', budgetTokens: '-1',
+      })
+      const cleared = serializeAnthropicThinkingBudget({
+        type: 'enabled', mode: 'override', budgetTokens: '',
+      })
+      expect(typed).toBe(cleared)
+      expect(typed).toBe(UNSET_THINKING_BUDGET_TOKENS)
     })
 
     /**

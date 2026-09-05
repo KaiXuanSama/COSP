@@ -11,6 +11,7 @@ import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngi
 import com.kaixuan.copilot_ollama_proxy.application.runtime.AnthropicThinkingSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
@@ -73,7 +74,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * <h2>请求体的协议差异</h2>
  * Anthropic 与 OpenAI 的请求体有三处硬差异，见 {@link #prepareRequestBody}：
  * {@code system} 是顶层字段而非 {@code messages} 里的一条、{@code max_tokens} 必填、
- * 思考深度用 {@code thinking} 对象而非 {@code reasoning_effort} 字符串。
+ * 思考用 {@code thinking} 对象（方式）加顶层 {@code output_config.effort}（深度）
+ * 而非单个 {@code reasoning_effort} 字符串。
  */
 @Service
 public class GenericAnthropicChatService {
@@ -565,10 +567,23 @@ public class GenericAnthropicChatService {
      *       按模型配置的 {@code thinking_mode} 与 {@code thinking_budget_tokens} 注入
      *       （覆写 / 兜底 / 透传三档），模型未配置时用
      *       {@link AnthropicThinkingSetting#defaults()}。
-     *       <p>思考<strong>深度</strong>（{@code reasoning_effort}）是另一维，
-     *       在本线路上当前<strong>只做剥离、不做映射</strong> —— 那一维需要先决定
-     *       「档位写成 {@code output_config.effort} 还是旧形态」，见下方长注释。</li>
+     *       <p>思考<strong>深度</strong>是另一维，写成顶层
+     *       {@code output_config.effort}（而非 OpenAI 的 {@code reasoning_effort}），
+     *       四档注入模式与 OpenAI 侧同一套，见
+     *       {@link ReasoningEffortSetting#applyToAnthropic}。</li>
      * </ol>
+     *
+     * <h2>两个思考维度的施加顺序不可交换</h2>
+     * <strong>深度先、方式后</strong>，且深度写了
+     * {@code thinking:{"type":"disabled"}} 时跳过方式。两者都会写 {@code thinking}，
+     * 而它们对那个字段的权限不对等：深度只在 {@code off} 档动它（五档里没有
+     * 「不思考」，只能借这个字段表达），方式则把它当作自己的主场。
+     *
+     * <p>先方式后深度会让深度的兜底档把方式刚写的 {@code thinking} 误认为
+     * 「下游已表态」，于是自己不再注入 —— 一个下游从未发过的字段反而封住了
+     * 用户配的档位。不跳过方式则相反：方式的覆写档会把 {@code disabled} 改写成
+     * {@code adaptive}，用户配的「关闭思考」被静默丢弃。前端的
+     * {@code anthropicThinkingLockedByEffort} 置灰就是同一条规则的界面表达。
      *
      * <h2>请求体转换规则的执行位置</h2>
      * 规则在协议归一化<strong>之后</strong>执行（{@code system} 已提到顶层、
@@ -591,12 +606,18 @@ public class GenericAnthropicChatService {
         extractSystemPrompt(body);
         ensureMaxTokens(body, resolvedModel, provider);
 
-        // reasoning_effort 是 OpenAI 的字段名；O2A 翻译器已把它映射到
-        // output_config.effort。此处只在所有设置层逻辑结束后剥离这个兼容副本，
-        // 不能在翻译器之前剥掉，否则会让兜底的「下游是否已表态」判定失真。
-        body.remove("reasoning_effort");
+        // 思考两维：深度先、方式后，且 off 档写了 disabled 时跳过方式。
+        // 顺序与跳过的理由见本方法的 javadoc。
+        boolean thinkingDisabled = resolveReasoningEffort(resolvedModel, provider).applyToAnthropic(body);
+        if (!thinkingDisabled) {
+            resolveThinking(resolvedModel, provider).applyTo(body);
+        }
 
-        resolveThinking(resolvedModel, provider).applyTo(body);
+        // reasoning_effort 是 OpenAI 的字段名；O2A 翻译器把它映射到 output_config.effort
+        // 后刻意保留了一份兼容副本，供上面两个设置层判定「下游已表态」。
+        // 因此这一行必须在设置层之后：提前剥会让兜底档把一个已表态的请求当成未表态，
+        // 静默退化成覆写档。
+        body.remove("reasoning_effort");
 
         applyBodyRules(body, provider);
 
@@ -621,6 +642,26 @@ public class GenericAnthropicChatService {
             }
         }
         return AnthropicThinkingSetting.defaults();
+    }
+
+    /**
+     * 从运行时模型配置中读取思考深度设置。
+     *
+     * <p>与 OpenAI 侧读的是<strong>同一列</strong>（{@code provider_model.reasoning_effort}）、
+     * 同一份解析与同一套四档语义，只有出站的字段名与形态不同。因此此处不引入
+     * 第二份配置 —— 用户在界面上看到的就是一个模型一个档位，无论它走哪条线路。
+     *
+     * <p>模型名查不到时用 {@link ReasoningEffortSetting#defaults()}（medium + 兜底），
+     * 与 OpenAI 侧 {@code resolveReasoningEffort} 同一形状。
+     */
+    private ReasoningEffortSetting resolveReasoningEffort(String resolvedModel,
+                                                        ProviderRuntimeConfiguration provider) {
+        for (var model : provider.models()) {
+            if (resolvedModel.equals(model.modelName())) {
+                return ReasoningEffortSetting.parse(model.reasoningEffort(), objectMapper);
+            }
+        }
+        return ReasoningEffortSetting.defaults();
     }
 
     /**
@@ -766,84 +807,37 @@ public class GenericAnthropicChatService {
 
     /*
      * ========================================================================
-     * 待实现：思考**深度**四档注入模式在 Anthropic 线路上的语义
+     * 思考**深度**在 Anthropic 线路上的形态选择：已落地的决定与遗留代价
      * ========================================================================
      *
-     * 注意这与已实现的思考**方式**（AnthropicThinkingSetting，见 resolveThinking）
-     * 是两个正交维度：方式管「预算怎么算」（adaptive / enabled+budget），
-     * 深度管「想多深」（档位字符串）。方式已在 V10 接入持久化并生效；
-     * 深度在本线路上仍未生效 —— prepareRequestBody 无条件剥掉 reasoning_effort。
+     * 深度与思考**方式**（AnthropicThinkingSetting，见 resolveThinking）是两个正交维度：
+     * 方式管「预算怎么算」（adaptive / enabled+budget），深度管「想多深」（档位字符串）。
+     * 两者都已接入持久化并生效 —— 方式自 V10、深度走 ReasoningEffortSetting.applyToAnthropic。
      *
-     * 下面是深度那一维的规格，实现时照此办理。
+     * ## 出站形态：output_config.effort
      *
-     * ## 与 OpenAI 侧的真实差异
+     * 三个候选：
      *
-     * 注意 thinking 字段**两条线路都有**，不是 Anthropic 独有 —— OpenAI 兼容上游
-     * （DeepSeek、小米 MiMo）也用 thinking:{"type":"enabled"|"disabled"} 管思考开关，
-     * 且与 reasoning_effort 并列存在。那一侧的四模式语义已实现，见
-     * {@code ReasoningEffortSetting.applyTo}。
+     *   output_config:{"effort":"..."}                   —— 顶层字段，4.6+，五档
+     *   thinking:{"type":"enabled","budget_tokens":N}    —— 4.6 弃用，4.7+ 直接 400
+     *   thinking:{"type":"disabled"}                     —— 只能表达「不思考」
      *
-     * 真正的差异在**取值形态**：
+     * 选了第一个。第二个要求把档位换算成 token 预算，而请求侧契约第 4.4 节已据「三个参考
+     * 项目的换算表互不相同、反向阈值也互不相同」决定不做这个换算 —— 换算被排除后，
+     * output_config.effort 是唯一自洽的落点。第三个只覆盖 off 档，因此它只作为 off 档的
+     * 出站形态，见 writeConfiguredAnthropicEffort。
      *
-     *   OpenAI 侧：thinking:{"type":"enabled"|"disabled"} + reasoning_effort 档位字符串
-     *   Anthropic：thinking:{"type":"disabled"}
-     *              thinking:{"type":"adaptive"}                    —— 4.6+ 新形态
-     *              thinking:{"type":"enabled","budget_tokens":N}    —— 4.7+ 返回 400
-     *              output_config:{"effort":"..."}                   —— 顶层字段，4.6+
+     * ## 遗留代价：4.5 及更早的模型不认识 output_config
      *
-     * 所以本线路的四模式**判据可以照搬** OpenAI 侧（两个字段任一存在即「下游已表态」），
-     * 只有「配置的档位写成什么」需要另做决定 —— 见下一节。
+     * 那些模型会以错误码回答。这**不修**，与「不做自动降级、不按模型名猜能力」一致：
      *
-     * ## 四个模式的规格
+     *   new-api（relaykit/relayconvert/reasoning/claude.go）按模型名前缀硬编码八个能力
+     *   维度来选形态，且内含逐级降级（xhigh 不支持就退 max 再退 high）。中转站会改模型名，
+     *   前缀匹配大面积失效；而本服务的原则是发出用户配置的东西。
      *
-     * 记「下游已表态」= 请求体里存在 reasoning_effort 或 thinking 之一。
-     *
-     *   PASSTHROUGH：什么都不做。下游发 disabled 也好、发 adaptive 也好，原样出站。
-     *                这一档唯一要注意的是不能像现在这样无条件 remove。
-     *
-     *   FALLBACK：   下游已表态则不干预（含 thinking:{type:"disabled"}）；
-     *                未表态才注入配置的档位。
-     *                关键点：不能只看 reasoning_effort —— 那样会给一个明确要求
-     *                「关闭思考」的请求再补一个思考强度，语义自相矛盾。
-     *
-     *   OVERRIDE：   无论下游表态与否，都按配置的档位重建，并清掉冲突的表达。
-     *                两个方向都要处理：
-     *                  a) 配置为 off 档：删掉 reasoning_effort 与既有 thinking，
-     *                     写入 thinking:{"type":"disabled"}；
-     *                  b) 配置为具体档位：删掉下游的 thinking:{"type":"disabled"}，
-     *                     写入该档位（形态见下）。
-     *                「删掉下游明确的 disabled」是刻意的 —— 尊重用户配置优先于
-     *                下游意图，这正是覆写档的定义。
-     *
-     *   DELETE：     同时检测并删除 reasoning_effort 与 thinking，检测到哪个删哪个。
-     *                用于那些收到任一字段就 400 的上游。
-     *
-     * ## 档位该写成什么形态，取决于上游认哪个
-     *
-     * 这是本规格唯一的未决问题，且**不能由本服务猜**：
-     *
-     *   - output_config.effort 是顶层字段，五档 low/medium/high/xhigh/max，
-     *     与 thinking.type 无关、可共存。但 4.5 及更早的模型不认识它。
-     *   - thinking.budget_tokens 在 4.6 弃用、4.7+ 直接 400。
-     *
-     * 另外注意 off 档在本线路上**不能**映射成 output_config.effort 的某个值 ——
-     * 那五档里没有「不思考」，关闭思考只能靠 thinking:{"type":"disabled"}。
-     * （顺带一提：OpenAI 的 Responses 协议里 reasoning.effort 确实有 none 这一档，
-     *   但那是第三种协议，与这里的 Chat Completions / Messages 都不是一回事。）
-     *
-     * 参考实现（new-api relaykit/relayconvert/reasoning/claude.go）按模型名前缀
-     * 硬编码了八个能力维度来选形态。**本服务刻意不这么做**：
-     *   1. 中转站会改模型名，前缀匹配大面积失效；
-     *   2. 那套方案内含自动降级（xhigh 不支持就退 max 再退 high），
-     *      而本服务的原则是尊重用户配置、不做任何「自动」行为。
-     *
-     * 因此形态选择应当是**用户可配置的**（参考 cc-switch 的 thinkingLevelMap：
-     * 字符串=实际发送值 / null=该档明确不可用 / 键缺失=用上游默认），
-     * 而不是从模型名推导。这需要一列新的模型配置，属于后续版本。
-     *
-     * V10 新增的 thinking_mode 只解决了 adaptive / enabled+budget 的选择，
-     * **没有**解决 output_config.effort 与旧形态之间的选择 —— 后者才是这一节的未决问题。
-     * 两者不要混为一谈：前者是用户想怎么定预算，后者是上游认哪个字段名。
+     * 若将来要支持老模型，正确做法是让形态选择**可配置**（参考 cc-switch 的
+     * thinkingLevelMap：字符串=实际发送值 / null=该档明确不可用 / 键缺失=用上游默认），
+     * 而不是从模型名推导。那需要一列新的模型配置，属于后续版本。
      *
      * ## 不要顺手做的事
      *

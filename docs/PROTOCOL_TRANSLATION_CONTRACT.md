@@ -1,7 +1,10 @@
 # 协议翻译契约（请求侧）
 
-> 本文档是 `ProtocolTranslator` 落地前的设计契约，不是已实现说明。
-> 当前 `ProtocolDispatchManager` 的 `translated` 分支仍抛未实现异常。
+> **状态**：O2A（下游 OpenAI → 上游 Anthropic）请求侧**已实现**，见
+> `OpenAiToAnthropicRequestTranslator` 与 `ChatCompletionService` 两处分支；
+> A2O（下游 `/v1/messages` + 上游 OpenAI）请求侧**尚未实现**，
+> `MessagesService` 的翻译分支仍抛 `ProtocolTranslationNotSupportedException`。
+> 本文档因此既是已实现说明（O2A）也是设计契约（A2O）。
 >
 > 相关：[AGENTS.md](../AGENTS.md)、[思考链回放调查](COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)、
 > [供应商适配史](PROVIDER_ADAPTATIONS.md)
@@ -74,15 +77,18 @@ O2A = OpenAI Chat Completions → Anthropic Messages；A2O = 反向。
 
 **落地要求**：这条必须有单测钉住，且要同时覆盖两个字段各自单独存在的情况。
 
-### 2.1 必须删掉的一行
+### 2.1 不能前置的一行
 
-`GenericAnthropicChatService.prepareRequestBody` 现有：
+`GenericAnthropicChatService.prepareRequestBody` 里的
 
 ```java
 body.remove("reasoning_effort");
 ```
 
-它在设置层之前，会把翻译结果先杀掉。翻译层落地后这行必须删除。
+曾经在设置层**之前**，会把翻译结果先杀掉。翻译层落地后它已移到设置层
+**之后**：翻译器保留一份 `reasoning_effort` 供设置层判定「下游已表态」，
+那份兼容副本在所有设置层逻辑结束后才被剥离。收尾清理仍需保留 ——
+要删的从来不是这行本身，而是它**在设置层之前**执行这件事。
 
 ---
 
@@ -365,7 +371,7 @@ A2O 丢弃：`metadata`、`mcp_servers`、`container`、`context_management`、`
 1. **第 2 节的无损搬运** —— 单测覆盖 `thinking` 与 `reasoning_effort` 各自单独存在的情况，
    断言设置层的 `fallback` 不会退化成 `override`
 2. **第 3.5 节的配对修复** —— 单测覆盖未被应答的 `tool_use` 与孤儿 `tool_result`
-3. 删除 2.1 那行 `body.remove("reasoning_effort")`
+3. 把 2.1 那行 `body.remove("reasoning_effort")` 移到设置层之后
 4. 其余字段映射与丢弃清单
 5. `translationContext` 出口
 6. 响应与 SSE 侧 —— 已另立契约，见
@@ -376,12 +382,18 @@ A2O 丢弃：`metadata`、`mcp_servers`、`container`、`context_management`、`
 
 ### 8.1 尚未决定的事项
 
-- **Anthropic 侧思考深度与思考方式的成对约束**。OpenAI 侧 `applyTo` 已成对操作
-  `thinking` 与 `reasoning_effort` 两个字段。Anthropic 侧目前思考深度（第一层）与思考方式
-  （第二层）是两个独立控件、各自带注入模式。前端已通过「思考方式去掉 `disabled`」+「思考深度
-  为 `Off` 时锁定第二层」消除了界面上的矛盾，但**后端的成对写入尚未实现**。
-- 思考方式与思考预算目前是**纯前端 UI 状态**，未接入 `EditableModel`，不提交后端。
-- 单测尚未覆盖 O2A / A2O 任一方向（翻译未实现）。
+- **深度的出站形态已选 `output_config.effort`，但 4.5 及更早的模型不认识它**。
+  那些模型会以错误码回答，且本服务**不修** —— 与第 4.5 节「不做自动降级」一致。
+  若要支持老模型，正确做法是让形态选择**可配置**（参考 cc-switch 的
+  `thinkingLevelMap`：字符串=实际发送值 / null=该档明确不可用 / 键缺失=用上游默认），
+  而不是从模型名推导。那需要一列新的模型配置，属于后续版本。
+- **直连 Anthropic 线路上，下游发来的 `reasoning_effort` 不会被改写成
+  `output_config.effort`**，而是被认作「已表态」后剥离，净效果是该次不发深度。
+  那属于下游把 OpenAI 字段发给 Anthropic 端点的畸形请求，改写它等于替下游猜意图。
+  翻译线路不受影响 —— 翻译器已把档位写进 `output_config.effort`，保留的那份只供判定。
+- 单测尚未覆盖 A2O 请求方向（未实现）。O2A 请求侧见
+  `OpenAiToAnthropicRequestTranslatorTests`，Anthropic 侧两个思考维度的四档注入见
+  `ReasoningEffortSettingTests.Anthropic注入模式` 与 `GenericAnthropicChatServiceTests`。
 
 ---
 
