@@ -16,6 +16,7 @@ import JsonViewer from './JsonViewer.vue'
 import ChunksViewer from './ChunksViewer.vue'
 import type { CollapseRule } from './JsonNode.vue'
 import { parseChunkViews } from './chunkViews'
+import { formatCacheHitRate } from '@/features/call-log/cacheHitRate'
 import type { DetailItem, UsageDetail } from '@/types/calllog'
 
 const props = withDefaults(
@@ -133,18 +134,11 @@ function formatCallType(detail: DetailItem): string {
 }
 
 /**
- * 缓存命中占比 = 缓存命中 token / 输入 token。
- *
- * 不落库为独立列（派生值），此处前端计算。严格区分 null 与 0：
- * - 缓存或输入任一为 null（上游未提供）→ '—'，表示无从计算，而非 0%；
- * - 缓存为 0 且输入有值 → '0%'，这是上游报告的真实未命中。
- * 输入为 0 时无法做除法，同样显示 '—'。
+ * 缓存命中占比。不落库为独立列（派生值），此处前端计算；口径按下游协议区分，
+ * 算法与协议差异说明见 `features/call-log/cacheHitRate.ts` —— 列表页共用同一份。
  */
-function formatCacheHitRate(usage: UsageDetail | null): string {
-  if (!usage) return '—'
-  const { cached_tokens: cached, prompt_tokens: prompt } = usage
-  if (cached == null || prompt == null || prompt === 0) return '—'
-  return `${((cached / prompt) * 100).toFixed(1)}%`
+function cacheHitRateOf(usage: UsageDetail | null): string {
+  return formatCacheHitRate(usage, props.detail.downstream_protocol)
 }
 
 // ── usage 原始数据浮窗 ──────────────────────────────────
@@ -345,7 +339,7 @@ onUnmounted(() => {
       </span>
       <span class="detail-usage-cell">
         <span class="detail-usage-label">缓存占比</span>
-        <span class="detail-usage-value">{{ formatCacheHitRate(props.detail.usage) }}</span>
+        <span class="detail-usage-value">{{ cacheHitRateOf(props.detail.usage) }}</span>
       </span>
       <span class="detail-usage-cell">
         <span class="detail-usage-label">总计</span>
