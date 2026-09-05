@@ -35,6 +35,10 @@ const MODELS = [
   { id: 'at-normal', desc: '按 stream 返回正常 Anthropic message / 完整 SSE 事件序列' },
   { id: 'at-thinking-text', desc: 'thinking + text 两个 content block（验证 block index 与 usage 跨事件合并）' },
   { id: 'at-tool-use', desc: '纯 tool_use，无正文（对照组：不应判空）' },
+  { id: 'at-tool-split-args', desc: '单工具 + 参数切成 30+ 片（含转义序列跨片边界）；验证 A2O 拼接' },
+  { id: 'at-tool-multi-split', desc: '三个工具各自参数分片，block index 从 1 起（验证稠密重映射 + 拼接）' },
+  { id: 'at-tool-interleaved', desc: '两个工具的参数分片交错发送（刻意非规范，压 index 映射）' },
+  { id: 'at-tool-no-args', desc: '工具无参数，零个 input_json_delta（下游只应收到 name 帧）' },
   { id: 'at-thinking-only', desc: '纯 thinking，无正文（对照组：不应判空）' },
   { id: 'at-empty-content', desc: '非流式：200 + content: []（应空响应兜底重发）' },
   { id: 'at-empty-usage-zero', desc: '非流式：空 content + 全 0 usage（应兜底；usage 不是判据）' },
@@ -153,6 +157,19 @@ function toolBlockStart(index) {
   };
 }
 
+/**
+ * 可指定 id / name 的工具块声明，供多工具场景使用。
+ *
+ * <p>id 必须各不相同：下游按 id 关联后续的 tool_result，重复 id 会让多轮对话串线。
+ */
+function namedToolBlockStart(index, toolId, name) {
+  return {
+    type: 'content_block_start',
+    index,
+    content_block: { type: 'tool_use', id: toolId, name, input: {} },
+  };
+}
+
 function textDelta(index, text) {
   return { type: 'content_block_delta', index, delta: { type: 'text_delta', text } };
 }
@@ -250,6 +267,172 @@ function writeToolUseStream(res, id, model) {
   log(`✓ at-tool-use 流完成  model=${model}`);
 }
 
+// ── 参数分片场景 ───────────────────────────────────────
+//
+// 真实上游对「一个工具的参数 JSON 怎么切」没有共识：MiMo 实测把 6KB 参数
+// 塞在单个 input_json_delta 里一次发完，而 Anthropic 官方会切成多片。
+// 因此这一组场景是唯一能在本地压到多片路径的手段。
+//
+// 关键约束：每一片**单独都不是合法 JSON**，下游必须靠拼接还原。
+// 翻译层只要在某一片上把 tool index 算错，拼出来的就是废串。
+
+/**
+ * 把一个 JSON 字符串按固定长度切片，**刻意不避开转义序列**。
+ *
+ * <p>不避开是重点：`\"` 与 `\uXXXX` 被拦腰截断，是最容易暴露「谁在中途试图
+ * 解析单片」这类缺陷的形状。正确实现应把每片当作**不透明字节**原样转发，
+ * 只在下游完整拼接后才有 JSON 语义。
+ *
+ * @param json 完整参数 JSON
+ * @param size 每片长度；取小值可制造大量分片
+ */
+function sliceJson(json, size) {
+  const parts = [];
+  for (let i = 0; i < json.length; i += size) {
+    parts.push(json.slice(i, i + size));
+  }
+  return parts;
+}
+
+/** 带转义地雷的参数：反斜杠路径、转义引号、换行、中文与 emoji。 */
+function escapeHeavyArgs() {
+  return JSON.stringify({
+    filePath: 'd:\\KaiXuan\\Desktop\\copilotDebug\\a "quoted" name.py',
+    content: '# 中文注释 with "双引号" and \\反斜杠\\\n'
+      + 'def greet(name: str) -> str:\n'
+      + '    """返回问候语。\n\n'
+      + '    包含制表符\t与换行，以及 emoji 🎉 用于压 UTF-16 代理对。\n'
+      + '    """\n'
+      + '    return f"你好，{name}！"\n',
+    mode: 'sync',
+  });
+}
+
+/**
+ * 单工具、参数切成大量小片。
+ *
+ * <p>期望的下游形态：一个带 `name` 的帧（`arguments` 为空串），
+ * 随后 N 个只带 `arguments` 的帧，全部落在 `tool_calls[0].index === 0`，
+ * 按序拼接后等于 `escapeHeavyArgs()` 的原文。
+ */
+function writeToolSplitArgsStream(res, id, model) {
+  writeSseHead(res);
+  const args = escapeHeavyArgs();
+  // 每片 12 字符：足够小以保证转义序列被截断，且分片数 30+。
+  const parts = sliceJson(args, 12);
+
+  writeEvent(res, messageStart(id, model, 57));
+  writeEvent(res, namedToolBlockStart(0, 'toolu_split_1', 'create_file'));
+  for (const part of parts) {
+    writeEvent(res, inputJsonDelta(0, part));
+  }
+  writeEvent(res, blockStop(0));
+  writeEvent(res, messageDelta(96, 'tool_use'));
+  writeEvent(res, messageStop());
+  res.end();
+  log(`✓ at-tool-split-args 流完成  model=${model}  参数 ${args.length} 字符切成 ${parts.length} 片`);
+}
+
+/**
+ * 三个工具，各自参数分片，且 **block index 从 1 开始**（0 给 thinking）。
+ *
+ * <p>这是 tool index 双索引域最容易错的形状：Anthropic 的 block index 是
+ * 1/2/3，而 OpenAI 的 `tool_calls[].index` 必须是稠密的 0/1/2。
+ * 直接透传 block index 会产出从 1 起的稀疏数组，下游拼不出第一个工具。
+ */
+function writeToolMultiSplitStream(res, id, model) {
+  writeSseHead(res);
+  writeEvent(res, messageStart(id, model, 63));
+
+  // index 0 留给 thinking，把工具挤到 1/2/3。
+  writeEvent(res, thinkingBlockStart(0));
+  writeEvent(res, thinkingDelta(0, '需要连续调用三个工具。'));
+  writeEvent(res, { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig_multi' } });
+  writeEvent(res, blockStop(0));
+
+  const tools = [
+    { blockIndex: 1, toolId: 'toolu_multi_a', name: 'create_directory',
+      args: JSON.stringify({ dirPath: 'd:\\tmp\\alpha' }) },
+    { blockIndex: 2, toolId: 'toolu_multi_b', name: 'create_file',
+      args: escapeHeavyArgs() },
+    { blockIndex: 3, toolId: 'toolu_multi_c', name: 'run_in_terminal',
+      args: JSON.stringify({ command: 'Get-ChildItem -Path "d:\\tmp" -Recurse', mode: 'sync' }) },
+  ];
+
+  let sliceTotal = 0;
+  for (const tool of tools) {
+    writeEvent(res, namedToolBlockStart(tool.blockIndex, tool.toolId, tool.name));
+    const parts = sliceJson(tool.args, 9);
+    sliceTotal += parts.length;
+    for (const part of parts) {
+      writeEvent(res, inputJsonDelta(tool.blockIndex, part));
+    }
+    writeEvent(res, blockStop(tool.blockIndex));
+  }
+
+  writeEvent(res, messageDelta(184, 'tool_use'));
+  writeEvent(res, messageStop());
+  res.end();
+  log(`✓ at-tool-multi-split 流完成  model=${model}  3 个工具共 ${sliceTotal} 片，block index 1..3`);
+}
+
+/**
+ * 两个工具的参数分片**交错**发送。
+ *
+ * <h2>为何测一个不规范的形状</h2>
+ * Anthropic 官方文档描述的是块顺序完成（一个 block 的 delta 发完才开下一个），
+ * 交错在实践中未观测到。但中转站会重排事件，且「按 block index 查表路由」
+ * 这个实现<strong>本应</strong>天然支持交错 —— 若某个实现偷懒用「当前活跃块」
+ * 之类的隐式状态，交错就会把两个工具的参数搅在一起。
+ *
+ * <p>因此这是一个**实现健壮性**探针，而非协议合规性测试。
+ * 期望：两段参数各自独立拼接成合法 JSON，互不污染。
+ */
+function writeToolInterleavedStream(res, id, model) {
+  writeSseHead(res);
+  writeEvent(res, messageStart(id, model, 48));
+
+  const first = JSON.stringify({ dirPath: 'd:\\tmp\\first-tool-path' });
+  const second = JSON.stringify({ command: 'echo "second tool"', mode: 'async' });
+
+  // 两个块都先声明，再交错发 delta。
+  writeEvent(res, namedToolBlockStart(0, 'toolu_inter_a', 'create_directory'));
+  writeEvent(res, namedToolBlockStart(1, 'toolu_inter_b', 'run_in_terminal'));
+
+  const firstParts = sliceJson(first, 8);
+  const secondParts = sliceJson(second, 8);
+  const rounds = Math.max(firstParts.length, secondParts.length);
+  for (let i = 0; i < rounds; i += 1) {
+    if (i < firstParts.length) writeEvent(res, inputJsonDelta(0, firstParts[i]));
+    if (i < secondParts.length) writeEvent(res, inputJsonDelta(1, secondParts[i]));
+  }
+
+  writeEvent(res, blockStop(0));
+  writeEvent(res, blockStop(1));
+  writeEvent(res, messageDelta(72, 'tool_use'));
+  writeEvent(res, messageStop());
+  res.end();
+  log(`✓ at-tool-interleaved 流完成  model=${model}  ${firstParts.length}+${secondParts.length} 片交错`);
+}
+
+/**
+ * 工具无参数：`content_block_start` 之后<strong>零个</strong> `input_json_delta`。
+ *
+ * <p>真实存在的形态（无参工具，如 `get_current_time`）。下游应只收到那一个带
+ * `name` 的帧，`arguments` 为空串 —— 不能凭空补一个 `{}` 帧，也不能因为
+ * 「没有 delta」就把整个工具调用丢掉。
+ */
+function writeToolNoArgsStream(res, id, model) {
+  writeSseHead(res);
+  writeEvent(res, messageStart(id, model, 19));
+  writeEvent(res, namedToolBlockStart(0, 'toolu_noargs_1', 'get_current_time'));
+  writeEvent(res, blockStop(0));
+  writeEvent(res, messageDelta(8, 'tool_use'));
+  writeEvent(res, messageStop());
+  res.end();
+  log(`✓ at-tool-no-args 流完成  model=${model}  零个 input_json_delta`);
+}
+
 /** 纯思考链流：对照组，不应被 COSP 判为空。 */
 function writeThinkingOnlyStream(res, id, model) {
   writeSseHead(res);
@@ -297,6 +480,44 @@ function nonStreamToolUse(res, id, model) {
   sendJson(res, 200, messageBody(id, model, [
     { type: 'tool_use', id: 'toolu_mock_1', name: 'get_weather', input: { city: 'Hangzhou' } },
   ], 'tool_use', usage(31, 14)), 'at-tool-use 已返回纯工具调用', model);
+}
+
+/**
+ * 分片场景的非流式对照。
+ *
+ * <p>非流式**没有分片概念** —— `input` 是一个完整对象。保留这些入口是为了让
+ * 「同一模型名在两种模式下都能打」这个约定不破，同时提供一份「参数原文应该
+ * 长什么样」的基准：流式拼接的结果必须与这里的 `input` 序列化后一致。
+ */
+function nonStreamToolSplitArgs(res, id, model) {
+  sendJson(res, 200, messageBody(id, model, [
+    { type: 'tool_use', id: 'toolu_split_1', name: 'create_file', input: JSON.parse(escapeHeavyArgs()) },
+  ], 'tool_use', usage(57, 96)), 'at-tool-split-args 已返回完整 input（非流式无分片）', model);
+}
+
+function nonStreamToolMultiSplit(res, id, model) {
+  sendJson(res, 200, messageBody(id, model, [
+    { type: 'thinking', thinking: '需要连续调用三个工具。', signature: 'sig_multi' },
+    { type: 'tool_use', id: 'toolu_multi_a', name: 'create_directory', input: { dirPath: 'd:\\tmp\\alpha' } },
+    { type: 'tool_use', id: 'toolu_multi_b', name: 'create_file', input: JSON.parse(escapeHeavyArgs()) },
+    { type: 'tool_use', id: 'toolu_multi_c', name: 'run_in_terminal',
+      input: { command: 'Get-ChildItem -Path "d:\\tmp" -Recurse', mode: 'sync' } },
+  ], 'tool_use', usage(63, 184)), 'at-tool-multi-split 已返回三个工具', model);
+}
+
+function nonStreamToolInterleaved(res, id, model) {
+  sendJson(res, 200, messageBody(id, model, [
+    { type: 'tool_use', id: 'toolu_inter_a', name: 'create_directory',
+      input: { dirPath: 'd:\\tmp\\first-tool-path' } },
+    { type: 'tool_use', id: 'toolu_inter_b', name: 'run_in_terminal',
+      input: { command: 'echo "second tool"', mode: 'async' } },
+  ], 'tool_use', usage(48, 72)), 'at-tool-interleaved 已返回两个工具（非流式无交错）', model);
+}
+
+function nonStreamToolNoArgs(res, id, model) {
+  sendJson(res, 200, messageBody(id, model, [
+    { type: 'tool_use', id: 'toolu_noargs_1', name: 'get_current_time', input: {} },
+  ], 'tool_use', usage(19, 8)), 'at-tool-no-args 已返回无参工具', model);
 }
 
 function nonStreamThinkingOnly(res, id, model) {
@@ -385,6 +606,10 @@ function handleMessages(req, res, body) {
     case 'at-normal': return stream ? writeNormalStream(res, id, model) : nonStreamNormal(res, id, model);
     case 'at-thinking-text': return stream ? writeThinkingTextStream(res, id, model) : nonStreamThinkingText(res, id, model);
     case 'at-tool-use': return stream ? writeToolUseStream(res, id, model) : nonStreamToolUse(res, id, model);
+    case 'at-tool-split-args': return stream ? writeToolSplitArgsStream(res, id, model) : nonStreamToolSplitArgs(res, id, model);
+    case 'at-tool-multi-split': return stream ? writeToolMultiSplitStream(res, id, model) : nonStreamToolMultiSplit(res, id, model);
+    case 'at-tool-interleaved': return stream ? writeToolInterleavedStream(res, id, model) : nonStreamToolInterleaved(res, id, model);
+    case 'at-tool-no-args': return stream ? writeToolNoArgsStream(res, id, model) : nonStreamToolNoArgs(res, id, model);
     case 'at-thinking-only': return stream ? writeThinkingOnlyStream(res, id, model) : nonStreamThinkingOnly(res, id, model);
     case 'at-empty-content': return stream ? streamEmpty(res, id, model, false) : nonStreamEmpty(res, id, model, false);
     case 'at-empty-usage-zero': return stream ? streamEmpty(res, id, model, true) : nonStreamEmpty(res, id, model, true);

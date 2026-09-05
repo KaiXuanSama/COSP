@@ -73,6 +73,29 @@ curl.exe -N -s -X POST http://localhost:11434/v1/messages `
   -d '{\"model\":\"[mock-anthropic] at-normal\",\"max_tokens\":1024,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'
 ```
 
+### A2O 跨协议（下游 OpenAI、上游 Anthropic）
+
+上面两条打的是 `/v1/messages`，**上下游都是 Anthropic，不经过翻译层**。
+要验证 A2O 响应翻译，必须打 `/v1/chat/completions` —— 下游说 OpenAI，
+`ProtocolDispatchManager` 才会挂上翻译器：
+
+**PowerShell 会把内联 JSON 里的引号搞坏**，写文件再 `--data-binary` 才可靠，
+且要在仓库根目录执行：
+
+```powershell
+Set-Location "d:\KaiXuan\Desktop\copilot-ollama-proxy-springboot"
+'{"model":"[mock-anthropic] at-tool-split-args","stream":true,"messages":[{"role":"user","content":"go"}]}' |
+  Set-Content -Encoding utf8 target\a2o-split.json
+curl.exe -N -s -X POST http://localhost:11434/v1/chat/completions `
+  -H "Content-Type: application/json" --data-binary "@target/a2o-split.json"
+```
+
+把 `at-tool-split-args` 换成 `at-tool-multi-split` / `at-tool-interleaved` /
+`at-tool-no-args` 即可跑完四个场景。
+
+> 该 provider 的 `supported_protocols` 必须包含 `ANTHROPIC`，否则调度器会直接
+> 报「不支持该线路」而非走翻译。
+
 ### 绕过 COSP 直接打 mock
 
 调试 mock 本身的形状时更快，但要自己带版本头：
@@ -93,6 +116,10 @@ curl.exe -s -X POST http://localhost:8083/v1/messages `
 | `at-normal` | 按 `stream` 返回正常 message / 完整事件序列 | 200 原样透传 |
 | `at-thinking-text` | `thinking` + `text` 两个 content block | 不兜底；usage 跨事件合并正确 |
 | `at-tool-use` | 纯 `tool_use`，无正文 | **不**兜底（对照组） |
+| `at-tool-split-args` | 单工具，参数切成 30+ 片 | A2O 拼接后为合法 JSON，index 恒为 0 |
+| `at-tool-multi-split` | 三工具分片，block index 从 1 起 | tool index 稠密重映射为 0/1/2 |
+| `at-tool-interleaved` | 两工具参数分片交错 | 两段各自独立拼接，互不污染 |
+| `at-tool-no-args` | 工具无参数，零个 `input_json_delta` | 只有一个带 `name` 的帧，不凭空补 `{}` |
 | `at-thinking-only` | 纯 `thinking`，无正文 | **不**兜底（对照组） |
 | `at-empty-content` | 非流式 `content: []` / 流式仅控制事件 | 空响应兜底，自动重发 |
 | `at-empty-usage-zero` | 空内容 + 全 0 usage | 空响应兜底（**usage 不是判据**） |
@@ -141,6 +168,64 @@ data: {"type":"message_stop"}
   `output_tokens` 在 `message_delta`。本 mock 的 `message_delta` 刻意**只带
   `output_tokens`**（真实上游即如此），因此能验证 COSP 的合并是「非 null 覆盖」
   而非「相加」或「整份替换」：若实现写成整份替换，输入 token 会丢。
+
+## 工具参数分片（A2O 翻译的重点）
+
+一个 `tool_use` 块的参数 JSON 通过 `input_json_delta` 逐片发出，
+**每一片单独都不是合法 JSON**：
+
+```text
+event: content_block_start
+data: {"type":"content_block_start","index":2,
+       "content_block":{"type":"tool_use","id":"toolu_x","name":"create_file","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,
+       "delta":{"type":"input_json_delta","partial_json":"{\"filePath\": \"d:\\\\a"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,
+       "delta":{"type":"input_json_delta","partial_json":".py\", \"content\": \"..."}}
+```
+
+下游 OpenAI 客户端靠拼接 `delta.tool_calls[].function.arguments` 还原完整参数，
+因此翻译层必须保证每一片都落在**同一个** `tool_calls[].index` 上且顺序不变。
+
+**为什么需要这组 mock 场景**：真实上游对「切不切、怎么切」没有共识。
+MiMo 实测把 6269 字符的参数塞在**单个** `input_json_delta` 里一次发完，
+Anthropic 官方则会切成多片。近期全部带工具调用的 A→O 日志里
+`maxDeltasPerBlock` 恒为 1 —— 也就是说**光靠 MiMo 压不到多片路径**，
+提示词写得再长也没用。这四个场景是本地唯一能触发该形态的手段。
+
+四个场景各自压的东西：
+
+| 模型名 | 形状 | 压什么 |
+| --- | --- | --- |
+| `at-tool-split-args` | 单工具，参数按 12 字符切成 30+ 片 | 拼接正确性；转义序列跨片边界 |
+| `at-tool-multi-split` | 三工具，block index **1/2/3**（0 给 thinking） | 双索引域重映射为稠密 0/1/2 |
+| `at-tool-interleaved` | 两工具的分片交错发送 | index 映射是否依赖隐式「当前活跃块」 |
+| `at-tool-no-args` | 零个 `input_json_delta` | 不凭空补 `{}`，也不丢掉整个工具调用 |
+
+三处刻意的设计：
+
+- **切片不避开转义序列**。`\"` 与 `\uXXXX` 被拦腰截断，是最容易暴露
+  「谁在中途试图解析单片」的形状。正确实现应把每片当作不透明字节原样转发。
+- **`at-tool-multi-split` 把工具挤到 block index 1 起**。直接透传 block index
+  会产出从 1 开始的稀疏 `tool_calls` 数组，下游拼不出第一个工具。
+- **交错场景是实现健壮性探针，不是协议合规性测试**。Anthropic 官方是块顺序完成的，
+  交错在实践中未观测到；但「按 block index 查表路由」本应天然支持它，
+  若某个实现用了「当前活跃块」这类隐式状态，交错会立刻把两个工具的参数搅在一起。
+
+非流式对照（同名模型 + `stream: false`）返回完整的 `input` 对象，
+**没有分片概念**。它的用途是提供基准：流式拼接的结果必须与非流式的
+`input` 序列化后一致。
+
+### 验证方法
+
+打完之后在管理后台的调用日志里展开该行，用「块显示」看两栏对照，
+或直接取 `chunks` 字段做拼接校验：把同一 `tool_calls[].index` 的
+`arguments` 按帧顺序连起来，应能 `JSON.parse` 成功，且等于上游
+所有 `partial_json` 的顺序拼接。
 
 ## 空响应兜底的判定口径
 
