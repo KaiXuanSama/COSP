@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.config;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.AnthropicThinkingSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
@@ -43,7 +44,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final double V8_8_VERSION = 8.8;
     private static final double V8_9_VERSION = 8.9;
     /** V9 起版本号为整数；{@code a.b} 作为 double 会让 V8.10 碎成 V8.1。 */
-    private static final double CURRENT_SCHEMA_VERSION = 9;
+    private static final double V9_VERSION = 9;
+    private static final double CURRENT_SCHEMA_VERSION = 10;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -241,8 +243,10 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         this::migrateToV88ProviderProtocols),
                 new MigrationStep(V8_9_VERSION, "思考深度升级为档位与注入模式",
                         this::migrateToV89ReasoningEffortModes),
-                new MigrationStep(CURRENT_SCHEMA_VERSION, "最大输出升级为上限与注入模式",
-                        this::migrateToV9MaxOutputModes));
+                new MigrationStep(V9_VERSION, "最大输出升级为上限与注入模式",
+                        this::migrateToV9MaxOutputModes),
+                new MigrationStep(CURRENT_SCHEMA_VERSION, "新增 Anthropic 思考方式与思考预算",
+                        this::migrateToV10ThinkingMode));
     }
 
     /**
@@ -306,7 +310,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                     CURRENT_SCHEMA_VERSION,
                     formatVersion(CURRENT_SCHEMA_VERSION)
                             + " 架构基线：统一供应商实现、token 用量表、日志载荷瘦身与线路协议、"
-                            + "请求体规则分组、供应商协议支持与 Anthropic 端点、思考深度注入模式"));
+                            + "请求体规则分组、供应商协议支持与 Anthropic 端点、"
+                            + "思考深度与最大输出注入模式、Anthropic 思考方式与预算"));
         log.info("[SchemaMigration] 已建立 {} 架构基线", formatVersion(CURRENT_SCHEMA_VERSION));
     }
 
@@ -946,7 +951,46 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
         jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
                 + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
-                CURRENT_SCHEMA_VERSION, "V9 增量迁移：最大输出升级为上限与注入模式");
+                V9_VERSION, "V9 增量迁移：最大输出升级为上限与注入模式");
+    }
+
+    /**
+     * V10：新增 Anthropic 思考方式（形态 + 注入模式）与思考预算两列。
+     *
+     * <h2>为何不需要重建表</h2>
+     * 与 V9 相反，这里是纯新增列：没有任何已有列的类型、默认值或 CHECK 发生变化，
+     * 而 {@code ALTER TABLE ADD COLUMN} 对带 CHECK 的新列是合法的。因此也<strong>不会</strong>
+     * 碰到 V9 那个「DROP TABLE 静默删除触发器」的陷 —— 触发器与唯一索引都不用动。
+     *
+     * <p>新列的默认值就是存量行升级后的值，无需回填 UPDATE：SQLite 的
+     * {@code ADD COLUMN ... NOT NULL DEFAULT} 会把默认值应用到所有已有行。
+     *
+     * <h2>默认值为何是 adaptive + 兜底</h2>
+     * 这正是 V10 之前 {@code GenericAnthropicChatService} 里那段硬编码的行为：
+     * 下游没带 {@code thinking} 就补一个 {@code adaptive}。选它作为默认，
+     * 升级前后的出站请求体完全一致 —— 迁移不得改变存量运行时行为。
+     *
+     * <p>预算默认 {@link AnthropicThinkingSetting#UNSET_BUDGET_TOKENS}（-1），
+     * 是「未设置」哨兵而非可出站的值。列约束因此允许 -1，但拒绝其余负数：
+     * 只有那一个负值有约定含义，其它负数一律是脏数据。
+     *
+     * <h2>不加 {@code *_schema} 标记列</h2>
+     * V8.7 与 V8.9 各带一个，那是当时基线判定要求结构证据的产物，现已不需要。
+     * 本迁移本身就是结构变更（新增两列），本来也不缺结构证据。
+     */
+    private void migrateToV10ThinkingMode() {
+        if (tableExists("provider_model")) {
+            addColumnIfNotExists("provider_model", "thinking_mode",
+                    "TEXT NOT NULL DEFAULT '" + AnthropicThinkingSetting.defaults().serialize() + "' "
+                            + "CHECK (json_valid(thinking_mode))");
+            addColumnIfNotExists("provider_model", "thinking_budget_tokens",
+                    "INTEGER NOT NULL DEFAULT " + AnthropicThinkingSetting.UNSET_BUDGET_TOKENS
+                            + " CHECK (thinking_budget_tokens > 0 OR thinking_budget_tokens = "
+                            + AnthropicThinkingSetting.UNSET_BUDGET_TOKENS + ")");
+        }
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+                CURRENT_SCHEMA_VERSION, "V10 增量迁移：新增 Anthropic 思考方式与思考预算");
     }
 
     /**

@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.application.provider;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.AnthropicThinkingSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRepository;
@@ -341,6 +342,14 @@ public class ProviderAdminService {
             model.put("reasoningEffort", ReasoningEffortSetting
                     .parse(value(form, prefix + index + "].reasoningEffort", "").trim(), objectMapper)
                     .serialize());
+            // 思考方式与预算（V10）。两者分属两列，但要一起 parse —— record 的构造器
+            // 把非正预算归一为哨兵，分开处理就得在这里再写一遗那个规则。
+            AnthropicThinkingSetting thinking = AnthropicThinkingSetting.parse(
+                    value(form, prefix + index + "].thinkingMode", "").trim(),
+                    parsePositiveInt(value(form, prefix + index + "].thinkingBudgetTokens", "")),
+                    objectMapper);
+            model.put("thinkingMode", thinking.serialize());
+            model.put("thinkingBudgetTokens", thinking.budgetTokens());
             models.add(model);
         }
         return models;
@@ -349,6 +358,24 @@ public class ProviderAdminService {
     private String value(MultiValueMap<String, String> form, String key, String defaultValue) {
         String value = form.getFirst(key);
         return value == null ? defaultValue : value;
+    }
+
+    /**
+     * 解析一个可选的正整数表单值，空值与非数字返回 0。
+     *
+     * <p>返回 0 而不是哨兵：归一成哨兵是
+     * {@link AnthropicThinkingSetting} 构造器的职责，这里只负责把表单字符串
+     * 变成一个数，不重复一遗那个规则。
+     */
+    private static int parsePositiveInt(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException exception) {
+            return 0;
+        }
     }
 
     private String maskApiKey(String key) {

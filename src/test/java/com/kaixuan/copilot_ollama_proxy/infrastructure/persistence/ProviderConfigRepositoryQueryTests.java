@@ -41,7 +41,12 @@ class ProviderConfigRepositoryQueryTests {
                 + "context_size INTEGER NOT NULL DEFAULT 0, "
                 + "max_output_tokens TEXT NOT NULL DEFAULT '{\"max_output_tokens\":4000,\"overwrite_mode\":\"fallback\"}' "
                 + "CHECK (json_valid(max_output_tokens)), caps_tools INTEGER NOT NULL DEFAULT 0, "
-                + "caps_vision INTEGER NOT NULL DEFAULT 0, reasoning_effort TEXT NOT NULL DEFAULT 'Medium', sort_order INTEGER NOT NULL DEFAULT 0)");
+                + "caps_vision INTEGER NOT NULL DEFAULT 0, reasoning_effort TEXT NOT NULL DEFAULT 'Medium', "
+                + "thinking_mode TEXT NOT NULL DEFAULT "
+                + "'{\"thinking_type\":\"adaptive\",\"overwrite_mode\":\"fallback\"}' "
+                + "CHECK (json_valid(thinking_mode)), "
+                + "thinking_budget_tokens INTEGER NOT NULL DEFAULT -1, "
+                + "sort_order INTEGER NOT NULL DEFAULT 0)");
         jdbcTemplate.execute("CREATE TABLE provider_api_key ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, key_uuid TEXT NOT NULL UNIQUE, provider_id INTEGER NOT NULL, key_name TEXT NOT NULL DEFAULT '', "
                 + "encrypted_api_key TEXT NOT NULL, nonce TEXT NOT NULL, encryption_version INTEGER NOT NULL DEFAULT 1, is_active INTEGER NOT NULL DEFAULT 0, "

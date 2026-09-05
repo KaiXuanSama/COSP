@@ -67,7 +67,11 @@ public class DatabaseRuntimeProviderCatalog implements RuntimeProviderCatalog {
                 source.capsTools(),
                 source.capsVision(),
                 source.reasoningEffort() != null ? source.reasoningEffort() : "Medium",
-                source.maxOutputTokens()
+                source.maxOutputTokens(),
+                // 与 maxOutputTokens 同理：null 原样传下去，含义由
+                // AnthropicThinkingSetting.parse 决定（落到 adaptive + 兜底）。
+                source.thinkingMode(),
+                source.thinkingBudgetTokens()
         );
     }
 }

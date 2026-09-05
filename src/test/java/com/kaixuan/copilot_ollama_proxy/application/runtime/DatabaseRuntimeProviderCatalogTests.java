@@ -28,7 +28,8 @@ class DatabaseRuntimeProviderCatalogTests {
                 "2026-07-18T00:00:00", List.of(new ProviderModelRow(
                         1, 42, "mimo-v2.5-pro", true, 32768,
                         "{\"max_output_tokens\":8192,\"overwrite_mode\":\"fallback\"}",
-                        true, false, "Medium", 0)));
+                        true, false, "Medium",
+                        "{\"thinking_type\":\"adaptive\",\"overwrite_mode\":\"fallback\"}", -1, 0)));
         ProviderRequestTransformRow transform = new ProviderRequestTransformRow(
                 42, 1, "[{\"key\":\"X-New\",\"value\":\"new\"}]",
                 "[\"base\"]", "{}", 2, "{\"version\":2,\"groups\":[{\"id\":\"g1\"}]}", 2,
@@ -63,7 +64,8 @@ class DatabaseRuntimeProviderCatalogTests {
                 "[\"ANTHROPIC\"]", "",
                 "2026-07-18T00:00:00", List.of(new ProviderModelRow(
                         1, 42, "mimo-v2.5-pro", true, 32768,
-                        maxOutputJson, true, false, "Medium", 0)));
+                        maxOutputJson, true, false, "Medium",
+                        "{\"thinking_type\":\"adaptive\",\"overwrite_mode\":\"fallback\"}", -1, 0)));
         when(providerConfigRepository.findAllActiveProvidersWithEnabledModels()).thenReturn(List.of(provider));
         when(providerApiKeyRepository.resolveActiveApiKey(42)).thenReturn("test-key");
         when(requestTransformRepository.findByProviderIds(List.of(42))).thenReturn(Map.of());
@@ -93,7 +95,7 @@ class DatabaseRuntimeProviderCatalogTests {
                 "[\"ANTHROPIC\"]", "",
                 "2026-07-18T00:00:00", List.of(new ProviderModelRow(
                         1, 42, "mimo-v2.5-pro", true, 32768,
-                        null, true, false, "Medium", 0)));
+                        null, true, false, "Medium", null, -1, 0)));
         when(providerConfigRepository.findAllActiveProvidersWithEnabledModels()).thenReturn(List.of(provider));
         when(providerApiKeyRepository.resolveActiveApiKey(42)).thenReturn("test-key");
         when(requestTransformRepository.findByProviderIds(List.of(42))).thenReturn(Map.of());

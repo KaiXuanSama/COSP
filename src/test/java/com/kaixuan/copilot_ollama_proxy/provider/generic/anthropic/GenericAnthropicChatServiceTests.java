@@ -6,6 +6,7 @@ import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.AnthropicThinkingSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.sun.net.httpserver.HttpServer;
@@ -401,13 +402,15 @@ class GenericAnthropicChatServiceTests {
 
         JsonNode body = objectMapper.readTree(capturedBody.get());
         assertThat(body.has("reasoning_effort")).isFalse();
-        // 只带深度、没带 thinking 时，现阶段硬编码兜底 adaptive。
+        // 只带深度、没带 thinking 时，按默认的「兜底 adaptive」补。
         assertThat(body.path("thinking").path("type").asText()).isEqualTo("adaptive");
     }
 
     /**
-     * 第二层思考方式尚未入库，运行时硬编码「兜底 adaptive」：
+     * 模型没有思考方式配置时落到默认的「兜底 adaptive」：
      * 下游没带 thinking 才补，带了就完全尊重。
+     *
+     * <p>这正是 V10 之前那段硬编码的行为，钉住它是为了保证升级前后出站请求体一致。
      */
     @Test
     void missingThinkingFallsBackToAdaptive() throws Exception {
@@ -440,6 +443,65 @@ class GenericAnthropicChatServiceTests {
         JsonNode body = objectMapper.readTree(capturedBody.get());
         // 显式 null 属于下游表态；最终清洗会去掉该字段，而不是改成 adaptive。
         assertThat(body.has("thinking")).isFalse();
+    }
+
+    /** 覆写档按配置重建 {@code thinking}，下游带了也照改。 */
+    @Test
+    void configuredOverrideThinkingReplacesDownstreamValue() throws Exception {
+        Map<String, Object> request = newRequest();
+        request.put("thinking", Map.of("type", "enabled", "budget_tokens", 2048));
+
+        realService().exposeMessages(request, routeWithThinking(baseUrlWithV1(),
+                "{\"thinking_type\":\"enabled\",\"overwrite_mode\":\"override\"}", 8192))
+                .block(Duration.ofSeconds(10));
+
+        JsonNode thinking = objectMapper.readTree(capturedBody.get()).path("thinking");
+        assertThat(thinking.path("type").asText()).isEqualTo("enabled");
+        assertThat(thinking.path("budget_tokens").asInt()).isEqualTo(8192);
+    }
+
+    /** 透传档既不改也不补，等于这一层不存在。 */
+    @Test
+    void configuredPassthroughLeavesThinkingAbsent() throws Exception {
+        realService().exposeMessages(newRequest(), routeWithThinking(baseUrlWithV1(),
+                "{\"thinking_type\":\"enabled\",\"overwrite_mode\":\"passthrough\"}", 8192))
+                .block(Duration.ofSeconds(10));
+
+        assertThat(objectMapper.readTree(capturedBody.get()).has("thinking")).isFalse();
+    }
+
+    /**
+     * {@code enabled} 缺预算时退化为 {@code adaptive}。
+     *
+     * <p>{@code {"type":"enabled"}} 少了 {@code budget_tokens} 会被上游拒绝，而用户恰恰
+     * <strong>没有</strong>表达预算，「交给上游决定」是唯一能出站的解释 —— 这不是自动降级。
+     */
+    @Test
+    void enabledWithoutBudgetDegradesToAdaptive() throws Exception {
+        realService().exposeMessages(newRequest(), routeWithThinking(baseUrlWithV1(),
+                "{\"thinking_type\":\"enabled\",\"overwrite_mode\":\"override\"}",
+                AnthropicThinkingSetting.UNSET_BUDGET_TOKENS))
+                .block(Duration.ofSeconds(10));
+
+        JsonNode thinking = objectMapper.readTree(capturedBody.get()).path("thinking");
+        assertThat(thinking.path("type").asText()).isEqualTo("adaptive");
+        assertThat(thinking.has("budget_tokens")).isFalse();
+    }
+
+    /**
+     * 越界预算原样发出，由上游用错误码回答。
+     *
+     * <p>与「不自动降级」的原则一致：不在这里把 {@code 16} 抬到 Anthropic 旧形态要求的
+     * {@code 1024}，否则用户看到的出站值与他配的值不一致却没有任何提示。
+     */
+    @Test
+    void outOfRangeBudgetIsSentVerbatim() throws Exception {
+        realService().exposeMessages(newRequest(), routeWithThinking(baseUrlWithV1(),
+                "{\"thinking_type\":\"enabled\",\"overwrite_mode\":\"override\"}", 16))
+                .block(Duration.ofSeconds(10));
+
+        assertThat(objectMapper.readTree(capturedBody.get())
+                .path("thinking").path("budget_tokens").asInt()).isEqualTo(16);
     }
 
     /** 模型名的供应商前缀要剥掉，上游只认真实模型名。 */
@@ -874,6 +936,26 @@ class GenericAnthropicChatServiceTests {
         return new ResolvedProviderRoute(
                 new ProviderRuntimeConfiguration("anthro", baseUrl, "test-key", List.of(
                         new ProviderRuntimeModel("claude-x", 200000, true, true, "Medium", maxOutputJson))),
+                "claude-x", "[anthro] claude-x");
+    }
+
+    /**
+     * 带模型思考方式配置的路由。
+     *
+     * <p>形态与模式在一列、预算在另一列，所以这里是两个参数而不是一个 JSON ——
+     * 与库里的两列一一对应。模型名同样必须是 {@code claude-x}，理由见
+     * {@link #routeWithMaxOutput}。
+     *
+     * @param thinkingModeJson 持久化原文，形如
+     *                         {@code {"thinking_type":"enabled","overwrite_mode":"override"}}
+     * @param budgetTokens     {@code thinking_budget_tokens} 列的值；未设置传哨兵
+     */
+    private static ResolvedProviderRoute routeWithThinking(String baseUrl, String thinkingModeJson,
+                                                          int budgetTokens) {
+        return new ResolvedProviderRoute(
+                new ProviderRuntimeConfiguration("anthro", baseUrl, "test-key", List.of(
+                        new ProviderRuntimeModel("claude-x", 200000, true, true, "Medium", null,
+                                thinkingModeJson, budgetTokens))),
                 "claude-x", "[anthro] claude-x");
     }
 

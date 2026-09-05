@@ -55,7 +55,7 @@ class SchemaMigrationRunnerTests {
                 "SELECT version FROM schema_version WHERE id = 1", Double.class))
                 .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
         assertThat(columnNames(jdbcTemplate, "provider_model"))
-                .contains("reasoning_effort", "max_output_tokens");
+                .contains("reasoning_effort", "max_output_tokens", "thinking_mode", "thinking_budget_tokens");
         assertThat(columnNames(jdbcTemplate, "provider_config"))
                 .contains("display_name")
                 .doesNotContain("api_key", "active_api_key_index", "custom_transforms", "api_format");
@@ -974,6 +974,136 @@ class SchemaMigrationRunnerTests {
                 .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
     }
 
+    // ==================== V10：Anthropic 思考方式与预算 ====================
+
+    /**
+     * V9 库升级到 V10 后新增两列，且存量行拿到的默认值<strong>就是</strong>
+     * V10 之前那段硬编码的行为。
+     *
+     * <p>这一条是本迁移的核心断言：默认值必须是 {@code adaptive + fallback}，
+     * 因为升级前 {@code GenericAnthropicChatService} 无条件「下游没带 thinking 就补 adaptive」，
+     * 那正是兜底档的定义。若默认写成覆写或透传，存量供应商的出站请求体会在升级瞬间改变 ——
+     * 迁移不得改变运行时行为。
+     */
+    @Test
+    void v9DatabaseGainsThinkingColumnsWithBehaviourPreservingDefaults() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV9ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 9);
+        jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name) VALUES (1, 'existing')");
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+        assertThat(columnNames(jdbcTemplate, "provider_model"))
+                .contains("thinking_mode", "thinking_budget_tokens");
+        // ADD COLUMN ... NOT NULL DEFAULT 会把默认值应用到所有已有行，无需回填 UPDATE。
+        assertThat(thinkingModeOf(jdbcTemplate, "existing"))
+                .isEqualTo("{\"thinking_type\":\"adaptive\",\"overwrite_mode\":\"fallback\"}");
+        assertThat(thinkingBudgetOf(jdbcTemplate, "existing")).isEqualTo(-1);
+    }
+
+    /**
+     * 新增列带 CHECK 约束：{@code thinking_mode} 必须是合法 JSON，
+     * 预算只放行正数与哨兵 -1。
+     *
+     * <p>预算那条约束刻意不写成 {@code >= -1}：只有 -1 一个负值有约定含义
+     * （未设置），0 与 -2 之类都是脏数据，不该被放进来再让读取侧去猜。
+     */
+    @Test
+    void v10ColumnsRejectInvalidJsonAndOutOfContractBudgets() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV9ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 9);
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "INSERT INTO provider_model (provider_id, model_name, thinking_mode) "
+                        + "VALUES (1, 'bad-thinking-json', 'not-json')"))
+                .isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "INSERT INTO provider_model (provider_id, model_name, thinking_budget_tokens) "
+                        + "VALUES (1, 'zero-budget', 0)"))
+                .isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "INSERT INTO provider_model (provider_id, model_name, thinking_budget_tokens) "
+                        + "VALUES (1, 'negative-budget', -2)"))
+                .isInstanceOf(DataAccessException.class);
+        // 正数与哨兵都必须放行。
+        jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, thinking_budget_tokens) "
+                + "VALUES (1, 'real-budget', 8192)");
+        jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, thinking_budget_tokens) "
+                + "VALUES (1, 'unset-budget', -1)");
+        assertThat(thinkingBudgetOf(jdbcTemplate, "real-budget")).isEqualTo(8192);
+        assertThat(thinkingBudgetOf(jdbcTemplate, "unset-budget")).isEqualTo(-1);
+    }
+
+    /**
+     * 重跑 V10 不改动用户已经配好的值。
+     *
+     * <p>{@code addColumnIfNotExists} 让 DDL 幂等，但真正要钉的是「没有回填 UPDATE」——
+     * 若迁移体里写了一条无条件的 {@code UPDATE ... SET thinking_mode = 默认值}，
+     * 第二次运行会把用户配的覆写档打回兜底档，而这个缺陷只在跑两遍时显形。
+     */
+    @Test
+    void v10MigrationRerunPreservesUserConfiguredThinking() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV9ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 9);
+        jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name) VALUES (1, 'configured')");
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        // 模拟用户在界面上改成「覆写 + 手动预算」。
+        jdbcTemplate.update("UPDATE provider_model SET thinking_mode = ?, thinking_budget_tokens = ? "
+                + "WHERE model_name = 'configured'",
+                "{\"thinking_type\":\"enabled\",\"overwrite_mode\":\"override\"}", 16384);
+
+        runner.run(null);
+
+        assertThat(thinkingModeOf(jdbcTemplate, "configured"))
+                .isEqualTo("{\"thinking_type\":\"enabled\",\"overwrite_mode\":\"override\"}");
+        assertThat(thinkingBudgetOf(jdbcTemplate, "configured")).isEqualTo(16384);
+    }
+
+    /**
+     * 新增列不影响 V9 重建时建起来的校验触发器与唯一索引。
+     *
+     * <p>V10 用 {@code ADD COLUMN} 而非重建表，因此本来就不该碰到它们 ——
+     * 但这一条把「没碰到」变成断言，避免将来有人把 V10 改成重建流程时
+     * 悄悄丢掉触发器（那正是 V9 踩过的坑，且 {@code DROP TABLE} 删触发器不报错）。
+     */
+    @Test
+    void v10DoesNotDisturbExistingValidationsWhenAddingColumns() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV9ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 9);
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "INSERT INTO provider_model (provider_id, model_name, caps_tools) VALUES (1, 'bad-caps', 7)"))
+                .isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "INSERT INTO provider_model (provider_id, model_name, max_output_tokens) "
+                        + "VALUES (1, 'bad-json', 'not-json')"))
+                .isInstanceOf(DataAccessException.class);
+        jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name) VALUES (1, 'dup')");
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "INSERT INTO provider_model (provider_id, model_name) VALUES (1, 'dup')"))
+                .isInstanceOf(DataAccessException.class);
+    }
+
     // ==================== 跨版本升级只执行缺失的迁移 ====================
     //
     // 以下两个用例锁定同一个不变量：库版本落后于代码版本时，只能执行区间内缺失的迁移，
@@ -1430,6 +1560,61 @@ class SchemaMigrationRunnerTests {
                                 + "INTEGER NOT NULL DEFAULT 2 CHECK (reasoning_effort_schema >= 1)");
         }
 
+        /**
+         * 建出 V9 重建后的 provider_model：{@code max_output_tokens} 已是带
+         * {@code json_valid} 的 TEXT，且触发器与唯一索引都在位。
+         *
+         * <p>直接复用 V9 迁移之后的真实形态，而不是「V8.9 表 + 手动改列」——
+         * V10 的前置条件是那张重建后的表，夹具必须与之一致，否则测的是一个
+         * 现实中不存在的中间态。
+         *
+         * <p>触发器与索引都建上，是为了让
+         * {@code v10DoesNotDisturbExistingValidationsWhenAddingColumns} 有东西可断言：
+         * 若夹具不建，那条用例会因为「本来就没有」而假通过。
+         */
+        private void createV9ProviderModelTable(JdbcTemplate jdbcTemplate) {
+                jdbcTemplate.execute("CREATE TABLE provider_model ("
+                                + "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                                + "provider_id INTEGER NOT NULL, "
+                                + "model_name VARCHAR(100) NOT NULL, "
+                                + "enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)), "
+                                + "context_size INTEGER NOT NULL DEFAULT 0 CHECK (context_size >= 0), "
+                                + "max_output_tokens TEXT NOT NULL DEFAULT "
+                                + "'{\"max_output_tokens\":4000,\"overwrite_mode\":\"fallback\"}' "
+                                + "CHECK (json_valid(max_output_tokens)), "
+                                + "caps_tools INTEGER NOT NULL DEFAULT 0 CHECK (caps_tools IN (0, 1)), "
+                                + "caps_vision INTEGER NOT NULL DEFAULT 0 CHECK (caps_vision IN (0, 1)), "
+                                + "reasoning_effort TEXT NOT NULL DEFAULT "
+                                + "'{\"reasoning_effort\":\"medium\",\"overwrite_mode\":\"fallback\"}' "
+                                + "CHECK (json_valid(reasoning_effort)), "
+                                + "reasoning_effort_schema INTEGER NOT NULL DEFAULT 2 "
+                                + "CHECK (reasoning_effort_schema >= 1), "
+                                + "sort_order INTEGER NOT NULL DEFAULT 0 CHECK (sort_order >= 0), "
+                                + "FOREIGN KEY (provider_id) REFERENCES provider_config(id) ON DELETE CASCADE)");
+                jdbcTemplate.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_model_provider_name "
+                                + "ON provider_model(provider_id, model_name)");
+                String modelInvalid = "NEW.enabled NOT IN (0, 1) OR NEW.caps_tools NOT IN (0, 1) "
+                                + "OR NEW.caps_vision NOT IN (0, 1) OR NEW.context_size < 0";
+                jdbcTemplate.execute("CREATE TRIGGER IF NOT EXISTS trg_provider_model_validate_insert "
+                                + "BEFORE INSERT ON provider_model FOR EACH ROW WHEN " + modelInvalid
+                                + " BEGIN SELECT RAISE(ABORT, 'invalid provider_model row'); END");
+                jdbcTemplate.execute("CREATE TRIGGER IF NOT EXISTS trg_provider_model_validate_update "
+                                + "BEFORE UPDATE ON provider_model FOR EACH ROW WHEN " + modelInvalid
+                                + " BEGIN SELECT RAISE(ABORT, 'invalid provider_model row'); END");
+        }
+
+        private String thinkingModeOf(JdbcTemplate jdbcTemplate, String modelName) {
+                return jdbcTemplate.queryForObject(
+                                "SELECT thinking_mode FROM provider_model WHERE model_name = ?",
+                                String.class, modelName);
+        }
+
+        private int thinkingBudgetOf(JdbcTemplate jdbcTemplate, String modelName) {
+                return jdbcTemplate.queryForObject(
+                                "SELECT thinking_budget_tokens FROM provider_model WHERE model_name = ?",
+                                Integer.class, modelName);
+        }
+
         /** 插一行带指定最大输出值的模型，模型名即用例里的标签。 */
         private void seedMaxOutput(JdbcTemplate jdbcTemplate, String modelName, int rawMaxOutput) {
                 jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, max_output_tokens) "
@@ -1544,6 +1729,12 @@ class SchemaMigrationRunnerTests {
                                 "INSERT INTO provider_model (provider_id, model_name, max_output_tokens) "
                                         + "VALUES (999, 'v9-checkpoint-probe', 'not-json')"))
                                 .isInstanceOf(DataAccessException.class);
+                }
+                if (version >= 10) {
+                        // V10 是纯新增列，断言列名即可 —— 与 V9 不同，这里没有「同名列换了形态」
+                        // 的歧义，列存在就说明迁移执行过。
+                        assertThat(columnNames(jdbcTemplate, "provider_model"))
+                                .contains("thinking_mode", "thinking_budget_tokens");
                 }
         }
 }

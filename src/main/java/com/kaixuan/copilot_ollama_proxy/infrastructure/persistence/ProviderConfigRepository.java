@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
+import com.kaixuan.copilot_ollama_proxy.application.runtime.AnthropicThinkingSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -160,8 +161,15 @@ public class ProviderConfigRepository {
             boolean capsTools = Boolean.TRUE.equals(m.get("capsTools"));
             boolean capsVision = Boolean.TRUE.equals(m.get("capsVision"));
             String reasoningEffort = (String) m.getOrDefault("reasoningEffort", "Medium");
-            jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, enabled, context_size, max_output_tokens, caps_tools, caps_vision, reasoning_effort, sort_order) " + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    providerId, modelName, modelEnabled ? 1 : 0, contextSize, maxOutputTokens, capsTools ? 1 : 0, capsVision ? 1 : 0, reasoningEffort, i);
+            // 与最大输出同理：表单路径已由 ProviderAdminService 收敛成 V10 JSON，
+            // 直接调仓储的路径（测试夹具、将来的导入）可能不传，靠默认值补上。
+            String thinkingMode = normalizeThinkingMode(m.get("thinkingMode"));
+            int thinkingBudgetTokens = normalizeThinkingBudget(m.get("thinkingBudgetTokens"));
+            jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, enabled, context_size, max_output_tokens, caps_tools, caps_vision, reasoning_effort, thinking_mode, thinking_budget_tokens, sort_order) "
+                            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    providerId, modelName, modelEnabled ? 1 : 0, contextSize, maxOutputTokens,
+                    capsTools ? 1 : 0, capsVision ? 1 : 0, reasoningEffort,
+                    thinkingMode, thinkingBudgetTokens, i);
         }
     }
 
@@ -214,7 +222,8 @@ public class ProviderConfigRepository {
         StringBuilder sql = new StringBuilder("SELECT pc.id, pc.provider_key, pc.display_name, pc.enabled, pc.base_url,")
                 .append(" pc.supported_protocols, pc.anthropic_base_url, pc.updated_at,")
                 .append(" pm.id AS model_id, pm.provider_id AS model_provider_id, pm.model_name, pm.enabled AS model_enabled,")
-                .append(" pm.context_size, pm.max_output_tokens, pm.caps_tools, pm.caps_vision, pm.reasoning_effort, pm.sort_order")
+                .append(" pm.context_size, pm.max_output_tokens, pm.caps_tools, pm.caps_vision, pm.reasoning_effort,")
+                .append(" pm.thinking_mode, pm.thinking_budget_tokens, pm.sort_order")
                 .append(" FROM provider_config pc")
                 .append(" LEFT JOIN provider_model pm ON pm.provider_id = pc.id")
                 .append(activeOnly ? " WHERE pc.enabled = 1" : "");
@@ -270,6 +279,11 @@ public class ProviderConfigRepository {
                     ((Number) row.get("caps_tools")).intValue() == 1,
                     ((Number) row.get("caps_vision")).intValue() == 1,
                     (String) row.get("reasoning_effort"),
+                    (String) row.get("thinking_mode"),
+                    // 未迁移的库里这一列不存在，取到 null；归一为未设置哨兵而非 0 ——
+                    // 0 会被当成「用户真的填了0」，而那不是事实。
+                    row.get("thinking_budget_tokens") instanceof Number budget
+                            ? budget.intValue() : AnthropicThinkingSetting.UNSET_BUDGET_TOKENS,
                     ((Number) row.get("sort_order")).intValue()
             ));
         }
@@ -320,6 +334,24 @@ public class ProviderConfigRepository {
         }
         return new MaxOutputTokensSetting(parseInt(raw, 0), MaxOutputTokensSetting.Mode.FALLBACK)
                 .serialize();
+    }
+
+    /**
+     * 把思考方式的入参收敛为列上 {@code json_valid} 接受的 V10 JSON。
+     *
+     * <p>与 {@link #normalizeMaxOutputTokens} 同构：已是 JSON 的值原样返回，
+     * 否则用默认值。本层没有 {@code ObjectMapper}，收敛职责在
+     * {@code ProviderAdminService.parseModels}。
+     */
+    private static String normalizeThinkingMode(Object value) {
+        String raw = value == null ? "" : String.valueOf(value).trim();
+        return raw.startsWith("{") ? raw : AnthropicThinkingSetting.defaults().serialize();
+    }
+
+    /** 非正预算一律归为未设置哨兵，因为列约束只放行正数与 -1。 */
+    private static int normalizeThinkingBudget(Object value) {
+        int parsed = parseInt(value == null ? "" : String.valueOf(value).trim(), 0);
+        return parsed > 0 ? parsed : AnthropicThinkingSetting.UNSET_BUDGET_TOKENS;
     }
 
     /**

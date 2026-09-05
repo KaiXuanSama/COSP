@@ -8,6 +8,7 @@ import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.AnthropicThinkingSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
@@ -560,9 +561,13 @@ public class GenericAnthropicChatService {
      *   <li><strong>{@code max_tokens} 必填</strong> —— 缺失时上游返回 400。
      *       按模型配置的 {@code max_output_tokens} 注入（覆写 / 兜底两档），
      *       模型未配置时用 {@link MaxOutputTokensSetting#defaults()}。</li>
-     *   <li><strong>思考深度用 {@code thinking} 对象</strong> ——
-     *       而非 OpenAI 的 {@code reasoning_effort} 字符串。当前只做剥离，
-     *       不做映射（见下方 TODO）。</li>
+     *   <li><strong>思考方式用 {@code thinking} 对象</strong> ——
+     *       按模型配置的 {@code thinking_mode} 与 {@code thinking_budget_tokens} 注入
+     *       （覆写 / 兜底 / 透传三档），模型未配置时用
+     *       {@link AnthropicThinkingSetting#defaults()}。
+     *       <p>思考<strong>深度</strong>（{@code reasoning_effort}）是另一维，
+     *       在本线路上当前<strong>只做剥离、不做映射</strong> —— 那一维需要先决定
+     *       「档位写成 {@code output_config.effort} 还是旧形态」，见下方长注释。</li>
      * </ol>
      *
      * <h2>请求体转换规则的执行位置</h2>
@@ -591,10 +596,7 @@ public class GenericAnthropicChatService {
         // 不能在翻译器之前剥掉，否则会让兜底的「下游是否已表态」判定失真。
         body.remove("reasoning_effort");
 
-        // TODO 思考方式 / 预算接入 provider_model 的真实持久化字段后，改为读取并应用
-        // 该配置（override / fallback / passthrough 等模式）。当前第二层 UI 尚未提交这些字段，
-        // 约定的临时语义是「兜底 adaptive」：下游未携带 thinking 时才注入，携带时完全尊重。
-        applyFallbackAdaptiveThinking(body);
+        resolveThinking(resolvedModel, provider).applyTo(body);
 
         applyBodyRules(body, provider);
 
@@ -603,20 +605,22 @@ public class GenericAnthropicChatService {
     }
 
     /**
-     * 临时的 Anthropic 思考方式默认值：兜底注入 {@code thinking: {type: "adaptive"}}。
+     * 从运行时模型配置中读取思考方式设置。
      *
-     * <p>只看 {@code thinking} 是否存在，不看 {@code output_config.effort}：深度仅表达
-     * 「想多想一点」，不表达选用 adaptive 还是旧版 enabled + budget_tokens 的方式。
-     * 所以 O2A 请求只带 {@code reasoning_effort} 时，翻译后会同时得到
-     * {@code output_config.effort} 与本方法补上的 {@code thinking: adaptive}，两者正交。
-     *
-     * <p>用 {@code containsKey} 而非检查值：下游显式发 {@code thinking: null} 也属于表态，
-     * 应由规则 / 上游去处理，兜底层不能越权改成 adaptive。最终 null 清洗仍在规则之后统一执行。
+     * <p>找不到匹配的模型时返回 {@link AnthropicThinkingSetting#defaults()}
+     * （adaptive + 兜底 + 未设置预算），与 {@link #resolveMaxOutputTokens} 同一形状。
+     * 这个默认值<strong>就是</strong> V10 之前那段硬编码的行为，因此升级前后的
+     * 出站请求体完全一致。
      */
-    private void applyFallbackAdaptiveThinking(Map<String, Object> body) {
-        if (!body.containsKey("thinking")) {
-            body.put("thinking", Map.of("type", "adaptive"));
+    private AnthropicThinkingSetting resolveThinking(String resolvedModel,
+                                                    ProviderRuntimeConfiguration provider) {
+        for (var model : provider.models()) {
+            if (resolvedModel.equals(model.modelName())) {
+                return AnthropicThinkingSetting.parse(
+                        model.thinkingMode(), model.thinkingBudgetTokens(), objectMapper);
+            }
         }
+        return AnthropicThinkingSetting.defaults();
     }
 
     /**
@@ -762,11 +766,15 @@ public class GenericAnthropicChatService {
 
     /*
      * ========================================================================
-     * 待实现：思考深度四档注入模式在 Anthropic 线路上的语义
+     * 待实现：思考**深度**四档注入模式在 Anthropic 线路上的语义
      * ========================================================================
      *
-     * 当前 prepareRequestBody 无条件剥掉 reasoning_effort，四个模式一个都没生效。
-     * 下面是规格，实现时照此办理。
+     * 注意这与已实现的思考**方式**（AnthropicThinkingSetting，见 resolveThinking）
+     * 是两个正交维度：方式管「预算怎么算」（adaptive / enabled+budget），
+     * 深度管「想多深」（档位字符串）。方式已在 V10 接入持久化并生效；
+     * 深度在本线路上仍未生效 —— prepareRequestBody 无条件剥掉 reasoning_effort。
+     *
+     * 下面是深度那一维的规格，实现时照此办理。
      *
      * ## 与 OpenAI 侧的真实差异
      *
@@ -832,6 +840,10 @@ public class GenericAnthropicChatService {
      * 因此形态选择应当是**用户可配置的**（参考 cc-switch 的 thinkingLevelMap：
      * 字符串=实际发送值 / null=该档明确不可用 / 键缺失=用上游默认），
      * 而不是从模型名推导。这需要一列新的模型配置，属于后续版本。
+     *
+     * V10 新增的 thinking_mode 只解决了 adaptive / enabled+budget 的选择，
+     * **没有**解决 output_config.effort 与旧形态之间的选择 —— 后者才是这一节的未决问题。
+     * 两者不要混为一谈：前者是用户想怎么定预算，后者是上游认哪个字段名。
      *
      * ## 不要顺手做的事
      *

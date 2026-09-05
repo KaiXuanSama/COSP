@@ -53,7 +53,20 @@ CREATE TABLE IF NOT EXISTS provider_model (
         CHECK (json_valid(reasoning_effort)),
     -- 思考深度配置的结构版本。存在的意义是让 V8.9 那次「内容形态变更」成为可判定的结构事实，
     -- 否则基线判定只能靠翻数据，而空库没有行可翻。
+    -- 注意：这是当时基线判定要求结构证据的产物，现已不需要，V9 与 V10 都没有再加同类列。
     reasoning_effort_schema INTEGER NOT NULL DEFAULT 2 CHECK (reasoning_effort_schema >= 1),
+    -- Anthropic 思考方式（V10 JSON）：{"thinking_type":"adaptive|enabled","overwrite_mode":"override|fallback|passthrough"}
+    -- 与思考深度正交：深度回答「想多深」，这里回答「预算怎么算」，两者可并存。
+    -- 没有 disabled 形态：关闭思考由思考深度的 Off 档表达，两处都给会产出自相矛盾的请求体。
+    -- 没有 delete 模式：强制剥离 thinking 用仅适用于 ANTHROPIC 的请求体规则表达。
+    thinking_mode   TEXT         NOT NULL DEFAULT '{"thinking_type":"adaptive","overwrite_mode":"fallback"}'
+        CHECK (json_valid(thinking_mode)),
+    -- 思考预算（token 数）。只在 thinking_type = enabled 时有意义，adaptive 形态不接受它。
+    -- -1 是「未设置」哨兵，不是可出站的值；enabled 但仍为 -1 时出站退化为 adaptive。
+    -- 约束只放行这一个负值：其余负数没有约定含义，一律是脏数据。
+    -- 预算没有自己的注入模式 —— 它是 enabled 形态的附属参数，跟着 thinking_mode 的模式走。
+    thinking_budget_tokens INTEGER NOT NULL DEFAULT -1
+        CHECK (thinking_budget_tokens > 0 OR thinking_budget_tokens = -1),
     sort_order      INTEGER      NOT NULL DEFAULT 0 CHECK (sort_order >= 0), -- 排序权重
     FOREIGN KEY (provider_id) REFERENCES provider_config(id) ON DELETE CASCADE
 );
