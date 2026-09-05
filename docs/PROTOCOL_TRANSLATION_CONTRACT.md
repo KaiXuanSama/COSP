@@ -368,7 +368,11 @@ A2O 丢弃：`metadata`、`mcp_servers`、`container`、`context_management`、`
 3. 删除 2.1 那行 `body.remove("reasoning_effort")`
 4. 其余字段映射与丢弃清单
 5. `translationContext` 出口
-6. 响应与 SSE 侧（另立契约）
+6. 响应与 SSE 侧 —— 已另立契约，见
+   [PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md](./PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md)
+
+前五项已完成（O2A 请求侧）。实际执行顺序随后调整为先做 **A2O 响应**而非 A2O 请求，
+理由见响应侧契约第 0 节：补上响应翻译才能让 O2A 这条链端到端可用。
 
 ### 8.1 尚未决定的事项
 

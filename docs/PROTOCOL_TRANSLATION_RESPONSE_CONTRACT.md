@@ -1,0 +1,699 @@
+# 协议翻译契约（响应侧）
+
+> **A2O 响应翻译已落地并经实流量验证**（流式与非流式、多轮工具调用、参数分片）。
+> 实现与验证状态见第 15 节；O2A 响应翻译尚未开始。
+>
+> 本文档既是设计契约也是实现说明：正文的「必须 / 不要」是约束，
+> 标注了实测日期的段落是已验证的事实。
+>
+> 请求侧见 [PROTOCOL_TRANSLATION_CONTRACT.md](./PROTOCOL_TRANSLATION_CONTRACT.md)（本文沿用其编号与术语）。
+> 相关：[AGENTS.md](../AGENTS.md)、[思考链回放调查](COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)、
+> [mock-anthropic](../tools/mock-anthropic/README.md)（参数分片等只能用 mock 触发的场景）
+
+A2O = Anthropic Messages 响应 → OpenAI Chat Completions 响应。
+本文档覆盖**非流式 JSON** 与**流式 SSE** 两侧。
+
+---
+
+## 0. 为何先做 A2O 响应而非 A2O 请求
+
+四个功能的原定顺序是 O2A 请求 → A2O 请求 → A2O 响应 → O2A 响应，但**实际执行顺序调整为
+O2A 请求 → A2O 响应**。
+
+理由：O2A 请求已落地并实测通过（下游打 `/v1/chat/completions`、上游 DeepSeek Anthropic
+端点返回完整事件序列），但下游收到的是 Anthropic 原生帧，Copilot 解析不了。
+补上 A2O 响应才让这条链**端到端可用**；而 A2O 请求服务的是另一条链（下游打 `/v1/messages`、
+上游只有 OpenAI），那条链在此之前一直是不可用状态，不因本次工作而改变。
+
+即：按「让已有的一半变成可用的整体」排序，而不是按功能编号排序。
+
+---
+
+## 1. 实测的上游事件序列
+
+以下是 O2A 落地后对 DeepSeek Anthropic 端点的真实抓包（`deepseek-v4-flash`，
+兜底注入 `thinking: {"type":"adaptive"}`），按到达顺序：
+
+```text
+message_start          → message.id / model / usage.input_tokens
+content_block_start    → index 0, content_block.type = "thinking"
+ping
+content_block_delta    → index 0, delta.type = "thinking_delta"   (× N)
+content_block_delta    → index 0, delta.type = "signature_delta"
+content_block_stop     → index 0
+content_block_start    → index 1, content_block.type = "text"
+content_block_delta    → index 1, delta.type = "text_delta"
+content_block_stop     → index 1
+message_delta          → delta.stop_reason = "end_turn", usage.output_tokens
+message_stop
+```
+
+两个直接影响设计的观察：
+
+- **thinking 块占用了 index 0**。任何把 Anthropic `index` 直接当 OpenAI
+  `tool_calls[].index` 用的实现，在有 thinking 的响应里都会产出稀疏数组。见第 4 节。
+- **`signature_delta` 真实存在**，不是文档里的边缘情况。见第 5 节。
+
+---
+
+## 2. 事件映射总表
+
+三个参考项目交叉验证后的结论。「帧数」指该事件产出多少个下游
+`chat.completion.chunk`。
+
+| Anthropic 事件 | 下游帧数 | 产出内容 |
+|---|---|---|
+| `message_start` | **1** | 唯一带 `delta.role: "assistant"` 的帧，同时确定 `id` / `model` |
+| `content_block_start` (text) | **0** | Chat 协议没有块生命周期概念 |
+| `content_block_start` (thinking) | **0** | 同上 |
+| `content_block_start` (tool_use) | **1** | `delta.tool_calls[{index, id, type:"function", function.name}]` |
+| `content_block_start` (redacted_thinking) | **0** | 见第 5.2 节 |
+| `content_block_start` (server_tool_use 等 hosted) | **0** | 白名单跳过，见第 6.3 节 |
+| `content_block_delta` / `text_delta` | 1 | `delta.content` |
+| `content_block_delta` / `thinking_delta` | 1 | `delta.reasoning_content` |
+| `content_block_delta` / `signature_delta` | **0** | 吸收进状态，见第 5.1 节 |
+| `content_block_delta` / `input_json_delta` | 1 | `delta.tool_calls[{index, function.arguments}]`，无 `id` / `name`。**片数不定**，见第 4.1 节 |
+| `content_block_stop` | **0** | |
+| `message_delta` | 1 | 唯一带 `finish_reason` 的帧。**只发 finish chunk，不带 usage** —— usage 由收尾统一发，见第 9.3 节 |
+| `message_stop` | **0** | `[DONE]` 由收尾逻辑发，不由本事件触发 |
+| `ping` | **0** | 见第 6.4 节 |
+| `error` | 见第 6.1 节 | |
+
+**这张表印证了 `ProtocolTranslator` 里那句「不是一帧进一帧出」**：零帧与多帧都存在，
+流式翻译方法的返回类型必须是 `List` / `Flux`，不能是单个 `String`。
+
+---
+
+## 3. 非流式映射
+
+| OpenAI 字段 | 来源 | 说明 |
+|---|---|---|
+| `id` | Anthropic `id` | 原样透传（`msg_xxx`），不加 `chatcmpl-` 前缀 |
+| `object` | 硬编码 | `"chat.completion"` |
+| `created` | 本地时间戳 | Anthropic 无此字段。**不是上游耗时基准**，日志对账时注意 |
+| `model` | **下游原始模型名** | 见第 7 节，不用上游返回的裸名 |
+| `choices[0].index` | 硬编码 `0` | Anthropic 无 n>1 概念 |
+| `choices[0].message.role` | 硬编码 | `"assistant"` |
+| `choices[0].message.content` | 所有 `type == "text"` 块按序拼接 | 无分隔符 |
+| `choices[0].message.reasoning_content` | 所有 `type == "thinking"` 块按序**累积** | 见第 5.3 节 |
+| `choices[0].message.tool_calls` | 每个 `type == "tool_use"` 块一项 | `arguments` = `Marshal(input)`，空 input → `"{}"` |
+| `choices[0].finish_reason` | `stop_reason` 映射 | 见第 8 节 |
+| `usage` | Anthropic `usage` 换算 | 见第 9 节 |
+
+多个 content block 的**相对顺序**要保留：text 与 tool_use 交错出现时，
+拼接后的 `content` 与 `tool_calls` 数组各自内部有序即可（Chat 协议本身表达不了交错）。
+
+---
+
+## 4. tool index 是两个独立索引域（必须做对）
+
+三个项目一致确认，且是 A2O 唯一真正需要跨帧状态的原因。
+
+- **Anthropic `index`**：覆盖**所有**块类型。实测序列里 thinking 占 0、text 占 1
+- **OpenAI `tool_calls[].index`**：必须是**从 0 起的稠密序列**
+
+直接把 Anthropic index 当 tool index 用的后果：一个「先思考、再调两个工具」的响应会产出
+`tool_calls[1]` 与 `tool_calls[2]`，下游看到的是 `index: 0` 缺失的稀疏数组，
+Copilot 大概率拼不出参数。
+
+**做法**（借鉴 new-api `ClaudeToChatStreamState`）：
+
+```text
+content_block_start (tool_use) 时按需分配 nextToolIndex++，记入 map
+input_json_delta 时按 Anthropic index 查表复用
+查不到且不是已知 hosted 块 → 报错，不猜
+```
+
+**不要沿用 sub2api 的做法**：它在 `content_block_delta` 处理里**完全忽略 `index` 字段**，
+只靠「当前打开的块」推断归属。这依赖「Anthropic 顺序发块、不交错」这个未文档化的假设。
+按 `index` 建映射表的成本几乎为零，没有理由赌这个假设。
+
+### 4.1 参数分片：每一片单独都不是合法 JSON
+
+一个 `tool_use` 块的参数 JSON 通过 `input_json_delta` 逐片发出，下游靠拼接
+`delta.tool_calls[].function.arguments` 还原。因此**每一片必须当作不透明字节
+原样转发** —— 中途试图解析单片必然失败，因为切点可能落在 `\"` 或 `\uXXXX` 中间。
+
+翻译层要保证的两件事：同一块的所有片落在**同一个** `tool_calls[].index` 上，
+且**顺序不变**。任一条破了，下游拼出来的就是废串。
+
+**上游对「切不切、怎么切」没有共识**，这一点决定了怎么测：
+
+| 上游 | 行为 |
+|---|---|
+| Anthropic 官方 | 长参数切成多片 |
+| MiMo（实测） | **不切**，6269 字符的参数装在单个 `input_json_delta` 里一次发完 |
+
+因此**光靠真实流量压不到多片路径** —— 近期全部带工具调用的 A→O 日志里
+`maxDeltasPerBlock` 恒为 1，提示词写得再长也没用（参数体越大只是那一片越长）。
+本地唯一手段是 `tools/mock-anthropic` 的四个场景：
+
+| 模型名 | 形状 | 压什么 |
+|---|---|---|
+| `at-tool-split-args` | 单工具，参数按 12 字符切成 23 片 | 拼接正确性；转义序列跨片边界 |
+| `at-tool-multi-split` | 三工具，block index **1/2/3**（0 给 thinking） | 双索引域重映射为稠密 0/1/2 |
+| `at-tool-interleaved` | 两工具的分片交错发送 | index 映射是否依赖隐式「当前活跃块」 |
+| `at-tool-no-args` | 零个 `input_json_delta` | 不凭空补 `{}`，也不丢掉整个工具调用 |
+
+切片刻意**不避开**转义序列：那是最容易暴露「谁在中途解析单片」的形状。
+交错场景是**实现健壮性探针而非协议合规性测试** —— 官方是块顺序完成的，交错在
+实践中未观测到，但按 `index` 查表本应天然支持它；若实现用了「当前活跃块」
+这类隐式状态，交错会立刻把两个工具的参数搅在一起。
+
+### 4.2 实测结论（2026-09-05，mock 四场景）
+
+| 场景 | 上游片数 | 下游 tool index | 拼接结果 |
+|---|---|---|---|
+| `at-tool-split-args` | 23（block 0） | `[0]` | 合法 JSON，与上游**逐字节相等** |
+| `at-tool-multi-split` | 4 / 30 / 8（block 1/2/3） | `[0,1,2]` | 三段各自合法，均逐字节相等 |
+| `at-tool-interleaved` | 5 / 7 交错（block 0/1） | `[0,1]` | 两段互不污染，逐字节相等 |
+| `at-tool-no-args` | 0 | `[0]` | `arguments` 为空串（**正确**，非缺陷） |
+
+四条 `frameCounts.length === upstream.length`，日志页两栏对齐可用。
+每个工具的帧位置 `monotonic` 为真。
+
+两个容易误读的输出，写在这里免得下次重新怀疑：
+
+- **`at-tool-no-args` 的 `arguments` 是空串，`JSON.parse` 会失败** —— 这是期望行为。
+  OpenAI 协议里无参工具就该发空串，下游按 `{}` 处理。校验脚本若无条件对
+  `arguments` 做 `JSON.parse`，这一条会假报失败。
+- **顺序性不要用「上游 delta 的 index 序列 == 下游帧的 index 序列」来判**。
+  多工具顺序发送时，块交界处 index 自然变化，会被朴素的「相邻不同即交错」
+  判据误报。有效判据是每个工具**各自**的 `monotonic` 加上拼接结果与上游
+  逐字节相等 —— 顺序错了字节序列就不可能相等。
+
+---
+
+## 5. 思考内容
+
+### 5.1 signature_delta：吸收，不产帧，不注入替代内容
+
+`signature` 由 Anthropic 自己签发，Chat 协议没有承载位置。
+
+**处置**：吸收进状态（供日志/诊断），**不产出下游帧**。
+
+**明确不抄 new-api**：它把 `signature_delta` 映射成 `delta.reasoning_content = "\n"`
+（`to_oai_chat_resp.go:87-89`），即拿签名当分隔符。这有两个问题：
+
+1. 那个换行会进入下游的 reasoning 文本，是凭空多出来的内容
+2. 如果下游把 reasoning 回放上来，签名依然缺失，只是多了脏字符
+
+签名不可跨协议携带这件事应当**显式化**（记一条 debug/diagnostic），
+不该被一个 `"\n"` 掩盖成「好像处理了」。
+
+### 5.2 redacted_thinking：显式识别并跳过，记一条 warning
+
+三个项目的处置都不理想：
+
+- new-api 非流式 switch 无该 case，流式落到 fall-through 产出一个**空 delta 噪声帧**
+- sub2api 完全无 case，且其 `content_block_stop` 会被状态机误判成上一个 item 的收尾
+  （CC 侧恰好都映射为 nil 所以无害，但那是**碰巧无害**而非设计）
+
+**处置**：显式识别 `redacted_thinking`，产出 0 帧，并记一条 warning。
+用户看到内容凭空变少时，日志里要有痕迹。
+
+### 5.3 thinking → reasoning_content 无闸门
+
+流式与非流式都**无条件**把 thinking 转成 `reasoning_content`，不看有没有 tool_calls。
+
+这一点需要与请求侧区分。sub2api 的**请求侧**有个 `hasToolCalls` 闸门
+（纯文本轮次的 thinking 直接丢），成因是 DeepSeek 只要求「产生 tool call 的
+`reasoning_content` 必须回传」，不带闸门会让上游 400。
+
+**那是上游请求校验的约束，响应侧不存在**。响应是发给下游客户端的，全量给出才能让客户端
+渲染思考过程。sub2api 自己的响应侧也没有闸门，这个不对称是刻意的。
+
+### 5.4 非流式的 thinking 必须累积而非赋值
+
+new-api 的非流式实现有个真实 bug 值得记：两条 thinking 路径写同一个字段互相覆盖，
+且用的是 `thinkingContent = *message.Thinking`（赋值而非追加），
+**多个 thinking 块只剩最后一个**，前面的静默丢失。
+
+只留一条路径，用 `StringBuilder` 累积。
+
+---
+
+## 6. 错误与控制事件
+
+### 6.1 mid-stream error 必须让下游可感知
+
+这是三个项目里处理得最差的一块，也是 COSP **不能照抄**的地方。
+
+- sub2api：`error` 事件落到 default → nil，**静默吞掉**；随后 finalize 补一个
+  `finish_reason: "stop"`。下游看到「成功但内容截断」
+- new-api：编排层拦截并中断流，但**状态码硬编码 500**；且如果 SSE 头已发、已写过 chunk，
+  最终响应会用 `c.JSON` 往流里塞一段裸 JSON —— 产出**畸形 SSE**（既无 `data:` 前缀也无 `[DONE]`）
+
+**COSP 的处置**（与现有 `onErrorResume` + `findWebResponseException` 透传原则一致）：
+
+- **SSE 头尚未发出**：走既有路径，透传上游状态码与错误体
+- **已发过 chunk**：不能再改状态码。发一个带 `finish_reason` 的终止帧，
+  随后 `[DONE]`，并在日志里记明成因。**绝不破坏帧结构**
+
+`error` 事件本身在流内是否要映射成一个 `data: {"error":...}` 帧留待实现时定，
+但「静默吞掉」与「写裸 JSON」两种都不接受。
+
+### 6.2 空响应判定复用既有口径
+
+`AnthropicContentDetector.eventHasPayload` 已经在做这件事，且注释里明确了
+「流式的判定单位是一整轮，不是单个事件」。响应翻译**不要另起一套判空**。
+
+cc-switch 的三档收尾可以借鉴（流结束但没 `message_stop` 时）：
+
+| 情况 | 处置 |
+|---|---|
+| `stop_reason` 已到 | 语义上已完成，正常收尾 |
+| 无 `stop_reason` 但有实质输出 | 按截断处理（`finish_reason: "length"`），并标记 |
+| 什么都没有 | 报失败 |
+
+第 2 档的判据（完成的块、累积文本、tool call 名/id 任一非空，**usage 不算**）
+与 `AnthropicContentDetector` 的口径一致，能直接对上。
+
+**注意 new-api 在这里比 COSP 宽松**：它的空响应不被视为错误，正常发 usage 尾帧 + `[DONE]`，
+下游收到一个合法空流。COSP 有 `EmptyUpstreamResponseException` + 重试预算，
+**保持现有的更严口径**，不要为了对齐参考实现而放宽。
+
+### 6.3 hosted tool 块白名单跳过
+
+`server_tool_use` / `web_search_tool_result` 这类块在 Chat Completions 里没有对等物。
+**显式列举并跳过**，比让它们掉进 default 分支产生噪声帧干净。
+
+### 6.4 ping 的处置
+
+三个项目都丢弃。但 Anthropic 用 `ping` 保活，长思考期间下游若有中间层超时，
+透传成 SSE 注释行更安全。
+
+COSP 的流式链路本身已有 keep-alive 机制（实测输出里可见 `:keep-alive`），
+因此**丢弃上游 ping**，不重复造保活帧。
+
+---
+
+## 7. 模型名必须回显下游的带前缀名
+
+sub2api 特意把状态里的 `Model` 预置成下游原始模型名，而不是上游返回的。
+
+COSP 有 `[provider-key] model` 前缀路由。如果把上游返回的裸 `deepseek-v4-flash`
+透给下游，**Copilot 下一轮拿这个名字路由会失败**（无前缀模型只在唯一匹配时才允许路由）。
+
+因此 `chat.completion` 与每个 chunk 的 `model` 字段都用下游原始请求里的模型名。
+
+---
+
+## 8. finish_reason 映射
+
+| Anthropic `stop_reason` | OpenAI `finish_reason` |
+|---|---|
+| `end_turn` | `stop` |
+| `stop_sequence` | `stop`（具体序列值丢失，OpenAI 无处放） |
+| `max_tokens` | `length` |
+| `tool_use` | `tool_calls` |
+| `refusal` | `content_filter` |
+| `pause_turn` | `length`（视为未完成） |
+| 未知值 | **原样透传** |
+
+最后一条与 AGENTS.md 的「不做自动降级、尊重上游」一致 ——
+强行归一到 `stop` 会把「上游给了个我们不认识的终止原因」伪装成正常结束。
+
+`finish_reason` **只在 `message_delta` 发出**。`stop_reason` 为 null 时发不带
+`finish_reason` 的帧（Anthropic 允许 `message_delta` 只带 usage）。
+
+---
+
+## 9. usage 换算（影响计费）
+
+**Anthropic 的 `input_tokens` 不含缓存，OpenAI 的 `prompt_tokens` 含缓存。**
+三个项目都做了这个换算，且都写了注释说明。
+
+```text
+prompt_tokens     = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+completion_tokens = output_tokens
+total_tokens      = prompt_tokens + completion_tokens
+
+prompt_tokens_details.cached_tokens = cache_read_input_tokens
+```
+
+不加回去，`api_call_usage` 表直接少记缓存部分。
+
+### 9.1 usage 分两个事件到达，合并时不能用 0 覆盖
+
+- `message_start` → `input_tokens` / `cache_read` / `cache_creation`
+- `message_delta` → `output_tokens`
+
+合并必须 `if > 0 才覆盖`，否则 `message_delta` 里的 `input_tokens: 0`
+会把 `message_start` 记下的值抹掉。
+
+### 9.2 reasoning_tokens 拿不到
+
+Anthropic 不单独上报思考 token，所以 A2O 产出的响应**永远没有**
+`completion_tokens_details.reasoning_tokens`。不要凭空估算。
+
+### 9.3 usage 尾帧依赖 include_usage
+
+流式的 usage 作为**独立 chunk** 发在 finish chunk 之后，形态是
+`{"choices":[], "usage":{...}}`（`choices` 是空数组，不是省略）。
+
+是否发出取决于下游请求的 `stream_options.include_usage`。
+这正是请求侧契约第 7 节要求 `TranslationContext` 承载的信息之一 ——
+当前 `TranslationContext` 只有 `wasStream`，实现响应侧时需要补 `includeUsage`。
+
+**唯一发出点必须是收尾逻辑**（`finalizeStream`），不能跟着 finish chunk 一起产出。
+后者会在正常路径上发出**两个** usage chunk：`message_delta` 带 `stop_reason` 时一个、
+流结束时收尾又补一个。宽容的客户端拿后者覆盖前者所以看不出问题，但那是两条相同的
+计费记录 —— 这是实现期真实出现过的缺陷。
+
+收敛到收尾一处还顺带修正了**完整性**：Anthropic 允许在带 `stop_reason` 的
+`message_delta` 之后再发只携带 usage 的 `message_delta`。跟着 finish chunk 发意味着用
+「那一刻」的累积值抢跑，之后到达的 usage 只能进第二帧 —— 两帧数字还不一样。
+
+注意测试要**数个数**而不是「找第一个」。原先的断言用「取第一个含 usage 的下标、
+验证它在 finish 之后」，这个缺陷因此长期没被发现。
+
+### 9.4 记账口径：`api_call_usage` 存下游侧的数字（A2O 已实现）
+
+**契约**：`prompt_tokens` 一列存的是**下游客户端真正收到的那个数**，口径由
+`downstream_protocol` 决定。理由是这一列的唯一读者是「用户想知道这次花了多少」，
+而用户对账的对象是自己客户端里看到的数字。
+
+`usage_raw` 与这三列是**两种数据**，同一行里同时留着是有意的：
+
+| 列 | 内容 | 跨协议时 |
+|---|---|---|
+| `usage_raw` | 上游原始报文的存档 | 保持上游原文，改写它等于销毁证据 |
+| `prompt_tokens` 等三列 | 跨协议共用的归一化度量 | 换算成下游口径 |
+
+四条线路的落地状态：
+
+| 线路 | 上游 → 下游 | 落库口径 | 现状 |
+|---|---|---|---|
+| OpenAI 直连 | O → O | 含缓存 | 一致（两侧本就同口径） |
+| Anthropic 直连 | A → A | 不含缓存 | 一致（同上） |
+| A2O | A → O | 含缓存 | **已换算** |
+| O2A | O → A | 应为不含缓存 | **待实现，见下** |
+
+#### 实现结构
+
+换算注入点是 `DownstreamLogView`（`provider/DownstreamLogView.java`）。它原先只承载
+「下游协议标识 + chunk 改写器」，现在多一个 `usageRewriter`：
+
+```java
+public record DownstreamLogView(
+        String downstreamProtocol,
+        Function<List<String>, ChunkLogPayload> chunkRewriter,
+        UnaryOperator<UsageTokens> usageRewriter)
+```
+
+放这里而不是上游服务内部，是因为**落库在上游服务内部、翻译在其外侧** ——
+上游服务不知道翻译存在，「下游到底看到了什么」只能由外侧注入。
+`GenericAnthropicChatService` 的两条 `saveUsage` 路径都过 `logView.viewUsage(...)`。
+
+换算函数是 `AnthropicToOpenAiResponseTranslator.translateUsageForLog`：
+
+```text
+prompt_tokens = input_tokens + cache_read_input_tokens
+```
+
+**注意它与出站报文的换算不是同一份代码**，因为入口形态不同：出站的
+`AnthropicUsageAccumulator` 读完整 usage 节点，落库侧只拿到已归一化的
+`UsageTokens` 三元组。两者必须给出同一个数，有单测钉住这一点。
+
+**换算不是幂等的** —— 重复施加会把缓存加两遍。落库路径上换算点只有一个
+（`DownstreamLogView.viewUsage`），不要在上游服务里再补一次「顺手」的换算。
+`translationIsNotIdempotentSoItMustBeAppliedExactlyOnce` 就是防这个。
+
+**改写器失败时退回上游原样**而不是丢掉整行用量：记一个口径可疑的数，
+好过让这次调用在概览页彻底消失。前者还能从同一行的 `usage_raw` 查证，
+后者是不可逆的信息损失。
+
+#### 非流式与流式的取舍相反
+
+非流式用 `DownstreamLogView.usageOnly(...)`：**不改写 chunk、只换算 usage**。
+响应体是单一字符串，日志记上游原文比记翻译后的更有用（后者可由前者推导，
+反之不行）；而 usage 那三列是共用度量列，必须换算。流式两个改写器都要。
+
+#### 前端
+
+`frontend/src/features/call-log/cacheHitRate.ts` 按 `downstream_protocol` 分两支，
+与本节契约一致，后端补齐 O2A 后前端无需再动。在前端加线路级特例来纠偏是错的方向 ——
+那会把「口径由上游决定」这个临时状态固化成约定，且每条新增线路都要再来一次。
+
+#### 三个待决项
+
+- **O2A 的反向换算**（phase 4）。下游 Anthropic 需要的是不含缓存的
+  `input_tokens`，而 `OpenAiUsageParser` 给出的 `prompt_tokens` 含缓存，
+  因此要做 `prompt - cached`。落地时给 `GenericOpenAiChatService` 的落库路径
+  加同样的 `logView.viewUsage(...)` 接线。**在此之前 O2A 行的缓存占比会偏低**
+  （缓存被计入两遍分母）。
+- **`cache_creation_input_tokens` 未落库**。它不在 `UsageTokens` 的三个字段里，
+  因此进不了落库侧的换算 —— 出站报文已经把它算进 `prompt_tokens`，
+  所以发生缓存写入时落库值会略低于下游实际收到的值，Anthropic 直连侧的
+  缓存占比分母也缺这一项。`cacheCreationIsMissingFromLoggedValueByKnownLimitation`
+  钉住了这个差值。**不要为它扩宽 `UsageTokens`** —— 那个 record 是多协议共用的
+  输出契约，为一侧的私有字段加成员会把协议细节漏到所有消费方；要补就加一列。
+- **四处 `SUM(COALESCE(prompt_tokens, 0))`**（`ApiCallUsageRepository` 第 158、
+  198、235、330 行）。统一到下游口径**不能**解决这个求和：两种协议的
+  `prompt_tokens` 定义天然不同，表内必然同时存在两种单位。需要另外决定 ——
+  概览页按协议分组求和，还是加一列 `cache_creation` 把换算后置到查询侧。
+  这两个选择也决定了上一条怎么做。
+
+---
+
+## 10. 帧形态的细节
+
+参考项目实测出来的几个「客户端会挑」的形态：
+
+- **首帧**：`{"delta":{"role":"assistant"},"finish_reason":null}`。
+  `content` 用 `null`（omit）还是 `""` 两家做法不同，实现时择一并钉测试
+- **finish chunk**：带 `"delta":{"content":""}` 而非空对象 `{}`
+- **usage chunk**：`"choices":[]` 空数组
+- **`[DONE]`**：字面 `data: [DONE]`，在 usage chunk 之后无条件发出。
+  **不由 `message_stop` 触发**，而由流结束触发
+
+`id` / `model` / `created` 需要回显在**每个** chunk 上。new-api 因为只在
+`message_start` 填这三项，导致后续帧的 `id` / `model` 为空，靠编排层回填补救 ——
+直接每帧都填更简单。
+
+---
+
+## 11. 跨帧状态
+
+A2O 需要的状态（已剔除 sub2api 因走 Responses IR 而引入的账本字段）：
+
+| 字段 | 用途 |
+|---|---|
+| `id` / `model` / `created` | 每帧回显。`model` 是下游原始名（第 7 节） |
+| `sentRole` | 保证 role 帧只发一次 |
+| `nextToolIndex` + `anthropicIndex → toolIndex` map | 两个索引域的桥（第 4 节） |
+| `blockTypeByIndex` | 识别 hosted 块、redacted_thinking |
+| `sawToolCall` | 收尾时兜底 `finish_reason` 用 |
+| `stopReason` | `message_delta` 写、收尾读 |
+| `inputTokens` / `outputTokens` / `cacheRead` / `cacheCreation` | usage 累加器（第 9.1 节） |
+| `includeUsage` | 来自 `TranslationContext` |
+| `finalized` | 收尾幂等 |
+
+**生命周期是一次请求**，且必须在**重试边界之内重建** ——
+`retryWhen` 重订阅时若不重置，第二轮会带着第一轮的 `sentRole` 与 tool index 分配。
+这与 `GenericAnthropicChatService` 里 `Flux.defer` 内重置 `sawPayload` / `logChunks`
+是同一个道理。
+
+**不需要**的字段（sub2api 有但那是 Responses 中间层的账本）：
+`sequenceNumber`、`outputs`、`currentContent`、`textAccum`、`contentIndex`、`currentItemId`。
+
+---
+
+## 12. 翻译位置与重试边界
+
+沿用请求侧契约第 1.2 节的结论：翻译器套在上游服务**外侧**，不进
+`GenericAnthropicChatService` 内部。
+
+响应侧多一条约束：**翻译必须在 `retryWhen` 之外**。
+
+理由是空响应判定与重试预算用的是**上游原生形态**。若翻译发生在 `retryWhen` 内侧，
+`AnthropicContentDetector` 看到的就是合成出来的 OpenAI chunk，
+而它的取值路径是照 Anthropic 结构写的（`content[]` 数组 + `type` 字段），
+会把每一轮都判成空并耗尽重试预算。
+
+### 12.1 落库：两份 chunk 加逐事件产帧数
+
+翻译在服务外侧、落库在服务内部，默认会记出两个错误的事实：协议列写成
+`ANTHROPIC → ANTHROPIC`，chunk 记的是 Anthropic 事件而下游收到的是 OpenAI chunk。
+`DownstreamLogView` 把「下游协议 + chunk 改写器」作为一个整体注入，上游服务不必知道
+翻译存在。
+
+`api_call_log.chunks` 一列两形（`ChunkLogPayload`）：
+
+```jsonc
+直连：  ["{...}", "[DONE]"]
+翻译：  {"translated": [...], "upstream": [...], "frameCounts": [1, 0, 0, 2]}
+```
+
+**两份都留**：只留上游看不到客户端收到了什么（排查解析失败时最需要的那一份），
+只留下游看不出上游到底发了什么。
+
+`frameCounts[i]` 是第 i 个上游事件译出的下游帧数，**这是两栏对齐的唯一依据**。
+帧数不对等是常态（实测 26 → 20），事后从两个数组反推不出映射关系 ——
+只有 `translateChunksForLog` 的循环当时知道每个事件产出了几帧。零帧事件必须记 `0`
+而不是被跳过，否则后面所有下标全部错位。
+
+收尾帧（finish + usage + `[DONE]`）不计入 `frameCounts`：它们是翻译层在流结束后
+自己补的，不对应任何上游事件。数量等于 `translated.length - sum(frameCounts)`，
+前端据此单独成段渲染，左侧留空。
+
+**空响应判定与重试预算仍只看上游原生形态**：翻译在 `retryWhen` 外侧，
+`AnthropicContentDetector` 永远看不到合成出来的 OpenAI chunk。
+
+---
+
+## 13. 落地顺序
+
+1. **非流式 A2O**——形态简单、无状态机，先把字段映射与 usage 换算钉死
+2. **流式状态机骨架**——`message_start` / `text_delta` / `message_delta` / `[DONE]`，
+   跑通纯文本响应
+3. **thinking 流**——`thinking_delta` → `reasoning_content`，`signature_delta` 吸收
+4. **tool 流**——两个索引域的映射，这是最容易错的一段
+5. **收尾三档 + mid-stream error**
+6. **接入 `ChatCompletionService`**，替换现有两处 TODO
+
+### 13.1 测试必须覆盖参考项目没覆盖的场景
+
+**new-api 的 A2O 流式只有一份 golden 快照，输入是 6 个事件的纯 text 序列——
+不含 thinking、不含 tool_use、不含多块。** 也就是说 tool index 重映射与 signature 处理
+这两条最容易出错的路径，在 new-api 里**没有测试覆盖**。
+
+COSP 必须自己补齐：
+
+- thinking 占 index 0 + tool_use 占 index 1/2 的混合序列（钉住第 4 节）
+- 多个 thinking 块（钉住第 5.4 节的累积而非覆盖）
+- `signature_delta` 不产帧（钉住第 5.1 节）
+- usage 两事件合并且 0 不覆盖（钉住第 9.1 节）
+- usage chunk 只发一个 —— 要**数个数**而非「找第一个」（钉住第 9.3 节）
+- 流结束无 `message_stop` 的三档收尾（钉住第 6.2 节）
+- 重试重订阅后状态被重置（钉住第 11 节）
+
+参考 new-api 的 golden 文件回归形式：整响应快照，字段级回归一目了然。
+
+### 13.2 有些形状只能用 mock 验证，单测不够
+
+单测能构造任意事件序列，但**构造不出真实上游的取舍**。两条只有实流量才能暴露的事：
+
+- **参数分片**：MiMo 不切分，所以真实流量永远走不到多片路径。单测覆盖了两片，
+  但「23 片 + 转义跨界」这种形状要靠 `tools/mock-anthropic` 的
+  `at-tool-split-args` 等四个场景（第 4.1 / 4.2 节）。
+- **单个 SSE 事件的载荷上限**：实测 6269 字符的 `data` 正常通过，
+  这是单测无从验证的传输层事实。
+
+反过来也成立：mock 场景**不替代单测**。mock 跑一次几秒，但它不进 CI，
+且需要手工启服务、配供应商、打 curl。规则是「语义边界进单测，
+传输与真实上游取舍进 mock」。
+
+---
+
+## 14. 参考实现索引（响应侧）
+
+调研于 2026-09-04。
+
+| 项目 | A2O 响应实现 | 位置 |
+|---|---|---|
+| **new-api** | **有，单段 Anthropic → Chat** | 转换器 `relaykit/relayconvert/internal/claude_messages/to_oai_chat_resp.go`；编排/收尾 `relay/channel/claude/relay-claude.go` |
+| sub2api | 有，但经 Responses IR 两段串联 | `apicompat/anthropic_to_responses_response.go` + `apicompat/responses_to_chatcompletions.go` |
+| cc-switch | **没有**（只有 Anthropic → **Responses**） | `src-tauri/src/proxy/providers/streaming_codex_anthropic.rs` |
+
+三点需要记录的事实修正：
+
+- **new-api 的 `convmeta.ClaudeConvertInfo` 不是 A2O 的状态**，它的注释明写
+  "state for OpenAI chat → Claude Messages"。A2O 用的是
+  `ClaudeToChatStreamState`（协议翻译）+ `ClaudeResponseInfo`（计费）两个结构
+- **sub2api 的 `chatcompletions_anthropic_bridge.go` 方向与 A2O 相反**，
+  它的响应方向是 CC → Anthropic（下游说 Anthropic、上游只会 CC）。
+  A2O 只有两段串联那一条路
+- **cc-switch 完全没有 A2O**，原因是结构性的：它的下游只有 Claude Code（说 Anthropic）
+  与 Codex（说 Responses），不存在说 Chat Completions 的下游
+
+### 14.1 值得借鉴（已纳入本契约）
+
+- new-api 的 tool index 独立域重映射（按需分配稠密序号 + map 查表 + 查不到报错不猜）
+- new-api 的 `finish_reason` 映射表，特别是 default 分支原样透传未知值
+- new-api 的 hosted tool 块显式白名单跳过
+- new-api 的「未知事件返回 false → 上层丢帧」契约：用布尔把「能否识别」与「产出什么」解耦
+- 三家一致的 usage cache 语义换算，以及 `if > 0 才覆盖`
+- cc-switch 的三档异常收尾，其判据与 `AnthropicContentDetector` 口径一致
+- cc-switch 的「一份状态机吃两种输入」：live SSE 与「上游忽略 `stream:true` 返回 JSON」
+  共用同一个状态机，后者只是合成事件序列喂进去。COSP 上游是任意中转站，这个兜底很可能用得上
+- cc-switch 的工具参数双来源优先级：累积 delta 优先，回退到 `content_block_start` 携带的
+  全量 `input`（有网关只在 start 给全量、完全不发 delta）
+- cc-switch 的「非对象内容块降级成 text 而非丢弃」：丢弃会让客户端看到「成功但空」，
+  无法察觉数据丢失
+- sub2api 的 SSE 解析容忍 `event:xxx`（冒号后无空格）——Kimi 等 Anthropic 兼容上游发紧凑格式，
+  严格匹配 `"event: "` 会丢弃全部事件
+- cc-switch 的 UTF-8 跨 chunk 边界处理：多字节字符被切断时把残字节 stash 到下一 chunk
+
+### 14.2 明确不借鉴
+
+- **new-api 的 `signature_delta → reasoning_content = "\n"`**（第 5.1 节）
+- **new-api 非流式的双路径 thinking 互相覆盖 + 赋值而非累积**（第 5.4 节）
+- **new-api 的错误一律 500**，以及已发 chunk 后往 SSE 里写裸 `c.JSON`（第 6.1 节）
+- **sub2api 的 `error` 事件静默吞掉**（第 6.1 节）
+- **sub2api 忽略 `content_block_delta.index`**，靠「顺序发块」侥幸成立（第 4 节）
+- **new-api / sub2api 的 `redacted_thinking` 无显式处理**（第 5.2 节）
+- **Responses 中间层**：COSP 没有 Responses 出口，A2O 方向那一跳纯粹转发
+- **cc-switch 的 `ccswitch-anthropic-thinking-v1:` base64 私有信封**：
+  它依赖「下游是 Codex 且会原样回传该字段」这个封闭前提，Copilot 不认识
+- **new-api 空响应不视为错误**：COSP 的 `EmptyUpstreamResponseException` + 重试预算
+  是更严的口径，保持不变（第 6.2 节）
+- cc-switch 的 `Read` 工具硬编码特判、`INFINITE_WHITESPACE_THRESHOLD` 定点补丁、
+  按 base_url 关键字识别供应商
+
+### 14.3 三家都没解决的：思考链回放
+
+跨协议造不出 `signature`，三家都是丢弃。cc-switch 用私有 base64 信封绕过，
+但那依赖下游是 Codex。
+
+**丢弃是可接受的起点**，但要清楚这意味着 Anthropic 上游的多轮思考缓存拿不回来。
+Copilot BYOK 会回传上一轮思考内容，因此翻译路线上开启 extended thinking 且带工具时
+可能硬失败——这与 [思考链回放调查](COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)
+的关注点重合，外部项目提供不了答案。
+
+**实测代价**（2026-09-05，MiMo 十轮工具调用链）：去程请求体里
+`thinking` 块与 `signature` 一个都没有 —— 出站时 `signature_delta` 被吸收成 0 帧，
+下游 Copilot 回传时也不带 `reasoning_content`，两头叠加使 `MessageTranslator`
+连重建的素材都没有。后果是**每一轮上游都从零开始思考**，那十轮里思考部分占了
+3 到 24 个 delta，属于重复付费。修它得先解决「Copilot 不回传 reasoning_content」
+这个上游约束，不在翻译层能力范围内。
+
+---
+
+## 15. 实现与验证状态
+
+### 15.1 已落地
+
+| 项 | 位置 |
+|---|---|
+| 非流式 A2O | `AnthropicToOpenAiNonStreamTranslator` |
+| 流式状态机 | `AnthropicToOpenAiStreamTranslator` + `A2OStreamState` |
+| usage 换算（出站） | `AnthropicUsageAccumulator` |
+| usage 换算（落库） | `AnthropicToOpenAiResponseTranslator.translateUsageForLog`（第 9.4 节） |
+| finish_reason 映射 | `StopReasonMapper` |
+| 落库双份 chunk + `frameCounts` | `ChunkLogPayload` / `DownstreamLogView` |
+| 接入 | `ChatCompletionService` 两处分支 |
+
+### 15.2 实流量已验证
+
+| 场景 | 上游 | 结论 |
+|---|---|---|
+| 流式纯文本 + thinking | DeepSeek / MiMo | 帧形态正确，裸模型名，`reasoning_content` 正常，无 signature 泄漏 |
+| 非流式 | DeepSeek | usage 与 `reasoning_content` 均正确 |
+| 多轮工具调用链（10 轮） | MiMo | 9 轮 `tool_calls` + 1 轮 `stop`，tool_use/tool_result 9 对全配平，无相邻同角色 |
+| 参数分片四场景 | mock-anthropic | 见第 4.2 节，全部逐字节相等 |
+| 跨供应商一致性 | DeepSeek + MiMo | 无按供应商分支 |
+
+### 15.3 未验证 / 待决
+
+- **O2A 响应翻译**（phase 4）尚未实现；落地后 `api_call_usage` 需要反向换算，
+  否则前端按下游 Anthropic 解读会把缓存计两遍（第 9.4 节）。
+- **A2O 请求翻译**（phase 3，下游 `/v1/messages` + 上游 OpenAI）尚未实现。
+- **`cache_creation_input_tokens` 未落库**，Anthropic 侧缓存占比分母偏小（第 9.4 节）。
+- **四处 `SUM(prompt_tokens)` 混单位**，长会话高缓存命中时求和严重虚高。
+  MiMo 那条十轮链的 `SUM` 约 22.9 万，而真实新增输入不到 1500 —— 统一口径解决不了
+  这个问题，需要另外决定按协议分组还是加列（第 9.4 节）。
+- **思考链回放**见第 14.3 节，受上游约束。
+- **mid-stream error**（第 6.1 节）与 **hosted tool 块**（第 6.3 节）只有单测覆盖，
+  没有实流量样本。
