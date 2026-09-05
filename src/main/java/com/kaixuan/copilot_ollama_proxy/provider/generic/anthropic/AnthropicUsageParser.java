@@ -13,9 +13,28 @@ import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
  * 且 OpenAI 侧那份还带着「8+1 个供应商实证得出的 cached_tokens fallback 链」，
  * 那条链是 OpenAI 兼容生态混乱的产物，套到 Anthropic 上没有意义。
  *
- * <p><strong>但输出契约共享</strong>：两侧都产出 {@link UsageTokens}，
- * 因此落库、前端展示、缓存命中率计算全部无需分支 —— 这正是「解析各写一份、
- * 度量归一化」的分界。
+ * <p><strong>但输出契约共享</strong>：两侧都产出 {@link UsageTokens}，因此落库无需分支 ——
+ * 这正是「解析各写一份、结构归一化」的分界。
+ *
+ * <h2>归一化的是结构，不是口径</h2>
+ * {@link UsageTokens} 统一了<strong>字段形状</strong>，但没有统一<strong>语义</strong>：
+ * 本类产出的 {@code promptTokens} 是 Anthropic 的 {@code input_tokens}（<strong>不含缓存</strong>），
+ * 而 {@code OpenAiUsageParser} 产出的是 OpenAI 的 {@code prompt_tokens}（<strong>含缓存</strong>）。
+ * 于是 {@code api_call_usage.prompt_tokens} 一列承载两种口径，消费方必须知道该行的协议
+ * 才能解读 —— 前端的缓存占比因此按 {@code downstream_protocol} 分两支
+ * （{@code frontend/src/features/call-log/cacheHitRate.ts}）。
+ *
+ * <h2>本类产出的是上游口径，跨协议时由 DownstreamLogView 换算</h2>
+ * 本类被 {@code GenericAnthropicChatService} <strong>无条件</strong>调用，不看下游是谁 ——
+ * 这是刻意的：本类的职责是「如实解析 Anthropic 报文」，口径转换属于另一件事。
+ *
+ * <p>落库前会过 {@code DownstreamLogView.viewUsage(...)}：直连时不改写（两侧口径本就一致），
+ * A2O 时由 {@code AnthropicToOpenAiResponseTranslator.translateUsageForLog} 把缓存加回
+ * {@code promptTokens}，使落库值与下游客户端实际收到的一致。
+ *
+ * <p><strong>不要在本类里改口径</strong> —— 那会连带弄坏 Anthropic 直连（那条线路下游要的
+ * 就是不含缓存的 {@code input_tokens}）。详见
+ * {@code docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md} 第 9.4 节。
  *
  * <h2>null 与 0 的区分必须保留</h2>
  * 与 OpenAI 侧同一约束：{@code null} 表示上游未提供该字段，{@code 0} 表示上游

@@ -27,29 +27,26 @@
  *
  * | 线路 | 上游 → 下游 | 走哪一支 | 后端落库口径 | 现状 |
  * |---|---|---|---|---|
- * | OpenAI 直连 | O → O | OpenAI | OpenAI（`OpenAiUsageParser`） | 一致 |
- * | Anthropic 直连 | A → A | Anthropic | Anthropic（`AnthropicUsageParser`） | 一致 |
- * | A2O | A → O | OpenAI | **Anthropic** | **失配** |
- * | O2A（尚未实现） | O → A | Anthropic | **OpenAI** | **将失配** |
+ * | OpenAI 直连 | O → O | OpenAI | OpenAI，含缓存 | 一致 |
+ * | Anthropic 直连 | A → A | Anthropic | Anthropic，不含缓存 | 一致 |
+ * | A2O | A → O | OpenAI | 已换算为 OpenAI | 一致 |
+ * | O2A（尚未实现） | O → A | Anthropic | OpenAI，含缓存 | **将失配** |
  *
- * <h2>已知失配：两条跨协议线路</h2>
- * 后端记账发生在<strong>上游侧</strong>（各上游服务直接调用自己协议的 usage 解析器落库），
- * 而本层按下游解读 —— 同协议直连两者本就一致，跨协议线路则对不上：
+ * <p>后端落库不是上游原样：跨协议时经 `DownstreamLogView.usageRewriter` 换算成下游口径，
+ * 因此本层按下游解读与落库值是对齐的。A2O 已接（`AnthropicToOpenAiResponseTranslator
+ * .translateUsageForLog`），O2A 待 phase 4 一并接上。
  *
- * <ul>
- *   <li><strong>A2O</strong>：落库的是 Anthropic 的 `input_tokens`（不含缓存），
- *       本层按 OpenAI 支直接相除，分母偏小，比率会远超 100%。
- *       <em>翻译层 `AnthropicUsageAccumulator` 已经算出了正确的 OpenAI 形态 usage
- *       （那份才是下游真正收到的），只是尚未接进记账链路。</em></li>
- *   <li><strong>O2A</strong>：落库的将是 OpenAI 的 `prompt_tokens`（已含缓存），
- *       本层按 Anthropic 支再加一次 `cached`，缓存会被计入两遍，比率偏低。</li>
- * </ul>
+ * <h2>待实现：O2A 会短暂失配</h2>
+ * O2A 下游是 Anthropic、上游是 OpenAI，落库走 `OpenAiUsageParser` 存的是含缓存的
+ * `prompt_tokens`，而本层按 Anthropic 支会再加一次 `cached` —— 缓存被计入两遍，比率偏低。
  *
- * <p>两者的解法是同一个，且在后端而非本层：<strong>让每条线路落库「下游侧」的 usage</strong>，
- * 而不是上游原样。在本层加线路级的特例分支会把「口径由上游决定」这个临时状态固化成约定，
- * 并让每条新增线路都要再来一次 —— 而按协议分支只有两支，与协议数同增。
+ * <p>解法在后端（给 OpenAI 侧的落库路径接上反向换算 `prompt - cached`），不在本层。
+ * 在本层加线路级特例会把「口径由上游决定」这个临时状态固化成约定，并让每条新增线路
+ * 都要再来一次 —— 而按协议分支只有两支，与协议数同增。
  *
- * <p>后端补齐之前，跨协议行的比率仍会偏离，这是刻意的：错在明处比在前端悄悄纠偏更容易被发现。
+ * <p>后端补齐之前 O2A 行的比率会偏低，这是刻意的：错在明处比在前端悄悄纠偏更容易被发现。
+ *
+ * <p>另有一处**固有**精度损失与线路无关，见 {@link cacheHitRate} 的分母说明。
  */
 import type { WireProtocol } from '@/types/protocol'
 

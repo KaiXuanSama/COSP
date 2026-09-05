@@ -99,12 +99,18 @@ public class ChatCompletionService {
         // 本服务按前缀路由，把裸名透给下游会让它下一轮路由失败（第 7 节）。
         if (decision.upstreamProtocol() == WireProtocol.ANTHROPIC) {
             TranslatedRequest translated = o2aTranslator.translateRequest(openAiRequest);
-            // 非流式只需告知下游协议：响应体是单一字符串，日志里记上游原文
+            // 非流式不改写 chunk：响应体是单一字符串，日志里记上游原文
             // 比记翻译后的更有用 —— 后者可以由前者推导，反之不行。
             // 流式不同：帧序列的切分方式无法从上游事件反推，见下方流式分支。
+            //
+            // 但 usage 必须换算：api_call_usage 的三个 token 列是跳协议共用的归一化
+            // 度量，不是原始报文的副本（原文另存于 usage_raw）。Anthropic 的
+            // input_tokens 不含缓存，落上游原样会让输入 token 比下游实际收到的
+            // 小一到两个数量级，并让概览页的 SUM 把两种口径混在一起（第 9.4 节）。
             Mono<String> upstream = genericAnthropicChatService.messages(
                     translated.body(), route, downstreamHeaders, requestId,
-                    DownstreamLogView.direct(DOWNSTREAM_PROTOCOL.name()));
+                    DownstreamLogView.usageOnly(DOWNSTREAM_PROTOCOL.name(),
+                            AnthropicToOpenAiResponseTranslator::translateUsageForLog));
             return a2oTranslator.translateResponse(upstream);
         }
         
@@ -154,13 +160,15 @@ public class ChatCompletionService {
             // 流式必须重译而不能只记上游事件：帧数不对等（零帧/一帧/多帧），
             // 从上游事件反推不出下游到底收到了几帧、长什么样。
             // frameCounts 让日志页能把两栏按事件对齐 —— 零帧事件右侧留占位。
+            // usage 同时换算成下游口径（含缓存），理由同非流式分支。
             DownstreamLogView logView = new DownstreamLogView(
                     DOWNSTREAM_PROTOCOL.name(),
                     chunks -> {
                         var log = a2oTranslator.translateChunksForLog(
                                 chunks, route.model(), translated.context().includeUsage());
                         return ChunkLogPayload.translated(log.translated(), chunks, log.frameCounts());
-                    });
+                    },
+                    AnthropicToOpenAiResponseTranslator::translateUsageForLog);
             Flux<String> upstream = genericAnthropicChatService.messagesStream(
                     translated.body(), route, downstreamHeaders, requestId, logView);
             return a2oTranslator.translateStream(upstream, route.model(), translated.context());
