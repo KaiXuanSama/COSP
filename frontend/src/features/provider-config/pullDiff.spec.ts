@@ -10,6 +10,8 @@ const model = (name: string, over: Partial<EditableModel> = {}): EditableModel =
   capsTools: true,
   capsVision: false,
   reasoningEffort: 'Medium',
+  thinkingMode: '{"thinking_type":"adaptive","overwrite_mode":"fallback"}',
+  thinkingBudgetTokens: '',
   ...over,
 })
 

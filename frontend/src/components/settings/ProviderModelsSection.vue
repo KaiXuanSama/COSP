@@ -3,10 +3,11 @@ import { NButton, NCheckbox, NForm, NFormItem, NInput, NPopselect, NSwitch, NToo
 import { ref } from 'vue'
 import {
   ANTHROPIC_THINKING_OVERWRITE_MODES,
+  ANTHROPIC_THINKING_OVERWRITE_MODE_HINTS,
   ANTHROPIC_THINKING_TYPE_OPTIONS,
-  DEFAULT_ANTHROPIC_THINKING_CONFIG,
   anthropicThinkingLockedByEffort,
   anthropicThinkingUsesBudget,
+  isAnthropicThinkingBudgetInputAllowed,
   MAX_OUTPUT_OVERWRITE_MODES,
   MAX_OUTPUT_OVERWRITE_MODE_HINTS,
   MAX_OUTPUT_PRESETS,
@@ -14,8 +15,10 @@ import {
   REASONING_OVERWRITE_MODES,
   REASONING_OVERWRITE_MODE_HINTS,
   directionFromWheel,
+  parseAnthropicThinkingConfig,
   parseMaxOutputConfig,
   parseReasoningEffortConfig,
+  serializeAnthropicThinkingMode,
   serializeMaxOutputConfig,
   serializeReasoningEffortConfig,
   stepInSequence,
@@ -143,31 +146,44 @@ const maxOutputWheel = useWheelStep(maxOutputPresetValues, NUDGE_MS)
 const expandedRows = ref<Record<number, boolean>>({})
 
 /**
- * Anthropic 思考形态的临时 UI 状态，尚未进模型提交体。
+ * Anthropic 思考方式的读写，与思考深度同一模式：每次读取都解一次、写入都序列化回去。
  *
- * 以行下标隔离，与展开状态同一口径；用户切换 type / mode / budget 会立即保留在
- * 当前抽屉会话里，但本轮保存时不会提交到后端。等后端契约确定后，把这里接到
- * EditableModel 的 parse / serialize 即可，不必再改 UI 结构。
+ * <h2>为何不缓存解析结果</h2>
+ * 与 `effortConfigOf` 同一理由 —— 模型数组可能被拉取模型整体替换，缓存需要跟着失效，
+ * 而这个解析是纯字符串操作，代价远低于维护一份同步状态。
+ *
+ * <p>这里曾是一个以行下标为键的组件内 `ref`（纯 UI 状态，保存时不提交）。
+ * V10 接入持久化后改为直接读写模型自身的两个字段 —— 那个下标键的版本是
+ * 「界面上配了但实际不生效」的根源。
  */
-const anthropicThinkingRows = ref<Record<number, AnthropicThinkingConfig>>({})
-
-function anthropicThinkingOf(index: number): AnthropicThinkingConfig {
-    return anthropicThinkingRows.value[index] ?? DEFAULT_ANTHROPIC_THINKING_CONFIG
+function thinkingConfigOf(model: EditableModel): AnthropicThinkingConfig {
+    return parseAnthropicThinkingConfig(model.thinkingMode, model.thinkingBudgetTokens)
 }
 
-function setAnthropicThinkingType(index: number, type: AnthropicThinkingType) {
-    anthropicThinkingRows.value[index] = { ...anthropicThinkingOf(index), type }
+/**
+ * 写回两个字段。
+ *
+ * 形态与模式进 `thinkingMode` 的 JSON，预算单独进 `thinkingBudgetTokens`，
+ * 因为它们在库里就是两列。
+ */
+function setThinkingConfig(model: EditableModel, next: AnthropicThinkingConfig) {
+    model.thinkingMode = serializeAnthropicThinkingMode(next)
+    model.thinkingBudgetTokens = next.budgetTokens
 }
 
-function setAnthropicThinkingMode(index: number, mode: OverwriteMode) {
-    anthropicThinkingRows.value[index] = {
-        ...anthropicThinkingOf(index),
+function setAnthropicThinkingType(model: EditableModel, type: AnthropicThinkingType) {
+    setThinkingConfig(model, { ...thinkingConfigOf(model), type })
+}
+
+function setAnthropicThinkingMode(model: EditableModel, mode: OverwriteMode) {
+    setThinkingConfig(model, {
+        ...thinkingConfigOf(model),
         mode: mode as AnthropicThinkingOverwriteMode,
-    }
+    })
 }
 
-function setAnthropicThinkingBudget(index: number, budgetTokens: string) {
-    anthropicThinkingRows.value[index] = { ...anthropicThinkingOf(index), budgetTokens }
+function setAnthropicThinkingBudget(model: EditableModel, budgetTokens: string) {
+    setThinkingConfig(model, { ...thinkingConfigOf(model), budgetTokens })
 }
 
 /**
@@ -553,24 +569,19 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                                         的二元组，只是值从思考深度换成了 thinking.type。
                                     -->
                                     <mode-scoped-field :modes="ANTHROPIC_THINKING_OVERWRITE_MODES"
-                                        :hints="{
-                                            override: '无论下游是否携带，都使用此处配置的 thinking.type',
-                                            fallback: '下游携带就用它的值，未携带才使用此处配置的 thinking.type',
-                                            passthrough: '下游携带就用它的值，未携带也不添加 thinking 字段',
-                                            delete: '不在此处使用',
-                                        }"
+                                        :hints="ANTHROPIC_THINKING_OVERWRITE_MODE_HINTS"
                                         :disabled="anthropicThinkingLocked(model)"
-                                        :mode="anthropicThinkingOf(index).mode"
-                                        @update:mode="(value: OverwriteMode) => setAnthropicThinkingMode(index, value)">
+                                        :mode="thinkingConfigOf(model).mode"
+                                        @update:mode="(value: OverwriteMode) => setAnthropicThinkingMode(model, value)">
                                         <n-tooltip placement="top">
                                             <template #trigger>
                                                 <n-popselect :options="anthropicThinkingTypeOptions" size="small" trigger="click"
                                                     :disabled="anthropicThinkingLocked(model)"
-                                                    :value="anthropicThinkingOf(index).type"
-                                                    @update:value="(value: AnthropicThinkingType) => setAnthropicThinkingType(index, value)">
+                                                    :value="thinkingConfigOf(model).type"
+                                                    @update:value="(value: AnthropicThinkingType) => setAnthropicThinkingType(model, value)">
                                                     <button type="button" class="effort-value"
                                                         :disabled="anthropicThinkingLocked(model)">
-                                                        <span class="effort-value__text">{{ anthropicThinkingOf(index).type }}</span>
+                                                        <span class="effort-value__text">{{ thinkingConfigOf(model).type }}</span>
                                                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
                                                             stroke="currentColor" stroke-width="2" stroke-linecap="round"
                                                             stroke-linejoin="round" aria-hidden="true">
@@ -601,17 +612,23 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                                     -->
                                     <n-tooltip placement="top">
                                         <template #trigger>
-                                            <n-input :value="anthropicThinkingOf(index).budgetTokens"
-                                                placeholder="预算 token 数"
+                                            <!--
+                                                allow-input 只限本框：旁边的最大输出只接正整数、带预设与滚轮，
+                                                不需要手输负号；本框的哨兵 -1 是个要能手输的负数。
+                                            -->
+                                            <n-input :value="thinkingConfigOf(model).budgetTokens"
+                                                placeholder="-1"
+                                                :allow-input="isAnthropicThinkingBudgetInputAllowed"
                                                 :disabled="anthropicThinkingLocked(model)
-                                                    || !anthropicThinkingUsesBudget(anthropicThinkingOf(index).type)"
-                                                @update:value="(value: string) => setAnthropicThinkingBudget(index, value)" />
+                                                    || !anthropicThinkingUsesBudget(thinkingConfigOf(model).type)"
+                                                @update:value="(value: string) => setAnthropicThinkingBudget(model, value)" />
                                         </template>
                                         <template v-if="anthropicThinkingLocked(model)">
                                             思考深度已选 <code>Off</code>，本组配置不适用。
                                         </template>
                                         <template v-else>
-                                            Anthropic 参数：仅在思考方式为 <code>enabled</code> 时使用。输入 <code>-1</code> 表示最大输出长度减 1。
+                                            <div>Anthropic 参数：仅在思考方式为 <code>enabled</code> 时使用。</div>
+                                            <div><code>-1</code> 与留空都表示未设置（入库均为 <code>-1</code>）—— 此时 <code>enabled</code> 出站会退化为 <code>adaptive</code>，而不是发一个上游会拒绝的值。</div>
                                         </template>
                                     </n-tooltip>
                                 </n-form-item>

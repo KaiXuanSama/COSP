@@ -11,6 +11,10 @@ export interface ProviderModel {
   capsTools: boolean
   capsVision: boolean
   reasoningEffort: string
+  /** Anthropic 思考方式（形态 + 注入模式）的 JSON 原文。 */
+  thinkingMode: string
+  /** 思考预算；`-1` 表示未设置。后端以数字返回。 */
+  thinkingBudgetTokens: number
 }
 
 export interface ApiKeyEntry {

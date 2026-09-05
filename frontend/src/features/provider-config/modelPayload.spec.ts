@@ -127,6 +127,8 @@ describe('toEditableModel', () => {
       capsTools: true,
       capsVision: false,
       reasoningEffort: '',
+      thinkingMode: undefined as unknown as string,
+      thinkingBudgetTokens: undefined as unknown as number,
     })
     expect(model.contextSize).toBe('0')
     // 最大输出与 contextSize 不同，缺省取 4K 而非 0：
@@ -147,6 +149,8 @@ describe('toModelFormParams', () => {
     capsTools: true,
     capsVision: false,
     reasoningEffort: 'Medium',
+    thinkingMode: '{"thinking_type":"adaptive","overwrite_mode":"fallback"}',
+    thinkingBudgetTokens: '',
     ...over,
   })
 

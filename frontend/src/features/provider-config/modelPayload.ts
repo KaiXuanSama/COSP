@@ -1,5 +1,10 @@
 import type { ProviderModel } from '@/stores/providers'
 import {
+  parseAnthropicThinkingConfig,
+  serializeAnthropicThinkingBudget,
+  serializeAnthropicThinkingMode,
+} from './anthropicThinking'
+import {
   parseMaxOutputConfig,
   serializeMaxOutputConfig,
 } from './maxOutput'
@@ -26,6 +31,21 @@ export interface EditableModel {
   capsTools: boolean
   capsVision: boolean
   reasoningEffort: string
+  /**
+   * Anthropic 思考方式（形态 + 注入模式）的 JSON 原文。
+   *
+   * 与 {@link reasoningEffort} 同理，存序列化后的 JSON 而不拆成两个字段 ——
+   * 它要原样回传给后端的同一个表列。
+   */
+  thinkingMode: string
+  /**
+   * 思考预算，字符串形态以直接绑 `n-input`。
+   *
+   * 空串表示未设置，提交时由 `serializeAnthropicThinkingBudget` 折成哨兵。
+   * 它不并进 {@link thinkingMode} 的 JSON：预算没有自己的注入模式，
+   * 在库里就是独立的裸整数列。
+   */
+  thinkingBudgetTokens: string
   [key: string]: unknown
 }
 
@@ -55,6 +75,30 @@ function normalizeMaxOutput(value: unknown): string {
 }
 
 /**
+ * 归一化思考方式为 V10 JSON 字符串，与上两者同理。
+ *
+ * <p>预算不参与这一步 —— 它存在另一列，由 {@link normalizeThinkingBudget} 处理。
+ */
+function normalizeThinkingMode(value: unknown): string {
+  return serializeAnthropicThinkingMode(parseAnthropicThinkingConfig(value, null))
+}
+
+/**
+ * 归一化思考预算为输入框内容。
+ *
+ * <p>缺失与无法识别的值都渲染成哨兵 `-1` 而非空串：这两种情形提交后存进库里的
+ * 就是 `-1`，显示空框会让对着数据库看的人以为两边不一致。新建模型行因此也直接
+ * 展示 `-1`，与列默认值对得上。
+ *
+ * <p>用户在编辑过程中把框清空仍然保持空 —— 本函数只在加载 / 构造 / 提交时跑，
+ * 不会在敲字时把光标位置顶掉。
+ */
+function normalizeThinkingBudget(value: unknown): string {
+  const config = parseAnthropicThinkingConfig(null, value)
+  return config.budgetTokens || String(serializeAnthropicThinkingBudget(config))
+}
+
+/**
  * 构造一行可编辑模型，未提供的字段取默认值。
  *
  * `source` 里的其余字段会被保留（展开在前），使拉取模型时能带回已有配置，
@@ -73,6 +117,10 @@ export function buildEditableModel(
     capsTools: (source.capsTools as boolean) ?? true,
     capsVision: (source.capsVision as boolean) ?? false,
     reasoningEffort: normalizeReasoningEffort(source.reasoningEffort),
+    // 新建行的默认值就是两个归一化函数对 undefined 的产出：
+    // adaptive + 兜底 + 预算空，与数据库列默认值逐一对应。
+    thinkingMode: normalizeThinkingMode(source.thinkingMode),
+    thinkingBudgetTokens: normalizeThinkingBudget(source.thinkingBudgetTokens),
   }
 }
 
@@ -88,6 +136,8 @@ export function toEditableModel(model: ProviderModel): EditableModel {
     contextSize: String(model.contextSize ?? '0'),
     maxOutputTokens: normalizeMaxOutput(model.maxOutputTokens),
     reasoningEffort: normalizeReasoningEffort(model.reasoningEffort),
+    thinkingMode: normalizeThinkingMode(model.thinkingMode),
+    thinkingBudgetTokens: normalizeThinkingBudget(model.thinkingBudgetTokens),
   }
 }
 
@@ -169,6 +219,12 @@ export function toModelFormParams(models: EditableModel[]): Record<string, strin
     if (model.reasoningEffort) {
       params[`${prefix}reasoningEffort`] = model.reasoningEffort
     }
+    // 与最大输出同理：空值也走一遗归一化而非省略键。预算必须始终下发 ——
+    // 省略它会让后端拿不到「用户把预算清空了」这个意图，旧值会留在库里。
+    params[`${prefix}thinkingMode`] = normalizeThinkingMode(model.thinkingMode)
+    params[`${prefix}thinkingBudgetTokens`] = String(
+      serializeAnthropicThinkingBudget(parseAnthropicThinkingConfig(
+        model.thinkingMode, model.thinkingBudgetTokens)))
   })
   return params
 }
