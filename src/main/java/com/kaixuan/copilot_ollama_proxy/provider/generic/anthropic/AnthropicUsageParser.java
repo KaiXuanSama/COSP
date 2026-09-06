@@ -41,13 +41,26 @@ import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
  * 再加一遍缓存）；O2A 也不再需要任何 usage 接线 —— 那条线路上游是 OpenAI，
  * 本来就产出归一口径。
  *
- * <h2>已知精度损失</h2>
- * {@code cache_creation_input_tokens}（本次写入缓存的量，同样在 {@code input_tokens}
- * 之外）<strong>不计入</strong> {@code promptTokens}，因为 {@link UsageTokens} 没有它的位置。
- * 发生缓存写入时落库值会略低于真实总输入。补它要给表加一列，见
+ * <h2>{@code cache_creation_input_tokens} 不计入，这是可接受的取舍</h2>
+ * Anthropic 的输入侧有三个量，后两个都在 {@code input_tokens} 之外：
+ * <pre>
+ * input_tokens                 本次新增输入
+ * cache_read_input_tokens      命中缓存读出的（便宜，按折扣价计费）
+ * cache_creation_input_tokens  写入缓存的（比普通输入更贵）
+ * </pre>
+ * 本类只把前两项相加，因此发生缓存写入时 {@code promptTokens} 略低于真实总输入，
+ * 缓存占比也随之略偏高。
+ *
+ * <p><strong>不把它算进去是因为 {@link UsageTokens} 没有它的位置</strong>，而那个 record
+ * 是多协议共用的输出契约 —— 为 Anthropic 的私有字段加成员会把协议细节漏给
+ * OpenAI 侧与 Ollama 侧（那两边永远是 null）。补它的正确做法是给
+ * {@code api_call_usage} 加一列，属于后续版本。
+ *
+ * <p>现阶段按「已知精度损失」处理而非缺陷：差额只在真的发生缓存写入那一轮出现
+ * （多轮对话里通常只有首轮），且同一行的 {@code usage_raw} 保留了上游原文，
+ * 随时可查。出站报文侧（{@code AnthropicUsageAccumulator}）则<strong>已经</strong>把三项
+ * 都算进去了，因此下游客户端看到的数字是完整的。详见
  * {@code docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md} 第 9.4 节。
- * <strong>不要为它扩宽</strong> {@link UsageTokens} —— 那个 record 是多协议共用的输出契约，
- * 为一侧的私有字段加成员会把协议细节漏到所有消费方。
  *
  * <h2>null 与 0 的区分必须保留</h2>
  * 与 OpenAI 侧同一约束：{@code null} 表示上游未提供该字段，{@code 0} 表示上游
@@ -112,10 +125,25 @@ public final class AnthropicUsageParser {
      * 合并两轮 usage —— 流式下把 {@code message_start} 的输入与
      * {@code message_delta} 的输出拼成完整一份。
      *
-     * <p>合并规则是「后来的非 null 值覆盖先前的」而非相加：Anthropic 的
-     * {@code message_delta} 报告的 {@code output_tokens} 是<strong>累计值</strong>
-     * 而非增量，相加会翻倍。而输入 token 只在 {@code message_start} 出现一次，
-     * 后续事件里缺失，故 null 不得覆盖已有值。
+     * <h2>覆盖而非相加</h2>
+     * Anthropic 的 {@code message_delta} 报告的 {@code output_tokens} 是
+     * <strong>累计值</strong>而非增量，相加会翻倍。
+     *
+     * <h2>只有正数才覆盖：0 不得抹掉已知值</h2>
+     * 存在这样的上游：<strong>每一个</strong>事件都带完整的 usage 对象，
+     * 但只有少数几个带真实数字，其余全是 {@code 0}（包括最后的
+     * {@code message_stop}）。若按「非 null 就覆盖」，那个全零尾事件会把
+     * {@code message_delta} 里的真实数字全部抹成 0 —— 实测到过的缺陷。
+     *
+     * <p>反向风险不存在：上游不会先报一个正数再改成 0，那在 token 计数上
+     * 没有意义。因此「保留已知正数」是安全的。
+     *
+     * <p>这与 {@code AnthropicUsageAccumulator.mergeField}（出站报文侧）是<strong>同一条
+     * 规则</strong>，两处必须一致。那边从一开始就只让正数覆盖，所以同一次调用里
+     * 出站 usage 正确、落库却全零 —— 两套规则不一致正是那个缺陷的成因。
+     *
+     * <p>{@code null} 与 {@code 0} 的区分仍然保留：两边都没给过正数时，
+     * 结果取 {@code update} 的值，因此「上游报告了 0」能落到 0 而不是变回 null。
      *
      * @param base   先前累积的指标；可为 null
      * @param update 新一轮解析出的指标；可为 null
@@ -128,9 +156,26 @@ public final class AnthropicUsageParser {
             return base;
         }
         return new UsageTokens(
-                update.promptTokens() != null ? update.promptTokens() : base.promptTokens(),
-                update.completionTokens() != null ? update.completionTokens() : base.completionTokens(),
-                update.cachedTokens() != null ? update.cachedTokens() : base.cachedTokens());
+                mergeCount(base.promptTokens(), update.promptTokens()),
+                mergeCount(base.completionTokens(), update.completionTokens()),
+                mergeCount(base.cachedTokens(), update.cachedTokens()));
+    }
+
+    /**
+     * 单个计数的合并：新值为正数才覆盖，否则保留已知的正数。
+     *
+     * <p>两边都不是正数时取 {@code update}（可能是 {@code 0} 也可能是 {@code null}），
+     * 但 {@code update} 为 null 而 {@code base} 有值时仍保留 {@code base} ——
+     * 后续事件不带某个字段是常态，不能因此丢掉已收到的数。
+     */
+    private static Integer mergeCount(Integer base, Integer update) {
+        if (update != null && update > 0) {
+            return update;
+        }
+        if (base != null && base > 0) {
+            return base;
+        }
+        return update != null ? update : base;
     }
 
     /**

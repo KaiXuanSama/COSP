@@ -285,6 +285,48 @@ class AnthropicPayloadAndUsageTests {
         }
 
         /**
+         * 全零的尾事件不得抹掉已收到的真实数字。
+         *
+         * <p>实测缺陷：有的上游<strong>每个</strong>事件都带完整 usage，只有少数几个带真实
+         * 数字，其余（含最后的 {@code message_stop}）全是 0。按「非 null 就覆盖」会让落库值
+         * 全变成 0，而同一次调用的出站报文却是对的 —— 因为出站侧
+         * （{@code AnthropicUsageAccumulator}）从一开始就只让正数覆盖。两套规则必须一致。
+         */
+        @Test
+        void 全零尾事件不得抹掉已收到的真实数字() {
+            UsageTokens real = AnthropicUsageParser.parseUsageObject(mapper,
+                    "{\"input_tokens\":475935,\"output_tokens\":64}");
+            UsageTokens allZero = AnthropicUsageParser.parseUsageObject(mapper,
+                    """
+                    {"input_tokens":0,"output_tokens":0,
+                     "cache_creation_input_tokens":0,"cache_read_input_tokens":0}""");
+
+            UsageTokens merged = AnthropicUsageParser.merge(real, allZero);
+
+            assertThat(merged.promptTokens()).isEqualTo(475935);
+            assertThat(merged.completionTokens()).isEqualTo(64);
+        }
+
+        /**
+         * 但「上游确实报告了 0」仍要能落到 0，不能变回 null。
+         *
+         * <p>缓存占比靠这个区分「—」（无从计算）与「0.0%」（真实未命中）。
+         */
+        @Test
+        void 上游报告的零在合并后仍是零而非null() {
+            UsageTokens base = AnthropicUsageParser.parseUsageObject(mapper,
+                    "{\"input_tokens\":100,\"cache_read_input_tokens\":0}");
+            UsageTokens update = AnthropicUsageParser.parseUsageObject(mapper,
+                    "{\"output_tokens\":20,\"cache_read_input_tokens\":0}");
+
+            UsageTokens merged = AnthropicUsageParser.merge(base, update);
+
+            assertThat(merged.cachedTokens()).isZero();
+            assertThat(merged.promptTokens()).isEqualTo(100);
+            assertThat(merged.completionTokens()).isEqualTo(20);
+        }
+
+        /**
          * 合并是覆盖而非相加 —— message_delta 的 output_tokens 是累计值。
          *
          * <p>若写成相加，多次 message_delta 会让输出 token 翻倍。

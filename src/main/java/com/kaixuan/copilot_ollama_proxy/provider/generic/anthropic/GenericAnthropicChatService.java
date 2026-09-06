@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
@@ -332,7 +333,9 @@ public class GenericAnthropicChatService {
         // 本轮累积的 usage：input_tokens 来自 message_start、output_tokens 来自 message_delta，
         // 必须跨事件合并才完整。
         AtomicReference<UsageTokens> usageAccumulator = new AtomicReference<>(UsageTokens.EMPTY);
-        AtomicReference<String> lastUsageRaw = new AtomicReference<>(null);
+        // 存档用的 usage 原文。取「信息量最大」的那一份而非最后一份，理由见
+        // pickRicherUsageRaw —— 有的上游每个事件都带 usage，且尾事件全零。
+        AtomicReference<String> archivedUsageRaw = new AtomicReference<>(null);
         // 本轮是否见过实质载荷。整轮为 false 即判空响应。
         AtomicBoolean sawPayload = new AtomicBoolean(false);
         // 空响应耗尽放行标记：该轮已在 doOnError 落过库，收尾处据此跳过，避免重复记录。
@@ -346,7 +349,7 @@ public class GenericAnthropicChatService {
                     logChunks.clear();
                     ttfbMs.set(-1);
                     usageAccumulator.set(UsageTokens.EMPTY);
-                    lastUsageRaw.set(null);
+                    archivedUsageRaw.set(null);
                     sawPayload.set(false);
                     return buildWebClient(reqHeaders, provider, downstreamHeaders, true)
                             .post().uri(messagesUri()).bodyValue(requestBody)
@@ -389,7 +392,7 @@ public class GenericAnthropicChatService {
                     // usage 跨事件合并：message_start 给输入、message_delta 给输出。
                     String rawUsage = AnthropicUsageParser.extractUsageRawJson(objectMapper, data);
                     if (rawUsage != null) {
-                        lastUsageRaw.set(rawUsage);
+                        archivedUsageRaw.set(pickRicherUsageRaw(archivedUsageRaw.get(), rawUsage));
                         usageAccumulator.set(AnthropicUsageParser.merge(usageAccumulator.get(),
                                 AnthropicUsageParser.parseUsageObject(objectMapper, rawUsage)));
                     }
@@ -452,7 +455,7 @@ public class GenericAnthropicChatService {
                         Long logId = saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
                                 capturedRespHeaders.get(), statusCode, logChunks, attemptStart.get(), logView);
                         long ttfb = ttfbMs.get();
-                        saveUsage(logId, providerKey, modelName, true, lastUsageRaw.get(),
+                        saveUsage(logId, providerKey, modelName, true, archivedUsageRaw.get(),
                                 ttfb < 0 ? null : (int) ttfb, usageAccumulator.get());
                     }
                 });
@@ -1057,6 +1060,54 @@ public class GenericAnthropicChatService {
             apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw, tokens, ttfbMs);
         } finally {
             publishCallRecorded();
+        }
+    }
+
+    /**
+     * 在两份 usage 原文里挑「信息量更大」的那一份存档。
+     *
+     * <h2>为何不能直接取最后一份</h2>
+     * 存在这样的上游：<strong>每一个</strong>流式事件都带完整的 usage 对象，但只有少数几个
+     * 带真实数字，其余（含最后的 {@code message_stop}）全是 {@code 0}。直接取最后一份会让
+     * {@code usage_raw} 存下一份全零报文 —— 实测到过的缺陷。
+     *
+     * <p>判据取<strong>四个输入输出字段的正值个数</strong>，相等时保留先到的那一份
+     * （更靠前的事件通常字段更全，例如 {@code message_start} 带 {@code cache_*}）。
+     * 不比较数值大小：那会在多轮 {@code message_delta} 里挑出「输出最多」的一帧，
+     * 而我们要的是「哪一帧最能说明这次调用」。
+     *
+     * <h2>它与三个 token 列的关系</h2>
+     * 两者独立：三列由 {@link AnthropicUsageParser#merge} 跨事件合并而来，本方法只决定
+     * <strong>存档哪一份原文</strong>。因此即使这里挑错，三列仍然正确 ——
+     * 但存档是查证的唯一依据，挑错等于让证据失效。
+     *
+     * @param current 已存档的原文；{@code null} 表示还没有
+     * @param incoming 新到的原文，非 null
+     * @return 应当存档的那一份
+     */
+    private String pickRicherUsageRaw(String current, String incoming) {
+        if (current == null) {
+            return incoming;
+        }
+        return countPositiveUsageFields(incoming) > countPositiveUsageFields(current)
+                ? incoming : current;
+    }
+
+    /** 数一份 usage 原文里有几个输入输出字段是正数。解析失败记 0（保守，不覆盖已有存档）。 */
+    private int countPositiveUsageFields(String usageRaw) {
+        try {
+            JsonNode usage = objectMapper.readTree(usageRaw);
+            int positives = 0;
+            for (String field : List.of("input_tokens", "output_tokens",
+                    "cache_read_input_tokens", "cache_creation_input_tokens")) {
+                JsonNode value = usage.get(field);
+                if (value != null && value.isNumber() && value.asLong() > 0) {
+                    positives++;
+                }
+            }
+            return positives;
+        } catch (Exception exception) {
+            return 0;
         }
     }
 

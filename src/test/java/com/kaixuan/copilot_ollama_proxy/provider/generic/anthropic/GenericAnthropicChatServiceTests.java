@@ -3,12 +3,14 @@ package com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
+import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.AnthropicThinkingSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
+import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -782,6 +784,36 @@ class GenericAnthropicChatServiceTests {
 
     // ==================== 流式 ====================
 
+    /**
+     * 每个事件都带 usage、且尾事件全零的上游，落库值必须是真实数字。
+     *
+     * <h2>实测缺陷</h2>
+     * 有的供应商<strong>每一个</strong>流式事件都带完整 usage 对象，但只有少数几个带真实数字，
+     * 其余（含最后的 {@code message_stop}）全是 {@code 0}。曾经的合并规则是「非 null 就覆盖」，
+     * 于是那个全零尾事件把 {@code message_delta} 的真实数字全抹成 0 —— 三个 token 列与
+     * {@code usage_raw} 一起变成全零，而同一次调用的<strong>出站</strong>报文却是对的
+     * （出站侧 {@code AnthropicUsageAccumulator} 从一开始就只让正数覆盖）。
+     *
+     * <p>这条用例走完整落库路径而非只测 {@code merge}：两个 bug 分别在合并规则与
+     * {@code usage_raw} 的挑选上，只测前者会漏掉后者。
+     */
+    @Test
+    void allZeroTrailingUsageDoesNotWipePersistedTokens() {
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        RecordingUsageService usageService = new RecordingUsageService();
+        TestService service = stubService(request -> sseResponse(everyEventCarriesUsage(factory)));
+        service.setApiCallUsage(usageService);
+
+        service.exposeMessagesStream(newRequest(), routeTo(baseUrlWithV1()))
+                .collectList().block(Duration.ofSeconds(20));
+
+        assertThat(usageService.tokens).isNotNull();
+        assertThat(usageService.tokens.promptTokens()).isEqualTo(475935);
+        assertThat(usageService.tokens.completionTokens()).isEqualTo(64);
+        // usage_raw 存的是信息量最大的那一份，而不是最后那份全零报文。
+        assertThat(usageService.usageRaw).contains("475935");
+    }
+
     /** 完整事件序列原样透传，顺序不变。 */
     @Test
     void streamPassesEventsThroughInOrder() {
@@ -1096,8 +1128,52 @@ class GenericAnthropicChatServiceTests {
                 Mono.just(sse(factory, "{\"type\":\"message_stop\"}")));
     }
 
+    /**
+     * 实测形态：<strong>每个</strong>事件都带完整 usage，只有 {@code message_delta} 带真实数字，
+     * 其余全零（含最后的 {@code message_stop}）。
+     */
+    private static Flux<DataBuffer> everyEventCarriesUsage(DefaultDataBufferFactory factory) {
+        String zeroUsage = """
+                "usage":{"input_tokens":0,"output_tokens":0,\
+                "cache_creation_input_tokens":0,"cache_read_input_tokens":0}""";
+        return Flux.concat(
+                Mono.just(sse(factory, """
+                        {"type":"message_start","message":{"id":"m1","role":"assistant",\
+                        "usage":{"input_tokens":475935,"output_tokens":1,\
+                        "cache_creation_input_tokens":0,"cache_read_input_tokens":0}},\
+                        """ + zeroUsage + "}")),
+                Mono.just(sse(factory, """
+                        {"type":"content_block_start","index":0,\
+                        "content_block":{"type":"text","text":""},""" + zeroUsage + "}")),
+                Mono.just(sse(factory, """
+                        {"type":"content_block_delta","index":0,\
+                        "delta":{"type":"text_delta","text":"hello"},""" + zeroUsage + "}")),
+                Mono.just(sse(factory, """
+                        {"type":"content_block_stop","index":0,""" + zeroUsage + "}")),
+                Mono.just(sse(factory, """
+                        {"type":"message_delta","delta":{"stop_reason":"end_turn"},\
+                        "usage":{"input_tokens":475935,"output_tokens":64,\
+                        "cache_creation_input_tokens":0,"cache_read_input_tokens":0}}""")),
+                Mono.just(sse(factory, """
+                        {"type":"message_stop",""" + zeroUsage + "}")));
+    }
+
     private static DataBuffer sse(DefaultDataBufferFactory factory, String json) {
         return factory.wrap(("data: " + json + "\n\n").getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** 捕获落库参数的 usage 服务替身。只需最后一次调用的值。 */
+    private static final class RecordingUsageService implements ApiCallUsageService {
+
+        private UsageTokens tokens;
+        private String usageRaw;
+
+        @Override
+        public void save(Long logId, String providerKey, String modelName, boolean stream,
+                         String usageRaw, UsageTokens tokens, Integer ttfbMs) {
+            this.usageRaw = usageRaw;
+            this.tokens = tokens;
+        }
     }
 
     /**
