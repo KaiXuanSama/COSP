@@ -9,15 +9,16 @@
  * `api_call_usage` 的三个 token 列是跨协议共用的度量列，口径由**后端**固定：
  *
  * ```text
- * prompt_tokens = 本次调用的总输入 token，包含缓存命中部分
+ * prompt_tokens = 本次调用的总输入 token，包含缓存命中与缓存写入
  * cached_tokens = 其中来自缓存命中的部分
  * ```
  *
  * 于是占比就是 `cached / prompt`，与该行走的是哪条线路无关。
  *
- * Anthropic 把缓存读取排在 `input_tokens` 之外单独计量，那个差异在
- * `AnthropicUsageParser.toTokens` 里就被抹平了（把 `cache_read_input_tokens`
- * 加回输入）—— 那个换算只依赖**上游**协议，因此属于解析层而非展示层。
+ * Anthropic 把输入拆成三个互斥的量（`input_tokens` /
+ * `cache_read_input_tokens` / `cache_creation_input_tokens`），后两个都在
+ * `input_tokens` 之外。那个差异在 `AnthropicUsageParser.toTokens` 里就被抹平了
+ * （三项相加）—— 那个换算只依赖**上游**协议，因此属于解析层而非展示层。
  *
  * <h2>为何这里曾经按协议分两支</h2>
  * 早期后端只在 A2O 路线上换算口径（`DownstreamLogView.usageRewriter`），
@@ -30,8 +31,7 @@
  *
  * 所以口径统一到了后端，本模块的协议分支随之删除。不要把它加回来 ——
  * 在展示层纠偏会把「口径由行决定」这个已被推翻的假设重新固化。
- *
- * 另有一处**固有**精度损失与线路无关，见 {@link cacheHitRate} 的分母说明。
+
  */
 
 /** 计算所需的最小字段集。不再需要协议标识。 */
@@ -50,12 +50,15 @@ export interface CacheHitRateInput {
  * 「这次确实没命中」是完全不同的结论。
  *
  * <h2>分母</h2>
- * 直接取 `prompt_tokens` —— 后端已保证它是含缓存的总输入。
+ * 直接取 `prompt_tokens` —— 后端已保证它是含缓存读写的总输入。
  *
- * 此处有一处已知的精度损失：Anthropic 的 `cache_creation_input_tokens`
- * （本次写入缓存的量，同样在 `input_tokens` 之外）没有落库，因此没被算进
- * `prompt_tokens`，命中率会在发生缓存写入的请求上略微偏高。这是可接受的 ——
- * 该字段属于成本项而非命中项，本就被刻意排除在分子之外，把它纳入分母需要新增存储。
+ * 分子与分母**刻意不对称**：Anthropic 的 `cache_creation_input_tokens`
+ * （本次写入缓存的量）计入分母但不计入分子。计入分母是因为那些 token
+ * 确实被模型处理了；不计入分子是因为它属于成本项而非命中项 ——
+ * 否则一次纯写入的调用会显示 100% 命中，而那一轮实际上一个 token 都没从缓存读到。
+ *
+ * 这也解释了常见的「高占比 / 0% 跳变」：前缀缓存的 TTL 内轮次全命中，
+ * 首轮与 TTL 过期后的重建轮次纯写入、命中为 0。那是真实行为，不是统计缺陷。
  *
  * @param usage 该行的 token 用量；`null` 表示没有用量行
  * @return 占比（0 表示 0%，1 表示 100%）；无从计算时 `null`

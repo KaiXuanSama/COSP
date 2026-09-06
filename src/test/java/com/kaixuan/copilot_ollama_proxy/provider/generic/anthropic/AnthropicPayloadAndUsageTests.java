@@ -176,8 +176,8 @@ class AnthropicPayloadAndUsageTests {
         /**
          * 字段名与 OpenAI 全然不同，但输出契约与<strong>口径</strong>都相同。
          *
-         * <p>{@code promptTokens} 是 {@code input_tokens + cache_read_input_tokens} ——
-         * Anthropic 把缓存读取排在 {@code input_tokens} 之外，而本列的口径是「总输入含缓存」。
+         * <p>{@code promptTokens} 是三项之和 —— Anthropic 把缓存读取与缓存写入都排在
+         * {@code input_tokens} 之外，而本列的口径是「总输入含缓存」。
          */
         @Test
         void 非流式响应的顶层usage() {
@@ -189,10 +189,30 @@ class AnthropicPayloadAndUsageTests {
             String raw = AnthropicUsageParser.extractUsageRawJson(mapper, body);
             UsageTokens tokens = AnthropicUsageParser.parseUsageObject(mapper, raw);
 
-            // 100 + 80；cache_creation 不参与（已知精度损失）。
-            assertThat(tokens.promptTokens()).isEqualTo(180);
+            // 100 + 80 + 5：三项互斥，相加才是真实总输入。
+            assertThat(tokens.promptTokens()).isEqualTo(185);
             assertThat(tokens.completionTokens()).isEqualTo(20);
+            // 分子只取 cache_read：cache_creation 是成本项而非命中项。
             assertThat(tokens.cachedTokens()).isEqualTo(80);
+        }
+
+        /**
+         * 真实样本：缓存写入量远大于新增输入时，丢弃它的代价多大。
+         *
+         * <p>数据来自一次 claude-opus-5 调用：{@code input_tokens} 8077、
+         * {@code cache_creation} 45772。旧口径（只加 cache_read）落库 8077，
+         * 而同一次调用的<strong>出站报文</strong>给下游的是 53849 ——
+         * 同一次调用两个数，差 5.7 倍。这条用例钉住两侧同口径。
+         */
+        @Test
+        void 缓存写入量计入总输入() {
+            UsageTokens tokens = AnthropicUsageParser.parseUsageObject(mapper, """
+                    {"input_tokens":8077,"output_tokens":43,
+                     "cache_read_input_tokens":0,"cache_creation_input_tokens":45772}""");
+
+            assertThat(tokens.promptTokens()).isEqualTo(53849);
+            // 纯写入那一轮确实一个 token 也没从缓存读到，命中率就该是 0%。
+            assertThat(tokens.cachedTokens()).isZero();
         }
 
         /**
@@ -230,21 +250,24 @@ class AnthropicPayloadAndUsageTests {
         }
 
         /**
-         * 缓存 token 只取 cache_read，不取 cache_creation。
+         * 分子与分母刻意不对称：cache_creation 计入输入但不计入命中。
          *
-         * <p>后者是「本次写入缓存的量」，属成本项而非命中项，混入会让命中率虚高。
-         * 它同样不计入 {@code promptTokens} —— {@link UsageTokens} 没有它的位置，
-         * 因此发生缓存写入时落库值略低于真实总输入。
+         * <p>计入分母是必需的：那些 token 确实被模型处理了。
+         * 不计入分子也是必需的：否则一次纯写入的调用会显示 100% 命中，
+         * 而那一轮实际上一个 token 都没从缓存读到。
+         *
+         * <p>{@code cachedTokens} 为 {@code null} 而非 {@code 0}：上游没给
+         * {@code cache_read_input_tokens} 字段，与「给了 0」是两回事。
          */
         @Test
-        void 缓存写入量既不计命中也不计输入() {
+        void 缓存写入量计入输入但不计命中() {
             String usage = """
                     {"input_tokens":100,"output_tokens":10,"cache_creation_input_tokens":50}""";
 
             UsageTokens tokens = AnthropicUsageParser.parseUsageObject(mapper, usage);
 
             assertThat(tokens.cachedTokens()).isNull();
-            assertThat(tokens.promptTokens()).isEqualTo(100);
+            assertThat(tokens.promptTokens()).isEqualTo(150);
         }
 
         /** message_start 的 usage 嵌在 message 下。 */

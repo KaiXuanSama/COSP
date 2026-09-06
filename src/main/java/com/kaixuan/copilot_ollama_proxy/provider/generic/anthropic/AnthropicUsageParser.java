@@ -16,15 +16,20 @@ import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
  * <p><strong>但输出契约共享</strong>：两侧都产出 {@link UsageTokens}，因此落库无需分支 ——
  * 这正是「解析各写一份、结构归一化」的分界。
  *
- * <h2>口径也归一：{@code promptTokens} 是总输入（含缓存）</h2>
+ * <h2>口径也归一：{@code promptTokens} 是总输入（含缓存读写）</h2>
  * {@code api_call_usage} 的三个 token 列是跨协议共用的度量列，口径必须固定：
  * <pre>
- * prompt_tokens = 本次调用的总输入 token，<strong>包含</strong>缓存命中部分
+ * prompt_tokens = 本次调用的总输入 token，<strong>包含</strong>缓存命中与缓存写入
  * </pre>
- * OpenAI 的 {@code prompt_tokens} 本来就是这个形态，而 Anthropic 把缓存读取排在
- * {@code input_tokens} <strong>之外</strong>单独计量，所以本类在 {@link #toTokens} 里把
- * {@code cache_read_input_tokens} 加回去。缓存命中的 token 确实是真实输入 ——
- * 模型每轮都要处理它们，缓存只是让它便宜，不是让它不存在。
+ * OpenAI 的 {@code prompt_tokens} 本来就是这个形态，而 Anthropic 把输入拆成三个互斥的量，
+ * 后两个都排在 {@code input_tokens} <strong>之外</strong>：
+ * <pre>
+ * input_tokens                 既没命中也没写入的新增输入（标准价）
+ * cache_read_input_tokens      命中缓存读出的（折扣价）
+ * cache_creation_input_tokens  本次写入缓存的（溢价）
+ * </pre>
+ * 所以 {@link #toTokens} 把后两项都加回去。它们确实是真实输入 —— 模型每一个都要处理，
+ * 缓存只改变单价，不改变是否存在。
  *
  * <h2>为何换算在解析层而不在落库层</h2>
  * 这个换算<strong>只依赖上游协议</strong>，与下游是谁无关：无论这条请求是
@@ -41,25 +46,26 @@ import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
  * 再加一遍缓存）；O2A 也不再需要任何 usage 接线 —— 那条线路上游是 OpenAI，
  * 本来就产出归一口径。
  *
- * <h2>{@code cache_creation_input_tokens} 不计入，这是可接受的取舍</h2>
- * Anthropic 的输入侧有三个量，后两个都在 {@code input_tokens} 之外：
- * <pre>
- * input_tokens                 本次新增输入
- * cache_read_input_tokens      命中缓存读出的（便宜，按折扣价计费）
- * cache_creation_input_tokens  写入缓存的（比普通输入更贵）
- * </pre>
- * 本类只把前两项相加，因此发生缓存写入时 {@code promptTokens} 略低于真实总输入，
- * 缓存占比也随之略偏高。
+ * <h2>分子与分母刻意不对称：{@code cachedTokens} 只取 cache_read</h2>
+ * {@code cache_creation} 计入 {@code promptTokens}（分母）但<strong>不</strong>计入
+ * {@code cachedTokens}（分子）。它是成本项而非命中项 —— 计入分子会让一次纯写入的调用
+ * 显示 100% 命中，而那一轮实际上一个 token 都没从缓存读到。
  *
- * <p><strong>不把它算进去是因为 {@link UsageTokens} 没有它的位置</strong>，而那个 record
- * 是多协议共用的输出契约 —— 为 Anthropic 的私有字段加成员会把协议细节漏给
- * OpenAI 侧与 Ollama 侧（那两边永远是 null）。补它的正确做法是给
- * {@code api_call_usage} 加一列，属于后续版本。
+ * <p>{@code cache_creation} 的 TTL 细分（{@code cache_creation.ephemeral_5m_input_tokens}
+ * 与 {@code ephemeral_1h_input_tokens}）不单独提取：它只影响单价、不影响 token 数量，
+ * 而 {@code cache_creation_input_tokens} 已是两者之和。需要时 {@code usage_raw}
+ * 保留了上游原文。
  *
- * <p>现阶段按「已知精度损失」处理而非缺陷：差额只在真的发生缓存写入那一轮出现
- * （多轮对话里通常只有首轮），且同一行的 {@code usage_raw} 保留了上游原文，
- * 随时可查。出站报文侧（{@code AnthropicUsageAccumulator}）则<strong>已经</strong>把三项
- * 都算进去了，因此下游客户端看到的数字是完整的。详见
+ * <h2>为何不加第四个列/成员</h2>
+ * 曾考虑给 {@code api_call_usage} 加一列存缓存写入量。不做的理由是三个 token 列的口径
+ * 本就定义为「总输入 / 总输出 / 其中命中」，把写入量并入总输入完全符合这个定义，
+ * 不需要新维度。{@link UsageTokens} 也因此保持三成员 —— 它是多协议共用的输出契约，
+ * 为 Anthropic 的私有拆分加成员会把协议细节漏给 OpenAI 侧与 Ollama 侧（那两边永远是 null）。
+ *
+ * <p>这个口径与 new-api 的 {@code buildOpenAIStyleUsageFromClaudeUsage} 一致
+ * （{@code input + read + creation}），因此经本服务 A2O 翻译落库的数字，与直接打上游
+ * OpenAI 兼容端点拿到的数字同源。出站报文侧（{@code AnthropicUsageAccumulator}）
+ * 从一开始就是三项相加，两侧现已同口径。详见
  * {@code docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md} 第 9.4 节。
  *
  * <h2>null 与 0 的区分必须保留</h2>
@@ -205,37 +211,48 @@ public final class AnthropicUsageParser {
     /**
      * 把 Anthropic usage 对象映射为归一口径的指标。
      *
-     * <h2>{@code promptTokens} 是 {@code input_tokens + cache_read_input_tokens}</h2>
-     * Anthropic 把缓存读取排在 {@code input_tokens} 之外，而本列的口径是「总输入含缓存」，
-     * 所以这里加回去。理由与不在落库层做这件事的原因见类注释。
+     * <h2>{@code promptTokens} 是三项之和</h2>
+     * <pre>
+     * promptTokens = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+     * </pre>
+     * Anthropic 把缓存读取与缓存写入都排在 {@code input_tokens} <strong>之外</strong>
+     * 单独计量，三者互斥，相加才是本轮真实总输入。而本列的口径是「总输入含缓存」，
+     * 所以两项都加回去。理由与不在落库层做这件事的原因见类注释。
      *
-     * <h2>缓存 token 只取 cache_read，不取 cache_creation</h2>
-     * 后者是「本次写入缓存的量」，属于成本项而非命中项，混入会让缓存命中率虚高。
-     * 它同样不计入 {@code promptTokens} —— 那是个已知精度损失，见类注释。
+     * <h2>但 {@code cachedTokens} 只取 cache_read</h2>
+     * 分子与分母<strong>刻意不对称</strong>：{@code cache_creation} 是「本次写入缓存的量」，
+     * 属于成本项而非命中项，计入分子会让缓存命中率虚高（一次纯写入的调用会显示 100% 命中）。
+     * 计入分母则是必须的 —— 那些 token 确实被模型处理了。
      */
     private static UsageTokens toTokens(JsonNode usage) {
         if (usage == null || !usage.isObject()) {
             return UsageTokens.EMPTY;
         }
         Integer cacheRead = intIfPresent(usage, "cache_read_input_tokens");
+        Integer cacheCreation = intIfPresent(usage, "cache_creation_input_tokens");
         return new UsageTokens(
-                sumOrNull(intIfPresent(usage, "input_tokens"), cacheRead),
+                sumOrNull(intIfPresent(usage, "input_tokens"), cacheRead, cacheCreation),
                 intIfPresent(usage, "output_tokens"),
                 cacheRead);
     }
 
     /**
-     * 两个可空计数相加，两者均缺失时保持 {@code null}。
+     * 多个可空计数相加，全部缺失时保持 {@code null}。
      *
-     * <p>{@code null} 不能当 0 参与相加：那会把「上游未提供」造成「上游报告了 0」，
-     * 而缓存占比靠这个区分区分「—」与「0.0%」。但只有一方缺失时可以按 0 参与 ——
-     * 那时另一方已经证明了「上游报告了输入侧数据」，和值仍然是个真实量。
+     * <p>{@code null} 不能当 0 参与相加：那会把「上游未提供」变成「上游报告了 0」，
+     * 而缓存占比靠这个区分「—」与「0.0%」。但只要有一项存在，其余就可以按 0 参与 ——
+     * 那一项已经证明了「上游报告了输入侧数据」，和值仍然是个真实量。
      */
-    private static Integer sumOrNull(Integer left, Integer right) {
-        if (left == null && right == null) {
-            return null;
+    private static Integer sumOrNull(Integer... counts) {
+        int sum = 0;
+        boolean anyPresent = false;
+        for (Integer count : counts) {
+            if (count != null) {
+                anyPresent = true;
+                sum += count;
+            }
         }
-        return (left == null ? 0 : left) + (right == null ? 0 : right);
+        return anyPresent ? sum : null;
     }
 
     /** 仅当字段存在且为整数时返回值，否则 null —— 保住 null 与 0 的区分。 */

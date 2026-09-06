@@ -374,13 +374,21 @@ Anthropic 不单独上报思考 token，所以 A2O 产出的响应**永远没有
 不随行的协议变化：
 
 ```text
-prompt_tokens     = 本次调用的总输入 token，包含缓存命中部分
+prompt_tokens     = 本次调用的总输入 token，包含缓存命中与缓存写入
 completion_tokens = 输出 token
-cached_tokens     = 输入中来自缓存命中的部分
+cached_tokens     = 输入中来自缓存**命中**的部分
 ```
 
-缓存命中的 token 是真实输入 —— 模型每轮都要处理它们，缓存只是让它便宜，
-不是让它不存在。因此多轮对话里同一段前缀在每一轮都被完整计入，这是**意图**而非缺陷。
+缓存相关的 token 都是真实输入 —— 模型每一个都要处理，缓存只改变单价、
+不改变是否存在。因此多轮对话里同一段前缀在每一轮都被完整计入，这是**意图**而非缺陷。
+
+**分子与分母刻意不对称**：`cache_creation` 计入 `prompt_tokens` 但不计入
+`cached_tokens`。计入分母是因为那些 token 确实被处理了；不计入分子是因为它属于
+成本项而非命中项 —— 否则一次纯写入的调用会显示 100% 命中，而那一轮实际上
+一个 token 都没从缓存读到。
+
+这也解释了常见的「高占比 / 0% 跳变」：前缀缓存 TTL 内的轮次全命中，
+首轮与 TTL 过期后的重建轮次纯写入、命中为 0。那是真实行为，不是统计缺陷。
 
 `usage_raw` 与这三列是**两种数据**，同一行里同时留着是有意的：
 
@@ -396,20 +404,35 @@ cached_tokens     = 输入中来自缓存命中的部分
 
 ```text
 AnthropicUsageParser.toTokens:
-    promptTokens = input_tokens + cache_read_input_tokens
+    promptTokens  = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+    cachedTokens  = cache_read_input_tokens
 ```
 
 **放在解析层是因为这个换算只依赖上游协议**，与下游是谁无关 —— 无论该请求是
-Anthropic 直连还是 A2O 翻译，上游都是 Anthropic、都差那一份缓存。
+Anthropic 直连还是 A2O 翻译，上游都是 Anthropic、都差那两份缓存。
 
 四条线路因此不需要任何按线路的接线：
 
 | 线路 | 上游 → 下游 | 换算 |
 |---|---|---|
 | OpenAI 直连 | O → O | 无需，`OpenAiUsageParser` 本就产出归一口径 |
-| Anthropic 直连 | A → A | `AnthropicUsageParser` 加回 `cache_read` |
+| Anthropic 直连 | A → A | `AnthropicUsageParser` 加回 read + creation |
 | A2O | A → O | 同上，同一份代码 |
 | O2A（未实现） | O → A | 无需，上游是 OpenAI |
+
+#### 与 new-api 同口径
+
+这与 new-api 的 `buildOpenAIStyleUsageFromClaudeUsage` 一致：
+
+```go
+totalInputTokens := usage.PromptTokens + usage.PromptTokensDetails.CachedTokens + cacheCreationTokens
+```
+
+意义在于：很多中转站本身就是 new-api，因此经本服务 A2O 落库的数字，
+与直接打同一中转站 OpenAI 兼容端点拿到的数字**同源** —— 换个端点打进来，
+落库口径不会变。new-api 额外单独暴露写入量（`prompt_tokens_details.cached_creation_tokens`
+与 `cache_write_tokens` 两个字段），本服务当前不转发那两个，因为 `UsageTokens`
+只有三个成员、而三列的定义已能完整表达计量需求。
 
 #### 曾经的做法及其失败原因
 
@@ -426,8 +449,11 @@ Anthropic 直连还是 A2O 翻译，上游都是 Anthropic、都差那一份缓�
 `usageRewriter` 与 `translateUsageForLog` 都已删除。**不要重建它们**：解析层已经
 加过缓存，再加一遍等于把缓存计两次。
 
-出站报文的换算仍在 `AnthropicUsageAccumulator`（读完整 usage 节点，且额外算上
-`cache_creation`），那与解析层是不同入口、不同精度，不是重复实现。
+出站报文的换算在 `AnthropicUsageAccumulator`，它从一开始就是三项相加；
+解析层早期只加两项，因此同一次调用的出站数字与落库数字不一致（实测样本：
+出站 53849、落库 8077，差 5.7 倍）。两侧现已同口径，但仍是两个入口（一个读
+`JsonNode` 并输出 OpenAI 形态、一个输出 `UsageTokens`），不是重复实现 ——
+**但修改其中一侧的口径时必须同步另一侧**。
 
 #### 前端
 
@@ -441,22 +467,27 @@ Anthropic 直连还是 A2O 翻译，上游都是 Anthropic、都差那一份缓�
 决定是**只保证新数据正确**：存量本就是混的，重算需要从 `usage_raw` 反推并改写历史，
 收益不抵风险。查证途径始终存在（同一行的 `usage_raw` 是上游原文）。
 
-#### 两个待决项
+#### 为何不加第四个列 / 成员
 
-- **`cache_creation_input_tokens` 未落库**（已接受，不当作缺陷）。Anthropic 输入侧有三个量：
-  `input_tokens`（新增）、`cache_read_input_tokens`（命中，折扣价）、
-  `cache_creation_input_tokens`（写入，比普通输入更贵）。解析层只加前两项，
-  因此发生缓存写入时 `prompt_tokens` 略低于真实总输入，缓存占比略偏高。
-  差额只在真的发生写入那一轮出现（多轮对话通常只有首轮），且 `usage_raw`
-  保留了上游原文可查；出站报文侧已经把三项都算进去，下游看到的数字是完整的。
-  **不要为它扩宽 `UsageTokens`** —— 那个 record 是多协议共用的输出契约，
-  为一侧的私有字段加成员会把协议细节漏到所有消费方；要补就加一列。
-- **合并时只有正数才覆盖，0 不得抹掉已知值**。存在这样的上游：**每一个**流式事件
-  都带完整 usage，但只有少数几个带真实数字，其余（含最后的 `message_stop`）全是 0。
-  `AnthropicUsageParser.merge` 与 `AnthropicUsageAccumulator.mergeField` 必须共用同一条
-  规则 —— 两者不一致曾导致同一次调用出站 usage 正确而落库全零。
-  同理 `usage_raw` 不能取「最后一份」，而要取「信息量最大的一份」
-  （`GenericAnthropicChatService.pickRicherUsageRaw`）。
+曾考虑给 `api_call_usage` 加一列存缓存写入量，并给 `UsageTokens` 加第四个成员。
+没做的理由：三列的口径本就定义为「总输入 / 总输出 / 其中命中」，
+把写入量**并入总输入**完全符合这个定义，不需要新维度。
+
+而 `UsageTokens` 保持三成员是因为它是多协议共用的输出契约 —— 为 Anthropic 的
+私有拆分加成员会把协议细节漏给 OpenAI 侧与 Ollama 侧（那两边永远是 null）。
+
+TTL 细分（`cache_creation.ephemeral_5m_input_tokens` /
+`ephemeral_1h_input_tokens`）同理不单独提取：它只影响单价、不影响 token 数量，
+而 `cache_creation_input_tokens` 已是两者之和。需要时 `usage_raw` 保留了上游原文。
+
+#### 一个仍需遵守的不变式
+
+**合并时只有正数才覆盖，0 不得抹掉已知值**。存在这样的上游：**每一个**流式事件
+都带完整 usage，但只有少数几个带真实数字，其余（含最后的 `message_stop`）全是 0。
+`AnthropicUsageParser.merge` 与 `AnthropicUsageAccumulator.mergeField` 必须共用同一条
+规则 —— 两者不一致曾导致同一次调用出站 usage 正确而落库全零。
+同理 `usage_raw` 不能取「最后一份」，而要取「信息量最大的一份」
+（`GenericAnthropicChatService.pickRicherUsageRaw`）。
 - **`api_usage_daily` 的写入侧**（`ApiUsageRepository.insert`）与
   `api_call_usage` 共用同一口径，因为两处都取自同一个 `UsageTokens`。
   但那张表在写入时就累加了，存量值无法靠改查询修正 —— 若将来要重算，
@@ -697,10 +728,9 @@ Copilot BYOK 会回传上一轮思考内容，因此翻译路线上开启 extend
 - **O2A 响应翻译**（phase 4）尚未实现。usage 不需要额外接线 —— 那条线路上游是
   OpenAI，`OpenAiUsageParser` 本就产出归一口径（第 9.4 节）。
 - **A2O 请求翻译**（phase 3，下游 `/v1/messages` + 上游 OpenAI）尚未实现。
-- **`cache_creation_input_tokens` 未落库**，因此未计入 `prompt_tokens`，
-  发生缓存写入时落库值略低于真实总输入，缓存占比略偏高（第 9.4 节）。
-- **存量行口径不一致**：口径统一之前落的 Anthropic 直连行不含缓存，
-  `api_usage_daily` 的累加值同样。已决定**不修**，只保证新数据正确（第 9.4 节）。
+- **存量行口径不一致**：口径统一之前落的 Anthropic 行分两批 —— 早期完全不含缓存，
+  中期只含 `cache_read`（缺 `cache_creation`）。`api_usage_daily` 的累加值同样。
+  已决定**不修**，只保证新数据正确（第 9.4 节）。
 - **思考链回放**见第 14.3 节，受上游约束。
 - **mid-stream error**（第 6.1 节）与 **hosted tool 块**（第 6.3 节）只有单测覆盖，
   没有实流量样本。
