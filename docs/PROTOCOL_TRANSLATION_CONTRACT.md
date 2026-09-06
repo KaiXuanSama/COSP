@@ -340,6 +340,30 @@ A2O 丢弃：`metadata`、`mcp_servers`、`container`、`context_management`、`
 当前 COSP 无 `@ControllerAdvice`，控制器的 `onErrorResume` 与 `findWebResponseException` 负责
 透传上游状态码。翻译层的**本地**校验失败不经过上游，需要自己给出 4xx，新增分支先保持现有模式。
 
+四类失败在控制器两侧各有独立分支，**不得归并**：
+
+| 异常 | 状态码 | 成因 | 用户该改什么 |
+|---|---|---|---|
+| `ProtocolTranslationNotSupportedException` | 400 | 供应商未声明支持下游打的那个协议，而该方向的翻译未实现 | 勾上该协议，或换供应商 |
+| `NoSupportedProtocolException` | 400 | 供应商一个协议都没勾（显式空数组） | 至少勾一个 |
+| `RequestTranslationException` | 400 | 请求本身无法表达成目标协议（6.1 那四类） | 改请求，消息里带字段路径 |
+| `ResponseTranslationException` | 502 | 上游给了个解析不了的报文 | 都没做错，是上游的问题 |
+
+前三类重试无益，给 5xx 会诱导客户端重试。**落进 502 兜底分支的后果不只是状态码不对** ——
+那个分支会把消息译成「无法连接到上游服务」，而上游根本没被尝试连接，排查方向会被指往
+网络与上游可用性。
+
+### 6.3.1 组装期异常必须转成 onError 信号
+
+翻译器与调度器都是**同步**调用，而控制器的 `Mono.firstWithSignal(service.xxx(...), cancelSignal)`
+参数是 eager 求值的。若应用服务在方法体里直接跑这些同步步骤，异常在 Mono **组装期**就抛出了
+控制器方法，`onErrorResume` 不在链上 —— 上表的分类一条都用不上，下游拿到 WebFlux 默认 500。
+流式更隐蔽：状态码尚未提交，因此发出去的不是 SSE error 帧而是 500 JSON。
+
+因此 `ChatCompletionService` 与 `MessagesService` 的四个方法主体都包在
+`Mono.defer` / `Flux.defer` 里，`ChatDispatchErrorSignalTests` 钉住这一点
+（含「直连路径行为不变」那两条，否则把方法体换成 `Mono.error(...)` 也会全绿）。
+
 ### 6.4 不做错误驱动的事后整流
 
 三个参考项目都有：匹配上游错误文案（`">= 1024"`、`"greater than or equal to 1024"`）后

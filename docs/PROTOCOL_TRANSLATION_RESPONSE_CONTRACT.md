@@ -558,7 +558,7 @@ A2O 需要的状态（已剔除 sub2api 因走 Responses IR 而引入的账本�
 3. **thinking 流**——`thinking_delta` → `reasoning_content`，`signature_delta` 吸收
 4. **tool 流**——两个索引域的映射，这是最容易错的一段
 5. **收尾三档 + mid-stream error**
-6. **接入 `ChatCompletionService`**，替换现有两处 TODO
+6. **接入 `ChatCompletionService`** 的两处翻译分支（已完成）
 
 ### 13.1 测试必须覆盖参考项目没覆盖的场景
 
