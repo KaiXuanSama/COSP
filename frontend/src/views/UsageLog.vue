@@ -269,8 +269,8 @@ function formatTokens(value: number | null): string {
 }
 
 /**
- * 缓存命中占比。口径由后端统一（`prompt_tokens` 含缓存），因此只有一套算法；
- * 详见 `features/call-log/cacheHitRate.ts` —— 详情组件共用同一份。
+ * 缓存命中占比。口径由后端统一（`prompt_tokens` 含缓存命中与缓存写入），
+ * 因此只有一套算法；详见 `features/call-log/cacheHitRate.ts` —— 详情组件共用同一份。
  */
 function cacheHitRateOf(row: UsageLogItem): string {
   return formatCacheHitRate(row)

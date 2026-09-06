@@ -9,7 +9,8 @@ function usage(prompt: number | null, cached: number | null) {
 
 describe('cacheHitRate', () => {
   /**
-   * 只有一套口径：后端已保证 `prompt_tokens` 含缓存，所以分母就是它。
+   * 只有一套口径：后端已保证 `prompt_tokens` 是含缓存<strong>命中与写入</strong>的总输入，
+   * 所以分母就是它。
    *
    * 这里曾经按 `downstream_protocol` 分两支，因为 Anthropic 直连落的是不含缓存的
    * `input_tokens`。那个分支已随后端口径统一而删除 —— 见模块注释。
@@ -24,13 +25,25 @@ describe('cacheHitRate', () => {
     })
 
     /**
-     * 真实的 Anthropic 样本：input_tokens 510、cache_read 25344。
+     * 真实的 Anthropic 命中样本：input_tokens 510、cache_read 25344、cache_creation 0。
      *
-     * 解析层已把两者相加，落库值是 25854，所以这里拿到的就是归一化后的数字，
+     * 解析层已把三项相加，落库值是 25854，所以这里拿到的就是归一化后的数字，
      * 占比 25344/25854 = 98.0%。若解析层漏了这一步，前端会看到 25344/510 = 4969.4%。
      */
-    it('归一化后的 Anthropic 样本落在合理区间', () => {
+    it('归一化后的 Anthropic 命中样本落在合理区间', () => {
       expect(cacheHitRate(usage(25854, 25344))).toBeCloseTo(0.98027, 5)
+    })
+
+    /**
+     * 真实的 Anthropic 纯写入样本：input_tokens 8077、cache_creation 45772、cache_read 0。
+     *
+     * 落库值是三项之和 53849，而分子只取命中（为 0），所以占比是 0%。
+     * 这正是分子分母不对称的用意：写入量确实被模型处理了所以计入分母，
+     * 但它是成本项而非命中项 —— 若也计入分子，这一轮会显示 100% 命中，
+     * 而它实际上一个 token 都没从缓存读到。
+     */
+    it('纯写入轮次显示 0% 而不是满命中', () => {
+      expect(cacheHitRate(usage(53849, 0))).toBe(0)
     })
 
     /**

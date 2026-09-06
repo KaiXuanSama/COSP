@@ -814,6 +814,56 @@ class GenericAnthropicChatServiceTests {
         assertThat(usageService.tokens.completionTokens()).isEqualTo(64);
         // usage_raw 存的是信息量最大的那一份，而不是最后那份全零报文。
         assertThat(usageService.usageRaw).contains("475935");
+        // 存档落在 message_delta 上。注意这里走的是「严格更多」分支而非打平分支：
+        // 该序列的 message_start 同时带了顶层全零 usage 与嵌在 message 下的真实 usage，
+        // 而 locateUsage 先看顶层 —— 那一帧抽到的是 0 个正值。打平取结算态的规则
+        // 由 tiedNonSettlementUsageDoesNotReplaceArchive 单独钉。
+        assertThat(usageService.usageRaw).contains("\"output_tokens\":64");
+    }
+
+    /**
+     * 正值个数打平且新到的<strong>不是</strong> {@code message_delta} 时，存档不替换。
+     *
+     * <h2>为什么要单独钉这一条</h2>
+     * 「打平取结算态」的另一半是「打平且不是结算态就保留」。若只按到达顺序取后者，
+     * 那些每个事件都带 usage 的上游会让存档一路漂到 {@code message_stop} ——
+     * 而 {@code message_stop} 上的 usage 是那类上游的副产物，不是结算依据。
+     *
+     * <p>尾事件的 {@code output_tokens} 故意写成一个与结算值不同的数（99），
+     * 这是为了让「有没有被替换」可观测，<strong>不是</strong>在断言某家上游真会这么发 ——
+     * 已实测的形态是尾事件全零，那一条由 {@link #allZeroTrailingUsageDoesNotWipePersistedTokens} 覆盖。
+     *
+     * <p>三个 token 列不参与本条断言：它们走 {@link AnthropicUsageParser#merge} 的
+     * 「正值覆盖」规则，与存档的「挑一份」规则<strong>刻意不同</strong> ——
+     * 度量列要的是完整数字，存档要的是上游原话。
+     */
+    @Test
+    void tiedNonSettlementUsageDoesNotReplaceArchive() {
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        RecordingUsageService usageService = new RecordingUsageService();
+        TestService service = stubService(request -> sseResponse(usageOnEveryEventWithRealNumbers(factory)));
+        service.setApiCallUsage(usageService);
+
+        service.exposeMessagesStream(newRequest(), routeTo(baseUrlWithV1()))
+                .collectList().block(Duration.ofSeconds(20));
+
+        assertThat(usageService.usageRaw).contains("\"output_tokens\":9");
+        assertThat(usageService.usageRaw).doesNotContain("99");
+    }
+
+    /** 新到的一份正值个数严格更多时替换存档，与事件类型无关。 */
+    @Test
+    void strictlyRicherUsageReplacesArchiveRegardlessOfEventType() {
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        RecordingUsageService usageService = new RecordingUsageService();
+        TestService service = stubService(request -> sseResponse(richerUsageOnContentBlock(factory)));
+        service.setApiCallUsage(usageService);
+
+        service.exposeMessagesStream(newRequest(), routeTo(baseUrlWithV1()))
+                .collectList().block(Duration.ofSeconds(20));
+
+        // content_block_delta 带了 3 个正值，压过 message_start 的 1 个。
+        assertThat(usageService.usageRaw).contains("\"cache_read_input_tokens\":3");
     }
 
     /** 完整事件序列原样透传，顺序不变。 */
@@ -1158,6 +1208,45 @@ class GenericAnthropicChatServiceTests {
                         "cache_creation_input_tokens":0,"cache_read_input_tokens":0}}""")),
                 Mono.just(sse(factory, """
                         {"type":"message_stop",""" + zeroUsage + "}")));
+    }
+
+    /**
+     * 每个事件都带 usage 且都是真实数字的序列。用于验证「打平且非结算态不替换存档」。
+     *
+     * <p>各事件的正值个数一律为 2，故全程打平，只有 {@code message_delta} 有资格替换。
+     */
+    private static Flux<DataBuffer> usageOnEveryEventWithRealNumbers(DefaultDataBufferFactory factory) {
+        return Flux.concat(
+                Mono.just(sse(factory, """
+                        {"type":"message_start","message":{"id":"m1","role":"assistant",\
+                        "usage":{"input_tokens":100,"output_tokens":1}}}""")),
+                Mono.just(sse(factory, """
+                        {"type":"content_block_start","index":0,\
+                        "content_block":{"type":"text","text":""}}""")),
+                Mono.just(sse(factory, """
+                        {"type":"content_block_delta","index":0,\
+                        "delta":{"type":"text_delta","text":"hello"},\
+                        "usage":{"input_tokens":100,"output_tokens":7}}""")),
+                Mono.just(sse(factory, """
+                        {"type":"message_delta","delta":{"stop_reason":"end_turn"},\
+                        "usage":{"input_tokens":100,"output_tokens":9}}""")),
+                Mono.just(sse(factory, """
+                        {"type":"message_stop",\
+                        "usage":{"input_tokens":100,"output_tokens":99}}""")));
+    }
+
+    /** {@code message_start} 只给一个正值，随后一个非结算事件给出三个 —— 后者应当替换存档。 */
+    private static Flux<DataBuffer> richerUsageOnContentBlock(DefaultDataBufferFactory factory) {
+        return Flux.concat(
+                Mono.just(sse(factory, """
+                        {"type":"message_start","message":{"id":"m1","role":"assistant",\
+                        "usage":{"input_tokens":10}}}""")),
+                Mono.just(sse(factory, """
+                        {"type":"content_block_delta","index":0,\
+                        "delta":{"type":"text_delta","text":"hi"},\
+                        "usage":{"input_tokens":10,"output_tokens":5,\
+                        "cache_read_input_tokens":3}}""")),
+                Mono.just(sse(factory, "{\"type\":\"message_stop\"}")));
     }
 
     private static DataBuffer sse(DefaultDataBufferFactory factory, String json) {

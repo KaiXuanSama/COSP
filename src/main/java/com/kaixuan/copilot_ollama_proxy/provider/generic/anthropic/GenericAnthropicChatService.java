@@ -337,8 +337,9 @@ public class GenericAnthropicChatService {
         // 本轮累积的 usage：input_tokens 来自 message_start、output_tokens 来自 message_delta，
         // 必须跨事件合并才完整。
         AtomicReference<UsageTokens> usageAccumulator = new AtomicReference<>(UsageTokens.EMPTY);
-        // 存档用的 usage 原文。取「信息量最大」的那一份而非最后一份，理由见
-        // pickRicherUsageRaw —— 有的上游每个事件都带 usage，且尾事件全零。
+        // 存档用的 usage 原文。挑「信息量最大」的那一份而非最后一份，打平时取结算态
+        // （message_delta），理由见 pickRicherUsageRaw —— 有的上游每个事件都带 usage，
+        // 且尾事件全零；也不跨事件拼字段，那会造出上游从未发出过的报文。
         AtomicReference<String> archivedUsageRaw = new AtomicReference<>(null);
         // 本轮是否见过实质载荷。整轮为 false 即判空响应。
         AtomicBoolean sawPayload = new AtomicBoolean(false);
@@ -396,7 +397,8 @@ public class GenericAnthropicChatService {
                     // usage 跨事件合并：message_start 给输入、message_delta 给输出。
                     String rawUsage = AnthropicUsageParser.extractUsageRawJson(objectMapper, data);
                     if (rawUsage != null) {
-                        archivedUsageRaw.set(pickRicherUsageRaw(archivedUsageRaw.get(), rawUsage));
+                        archivedUsageRaw.set(pickRicherUsageRaw(archivedUsageRaw.get(), rawUsage,
+                                isSettlementEvent(data)));
                         usageAccumulator.set(AnthropicUsageParser.merge(usageAccumulator.get(),
                                 AnthropicUsageParser.parseUsageObject(objectMapper, rawUsage)));
                     }
@@ -1076,17 +1078,44 @@ public class GenericAnthropicChatService {
     }
 
     /**
-     * 在两份 usage 原文里挑「信息量更大」的那一份存档。
+     * 在两份 usage 原文里挑一份存档。<strong>永远是「挑一份」，不跨事件拼字段</strong>。
      *
      * <h2>为何不能直接取最后一份</h2>
      * 存在这样的上游：<strong>每一个</strong>流式事件都带完整的 usage 对象，但只有少数几个
      * 带真实数字，其余（含最后的 {@code message_stop}）全是 {@code 0}。直接取最后一份会让
      * {@code usage_raw} 存下一份全零报文 —— 实测到过的缺陷。
      *
-     * <p>判据取<strong>四个输入输出字段的正值个数</strong>，相等时保留先到的那一份
-     * （更靠前的事件通常字段更全，例如 {@code message_start} 带 {@code cache_*}）。
-     * 不比较数值大小：那会在多轮 {@code message_delta} 里挑出「输出最多」的一帧，
+     * <p>因此第一判据是<strong>四个输入输出字段的正值个数</strong>：严格更多才替换。
+     * 不比较数值大小 —— 那会在多轮 {@code message_delta} 里挑出「输出最多」的一帧，
      * 而我们要的是「哪一帧最能说明这次调用」。
+     *
+     * <h2>正值个数相等时优先结算态（{@code message_delta}）</h2>
+     * 实测样本：{@code message_start} 给
+     * {@code {input_tokens:8077, cache_creation_input_tokens:45772}}（2 个正值），
+     * {@code message_delta} 给 {@code {output_tokens:43, cache_creation_input_tokens:45772}}
+     * （同样 2 个正值）。两份各缺一半，纯按个数打平。
+     *
+     * <p>此时取 {@code message_delta}：{@code message_start} 是<strong>预算/预估</strong>态
+     * （请求刚被接收，输出还没产生），{@code message_delta} 是<strong>结算</strong>态。
+     * 存档的用途是查证「这次调用最终算了多少」，结算态更贴近这个问题。
+     * 打平且都不是 {@code message_delta} 时保留先到的那一份（不做无意义的抖动）。
+     *
+     * <h2>为何不把两个事件的字段合并成一份「完整」原文</h2>
+     * 因为同名字段在两个事件里可以给出<strong>不同的值</strong>，合并会造出一份上游从未
+     * 发出过的报文。cc-switch 记录的 Qwen / MiniMax 形态就是这样：{@code message_start}
+     * 报 {@code input_tokens=200000 / cache_read=180000}，{@code message_delta} 改报
+     * {@code 80000 / 120000} —— 两份各自<strong>自洽（配套）</strong>，逐字段挑「较大者」
+     * 会拼出一份两头不搭的账。存档的价值恰恰在于它是上游原话，一旦拼接就不再是证据。
+     *
+     * <p>三个 token 列<strong>确实</strong>跨事件合并（{@link AnthropicUsageParser#merge}），
+     * 那是度量列、要的是完整数字；存档要的是原文。两者职责不同，所以规则也不同。
+     *
+     * <h2>官方 Claude 形态尚未一手验证</h2>
+     * 目前掌握的 {@code message_start} / {@code message_delta} 形态全部来自第三方
+     * Anthropic 兼容端点（DeepSeek、MiMo、Qwen、MiniMax）与中转项目的测试夹具，
+     * 各家并不一致：有的 {@code message_delta} 只带 {@code output_tokens}，
+     * 有的带完整四项。因此这里选的是<strong>保守策略</strong>（挑一份 + 打平取结算态），
+     * 而不是依赖任何一家的形态假设。拿到官方 key 的一手抓包后可以重新评估。
      *
      * <h2>它与三个 token 列的关系</h2>
      * 两者独立：三列由 {@link AnthropicUsageParser#merge} 跨事件合并而来，本方法只决定
@@ -1095,14 +1124,38 @@ public class GenericAnthropicChatService {
      *
      * @param current 已存档的原文；{@code null} 表示还没有
      * @param incoming 新到的原文，非 null
+     * @param incomingIsSettlement {@code incoming} 是否来自 {@code message_delta}
      * @return 应当存档的那一份
      */
-    private String pickRicherUsageRaw(String current, String incoming) {
+    private String pickRicherUsageRaw(String current, String incoming, boolean incomingIsSettlement) {
         if (current == null) {
             return incoming;
         }
-        return countPositiveUsageFields(incoming) > countPositiveUsageFields(current)
-                ? incoming : current;
+        int incomingPositives = countPositiveUsageFields(incoming);
+        int currentPositives = countPositiveUsageFields(current);
+        if (incomingPositives > currentPositives) {
+            return incoming;
+        }
+        if (incomingPositives == currentPositives && incomingIsSettlement) {
+            return incoming;
+        }
+        return current;
+    }
+
+    /**
+     * 事件是否是结算态（{@code message_delta}）。
+     *
+     * <p>只认这一个类型：{@code message_start} 是预算态，{@code content_block_*} 与
+     * {@code message_stop} 上的 usage 是某些上游「每事件都带一份」的副产物，都不是结算。
+     * 解析失败按「不是结算」处理 —— 保守，不因一份读不懂的报文替换已有存档。
+     */
+    private boolean isSettlementEvent(String eventJson) {
+        try {
+            JsonNode type = objectMapper.readTree(eventJson).get("type");
+            return type != null && "message_delta".equals(type.asText());
+        } catch (Exception exception) {
+            return false;
+        }
     }
 
     /** 数一份 usage 原文里有几个输入输出字段是正数。解析失败记 0（保守，不覆盖已有存档）。 */

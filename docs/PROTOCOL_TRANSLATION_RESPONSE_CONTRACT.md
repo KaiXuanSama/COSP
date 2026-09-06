@@ -488,6 +488,28 @@ TTL 细分（`cache_creation.ephemeral_5m_input_tokens` /
 规则 —— 两者不一致曾导致同一次调用出站 usage 正确而落库全零。
 同理 `usage_raw` 不能取「最后一份」，而要取「信息量最大的一份」
 （`GenericAnthropicChatService.pickRicherUsageRaw`）。
+
+#### `usage_raw` 永远挑一份，不跨事件拼字段
+
+三个 token 列跨事件合并（度量列要完整数字），存档列永远挑一份原文
+（查证要的是上游原话）。两套规则刻意不同。
+
+挑选规则：四个输入输出字段的正值个数，严格更多才替换；个数打平时取
+`message_delta`（结算态），否则保留先到的那一份。`message_start` 是预算 /
+预估态（请求刚被接收，输出还没产生），`message_delta` 是结算态
+（这次调用最终算了多少）。尾事件全零不会替换已有存档（0 个正值压不过 2 个）。
+
+**不把两个事件的字段合并成一份「完整」原文**。同名字段在两个事件里可以给出
+不同的值：cc-switch 记录的 Qwen / MiniMax 形态里，`message_start` 报
+`input_tokens=200000 / cache_read=180000`，`message_delta` 改报
+`80000 / 120000` —— 两份各自自洽（配套），逐字段挑较大者会拼出一份
+上游从未发出过的报文。存档一旦拼接就不再是证据。完整事件序列本就在
+`chunks` 列里，真要看原文那里有全部。
+
+官方 Claude 的 `message_start` vs `message_delta` 形态尚未一手验证
+（目前掌握的样本全部来自第三方 Anthropic 兼容端点与中转项目的测试夹具，
+各家并不一致）。拿到官方 key 的抓包后可以重新评估本条规则。
+
 - **`api_usage_daily` 的写入侧**（`ApiUsageRepository.insert`）与
   `api_call_usage` 共用同一口径，因为两处都取自同一个 `UsageTokens`。
   但那张表在写入时就累加了，存量值无法靠改查询修正 —— 若将来要重算，
