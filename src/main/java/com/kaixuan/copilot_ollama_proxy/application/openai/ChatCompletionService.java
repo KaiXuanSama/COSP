@@ -1,8 +1,10 @@
 package com.kaixuan.copilot_ollama_proxy.application.openai;
 
+import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchDecision;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.RequestTranslationException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslatedRequest;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.AnthropicToOpenAiResponseTranslator;
@@ -26,9 +28,17 @@ import java.util.Map;
  * 负责解析供应商模型路由，经协议调度管理器确认走法后委托上游执行器完成调用。
  *
  * <p>本服务的下游协议恒为 {@link WireProtocol#OPENAI}（由它服务的端点决定）；
- * 上游协议由 {@link ProtocolDispatchManager} 按供应商支持情况得出。
- * 当前阶段所有供应商都被乐观地认为支持两种协议，故恒走 OpenAI 直连，
- * 行为与引入调度器之前完全一致。
+ * 上游协议由 {@link ProtocolDispatchManager} 按供应商支持情况得出。两条路都活：
+ * 供应商支持 OpenAI 时直连，只支持 Anthropic 时走 O2A 去程 + A2O 回程翻译。
+ *
+ * <h2>为何两个方法体都裹在 defer 里</h2>
+ * 路由解析、协议调度与请求翻译都是<strong>同步</strong>调用，且都会抛异常
+ * （{@link NoSupportedProtocolException}、{@link RequestTranslationException}）。
+ * 控制器那侧的 {@code Mono.firstWithSignal(chatCompletion(...), cancelSignal)}
+ * 参数是 eager 求值的：若不包 defer，异常在 Mono <strong>组装期</strong>就抛出了
+ * 控制器方法，{@code onErrorResume} 根本不在链上 —— 下游拿到的是 WebFlux 默认
+ * 500 与通用错误体，那些带字段路径的消息一个字都到不了对端。
+ * 流式同理，且更隐蔽：状态码还未提交，因此发出去的不是 SSE error 帧而是 500 JSON。
  */
 @Service
 public class ChatCompletionService {
@@ -75,8 +85,14 @@ public class ChatCompletionService {
      * @return 上游原始 OpenAI 响应
      */
     public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
-                                       HttpHeaders downstreamHeaders, String requestId) {
-        ResolvedProviderRoute route = providerRouteResolver.resolve(model);
+                                       HttpHeaders downstreamHeaders, String requestId) {        // defer 把路由 / 调度 / 翻译的同步异常转成 onError 信号，控制器才能分类处置。
+        // 理由见类注释。
+        return Mono.defer(() ->
+                dispatchChatCompletion(openAiRequest, model, downstreamHeaders, requestId));
+    }
+
+    private Mono<String> dispatchChatCompletion(Map<String, Object> openAiRequest, String model,
+                                                HttpHeaders downstreamHeaders, String requestId) {        ResolvedProviderRoute route = providerRouteResolver.resolve(model);
         if (route == null) {
             return Mono.error(new RuntimeException("没有可用的上游服务来处理模型: " + model));
         }
@@ -134,6 +150,14 @@ public class ChatCompletionService {
      */
     public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model,
                                               HttpHeaders downstreamHeaders, String requestId) {
+        // 同非流式：defer 让组装期异常成为 onError 信号，控制器才能发出 SSE error 帧
+        // 而不是让 WebFlux 兜底成 500 JSON。
+        return Flux.defer(() ->
+                dispatchChatCompletionStream(openAiRequest, model, downstreamHeaders, requestId));
+    }
+
+    private Flux<String> dispatchChatCompletionStream(Map<String, Object> openAiRequest, String model,
+                                                      HttpHeaders downstreamHeaders, String requestId) {
         ResolvedProviderRoute route = providerRouteResolver.resolve(model);
         if (route == null) {
             return Flux.error(new RuntimeException("没有可用的上游服务来处理模型: " + model));

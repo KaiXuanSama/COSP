@@ -19,7 +19,9 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.RequestTranslationException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
@@ -116,6 +118,61 @@ class OpenAiControllerTests {
         .jsonPath("$.error.message").value(org.hamcrest.Matchers.allOf(
             org.hamcrest.Matchers.containsString("relay-x"),
             org.hamcrest.Matchers.containsString("OPENAI"),
+            org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接"))));
+  }
+
+  /**
+   * 供应商一个协议都没勾时给 400 并点名该去做什么。
+   *
+   * <p>此前是 WebFlux 默认 500：{@code dispatch(...)} 在应用服务方法体里同步执行，
+   * 异常在 Mono 组装期就逃出了控制器，{@code onErrorResume} 不在链上。
+   * 服务层加 defer 之后才有本用例断言的形态。
+   */
+  @Test
+  void providerWithoutAnyProtocolReturnsBadRequestInsteadOfServerError() {
+    given(chatCompletionService.chatCompletion(anyMap(), anyString(),
+        org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString()))
+        .willReturn(Mono.error(new NoSupportedProtocolException("relay-x")));
+
+    webTestClient.post().uri("/v1/chat/completions").contentType(MediaType.APPLICATION_JSON)
+        .accept(MediaType.APPLICATION_JSON)
+        .bodyValue("{\"model\":\"m\",\"stream\":false,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
+        .exchange().expectStatus().isEqualTo(400).expectBody()
+        .jsonPath("$.error.type").isEqualTo("invalid_request_error")
+        .jsonPath("$.error.message").value(org.hamcrest.Matchers.allOf(
+            org.hamcrest.Matchers.containsString("relay-x"),
+            org.hamcrest.Matchers.containsString("至少勾选一种协议"),
+            org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接"))));
+  }
+
+  /**
+   * 请求翻译失败给 400，且<strong>字段路径必须出现在错误体里</strong>。
+   *
+   * <p>这是这批修复里最容易被忽略的一条：前两条的异常来自调度器（配置问题），
+   * 本条来自翻译器（请求内容问题）—— 即使供应商配置完全正常，一个带未知
+   * {@code role} 的普通下游请求就能触发。控制器此前没有这个分支，
+   * 而 {@code RequestTranslationException} 精心构造的
+   * {@code messages[2].role} 一个字都到不了对端。
+   *
+   * <p>不能归到 502：下游没做错网络的事，是它的请求体本身无法表达成上游协议，
+   * 502 会让调用方去查上游可用性。
+   */
+  @Test
+  void requestTranslationFailureReturnsBadRequestCarryingTheFieldPath() {
+    given(chatCompletionService.chatCompletion(anyMap(), anyString(),
+        org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString()))
+        .willReturn(Mono.error(new RequestTranslationException(
+            "messages[2].role", "是未知角色 narrator，无法翻译到 Anthropic 协议")));
+
+    webTestClient.post().uri("/v1/chat/completions").contentType(MediaType.APPLICATION_JSON)
+        .accept(MediaType.APPLICATION_JSON)
+        .bodyValue("{\"model\":\"m\",\"stream\":false,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
+        .exchange().expectStatus().isEqualTo(400).expectBody()
+        .jsonPath("$.error.type").isEqualTo("invalid_request_error")
+        .jsonPath("$.error.message").value(org.hamcrest.Matchers.allOf(
+            // 字段路径是这个异常存在的意义，丢了它下游只能去猜改哪里。
+            org.hamcrest.Matchers.containsString("messages[2].role"),
+            org.hamcrest.Matchers.containsString("narrator"),
             org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接"))));
   }
 

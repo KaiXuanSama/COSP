@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.api.anthropic;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
@@ -334,6 +335,13 @@ public class AnthropicController {
             return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
                     .body(anthropicErrorBody(protocolException.getMessage()));
         }
+        // 协议一个都没勾：同样是本地配置问题，不能落进 502 兜底。
+        NoSupportedProtocolException noProtocol = findNoSupportedProtocolException(ex);
+        if (noProtocol != null) {
+            log.warn("供应商未配置任何协议 [{}]: {}", model, noProtocol.getMessage());
+            return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
+                    .body(anthropicErrorBody(noProtocol.getMessage()));
+        }
         WebClientResponseException responseException = findWebResponseException(ex);
         if (responseException != null) {
             log.warn("上游 API 返回错误 [{}] {}: {}", model,
@@ -353,6 +361,11 @@ public class AnthropicController {
         if (protocolException != null) {
             log.warn("协议不可用 [{}]: {}", model, protocolException.getMessage());
             return anthropicErrorBody(protocolException.getMessage());
+        }
+        NoSupportedProtocolException noProtocol = findNoSupportedProtocolException(error);
+        if (noProtocol != null) {
+            log.warn("供应商未配置任何协议 [{}]: {}", model, noProtocol.getMessage());
+            return anthropicErrorBody(noProtocol.getMessage());
         }
         WebClientResponseException responseException = findWebResponseException(error);
         if (responseException != null) {
@@ -430,6 +443,23 @@ public class AnthropicController {
         while (current != null) {
             if (current instanceof ProtocolTranslationNotSupportedException protocolException) {
                 return protocolException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    /**
+     * 递归解包「供应商一个协议都没勾」异常。
+     *
+     * <p>不直接 catch {@code IllegalStateException}：那会把任何库抛的同类异常
+     * 一并译成「协议没配」，那种误导比笼统的 500 更难排查。
+     */
+    private NoSupportedProtocolException findNoSupportedProtocolException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof NoSupportedProtocolException noProtocol) {
+                return noProtocol;
             }
             current = current.getCause();
         }

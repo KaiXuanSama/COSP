@@ -306,9 +306,13 @@ public class GenericAnthropicChatService {
      * （透传上游真实返回），而重发的新一轮会追加在后面 —— 对 Anthropic 客户端而言，
      * 一个未收到 {@code message_stop} 的消息序列后接新序列，是可判别的。
      *
-     * <p>手动重试（{@code CallRetryRegistry} + {@code takeUntilOther}）本阶段不接：
-     * 它需要在流中途切断并重发，而 Anthropic 客户端对「序列被截断后重新开始」的容忍度
-     * 尚未验证。留到翻译层阶段一并处理。
+     * <h2>不接手动（静默）重试</h2>
+     * {@code CallRetryRegistry} + {@code takeUntilOther} 那套只接在 OpenAI 流式上。
+     * 它需要在流中途切断并重发，而 Anthropic 客户端是事件状态机：一个未收到
+     * {@code message_stop} 的序列后接一个全新的 {@code message_start}，对严格客户端
+     * 是否合法尚未验证。前置条件是拿到真实客户端的行为证据，不是翻译层完工
+     * （翻译层已落地，这一项仍不具备条件）。前端已用 {@code v-if="menuTarget.stream"}
+     * 隐藏不可用的菜单项，因此没有「点了没反应」的体验问题。
      */
     protected Flux<String> messagesStream(Map<String, Object> request, String model,
                                           ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
@@ -538,12 +542,19 @@ public class GenericAnthropicChatService {
                     if (!headers.containsKey(ANTHROPIC_VERSION_HEADER)) {
                         headers.set(ANTHROPIC_VERSION_HEADER, ANTHROPIC_VERSION_VALUE);
                     }
-                    // TODO 认证头形态尚未实测确认。Anthropic 官方用 x-api-key，
-                    //  而多数 OpenAI 兼容中转站转发 Anthropic 时沿用 Authorization: Bearer。
-                    //  此处同时给两个：applyHeaders 已设好 Bearer，这里补一个 x-api-key，
-                    //  让两类上游都能通过。待实测后收敛为单一形态，或做成可配置。
-                    //  同时给两个的风险是某些严格的上游会因为多余的头而拒绝 —— 若遇到，
-                    //  优先怀疑这里。
+                    // 双认证头：Anthropic 官方用 x-api-key，而多数 OpenAI 兼容中转站转发
+                    // Anthropic 时沿用 Authorization: Bearer。applyHeaders 已设好 Bearer，
+                    // 这里补一个 x-api-key，使两类上游都能通过。
+                    //
+                    // TODO(待决策) 是否收敛为单一形态（或做成可配置）。
+                    //  已知：DeepSeek 与 MiMo 的 Anthropic 端点接受两个头并存（流式与非流式、
+                    //  含多轮工具链，已实测）。
+                    //  未知：是否存在「因多余认证头而拒绝」的严格上游 ——
+                    //  若遇到不明原因的 401/403，优先怀疑这里。
+                    //  决策前提是先拿到上述反例；没有反例就收敛，等于把一个已知可行的
+                    //  兼容策略换成一个需要用户自己选对的配置项。
+                    //  改动面是两处：同一套双头逻辑在
+                    //  ProviderModelDiscoveryService.applyProtocolHeaders 也有一份。
                     if (!headers.containsKey("x-api-key") && apiKey != null && !apiKey.isBlank()) {
                         headers.set("x-api-key", apiKey);
                     }
@@ -902,10 +913,11 @@ public class GenericAnthropicChatService {
     /**
      * 可重试判定 —— 与 OpenAI 侧同一口径（四类可恢复失败）。
      *
-     * <p>这段逻辑纯粹基于异常类型与 HTTP 状态码，本身与协议无关。
-     * 本阶段按保守方式复制一份而不抽公共工具：抽取要改动刚验证过的 OpenAI 链路，
-     * 而两边都稳定之后再合并的成本更低。若此处与 OpenAI 侧出现口径差异，
-     * 那才是真正该抽取的信号。
+     * <p>这段逻辑纯粹基于异常类型与 HTTP 状态码，本身与协议无关，与
+     * {@code AbstractUpstreamChatService} 里那份目前逐字节相同。刷意不抽公共工具：
+     * 抽取要改动已验证的 OpenAI 链路，而两份相同的代价只是重复。
+     * <strong>抽取的触发信号是两侧出现口径差异</strong>（那才说明有一侧被遗忘了），
+     * 而不是「现在两份一样所以应该合并」。
      */
     private static boolean isRetryableFailure(Throwable failure) {
         if (failure instanceof WebClientRequestException) {

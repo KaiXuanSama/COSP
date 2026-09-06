@@ -95,8 +95,13 @@ class ProtocolDispatchManagerTests {
 
         assertThat(ProviderProtocolSupport.of(provider)).isEmpty();
         assertThatThrownBy(() -> manager.dispatch(WireProtocol.OPENAI, provider))
+                // 独立类型让控制器能精确识别并给 400；仍是 IllegalStateException 的子类，
+                // 因此任何只认父类型的兜底逻辑行为不变。
+                .isInstanceOf(NoSupportedProtocolException.class)
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("未声明支持任何线路协议");
+                .hasMessageContaining("未声明支持任何线路协议")
+                // 消息要指向可操作的动作，而不是只陈述状态。
+                .hasMessageContaining("至少勾选一种协议");
     }
 
     /** 字段缺失回退为全集，等同 V8.8 之前的行为；不与显式空集合混淆。 */

@@ -19,14 +19,15 @@ import java.util.Set;
  *   <li><strong>同名协议优先</strong> —— 供应商支持下游同名协议时一律直连。
  *       两种都支持时也走这条，因为直连不经翻译、无信息损耗。</li>
  *   <li>否则挑供应商支持的其它协议并标记需要翻译。</li>
- *   <li>供应商一种都不支持时抛异常（当前的乐观假设下不可达，但规则要完备）。</li>
+ *   <li>供应商一种都不支持时抛 {@link NoSupportedProtocolException}。</li>
  * </ol>
  *
- * <h2>为何在无事可调的阶段就建这个类</h2>
- * 第一阶段所有供应商都被乐观地认为支持两种协议，规则 1 恒成立，本类的输出永远是直连 ——
- * 删掉它功能不变。留着的理由是接缝：若此刻不把决策点独立出来，
- * 届时加翻译就会在 {@code ChatCompletionService} 与控制器里长出协议分支，
- * 两条链各自分叉之后再往中间塞一层，改动面远大于现在建好。
+ * <h2>三条规则现在都可达</h2>
+ * V8.8 把协议支持落库之后本类不再是纯接缝：规则 2 由「只勾了一种协议、下游打另一个端点」
+ * 触发，规则 3 由显式空集合触发。规则 2 的两个方向<strong>处境不同</strong> ——
+ * 下游 OpenAI + 上游 Anthropic（O2A 去程 + A2O 回程）已实现并实测，
+ * 反方向仍由调用方抛 {@link ProtocolTranslationNotSupportedException}。
+ * 本类不区分这个差异：它只回答「要不要翻译」，谁有实现是调用方的事。
  *
  * <p>路由与协议是<strong>两个独立维度</strong>：{@code ProviderRouteResolver} 先按模型名
  * 选出供应商（规则不变，无前缀模型仍要求唯一匹配），本类再判断协议怎么走。
@@ -44,7 +45,7 @@ public class ProtocolDispatchManager {
      * @param downstreamProtocol 下游使用的协议（由它打的端点决定）
      * @param provider           已由路由解析器选出的目标供应商
      * @return 调度结论
-     * @throws IllegalStateException 供应商未声明支持任何协议
+     * @throws NoSupportedProtocolException 供应商未声明支持任何协议
      */
     public ProtocolDispatchDecision dispatch(WireProtocol downstreamProtocol,
                                              ProviderRuntimeConfiguration provider) {
@@ -56,12 +57,14 @@ public class ProtocolDispatchManager {
         }
 
         // 规则 2：下游协议不被支持，改用供应商支持的其它协议并标记需要翻译。
-        // V8.8 协议支持落库后本分支可达：用户只勾了 OpenAI 而下游打 /v1/messages 就会走到这里。
-        // TODO 调用方（ChatCompletionService 等）收到 translationNeeded=true 时抛
-        //  ProtocolTranslationNotSupportedException；待 ProtocolTranslator 有实现后，
-        //  改为按本结论挑选对应翻译器并把它套在上游服务外侧（装饰器，不进重试内侧）。
-        //  请求侧的字段映射、丢弃清单与两条不变式见
-        //  docs/PROTOCOL_TRANSLATION_CONTRACT.md（已调研 cc-switch / sub2api / new-api 三家实现）。
+        //
+        // 本类只给结论，不判断该组合有没有实现 —— 那是调用方的事，且两个方向的状态不同：
+        //   下游 OPENAI + 上游 ANTHROPIC：ChatCompletionService 已挂 O2A 去程 + A2O 回程；
+        //   下游 ANTHROPIC + 上游 OPENAI：MessagesService 抛 ProtocolTranslationNotSupportedException。
+        // 翻译器一律套在上游服务外侧（装饰器），因而在 retryWhen 之外 ——
+        // 空响应判定与落库看到的必须是上游原生形态。
+        // 契约见 docs/PROTOCOL_TRANSLATION_CONTRACT.md（请求侧）与
+        // docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md（响应侧）。
         for (WireProtocol candidate : WireProtocol.values()) {
             if (supported.contains(candidate)) {
                 log.info("供应商 {} 不支持下游协议 {}，改用 {} 并需要翻译",
@@ -70,9 +73,11 @@ public class ProtocolDispatchManager {
             }
         }
 
-        // 规则 3：一种都不支持。乐观假设下不可达，但不留静默失败的口子 ——
-        // 字段落库后若被配成空集合，这里要能明确报出来而不是让调用方拿到 null。
-        throw new IllegalStateException(
-                "供应商 " + provider.providerKey() + " 未声明支持任何线路协议，无法调度");
+        // 规则 3：一种都不支持。用户把协议全部取消勾选就会走到这里 ——
+        // 要能明确报出来而不是让调用方拿到 null。
+        // 用独立异常类型（而非裸 IllegalStateException）是为了让控制器能精确识别并给
+        // 400 + 可操作消息；直接判 IllegalStateException 会把任何库抛的同类异常
+        // 一并译成「协议没配」。
+        throw new NoSupportedProtocolException(provider.providerKey());
     }
 }

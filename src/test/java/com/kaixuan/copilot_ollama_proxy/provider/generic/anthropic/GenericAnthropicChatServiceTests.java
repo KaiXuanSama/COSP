@@ -165,7 +165,9 @@ class GenericAnthropicChatServiceTests {
      * 同时发送两种认证头形态。
      *
      * <p>官方用 {@code x-api-key}，多数 OpenAI 兼容中转站沿用
-     * {@code Authorization: Bearer} —— 当前两个都给以兼容两类上游，见服务里的 TODO。
+     * {@code Authorization: Bearer}，两个都给以兼容两类上游。DeepSeek 与 MiMo
+     * 已实测接受两头并存；收敛成单一形态需要先拿到「严格上游因多余认证头而拒绝」的反例，
+     * 详见服务里 {@code buildWebClient} 的说明。
      */
     @Test
     void bothAuthenticationHeaderStylesAreSent() {

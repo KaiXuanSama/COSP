@@ -161,6 +161,9 @@ public class ProviderModelDiscoveryService {
      * <p>两个头都只在缺失时设置，因此供应商自定义头规则（已在 {@code applyHeaders} 里生效）
      * 仍能覆盖它们 —— 某些中转站要求特定版本号。
      */
+    // TODO(待决策) 双认证头是否收敛为单一形态。本处是第二份副本，
+    //  已知与未知的完整记录在
+    //  GenericAnthropicChatService.buildWebClient 那一处；收敛时两处同改。
     private void applyProtocolHeaders(HttpHeaders headers, String apiKey, WireProtocol protocol) {
         if (protocol != WireProtocol.ANTHROPIC) {
             return;

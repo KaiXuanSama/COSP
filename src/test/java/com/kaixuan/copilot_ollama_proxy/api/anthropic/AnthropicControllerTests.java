@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.api.anthropic;
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
 import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import org.junit.jupiter.api.BeforeEach;
@@ -240,6 +241,34 @@ class AnthropicControllerTests {
                         org.hamcrest.Matchers.containsString("ANTHROPIC")))
                 .jsonPath("$.error.message").value(
                         org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接")));
+    }
+
+    /**
+     * 供应商一个协议都没勾时给 400 并点名该去做什么。
+     *
+     * <p>这条路径此前是 WebFlux 默认 500：{@code dispatch(...)} 在应用服务方法体里同步执行，
+     * 异常在 Mono 组装期就逃出了控制器，{@code onErrorResume} 不在链上。
+     * 服务层加 defer 之后才有本用例断言的形态。
+     *
+     * <p>与「未声明支持某协议」分开是因为可操作的动作不同：那条可以选「勾上该协议」
+     * 或「换供应商」，这条只有「至少勾一个」。
+     */
+    @Test
+    void providerWithoutAnyProtocolReturnsBadRequestInsteadOfServerError() {
+        given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                .willReturn(Mono.error(new NoSupportedProtocolException("relay-x")));
+
+        webTestClient.post().uri("/v1/messages")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"model\":\"claude-x\",\"max_tokens\":100,\"messages\":[]}")
+                .exchange()
+                .expectStatus().isEqualTo(400)
+                .expectBody()
+                .jsonPath("$.type").isEqualTo("error")
+                .jsonPath("$.error.message").value(org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("relay-x"),
+                        org.hamcrest.Matchers.containsString("至少勾选一种协议"),
+                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接"))));
     }
 
     // ==================== 流式 ====================

@@ -3,7 +3,9 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.RequestTranslationException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ResponseTranslationException;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
@@ -207,6 +209,20 @@ public class OpenAiController {
                         return Mono.just(ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
                                 .body(openAiErrorBody(protocolException.getMessage(), "invalid_request_error")));
                     }
+                    // 协议一个都没勾：同样是本地配置问题，重试无益。
+                    NoSupportedProtocolException noProtocol = findNoSupportedProtocolException(ex);
+                    if (noProtocol != null) {
+                        log.warn("供应商未配置任何协议 [{}]: {}", model, noProtocol.getMessage());
+                        return Mono.just(ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
+                                .body(openAiErrorBody(noProtocol.getMessage(), "invalid_request_error")));
+                    }
+                    // 请求翻译失败：下游请求本身无法表达成上游协议，消息里已带字段路径。
+                    RequestTranslationException requestTranslation = findRequestTranslationException(ex);
+                    if (requestTranslation != null) {
+                        log.warn("请求翻译失败 [{}]: {}", model, requestTranslation.getMessage());
+                        return Mono.just(ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
+                                .body(openAiErrorBody(requestTranslation.getMessage(), "invalid_request_error")));
+                    }
                     // 透传上游错误响应（重试耗尽时 WebClientResponseException 被包装在 RetryExhaustedException 中，需要解包）
                     WebClientResponseException responseException = findWebResponseException(ex);
                     if (responseException != null) {
@@ -320,6 +336,23 @@ public class OpenAiController {
                         log.warn("协议不可用 [{}]: {}", model, protocolException.getMessage());
                         return Flux.just(ServerSentEvent.<String>builder(
                                 openAiErrorBody(protocolException.getMessage(), "invalid_request_error"))
+                                .event("error").build());
+                    }
+                    // 协议一个都没勾：同非流式。
+                    NoSupportedProtocolException noProtocol = findNoSupportedProtocolException(error);
+                    if (noProtocol != null) {
+                        log.warn("供应商未配置任何协议 [{}]: {}", model, noProtocol.getMessage());
+                        return Flux.just(ServerSentEvent.<String>builder(
+                                openAiErrorBody(noProtocol.getMessage(), "invalid_request_error"))
+                                .event("error").build());
+                    }
+                    // 请求翻译失败：同非流式。注意这里能走到是因为服务层的 Flux.defer
+                    // 把组装期异常转成了 onError 信号；否则它会逃出控制器变成 500 JSON。
+                    RequestTranslationException requestTranslation = findRequestTranslationException(error);
+                    if (requestTranslation != null) {
+                        log.warn("请求翻译失败 [{}]: {}", model, requestTranslation.getMessage());
+                        return Flux.just(ServerSentEvent.<String>builder(
+                                openAiErrorBody(requestTranslation.getMessage(), "invalid_request_error"))
                                 .event("error").build());
                     }
                     // 透传上游错误响应（解包重试耗尽包装）
@@ -621,16 +654,6 @@ public class OpenAiController {
     }
 
     /**
-     * 从异常链中查找协议不可用异常。
-     *
-     * <p>必须在解包 {@code WebClientResponseException} <strong>之前</strong>判定：本异常代表
-     * 「请求根本没发出去」，若落入兜底分支会被译成「无法连接到上游服务」，而上游并未被尝试连接 ——
-     * 这会把排查方向指向网络与上游可用性，而真正要改的是供应商的协议勾选。
-     *
-     * <p>用 400 而非 502：失败源于本地配置与请求的组合，不是网关上游故障，
-     * 且重试多少次结果都一样 —— 5xx 会诱导客户端重试。
-     */
-    /**
      * 从异常链里找出响应翻译异常。
      *
      * <p>与 {@link #findProtocolException} 同一个理由需要解包：
@@ -647,11 +670,56 @@ public class OpenAiController {
         return null;
     }
 
+    /**
+     * 从异常链中查找协议不可用异常。
+     *
+     * <p>必须在解包 {@code WebClientResponseException} <strong>之前</strong>判定：本异常代表
+     * 「请求根本没发出去」，若落入兜底分支会被译成「无法连接到上游服务」，而上游并未被尝试连接 ——
+     * 这会把排查方向指向网络与上游可用性，而真正要改的是供应商的协议勾选。
+     *
+     * <p>用 400 而非 502：失败源于本地配置与请求的组合，不是网关上游故障，
+     * 且重试多少次结果都一样 —— 5xx 会诱导客户端重试。
+     */
     private ProtocolTranslationNotSupportedException findProtocolException(Throwable throwable) {
         Throwable current = throwable;
         while (current != null) {
             if (current instanceof ProtocolTranslationNotSupportedException protocolException) {
                 return protocolException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    /**
+     * 从异常链里找出「供应商一个协议都没勾」异常。
+     *
+     * <p>不直接 catch {@code IllegalStateException}：那会把 Reactor / Jackson 或任何库抛的
+     * 同类异常一并译成「协议没配」，那种误导比笼统的 500 更难排查。
+     */
+    private NoSupportedProtocolException findNoSupportedProtocolException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof NoSupportedProtocolException noProtocol) {
+                return noProtocol;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    /**
+     * 从异常链里找出请求翻译异常。
+     *
+     * <p>它与 {@link #findProtocolException} 都回 400，但排查方向相反：那个要改<strong>配置</strong>，
+     * 这个要改<strong>请求</strong>。异常消息里已带 {@code messages[2].role} 这样的字段路径，
+     * 直接透传即可 —— 只说「翻译失败」等于让调用方去猜。
+     */
+    private RequestTranslationException findRequestTranslationException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof RequestTranslationException translationException) {
+                return translationException;
             }
             current = current.getCause();
         }
