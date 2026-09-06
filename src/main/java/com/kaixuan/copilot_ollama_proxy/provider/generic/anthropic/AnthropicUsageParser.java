@@ -16,25 +16,38 @@ import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
  * <p><strong>但输出契约共享</strong>：两侧都产出 {@link UsageTokens}，因此落库无需分支 ——
  * 这正是「解析各写一份、结构归一化」的分界。
  *
- * <h2>归一化的是结构，不是口径</h2>
- * {@link UsageTokens} 统一了<strong>字段形状</strong>，但没有统一<strong>语义</strong>：
- * 本类产出的 {@code promptTokens} 是 Anthropic 的 {@code input_tokens}（<strong>不含缓存</strong>），
- * 而 {@code OpenAiUsageParser} 产出的是 OpenAI 的 {@code prompt_tokens}（<strong>含缓存</strong>）。
- * 于是 {@code api_call_usage.prompt_tokens} 一列承载两种口径，消费方必须知道该行的协议
- * 才能解读 —— 前端的缓存占比因此按 {@code downstream_protocol} 分两支
- * （{@code frontend/src/features/call-log/cacheHitRate.ts}）。
+ * <h2>口径也归一：{@code promptTokens} 是总输入（含缓存）</h2>
+ * {@code api_call_usage} 的三个 token 列是跨协议共用的度量列，口径必须固定：
+ * <pre>
+ * prompt_tokens = 本次调用的总输入 token，<strong>包含</strong>缓存命中部分
+ * </pre>
+ * OpenAI 的 {@code prompt_tokens} 本来就是这个形态，而 Anthropic 把缓存读取排在
+ * {@code input_tokens} <strong>之外</strong>单独计量，所以本类在 {@link #toTokens} 里把
+ * {@code cache_read_input_tokens} 加回去。缓存命中的 token 确实是真实输入 ——
+ * 模型每轮都要处理它们，缓存只是让它便宜，不是让它不存在。
  *
- * <h2>本类产出的是上游口径，跨协议时由 DownstreamLogView 换算</h2>
- * 本类被 {@code GenericAnthropicChatService} <strong>无条件</strong>调用，不看下游是谁 ——
- * 这是刻意的：本类的职责是「如实解析 Anthropic 报文」，口径转换属于另一件事。
+ * <h2>为何换算在解析层而不在落库层</h2>
+ * 这个换算<strong>只依赖上游协议</strong>，与下游是谁无关：无论这条请求是
+ * Anthropic 直连还是 A2O 翻译，上游都是 Anthropic、都差那一份缓存。既然如此，
+ * 它就属于「如实解析 Anthropic 报文」这个职责的一部分。
  *
- * <p>落库前会过 {@code DownstreamLogView.viewUsage(...)}：直连时不改写（两侧口径本就一致），
- * A2O 时由 {@code AnthropicToOpenAiResponseTranslator.translateUsageForLog} 把缓存加回
- * {@code promptTokens}，使落库值与下游客户端实际收到的一致。
+ * <p>早期的做法是只在 A2O 路线上换算（{@code DownstreamLogView.usageRewriter} +
+ * {@code AnthropicToOpenAiResponseTranslator.translateUsageForLog}），前提是「Anthropic
+ * 直连要的就是不含缓存的 {@code input_tokens}」。那个前提已被推翻：一列承载两种
+ * 口径让每个消费方都得先知道该行的协议，而汇总查询根本做不到这一点
+ * （SQL 里一 {@code SUM} 就把两种定义混在一起了）。
  *
- * <p><strong>不要在本类里改口径</strong> —— 那会连带弄坏 Anthropic 直连（那条线路下游要的
- * 就是不含缓存的 {@code input_tokens}）。详见
+ * <p>换算上提后两个副作用：那条落库侧的换算管道整体删除（留着只会诱人
+ * 再加一遍缓存）；O2A 也不再需要任何 usage 接线 —— 那条线路上游是 OpenAI，
+ * 本来就产出归一口径。
+ *
+ * <h2>已知精度损失</h2>
+ * {@code cache_creation_input_tokens}（本次写入缓存的量，同样在 {@code input_tokens}
+ * 之外）<strong>不计入</strong> {@code promptTokens}，因为 {@link UsageTokens} 没有它的位置。
+ * 发生缓存写入时落库值会略低于真实总输入。补它要给表加一列，见
  * {@code docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md} 第 9.4 节。
+ * <strong>不要为它扩宽</strong> {@link UsageTokens} —— 那个 record 是多协议共用的输出契约，
+ * 为一侧的私有字段加成员会把协议细节漏到所有消费方。
  *
  * <h2>null 与 0 的区分必须保留</h2>
  * 与 OpenAI 侧同一约束：{@code null} 表示上游未提供该字段，{@code 0} 表示上游
@@ -145,20 +158,39 @@ public final class AnthropicUsageParser {
     }
 
     /**
-     * 把 Anthropic usage 对象映射为归一化指标。
+     * 把 Anthropic usage 对象映射为归一口径的指标。
      *
-     * <p>缓存 token 取 {@code cache_read_input_tokens}（真正的缓存命中读取量），
-     * <strong>不取</strong> {@code cache_creation_input_tokens} —— 后者是「本次写入缓存
-     * 的量」，属于成本项而非命中项，混入会让缓存命中率虚高。
+     * <h2>{@code promptTokens} 是 {@code input_tokens + cache_read_input_tokens}</h2>
+     * Anthropic 把缓存读取排在 {@code input_tokens} 之外，而本列的口径是「总输入含缓存」，
+     * 所以这里加回去。理由与不在落库层做这件事的原因见类注释。
+     *
+     * <h2>缓存 token 只取 cache_read，不取 cache_creation</h2>
+     * 后者是「本次写入缓存的量」，属于成本项而非命中项，混入会让缓存命中率虚高。
+     * 它同样不计入 {@code promptTokens} —— 那是个已知精度损失，见类注释。
      */
     private static UsageTokens toTokens(JsonNode usage) {
         if (usage == null || !usage.isObject()) {
             return UsageTokens.EMPTY;
         }
+        Integer cacheRead = intIfPresent(usage, "cache_read_input_tokens");
         return new UsageTokens(
-                intIfPresent(usage, "input_tokens"),
+                sumOrNull(intIfPresent(usage, "input_tokens"), cacheRead),
                 intIfPresent(usage, "output_tokens"),
-                intIfPresent(usage, "cache_read_input_tokens"));
+                cacheRead);
+    }
+
+    /**
+     * 两个可空计数相加，两者均缺失时保持 {@code null}。
+     *
+     * <p>{@code null} 不能当 0 参与相加：那会把「上游未提供」造成「上游报告了 0」，
+     * 而缓存占比靠这个区分区分「—」与「0.0%」。但只有一方缺失时可以按 0 参与 ——
+     * 那时另一方已经证明了「上游报告了输入侧数据」，和值仍然是个真实量。
+     */
+    private static Integer sumOrNull(Integer left, Integer right) {
+        if (left == null && right == null) {
+            return null;
+        }
+        return (left == null ? 0 : left) + (right == null ? 0 : right);
     }
 
     /** 仅当字段存在且为整数时返回值，否则 null —— 保住 null 与 0 的区分。 */

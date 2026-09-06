@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslationContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -149,57 +148,17 @@ public class AnthropicToOpenAiResponseTranslator implements ProtocolTranslator {
         return new TranslatedChunkLog(translated, frameCounts);
     }
 
-    /**
-     * 把上游口径的 token 指标换算成下游口径，供<strong>落库</strong>使用。
+    /*
+     * 这里曾有一个 translateUsageForLog(UsageTokens)，把 cache_read 加回 promptTokens
+     * 供 A2O 落库使用。它已被删除，因为那个换算被上提到了 AnthropicUsageParser.toTokens。
      *
-     * <h2>为何落库也要换算</h2>
-     * {@code api_call_usage} 的三个 token 列是跨协议共用的度量列，前端与概览页求和
-     * 都按<strong>下游协议</strong>解读它们（那才是用户在自己客户端里看到的数）。
-     * 落上游原样会让 A2O 行的输入 token 比下游实际收到的小一到两个数量级 ——
-     * 实测同一次调用下游收到 22583，日志里记着 55。
+     * 上提的理由：换算只依赖上游协议，与下游是谁无关 —— Anthropic 直连与 A2O 的上游
+     * 都是 Anthropic、都差那一份缓存。放在这里意味着只有翻译路线被修正，直连路线继续
+     * 落不含缓存的值，于是 api_call_usage.prompt_tokens 一列承载两种定义，
+     * 而汇总查询无法按行区分协议（SQL 里一 SUM 就混在一起了）。
      *
-     * <p>与 {@link #translateChunksForLog} 同一动机：落库在上游服务内部，翻译在其外侧，
-     * 因此「下游到底看到了什么」必须由本类显式提供。契约第 9.4 节。
-     *
-     * <h2>换算式</h2>
-     * <pre>
-     * prompt_tokens = input_tokens + cache_read_input_tokens
-     * </pre>
-     * Anthropic 把缓存读取排在 {@code input_tokens} 之外单独计量，OpenAI 则算在
-     * {@code prompt_tokens} 之内 —— 这与 {@link AnthropicUsageAccumulator} 对<strong>出站报文</strong>
-     * 做的换算是同一件事，只是那里能拿到完整 usage 节点，这里只能拿到已归一化的三元组。
-     *
-     * <p><strong>已知精度损失</strong>：{@code cache_creation_input_tokens}
-     * （本次写入缓存的量，同样在 {@code input_tokens} 之外）不在
-     * {@link UsageTokens} 的三个字段里，因此进不了这里的换算。出站报文<strong>已经</strong>
-     * 把它算进 {@code prompt_tokens}（见 {@link AnthropicUsageAccumulator#toOpenAiUsage}），
-     * 所以发生缓存写入时落库值会略低于下游实际收到的值。
-     *
-     * <p>补齐它需要给 {@code api_call_usage} 加一列独立记 {@code cache_creation}，
-     * 那与「四处 {@code SUM(prompt_tokens)} 混单位」是同一个待决事项，见契约第 9.4 节。
-     * 不为此扩宽 {@link UsageTokens} —— 那个 record 是三种协议共用的输出契约，
-     * 为一侧的私有字段加成员会把协议细节漏到所有消费方。
-     *
-     * <p>{@code cachedTokens} 原样透传：它在两种协议里都是「其中多少来自缓存命中」，
-     * 语义一致，不需要换算。
-     *
-     * @param upstreamTokens Anthropic 口径的指标（{@code promptTokens} 不含缓存）
-     * @return OpenAI 口径的指标（{@code promptTokens} 含缓存）
+     * 不要在此处重建它：解析层已经加过缓存，再加一遍等于把缓存计两次。
+     * 出站报文的换算仍在 AnthropicUsageAccumulator（那里读完整 usage 节点，
+     * 且额外算上 cache_creation），两者是不同入口、不同精度，不是重复实现。
      */
-    public static UsageTokens translateUsageForLog(UsageTokens upstreamTokens) {
-        if (upstreamTokens == null || upstreamTokens.isEmpty()) {
-            return UsageTokens.EMPTY;
-        }
-        Integer input = upstreamTokens.promptTokens();
-        Integer cacheRead = upstreamTokens.cachedTokens();
-        // null 不参与相加：null 表示上游未提供，与 0 是两回事，把 null 当 0 相加
-        // 会造出一个「上游报告了这个值」的假象。两者都缺失时保持 null。
-        Integer prompt;
-        if (input == null && cacheRead == null) {
-            prompt = null;
-        } else {
-            prompt = (input == null ? 0 : input) + (cacheRead == null ? 0 : cacheRead);
-        }
-        return new UsageTokens(prompt, upstreamTokens.completionTokens(), cacheRead);
-    }
 }

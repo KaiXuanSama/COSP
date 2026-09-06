@@ -244,7 +244,7 @@ public class GenericAnthropicChatService {
                     // ttfb 传 null：非流式没有首字概念，与 OpenAI 侧一致。
                     saveUsage(logId, providerKey, modelName, false,
                             AnthropicUsageParser.extractUsageRawJson(objectMapper, entity.getBody()),
-                            null, logView);
+                            null);
                 })
                 // 失败往返：每次失败（含被 retry 吞掉的中间失败）都各自落一条。
                 .doOnError(e -> {
@@ -453,7 +453,7 @@ public class GenericAnthropicChatService {
                                 capturedRespHeaders.get(), statusCode, logChunks, attemptStart.get(), logView);
                         long ttfb = ttfbMs.get();
                         saveUsage(logId, providerKey, modelName, true, lastUsageRaw.get(),
-                                ttfb < 0 ? null : (int) ttfb, usageAccumulator.get(), logView);
+                                ttfb < 0 ? null : (int) ttfb, usageAccumulator.get());
                     }
                 });
     }
@@ -1027,9 +1027,9 @@ public class GenericAnthropicChatService {
 
     /** 非流式用量写入：从原始 usage JSON 解析。 */
     private void saveUsage(Long logId, String providerKey, String modelName, boolean stream,
-                           String usageRaw, Integer ttfbMs, DownstreamLogView logView) {
+                           String usageRaw, Integer ttfbMs) {
         saveUsage(logId, providerKey, modelName, stream, usageRaw, ttfbMs,
-                AnthropicUsageParser.parseUsageObject(objectMapper, usageRaw), logView);
+                AnthropicUsageParser.parseUsageObject(objectMapper, usageRaw));
     }
 
     /**
@@ -1050,13 +1050,11 @@ public class GenericAnthropicChatService {
      * 的调用本就不写用量行，若按「两张表都写了」判定，这些记录永远不会实时出现在前端。
      */
     private void saveUsage(Long logId, String providerKey, String modelName, boolean stream,
-                           String usageRaw, Integer ttfbMs, UsageTokens tokens,
-                           DownstreamLogView logView) {
+                           String usageRaw, Integer ttfbMs, UsageTokens tokens) {
         try {
             if (apiCallUsage == null) return;
             if (usageRaw == null) return;
-            apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw,
-                    logView.viewUsage(tokens), ttfbMs);
+            apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw, tokens, ttfbMs);
         } finally {
             publishCallRecorded();
         }

@@ -134,11 +134,11 @@ function formatCallType(detail: DetailItem): string {
 }
 
 /**
- * 缓存命中占比。不落库为独立列（派生值），此处前端计算；口径按下游协议区分，
- * 算法与协议差异说明见 `features/call-log/cacheHitRate.ts` —— 列表页共用同一份。
+ * 缓存命中占比。不落库为独立列（派生值），此处前端计算；口径由后端统一，
+ * 算法说明见 `features/call-log/cacheHitRate.ts` —— 列表页共用同一份。
  */
 function cacheHitRateOf(usage: UsageDetail | null): string {
-  return formatCacheHitRate(usage, props.detail.downstream_protocol)
+  return formatCacheHitRate(usage)
 }
 
 // ── usage 原始数据浮窗 ──────────────────────────────────

@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ResponseTranslationException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslationContext;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -262,167 +261,15 @@ class AnthropicToOpenAiResponseTranslatorTests {
         }
     }
 
-    // ==================== 落库 usage 换算 ====================
-
-    /**
-     * 落库侧的 usage 换算（契约第 9.4 节）。
+    /*
+     * 这里曾有一组 UsageForLog 用例，验证 translateUsageForLog 把 cache_read
+     * 加回 promptTokens。那个方法已删除 —— 换算被上提到 AnthropicUsageParser.toTokens，
+     * 因为它只依赖上游协议、与下游是谁无关。对应用例现在在
+     * AnthropicPayloadAndUsageTests.Usage解析 里。
      *
-     * <p>与出站报文的换算是同一件事，但入口不同：出站拿到的是完整 usage 节点，
-     * 落库拿到的是已归一化的 {@link UsageTokens} 三元组。
+     * 出站报文的 usage 换算仍归本类管（AnthropicUsageAccumulator，且额外算上
+     * cache_creation），那部分用例在下面的流式与非流式分组里。
      */
-    @Nested
-    @DisplayName("落库 usage 换算成下游口径")
-    class UsageForLog {
-
-        /**
-         * 落库的 {@code prompt_tokens} 必须是<strong>下游实际收到</strong>的那个数。
-         *
-         * <p>这是本次修复的核心缺陷：实测同一次 A2O 调用，下游收到 22583，
-         * 日志里却记着 55 —— 于是缓存占比算成 {@code 22528/55 = 40960%}。
-         */
-        @Test
-        void promptTokensIncludeCacheSoDownstreamSeesTheSameNumber() {
-            UsageTokens upstream = new UsageTokens(55, 279, 22528);
-
-            UsageTokens forLog = AnthropicToOpenAiResponseTranslator.translateUsageForLog(upstream);
-
-            assertThat(forLog.promptTokens()).isEqualTo(22583);
-            assertThat(forLog.completionTokens()).isEqualTo(279);
-            // 缓存命中量在两种协议里语义一致，原样透传。
-            assertThat(forLog.cachedTokens()).isEqualTo(22528);
-        }
-
-        /** 换算后缓存占比必然落在 0~100%，这正是前端那个百分比的分母来源。 */
-        @Test
-        void cacheHitRateBecomesRepresentableAfterTranslation() {
-            UsageTokens forLog = AnthropicToOpenAiResponseTranslator
-                    .translateUsageForLog(new UsageTokens(55, 279, 22528));
-
-            double rate = forLog.cachedTokens() / (double) forLog.promptTokens();
-
-            assertThat(rate).isBetween(0.0, 1.0);
-        }
-
-        /**
-         * null 不能当 0 参与相加。
-         *
-         * <p>null 表示上游未提供该字段，0 表示上游报告了真实零值 —— 把 null 折成 0
-         * 会造出「上游报告了这个值」的假象，毁掉缓存占比「—」与「0.0%」的区分。
-         */
-        @Test
-        void missingCacheFieldLeavesPromptUnchanged() {
-            UsageTokens forLog = AnthropicToOpenAiResponseTranslator
-                    .translateUsageForLog(new UsageTokens(100, 20, null));
-
-            assertThat(forLog.promptTokens()).isEqualTo(100);
-            assertThat(forLog.cachedTokens()).isNull();
-        }
-
-        @Test
-        void missingInputWithPresentCacheStillProducesASum() {
-            UsageTokens forLog = AnthropicToOpenAiResponseTranslator
-                    .translateUsageForLog(new UsageTokens(null, 20, 300));
-
-            // 输入缺失但缓存有值：分母仍然有效（全部输入都来自缓存命中）。
-            assertThat(forLog.promptTokens()).isEqualTo(300);
-        }
-
-        /** 两个输入侧字段都缺失时保持 null，不能凭空造出 0。 */
-        @Test
-        void bothInputFieldsMissingKeepsPromptNull() {
-            UsageTokens forLog = AnthropicToOpenAiResponseTranslator
-                    .translateUsageForLog(new UsageTokens(null, 20, null));
-
-            assertThat(forLog.promptTokens()).isNull();
-            assertThat(forLog.completionTokens()).isEqualTo(20);
-        }
-
-        /** 真实零值必须活下来：0 缓存 + 有输入 → 占比 0.0%，而非「—」。 */
-        @Test
-        void realZeroCacheSurvivesTranslation() {
-            UsageTokens forLog = AnthropicToOpenAiResponseTranslator
-                    .translateUsageForLog(new UsageTokens(100, 20, 0));
-
-            assertThat(forLog.promptTokens()).isEqualTo(100);
-            assertThat(forLog.cachedTokens()).isZero();
-        }
-
-        @Test
-        void emptyAndNullInputsYieldEmpty() {
-            assertThat(AnthropicToOpenAiResponseTranslator.translateUsageForLog(null))
-                    .isEqualTo(UsageTokens.EMPTY);
-            assertThat(AnthropicToOpenAiResponseTranslator.translateUsageForLog(UsageTokens.EMPTY))
-                    .isEqualTo(UsageTokens.EMPTY);
-        }
-
-        /**
-         * 换算是幂等的<strong>吗？不是</strong> —— 这一条钉住「只能换算一次」。
-         *
-         * <p>重复施加会把缓存加两遍。落库路径上换算点只有一个
-         * （{@code DownstreamLogView.viewUsage}），本测试防止将来有人在
-         * 上游服务里再补一次「顺手」的换算。
-         */
-        @Test
-        void translationIsNotIdempotentSoItMustBeAppliedExactlyOnce() {
-            UsageTokens once = AnthropicToOpenAiResponseTranslator
-                    .translateUsageForLog(new UsageTokens(55, 279, 22528));
-            UsageTokens twice = AnthropicToOpenAiResponseTranslator.translateUsageForLog(once);
-
-            assertThat(once.promptTokens()).isEqualTo(22583);
-            assertThat(twice.promptTokens()).isEqualTo(45111);
-        }
-
-        /**
-         * 落库值与出站报文一致（在无缓存写入时）。
-         *
-         * <p>两者走的是不同代码路径 —— 出站是 {@code AnthropicUsageAccumulator}
-         * 读完整 usage 节点，落库是本方法读三元组 —— 必须给出同一个数，
-         * 否则「日志里的数就是客户端看到的数」这个契约就不成立。
-         */
-        @Test
-        void loggedPromptMatchesOutboundPayloadWhenNoCacheCreation() throws Exception {
-            String upstream = """
-                    {"id":"msg_1","model":"claude-x","stop_reason":"end_turn",
-                     "content":[{"type":"text","text":"好"}],
-                     "usage":{"input_tokens":55,"output_tokens":279,
-                              "cache_read_input_tokens":22528,"cache_creation_input_tokens":0}}
-                    """;
-            int outbound = translateNonStream(upstream).path("usage").path("prompt_tokens").asInt();
-
-            // 落库侧从归一化三元组出发（AnthropicUsageParser 的产出形态）。
-            int logged = AnthropicToOpenAiResponseTranslator
-                    .translateUsageForLog(new UsageTokens(55, 279, 22528))
-                    .promptTokens();
-
-            assertThat(logged).isEqualTo(outbound);
-        }
-
-        /**
-         * 已知精度损失：{@code cache_creation_input_tokens} 不在
-         * {@link UsageTokens} 里，因此落库值会低于出站值。
-         *
-         * <p>钉住这个差值而非假装它不存在 —— 补齐它需要给 {@code api_call_usage}
-         * 加一列，属于契约第 9.4 节的待决事项。
-         */
-        @Test
-        void cacheCreationIsMissingFromLoggedValueByKnownLimitation() throws Exception {
-            String upstream = """
-                    {"id":"msg_1","model":"claude-x","stop_reason":"end_turn",
-                     "content":[{"type":"text","text":"好"}],
-                     "usage":{"input_tokens":10,"output_tokens":5,
-                              "cache_read_input_tokens":3,"cache_creation_input_tokens":2}}
-                    """;
-            int outbound = translateNonStream(upstream).path("usage").path("prompt_tokens").asInt();
-
-            int logged = AnthropicToOpenAiResponseTranslator
-                    .translateUsageForLog(new UsageTokens(10, 5, 3))
-                    .promptTokens();
-
-            assertThat(outbound).isEqualTo(15);
-            // 差额恰好是 cache_creation_input_tokens。
-            assertThat(logged).isEqualTo(13);
-        }
-    }
 
     // ==================== 流式：帧数不对等 ====================
 

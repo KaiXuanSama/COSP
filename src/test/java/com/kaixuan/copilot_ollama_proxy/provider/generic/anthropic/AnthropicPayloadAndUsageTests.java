@@ -173,7 +173,12 @@ class AnthropicPayloadAndUsageTests {
     @Nested
     class Usage解析 {
 
-        /** 字段名与 OpenAI 全然不同，但输出契约相同。 */
+        /**
+         * 字段名与 OpenAI 全然不同，但输出契约与<strong>口径</strong>都相同。
+         *
+         * <p>{@code promptTokens} 是 {@code input_tokens + cache_read_input_tokens} ——
+         * Anthropic 把缓存读取排在 {@code input_tokens} 之外，而本列的口径是「总输入含缓存」。
+         */
         @Test
         void 非流式响应的顶层usage() {
             String body = """
@@ -184,24 +189,62 @@ class AnthropicPayloadAndUsageTests {
             String raw = AnthropicUsageParser.extractUsageRawJson(mapper, body);
             UsageTokens tokens = AnthropicUsageParser.parseUsageObject(mapper, raw);
 
-            assertThat(tokens.promptTokens()).isEqualTo(100);
+            // 100 + 80；cache_creation 不参与（已知精度损失）。
+            assertThat(tokens.promptTokens()).isEqualTo(180);
             assertThat(tokens.completionTokens()).isEqualTo(20);
             assertThat(tokens.cachedTokens()).isEqualTo(80);
+        }
+
+        /**
+         * 归一口径使缓存占比必然落在 0~100%。
+         *
+         * <p>真实样本：{@code input_tokens} 55、{@code cache_read} 22528。
+         * 不加回时前端算出 {@code 22528/55 = 40960%} —— 那正是本次修复的起因。
+         */
+        @Test
+        void 缓存占比归一后可表达() {
+            UsageTokens tokens = AnthropicUsageParser.parseUsageObject(mapper,
+                    "{\"input_tokens\":55,\"output_tokens\":279,\"cache_read_input_tokens\":22528}");
+
+            assertThat(tokens.promptTokens()).isEqualTo(22583);
+            double rate = tokens.cachedTokens() / (double) tokens.promptTokens();
+            assertThat(rate).isBetween(0.0, 1.0);
+        }
+
+        /**
+         * 换算在解析层而非落库层，因此与下游是谁无关。
+         *
+         * <p>本类被无条件调用（Anthropic 直连与 A2O 共用），所以两条线路拿到的是
+         * 同一个数。早期只在 A2O 上换算，于是一列承载两种定义，而汇总查询
+         * 无法按行区分协议。这条用例钉住「只能换一次、且就在这里换」。
+         */
+        @Test
+        void 换算只依赖上游协议而非下游() {
+            String usage = "{\"input_tokens\":10,\"output_tokens\":5,\"cache_read_input_tokens\":3}";
+
+            UsageTokens once = AnthropicUsageParser.parseUsageObject(mapper, usage);
+
+            assertThat(once.promptTokens()).isEqualTo(13);
+            // 在落库路径上再加一遍会得到 16，那是缓存被计两次。
+            assertThat(once.promptTokens() + once.cachedTokens()).isEqualTo(16);
         }
 
         /**
          * 缓存 token 只取 cache_read，不取 cache_creation。
          *
          * <p>后者是「本次写入缓存的量」，属成本项而非命中项，混入会让命中率虚高。
+         * 它同样不计入 {@code promptTokens} —— {@link UsageTokens} 没有它的位置，
+         * 因此发生缓存写入时落库值略低于真实总输入。
          */
         @Test
-        void 缓存写入量不计入缓存命中() {
+        void 缓存写入量既不计命中也不计输入() {
             String usage = """
                     {"input_tokens":100,"output_tokens":10,"cache_creation_input_tokens":50}""";
 
             UsageTokens tokens = AnthropicUsageParser.parseUsageObject(mapper, usage);
 
             assertThat(tokens.cachedTokens()).isNull();
+            assertThat(tokens.promptTokens()).isEqualTo(100);
         }
 
         /** message_start 的 usage 嵌在 message 下。 */
@@ -269,12 +312,38 @@ class AnthropicPayloadAndUsageTests {
             assertThat(tokens.cachedTokens()).isNull();
         }
 
+        /**
+         * 两个输入侧字段都缺失时 {@code promptTokens} 保持 null。
+         *
+         * <p>不能把两个 null 相加成 0 —— 那会造出「上游报告了 0 输入」的假象，
+         * 而缓存占比靠这个区分区分「—」与「0.0%」。
+         */
+        @Test
+        void 两个输入侧字段都缺失时保持null() {
+            UsageTokens tokens = AnthropicUsageParser.parseUsageObject(mapper,
+                    "{\"output_tokens\":20}");
+
+            assertThat(tokens.promptTokens()).isNull();
+            assertThat(tokens.completionTokens()).isEqualTo(20);
+        }
+
+        /** 只有缓存命中、没有新增输入时，总输入就是缓存量。 */
+        @Test
+        void 输入缺失但缓存有值时仍产出和值() {
+            UsageTokens tokens = AnthropicUsageParser.parseUsageObject(mapper,
+                    "{\"output_tokens\":20,\"cache_read_input_tokens\":300}");
+
+            assertThat(tokens.promptTokens()).isEqualTo(300);
+        }
+
         @Test
         void 上游报告的零值保持为零() {
             UsageTokens tokens = AnthropicUsageParser.parseUsageObject(mapper,
                     "{\"input_tokens\":10,\"cache_read_input_tokens\":0}");
 
             assertThat(tokens.cachedTokens()).isZero();
+            // 0 缓存参与相加不改变总输入。
+            assertThat(tokens.promptTokens()).isEqualTo(10);
         }
 
         @Test
