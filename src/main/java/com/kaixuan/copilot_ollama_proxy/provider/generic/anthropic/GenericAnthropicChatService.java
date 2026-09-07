@@ -515,8 +515,10 @@ public class GenericAnthropicChatService {
      * 刻意不抽公共方法：它依赖三个注入字段，抽出去要传三个参数或再造一个 Bean，
      * 而本身只有二十行。
      *
-     * <p>Anthropic 特有的两点：必须带 {@code anthropic-version} 头；
-     * 认证头是 {@code x-api-key} 而非 {@code Authorization: Bearer}（见下）。
+     * <p>Anthropic 特有的两点：必须带 {@code anthropic-version} 头；鉴权用
+     * {@code x-api-key} 而非 {@code Authorization: Bearer}，后者会被一并删除 ——
+     * 按出站协议装配鉴权头的规则见
+     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders}。
      */
     private WebClient buildWebClient(Map<String, String> capturedHeaders,
                                      ProviderRuntimeConfiguration provider,
@@ -534,31 +536,18 @@ public class GenericAnthropicChatService {
                 .clientConnector(new ReactorClientHttpConnector(capturingHttpClient))
                 .baseUrl(normalizedUrl)
                 .defaultHeaders(headers -> {
-                    // 复用共享的请求头装配（下游头透传白名单、hop-by-hop 排除、
-                    // 供应商头规则含 {apiKey} 占位与删除标记）——
-                    // 这些与协议无关，两侧必须同口径。
+                    // 复用共享的请求头装配（下游头透传白名单、hop-by-hop 排除、按出站协议
+                    // 装配鉴权头、供应商头规则含 {apiKey} 占位与删除标记）。
+                    // 出站协议恒为 ANTHROPIC：本服务只打 Anthropic 端点，因此鉴权装配
+                    // 写 x-api-key 并删掉 Authorization —— 后者在这条链路上是噪音，
+                    // 可能来自下游透传，也可能来自 O2A 翻译路线（下游说 OpenAI、上游走这里）。
                     providerRequestHeaderService.applyHeaders(
-                            headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream);
+                            headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream,
+                            WireProtocol.ANTHROPIC);
                     // Anthropic 必需的版本头。放在 applyHeaders 之后，
                     // 使供应商头规则仍可覆盖它（某些中转站要求特定版本）。
                     if (!headers.containsKey(ANTHROPIC_VERSION_HEADER)) {
                         headers.set(ANTHROPIC_VERSION_HEADER, ANTHROPIC_VERSION_VALUE);
-                    }
-                    // 双认证头：Anthropic 官方用 x-api-key，而多数 OpenAI 兼容中转站转发
-                    // Anthropic 时沿用 Authorization: Bearer。applyHeaders 已设好 Bearer，
-                    // 这里补一个 x-api-key，使两类上游都能通过。
-                    //
-                    // TODO(待决策) 是否收敛为单一形态（或做成可配置）。
-                    //  已知：DeepSeek 与 MiMo 的 Anthropic 端点接受两个头并存（流式与非流式、
-                    //  含多轮工具链，已实测）。
-                    //  未知：是否存在「因多余认证头而拒绝」的严格上游 ——
-                    //  若遇到不明原因的 401/403，优先怀疑这里。
-                    //  决策前提是先拿到上述反例；没有反例就收敛，等于把一个已知可行的
-                    //  兼容策略换成一个需要用户自己选对的配置项。
-                    //  改动面是两处：同一套双头逻辑在
-                    //  ProviderModelDiscoveryService.applyProtocolHeaders 也有一份。
-                    if (!headers.containsKey("x-api-key") && apiKey != null && !apiKey.isBlank()) {
-                        headers.set("x-api-key", apiKey);
                     }
                 })
                 .filter((request, next) -> {

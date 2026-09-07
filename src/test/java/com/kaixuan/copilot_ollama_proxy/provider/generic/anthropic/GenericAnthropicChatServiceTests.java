@@ -162,19 +162,21 @@ class GenericAnthropicChatServiceTests {
     }
 
     /**
-     * 同时发送两种认证头形态。
+     * 只发出站协议认的那一种鉴权头。
      *
-     * <p>官方用 {@code x-api-key}，多数 OpenAI 兼容中转站沿用
-     * {@code Authorization: Bearer}，两个都给以兼容两类上游。DeepSeek 与 MiMo
-     * 已实测接受两头并存；收敛成单一形态需要先拿到「严格上游因多余认证头而拒绝」的反例，
-     * 详见服务里 {@code buildWebClient} 的说明。
+     * <p>本服务的出站协议恒为 Anthropic，因此发 {@code x-api-key} 并删掉
+     * {@code Authorization} —— 后者在这条链路上是噪音，可能来自下游透传，
+     * 也可能来自 O2A 翻译路线。装配规则见
+     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders}；
+     * 需要双头并存的中转站可用请求头规则把 {@code Authorization} 加回来，
+     * 那条出口由 {@code ProviderRequestHeaderServiceTests} 覆盖。
      */
     @Test
-    void bothAuthenticationHeaderStylesAreSent() {
+    void onlyAnthropicAuthenticationHeaderIsSent() {
         realService().exposeMessages(newRequest(), routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
 
-        assertThat(capturedHeaders.get()).containsEntry("Authorization", "Bearer test-key");
         assertThat(capturedHeaders.get()).containsEntry("X-api-key", "test-key");
+        assertThat(capturedHeaders.get()).doesNotContainKey("Authorization");
     }
 
     // ==================== 请求体构造 ====================

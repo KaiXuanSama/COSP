@@ -100,8 +100,8 @@ public class ProviderModelDiscoveryService {
         String requestUrl = providerRequestHeaderService.buildRequestUrl(rawBaseUrl, normalizeModelPullPath(rawModelPullPath));
         return webClientBuilder.clone().defaultHeaders(headers -> {
             headers.setAccept(List.of(MediaType.APPLICATION_JSON));
-            providerRequestHeaderService.applyHeaders(headers, apiKey, headerRulesJson);
-            applyProtocolHeaders(headers, apiKey, protocol);
+            providerRequestHeaderService.applyHeaders(headers, apiKey, headerRulesJson, protocol);
+            applyProtocolHeaders(headers, protocol);
         }).build().get().uri(requestUrl).exchangeToMono(response -> response.bodyToMono(String.class).defaultIfEmpty("")
                 .map(responseBody -> {
                     ResponseEntity.BodyBuilder builder = ResponseEntity.status(response.statusCode().value());
@@ -147,7 +147,7 @@ public class ProviderModelDiscoveryService {
     }
 
     /**
-     * 补上目标协议特有的请求头。
+     * 补上目标协议特有的非鉴权请求头。
      *
      * <h2>为何拉取模型也要分协议</h2>
      * 两个协议的模型列表端点<strong>路径完全相同</strong>（都是 {@code GET /v1/models}），
@@ -155,24 +155,21 @@ public class ProviderModelDiscoveryService {
      * 若不分协议，从一个只有 Anthropic 端点的供应商拉模型就会稳定得到 400，
      * 而错误消息会指向「地址不对」—— 地址其实是对的。
      *
-     * <p>{@code x-api-key} 与上游聊天链路保持同一口径：官方用它，而多数 OpenAI 兼容中转站
-     * 沿用 {@code Authorization: Bearer}，两个都给以兼容两类上游。
+     * <h2>鉴权头不在这里</h2>
+     * 它由 {@code ProviderRequestHeaderService} 按出站协议统一装配（写本协议那一个、
+     * 删另一个），本方法只补版本头。这一处曾有一份「双认证头」副本，与聊天链路各写一遍；
+     * 收归一处后，模型拉取与聊天用的是同一套鉴权口径 —— 拉取能通而聊天 401
+     * （或反之）这类只能靠对比两处代码才能解释的现象因此不再可能。
      *
-     * <p>两个头都只在缺失时设置，因此供应商自定义头规则（已在 {@code applyHeaders} 里生效）
-     * 仍能覆盖它们 —— 某些中转站要求特定版本号。
+     * <p>版本头只在缺失时设置，因此供应商自定义头规则（已在 {@code applyHeaders} 里生效）
+     * 仍能覆盖它 —— 某些中转站要求特定版本号。
      */
-    // TODO(待决策) 双认证头是否收敛为单一形态。本处是第二份副本，
-    //  已知与未知的完整记录在
-    //  GenericAnthropicChatService.buildWebClient 那一处；收敛时两处同改。
-    private void applyProtocolHeaders(HttpHeaders headers, String apiKey, WireProtocol protocol) {
+    private void applyProtocolHeaders(HttpHeaders headers, WireProtocol protocol) {
         if (protocol != WireProtocol.ANTHROPIC) {
             return;
         }
         if (!headers.containsKey(ANTHROPIC_VERSION_HEADER)) {
             headers.set(ANTHROPIC_VERSION_HEADER, ANTHROPIC_VERSION_VALUE);
-        }
-        if (!headers.containsKey("x-api-key") && apiKey != null && !apiKey.isBlank()) {
-            headers.set("x-api-key", apiKey);
         }
     }
 

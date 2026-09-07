@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
@@ -630,8 +631,11 @@ public abstract class AbstractUpstreamChatService {
         return webClientBuilder.clone()
             .clientConnector(new ReactorClientHttpConnector(capturingHttpClient))
             .baseUrl(normalizedUrl).defaultHeaders(headers -> {
+                // 出站协议恒为 OPENAI：本管道就是 OpenAI 上游管道。
+                // 鉴权装配据此写 Authorization 并删掉 x-api-key（下游透传或翻译残留的噪音）。
                 providerRequestHeaderService.applyHeaders(
-                    headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream);
+                    headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream,
+                    WireProtocol.OPENAI);
         }).filter((request, next) -> {
             capturedHeaders.clear();
             capturedHeaders.putAll(providerRequestHeaderService.createLogSnapshot(request.headers()));
