@@ -17,8 +17,13 @@ import java.util.Set;
 /**
  * 准备数据库供应商的通用出站请求头与 URL。
  *
- * 下游请求头先透传，默认 Bearer 认证随后覆盖下游 Authorization，
- * 请求头规则最后可覆盖、补充或删除默认值。
+ * 装配分三层，后者覆盖前者：先完整透传下游的端到端头（只排除
+ * {@link #NON_FORWARDABLE_HEADERS} 里那些描述连接本身的头），再覆盖鉴权头，
+ * 最后由供应商请求头规则覆盖、补充或删除任何头。
+ *
+ * 三层的职责边界不要混：第一层只做传输层正确性，第二层保证出站凭据是供应商配置的
+ * 而非下游透传来的，第三层承载「这个上游需要什么」的全部特例。因此凡是超出传输层
+ * 正确性的取舍都不应下沉到第一层 —— 规则层拥有最终决定权是有意的设计。
  */
 @Service
 public class ProviderRequestHeaderService {
@@ -26,7 +31,35 @@ public class ProviderRequestHeaderService {
     private static final Logger log = LoggerFactory.getLogger(ProviderRequestHeaderService.class);
     private static final String DELETE_MARKER = "/del/";
     private static final TypeReference<List<Map<String, String>>> HEADER_RULE_LIST_TYPE = new TypeReference<>() {};
-        private static final Set<String> NON_FORWARDABLE_HEADERS = Set.of(
+
+    /**
+     * 不跨连接透传的请求头。
+     *
+     * 这份清单只关心传输层正确性，不是鉴权策略、也不是「哪些头不该给上游看」的黑名单。
+     * 收录标准只有一条：该头描述的是「下游到 COSP 这一段连接」而非这条消息本身，
+     * 因此它的值对新建的上游连接一律无效，必须由发起方重新生成。
+     *
+     * 前八项是 RFC 7230 §6.1 的 hop-by-hop 头。其中 transfer-encoding 说的是下游请求体
+     * 怎么分帧的，而出站请求体由 Reactor Netty 重新编码，带着旧值出站会让报文自述与实际
+     * 线格式矛盾；proxy-authorization 与 proxy-authenticate 是给中间代理的凭据，语义上
+     * 只作用于当前这一跳，转发出去等于把代理凭据交给上游。
+     *
+     * 另两项是必须重算而非必须隐藏：host 要反映目标 authority，下游那个
+     * localhost:11434 带到上游会打错虚拟主机或让 TLS SNI 对不上；content-length 要等于
+     * 实际字节数，而 COSP 一路在改请求体（模型名替换、协议翻译、请求体规则、null 清洗），
+     * 长度几乎必然变，带着旧长度比不带更糟 —— 上游要么在错误的偏移截断，要么一直等
+     * 永远不会来的字节。
+     *
+     * 鉴权头刻意不在此列。Authorization 与 x-api-key 都是端到端头，描述消息而非连接，
+     * 「完全透传下游请求头」是本服务的前提；它们由第二层的鉴权覆盖处理，而非在这里剥离。
+     * 把鉴权头加进来会把「覆盖」偷换成「剥离」，还会打断那些正靠透传自定义鉴权头工作的配置。
+     *
+     * 同理，Cookie 与 Accept-Encoding 也不在此列 —— 它们透传后可能带来问题
+     * （如上游返回 Brotli 压缩的 SSE 流导致解码失败），但那属于「这个上游需要什么」，
+     * 该由供应商的请求头规则按需删除或改写。本清单管的是「不这么做协议就不成立」，
+     * 保持最小化，其余取舍一律交给规则层。
+     */
+    private static final Set<String> NON_FORWARDABLE_HEADERS = Set.of(
             "connection", "content-length", "host", "keep-alive", "proxy-authenticate",
             "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade");
 
