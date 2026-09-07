@@ -1,27 +1,9 @@
-# COSP Copilot 指令
+# COSP Copilot 入口
 
-## 当前架构
+开始任何根 COSP 任务前，先读并遵循 [AGENTS.md](../AGENTS.md)。它是 workspace-wide 的唯一规则真源；
+本文件不复制架构、测试或运行时细节，以免两份说明漂移。
 
-- Copilot 使用 `/api/version`、`/api/tags`、`/api/show` 发现模型，实际聊天走 `/v1/chat/completions`；另有 `/v1/messages` 供 Claude 系客户端直连（Anthropic 协议）。
-- `ModelDiscoveryService` / `ChatCompletionService` / `MessagesService` 是应用层用例服务；两条聊天线路经 `ProtocolDispatchManager` 分派到 `GenericOpenAiChatService` 或 `GenericAnthropicChatService`。
-- 所有供应商都是数据库记录，不存在内置或专有 provider。通过管理后台配置 Base URL、API Key、模型、能力和转换规则。
-- `ProviderRouteResolver` 对前缀模型精确路由；无前缀模型仅在唯一匹配时允许路由。
-- 单端口 11434 同时提供对外 API 与管理后台（`/config/api/**` + JWT）。
+修改文件时还要加载匹配路径的 [instructions](./instructions/)；改 SQLite schema、迁移版本、表、列、
+索引或约束时，使用 [数据库迁移 Skill](./skills/cosp-schema-migration-skill/SKILL.md)。
 
-## 开发规则
-
-- 保持 `api -> application -> provider` 分层；DTO 位于独立 `protocol` 层，持久化在 `infrastructure/persistence`（`JdbcTemplate`，无 JPA / 无 Lombok）。
-- 能力只能由 `provider_model` 的 `caps_tools`、`caps_vision` 决定，禁止硬编码或通过模型名判断。
-- 上下文窗口最小为 8192。
-- WebFlux 中所有 JDBC 调用使用 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`。
-- 对外调用必须复用注入的 `WebClient.Builder`，不要使用裸 `WebClient.builder()`。
-- 标准供应商不创建新 Java 包；供应商差异先用 `provider_request_transform` 的请求头/请求体规则表达。请求体规则集是 V2（`groups` + 每组 `protocols`），引擎在 `application/provider`，协议无关、两侧上游服务共用。
-- 规则引擎**只有后端一份实现**：编辑器预览走 `POST /config/api/request-body-rules/preview`，不要在前端重建引擎。
-- `GatewayAuthFilter` 只拦截 `POST /v1/chat/completions` 与 `POST /v1/messages`，Ollama 发现接口必须保持匿名可访。
-- 流式与非流式共用同一份重试预算（`buildRetrySpec`）与同一份空响应判定（`OpenAiContentDetector.payloadHasContent`），不要为某一侧另起 `retryWhen` 或放宽判定口径。
-
-## 测试
-
-测试类名以 `Tests` 结尾（Surefire 只拾取这个后缀）。集成测试使用 `@SpringBootTest(webEnvironment = RANDOM_PORT)` 和 `WebTestClient`；JDBC 测试用 `@TempDir` 临时 SQLite；上游用自定义 `ExchangeFunction` stub，没有 MockWebServer。修改后先检查编辑器错误，再运行 `./mvnw test` 或 `cd frontend && npm run test:run`。不要主动启动服务或操作 `admin.db`。
-
-更完整的架构与验证约定见 [AGENTS.md](../AGENTS.md)。
+`cc-switch/`、`new-api/`、`sub2api/` 是独立参考项目。任务未明确指向时只读，不修改、不构建、不测试。

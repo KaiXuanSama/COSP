@@ -115,7 +115,7 @@ schema cannot be reclaimed and they aid manual inspection; do not copy the patte
 1. Use editor diagnostics on the runner, schema SQL, and migration tests.
 2. Run `SchemaMigrationRunnerTests` first.
 3. Run focused repository tests if a table or constraint is used by a repository.
-4. Run `./mvnw test`; this also validates the integrated frontend build.
+4. Run `./mvnw test` (`mvnw.cmd test` with a current-directory path from Windows PowerShell); this also validates the integrated frontend build.
 5. Do not start the application, call live endpoints, or access `admin.db`.
 
 ## Checklist

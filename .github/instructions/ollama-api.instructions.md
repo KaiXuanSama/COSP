@@ -1,5 +1,5 @@
 ---
-applyTo: "**/api/ollama/**,**/protocol/ollama/**,**/provider/**/discovery/**,**/application/ollama/**"
+applyTo: "**/api/ollama/**,**/protocol/ollama/**,**/provider/**/discovery/**,**/application/ollama/**,**/application/catalog/**"
 description: "Ollama 模型发现协议开发指南。Use when: 修改 /api/version、/api/tags、/api/show 或其 DTO、模型目录与发现服务。"
 ---
 
@@ -33,7 +33,8 @@ Ollama 层只用于模型发现：`GET /api/version`、`GET /api/tags`、`POST /
 
 1. 模型能力由 `provider_model.caps_tools` 与 `caps_vision` 读取，禁止硬编码。
 2. 上下文窗口必须至少为 8192，避免 Copilot 计算出零可用输入窗口。
-3. `tags` 与 `show` 必须从 `ResolvedProviderRoute` 中使用已解析的供应商与模型，不能重新扫描或猜测供应商。
+3. `/api/show` 必须使用 `ProviderRouteResolver` 给出的 `ResolvedProviderRoute`，不能重新扫描或猜测供应商；
+	`/api/tags` 直接消费 `ModelCatalogService` 聚合出的 `AvailableModel`，不要为列表中的每个模型重新路由。
 4. 无启用模型时维持现有 `nano_llm` 兜底行为。
 5. DTO 保持在 `protocol` 层，不引入 application/provider 依赖。
 

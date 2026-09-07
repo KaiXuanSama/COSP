@@ -9,7 +9,8 @@ description: "COSP Java 测试约定。Use when: 新增或修改 src/test/java �
 
 ## 命名
 
-**类名必须以 `Tests` 结尾** —— Surefire 只拾取这个后缀，`*Test` / `*IT` 都不会被执行。测试包路径镜像主代码分层。
+项目测试类统一以 `Tests` 结尾，测试包路径镜像主代码分层。这是仓库命名约定；不要依赖
+Surefire 的其它默认命名模式，也不要新增 `*IT` 而不显式接入测试生命周期。
 
 ## 四类测试
 
@@ -31,6 +32,10 @@ description: "COSP Java 测试约定。Use when: 新增或修改 src/test/java �
 ./mvnw test -Dtest=XxxTests    # 单类
 ./mvnw test                    # 全量，含前端构建
 ```
+
+Windows PowerShell 使用 `mvnw.cmd` 的等价命令（当前目录执行时加 `./` 或 `.` + 路径分隔符）；多测试类的
+`-Dtest=...` 参数整体加引号，避免
+PowerShell 把逗号表达式拆成参数。需要跳过前端时沿用 `pom.xml` 已支持的 Maven 属性，不自行删插件执行。
 
 先用编辑器诊断检查改动文件，再跑命令。`tools/mock-upstream`（OpenAI 流式）、`tools/mock-nonstream`（OpenAI 非流式）、`tools/mock-anthropic`（Anthropic 两种模式）、`tools/mock-cosp` 是手动验证工具，不参与自动化测试。
 

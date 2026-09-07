@@ -1,11 +1,12 @@
 ---
 applyTo: "frontend/**"
-description: "COSP 管理后台前端约定。Use when: 修改 frontend/ 下的 Vue 组件、Pinia store、SCSS 主题、请求体规则编辑器或前端单测。"
+description: "COSP 管理后台前端约定。Use when: 修改 frontend/ 下的 Vue 组件、Pinia store、API/SSE、路由、SCSS 主题、请求体规则编辑器或 Vitest 单测。"
 ---
 
 # 前端开发指南
 
-Vue 3 + TypeScript + Pinia + Naive UI + SCSS，构建工具 Vite。无 ESLint / Prettier，唯一质量关卡是 `npm run build` 中的 `vue-tsc -b`（`strict: true`）。
+Vue 3 + TypeScript + Pinia + Naive UI + SCSS，构建工具 Vite。无 ESLint / Prettier；静态检查随
+`npm run build` 执行 `vue-tsc -b`（`strict: true`），行为测试需另跑 `npm run test:run`。
 
 `tsconfig.json` 只做项目引用聚合，实际配置在两个子项目里：`tsconfig.app.json` 管 `src/**`（浏览器侧，**刻意不含 Node 类型**，防止误用 `process` / `__dirname` 后仍通过检查），`tsconfig.node.json` 管 `vite.config.ts`（含 `@types/node`）。新增构建期脚本要加进 `tsconfig.node.json` 的 `include`，否则不受类型检查覆盖。
 
@@ -27,27 +28,35 @@ npm run build           # vue-tsc -b && vite build
 
 | 目录 | 内容 |
 |---|---|
-| `src/features/**` | 纯 TS 领域逻辑，可单测，不含 UI（当前只有 `request-body-rules/`） |
-| `src/components/<feature>/` | 对应 UI 组件，用 `index.ts` 做 barrel 导出 |
-| `src/stores/` | Pinia store，同时是 DTO 类型定义的所在处 |
+| `src/features/**` | 可单测的领域逻辑与轻量 composable；不放 SFC |
+| `src/components/<feature>/` | 对应 UI 组件；导出边界以目录 `index.ts` 和 README 为准 |
+| `src/stores/` | Pinia store 与其拥有的状态类型 |
+| `src/types/` | 跨页面、跨 store 的共享协议/DTO 类型 |
 | `src/views/` | 路由页面 |
-| `src/api/` | axios 实例与 SSE 封装 |
+| `src/api/` | Axios 实例、共享端点函数与认证 SSE 封装 |
 
 **新增可测逻辑优先放 `features/` 或组件目录下的 `useXxx.ts` / 纯数据模块**，让组件保持薄。纯数据与类型模块用小写模块名（`heatmap.ts`、`usagechart.ts`），组合式函数用 `useXxx.ts`。
 
 ## 约定
 
-- 所有 `.vue` 统一 `<script setup lang="ts">`，样式统一 `<style lang="scss" scoped>`。
-- 请求一律 `import http from '@/api'` 复用那个 axios 实例（`baseURL: '/config/api'`，拦截器负责注入 Bearer 和 401 跳登录）。**具体端点写在各 store / view 里，`api/index.ts` 不是端点清单**。
+- `.vue` 默认使用 `<script setup lang="ts">` 与 scoped SCSS；全局入口、布局/Teleport 或组件契约
+  明确要求时可用非 scoped 样式，已有 plain CSS 组件不要为统一语法而改写。
+- 普通 `/config/api/**` 请求复用 `@/api` 的 Axios 实例（拦截器负责 Bearer 与管理员会话 401）；
+  跨页面共享端点函数可放 `src/api/`。`/auth/login`、`/auth/me` 和认证 SSE 是明确的 `fetch` 例外。
 - 需要 SSE 时用 `@/api/authEventSource` 的 `createAuthEventSource`，原生 `EventSource` 无法带 Authorization 头。
-- DTO 接口从对应 store 导出（如 `stores/providers.ts` 的 `Provider`、`ProviderModel`），不要在 `api/` 下另建类型层。
+- 类型放在其所有者处：store 状态类型随 store，跨页面协议放 `src/types/`，领域响应放对应 feature；
+  不要在 `api/` 再复制一套 DTO。
 - Token 存 `localStorage['cosp_token']`，只用 `auth` 工具对象读写。
 - 401 后的登录跳转统一调 `api/index.ts` 导出的 `redirectToLogin()`（axios 拦截器与 SSE 共用），它会带上 `?redirect=` 供登录后回跳；组件内部能拿到 router 时用 `router.replace({ name: 'login', query: { redirect: route.fullPath } })`。
+- 模型拉取端点的 401 可能来自上游 API Key，调用必须保留 `skipAuthRedirect`，不能把管理员误登出。
 - 路由表末尾有 catch-all 指向 `views/NotFound.vue`。后端把所有非 API 的浏览器请求都回退成 index.html，拼错的地址会进入前端路由 —— 删了这条就会渲染成空白页。
+- 上游响应、调用日志和 Markdown 都是不可信输入；未经 HTML 净化不得交给 `v-html`。JWT 位于
+  localStorage，这类 XSS 会直接扩大为管理员会话泄露。
+- HTTP 状态 `-1` 只表示非 HTTP 异常，可能是连接、DNS、TLS、截断或空响应耗尽；前端不得固定显示为“空响应”。
 
 ## 主题
 
-设计 token 在 `src/styles/_variables.scss`（SCSS 变量，如 `$accent #c27a3e`、`$bg #f5f3ee`）。**同一套色值在 `src/App.vue` 的 Naive UI `GlobalThemeOverrides` 里第二次硬编码，改主题色必须同步两处。** 没有 CSS 自定义属性体系，也没有深色模式。
+设计 token 在 `src/styles/_variables.scss`（SCSS 变量，如 `$accent #c27a3e`、`$bg #f5f3ee`）。**同一套色值在 `src/App.vue` 的 Naive UI `GlobalThemeOverrides` 里第二次硬编码，改主题色必须同步两处。** 没有全局 CSS custom-property 主题体系，也没有深色模式；组件族可以拥有局部 CSS 变量。
 
 Naive UI 组件的内联 CSS 变量优先级高于 scoped class 里的同名变量覆盖，遇到样式不生效先查这一点（`views/Preferences.vue` 有实例注释）。
 
@@ -64,6 +73,16 @@ JSON 值输入统一走 `JsonValueInput.vue`（左侧类型档位 + 右侧按类
 预览由后端计算，**不要在前端重建引擎** —— 那份 TS 引擎已删除，理由见 AGENTS.md「引擎只有一份实现，预览走接口」。异步取值的防抖、请求竞态、加载态与失败降级都在 `features/request-body-rules/preview.ts` 的 `createPreviewScheduler`，竞态守卫按请求序号而非「是否有在途请求」判断。
 
 `WireProtocol` 统一从 `@/types/protocol` 导入（同时提供 `ALL_WIRE_PROTOCOLS`、`WIRE_PROTOCOL_LABELS` 与 `isWireProtocol`），字面量与后端枚举常量名逐字一致，不要在各处重写联合类型。
+
+## 自研组件契约
+
+修改热力图、范围滑块、用量柱图或折线图前，先读对应目录 README；改变 Props、事件、类型、动画或
+barrel 导出时同步更新文档：
+
+- [`components/heatmap/README.md`](../../frontend/src/components/heatmap/README.md)
+- [`components/rangeslider/README.md`](../../frontend/src/components/rangeslider/README.md)
+- [`components/usagechart/README.md`](../../frontend/src/components/usagechart/README.md)
+- [`components/usageline/README.md`](../../frontend/src/components/usageline/README.md)
 
 ## 手动验证
 
