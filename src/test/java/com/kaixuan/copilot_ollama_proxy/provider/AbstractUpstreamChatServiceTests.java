@@ -147,6 +147,145 @@ class AbstractUpstreamChatServiceTests {
         assertThat(normalizedIndent).contains("\"content\":\"  \\n\"");
     }
 
+    /**
+     * 工具调用分片里 {@code id} / {@code name} 的保全。
+     *
+     * <h2>为何单独一组</h2>
+     * 下游 Copilot 的 {@code SSEProcessor} 靠这两个字段拼装工具调用，而它的取值方式很脆：
+     * <ul>
+     *   <li>{@code StreamingToolCall.update} 只在 {@code toolCall.id} 为 truthy 时赋值 ——
+     *       字段缺失与空串都填不进去；</li>
+     *   <li>收尾的 {@code getToolCalls()} 对 {@code name} 与 {@code id} 用<strong>非空断言</strong>，
+     *       没填上就产出 {@code undefined}；</li>
+     *   <li>拿到 name 为 {@code undefined} 的工具调用后，上层匹配不到已注册工具，
+     *       既不报错也不执行，直接判成「本轮没有工具调用」而结束整轮对话。</li>
+     * </ul>
+     *
+     * <p>而本服务的 {@code pruneEmptyValues} 会递归删空串。两者叠加就可能让一次正常的工具调用
+     * 在下游静默消失，因此这一组用例的作用是<strong>划清责任边界</strong>：确认清洗环节
+     * 有没有把工具调用必要字段弄丢。
+     *
+     * <p>用例覆盖真实上游的三种发法：一次给全、id 只在首片、以及用空串占位。
+     */
+    @Test
+    void normalizeChunkKeepsToolCallIdAndNameWhenUpstreamSendsThemTogether() throws Exception {
+        TestOpenAiService service = new TestOpenAiService();
+
+        String raw = """
+                {"id":"chatcmpl-7","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"view_image","arguments":""}}]},"finish_reason":null}]}
+                """;
+
+        String normalized = service.exposeTranslateChunk(raw);
+
+        assertThat(normalized).contains("\"id\":\"call_abc\"");
+        assertThat(normalized).contains("\"name\":\"view_image\"");
+        assertThat(normalized).contains("\"tool_calls\"");
+    }
+
+    /**
+     * 后续分片只带 {@code arguments} 增量，不重复 id / name —— 这是 OpenAI 协议的标准形态。
+     *
+     * <p>此时 {@code tool_calls[0]} 只剩 {@code index} 与 {@code function.arguments}，
+     * 必须仍被当成「有意义的工具调用」而保留：删掉它等于把参数丢了，下游拼出来的调用参数不完整。
+     */
+    @Test
+    void normalizeChunkKeepsArgumentOnlyToolCallDeltaWithoutIdOrName() throws Exception {
+        TestOpenAiService service = new TestOpenAiService();
+
+        String raw = """
+                {"id":"chatcmpl-8","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"filePath\\""}}]},"finish_reason":null}]}
+                """;
+
+        String normalized = service.exposeTranslateChunk(raw);
+
+        assertThat(normalized).contains("\"tool_calls\"");
+        assertThat(normalized).contains("filePath");
+    }
+
+    /**
+     * 上游用空串占位 id / name 时的行为 —— 本组的核心疑点。
+     *
+     * <p>部分上游在工具调用的后续分片里把 {@code id} / {@code name} 发成 {@code ""} 而非省略。
+     * {@code pruneEmptyValues} 删空串，于是这两个键会从出站报文里消失。
+     *
+     * <p>这本身<strong>不是缺陷</strong>：空串在下游同样填不进 {@code StreamingToolCall}
+     * （它要求 truthy），删与不删对下游等效，而删掉更省字节。本用例把这个行为钉住，
+     * 以便将来有人怀疑「是不是 COSP 把 id 弄丢了」时能直接看到结论：
+     * 空串本来就不携带信息，真正的 id 只要在任一分片里出现过就会被保留（见上一条用例）。
+     */
+    @Test
+    void normalizeChunkDropsEmptyStringToolCallIdWhichCarriesNoInformationAnyway() throws Exception {
+        TestOpenAiService service = new TestOpenAiService();
+
+        String raw = """
+                {"id":"chatcmpl-9","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":null}]}
+                """;
+
+        String normalized = service.exposeTranslateChunk(raw);
+
+        // 空串被删，但整个 tool_calls 结构与 arguments 必须保留
+        assertThat(normalized).doesNotContain("\"id\":\"\"");
+        assertThat(normalized).doesNotContain("\"name\":\"\"");
+        assertThat(normalized).contains("\"tool_calls\"");
+        assertThat(normalized).contains("\"arguments\":\"{}\"");
+    }
+
+    /**
+     * 工具调用<strong>先于</strong>正文时，两者都必须原样保留、顺序不变。
+     *
+     * <p>这是本组最贴近实际故障的一条：曾观察到某模型先发 {@code tool_calls} 再发正文时，
+     * Copilot 直接终止对话且不执行工具。本用例确认<strong>本服务不重排也不丢弃</strong> ——
+     * 若两条断言都通过，那么问题不在这一层，而在下游客户端的流解析。
+     *
+     * <p>清洗是逐 chunk 无状态的（除 reasoning 累积外），因此顺序天然由上游决定。
+     * 这条断言的价值不在于发现 bug，而在于把「COSP 没动顺序」变成可复核的事实。
+     */
+    @Test
+    void normalizeChunkPreservesToolCallThenContentOrderWithoutReordering() throws Exception {
+        TestOpenAiService service = new TestOpenAiService();
+
+        String toolCallFirst = """
+                {"id":"chatcmpl-10","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":null}]}
+                """;
+        String contentAfter = """
+                {"id":"chatcmpl-10","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"let me check"},"finish_reason":null}]}
+                """;
+
+        String normalizedToolCall = service.exposeTranslateChunk(toolCallFirst);
+        String normalizedContent = service.exposeTranslateChunk(contentAfter);
+
+        // 工具调用帧：id / name 完整
+        assertThat(normalizedToolCall).contains("\"id\":\"call_x\"");
+        assertThat(normalizedToolCall).contains("\"name\":\"read_file\"");
+        // 正文帧：正文完整，且不会被工具调用帧影响
+        assertThat(normalizedContent).contains("\"content\":\"let me check\"");
+        assertThat(normalizedContent).doesNotContain("\"tool_calls\"");
+    }
+
+    /**
+     * {@code finish_reason: tool_calls} 的收尾帧必须原样保留该值。
+     *
+     * <p>下游靠它触发工具调用的收尾组装（{@code SSEProcessor} 在
+     * {@code finish_reason} 为 {@code tool_calls} 或 {@code stop} 时才发出完整工具调用）。
+     * 若这里被归一成别的值，下游永远等不到收尾，工具调用会被丢弃。
+     *
+     * <p>同时确认它<strong>不触发 reasoning fallback</strong>：那条兜底只认 {@code stop}，
+     * 否则纯工具调用响应会被凭空插入一段思考内容作为正文。
+     */
+    @Test
+    void normalizeChunkKeepsToolCallsFinishReasonIntact() throws Exception {
+        TestOpenAiService service = new TestOpenAiService();
+
+        String raw = """
+                {"id":"chatcmpl-11","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+                """;
+
+        String normalized = service.exposeTranslateChunk(raw);
+
+        assertThat(normalized).contains("\"finish_reason\":\"tool_calls\"");
+        assertThat(normalized).contains("\"delta\":{}");
+    }
+
     @Test
     void webClientFilterCapturesFinalRequestHeadersInsteadOfOnlyDefaultHeaders() {
         TestOpenAiService service = new TestOpenAiService();
