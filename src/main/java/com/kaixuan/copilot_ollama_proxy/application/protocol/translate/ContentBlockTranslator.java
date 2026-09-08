@@ -138,8 +138,14 @@ final class ContentBlockTranslator {
     /**
      * 把 content 压平成字符串，只取文本块。
      *
-     * <p>用于 system 与 {@code tool_result}——那两处的目标形态就是字符串。
+     * <p>用于 <strong>system</strong>——那里的目标形态就是字符串（Anthropic 的顶层
+     * {@code system} 接受字符串，而下游的 system 提取那一步本来就只认字符串）。
      * 与 {@code GenericAnthropicChatService.stringifyContent} 同口径。
+     *
+     * <p><strong>不要用于 {@code tool_result}。</strong> 本方法会丢弃图片等非文本块，
+     * 而 Anthropic 的 {@code tool_result.content} 原生支持图片块，压平会让 agent
+     * 用工具读到的图在翻译中消失。那一处走 {@link #translateBlocks}，
+     * 理由见 {@code MessageTranslator.translateToolResult}。
      *
      * @return 字符串形态；输入为 null 或无文本块时返回空串
      */

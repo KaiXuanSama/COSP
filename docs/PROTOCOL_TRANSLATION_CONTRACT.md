@@ -149,10 +149,48 @@ Responses 或其它协议的专有分片原样发给 Anthropic，上游只会回
 | `tool_choice: {type:"function", function:{name}}` | `{type: "tool", name}` | 映射 | |
 | `tool_choice` 指向未声明的工具 | — | 丢弃整个 `tool_choice` | 保留会被上游拒 |
 | assistant `tool_calls[]` | assistant `tool_use` 块 | 映射 | `id`→`id`、`function.name`→`name`、`function.arguments`（JSON 字符串）→ `input` 对象。**解析失败报错**，不静默留空 |
-| `role: tool` + `tool_call_id` | user 消息里的 `tool_result` 块 | 映射 | 见 3.5 |
+| `role: tool` + `tool_call_id` | user 消息里的 `tool_result` 块 | 映射 | 位置见 3.5，content 形态见 3.4.1 |
 
 **工具调用 ID 原样搬运。** 不做前缀拼接。参考项目里 sub2api 对任何未知前缀的 id 一律拼
 `toolu_`，可能撞长度限制或产生不合法 ID。
+
+#### 3.4.1 tool_result 的 content 形态
+
+`tool_result.content` 走**块翻译**（第 3.3 节的白名单），不是压平取文本。Anthropic 官方
+SDK 里该字段是 `Union[str, Iterable[Content]]`，其中 `Content` 含 `ImageBlockParam` ——
+**工具结果带图是协议原生支持的形态**。
+
+出站形态由「翻译后还剩什么」决定：
+
+| 翻译后 | 出站 content | 理由 |
+|---|---|---|
+| 什么都不剩 | — | 整条丢弃（见 5.2） |
+| 只剩文本块 | 字符串 | 既有形态。多个文本块用 `\n` 拼接 |
+| 含非文本块（当前只有图片） | 块数组 | 唯一能装下图片的形态 |
+
+字符串输入直接短路，不绕一圈拆块再压回。
+
+**为何纯文本仍输出字符串**：使本规则的影响面严格限定在「真的有图」这一种输入上，纯文本
+工具结果的出站报文逐字节不变。与 user 消息对字符串 content 刻意不升格同一取向。
+
+**这条曾经写错过。** 早期实现调 `stringify` 压平，而它只取文本块，于是 agent 调
+`view_image` 之类工具读到的图片在这一步被静默丢弃 —— 那张图只存在于 `role: tool` 消息的
+`content` 里。表现是「O2A 路线上模型看不见图，而 OpenAI 直连能看见」，且日志里
+`tool_result.content` 只剩一段描述图片位置的文字，没有 base64。
+
+**不要把 OpenAI 侧的「图片工具兼容规则」搬进翻译层。** 那条规则（把含图的 tool 消息整条
+改成普通 user 消息、删掉 `tool_call_id`）是针对「某些 OpenAI 兼容中转站把 `role: tool`
+的 content 当纯文本处理」这一实现缺陷的兼容妥协。Anthropic 侧不存在该缺陷，照协议把图片
+放进 `tool_result` 才是正解。若某个 Anthropic 中转站确实也认不出，那属于「这个上游需要
+什么」，用仅适用 `ANTHROPIC` 的请求体规则表达。
+
+参考项目在这一点上都不完整，可以对照但不要照抄：one-api 的 `tool_result` 分支整个包在
+`if message.IsStringContent()` 里，多模态 tool 消息会丢掉 `tool_result` 与 `tool_use_id`
+（其 DTO 的 `Content` 字段是 `string`，结构上装不下图片块）；new-api 的 Chat→Claude 链把
+下游 content 原样搬运，OpenAI 形态的 `image_url` 块直接发给 Anthropic；反方向它把
+Anthropic 的块数组 `Marshal` 成 JSON 字符串塞进 OpenAI tool 消息，等于把图变成一段描述图
+的文字。new-api 唯一做对的是 Responses 链的 `claudeToolResultToResponsesOutput`，那里做了
+真正的块级翻译 —— 本节要求的正是同一件事的反方向。
 
 ### 3.5 tool_use ↔ tool_result 配对修复（必须实现）
 
@@ -176,7 +214,12 @@ merge → pair → merge
 **三步顺序不可省略也不可交换。** 这是本契约里工程价值最高的一段，必须有单测覆盖
 「未被应答的 tool_use」与「孤儿 tool_result」两种输入。
 
-空 `tool_result` 内容**整条丢弃**，不填占位字符串（见 5.2）。
+空 `tool_result` 内容**整条丢弃**，不填占位字符串（见 5.2）。content 的具体形态见 3.4.1。
+
+**配对修复不得破坏块数组形态的 tool_result。** 三步里的 merge 与 pair 搬动的是整个
+`tool_result` 块，只能操作消息级 content，不得动块内 content —— 否则带图的工具结果会在
+重新摆位置时被压平。这一条要用单测钉住而非靠推断（在两条 tool_use / tool_result 之间
+插一条正文 user，迫使 pair 真的发生搬动）。
 
 ---
 
@@ -395,14 +438,20 @@ A2O 丢弃：`metadata`、`mcp_servers`、`container`、`context_management`、`
 1. **第 2 节的无损搬运** —— 单测覆盖 `thinking` 与 `reasoning_effort` 各自单独存在的情况，
    断言设置层的 `fallback` 不会退化成 `override`
 2. **第 3.5 节的配对修复** —— 单测覆盖未被应答的 `tool_use` 与孤儿 `tool_result`
-3. 把 2.1 那行 `body.remove("reasoning_effort")` 移到设置层之后
-4. 其余字段映射与丢弃清单
-5. `translationContext` 出口
-6. 响应与 SSE 侧 —— 已另立契约，见
+3. **第 3.4.1 节的 tool_result content 形态** —— 单测覆盖纯文本（仍为字符串）、data URL 图片、
+   http URL 图片、图文混合保序，以及配对修复后图片仍在
+4. 把 2.1 那行 `body.remove("reasoning_effort")` 移到设置层之后
+5. 其余字段映射与丢弃清单
+6. `translationContext` 出口
+7. 响应与 SSE 侧 —— 已另立契约，见
    [PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md](./PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md)
 
-前五项已完成（O2A 请求侧）。实际执行顺序随后调整为先做 **A2O 响应**而非 A2O 请求，
+前六项已完成（O2A 请求侧）。实际执行顺序随后调整为先做 **A2O 响应**而非 A2O 请求，
 理由见响应侧契约第 0 节：补上响应翻译才能让 O2A 这条链端到端可用。
+
+第 3 项（`tool_result` content 形态）是后补的：O2A 请求侧最初落地时压平了该字段，直到
+agent 用工具读图的场景暴露出来才修。教训是**「这个字段的目标形态是字符串」这个判断要按
+协议查证，不要按已见过的输入推断** —— 当时见过的 tool 消息都是纯文本的。
 
 ### 8.1 尚未决定的事项
 

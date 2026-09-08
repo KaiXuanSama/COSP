@@ -229,6 +229,29 @@ final class MessageTranslator {
      *
      * <p>空内容整条丢弃，不塞占位字符串：参考项目用 {@code "..."} 或
      * {@code "(empty)"} 填空，那会作为真实内容进入模型上下文与计费。
+     *
+     * <h2>content 走块翻译而非压平取文本</h2>
+     * Anthropic 的 {@code tool_result.content} 是
+     * {@code Union[str, Iterable[Content]]}，其中 {@code Content} 含
+     * {@code ImageBlockParam} —— <strong>工具结果带图是协议原生支持的形态</strong>。
+     *
+     * <p>早期这里调 {@code stringify} 压平，而它只取文本块，于是 agent 调
+     * {@code view_image} 之类工具读到的图片在这一步被静默丢弃：那张图只存在于
+     * {@code role: tool} 消息的 {@code content} 里，压平之后剩下的只有一段
+     * 描述图片位置的文字。表现是「O2A 路线上模型看不见图，而 OpenAI 直连能看见」。
+     *
+     * <p>顺带一提，OpenAI 侧那条把「图片 tool 消息」整条改成普通 user 消息的
+     * 请求体规则<strong>不适用于这条线路</strong>，也不该被搬进翻译层：它是针对
+     * 「某些 OpenAI 兼容中转站把 {@code role: tool} 的 content 当纯文本处理」
+     * 这个实现缺陷的兼容妥协。Anthropic 侧不存在该缺陷，正确做法就是照协议
+     * 把图片放进 {@code tool_result}。若某个 Anthropic 中转站确实也认不出，
+     * 那属于「这个上游需要什么」，用仅适用 {@code ANTHROPIC} 的请求体规则表达。
+     *
+     * <h2>为何纯文本仍输出字符串</h2>
+     * 保持既有形态，使本改动的影响面严格限定在「{@code tool_result} 真的有图」
+     * 这一种输入上 —— 纯文本工具结果的出站报文逐字节不变。这与
+     * {@link #translateUser} 对字符串 content 刻意不升格成块数组同一取向：
+     * 部分上游对块数组更严格，没有升格的必要就不升格。
      */
     private Map<String, Object> translateToolResult(Map<String, Object> message, String path) {
         Object toolCallId = message.get("tool_call_id");
@@ -237,15 +260,54 @@ final class MessageTranslator {
             throw new RequestTranslationException(path + ".tool_call_id",
                     "缺失，无法构造 tool_result 块");
         }
-        String text = contentBlockTranslator.stringify(message.get("content"));
-        if (text == null || text.isBlank()) {
+        Object content = translateToolResultContent(message.get("content"), path + ".content");
+        if (content == null) {
             return null;
         }
         Map<String, Object> block = new LinkedHashMap<>();
         block.put("type", "tool_result");
         block.put("tool_use_id", toolCallId);
-        block.put("content", text);
+        block.put("content", content);
         return messageOf(ROLE_USER, List.of(block));
+    }
+
+    /**
+     * 选择 {@code tool_result.content} 的出站形态。
+     *
+     * <p>三种结果，判据只有「翻译后还剩什么」：
+     * <ol>
+     *   <li>什么都不剩 → {@code null}，调用方整条丢弃</li>
+     *   <li>只剩文本块 → 压成字符串（既有形态）</li>
+     *   <li>含非文本块（当前只有图片）→ 块数组，那是唯一能装下图片的形态</li>
+     * </ol>
+     *
+     * <p>字符串输入直接短路：它本就是目标形态之一，绕一圈拆成块再压回去没有意义。
+     *
+     * @return 字符串、块数组，或 {@code null} 表示无实质内容
+     */
+    private Object translateToolResultContent(Object content, String path) {
+        if (content instanceof String text) {
+            return text.isBlank() ? null : text;
+        }
+        List<Object> blocks = contentBlockTranslator.translateBlocks(content, path);
+        if (blocks.isEmpty()) {
+            return null;
+        }
+        if (blocks.stream().allMatch(MessageTranslator::isTextBlock)) {
+            // 全文本：压回字符串，与改动前的出站形态一致。
+            // 多个文本块用换行拼接，与 ContentBlockTranslator.stringify 同口径。
+            return blocks.stream()
+                    .map(block -> ((Map<?, ?>) block).get("text"))
+                    .map(String::valueOf)
+                    .reduce((left, right) -> left + "\n" + right)
+                    .orElse(null);
+        }
+        return blocks;
+    }
+
+    /** 判断已翻译好的块是否为文本块。块由本类产出，故形态可信。 */
+    private static boolean isTextBlock(Object block) {
+        return block instanceof Map<?, ?> map && "text".equals(map.get("type"));
     }
 
     private static void addIfNotEmpty(List<Object> sink, Map<String, Object> message) {

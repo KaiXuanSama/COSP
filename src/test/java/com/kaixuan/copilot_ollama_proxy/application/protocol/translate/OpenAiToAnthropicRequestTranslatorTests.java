@@ -251,6 +251,214 @@ class OpenAiToAnthropicRequestTranslatorTests {
         }
     }
 
+    /**
+     * {@code tool_result.content} 的形态选择。
+     *
+     * <p>Anthropic 的 {@code tool_result.content} 是 {@code Union[str, Iterable[Content]]}，
+     * 其中 {@code Content} 含 {@code ImageBlockParam} —— 工具结果带图是协议原生支持的形态。
+     * 因此这里必须做块级翻译而非压平取文本：agent 调 {@code view_image} 之类的工具读图时，
+     * 图片只存在于 {@code role: tool} 消息的 {@code content} 里，压平会把它整个丢掉。
+     *
+     * <p>纯文本仍输出字符串：那是既有形态，保持不变使改动的影响面严格限定在「真的有图」这一种
+     * 输入上，也与 {@code translateUser} 对字符串 content 刻意不升格同一取向。
+     */
+    @Nested
+    @DisplayName("tool_result 内容形态")
+    class ToolResultContent {
+
+        /** 纯文本工具结果保持字符串形态，出站报文与改动前逐字节一致。 */
+        @Test
+        @DisplayName("纯文本 content 仍输出字符串")
+        void shouldKeepPlainTextAsString() {
+            Map<String, Object> translated = translateToolResultContent(List.of(
+                    Map.of("type", "text", "text", "tool output")
+            ));
+
+            assertEquals("tool output", translated.get("content"),
+                    "纯文本必须仍是字符串，不升格成块数组");
+        }
+
+        /** 字符串 content（最常见形态）同样保持字符串。 */
+        @Test
+        @DisplayName("字符串 content 原样保留")
+        void shouldKeepRawStringContent() {
+            Map<String, Object> translated = translateToolResultContent("plain result");
+
+            assertEquals("plain result", translated.get("content"));
+        }
+
+        /** data URL 图片必须解析成 base64 源，而不是在压平时消失。 */
+        @Test
+        @DisplayName("data URL 图片必须翻译成 image 块")
+        void shouldTranslateDataUrlImage() {
+            Map<String, Object> translated = translateToolResultContent(List.of(
+                    Map.of("type", "image_url",
+                            "image_url", Map.of("url", "data:image/png;base64,iVBORw0KGgo="))
+            ));
+
+            @SuppressWarnings("unchecked")
+            List<Object> blocks = (List<Object>) translated.get("content");
+            assertEquals(1, blocks.size(), "含图片时 content 必须是块数组");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> imageBlock = (Map<String, Object>) blocks.get(0);
+            assertEquals("image", imageBlock.get("type"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> source = (Map<String, Object>) imageBlock.get("source");
+            assertEquals("base64", source.get("type"));
+            assertEquals("image/png", source.get("media_type"));
+            assertEquals("iVBORw0KGgo=", source.get("data"));
+        }
+
+        /** http URL 走 Anthropic 原生 url 源，不下载转 base64。 */
+        @Test
+        @DisplayName("http 图片使用原生 url 源")
+        void shouldUseNativeUrlForHttpImage() {
+            Map<String, Object> translated = translateToolResultContent(List.of(
+                    Map.of("type", "image_url",
+                            "image_url", Map.of("url", "https://example.com/a.png"))
+            ));
+
+            @SuppressWarnings("unchecked")
+            List<Object> blocks = (List<Object>) translated.get("content");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> imageBlock = (Map<String, Object>) blocks.get(0);
+            assertEquals("image", imageBlock.get("type"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> source = (Map<String, Object>) imageBlock.get("source");
+            assertEquals("url", source.get("type"));
+            assertEquals("https://example.com/a.png", source.get("url"));
+        }
+
+        /**
+         * 图文混合必须两者都在，且保持原有顺序。
+         *
+         * <p>这是 Copilot 调 {@code view_image} 的真实形态：一段说明文字 + 一张图。
+         */
+        @Test
+        @DisplayName("图文混合两者都保留且保序")
+        void shouldKeepBothTextAndImageInOrder() {
+            Map<String, Object> translated = translateToolResultContent(List.of(
+                    Map.of("type", "text", "text", "here is the image"),
+                    Map.of("type", "image_url",
+                            "image_url", Map.of("url", "data:image/jpeg;base64,/9j/4AAQ="))
+            ));
+
+            @SuppressWarnings("unchecked")
+            List<Object> blocks = (List<Object>) translated.get("content");
+            assertEquals(2, blocks.size());
+            @SuppressWarnings("unchecked")
+            Map<String, Object> textBlock = (Map<String, Object>) blocks.get(0);
+            assertEquals("text", textBlock.get("type"));
+            assertEquals("here is the image", textBlock.get("text"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> imageBlock = (Map<String, Object>) blocks.get(1);
+            assertEquals("image", imageBlock.get("type"));
+        }
+
+        /**
+         * 配对修复不得破坏块数组形态的 tool_result。
+         *
+         * <p>{@code ToolPairingNormalizer} 的 merge → pair → merge 会搬动整个
+         * {@code tool_result} 块。它操作的是消息级 content，不该动块内 content ——
+         * 这条用测试钉住而非靠推断。
+         */
+        @Test
+        @DisplayName("配对修复后图片仍在")
+        void shouldSurvivePairingNormalization() {
+            Map<String, Object> request = Map.of(
+                    "model", "test-model",
+                    "messages", List.of(
+                            Map.of("role", "assistant", "content", "",
+                                    "tool_calls", List.of(
+                                            Map.of("id", "call_1", "type", "function",
+                                                    "function", Map.of("name", "view_image", "arguments", "{}"))
+                                    )),
+                            // 中间插一条正文 user，迫使 pair 重新搬动 tool_result
+                            Map.of("role", "user", "content", "unrelated text"),
+                            Map.of("role", "tool", "tool_call_id", "call_1", "content", List.of(
+                                    Map.of("type", "text", "text", "screenshot"),
+                                    Map.of("type", "image_url",
+                                            "image_url", Map.of("url", "data:image/png;base64,AAAA"))
+                            ))
+                    )
+            );
+
+            TranslatedRequest translated = translator.translateRequest(request);
+
+            @SuppressWarnings("unchecked")
+            List<Object> messages = (List<Object>) translated.body().get("messages");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> userMessage = (Map<String, Object>) messages.get(1);
+            @SuppressWarnings("unchecked")
+            List<Object> content = (List<Object>) userMessage.get("content");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> toolResult = (Map<String, Object>) content.get(0);
+            assertEquals("tool_result", toolResult.get("type"));
+
+            @SuppressWarnings("unchecked")
+            List<Object> resultBlocks = (List<Object>) toolResult.get("content");
+            assertEquals(2, resultBlocks.size(), "配对修复后图片块必须仍在");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> imageBlock = (Map<String, Object>) resultBlocks.get(1);
+            assertEquals("image", imageBlock.get("type"));
+        }
+
+        /** 认不出的块被丢弃后若一无所剩，整条消息仍按既有语义丢弃。 */
+        @Test
+        @DisplayName("只剩认不出的块时整条丢弃")
+        void shouldDropWhenNothingSurvivesWhitelist() {
+            Map<String, Object> request = Map.of(
+                    "model", "test-model",
+                    "messages", List.of(
+                            Map.of("role", "assistant", "content", "",
+                                    "tool_calls", List.of(
+                                            Map.of("id", "call_1", "type", "function",
+                                                    "function", Map.of("name", "tool_a", "arguments", "{}"))
+                                    )),
+                            Map.of("role", "tool", "tool_call_id", "call_1", "content", List.of(
+                                    Map.of("type", "input_audio", "input_audio", Map.of("data", "x"))
+                            ))
+                    )
+            );
+
+            TranslatedRequest translated = translator.translateRequest(request);
+
+            @SuppressWarnings("unchecked")
+            List<Object> messages = (List<Object>) translated.body().get("messages");
+            // tool_result 整条丢弃 → assistant 的 tool_use 变成未被应答 → 也被丢弃
+            assertTrue(messages.isEmpty(), "无实质内容时不得造占位内容");
+        }
+
+        /**
+         * 构造单条 tool_result 并取出那个块，避免每个用例重复搭配对结构。
+         */
+        private Map<String, Object> translateToolResultContent(Object content) {
+            Map<String, Object> request = Map.of(
+                    "model", "test-model",
+                    "messages", List.of(
+                            Map.of("role", "assistant", "content", "",
+                                    "tool_calls", List.of(
+                                            Map.of("id", "call_1", "type", "function",
+                                                    "function", Map.of("name", "tool_a", "arguments", "{}"))
+                                    )),
+                            Map.of("role", "tool", "tool_call_id", "call_1", "content", content)
+                    )
+            );
+
+            TranslatedRequest translated = translator.translateRequest(request);
+
+            @SuppressWarnings("unchecked")
+            List<Object> messages = (List<Object>) translated.body().get("messages");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> userMessage = (Map<String, Object>) messages.get(1);
+            @SuppressWarnings("unchecked")
+            List<Object> blocks = (List<Object>) userMessage.get("content");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> toolResult = (Map<String, Object>) blocks.get(0);
+            return toolResult;
+        }
+    }
+
     @Nested
     @DisplayName("顶层字段映射")
     class TopLevelFields {
