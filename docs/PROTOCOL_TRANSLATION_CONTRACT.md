@@ -1,10 +1,13 @@
 # 协议翻译契约（请求侧）
 
-> **状态**：O2A（下游 OpenAI → 上游 Anthropic）请求侧**已实现**，见
+> **状态**：O2A（下游 OpenAI → 上游 Anthropic）请求侧**已实现并经实流量验证**，见
 > `OpenAiToAnthropicRequestTranslator` 与 `ChatCompletionService` 两处分支；
 > A2O（下游 `/v1/messages` + 上游 OpenAI）请求侧**尚未实现**，
 > `MessagesService` 的翻译分支仍抛 `ProtocolTranslationNotSupportedException`。
 > 本文档因此既是已实现说明（O2A）也是设计契约（A2O）。
+>
+> 标注了实测日期的段落是已验证的事实，其余是约束。已实测：多轮工具链（见响应侧契约第 1 节）、
+> 工具结果带图的多模态识别（3.4.2）。
 >
 > 相关：[AGENTS.md](../AGENTS.md)、[思考链回放调查](COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)、
 > [供应商适配史](PROVIDER_ADAPTATIONS.md)
@@ -132,8 +135,8 @@ Responses 或其它协议的专有分片原样发给 Anthropic，上游只会回
 | OpenAI 块 | Anthropic 块 | 处置 |
 |---|---|---|
 | `text` / `input_text` | `text` | 映射 |
-| `image_url`（data URL） | `image.source: {type: "base64", media_type, data}` | 映射，解析 `data:<mt>;base64,<data>` |
-| `image_url`（http/https） | `image.source: {type: "url", url}` | 映射。**不下载转 base64**——Anthropic 原生支持 URL 形态，代理侧下载是额外带宽、延迟与失败点 |
+| `image_url`（data URL） | `image.source: {type: "base64", media_type, data}` | 映射，解析 `data:<mt>;base64,<data>`。**Copilot 场景下的图片恒走这条**（见 3.4.2） |
+| `image_url`（http/https） | `image.source: {type: "url", url}` | 映射。**不下载转 base64**——Anthropic 原生支持 URL 形态，代理侧下载是额外带宽、延迟与失败点。当前主要客户端不产生这种输入，但保留该分支的代价为零 |
 | 其它 | — | 丢弃 |
 
 ### 3.4 工具
@@ -180,9 +183,11 @@ SDK 里该字段是 `Union[str, Iterable[Content]]`，其中 `Content` 含 `Imag
 
 **不要把 OpenAI 侧的「图片工具兼容规则」搬进翻译层。** 那条规则（把含图的 tool 消息整条
 改成普通 user 消息、删掉 `tool_call_id`）是针对「某些 OpenAI 兼容中转站把 `role: tool`
-的 content 当纯文本处理」这一实现缺陷的兼容妥协。Anthropic 侧不存在该缺陷，照协议把图片
-放进 `tool_result` 才是正解。若某个 Anthropic 中转站确实也认不出，那属于「这个上游需要
-什么」，用仅适用 `ANTHROPIC` 的请求体规则表达。
+的 content 当纯文本处理」这一实现缺陷的兼容妥協。**Anthropic 侧不存在该缺陷（已实测，
+见 3.4.2）**，照协议把图片放进 `tool_result` 就够了 —— 无需为 Anthropic 侧再写一条兼容规则。
+
+若将来遇到某个 Anthropic 中转站确实也认不出，那属于「这个上游需要什么」，用仅适用
+`ANTHROPIC` 的请求体规则表达（那时规则层能表达，因为报文已是 Anthropic 形态）。
 
 参考项目在这一点上都不完整，可以对照但不要照抄：one-api 的 `tool_result` 分支整个包在
 `if message.IsStringContent()` 里，多模态 tool 消息会丢掉 `tool_result` 与 `tool_use_id`
@@ -191,6 +196,28 @@ SDK 里该字段是 `Union[str, Iterable[Content]]`，其中 `Content` 含 `Imag
 Anthropic 的块数组 `Marshal` 成 JSON 字符串塞进 OpenAI tool 消息，等于把图变成一段描述图
 的文字。new-api 唯一做对的是 Responses 链的 `claudeToolResultToResponsesOutput`，那里做了
 真正的块级翻译 —— 本节要求的正是同一件事的反方向。
+
+#### 3.4.2 实测结论（2026-09-08，Copilot + mimo-v2.5 Anthropic 端点）
+
+下游打 `/v1/chat/completions`、上游走 Anthropic 端点，agent 调 `view_image` 读一张人物
+肖像照，**模型正确识别了图像内容**：思考链里出现帽檐宽度、羽毛装饰、暖色调、背景
+虚化等只有看到像素才能得出的细节。修前的同一场景下模型只能看到一段
+`[Image URI: vscode-chat-response-resource://...]` 文本。
+
+两条由此从推断变成事实：
+
+- **Anthropic 端点能识别 `tool_result` 里的图片块**。它不像 OpenAI 侧那些中转站那样把
+  工具结果当纯文本处理，因此不需要在翻译层做 tool→user 那套妥协。
+- **本节的形态选择是正确的**：块数组 + `image.source` 能被上游正确解析，不需要额外包装。
+
+**已实测的只有 data URL 分支，而且在 Copilot 场景下走不到另一条。** Copilot 的 `view_image`
+必须先把图片下载到本地才能识别（它读不了网页上的图，OpenAI 路径下同样如此，属于 Copilot
+侧的限制），因此工具结果里的图片恒为 base64。`http`/`https` 图片走原生
+`source.type: "url"` 那一条有单测覆盖，但**在当前主要客户端上没有触发路径**，
+实流量验证要等到某个客户端真的直接发远程 URL 时才可能发生。
+
+这条分支因此**不要因为「没验证过」就删掉或改成下载转 base64**：它是照 Anthropic 协议写的
+正确映射，代价为零（不下载就没有额外带宽、延迟与失败点），只是暂时没有实流量经过。
 
 ### 3.5 tool_use ↔ tool_result 配对修复（必须实现）
 
@@ -450,8 +477,9 @@ A2O 丢弃：`metadata`、`mcp_servers`、`container`、`context_management`、`
 理由见响应侧契约第 0 节：补上响应翻译才能让 O2A 这条链端到端可用。
 
 第 3 项（`tool_result` content 形态）是后补的：O2A 请求侧最初落地时压平了该字段，直到
-agent 用工具读图的场景暴露出来才修。教训是**「这个字段的目标形态是字符串」这个判断要按
-协议查证，不要按已见过的输入推断** —— 当时见过的 tool 消息都是纯文本的。
+agent 用工具读图的场景暴露出来才修，已于 2026-09-08 实测通过（见 3.4.2）。教训是
+**「这个字段的目标形态是字符串」这个判断要按协议查证，不要按已见过的输入推断** ——
+当时见过的 tool 消息都是纯文本的。
 
 ### 8.1 尚未决定的事项
 
