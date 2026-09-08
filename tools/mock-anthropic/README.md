@@ -4,13 +4,14 @@
 通过**模型名**触发正常、空响应、传输截断、错误码、重试中途成功等场景，
 用于在真实 HTTP / SSE 连接下验证 COSP 的 Anthropic 上游链路。
 
-## 与另外三个 mock 的分工
+## 与另外四个 mock 的分工
 
 | 工具 | 模拟谁 | 协议 | npm script | 端口 |
 | --- | --- | --- | --- | --- |
 | `mock-upstream` | 上游供应商（流式） | OpenAI | `mock:stream` | 8081 |
 | `mock-nonstream` | 上游供应商（非流式） | OpenAI | `mock:nonstream` | 8082 |
 | `mock-anthropic` | 上游供应商（两种模式） | **Anthropic** | `mock:anthropic` | 8083 |
+| `mock-toolorder` | 上游供应商（工具调用顺序专项） | OpenAI + Anthropic | `mock:toolorder` | 8084 |
 | `mock-cosp` | COSP 自己 | Ollama / OpenAI | `mock:cosp` | 11333 |
 
 **本 mock 不按模式拆成两个服务**，与 OpenAI 侧的做法刻意不同。原因是协议差异：

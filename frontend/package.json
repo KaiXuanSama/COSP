@@ -12,6 +12,7 @@
     "mock:stream": "node ../tools/mock-upstream/mock-upstream.js",
     "mock:nonstream": "node ../tools/mock-nonstream/mock-nonstream.js",
     "mock:anthropic": "node ../tools/mock-anthropic/mock-anthropic.js",
+    "mock:toolorder": "node ../tools/mock-toolorder/mock-toolorder.js",
     "mock:cosp": "node ../tools/mock-cosp/mock-cosp.js"
   },
   "dependencies": {
