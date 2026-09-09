@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { NCard, NInput, NInputNumber, NButton, NSwitch, NModal, useMessage } from 'naive-ui'
 import { useProviderStore } from '@/stores/providers'
 import { copyToClipboard } from '@/utils/clipboard'
+import { DEFAULT_PROXY_PORT, formatProxyAddress, parseProxyAddress } from '@/features/proxy-address/proxyAddress'
 
 const providerStore = useProviderStore()
 const message = useMessage()
@@ -18,6 +19,13 @@ const retryMaxAttempts = ref<number | null>(5)
 const retryDefaultValue = ref(5)
 const retryMaxConfigurable = ref(100)
 const retrySaving = ref(false)
+
+// ── 出站代理 ──
+// 后端用一个 host:port 字符串持久化，界面拆成两个输入框降低填写门槛。
+// 主机留空后保存 = 清空代理地址，所有供应商直连。
+const proxyHost = ref('')
+const proxyPort = ref<number | null>(DEFAULT_PROXY_PORT)
+const proxySaving = ref(false)
 
 /** 把当前取值翻译成人话，避免用户对着 -1 / 0 猜语义。 */
 const retryHint = computed(() => {
@@ -37,7 +45,7 @@ const gatewayRegenerating = ref(false)
 const showGatewayHelp = ref(false)
 
 onMounted(async () => {
-  // 一次聚合调用拿全部运行时配置：伪造版本号 + 下游鉴权状态。
+  // 一次聚合调用拿全部运行时配置：伪造版本号 + 重试策略 + 出站代理 + 下游鉴权状态。
   try {
     const config = await providerStore.fetchRuntimeConfig()
     if (config.fakeVersion) {
@@ -50,6 +58,9 @@ onMounted(async () => {
     retryMaxAttempts.value = config.retryPolicy.maxAttempts
     retryDefaultValue.value = config.retryPolicy.defaultValue
     retryMaxConfigurable.value = config.retryPolicy.maxConfigurable
+    const proxyAddress = parseProxyAddress(config.upstreamProxyAddress)
+    proxyHost.value = proxyAddress.host
+    proxyPort.value = proxyAddress.port
   } catch {
     // 读取失败时保持默认值
   }
@@ -76,6 +87,27 @@ async function saveFakeVersion() {
   await providerStore.saveFakeVersion(fakeVersion.value)
   versionPlaceholder.value = fakeVersion.value
   message.success('版本号已保存')
+}
+
+async function saveProxyAddress() {
+  const host = proxyHost.value.trim()
+  const port = proxyPort.value
+  if (host && (port === null || !Number.isInteger(port) || port < 1 || port > 65535)) {
+    message.warning('代理端口必须是 1 到 65535 的整数')
+    return
+  }
+
+  proxySaving.value = true
+  try {
+    const address = formatProxyAddress(host, port ?? DEFAULT_PROXY_PORT)
+    await providerStore.saveProxyAddress(address)
+    proxyHost.value = host
+    message.success(address ? `代理地址已保存为 ${address}` : '代理地址已清空')
+  } catch {
+    message.error('代理地址保存失败，请重试')
+  } finally {
+    proxySaving.value = false
+  }
 }
 
 async function onGatewayToggle(value: boolean) {
@@ -144,6 +176,20 @@ async function regenerateGatewayKey() {
         <n-input id="fakeVersion" v-model:value="fakeVersion" :placeholder="versionPlaceholder"
           @keyup.enter="saveFakeVersion" />
         <n-button type="primary" @click="saveFakeVersion">保存</n-button>
+      </div>
+    </n-card>
+
+    <!-- 出站代理 -->
+    <n-card title="出站代理" :bordered="true" style="margin-top: 16px;">
+      <div class="proxy-address-row">
+        <n-input class="proxy-host-input" v-model:value="proxyHost" placeholder="代理 IP 或主机名，例如 127.0.0.1"
+          clearable @keyup.enter="saveProxyAddress" />
+        <n-input-number class="proxy-port-input" v-model:value="proxyPort" :min="1" :max="65535"
+          :step="1" :precision="0" placeholder="端口" @keyup.enter="saveProxyAddress" />
+        <n-button type="primary" :loading="proxySaving" @click="saveProxyAddress">保存</n-button>
+      </div>
+      <div class="proxy-address-note">
+        只对已开启「使用代理」的供应商生效；未开启的供应商仍然直连。清空代理 IP 并保存可停用代理。
       </div>
     </n-card>
 
@@ -260,6 +306,27 @@ async function regenerateGatewayKey() {
   display: flex;
   gap: $space-sm;
   align-items: center;
+}
+
+.proxy-address-row {
+  display: flex;
+  gap: $space-sm;
+  align-items: center;
+}
+
+.proxy-host-input {
+  flex: 1;
+}
+
+.proxy-port-input {
+  width: 132px;
+}
+
+.proxy-address-note {
+  margin-top: $space-sm;
+  font-size: 12px;
+  color: $text-muted;
+  line-height: 1.6;
 }
 
 .retry-policy-row {

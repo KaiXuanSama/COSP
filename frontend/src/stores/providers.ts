@@ -104,6 +104,8 @@ export interface RuntimeConfigView {
   fakeVersion: string
   gatewayAuth: GatewayAuthStatus
   retryPolicy: RetryPolicyView
+  /** 出站代理地址，形如 host:port；空串表示未配置代理。 */
+  upstreamProxyAddress: string
 }
 
 export const useProviderStore = defineStore('providers', () => {
@@ -155,7 +157,7 @@ export const useProviderStore = defineStore('providers', () => {
     fakeVersion.value = version
   }
 
-  // 聚合读取全部运行时配置（伪造版本号 + 下游鉴权状态 + 重试策略），一次调用拿全部显示信息。
+  // 聚合读取全部运行时配置（伪造版本号 + 下游鉴权状态 + 重试策略 + 出站代理），一次调用拿全部显示信息。
   // 敏感值已在后端脱敏；明文 Key 仍只经 reveal / regenerate 按需获取。
   async function fetchRuntimeConfig(): Promise<RuntimeConfigView> {
     const res = await http.get('/runtime-config')
@@ -174,11 +176,19 @@ export const useProviderStore = defineStore('providers', () => {
         defaultValue: retry.defaultValue ?? 5,
         maxConfigurable: retry.maxConfigurable ?? 100,
       },
+      upstreamProxyAddress: typeof res.data.upstreamProxyAddress === 'string'
+        ? res.data.upstreamProxyAddress
+        : '',
     }
   }
 
   async function saveRetryMaxAttempts(maxAttempts: number) {
     await http.post('/retry-policy', null, { params: { maxAttempts } })
+  }
+
+  /** 专项写入出站代理地址；与其它运行时配置一样统一使用 query string。 */
+  async function saveProxyAddress(address: string) {
+    await http.post('/proxy-address', null, { params: { address } })
   }
 
   // ==================== 下游鉴权（网关 API Key）====================
@@ -249,5 +259,5 @@ export const useProviderStore = defineStore('providers', () => {
     await fetchAll()
   }
 
-  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchRuntimeConfig, saveRetryMaxAttempts, setGatewayAuthEnabled, revealGatewayApiKey, regenerateGatewayApiKey, addProvider, deleteProvider, updateProvider }
+  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchRuntimeConfig, saveRetryMaxAttempts, saveProxyAddress, setGatewayAuthEnabled, revealGatewayApiKey, regenerateGatewayApiKey, addProvider, deleteProvider, updateProvider }
 })
