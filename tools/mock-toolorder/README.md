@@ -14,14 +14,32 @@
 
 COSP 侧的清洗已由单测证明**无损**（`AbstractUpstreamChatServiceTests` 里那组
 `normalizeChunkKeepsToolCall*` 用例：工具调用的 `id` / `name` / `arguments` 与
-`finish_reason` 全部原样透传，空串占位被删但对下游等效）。因此责任落在下游客户端的流解析，
-本 mock 的作用是**稳定复现那个顺序**，用来观察客户端实际行为、并产出可复现的最小样例。
+`finish_reason` 全部原样透传，空串占位被删但对下游等效）。因此当时把责任指向下游客户端的流解析，
+本 mock 的作用是**稳定复现那个顺序**，用来观察客户端实际行为。
 
-怀疑的位置在 `vscode-copilot-chat` 的 `SSEProcessor.processSSEInner`
+当时怀疑的位置是 `vscode-copilot-chat` 的 `SSEProcessor.processSSEInner`
 （`src/platform/networking/node/stream.ts`）：工具调用分支里有一句
 `if (solution.text.length)` 补空格去 flush linkifier，说明作者假定的是「正文先、工具调用后」；
 而收尾的 `getToolCalls()` 对 `name` 与 `id` 用非空断言，没填上就产出 `undefined`，
 上层匹配不到工具却又不报错，于是判成「本轮没有工具调用」而结束整轮。
+
+## 实测结论（2026-09-09）：顺序已被排除
+
+> **先看这一节**。工具调用失败时不要再从「顺序」开始怀疑，那条路已经走完了。
+
+四种组合（OpenAI 直连 / O2A 翻译 × 两种顺序）各跑两轮，**Copilot 全部正常解析并执行工具**。
+mock 日志还确认了每一轮都「下游声明 73 个工具，含 read_file」，因此工具未声明这个干扰因素也不成立。
+
+这推翻了上一节的怀疑：`SSEProcessor` 里那句补空格确实假定了正文在前，
+但不足以丢掉工具调用。昨夜看到的现象另有成因，待实机重测。
+
+一个值得记住的干扰项：那时 COSP 日志的**规整显示自己有序列 bug**
+（OpenAI 侧按类型归桶后按写死顺序输出，总是显示工具在正文之前），
+已修（`frontend/src/components/calllog/chunkAggregation.ts`）。当时看到的「工具在前」
+有可能就是这个显示 bug 造成的假象 —— 日志本身不可信时，由它得出的现象描述也不可信。
+
+本 mock 保留下来作为回归工具：它现在是一个已知能跑通的基准，
+下次怀疑流解析时可用它先确认「正常形态仍然正常」。
 
 ## 与另外四个 mock 的分工
 
@@ -69,15 +87,34 @@ node tools/mock-toolorder/mock-toolorder.js
 
 ## 两个场景
 
-| 模型名 | 顺序 | 预期 |
+| 模型名 | 顺序 | 实测结果 |
 | --- | --- | --- |
-| `to-content-first` | 正文 → 工具调用 | **对照组**：已知可正常执行工具 |
-| `to-tool-first` | 工具调用 → 正文 | **复现组**：疑似静默终止且不执行工具 |
+| `to-content-first` | 正文 → 工具调用 | Copilot 正常执行工具（两种协议）|
+| `to-tool-first` | 工具调用 → 正文 | Copilot **也**正常执行工具（两种协议）|
 
 两个场景共用同一份正文、同一个工具（`read_file`）、同一份参数，**唯一差异是顺序**。
 参数刻意切成两片，顺带覆盖「参数跨片」这一常见形态。
 
 模型名解析容忍 `[provider-key] ` 前缀 —— 手打请求时容易带上。
+
+### 工具参数必须满足下游的 schema
+
+参数发的是 `read_file` 的完整形态，三个字段在它的 schema 里**都是 required**：
+
+```json
+{ "filePath": "<仓库根>/README.md", "startLine": 1, "endLine": 40 }
+```
+
+`filePath` 由脚本位置反推仓库根得出的**绝对路径**，换机器换盘符不用改代码；
+`MOCK_TOOLORDER_FILE` 可指向其他文件。
+
+这里曾经只发 `{"filePath":"README.md"}` —— 缺两个必填字段、路径又是相对的，
+于是工具执行必然以参数校验失败告终。**那种失败会把「顺序」这个唯一变量淹没**：
+看到的报错来自参数，而不是来自想观察的流解析行为。
+教训：mock 的载荷也要照下游 schema 查证，不能只求「形态像个工具调用」。
+
+启动时会打印完整参数，目标文件不存在会告警；每次请求还会记录下游声明了多少工具、
+含不含 `read_file` —— 「工具未找到」与「顺序导致的静默终止」是两种现象，必须能一眼分开。
 
 ### OpenAI 侧（`/chat/completions`）帧序列
 
@@ -97,6 +134,9 @@ delta{} finish_reason=tool_calls          delta{} finish_reason=tool_calls
 工具调用首帧给全 `id` / `type` / `function.name`，后续帧只带 `arguments` 增量 ——
 这是 OpenAI 协议的标准分片方式，也是 Copilot 的 `StreamingToolCall` 期待的形态
 （它只在 `toolCall.id` 为 truthy 时赋值）。
+
+参数的切点取 JSON 串中点，必然落在 `filePath` 的值内部，因此两片各自都不是合法 JSON ——
+任何试图按单片解析的实现都会在这里暴露。
 
 ### Anthropic 侧（`/messages`）block index
 

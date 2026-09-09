@@ -65,7 +65,8 @@ describe('aggregateChunks', () => {
    *
    * 这一条是本组的核心：早先的实现把整条流归成三个桶后按写死的
    * `thinking → tool_calls → content` 输出，于是无论上游实际顺序如何，
-   * 规整视图永远显示工具调用在正文之前 —— 顺序类问题因此无法从日志中看出。
+   * 规整视图永远显示工具调用在正文之前 —— 顺序类问题因此无法从日志中看出，
+   * 由日志得出的现象描述也就不可信（详见 `tools/mock-toolorder/README.md`）。
    */
   it('preserves tool-call-before-content order for OpenAI streams', () => {
     const segments = aggregateChunks([

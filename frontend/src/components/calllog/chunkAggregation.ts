@@ -56,9 +56,10 @@ export function aggregateChunks(chunks: string[], downstreamProtocol: WireProtoc
  * `thinking → tool_calls → content` 顺序输出。代价是<strong>规整视图永远显示
  * 「工具调用在正文之前」</strong>，与上游实际帧序无关。
  *
- * <p>这让日志在「顺序类问题」上给出误导性的图像 —— 而那恰是最难排查的一类：
- * 某些客户端对「工具调用先于正文」的处理有缺陷（会静默终止且不执行工具），
- * 排查时若日志看起来正常，就只能靠换模型试错。这一条是本次改动的直接动因。
+ * <p>这让日志在「顺序类问题」上给出误导性的图像。直接动因是一次排查
+ * 「工具调用先于正文时客户端不执行工具」的怀疑 —— 那个怀疑后来被实测推翻
+ * （见 `tools/mock-toolorder/README.md`），但推翻它的前提正是先让日志说真话：
+ * <strong>日志不可信时，由它得出的现象描述也不可信</strong>。
  *
  * <h2>与 Anthropic 侧对齐</h2>
  * Anthropic 侧靠 `content_block_start` 天然分段，顺序由 `blockOrder` 记录。
