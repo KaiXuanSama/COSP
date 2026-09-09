@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS provider_config (
     -- 独立成列而非从 base_url 推导：中转站的 Anthropic 端点位置不可预测（有的在 /v1/messages，
     -- 有的在根路径），继续猜只会让「配了却调不通」这类问题无从排查。
     anthropic_base_url  TEXT      NOT NULL DEFAULT '',
+    -- 该供应商的出站请求是否经由 HTTP 代理。默认 0（直连）：代理是需要用户显式选择的能力，
+    -- 默认开启会让升级后所有出站流量突然改道。代理地址本身存在 app_config，不在这里。
+    use_proxy        INTEGER      NOT NULL DEFAULT 0 CHECK (use_proxy IN (0, 1)),
     updated_at       TEXT         NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
 );
 

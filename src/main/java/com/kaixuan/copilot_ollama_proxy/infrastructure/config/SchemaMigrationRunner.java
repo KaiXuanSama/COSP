@@ -45,7 +45,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final double V8_9_VERSION = 8.9;
     /** V9 起版本号为整数；{@code a.b} 作为 double 会让 V8.10 碎成 V8.1。 */
     private static final double V9_VERSION = 9;
-    private static final double CURRENT_SCHEMA_VERSION = 10;
+    private static final double V10_VERSION = 10;
+    private static final double CURRENT_SCHEMA_VERSION = 11;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -245,8 +246,10 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         this::migrateToV89ReasoningEffortModes),
                 new MigrationStep(V9_VERSION, "最大输出升级为上限与注入模式",
                         this::migrateToV9MaxOutputModes),
-                new MigrationStep(CURRENT_SCHEMA_VERSION, "新增 Anthropic 思考方式与思考预算",
-                        this::migrateToV10ThinkingMode));
+                new MigrationStep(V10_VERSION, "新增 Anthropic 思考方式与思考预算",
+                        this::migrateToV10ThinkingMode),
+                new MigrationStep(CURRENT_SCHEMA_VERSION, "供应商新增出站代理开关",
+                        this::migrateToV11ProviderProxy));
     }
 
     /**
@@ -990,7 +993,26 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
         jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
                 + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
-                CURRENT_SCHEMA_VERSION, "V10 增量迁移：新增 Anthropic 思考方式与思考预算");
+                V10_VERSION, "V10 增量迁移：新增 Anthropic 思考方式与思考预算");
+    }
+
+    /**
+     * V11：供应商新增出站代理开关。
+     *
+     * <p>默认 {@code 0}（不走代理），因此存量供应商升级后行为不变 —— 代理开关是一项
+     * 需要用户显式选择的能力，默认开启会让升级后所有出站流量突然改道。
+     *
+     * <p>不需要表重建：纯新增列，SQLite 的 {@code ALTER TABLE ADD COLUMN} 能直接带
+     * {@code DEFAULT} 与 {@code CHECK}。仅当改现有列的类型 / 默认值 / 约束时才需重建。
+     */
+    private void migrateToV11ProviderProxy() {
+        if (tableExists("provider_config")) {
+            addColumnIfNotExists("provider_config", "use_proxy",
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (use_proxy IN (0, 1))");
+        }
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+                CURRENT_SCHEMA_VERSION, "V11 增量迁移：供应商新增出站代理开关");
     }
 
     /**
