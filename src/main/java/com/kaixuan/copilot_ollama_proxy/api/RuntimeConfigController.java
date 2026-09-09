@@ -48,6 +48,21 @@ public class RuntimeConfigController {
     }
 
     /**
+     * 保存出站代理地址。
+     *
+     * <p>空值表示清空（没有代理，全部直连）。地址改动即时生效：保存后决策中心的内存值同步更新，
+     * 下一个出站连接就用新地址。不校验 {@code host:port} 形态 —— 面向个人使用，填错时表现为
+     * 该目标连不上，用户自查即可，不值得为此加一层可能误拒 IPv6 / 带认证代理的格式校验。
+     *
+     * @param address 形如 {@code host:port} 的地址，空表示清空
+     * @return {@code { ok: true }}
+     */
+    @PostMapping("/config/api/proxy-address")
+    public Mono<Map<String, Object>> saveProxyAddress(@RequestParam(required = false, defaultValue = "") String address) {
+        return runtimeConfigService.saveProxyAddress(address).thenReturn(Map.of("ok", true));
+    }
+
+    /**
      * 保存上游重试次数。
      *
      * <p>值非法（超出 {@code [-1, 100]}）时返回 400 并带上原因，不落库。

@@ -2,7 +2,6 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.config;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.net.InetSocketAddress;
@@ -12,7 +11,21 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
 
 /**
- * 决定某个出站目标是否走 HTTP 代理。
+ * 出站代理决策中心：既持有代理地址，又逐目标判定走不走代理。
+ *
+ * <h2>语义只有一句</h2>
+ * 「有一个代理，对启用代理的供应商用，对不启用的直连」。由此推出两条正交判据，
+ * 缺任一条都直连：
+ * <ul>
+ *   <li><strong>有没有代理</strong>：由 {@link #proxyAddress} 是否配置表达。地址为空 =
+ *       没有代理 = 一切直连，无需另设「全局开关」——空地址本身就是关。</li>
+ *   <li><strong>用不用代理</strong>：由 {@link #proxiedTargets} 是否命中表达。集合为空 =
+ *       没有任何供应商开了 {@code use_proxy} = 一切直连。</li>
+ * </ul>
+ *
+ * <p>刻意<strong>不做全局启停总闸</strong>：那是第三个维度，与上面两条重叠。要临时停用代理，
+ * 清空地址即可；要停用单个供应商，关它的开关即可。多一个总闸只会制造「开关开着但地址空着」
+ * 这类需要解释的组合。
  *
  * <h2>为何是一个谓词而不是两个 HttpClient</h2>
  * 代理是<strong>连接级</strong>设置，{@code WebClient.Builder.clone()} 克隆不出新的
@@ -44,12 +57,10 @@ import java.util.concurrent.CopyOnWriteArraySet;
  * 复用本类</strong>而不是另立一份清单，否则会出现「解析交给了代理但连接没走代理」这类
  * 自相矛盾的组合。背景见 {@code WebClientConfig#httpClient} 的风险说明。
  *
- * <h2>当前阶段：只有全局开关</h2>
- * 供应商粒度的开关（{@code provider_config.use_proxy}）尚未落库，因此
- * {@link #proxiedTargets} 现在是空集，而 {@link #isDirect} 在全局开关打开时对
- * <strong>所有</strong>目标返回「走代理」，与本功能之前的全局代理行为一致。
- * 接上那一列之后，只需让目录层调用 {@link #replaceProxiedTargets} 灌入
- * 「开了开关的供应商的 host:port 集合」，判定逻辑本身不用改。
+ * <h2>地址存内存、由 app_config 灌入</h2>
+ * {@link #proxyAddress} 是 {@code volatile} 内存值，不在这里读数据库 —— {@link #isDirect}
+ * 与地址求值都在 Reactor Netty 建连的热路径上，碰阻塞 JDBC 不可接受。真源是
+ * {@code app_config}，由冷路径（启动加载、设置页保存）调 {@link #updateProxyAddress} 灌入。
  */
 @Component
 public class OutboundProxyDecider {
@@ -57,12 +68,12 @@ public class OutboundProxyDecider {
     private static final Logger log = LoggerFactory.getLogger(OutboundProxyDecider.class);
 
     /**
-     * 全局代理总闸。
+     * 当前代理地址，形如 {@code host:port}；空表示没有代理。
      *
-     * <p>关掉即所有出站直连，等价于没配代理 —— 这一档存在的意义是「代理挂了想快速排除
-     * 它的影响」时不必去清空地址，也不必逐个关供应商开关。
+     * <p>{@code volatile}：写在冷路径（启动加载、设置页保存），读在建连热路径，
+     * 单个引用的可见性用 volatile 足够，不需要锁。空字符串是「没有代理」的规范表示。
      */
-    private final boolean enabled;
+    private volatile String proxyAddress = "";
 
     /**
      * 应当走代理的目标集合，元素形如 {@code host:port}（小写）。
@@ -73,26 +84,38 @@ public class OutboundProxyDecider {
     private final Set<String> proxiedTargets = new CopyOnWriteArraySet<>();
 
     /**
-     * 集合为空时的判定。
+     * 是否配置了代理地址。
      *
-     * <p>当前恒为 {@code true}（空集 = 全部走代理），保持接上供应商开关之前的既有行为。
-     * 供应商粒度落库后应改为 {@code false}（空集 = 谁都不走），否则「所有供应商都关了开关」
-     * 会被误判成「所有供应商都走代理」。
+     * <p>{@code WebClientConfig} 用它决定 {@link #currentProxyAddress} 的 Supplier
+     * 会不会被调用；更重要的是它替代了原先的「全局开关」——空地址即没有代理。
      */
-    private static final boolean PROXY_ALL_WHEN_EMPTY = true;
-
-    public OutboundProxyDecider(@Value("${http.proxy.enabled:true}") boolean enabled) {
-        this.enabled = enabled;
+    public boolean hasProxyAddress() {
+        return !proxyAddress.isBlank();
     }
 
     /**
-     * 全局代理是否启用。
+     * 当前代理地址原文（{@code host:port}），空表示没有代理。
      *
-     * <p>{@code WebClientConfig} 用它决定要不要给 {@code HttpClient} 装上
-     * {@code ProxyProvider} —— 关闭时不装，连谓词都不会被调用。
+     * <p>供设置页回显，也供 {@code WebClientConfig} 的地址 Supplier 现读。
      */
-    public boolean isEnabled() {
-        return enabled;
+    public String currentProxyAddress() {
+        return proxyAddress;
+    }
+
+    /**
+     * 更新代理地址（冷路径调用）。
+     *
+     * <p>只改内存值；落库由调用方（设置页保存用例）负责。传 null 或空视为清空 = 没有代理。
+     *
+     * @param address 形如 {@code host:port} 的地址；null 或空表示清空
+     */
+    public void updateProxyAddress(String address) {
+        this.proxyAddress = address == null ? "" : address.trim();
+        if (proxyAddress.isBlank()) {
+            log.info("[Proxy] 代理地址已清空，全部出站直连");
+        } else {
+            log.info("[Proxy] 代理地址更新为 {}", proxyAddress);
+        }
     }
 
     /**
@@ -101,19 +124,20 @@ public class OutboundProxyDecider {
      * <p>语义是反的（返回 true 表示直连），因为 Reactor Netty 的钩子叫
      * {@code nonProxyHostsPredicate} —— 保持与它同向，避免在接线处再做一次取反。
      *
+     * <p>两条判据任一不满足都直连：没配代理地址（{@link #hasProxyAddress} 为假），
+     * 或目标不在 {@link #proxiedTargets} 里。集合为空时<strong>所有</strong>目标直连 ——
+     * 这是「没有任何供应商开代理」的正确表现，绝不能反过来当成「全部走代理」。
+     *
      * @param address 即将连接的目标地址；非 {@link InetSocketAddress} 时保守直连
      * @return true 表示不走代理
      */
     public boolean isDirect(SocketAddress address) {
-        if (!enabled) {
+        if (!hasProxyAddress()) {
             return true;
         }
         if (!(address instanceof InetSocketAddress inet)) {
             // Unix domain socket 之类的非 IP 目标：代理无从施加，直连。
             return true;
-        }
-        if (proxiedTargets.isEmpty()) {
-            return !PROXY_ALL_WHEN_EMPTY;
         }
         return !proxiedTargets.contains(targetKey(inet));
     }
@@ -125,7 +149,7 @@ public class OutboundProxyDecider {
      * 最不容易漏（增量要处理「开关关掉」「供应商删除」「base_url 改了」三种撤销路径，
      * 漏一种就会留下一个再也清不掉的陈旧目标）。
      *
-     * @param targets 形如 {@code host:port} 的目标；null 或空表示回到默认判定
+     * @param targets 形如 {@code host:port} 的目标；null 或空表示清空（一切直连）
      */
     public void replaceProxiedTargets(Set<String> targets) {
         proxiedTargets.clear();

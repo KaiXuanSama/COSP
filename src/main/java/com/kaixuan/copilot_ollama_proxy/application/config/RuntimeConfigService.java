@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.application.config;
 
 import com.kaixuan.copilot_ollama_proxy.application.config.GatewayAuthService.GatewayAuthStatus;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.config.OutboundProxyDecider;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
@@ -23,16 +24,22 @@ public class RuntimeConfigService {
 
     private static final String FAKE_VERSION_KEY = "fake_version";
 
+    /** 出站代理地址（{@code host:port}）在 app_config 里的键。空值表示没有代理。 */
+    static final String UPSTREAM_PROXY_ADDRESS_KEY = "upstream_proxy_address";
+
     private final AppConfigRepository appConfigRepository;
     private final GatewayAuthService gatewayAuthService;
     private final RetryPolicyService retryPolicyService;
+    private final OutboundProxyDecider proxyDecider;
 
     public RuntimeConfigService(AppConfigRepository appConfigRepository,
                                 GatewayAuthService gatewayAuthService,
-                                RetryPolicyService retryPolicyService) {
+                                RetryPolicyService retryPolicyService,
+                                OutboundProxyDecider proxyDecider) {
         this.appConfigRepository = appConfigRepository;
         this.gatewayAuthService = gatewayAuthService;
         this.retryPolicyService = retryPolicyService;
+        this.proxyDecider = proxyDecider;
     }
 
     /**
@@ -49,11 +56,17 @@ public class RuntimeConfigService {
         Mono<Integer> retryMaxAttemptsMono = Mono.fromCallable(retryPolicyService::getMaxAttempts)
                 .subscribeOn(Schedulers.boundedElastic());
 
-        return Mono.zip(fakeVersionMono, gatewayAuthService.getStatus(), retryMaxAttemptsMono)
+        // 代理地址读内存里的当前值，不回查 DB：decider 是它的运行时真源（启动时已从 app_config 灌入），
+        // 保存路径也会同步更新它。回查 DB 只会多一次 IO，还可能与内存值短暂不一致。
+        Mono<String> proxyAddressMono = Mono.fromCallable(proxyDecider::currentProxyAddress)
+                .subscribeOn(Schedulers.boundedElastic());
+
+        return Mono.zip(fakeVersionMono, gatewayAuthService.getStatus(), retryMaxAttemptsMono, proxyAddressMono)
                 .map(tuple -> new RuntimeConfigView(tuple.getT1(), tuple.getT2(),
                         new RetryPolicyView(tuple.getT3(),
                                 RetryPolicyService.DEFAULT_MAX_ATTEMPTS,
-                                RetryPolicyService.MAX_CONFIGURABLE_ATTEMPTS)));
+                                RetryPolicyService.MAX_CONFIGURABLE_ATTEMPTS),
+                        tuple.getT4()));
     }
 
     public Mono<Void> saveFakeVersion(String version) {
@@ -75,14 +88,45 @@ public class RuntimeConfigService {
     }
 
     /**
+     * 保存出站代理地址，并同步更新决策中心的内存值。
+     *
+     * <p>先落库再更内存：万一落库失败，内存不会先于持久化改动，重启后不会出现
+     * 「界面显示旧值但实际用的是没存下的新值」。归一化只做 trim，不校验 {@code host:port}
+     * 形态 —— 这是面向个人使用的服务，地址填错时表现为该目标连不上，用户自己就能发现，
+     * 不值得为此加一层可能误拒合法写法（IPv6、带认证的代理 URL 等）的格式校验。
+     *
+     * @param address 形如 {@code host:port} 的地址；空表示清空 = 没有代理
+     * @return 完成信号
+     */
+    public Mono<Void> saveProxyAddress(String address) {
+        String normalized = address == null ? "" : address.trim();
+        return Mono.<Void>fromRunnable(() -> {
+            appConfigRepository.saveConfig(UPSTREAM_PROXY_ADDRESS_KEY, normalized);
+            proxyDecider.updateProxyAddress(normalized);
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 从 app_config 读出代理地址并灌入决策中心（启动时调用一次）。
+     *
+     * <p>由 {@code ProxyConfigBootstrap} 在启动阶段调用，把持久化的地址带进内存。
+     * 与设置页保存共用 {@code decider} 的同一个内存槽，因此启动后二者一致。
+     */
+    public void loadProxyAddressIntoDecider() {
+        String stored = appConfigRepository.findConfigValue(UPSTREAM_PROXY_ADDRESS_KEY);
+        proxyDecider.updateProxyAddress(stored == null ? "" : stored);
+    }
+
+    /**
      * 运行时配置聚合视图。
      *
      * @param fakeVersion  伪造版本号（未配置时为空串）
      * @param gatewayAuth  下游鉴权状态（含脱敏 Key，绝不含明文）
      * @param retryPolicy  上游重试策略
+     * @param upstreamProxyAddress 出站代理地址（{@code host:port}，空串表示没有代理）
      */
     public record RuntimeConfigView(String fakeVersion, GatewayAuthStatus gatewayAuth,
-                                    RetryPolicyView retryPolicy) {
+                                    RetryPolicyView retryPolicy, String upstreamProxyAddress) {
     }
 
     /**
