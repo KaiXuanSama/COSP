@@ -34,6 +34,7 @@ class ProviderRequestTransformRepositoryTests {
                 + "body_preview_json TEXT NOT NULL CHECK (json_valid(body_preview_json)), "
                 + "body_rules_version INTEGER NOT NULL CHECK (body_rules_version >= 1), "
                 + "body_rules_json TEXT NOT NULL CHECK (json_valid(body_rules_json)), "
+                + "body_rules_schema INTEGER NOT NULL DEFAULT 2 CHECK (body_rules_schema >= 1), "
                 + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')), "
                 + "FOREIGN KEY (provider_id) REFERENCES provider_config(id) ON DELETE CASCADE)");
@@ -54,7 +55,7 @@ class ProviderRequestTransformRepositoryTests {
         repository.upsert(
                 providerId, 1, "[{\"key\":\"api-key\",\"value\":\"{apiKey}\"}]",
                 "[\"base\",\"tools\"]", "{\"model\":\"<string>\",\"stream\":true}",
-                1, "{\"version\":1,\"rules\":[]}");
+                2, "{\"version\":2,\"groups\":[]}");
 
         ProviderRequestTransformRow row = repository.findByProviderId(providerId);
         assertThat(row).isNotNull();
@@ -63,8 +64,9 @@ class ProviderRequestTransformRepositoryTests {
         assertThat(row.headerRulesJson()).contains("api-key");
         assertThat(row.bodyTemplateKeysJson()).isEqualTo("[\"base\",\"tools\"]");
         assertThat(row.bodyPreviewJson()).contains("\"stream\":true");
-        assertThat(row.bodyRulesVersion()).isEqualTo(1);
-        assertThat(row.bodyRulesJson()).isEqualTo("{\"version\":1,\"rules\":[]}");
+        assertThat(row.bodyRulesVersion()).isEqualTo(2);
+        assertThat(row.bodyRulesJson()).isEqualTo("{\"version\":2,\"groups\":[]}");
+        assertThat(row.bodyRulesSchema()).isEqualTo(2);
         assertThat(row.createdAt()).isNotBlank();
         assertThat(row.updatedAt()).isNotBlank();
     }
@@ -72,12 +74,12 @@ class ProviderRequestTransformRepositoryTests {
     @Test
     void upsertUpdatesExistingRowWithoutCreatingDuplicate() {
         int providerId = insertProvider("alpha");
-        repository.upsert(providerId, 1, "[]", "[\"base\"]", "{}", 1,
-                "{\"version\":1,\"rules\":[]}");
+        repository.upsert(providerId, 1, "[]", "[\"base\"]", "{}", 2,
+                "{\"version\":2,\"groups\":[]}");
 
         repository.upsert(providerId, 2, "[{\"key\":\"x-token\",\"value\":\"v\"}]",
                 "[\"custom\"]", "{\"custom\":true}", 2,
-                "{\"version\":1,\"rules\":[]}");
+                "{\"version\":2,\"groups\":[]}");
 
         Integer count = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM provider_request_transform WHERE provider_id = ?",
@@ -96,12 +98,12 @@ class ProviderRequestTransformRepositoryTests {
         int firstId = insertProvider("alpha");
         int secondId = insertProvider("beta");
         int thirdId = insertProvider("gamma");
-        repository.upsert(firstId, 1, "[]", "[\"base\"]", "{\"id\":1}", 1,
-                "{\"version\":1,\"rules\":[]}");
-        repository.upsert(secondId, 1, "[]", "[\"base\"]", "{\"id\":2}", 1,
-                "{\"version\":1,\"rules\":[]}");
-        repository.upsert(thirdId, 1, "[]", "[\"base\"]", "{\"id\":3}", 1,
-                "{\"version\":1,\"rules\":[]}");
+        repository.upsert(firstId, 1, "[]", "[\"base\"]", "{\"id\":1}", 2,
+                "{\"version\":2,\"groups\":[]}");
+        repository.upsert(secondId, 1, "[]", "[\"base\"]", "{\"id\":2}", 2,
+                "{\"version\":2,\"groups\":[]}");
+        repository.upsert(thirdId, 1, "[]", "[\"base\"]", "{\"id\":3}", 2,
+                "{\"version\":2,\"groups\":[]}");
 
         Map<Integer, ProviderRequestTransformRow> result = repository.findByProviderIds(
                 java.util.List.of(thirdId, firstId));

@@ -24,6 +24,7 @@ public class ProviderModelDiscoveryController {
     public Mono<ResponseEntity<Object>> pullProviderModels(@PathVariable String providerKey,
                                                            @RequestBody Map<String, String> body) {
         return providerModelDiscoveryService.pullModels(providerKey, new ProviderModelDiscoveryService.ModelPullCommand(
-                body.get("baseUrl"), body.get("apiKey"), body.get("keyUuid"), body.get("modelPullPath")));
+                body.get("baseUrl"), body.get("apiKey"), body.get("keyUuid"), body.get("modelPullPath"),
+                ProviderModelDiscoveryService.ModelPullCommand.parseProtocol(body.get("protocol"))));
     }
 }

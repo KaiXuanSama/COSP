@@ -1,5 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.application.catalog;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
@@ -19,9 +21,12 @@ import java.util.List;
 public class DatabaseModelCatalogService implements ModelCatalogService {
 
     private final ProviderConfigRepository providerConfigRepository;
+    private final ObjectMapper objectMapper;
 
-    public DatabaseModelCatalogService(ProviderConfigRepository providerConfigRepository) {
+    public DatabaseModelCatalogService(ProviderConfigRepository providerConfigRepository,
+                                      ObjectMapper objectMapper) {
         this.providerConfigRepository = providerConfigRepository;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -44,7 +49,10 @@ public class DatabaseModelCatalogService implements ModelCatalogService {
                 boolean capsTools = m.capsTools();
                 boolean capsVision = m.capsVision();
                 int contextSize = m.contextSize();
-                int maxOutputTokens = m.maxOutputTokens();
+                // 行里存的是 V9 JSON（或未迁移库的裸整数），而发现接口只需要数值上限；
+                // 注入模式在这里无意义 —— 它只影响发往上游的请求体。
+                int maxOutputTokens = MaxOutputTokensSetting
+                        .parse(m.maxOutputTokens(), objectMapper).maxOutputTokens();
                 result.add(new AvailableModel(providerKey, displayKey, modelName, prefixedName, capsTools, capsVision, contextSize, maxOutputTokens));
             }
         }

@@ -1,5 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
+import com.kaixuan.copilot_ollama_proxy.application.runtime.AnthropicThinkingSetting;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -66,6 +68,39 @@ public class ProviderConfigRepository {
     }
 
     /**
+     * 更新供应商的线路协议配置（支持的协议集合与 Anthropic 独立端点）。
+     *
+     * <p><strong>两个参数都按「null 表示不改」处理</strong>，而非「null 表示清空」。
+     * 协议配置目前只由后端接口写入，管理后台表单尚未提交这两个字段；若按「未提供即清空」
+     * 处理，任何一次普通的供应商编辑都会把用户配好的协议支持抹平，而这个字段一旦被清成
+     * 空数组，该供应商的所有调用都会被调度器拒绝 —— 一次无关的保存造成全面不可用，
+     * 是最难联想到成因的那类故障。
+     *
+     * @param providerKey             供应商标识
+     * @param supportedProtocolsJson  协议集合 JSON 字符串数组；null 表示保留原值
+     * @param anthropicBaseUrl        Anthropic 独立端点；null 表示保留原值，空串表示回退到 base_url
+     */
+    public void updateProviderProtocols(String providerKey, String supportedProtocolsJson,
+                                        String anthropicBaseUrl) {
+        if (supportedProtocolsJson == null && anthropicBaseUrl == null) {
+            return;
+        }
+        List<Object> arguments = new ArrayList<>();
+        StringBuilder sql = new StringBuilder("UPDATE provider_config SET ");
+        if (supportedProtocolsJson != null) {
+            sql.append("supported_protocols = ?, ");
+            arguments.add(supportedProtocolsJson);
+        }
+        if (anthropicBaseUrl != null) {
+            sql.append("anthropic_base_url = ?, ");
+            arguments.add(anthropicBaseUrl);
+        }
+        sql.append("updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?");
+        arguments.add(providerKey);
+        jdbcTemplate.update(sql.toString(), arguments.toArray());
+    }
+
+    /**
      * 仅更新服务商的 base_url，不修改 enabled 状态，也不涉及 API Key。
      * 如果指定的 providerKey 不存在，则自动插入一条新记录（enabled = 0）。
      * @return 对应的 provider_config.id
@@ -119,12 +154,22 @@ public class ProviderConfigRepository {
             String modelName = (String) m.getOrDefault("modelName", "");
             boolean modelEnabled = Boolean.TRUE.equals(m.get("enabled"));
             int contextSize = parseInt(m.get("contextSize"), 0);
-            int maxOutputTokens = parseInt(m.get("maxOutputTokens"), 128000);
+            // 表单侧已由 ProviderAdminService 收敛成 V9 JSON，原样存下即可。
+            // 但直接调用仓储的路径（测试夹具、将来的导入）可能传裸整数，那时得补成 JSON —— 否则
+            // 违反列上的 json_valid 约束。已是 JSON 的值不解析，避免在这里重复一遍收敛逻辑。
+            String maxOutputTokens = normalizeMaxOutputTokens(m.get("maxOutputTokens"));
             boolean capsTools = Boolean.TRUE.equals(m.get("capsTools"));
             boolean capsVision = Boolean.TRUE.equals(m.get("capsVision"));
             String reasoningEffort = (String) m.getOrDefault("reasoningEffort", "Medium");
-            jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, enabled, context_size, max_output_tokens, caps_tools, caps_vision, reasoning_effort, sort_order) " + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    providerId, modelName, modelEnabled ? 1 : 0, contextSize, maxOutputTokens, capsTools ? 1 : 0, capsVision ? 1 : 0, reasoningEffort, i);
+            // 与最大输出同理：表单路径已由 ProviderAdminService 收敛成 V10 JSON，
+            // 直接调仓储的路径（测试夹具、将来的导入）可能不传，靠默认值补上。
+            String thinkingMode = normalizeThinkingMode(m.get("thinkingMode"));
+            int thinkingBudgetTokens = normalizeThinkingBudget(m.get("thinkingBudgetTokens"));
+            jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, enabled, context_size, max_output_tokens, caps_tools, caps_vision, reasoning_effort, thinking_mode, thinking_budget_tokens, sort_order) "
+                            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    providerId, modelName, modelEnabled ? 1 : 0, contextSize, maxOutputTokens,
+                    capsTools ? 1 : 0, capsVision ? 1 : 0, reasoningEffort,
+                    thinkingMode, thinkingBudgetTokens, i);
         }
     }
 
@@ -174,9 +219,11 @@ public class ProviderConfigRepository {
     }
 
     private List<ProviderConfigRow> loadProvidersWithModels(String providerKey, boolean activeOnly, boolean enabledModelsOnly) {
-        StringBuilder sql = new StringBuilder("SELECT pc.id, pc.provider_key, pc.display_name, pc.enabled, pc.base_url, pc.updated_at,")
+        StringBuilder sql = new StringBuilder("SELECT pc.id, pc.provider_key, pc.display_name, pc.enabled, pc.base_url,")
+                .append(" pc.supported_protocols, pc.anthropic_base_url, pc.updated_at,")
                 .append(" pm.id AS model_id, pm.provider_id AS model_provider_id, pm.model_name, pm.enabled AS model_enabled,")
-                .append(" pm.context_size, pm.max_output_tokens, pm.caps_tools, pm.caps_vision, pm.reasoning_effort, pm.sort_order")
+                .append(" pm.context_size, pm.max_output_tokens, pm.caps_tools, pm.caps_vision, pm.reasoning_effort,")
+                .append(" pm.thinking_mode, pm.thinking_budget_tokens, pm.sort_order")
                 .append(" FROM provider_config pc")
                 .append(" LEFT JOIN provider_model pm ON pm.provider_id = pc.id")
                 .append(activeOnly ? " WHERE pc.enabled = 1" : "");
@@ -206,6 +253,8 @@ public class ProviderConfigRepository {
                     resolveDisplayName(providerKeyValue, (String) row.get("display_name")),
                     ((Number) row.get("enabled")).intValue() == 1,
                     (String) row.get("base_url"),
+                    (String) row.get("supported_protocols"),
+                    (String) row.get("anthropic_base_url"),
                     (String) row.get("updated_at")
             ));
 
@@ -223,10 +272,18 @@ public class ProviderConfigRepository {
                     (String) row.get("model_name"),
                     modelEnabled,
                     ((Number) row.get("context_size")).intValue(),
-                    ((Number) row.get("max_output_tokens")).intValue(),
+                    // V9 起是 TEXT（JSON），但未迁移的库里仍可能是 INTEGER，
+                    // 所以统一转字符串而不强转具体类型。
+                    row.get("max_output_tokens") == null
+                            ? null : String.valueOf(row.get("max_output_tokens")),
                     ((Number) row.get("caps_tools")).intValue() == 1,
                     ((Number) row.get("caps_vision")).intValue() == 1,
                     (String) row.get("reasoning_effort"),
+                    (String) row.get("thinking_mode"),
+                    // 未迁移的库里这一列不存在，取到 null；归一为未设置哨兵而非 0 ——
+                    // 0 会被当成「用户真的填了0」，而那不是事实。
+                    row.get("thinking_budget_tokens") instanceof Number budget
+                            ? budget.intValue() : AnthropicThinkingSetting.UNSET_BUDGET_TOKENS,
                     ((Number) row.get("sort_order")).intValue()
             ));
         }
@@ -242,6 +299,8 @@ public class ProviderConfigRepository {
                     provider.displayName,
                     provider.enabled,
                     provider.baseUrl,
+                    provider.supportedProtocolsJson,
+                    provider.anthropicBaseUrl,
                     provider.updatedAt,
                     provider.models
             ));
@@ -259,6 +318,40 @@ public class ProviderConfigRepository {
         } catch (NumberFormatException e) {
             return defaultValue;
         }
+    }
+
+    /**
+     * 把最大输出的入参收敛为列上 {@code json_valid} 接受的 V9 JSON。
+     *
+     * <p>已是 JSON 的值原样返回而不解析：本层没有 {@code ObjectMapper}，
+     * 而收敛的职责在 {@code ProviderAdminService.parseModels} —— 表单路径进来的值已经规范。
+     * 这里只负责让裸整数（测试夹具、将来的配置导入）也能满足约束。
+     */
+    private static String normalizeMaxOutputTokens(Object value) {
+        String raw = value == null ? "" : String.valueOf(value).trim();
+        if (raw.startsWith("{")) {
+            return raw;
+        }
+        return new MaxOutputTokensSetting(parseInt(raw, 0), MaxOutputTokensSetting.Mode.FALLBACK)
+                .serialize();
+    }
+
+    /**
+     * 把思考方式的入参收敛为列上 {@code json_valid} 接受的 V10 JSON。
+     *
+     * <p>与 {@link #normalizeMaxOutputTokens} 同构：已是 JSON 的值原样返回，
+     * 否则用默认值。本层没有 {@code ObjectMapper}，收敛职责在
+     * {@code ProviderAdminService.parseModels}。
+     */
+    private static String normalizeThinkingMode(Object value) {
+        String raw = value == null ? "" : String.valueOf(value).trim();
+        return raw.startsWith("{") ? raw : AnthropicThinkingSetting.defaults().serialize();
+    }
+
+    /** 非正预算一律归为未设置哨兵，因为列约束只放行正数与 -1。 */
+    private static int normalizeThinkingBudget(Object value) {
+        int parsed = parseInt(value == null ? "" : String.valueOf(value).trim(), 0);
+        return parsed > 0 ? parsed : AnthropicThinkingSetting.UNSET_BUDGET_TOKENS;
     }
 
     /**
@@ -295,16 +388,21 @@ public class ProviderConfigRepository {
         private final String displayName;
         private final boolean enabled;
         private final String baseUrl;
+        private final String supportedProtocolsJson;
+        private final String anthropicBaseUrl;
         private final String updatedAt;
         private final List<ProviderModelRow> models = new ArrayList<>();
 
         private MutableProviderConfig(int id, String providerKey, String displayName, boolean enabled, String baseUrl,
+                                      String supportedProtocolsJson, String anthropicBaseUrl,
                                       String updatedAt) {
             this.id = id;
             this.providerKey = providerKey;
             this.displayName = displayName;
             this.enabled = enabled;
             this.baseUrl = baseUrl;
+            this.supportedProtocolsJson = supportedProtocolsJson;
+            this.anthropicBaseUrl = anthropicBaseUrl;
             this.updatedAt = updatedAt;
         }
     }

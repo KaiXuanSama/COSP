@@ -3,10 +3,14 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.RequestTranslationException;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.ResponseTranslationException;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageParser;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.OpenAiUsageParser;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
@@ -198,6 +202,27 @@ public class OpenAiController {
                     }
                     // FAILED：上游错误或连接失败（客户端主动断连已在上面 return，不计入）。
                     callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.FAILED, model, stream));
+                    // 协议不可用：请求根本没发出去，不能译成「无法连接到上游」（见 findProtocolException）。
+                    ProtocolTranslationNotSupportedException protocolException = findProtocolException(ex);
+                    if (protocolException != null) {
+                        log.warn("协议不可用 [{}]: {}", model, protocolException.getMessage());
+                        return Mono.just(ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
+                                .body(openAiErrorBody(protocolException.getMessage(), "invalid_request_error")));
+                    }
+                    // 协议一个都没勾：同样是本地配置问题，重试无益。
+                    NoSupportedProtocolException noProtocol = findNoSupportedProtocolException(ex);
+                    if (noProtocol != null) {
+                        log.warn("供应商未配置任何协议 [{}]: {}", model, noProtocol.getMessage());
+                        return Mono.just(ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
+                                .body(openAiErrorBody(noProtocol.getMessage(), "invalid_request_error")));
+                    }
+                    // 请求翻译失败：下游请求本身无法表达成上游协议，消息里已带字段路径。
+                    RequestTranslationException requestTranslation = findRequestTranslationException(ex);
+                    if (requestTranslation != null) {
+                        log.warn("请求翻译失败 [{}]: {}", model, requestTranslation.getMessage());
+                        return Mono.just(ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
+                                .body(openAiErrorBody(requestTranslation.getMessage(), "invalid_request_error")));
+                    }
                     // 透传上游错误响应（重试耗尽时 WebClientResponseException 被包装在 RetryExhaustedException 中，需要解包）
                     WebClientResponseException responseException = findWebResponseException(ex);
                     if (responseException != null) {
@@ -206,9 +231,17 @@ public class OpenAiController {
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .body(responseException.getResponseBodyAsString()));
                     }
+                    // 响应翻译失败：请求发出去了、上游也给了 2xx，但报文解析不了。
+                    // 不能译成「无法连接到上游」—— 那会把排查方向引到网络上。
+                    ResponseTranslationException translationException = findResponseTranslationException(ex);
+                    if (translationException != null) {
+                        log.warn("响应翻译失败 [{}]: {}", model, translationException.getMessage());
+                        return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
+                                .body(openAiErrorBody(translationException.getMessage(), "upstream_error")));
+                    }
                     log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(ex), extractRequestUrl(ex));
                     return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                            .body("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}"));
+                            .body(openAiErrorBody("无法连接到上游服务", "upstream_error")));
                 })
                 // CANCELED：下游（Copilot）主动断连是 Reactor 的 cancel 信号，onErrorResume 捕获不到，
                 // 必须用 doOnCancel 感知，否则不发终态事件 → inFlight 记录永久留存 → 僵尸 toast。
@@ -297,6 +330,31 @@ public class OpenAiController {
                     }
                     // FAILED：上游错误或连接失败（客户端主动断连已在上面 return，不计入）。
                     callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.FAILED, model, true));
+                    // 协议不可用：同非流式，不能被当成上游连接失败。
+                    ProtocolTranslationNotSupportedException protocolException = findProtocolException(error);
+                    if (protocolException != null) {
+                        log.warn("协议不可用 [{}]: {}", model, protocolException.getMessage());
+                        return Flux.just(ServerSentEvent.<String>builder(
+                                openAiErrorBody(protocolException.getMessage(), "invalid_request_error"))
+                                .event("error").build());
+                    }
+                    // 协议一个都没勾：同非流式。
+                    NoSupportedProtocolException noProtocol = findNoSupportedProtocolException(error);
+                    if (noProtocol != null) {
+                        log.warn("供应商未配置任何协议 [{}]: {}", model, noProtocol.getMessage());
+                        return Flux.just(ServerSentEvent.<String>builder(
+                                openAiErrorBody(noProtocol.getMessage(), "invalid_request_error"))
+                                .event("error").build());
+                    }
+                    // 请求翻译失败：同非流式。注意这里能走到是因为服务层的 Flux.defer
+                    // 把组装期异常转成了 onError 信号；否则它会逃出控制器变成 500 JSON。
+                    RequestTranslationException requestTranslation = findRequestTranslationException(error);
+                    if (requestTranslation != null) {
+                        log.warn("请求翻译失败 [{}]: {}", model, requestTranslation.getMessage());
+                        return Flux.just(ServerSentEvent.<String>builder(
+                                openAiErrorBody(requestTranslation.getMessage(), "invalid_request_error"))
+                                .event("error").build());
+                    }
                     // 透传上游错误响应（解包重试耗尽包装）
                     WebClientResponseException responseException = findWebResponseException(error);
                     if (responseException != null) {
@@ -304,7 +362,8 @@ public class OpenAiController {
                         return Flux.just(ServerSentEvent.<String>builder(responseException.getResponseBodyAsString()).event("error").build());
                     }
                     log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(error), extractRequestUrl(error));
-                    return Flux.just(ServerSentEvent.<String>builder("{\"error\":{\"message\":\"无法连接到上游服务\",\"type\":\"upstream_error\"}}").event("error").build());
+                    return Flux.just(ServerSentEvent.<String>builder(
+                            openAiErrorBody("无法连接到上游服务", "upstream_error")).event("error").build());
                 })
                 // CANCELED：下游（Copilot）主动断连是 Reactor 的 cancel 信号，onErrorResume 捕获不到，
                 // 必须用 doOnCancel 感知。管理员取消走 takeUntilOther→concatWith 正常 complete（不触发此处），
@@ -538,7 +597,7 @@ public class OpenAiController {
      * @param openAiJson 非流式响应的 JSON 字符串，包含 usage 字段
      */
     private void recordUsage(String openAiJson) {
-        UsageTokens tokens = UsageParser.parseFromJson(objectMapper, openAiJson);
+        UsageTokens tokens = OpenAiUsageParser.parseFromJson(objectMapper, openAiJson);
         if (!tokens.isEmpty()) {
             apiUsageCollector.record(tokens.promptOrZero(), tokens.completionOrZero());
         }
@@ -552,7 +611,7 @@ public class OpenAiController {
      * @param outputTokens 输出 token 累加器
      */
     private void accumulateStreamUsage(String chunk, AtomicInteger inputTokens, AtomicInteger outputTokens) {
-        UsageTokens tokens = UsageParser.parseFromJson(objectMapper, chunk);
+        UsageTokens tokens = OpenAiUsageParser.parseFromJson(objectMapper, chunk);
         // 流式 usage 通常只出现在尾 chunk；有则覆盖累加器（缺失记 0，保持既有日聚合行为）。
         if (!tokens.isEmpty()) {
             inputTokens.set(tokens.promptOrZero());
@@ -592,6 +651,98 @@ public class OpenAiController {
             current = current.getCause();
         }
         return null;
+    }
+
+    /**
+     * 从异常链里找出响应翻译异常。
+     *
+     * <p>与 {@link #findProtocolException} 同一个理由需要解包：
+     * 重试耗尽时真正的异常会被包在 {@code RetryExhaustedException} 里。
+     */
+    private ResponseTranslationException findResponseTranslationException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof ResponseTranslationException translationException) {
+                return translationException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    /**
+     * 从异常链中查找协议不可用异常。
+     *
+     * <p>必须在解包 {@code WebClientResponseException} <strong>之前</strong>判定：本异常代表
+     * 「请求根本没发出去」，若落入兜底分支会被译成「无法连接到上游服务」，而上游并未被尝试连接 ——
+     * 这会把排查方向指向网络与上游可用性，而真正要改的是供应商的协议勾选。
+     *
+     * <p>用 400 而非 502：失败源于本地配置与请求的组合，不是网关上游故障，
+     * 且重试多少次结果都一样 —— 5xx 会诱导客户端重试。
+     */
+    private ProtocolTranslationNotSupportedException findProtocolException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof ProtocolTranslationNotSupportedException protocolException) {
+                return protocolException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    /**
+     * 从异常链里找出「供应商一个协议都没勾」异常。
+     *
+     * <p>不直接 catch {@code IllegalStateException}：那会把 Reactor / Jackson 或任何库抛的
+     * 同类异常一并译成「协议没配」，那种误导比笼统的 500 更难排查。
+     */
+    private NoSupportedProtocolException findNoSupportedProtocolException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof NoSupportedProtocolException noProtocol) {
+                return noProtocol;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    /**
+     * 从异常链里找出请求翻译异常。
+     *
+     * <p>它与 {@link #findProtocolException} 都回 400，但排查方向相反：那个要改<strong>配置</strong>，
+     * 这个要改<strong>请求</strong>。异常消息里已带 {@code messages[2].role} 这样的字段路径，
+     * 直接透传即可 —— 只说「翻译失败」等于让调用方去猜。
+     */
+    private RequestTranslationException findRequestTranslationException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof RequestTranslationException translationException) {
+                return translationException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    /**
+     * OpenAI 风格错误体。
+     *
+     * <p>走序列化而不拼字符串：message 可能来自异常消息，内容不可控；一个引号或换行
+     * 就能把错误体本身变成非法 JSON，而客户端解析失败后看到的是一个完全无关的错误。
+     */
+    private String openAiErrorBody(String message, String type) {
+        java.util.Map<String, Object> error = new java.util.LinkedHashMap<>();
+        error.put("message", message);
+        error.put("type", type);
+        java.util.Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("error", error);
+        try {
+            return objectMapper.writeValueAsString(body);
+        } catch (Exception exception) {
+            return "{\"error\":{\"message\":\"上游调用失败\",\"type\":\"upstream_error\"}}";
+        }
     }
 
     /**

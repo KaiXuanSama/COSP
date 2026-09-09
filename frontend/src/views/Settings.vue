@@ -1,15 +1,54 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { NCard, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NSelect, NDropdown, useMessage } from 'naive-ui'
+import { NCard, NCheckbox, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NSelect, NDropdown, useMessage } from 'naive-ui'
 import ProviderModelsSection from '@/components/settings/ProviderModelsSection.vue'
 import RequestBodyRuleEditor from '@/components/settings/request-body-rules/RequestBodyRuleEditor.vue'
 import { useProviderStore, type ApiKeyEntry } from '@/stores/providers'
 import type { RequestBodyEditorState } from '@/features/request-body-rules/editorState'
-import { createDefaultRequestBodyEditorState } from '@/features/request-body-rules/editorState'
-import { MIMO_EXAMPLE_RULESET } from '@/features/request-body-rules/defaultRequestBody'
-import type { RequestBodyTemplateKey } from '@/features/request-body-rules/requestBodyTemplates'
-import { composeRequestBodyTemplate } from '@/features/request-body-rules/requestBodyTemplates'
-import type { RuleSet } from '@/features/request-body-rules/types'
+import { countRules } from '@/features/request-body-rules/editorState'
+import { migrateRuleSet } from '@/features/request-body-rules/migration'
+import { WIRE_PROTOCOL_LABELS, type WireProtocol } from '@/types/protocol'
+import {
+  ANTHROPIC_ENDPOINT_SUFFIX,
+  DEFAULT_NEW_PROVIDER_PROTOCOLS,
+  OPENAI_ENDPOINT_SUFFIX,
+  aggregatorPresets,
+  applyPullDiff,
+  buildEditableModel,
+  buildPullDiff,
+  createProviderDefaultEditorState,
+  describeEndpoint,
+  describeProviderKey,
+  displayKey,
+  extractModelNames,
+  findPreset,
+  mirrorAnthropicBaseUrl,
+  normalizeProtocols,
+  orderProtocolRows,
+  protocolsToJson,
+  resolveModelPullTarget,
+  resolvePrimaryProtocol,
+  shouldMirrorOnFocus,
+  toggleProtocol,
+  hasChanges as pullDiffHasChanges,
+  isNewKeyValue,
+  keepMeaningfulEntries,
+  newKeyValue,
+  officialPresets,
+  relayPresets,
+  resolveActiveValue,
+  resolvePullCredential,
+  resolvePullModelsErrorMessage,
+  revertDiffEntry,
+  toApiKeyPayloads,
+  toEditableModel,
+  toModelFormParams,
+  toPresetFormValues,
+  toProviderKey,
+  type EditableModel,
+  type HeaderEntry,
+  type PullDiff,
+} from '@/features/provider-config'
 
 const providerStore = useProviderStore()
 const message = useMessage()
@@ -32,21 +71,123 @@ const providerMeta = ref<Record<string, { displayName: string; colorClass: strin
 const editingKey = ref<string | null>(null)
 const editForm = ref({
   baseUrl: '',
+  anthropicBaseUrl: '',
+  protocols: [...DEFAULT_NEW_PROVIDER_PROTOCOLS] as WireProtocol[],
   apiKeys: [] as ApiKeyEntry[],
   activeKeyUuid: '' as string,
-  models: [] as any[],
+  models: [] as EditableModel[],
 })
-const pullingModels = ref(false)
 
-interface PullDiffEntry {
-  modelName: string
-  status: 'added' | 'removed' | 'unchanged'
-  existingModel?: any
+/**
+ * 抽屉里 OpenAI 地址编辑是否联动 Anthropic 地址。
+ *
+ * 与弹窗同一套逻辑但各自持有状态：两个界面可以先后打开，共用一个快照会让
+ * 在弹窗里的一次聚焦影响抽屉的联动行为。
+ */
+const editMirroringAnthropicBaseUrl = ref(false)
+
+/**
+ * 折叠时显示在第一行的协议。
+ *
+ * <strong>打开抽屉时快照一次，之后不随勾选变化。</strong>做成 computed 会让
+ * 「取消勾选 OpenAI」的瞬间两行交换位置，用户正在编辑的输入框跳到另一行去 ——
+ * 那个跳动没有任何信息价值，纯粹是布局规则的副作用。
+ */
+const editPrimaryProtocol = ref<WireProtocol>('OPENAI')
+
+/** 第二行地址是否展开。 */
+const editUrlsExpanded = ref(false)
+
+/**
+ * 折叠动画的高度由这三个钩子按元素实际高度给出。
+ *
+ * 纯 CSS 写不好这个动画：`max-height` 的目标值只能猜，猜大了前段就空转；
+ * 而 `grid-template-rows` 的 `fr` 插值非线性，250ms 的过渡实测约 75ms 就走完了
+ * 大部分路程。读一次 `scrollHeight` 两个问题同时消失 —— 值是量出来的，
+ * 且 `px` 的插值是线性的。
+ */
+function onProtocolRowEnter(el: Element) {
+  const target = el as HTMLElement
+  // 起点由 CSS 的 enter-from 给（max-height: 0），这里只需把终点设成实际高度。
+  target.style.maxHeight = `${target.scrollHeight}px`
 }
 
-const pullDiffModal = ref({
+/** 动画结束后清掉内联高度，否则内容变高（如换行）时会被这个固定值裁掉。 */
+function onProtocolRowAfterEnter(el: Element) {
+  ;(el as HTMLElement).style.maxHeight = ''
+}
+
+function onProtocolRowLeave(el: Element) {
+  const target = el as HTMLElement
+  // 离场起点必须显式写成当前高度：此刻内联样式是空的，浏览器拿不到可插值的起始值，
+  // 于是会直接跳到 leave-to 的 0 —— 那就完全没有动画。
+  target.style.maxHeight = `${target.scrollHeight}px`
+  // 强制读取布局，让上面这行先生效，再由 leave-to 的 0 触发过渡。
+  void target.offsetHeight
+  target.style.maxHeight = '0'
+}
+
+/** 两行的显示顺序：首行是快照选出的协议，另一个跟在后面。 */
+const editProtocolRows = computed(() => orderProtocolRows(editPrimaryProtocol.value))
+
+function isEditProtocolEnabled(protocol: WireProtocol) {
+  return editForm.value.protocols.includes(protocol)
+}
+
+function setEditProtocolEnabled(protocol: WireProtocol, enabled: boolean) {
+  editForm.value.protocols = toggleProtocol(editForm.value.protocols, protocol, enabled)
+}
+
+/** 按协议读地址。Anthropic 的空值不在这里回退 —— 输入框要如实显示空，占位符负责说明。 */
+function editBaseUrlOf(protocol: WireProtocol) {
+  return protocol === 'ANTHROPIC' ? editForm.value.anthropicBaseUrl : editForm.value.baseUrl
+}
+
+function onEditBaseUrlInput(protocol: WireProtocol, value: string) {
+  if (protocol === 'ANTHROPIC') {
+    editForm.value.anthropicBaseUrl = value
+    // 用户亲手改过，联动立即终止，否则他的输入会被下一次同步覆盖。
+    editMirroringAnthropicBaseUrl.value = false
+    return
+  }
+  editForm.value.baseUrl = value
+  editForm.value.anthropicBaseUrl = mirrorAnthropicBaseUrl(
+    value, editMirroringAnthropicBaseUrl.value, editForm.value.anthropicBaseUrl,
+  )
+}
+
+/** 进入 OpenAI 地址框时拍下「Anthropic 当前是否为空」，作为本轮编辑的联动依据。 */
+function onEditBaseUrlFocus(protocol: WireProtocol) {
+  if (protocol === 'OPENAI') {
+    editMirroringAnthropicBaseUrl.value = shouldMirrorOnFocus(editForm.value.anthropicBaseUrl)
+  }
+}
+
+const PROTOCOL_ROW_LABELS: Record<WireProtocol, string> = {
+  OPENAI: 'OpenAI 请求Url',
+  ANTHROPIC: 'Anthropic 请求Url',
+}
+
+const PROTOCOL_ROW_PLACEHOLDERS: Record<WireProtocol, string> = {
+  OPENAI: 'https://api.example.com/v1',
+  ANTHROPIC: '留空则与 OpenAI 地址相同',
+}
+
+/** 端点预览文案；地址为空时退回占位模板，不拼出只剩路径的半成品。 */
+function editEndpointHintOf(protocol: WireProtocol) {
+  if (protocol === 'ANTHROPIC') {
+    return describeEndpoint(
+      editForm.value.anthropicBaseUrl || editForm.value.baseUrl, ANTHROPIC_ENDPOINT_SUFFIX,
+    ) || `\${anthropic_url}${ANTHROPIC_ENDPOINT_SUFFIX}`
+  }
+  return describeEndpoint(editForm.value.baseUrl, OPENAI_ENDPOINT_SUFFIX)
+    || `\${openai_url}${OPENAI_ENDPOINT_SUFFIX}`
+}
+const pullingModels = ref(false)
+
+const pullDiffModal = ref<{ visible: boolean } & PullDiff>({
   visible: false,
-  entries: [] as PullDiffEntry[],
+  entries: [],
   addedCount: 0,
   removedCount: 0,
 })
@@ -152,23 +293,11 @@ async function handleProviderContextSelect(action: 'edit' | 'disable') {
 const showApiKeyModal = ref(false)
 const editingApiKeys = ref<ApiKeyEntry[]>([])
 
-/** 脱敏显示 API Key：前4位 + **** + 后4位 */
-function maskApiKey(key: string): string {
-  if (!key || key.length <= 10) return key ? '****' : ''
-  return key.substring(0, 6) + '****' + key.substring(key.length - 4)
-}
-
-/** 展示某条 Key 的脱敏值：优先展示后端脱敏值，其次对新输入的明文脱敏 */
-function displayKey(entry: ApiKeyEntry): string {
-  if (entry.apiKey && entry.apiKey.trim()) return maskApiKey(entry.apiKey.trim())
-  return entry.masked || ''
-}
-
 /** 构建下拉选项，value 使用 keyUuid（新增未保存项用临时标记） */
 const apiKeyOptions = computed(() =>
   editForm.value.apiKeys.map((entry, index) => ({
     label: `${entry.name || '未命名'}: ${displayKey(entry)}`,
-    value: entry.keyUuid || `__new_${index}`,
+    value: entry.keyUuid || newKeyValue(index),
   }))
 )
 
@@ -186,14 +315,9 @@ function removeApiKeyEntry(index: number) {
 }
 
 function saveApiKeyModal() {
-  // 保留有 keyUuid（已有）或填了新明文的项
-  const valid = editingApiKeys.value.filter(k => (k.keyUuid && k.keyUuid.length > 0) || (k.apiKey && k.apiKey.trim()))
+  const valid = keepMeaningfulEntries(editingApiKeys.value)
   editForm.value.apiKeys = valid
-  // 若激活项已被删除，重置为第一项
-  const activeStillExists = valid.some(k => k.keyUuid && k.keyUuid === editForm.value.activeKeyUuid)
-  if (!activeStillExists) {
-    editForm.value.activeKeyUuid = valid[0]?.keyUuid || (valid.length > 0 ? `__new_0` : '')
-  }
+  editForm.value.activeKeyUuid = resolveActiveValue(valid, editForm.value.activeKeyUuid)
   showApiKeyModal.value = false
 }
 
@@ -208,166 +332,118 @@ const providerName = ref('')
 const providerAdvancedExpanded = ref(false)
 const editingProviderKey = ref<string | null>(null)
 const providerBaseUrl = ref('')
+const providerAnthropicBaseUrl = ref('')
+const providerProtocols = ref<WireProtocol[]>([...DEFAULT_NEW_PROVIDER_PROTOCOLS])
 const showPresetModal = ref(false)
 
-/** 预设供应商模板 */
-interface ProviderPreset {
-  label: string
-  baseUrl: string
-  headers: KeyValueEntry[]
-  /** 可选的默认请求体模板键；未配置时回退为基础参数。 */
-  requestBodyTemplateKeys?: RequestBodyTemplateKey[]
-  /** 可选的默认请求体映射规则；未配置时回退为空规则集。 */
-  requestBodyRules?: RuleSet
+/**
+ * 本轮 OpenAI 地址编辑是否联动 Anthropic 地址。
+ *
+ * 在获得焦点时一次性拍快照，而不是每次输入时重新判空 —— 后者会让 Anthropic
+ * 在同步到第一个字符后就不再为空，于是永远停在一个字母上。
+ */
+const mirroringAnthropicBaseUrl = ref(false)
+
+/** 端点预览文案；地址为空时退回占位模板，不拼出只剩路径的半成品。 */
+const openAiEndpointHint = computed(() =>
+  describeEndpoint(providerBaseUrl.value, OPENAI_ENDPOINT_SUFFIX) || `\${openai_url}${OPENAI_ENDPOINT_SUFFIX}`
+)
+const anthropicEndpointHint = computed(() =>
+  describeEndpoint(providerAnthropicBaseUrl.value, ANTHROPIC_ENDPOINT_SUFFIX)
+    || `\${anthropic_url}${ANTHROPIC_ENDPOINT_SUFFIX}`
+)
+
+function isProtocolEnabled(protocol: WireProtocol) {
+  return providerProtocols.value.includes(protocol)
 }
 
-const IMAGE_COMPATIBILITY_TEMPLATE_KEYS: RequestBodyTemplateKey[] = ['message-tool-image']
+function setProtocolEnabled(protocol: WireProtocol, enabled: boolean) {
+  providerProtocols.value = toggleProtocol(providerProtocols.value, protocol, enabled)
+}
 
-/** 创建供应商默认图片兼容配置，避免共享可变规则集。 */
-function createProviderDefaultEditorState(): RequestBodyEditorState {
+/** 进入 OpenAI 地址输入框：拍下「Anthropic 当前是否为空」作为本轮编辑的联动依据。 */
+function onOpenAiBaseUrlFocus() {
+  mirroringAnthropicBaseUrl.value = shouldMirrorOnFocus(providerAnthropicBaseUrl.value)
+}
+
+function onOpenAiBaseUrlInput(value: string) {
+  providerBaseUrl.value = value
+  providerAnthropicBaseUrl.value = mirrorAnthropicBaseUrl(
+    value, mirroringAnthropicBaseUrl.value, providerAnthropicBaseUrl.value,
+  )
+}
+
+/** 用户亲自改过 Anthropic 地址，联动立即终止—— 否则他的输入会被下一次同步覆盖。 */
+function onAnthropicBaseUrlInput(value: string) {
+  providerAnthropicBaseUrl.value = value
+  mirroringAnthropicBaseUrl.value = false
+}
+
+/** 协议配置的提交载荷。 */
+function buildProtocolPayload() {
   return {
-    templateKeys: [...IMAGE_COMPATIBILITY_TEMPLATE_KEYS],
-    previewBody: composeRequestBodyTemplate(IMAGE_COMPATIBILITY_TEMPLATE_KEYS),
-    rules: cloneRuleSet(MIMO_EXAMPLE_RULESET),
+    supportedProtocolsJson: protocolsToJson(providerProtocols.value),
+    anthropicBaseUrl: providerAnthropicBaseUrl.value.trim(),
   }
 }
 
-const officialPresets: ProviderPreset[] = [
-  {
-    label: 'MiMo',
-    baseUrl: 'https://api.xiaomimimo.com/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'DeepSeek',
-    baseUrl: 'https://api.deepseek.com/v1',
-    headers: [],
-  },
-  {
-    label: 'LongCat',
-    baseUrl: 'https://api.longcat.chat/openai/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'Kimi',
-    baseUrl: 'https://api.moonshot.cn/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'Kimi (CodePlan)',
-    baseUrl: 'https://api.kimi.com/coding/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'Mimo (TokenPlan)',
-    baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'Agnes',
-    baseUrl: 'https://apihub.agnes-ai.com/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'Zhipu',
-    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'StepFun',
-    baseUrl: 'https://api.stepfun.com/v1',
-    headers: [],
-  },
-]
-
-const aggregatorPresets: ProviderPreset[] = [
-  {
-    label: 'SenseNova',
-    baseUrl: 'https://token.sensenova.cn/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'Uumit',
-    baseUrl: 'https://agent.uumit.com/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'Xunfei',
-    baseUrl: 'https://maas-api.cn-huabei-1.xf-yun.com/v2',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'WorkBuddy',
-    baseUrl: 'https://copilot.tencent.com/v2',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-]
-
-const relayPresets: ProviderPreset[] = [
-  {
-    label: 'AgentRouter',
-    baseUrl: 'https://agentrouter.org/v1',
-    headers: [
-      { key: 'User-Agent', value: 'claude-cli/2.1.195 (external, cli)' },
-      { key: 'Accept-Encoding', value: '/del/' }
-    ],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-  {
-    label: 'FreeModel',
-    baseUrl: 'https://api.freemodel.dev/v1',
-    headers: [],
-    requestBodyTemplateKeys: IMAGE_COMPATIBILITY_TEMPLATE_KEYS,
-    requestBodyRules: MIMO_EXAMPLE_RULESET,
-  },
-]
-
-const allPresets = [...officialPresets, ...aggregatorPresets, ...relayPresets]
-
-/** 深拷贝规则集，避免预设常量被编辑器状态原地修改。 */
-function cloneRuleSet(rules: RuleSet): RuleSet {
-  return JSON.parse(JSON.stringify(rules)) as RuleSet
+/** 宽容解析后端回传的 JSON 字段；无法解析时返回 undefined 交由迁移函数兼容。 */
+function safeParseJson(text: string | null | undefined): unknown {
+  if (!text) return undefined
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
 }
+
+/**
+ * 现有供应商的「路由标识 → 展示名」映射，供重名检测使用。
+ *
+ * 取自 store 而非 providerMeta：后者是前端本地元数据，可能滞后于数据库。
+ */
+const existingProviderKeys = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {}
+  for (const [key, provider] of Object.entries(providerStore.providers)) {
+    map[key] = provider?.displayName || key
+  }
+  return map
+})
+
+/** 当前输入的供应商名称会派生出什么样的路由标识。 */
+const providerKeyInfo = computed(() =>
+  describeProviderKey(providerName.value, {
+    existing: existingProviderKeys.value,
+    currentKey: editingProviderKey.value,
+  })
+)
+
+/** 路由标识提示的说明文案。`ok` 无需额外解释，返回空串。 */
+const providerKeyHint = computed(() => {
+  const info = providerKeyInfo.value
+  switch (info.status) {
+    case 'unavailable':
+      return '名称需包含至少一个英文字母或数字，否则无法生成路由标识'
+    case 'conflict':
+      return `已被供应商「${info.conflictWith}」占用，请换一个名称`
+    case 'lossy':
+      return `名称中的 ${info.droppedChars.join(' ')} 不参与标识生成`
+    default:
+      return info.renamed ? '改名后 Copilot 中的模型前缀会随之变化，需重新选择模型' : ''
+  }
+})
 
 /** 选择预设时自动填充名称、地址、请求头、请求体模板和规则。 */
 function applyPreset(label: string) {
-  const preset = allPresets.find(p => p.label === label)
+  const preset = findPreset(label)
   if (preset) {
-    providerName.value = preset.label
-    providerBaseUrl.value = preset.baseUrl
-    providerHeaders.value = preset.headers.map(h => ({ ...h }))
-    const editorState = createDefaultRequestBodyEditorState()
-    if (preset.requestBodyTemplateKeys && preset.requestBodyTemplateKeys.length > 0) {
-      editorState.templateKeys = [...preset.requestBodyTemplateKeys]
-      editorState.previewBody = composeRequestBodyTemplate(preset.requestBodyTemplateKeys)
-    }
-    if (preset.requestBodyRules) {
-      editorState.rules = cloneRuleSet(preset.requestBodyRules)
-    }
-    requestBodyEditorState.value = editorState
+    const values = toPresetFormValues(preset)
+    providerName.value = values.displayName
+    providerBaseUrl.value = values.baseUrl
+    providerAnthropicBaseUrl.value = values.anthropicBaseUrl
+    mirroringAnthropicBaseUrl.value = false
+    providerHeaders.value = values.headers
+    requestBodyEditorState.value = values.editorState
     providerAdvancedExpanded.value = true
   }
   showPresetModal.value = false
@@ -377,17 +453,16 @@ function applyPreset(label: string) {
 function clearProviderForm() {
   providerName.value = ''
   providerBaseUrl.value = ''
+  providerAnthropicBaseUrl.value = ''
+  providerProtocols.value = [...DEFAULT_NEW_PROVIDER_PROTOCOLS]
+  mirroringAnthropicBaseUrl.value = false
   providerHeaders.value = []
   requestBodyEditorState.value = createProviderDefaultEditorState()
   providerAdvancedExpanded.value = false
 }
 
 /** 高级设置 - 请求头覆盖列表 */
-interface KeyValueEntry {
-  key: string
-  value: string
-}
-const providerHeaders = ref<KeyValueEntry[]>([])
+const providerHeaders = ref<HeaderEntry[]>([])
 
 /** 请求体映射规则及编辑器预览状态。 */
 const requestBodyEditorState = ref<RequestBodyEditorState>(createProviderDefaultEditorState())
@@ -406,6 +481,9 @@ function resetProviderAdvanced() {
   providerHeaders.value = []
   requestBodyEditorState.value = createProviderDefaultEditorState()
   providerBaseUrl.value = ''
+  providerAnthropicBaseUrl.value = ''
+  providerProtocols.value = [...DEFAULT_NEW_PROVIDER_PROTOCOLS]
+  mirroringAnthropicBaseUrl.value = false
   editingProviderKey.value = null
 }
 
@@ -417,7 +495,10 @@ function openEditProviderModal(key: string) {
   providerName.value = displayName
   providerHeaders.value = []
   requestBodyEditorState.value = createProviderDefaultEditorState()
-  providerBaseUrl.value = (provider as any)?.baseUrl || ''
+  providerBaseUrl.value = provider?.baseUrl || ''
+  providerAnthropicBaseUrl.value = provider?.anthropicBaseUrl || ''
+  providerProtocols.value = normalizeProtocols(provider?.supportedProtocols)
+  mirroringAnthropicBaseUrl.value = false
   if (provider) {
     try {
       const headerRules = JSON.parse(provider.requestTransform?.headerRulesJson || '[]')
@@ -428,10 +509,13 @@ function openEditProviderModal(key: string) {
     try {
       const saved = provider.requestTransform
       if (saved) {
+        // 旧的 bodyTemplateKeysJson / bodyPreviewJson 是 V1 时与规则并列的全局调试样本，
+        // 升 V2 时得搬进唯一那个组，否则用户调过的预览请求体会丢。
         requestBodyEditorState.value = {
-          templateKeys: JSON.parse(saved.bodyTemplateKeysJson) as RequestBodyTemplateKey[],
-          previewBody: JSON.parse(saved.bodyPreviewJson) as Record<string, unknown>,
-          rules: JSON.parse(saved.bodyRulesJson),
+          rules: migrateRuleSet(JSON.parse(saved.bodyRulesJson), {
+            templateKeys: safeParseJson(saved.bodyTemplateKeysJson),
+            previewBody: safeParseJson(saved.bodyPreviewJson),
+          }),
         }
       }
     } catch {
@@ -448,6 +532,23 @@ function buildHeaderRulesJson(): string {
   return JSON.stringify(headers.map(h => ({ key: h.key.trim(), value: h.value })))
 }
 
+/**
+ * 构建请求转换配置的提交载荷。
+ *
+ * `bodyTemplateKeysJson` / `bodyPreviewJson` 已是 legacy 列：真正的预览样本现在跟随每个
+ * 规则组存在 `bodyRulesJson` 里。仍然提交它们是因为后端校验还要求非空，
+ * 取首组的值保证旧版本回滚时能读到一份有意义的样本而非空对象。
+ */
+function buildRequestTransformPayload() {
+  const ruleSet = requestBodyEditorState.value.rules
+  const primary = ruleSet.groups[0]
+  return {
+    bodyTemplateKeysJson: JSON.stringify(primary?.templateKeys ?? ['base']),
+    bodyPreviewJson: JSON.stringify(primary?.previewBody ?? {}),
+    bodyRulesJson: JSON.stringify(ruleSet),
+  }
+}
+
 /** 保存供应商。 */
 async function saveProvider() {
   const name = providerName.value.trim()
@@ -455,22 +556,31 @@ async function saveProvider() {
     message.warning('请输入供应商名称')
     return
   }
+  // 标识为空或冲突时本地就拦下：后端虽有同源校验，但它对冲突只能回
+  // 「该供应商名称已存在」，与用户看到的展示名对不上。
+  if (!providerKeyInfo.value.submittable) {
+    message.warning(providerKeyHint.value)
+    return
+  }
+  // 一个协议都不勾在后端是合法入参但非法配置：调度器会拒接该供应商的所有调用。
+  // 在这里拦下比存进去再去排查「为什么全部请求都失败」便宜得多。
+  if (providerProtocols.value.length === 0) {
+    message.warning('至少需要启用一个协议')
+    return
+  }
   try {
     const headerRulesJson = buildHeaderRulesJson()
     const baseUrl = providerBaseUrl.value.trim()
-    const requestTransform = {
-      bodyTemplateKeysJson: JSON.stringify(requestBodyEditorState.value.templateKeys),
-      bodyPreviewJson: JSON.stringify(requestBodyEditorState.value.previewBody),
-      bodyRulesJson: JSON.stringify(requestBodyEditorState.value.rules),
-    }
+    const requestTransform = buildRequestTransformPayload()
+    const protocolPayload = buildProtocolPayload()
     if (editingProviderKey.value) {
       // 编辑模式
       await providerStore.updateProvider(
-        editingProviderKey.value, name, headerRulesJson, baseUrl, requestTransform,
+        editingProviderKey.value, name, headerRulesJson, baseUrl, requestTransform, protocolPayload,
       )
       // 更新前端元数据
       const oldKey = editingProviderKey.value
-      const newKey = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+      const newKey = toProviderKey(name)
       const metaUpdate = { displayName: name, apiUrlPlaceholder: baseUrl || 'https://api.example.com/v1' }
       if (newKey !== oldKey && providerMeta.value[oldKey]) {
         providerMeta.value[newKey] = { ...providerMeta.value[oldKey], ...metaUpdate }
@@ -483,7 +593,9 @@ async function saveProvider() {
       message.success(`已修改供应商「${name}」`)
     } else {
       // 新增模式
-      const res = await providerStore.addProvider(name, headerRulesJson, baseUrl, requestTransform)
+      const res = await providerStore.addProvider(
+        name, headerRulesJson, baseUrl, requestTransform, protocolPayload,
+      )
       providerMeta.value[res.providerKey] = {
         displayName: name,
         colorClass: 'accent',
@@ -564,102 +676,17 @@ function openEditPanel(key: string) {
     const activeEntry = apiKeys.find(k => k.active)
     editForm.value = {
       baseUrl: p.baseUrl || providerMeta.value[key]?.apiUrlPlaceholder || '',
+      anthropicBaseUrl: p.anthropicBaseUrl || '',
+      protocols: normalizeProtocols(p.supportedProtocols),
       apiKeys,
       activeKeyUuid: activeEntry?.keyUuid || apiKeys[0]?.keyUuid || '',
-      models: p.models.map(m => ({
-        ...m,
-        contextSize: String(m.contextSize ?? '0'),
-        maxOutputTokens: String(m.maxOutputTokens ?? '128000'),
-        reasoningEffort: typeof m.reasoningEffort === 'string' && m.reasoningEffort.trim()
-          ? m.reasoningEffort.split(',')[0].trim()
-          : 'Medium',
-      })),
+      models: p.models.map(toEditableModel),
     }
+    editMirroringAnthropicBaseUrl.value = false
+    // 首行协议与折叠状态都以「打开时」为准：之后勾选变化不重排，避免输入框跳位。
+    editPrimaryProtocol.value = resolvePrimaryProtocol(editForm.value.protocols)
+    editUrlsExpanded.value = false
   }
-}
-
-function buildEditableModel(modelName = '', source: Record<string, any> = {}) {
-  return {
-    ...source,
-    modelName,
-    enabled: source.enabled ?? true,
-    contextSize: String(source.contextSize ?? '128000'),
-    maxOutputTokens: String(source.maxOutputTokens ?? '128000'),
-    capsTools: source.capsTools ?? true,
-    capsVision: source.capsVision ?? false,
-    reasoningEffort: typeof source.reasoningEffort === 'string' && source.reasoningEffort.trim()
-      ? source.reasoningEffort.split(',')[0].trim()
-      : 'Medium',
-  }
-}
-
-function extractModelNames(payload: unknown) {
-  let parsedPayload = payload
-  if (typeof parsedPayload === 'string') {
-    try {
-      parsedPayload = JSON.parse(parsedPayload)
-    } catch {
-      return [] as string[]
-    }
-  }
-
-  const modelNames = new Set<string>()
-
-  const collect = (items: unknown) => {
-    if (!Array.isArray(items)) return
-    for (const item of items) {
-      if (typeof item === 'string') {
-        const value = item.trim()
-        if (value) modelNames.add(value)
-        continue
-      }
-      if (!item || typeof item !== 'object') continue
-      for (const key of ['id', 'model', 'name']) {
-        const value = (item as Record<string, unknown>)[key]
-        if (typeof value === 'string' && value.trim()) {
-          modelNames.add(value.trim())
-          break
-        }
-      }
-    }
-  }
-
-  if (Array.isArray(parsedPayload)) {
-    collect(parsedPayload)
-  } else if (parsedPayload && typeof parsedPayload === 'object') {
-    const source = parsedPayload as Record<string, unknown>
-    collect(source.data)
-    collect(source.models)
-  }
-
-  return Array.from(modelNames)
-}
-
-function resolvePullModelsErrorMessage(error: any) {
-  const status = error?.response?.status
-  const data = error?.response?.data
-
-  // 优先使用后端返回的友好错误信息
-  if (data && typeof data === 'object' && typeof data.error === 'string' && data.error.trim()) {
-    return '模型拉取失败：' + data.error
-  }
-  if (typeof data === 'string' && data.trim()) {
-    try {
-      const parsed = JSON.parse(data)
-      if (typeof parsed.error === 'string' && parsed.error.trim()) {
-        return '模型拉取失败：' + parsed.error
-      }
-    } catch { /* 非 JSON，使用原文 */ }
-    return '模型拉取失败：' + data
-  }
-  // 前端兜底
-  if (status === 401 || status === 403) {
-    return '模型拉取失败：API Key 无效或无权限'
-  }
-  if (status === 404) {
-    return '模型拉取失败：模型列表端点不存在'
-  }
-  return '拉取模型失败，请检查网络连接和 API 地址'
 }
 
 function closeEditPanel() {
@@ -669,29 +696,19 @@ function closeEditPanel() {
 async function saveEditPanel() {
   if (!editingKey.value) return
   const key = editingKey.value
-  // 序列化 apiKeys：仅回传 keyUuid（未修改）或 keyUuid+apiKey（修改）或 apiKey（新增）
-  const apiKeysPayload = editForm.value.apiKeys.map(k => {
-    const entry: Record<string, string> = { name: k.name || '' }
-    if (k.keyUuid) entry.keyUuid = k.keyUuid
-    if (k.apiKey && k.apiKey.trim()) entry.apiKey = k.apiKey.trim()
-    return entry
-  })
+  // 与弹窗同一道拦：空集在后端是合法入参但非法配置，存进去会让该供应商的全部调用被拒。
+  if (editForm.value.protocols.length === 0) {
+    message.warning('至少需要启用一个协议')
+    return
+  }
   const params: Record<string, string> = {
     baseUrl: editForm.value.baseUrl,
-    apiKeys: JSON.stringify(apiKeysPayload),
-    activeKeyUuid: editForm.value.activeKeyUuid.startsWith('__new_') ? '' : editForm.value.activeKeyUuid,
+    anthropicBaseUrl: editForm.value.anthropicBaseUrl.trim(),
+    supportedProtocolsJson: protocolsToJson(editForm.value.protocols),
+    apiKeys: JSON.stringify(toApiKeyPayloads(editForm.value.apiKeys)),
+    activeKeyUuid: isNewKeyValue(editForm.value.activeKeyUuid) ? '' : editForm.value.activeKeyUuid,
+    ...toModelFormParams(editForm.value.models),
   }
-  editForm.value.models.forEach((m, i) => {
-    params[`models[${i}].name`] = m.modelName
-    params[`models[${i}].enabled`] = m.enabled ? 'on' : ''
-    params[`models[${i}].contextSize`] = m.contextSize || '0'
-    params[`models[${i}].maxOutputTokens`] = m.maxOutputTokens || '128000'
-    params[`models[${i}].capsTools`] = m.capsTools ? 'on' : ''
-    params[`models[${i}].capsVision`] = m.capsVision ? 'on' : ''
-    if (m.reasoningEffort) {
-      params[`models[${i}].reasoningEffort`] = m.reasoningEffort
-    }
-  })
   try {
     await providerStore.saveProviderConfig(key, params)
     // 保存后从后端重新拉取，确保拿到最新的 keyUuid 与脱敏值
@@ -716,44 +733,30 @@ async function pullModels() {
   if (!editingKey.value) return
   const providerKey = editingKey.value
 
-  // 解析拉取模型所需的 Key：
-  // 1. 优先使用当前选中 Key 条目中新输入的明文（覆盖新增未保存 + 重新输入的场景）
-  // 2. 其次使用任意一条有明文输入的 Key
-  // 3. 若表单中完全没有明文，但当前选中 Key 已保存（有 keyUuid）→ 通过 UUID 让后端解密
-  // 4. 以上都不满足 → 提示用户
-  const activeUuid = editForm.value.activeKeyUuid
-  const activeEntry = editForm.value.apiKeys.find(
-    k => (k.keyUuid && k.keyUuid === activeUuid) || `__new_0` === activeUuid
-  )
-  let apiKey = activeEntry?.apiKey?.trim() || ''
-  let keyUuid = ''
-  if (!apiKey) {
-    const anyPlain = editForm.value.apiKeys.find(k => k.apiKey && k.apiKey.trim())
-    apiKey = anyPlain?.apiKey?.trim() || ''
-  }
-  if (!apiKey) {
-    // 没有明文可用，尝试使用已保存 Key 的 UUID 让后端解密
-    if (activeEntry?.keyUuid) {
-      keyUuid = activeEntry.keyUuid
-    } else {
-      // 尝试任意一条已保存的 Key
-      const anySaved = editForm.value.apiKeys.find(k => k.keyUuid)
-      keyUuid = anySaved?.keyUuid || ''
-    }
-  }
-  if (!apiKey && !keyUuid) {
+  const credential = resolvePullCredential(editForm.value.apiKeys, editForm.value.activeKeyUuid)
+  if (!credential) {
     message.warning('拉取模型需要 API Key。请在"管理 API Key"中新增一条 Key 后再拉取。')
+    return
+  }
+
+  // 拉取走哪条线路由启用状态决定，不让用户选：两个协议的模型列表端点路径完全相同
+  // （都是 GET /v1/models），无法从响应判断上游以哪种协议作答，所以「选线路」没有参考依据。
+  const target = resolveModelPullTarget(
+    editForm.value.protocols, editForm.value.baseUrl, editForm.value.anthropicBaseUrl,
+  )
+  if (!target) {
+    message.warning('请先启用至少一个协议再拉取模型')
     return
   }
 
   pullingModels.value = true
   try {
-    const resolvedBaseUrl = editForm.value.baseUrl.trim() || providerMeta.value[providerKey]?.apiUrlPlaceholder || ''
-    const payload: Record<string, string> = { baseUrl: resolvedBaseUrl }
-    if (apiKey) {
-      payload.apiKey = apiKey
-    } else {
-      payload.keyUuid = keyUuid
+    const resolvedBaseUrl = target.baseUrl || providerMeta.value[providerKey]?.apiUrlPlaceholder || ''
+    const payload: Record<string, string> = { baseUrl: resolvedBaseUrl, protocol: target.protocol }
+    if (credential.apiKey) {
+      payload.apiKey = credential.apiKey
+    } else if (credential.keyUuid) {
+      payload.keyUuid = credential.keyUuid
     }
     const responsePayload = await providerStore.pullProviderModels(providerKey, payload)
     const modelNames = extractModelNames(responsePayload)
@@ -762,33 +765,9 @@ async function pullModels() {
       return
     }
 
-    // 计算差异
-    const currentModelNames = new Set(editForm.value.models.map((m: any) => m.modelName))
-    const pulledModelNames = new Set(modelNames)
-
-    const entries: PullDiffEntry[] = []
-    // 保留的 + 新增的
-    for (const name of modelNames) {
-      entries.push({
-        modelName: name,
-        status: currentModelNames.has(name) ? 'unchanged' : 'added',
-        existingModel: currentModelNames.has(name)
-          ? editForm.value.models.find((m: any) => m.modelName === name)
-          : undefined,
-      })
-    }
-    // 被删除的
-    for (const m of editForm.value.models as any[]) {
-      if (!pulledModelNames.has(m.modelName)) {
-        entries.push({ modelName: m.modelName, status: 'removed', existingModel: m })
-      }
-    }
-
     pullDiffModal.value = {
       visible: true,
-      entries,
-      addedCount: entries.filter(e => e.status === 'added').length,
-      removedCount: entries.filter(e => e.status === 'removed').length,
+      ...buildPullDiff(editForm.value.models, modelNames),
     }
   } catch (error: any) {
     message.error(resolvePullModelsErrorMessage(error))
@@ -798,12 +777,10 @@ async function pullModels() {
 }
 
 function applyPulledModels() {
-  // 只保留 added 和 unchanged 的模型
-  editForm.value.models = pullDiffModal.value.entries
-    .filter(e => e.status !== 'removed')
-    .map(e => buildEditableModel(e.modelName, e.existingModel ?? {}))
+  const { addedCount, removedCount } = pullDiffModal.value
+  editForm.value.models = applyPullDiff(pullDiffModal.value)
   pullDiffModal.value.visible = false
-  message.success(`已应用：新增 ${pullDiffModal.value.addedCount} 个，移除 ${pullDiffModal.value.removedCount} 个`)
+  message.success(`已应用：新增 ${addedCount} 个，移除 ${removedCount} 个`)
 }
 
 function cancelPulledModels() {
@@ -811,17 +788,10 @@ function cancelPulledModels() {
 }
 
 function revertPullDiff(index: number) {
-  const entry = pullDiffModal.value.entries[index]
-  if (!entry || entry.status === 'unchanged') return
-  if (entry.status === 'added') {
-    // 新增的撤销 → 从列表中移除
-    pullDiffModal.value.entries.splice(index, 1)
-  } else {
-    // 移除的撤销 → 恢复为未变更
-    entry.status = 'unchanged'
+  pullDiffModal.value = {
+    visible: pullDiffModal.value.visible,
+    ...revertDiffEntry(pullDiffModal.value, index),
   }
-  pullDiffModal.value.addedCount = pullDiffModal.value.entries.filter(e => e.status === 'added').length
-  pullDiffModal.value.removedCount = pullDiffModal.value.entries.filter(e => e.status === 'removed').length
 }
 
 function addModel() {
@@ -865,7 +835,7 @@ function removeModel(index: number) {
           </div>
           <div class="provider-card-models">
             <span v-if="providerStore.providers[key]?.models?.length">
-              {{providerStore.providers[key].models.filter((m: any) => m.enabled).length}} 个模型
+              {{providerStore.providers[key].models.filter(m => m.enabled).length}} 个模型
             </span>
             <span v-else class="text-muted">未配置</span>
           </div>
@@ -935,6 +905,21 @@ function removeModel(index: number) {
           <n-button size="small" @click="clearProviderForm">清空</n-button>
           <n-button size="small" @click="showPresetModal = true">预设</n-button>
         </div>
+
+        <!-- 路由标识预览：让用户在输入时就知道名称会被转换成什么 -->
+        <div v-if="providerKeyInfo.status !== 'blank'" class="provider-key-preview"
+          :class="`provider-key-preview--${providerKeyInfo.status}`">
+          <div class="provider-key-preview-row">
+            <span class="provider-key-preview-label">路由标识</span>
+            <code v-if="providerKeyInfo.renamed" class="provider-key-preview-value">
+              <span class="provider-key-preview-old">{{ providerKeyInfo.previousKey }}</span>
+              <span class="provider-key-preview-arrow">→</span>{{ providerKeyInfo.key }}
+            </code>
+            <code v-else-if="providerKeyInfo.key" class="provider-key-preview-value">{{ providerKeyInfo.key }}</code>
+            <span v-else class="provider-key-preview-value provider-key-preview-value--empty">无法生成</span>
+          </div>
+          <div v-if="providerKeyHint" class="provider-key-preview-hint">{{ providerKeyHint }}</div>
+        </div>
       </div>
 
       <!-- 高级设置折叠区域 -->
@@ -948,12 +933,34 @@ function removeModel(index: number) {
       </div>
 
       <div v-if="providerAdvancedExpanded" class="advanced-panel">
-        <!-- API 地址 -->
+        <!-- OpenAI 请求 Url -->
         <div class="advanced-section">
           <div class="advanced-section-header">
-            <span class="advanced-section-title">API 地址</span>
+            <span class="advanced-section-title">OpenAI 请求Url</span>
+            <span class="endpoint-hint" :title="openAiEndpointHint">{{ openAiEndpointHint }}</span>
           </div>
-          <n-input v-model:value="providerBaseUrl" placeholder="https://api.example.com/v1" />
+          <div class="protocol-url-row">
+            <n-checkbox :checked="isProtocolEnabled('OPENAI')"
+              :title="`启用 ${WIRE_PROTOCOL_LABELS.OPENAI} 协议`"
+              @update:checked="setProtocolEnabled('OPENAI', $event)" />
+            <n-input :value="providerBaseUrl" placeholder="https://api.example.com/v1"
+              @update:value="onOpenAiBaseUrlInput" @focus="onOpenAiBaseUrlFocus" />
+          </div>
+        </div>
+
+        <!-- Anthropic 请求 Url -->
+        <div class="advanced-section">
+          <div class="advanced-section-header">
+            <span class="advanced-section-title">Anthropic 请求Url</span>
+            <span class="endpoint-hint" :title="anthropicEndpointHint">{{ anthropicEndpointHint }}</span>
+          </div>
+          <div class="protocol-url-row">
+            <n-checkbox :checked="isProtocolEnabled('ANTHROPIC')"
+              :title="`启用 ${WIRE_PROTOCOL_LABELS.ANTHROPIC} 协议`"
+              @update:checked="setProtocolEnabled('ANTHROPIC', $event)" />
+            <n-input :value="providerAnthropicBaseUrl" placeholder="留空则与 OpenAI 地址相同"
+              @update:value="onAnthropicBaseUrlInput" />
+          </div>
         </div>
 
         <!-- 请求头覆盖 -->
@@ -994,8 +1001,8 @@ function removeModel(index: number) {
             </n-button>
           </div>
           <div class="advanced-empty" style="cursor: pointer;" @click="showRequestBodyRuleEditor = true">
-            已配置 {{ requestBodyEditorState.rules.rules.length }} 条规则
-            <span class="request-body-rules-hint">（保存后作用于 Copilot 实际请求）</span>
+            已配置 {{ requestBodyEditorState.rules.groups.length }} 个规则组、{{ countRules(requestBodyEditorState.rules) }} 条规则
+            <span class="request-body-rules-hint">（保存后按线路作用于实际请求）</span>
           </div>
         </div>
       </div>
@@ -1072,7 +1079,7 @@ function removeModel(index: number) {
         <div class="pull-diff-footer">
           <n-button @click="cancelPulledModels">取消</n-button>
           <n-button type="primary" @click="applyPulledModels"
-            :disabled="!pullDiffModal.addedCount && !pullDiffModal.removedCount">
+            :disabled="!pullDiffHasChanges(pullDiffModal)">
             应用
           </n-button>
         </div>
@@ -1085,10 +1092,71 @@ function removeModel(index: number) {
       class="edit-drawer">
       <n-drawer-content :title="editingKey ? providerMeta[editingKey]?.displayName : ''" closable
         @close="closeEditPanel">
-        <div class="field-group">
-          <label class="field-label">API 地址</label>
-          <n-input v-model:value="editForm.baseUrl"
-            :placeholder="editingKey ? providerMeta[editingKey]?.apiUrlPlaceholder : ''" />
+        <!--
+          两个协议地址共处一个容器：左侧是地址行，右侧是展开控件。
+          折叠时只显示首行（由打开时的启用状态决定是谁），把纵向空间让给模型列表。
+        -->
+        <div class="field-group protocol-urls">
+          <div class="protocol-urls__rows">
+            <!--
+              首行与次行显式写出而非用 v-for：Transition 只接受单个子元素，
+              而只有次行参与折叠动画。两者内容结构相同但仅此两处，
+              重复的代价小于为了消重再引入一层组件与 props 传递。
+            -->
+            <div class="protocol-urls__row">
+              <div class="field-label-row">
+                <label class="field-label">{{ PROTOCOL_ROW_LABELS[editProtocolRows[0]] }}</label>
+                <span class="endpoint-hint" :title="editEndpointHintOf(editProtocolRows[0])">
+                  {{ editEndpointHintOf(editProtocolRows[0]) }}
+                </span>
+              </div>
+              <div class="protocol-url-row">
+                <n-input :value="editBaseUrlOf(editProtocolRows[0])"
+                  :placeholder="PROTOCOL_ROW_PLACEHOLDERS[editProtocolRows[0]]"
+                  @update:value="(val: string) => onEditBaseUrlInput(editProtocolRows[0], val)"
+                  @focus="onEditBaseUrlFocus(editProtocolRows[0])" />
+                <n-checkbox :checked="isEditProtocolEnabled(editProtocolRows[0])"
+                  @update:checked="setEditProtocolEnabled(editProtocolRows[0], $event)">启用</n-checkbox>
+              </div>
+            </div>
+            <!--
+              次行外面多一层 __collapse：grid-template-rows 过渡要求过渡元素自身是
+              grid 容器、且内容位于单个可裁剪的子元素中。若直接把 __row 作为过渡元素，
+              它的两个子 div（标签行、输入行）会各占一个轨道，收缩时只有第一个轨道在动。
+            -->
+            <Transition name="protocol-url-slide"
+              @enter="onProtocolRowEnter" @after-enter="onProtocolRowAfterEnter"
+              @leave="onProtocolRowLeave">
+              <div v-if="editUrlsExpanded" class="protocol-urls__collapse">
+                <div class="protocol-urls__row">
+                  <div class="field-label-row">
+                    <label class="field-label">{{ PROTOCOL_ROW_LABELS[editProtocolRows[1]] }}</label>
+                    <span class="endpoint-hint" :title="editEndpointHintOf(editProtocolRows[1])">
+                      {{ editEndpointHintOf(editProtocolRows[1]) }}
+                    </span>
+                  </div>
+                  <div class="protocol-url-row">
+                    <n-input :value="editBaseUrlOf(editProtocolRows[1])"
+                      :placeholder="PROTOCOL_ROW_PLACEHOLDERS[editProtocolRows[1]]"
+                      @update:value="(val: string) => onEditBaseUrlInput(editProtocolRows[1], val)"
+                      @focus="onEditBaseUrlFocus(editProtocolRows[1])" />
+                    <n-checkbox :checked="isEditProtocolEnabled(editProtocolRows[1])"
+                      @update:checked="setEditProtocolEnabled(editProtocolRows[1], $event)">启用</n-checkbox>
+                  </div>
+                </div>
+              </div>
+            </Transition>
+          </div>
+          <button type="button" class="protocol-urls__toggle"
+            :class="{ 'protocol-urls__toggle--expanded': editUrlsExpanded }"
+            :title="editUrlsExpanded ? '收起另一个协议地址' : '展开另一个协议地址'"
+            :aria-expanded="editUrlsExpanded"
+            @click="editUrlsExpanded = !editUrlsExpanded">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
         </div>
         <div class="field-group">
           <label class="field-label">API Key</label>
@@ -1158,6 +1226,142 @@ function removeModel(index: number) {
   letter-spacing: 0.15em;
   text-transform: uppercase;
   color: $text-muted;
+}
+
+/**
+ * 两个协议地址的外层容器：左侧地址行，右侧展开控件。
+ *
+ * 展开按钮垂直居中于**整个容器**而非首行，因为它控制的是容器的展开状态；
+ * 若钉在首行，展开后它会停在上方，看起来像只属于第一行。
+ */
+.protocol-urls {
+  // stretch 而非 center：按钮要纵向撑满容器，居中会让它只占内容高度。
+  display: flex;
+  align-items: stretch;
+  gap: $space-sm;
+}
+
+/**
+ * 行间距由次行的 margin 而非容器的 gap 提供。
+ *
+ * gap 不参与过渡：次行被移除的那一帧，那 8px 会瞬间消失，于是平滑的高度动画末尾
+ * 总带一下突跳。改成 margin 后它能和 max-height 一起被过渡掉。
+ */
+.protocol-urls__rows {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.protocol-urls__row {
+  min-width: 0;
+}
+
+/**
+ * 次行的折叠包装层。
+ *
+ * 间距落在这一层而非行本身：它是被过渡的那个元素，`margin-top` 只有挂在这里
+ * 才能与高度一起被插值掉。
+ */
+.protocol-urls__collapse {
+  min-width: 0;
+  margin-top: $space-sm;
+}
+
+/**
+ * 展开/收起控件：纵向竖长条，高度由容器（左侧地址行）决定。
+ *
+ * 用原生 button 而非 n-button：它只是一个箭头，n-button 的内边距与最小宽度会让它
+ * 在这个位置显得过重，而这里要的是最小横向占用。
+ *
+ * <p>高度靠 `align-items: stretch` 由父容器撑开，不写死数值 —— 展开后左侧多一行，
+ * 写死的高度会与它脱节，而这个控件的语义正是「作用于整个容器」。
+ */
+.protocol-urls__toggle {
+  flex: 0 0 auto;
+  width: 20px;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid $border;
+  border-radius: 4px;
+  background: transparent;
+  color: $text-muted;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+
+  &:hover {
+    color: $accent;
+    border-color: $accent;
+    background: $accent-light;
+  }
+
+  svg {
+    transition: transform 0.25s ease;
+  }
+
+  &--expanded svg {
+    transform: rotate(180deg);
+  }
+}
+
+/**
+ * 次行的滑动淡入 / 淡出。
+ *
+ * <h2>为何高度由 JS 钩子给而不写在 CSS 里</h2>
+ * 两种纯 CSS 写法都测出了可见的不流畅：
+ * <ul>
+ *   <li>`max-height` 的目标值只能猜。实测行高 56px，写 80px 时收起的前 24px
+ *       内容并未被裁剪 —— 那一段是纯空转，元素一动不动，真正的收缩挤在后段，
+ *       观感是「先停一下再突然收起」。</li>
+ *   <li>`grid-template-rows: 1fr → 0fr` 不需猜值，但 `fr` 是比例单位，插值并非线性：
+ *       实测 250ms 的过渡在约 75ms 内就走完了绝大部分路程，变成「一下就没了」。</li>
+ * </ul>
+ * 钩子里读 `scrollHeight` 再写回 `max-height`，两个问题同时消失：值是量出来的不用猜，
+ * 而 `px` 的插值是线性的。
+ *
+ * <p>透明度与位移仍要一起过渡：只做高度像是被挤出来的、没有出现感；
+ * 只做透明度则会让下方的模型列表在展开瞬间被整块推下去，位移是突变的。
+ *
+ * <p>行间距的 `margin-top` 必须同步过渡 —— 它若在最后一帧瞬间消失，
+ * 平滑的高度动画末尾仍会带一下突跳。
+ */
+.protocol-url-slide-enter-active,
+.protocol-url-slide-leave-active {
+  overflow: hidden;
+  transition: max-height 0.25s ease, opacity 0.2s ease, transform 0.25s ease,
+    margin-top 0.25s ease;
+}
+
+.protocol-url-slide-enter-from,
+.protocol-url-slide-leave-to {
+  max-height: 0;
+  margin-top: 0;
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+/**
+ * 标签与端点预览同一行。
+ *
+ * 这里的标签不能沿用 `.field-label` 的 `text-transform: uppercase` —— 那会把
+ * 「OpenAI 请求Url」显示成「OPENAI 请求URL」，而协议名的大小写是它的正式写法。
+ */
+.field-label-row {
+  display: flex;
+  align-items: baseline;
+  gap: $space-sm;
+  margin-bottom: 4px;
+
+  .field-label {
+    flex: 0 0 auto;
+    margin-bottom: 0;
+    text-transform: none;
+    letter-spacing: 0.05em;
+  }
 }
 
 .provider-grid {
@@ -1366,6 +1570,83 @@ function removeModel(index: number) {
   align-items: center;
 }
 
+/* 路由标识预览 —— 把「展示名 → provider-key」的转换结果摊开给用户看 */
+.provider-key-preview {
+  margin-top: $space-sm;
+  padding: $space-sm $space-sm + 2px;
+  border-radius: $radius;
+  border: 1px solid $border;
+  background: $border-light;
+  border-left: 2px solid $text-muted;
+}
+
+.provider-key-preview-row {
+  display: flex;
+  align-items: baseline;
+  gap: $space-sm;
+}
+
+.provider-key-preview-label {
+  flex-shrink: 0;
+  font-family: $font-mono;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: $text-muted;
+}
+
+.provider-key-preview-value {
+  font-family: $font-mono;
+  font-size: 12px;
+  color: $text-primary;
+  word-break: break-all;
+}
+
+.provider-key-preview-value--empty {
+  color: $danger;
+}
+
+/* 改名时并列旧标识，划掉表示即将失效 */
+.provider-key-preview-old {
+  color: $text-muted;
+  text-decoration: line-through;
+}
+
+.provider-key-preview-arrow {
+  margin: 0 $space-xs;
+  color: $text-muted;
+}
+
+.provider-key-preview-hint {
+  margin-top: $space-xs;
+  font-size: 12px;
+  line-height: 1.5;
+  color: $text-body;
+}
+
+.provider-key-preview--lossy {
+  border-left-color: $warning;
+
+  .provider-key-preview-hint {
+    color: $warning;
+  }
+}
+
+.provider-key-preview--unavailable,
+.provider-key-preview--conflict {
+  border-left-color: $danger;
+
+  .provider-key-preview-hint {
+    color: $danger;
+  }
+}
+
+/* 未改名的正常态：仅陈述事实，不需要强调 */
+.provider-key-preview--ok {
+  border-left-color: $success;
+}
+
 /* ── 预设供应商列表 ── */
 .preset-columns {
   display: grid;
@@ -1453,6 +1734,47 @@ function removeModel(index: number) {
   font-size: 13px;
   font-weight: 600;
   color: $text-body;
+  // 标题不参与压缩：地址一长，该被截断的是右侧提示而不是「OpenAI 请求Url」。
+  flex: 0 0 auto;
+}
+
+/**
+ * 端点预览。占据标题右侧的剩余空间并单行截断 —— 完整地址由 title 属性提供，
+ * 因为它可以很长，换行会把整个区块的高度撑起来。
+ */
+.endpoint-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: $space-sm;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: $font-mono;
+  font-size: 11px;
+  color: $text-muted;
+  text-align: right;
+}
+
+/**
+ * 地址输入框与启用复选框同一行。
+ *
+ * 输入框吃掉剩余空间、复选框宽度由内容决定。两者的左右次序在弹窗与抽屉里不同
+ * （弹窗复选框在前、抽屉在后），由模板的元素顺序决定，这里不做假设。
+ */
+.protocol-url-row {
+  display: flex;
+  align-items: center;
+  gap: $space-sm;
+
+  :deep(.n-input) {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  :deep(.n-checkbox) {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
 }
 
 .advanced-add-btn {

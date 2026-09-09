@@ -1,5 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.application.logging;
 
+import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
+
 import java.util.List;
 import java.util.Map;
 
@@ -34,6 +36,17 @@ public interface ApiCallLogService {
                        Map<String, String> responseHeaders, int statusCode, String responseBody, long durationMs);
 
     /**
+     * 保存一条带线路协议信息的非流式调用日志。
+     */
+    default Long saveNonStream(String providerKey, String modelName,
+                               String downstreamProtocol, String upstreamProtocol,
+                               Map<String, String> requestHeaders, Map<String, Object> requestBody,
+                               Map<String, String> responseHeaders, int statusCode, String responseBody, long durationMs) {
+        return saveNonStream(providerKey, modelName, requestHeaders, requestBody, responseHeaders,
+                statusCode, responseBody, durationMs);
+    }
+
+    /**
      * 保存一条流式调用日志。
      *
      * @param providerKey     供应商标识
@@ -49,6 +62,35 @@ public interface ApiCallLogService {
     Long saveStream(String providerKey, String modelName,
                     Map<String, String> requestHeaders, Map<String, Object> requestBody,
                     Map<String, String> responseHeaders, int statusCode, List<String> chunks, long durationMs);
+
+    /**
+     * 保存一条带线路协议信息的流式调用日志。
+     */
+    default Long saveStream(String providerKey, String modelName,
+                            String downstreamProtocol, String upstreamProtocol,
+                            Map<String, String> requestHeaders, Map<String, Object> requestBody,
+                            Map<String, String> responseHeaders, int statusCode, List<String> chunks, long durationMs) {
+        return saveStream(providerKey, modelName, requestHeaders, requestBody, responseHeaders,
+                statusCode, chunks, durationMs);
+    }
+
+    /**
+     * 保存一条流式调用日志，chunk 以 {@link ChunkLogPayload} 给出。
+     *
+     * <p>跨协议翻译时该载荷同时带上游原始事件与下游实际收到的 chunk；
+     * 直连时只有一份，落库形态与历史数据完全一致。
+     *
+     * <p>默认实现只取下游那一份，使未升级的实现行为不变。
+     */
+    default Long saveStream(String providerKey, String modelName,
+                            String downstreamProtocol, String upstreamProtocol,
+                            Map<String, String> requestHeaders, Map<String, Object> requestBody,
+                            Map<String, String> responseHeaders, int statusCode,
+                            ChunkLogPayload chunks, long durationMs) {
+        return saveStream(providerKey, modelName, downstreamProtocol, upstreamProtocol,
+                requestHeaders, requestBody, responseHeaders, statusCode,
+                chunks == null ? null : chunks.translated(), durationMs);
+    }
 
     /**
      * 保存一条流式调用日志（含错误信息）。
@@ -71,6 +113,33 @@ public interface ApiCallLogService {
                              Map<String, String> requestHeaders, Map<String, Object> requestBody,
                              Map<String, String> responseHeaders, int statusCode, List<String> chunks,
                              Map<String, String> errorHeaders, int errorCode, String errorBody, long durationMs);
+
+    /**
+     * 保存一条带线路协议信息的流式错误调用日志。
+     */
+    default Long saveStreamWithError(String providerKey, String modelName,
+                                     String downstreamProtocol, String upstreamProtocol,
+                                     Map<String, String> requestHeaders, Map<String, Object> requestBody,
+                                     Map<String, String> responseHeaders, int statusCode, List<String> chunks,
+                                     Map<String, String> errorHeaders, int errorCode, String errorBody, long durationMs) {
+        return saveStreamWithError(providerKey, modelName, requestHeaders, requestBody, responseHeaders,
+                statusCode, chunks, errorHeaders, errorCode, errorBody, durationMs);
+    }
+
+    /**
+     * 保存一条流式错误调用日志，chunk 以 {@link ChunkLogPayload} 给出。
+     */
+    default Long saveStreamWithError(String providerKey, String modelName,
+                                     String downstreamProtocol, String upstreamProtocol,
+                                     Map<String, String> requestHeaders, Map<String, Object> requestBody,
+                                     Map<String, String> responseHeaders, int statusCode,
+                                     ChunkLogPayload chunks,
+                                     Map<String, String> errorHeaders, int errorCode, String errorBody, long durationMs) {
+        return saveStreamWithError(providerKey, modelName, downstreamProtocol, upstreamProtocol,
+                requestHeaders, requestBody, responseHeaders, statusCode,
+                chunks == null ? null : chunks.translated(),
+                errorHeaders, errorCode, errorBody, durationMs);
+    }
 
     /**
      * 发出一次「本次调用的记录已落库」信号，供管理后台的日志 SSE 流唤醒前端重新拉取。

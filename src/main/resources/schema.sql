@@ -19,7 +19,14 @@ CREATE TABLE IF NOT EXISTS provider_config (
     provider_key     VARCHAR(30)  NOT NULL UNIQUE,   -- 服务商标识，如 longcat / mimo
     display_name     TEXT         NOT NULL DEFAULT '', -- 前端完整显示名，独立于路由用 provider_key
     enabled          INTEGER      NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)), -- 是否启用（0=禁用，1=启用）
-    base_url         TEXT         NOT NULL DEFAULT '', -- API 基础 URL
+    base_url         TEXT         NOT NULL DEFAULT '', -- OpenAI 协议的 API 基础 URL
+    -- 该供应商支持的线路协议集合（JSON 字符串数组，元素取值同 WireProtocol 枚举名）。
+    -- 空数组表示「一种都不支持」，是显式的非法配置：调度器会明确报错而非静默回退。
+    supported_protocols TEXT      NOT NULL DEFAULT '["OPENAI","ANTHROPIC"]' CHECK (json_valid(supported_protocols)),
+    -- Anthropic 协议的独立 API 基础 URL；为空时回退到 base_url。
+    -- 独立成列而非从 base_url 推导：中转站的 Anthropic 端点位置不可预测（有的在 /v1/messages，
+    -- 有的在根路径），继续猜只会让「配了却调不通」这类问题无从排查。
+    anthropic_base_url  TEXT      NOT NULL DEFAULT '',
     updated_at       TEXT         NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
 );
 
@@ -31,10 +38,35 @@ CREATE TABLE IF NOT EXISTS provider_model (
     model_name      VARCHAR(100) NOT NULL,            -- 模型名称
     enabled         INTEGER      NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)), -- 是否启用（0=禁用，1=启用，默认启用）
     context_size    INTEGER      NOT NULL DEFAULT 0 CHECK (context_size >= 0), -- 上下文大小（token 数）
-    max_output_tokens INTEGER    NOT NULL DEFAULT 128000 CHECK (max_output_tokens >= 0), -- 最大输出 token 数
+    -- 最大输出配置（V9 JSON）：{"max_output_tokens":4000,"overwrite_mode":"override|fallback"}
+    -- 只有两档模式：override 一律用配置值；fallback 用下游的、没带才补。
+    -- 没有 passthrough / delete：Anthropic 侧 max_tokens 缺失会 400，「不补」在那条线路上等于必然失败。
+    max_output_tokens TEXT       NOT NULL DEFAULT '{"max_output_tokens":4000,"overwrite_mode":"fallback"}'
+        CHECK (json_valid(max_output_tokens)),
     caps_tools      INTEGER      NOT NULL DEFAULT 0 CHECK (caps_tools IN (0, 1)), -- 是否支持工具调用（0=否，1=是）
     caps_vision     INTEGER      NOT NULL DEFAULT 0 CHECK (caps_vision IN (0, 1)), -- 是否支持视觉（0=否，1=是）
-    reasoning_effort TEXT        NOT NULL DEFAULT 'Medium', -- 思考深度（逗号分隔，如 Low,Medium）
+    -- 思考深度配置（V2 JSON）：{"reasoning_effort":"medium","overwrite_mode":"override|fallback|passthrough|delete"}
+    -- 四种模式的区别只在「下游带了值时用谁的」与「下游没带时是否补」：
+    -- override 一律用配置值；fallback 用下游的、没带才补；passthrough 用下游的、没带也不补；
+    -- delete 连下游自带的也移除（某些上游收到该字段会 400，必须能强制剥离）。
+    reasoning_effort TEXT        NOT NULL DEFAULT '{"reasoning_effort":"medium","overwrite_mode":"fallback"}'
+        CHECK (json_valid(reasoning_effort)),
+    -- 思考深度配置的结构版本。存在的意义是让 V8.9 那次「内容形态变更」成为可判定的结构事实，
+    -- 否则基线判定只能靠翻数据，而空库没有行可翻。
+    -- 注意：这是当时基线判定要求结构证据的产物，现已不需要，V9 与 V10 都没有再加同类列。
+    reasoning_effort_schema INTEGER NOT NULL DEFAULT 2 CHECK (reasoning_effort_schema >= 1),
+    -- Anthropic 思考方式（V10 JSON）：{"thinking_type":"adaptive|enabled","overwrite_mode":"override|fallback|passthrough"}
+    -- 与思考深度正交：深度回答「想多深」，这里回答「预算怎么算」，两者可并存。
+    -- 没有 disabled 形态：关闭思考由思考深度的 Off 档表达，两处都给会产出自相矛盾的请求体。
+    -- 没有 delete 模式：强制剥离 thinking 用仅适用于 ANTHROPIC 的请求体规则表达。
+    thinking_mode   TEXT         NOT NULL DEFAULT '{"thinking_type":"adaptive","overwrite_mode":"fallback"}'
+        CHECK (json_valid(thinking_mode)),
+    -- 思考预算（token 数）。只在 thinking_type = enabled 时有意义，adaptive 形态不接受它。
+    -- -1 是「未设置」哨兵，不是可出站的值；enabled 但仍为 -1 时出站退化为 adaptive。
+    -- 约束只放行这一个负值：其余负数没有约定含义，一律是脏数据。
+    -- 预算没有自己的注入模式 —— 它是 enabled 形态的附属参数，跟着 thinking_mode 的模式走。
+    thinking_budget_tokens INTEGER NOT NULL DEFAULT -1
+        CHECK (thinking_budget_tokens > 0 OR thinking_budget_tokens = -1),
     sort_order      INTEGER      NOT NULL DEFAULT 0 CHECK (sort_order >= 0), -- 排序权重
     FOREIGN KEY (provider_id) REFERENCES provider_config(id) ON DELETE CASCADE
 );
@@ -69,15 +101,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_api_key_active
 
 -- ==================== 供应商请求转换配置表 ====================
 -- 请求头运行时读取本表的 header_rules_json；请求体运行时读取本表 body_rules_json。
+-- body_rules_json 自 V8.7 起是 V2 规则组格式：{"version":2,"groups":[...]}，
+-- 每组自带 protocols（适用线路）、templateKeys 与 previewBody（该组专属调试样本）。
+-- body_template_keys_json 与 body_preview_json 是 legacy 列：内容已下沉进第一个规则组，
+-- 不再是配置来源，仅为旧版本回滚时仍能读到一份有意义的样本而保留。
 
 CREATE TABLE IF NOT EXISTS provider_request_transform (
     provider_id             INTEGER PRIMARY KEY,       -- 与供应商一对一关联
     header_rules_version    INTEGER NOT NULL DEFAULT 1 CHECK (header_rules_version >= 1),
     header_rules_json       TEXT    NOT NULL DEFAULT '[]' CHECK (json_valid(header_rules_json)),
-    body_template_keys_json TEXT    NOT NULL DEFAULT '["custom"]' CHECK (json_valid(body_template_keys_json)),
-    body_preview_json       TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(body_preview_json)),
-    body_rules_version      INTEGER NOT NULL DEFAULT 1 CHECK (body_rules_version >= 1),
-    body_rules_json         TEXT    NOT NULL DEFAULT '{"version":1,"rules":[]}' CHECK (json_valid(body_rules_json)),
+    body_template_keys_json TEXT    NOT NULL DEFAULT '["custom"]' CHECK (json_valid(body_template_keys_json)), -- legacy
+    body_preview_json       TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(body_preview_json)),               -- legacy
+    body_rules_version      INTEGER NOT NULL DEFAULT 2 CHECK (body_rules_version >= 1),
+    body_rules_json         TEXT    NOT NULL DEFAULT '{"version":2,"groups":[]}' CHECK (json_valid(body_rules_json)),
+    body_rules_schema       INTEGER NOT NULL DEFAULT 2 CHECK (body_rules_schema >= 1),  -- 规则集结构版本，V8.7 迁移的结构性标记
     created_at              TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')),
     updated_at              TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')),
     FOREIGN KEY (provider_id) REFERENCES provider_config(id) ON DELETE CASCADE
@@ -115,6 +152,8 @@ CREATE TABLE IF NOT EXISTS api_call_log (
     provider_key    VARCHAR(30),                   -- 服务商标识，如 deepseek / mimo
     model_name      VARCHAR(100),                  -- 模型名称
     is_stream       INTEGER      NOT NULL DEFAULT 0 CHECK (is_stream IN (0, 1)), -- 是否流式（0=否，1=是）
+    downstream_protocol TEXT     NOT NULL DEFAULT 'OPENAI' CHECK (downstream_protocol IN ('OPENAI', 'ANTHROPIC')), -- 下游请求线路协议
+    upstream_protocol   TEXT     NOT NULL DEFAULT 'OPENAI' CHECK (upstream_protocol IN ('OPENAI', 'ANTHROPIC')), -- 实际上游线路协议
     status_code     INTEGER,                        -- HTTP 响应状态码
     request_headers TEXT,                           -- JSON 格式的请求头
     request_body    TEXT,                           -- JSON 格式的请求体

@@ -63,7 +63,7 @@ node tools/mock-upstream/mock-upstream.js
 - 兜底重发与 429 / 5xx / 网络中断**共用同一份 5 次预算**（`buildRetrySpec`），
   不是第二套重试实现。耗尽后把最后一轮的帧原样放行给下游。
 
-判定实现见 `UpstreamChunkContentDetector`，接线点在 `AbstractUpstreamChatService#chatCompletionStream`
+判定实现见 `OpenAiContentDetector`，接线点在 `AbstractUpstreamChatService#chatCompletionStream`
 的 gate（`retryWhen` 内侧）。非流式走同一份内层判定但另有入口，场景见
 [tools/mock-nonstream/README.md](../mock-nonstream/README.md)。
 

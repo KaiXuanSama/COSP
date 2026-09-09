@@ -9,7 +9,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -320,13 +322,25 @@ class UsageQueryServiceHourlySeriesTests {
         assertThat(end.getValue()).isEqualTo(result.windowEnd());
     }
 
-    /** 响应式入口可用。 */
+    /**
+     * 响应式入口可用。
+     *
+     * <p>本类其余用例都把 {@code now} 显式喂给 {@code buildHourlySeries}，唯独这里不能 ——
+     * 要验的正是「响应式入口自己取当前时刻」这件事，注入时刻就把被测行为绕过去了。
+     *
+     * <p>因此日期必须<strong>相对当前</strong>算，不能写死：写死的日期会随着真实时间推移
+     * 滑出可回看窗口，届时被 {@code resolveHourlyAnchorDate} 收敛到边界日，
+     * 于是断言在某天之后突然开始失败，而代码从未改动。取「昨天」是因为它恒落在
+     * {@code [earliestReachable, today]} 之内（窗口有两周），必然被原样回显。
+     */
     @Test
     void reactiveEntryPointReturnsSeries() {
-        UsageHourlySeries result = service.getHourlySeries("2026-07-28").block();
+        String yesterday = LocalDate.now().minusDays(1).format(DateTimeFormatter.ISO_LOCAL_DATE);
+
+        UsageHourlySeries result = service.getHourlySeries(yesterday).block();
 
         assertThat(result).isNotNull();
-        assertThat(result.date()).isEqualTo("2026-07-28");
+        assertThat(result.date()).isEqualTo(yesterday);
         assertThat(result.points()).hasSize(25);
     }
 }

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.DatabaseRuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRepository;
@@ -38,13 +39,17 @@ import static org.mockito.Mockito.when;
 class ProviderRequestBodyTransformationIntegrationTests {
 
     private static final String RULES = """
-            {"version":1,"rules":[{
-              "id":"rewrite-temperature","order":0,"field":"temperature","array":false,
-              "conditional":false,"conditionMode":"all","conditions":[],
-              "operations":[{"type":"set_value","value":0.2}]},
-              {"id":"remove-reasoning","order":1,"field":"reasoning_effort","array":false,
-              "conditional":false,"conditionMode":"all","conditions":[],
-              "operations":[{"type":"delete"}]}
+            {"version":2,"groups":[{
+              "id":"g-openai","name":"OpenAI 规则组","order":0,"enabled":true,
+              "protocols":["OPENAI"],"templateKeys":["base"],"previewBody":{},
+              "rules":[{
+                "id":"rewrite-temperature","order":0,"field":"temperature","array":false,
+                "conditional":false,"conditionMode":"all","conditions":[],
+                "operations":[{"type":"set_value","value":0.2}]},
+                {"id":"remove-reasoning","order":1,"field":"reasoning_effort","array":false,
+                "conditional":false,"conditionMode":"all","conditions":[],
+                "operations":[{"type":"delete"}]}
+              ]}
             ]}
             """;
 
@@ -108,7 +113,8 @@ class ProviderRequestBodyTransformationIntegrationTests {
         DatabaseRuntimeProviderCatalog catalog = new DatabaseRuntimeProviderCatalog(
                 providerConfigRepository, apiKeyRepository, transformRepository);
         GenericOpenAiChatService genericChatService = new GenericOpenAiChatService(
-                objectMapper, new ProviderRequestHeaderService(objectMapper));
+                objectMapper, new ProviderRequestHeaderService(objectMapper),
+                new RequestBodyRuleEngine(objectMapper));
         genericChatService.setWebClientBuilder(WebClient.builder());
         AtomicReference<Map<String, String>> loggedRequestHeaders = new AtomicReference<>();
         ApiCallLogService callLogService = mock(ApiCallLogService.class);
@@ -122,8 +128,11 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 org.mockito.ArgumentMatchers.anyMap(), org.mockito.ArgumentMatchers.anyInt(),
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyLong());
         genericChatService.setApiCallLog(callLogService);
+        // 翻译落地后，ChatCompletionService 需要两个上游服务与两个翻译器。
+        // 本测试只关注 OpenAI 直连路径，不走翻译，用 null 占位。
         ChatCompletionService chatCompletionService = new ChatCompletionService(
-                new ProviderRouteResolver(catalog), genericChatService);
+                new ProviderRouteResolver(catalog), new ProtocolDispatchManager(),
+                genericChatService, null, null, null);
 
         HttpHeaders downstreamHeaders = new HttpHeaders();
         downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-token");
@@ -172,17 +181,25 @@ class ProviderRequestBodyTransformationIntegrationTests {
         jdbcTemplate.execute("CREATE TABLE provider_config ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, "
                 + "display_name TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0, "
-                + "base_url TEXT NOT NULL DEFAULT '', updated_at TEXT)");
+                + "base_url TEXT NOT NULL DEFAULT '', "
+                + "supported_protocols TEXT NOT NULL DEFAULT '[\"OPENAI\",\"ANTHROPIC\"]', "
+                + "anthropic_base_url TEXT NOT NULL DEFAULT '', updated_at TEXT)");
         jdbcTemplate.execute("CREATE TABLE provider_model ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, "
                 + "enabled INTEGER NOT NULL DEFAULT 0, context_size INTEGER NOT NULL DEFAULT 8192, "
-                + "max_output_tokens INTEGER NOT NULL DEFAULT 4096, caps_tools INTEGER NOT NULL DEFAULT 0, "
+                + "max_output_tokens TEXT NOT NULL DEFAULT '{\"max_output_tokens\":4000,\"overwrite_mode\":\"fallback\"}' "
+                + "CHECK (json_valid(max_output_tokens)), caps_tools INTEGER NOT NULL DEFAULT 0, "
                 + "caps_vision INTEGER NOT NULL DEFAULT 0, reasoning_effort TEXT NOT NULL DEFAULT 'Medium', "
+                + "thinking_mode TEXT NOT NULL DEFAULT "
+                + "'{\"thinking_type\":\"adaptive\",\"overwrite_mode\":\"fallback\"}' "
+                + "CHECK (json_valid(thinking_mode)), "
+                + "thinking_budget_tokens INTEGER NOT NULL DEFAULT -1, "
                 + "sort_order INTEGER NOT NULL DEFAULT 0)");
         jdbcTemplate.execute("CREATE TABLE provider_request_transform ("
                 + "provider_id INTEGER PRIMARY KEY, header_rules_version INTEGER NOT NULL, "
                 + "header_rules_json TEXT NOT NULL, body_template_keys_json TEXT NOT NULL, "
                 + "body_preview_json TEXT NOT NULL, body_rules_version INTEGER NOT NULL, "
-                + "body_rules_json TEXT NOT NULL, created_at TEXT, updated_at TEXT)");
+                + "body_rules_json TEXT NOT NULL, body_rules_schema INTEGER NOT NULL DEFAULT 2, "
+                + "created_at TEXT, updated_at TEXT)");
     }
 }

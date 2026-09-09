@@ -1,6 +1,8 @@
 package com.kaixuan.copilot_ollama_proxy.application.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -8,6 +10,8 @@ import org.springframework.http.MediaType;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ProviderRequestHeaderServiceTests {
+
+    private static final String ANTHROPIC_KEY_HEADER = ProviderRequestHeaderService.ANTHROPIC_API_KEY_HEADER;
 
     private final ProviderRequestHeaderService service = new ProviderRequestHeaderService(new ObjectMapper());
 
@@ -22,7 +26,7 @@ class ProviderRequestHeaderServiceTests {
                   {"key":"X-Provider","value":"generic"},
                   {"key":"X-Remove","value":"/del/"}
                 ]
-                """);
+                """, WireProtocol.OPENAI);
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Custom actual-api-key");
         assertThat(headers.getFirst("X-Provider")).isEqualTo("generic");
@@ -33,7 +37,7 @@ class ProviderRequestHeaderServiceTests {
     void applyHeadersUsesBearerAuthenticationWhenThereAreNoRules() {
         HttpHeaders headers = new HttpHeaders();
 
-        service.applyHeaders(headers, "actual-api-key", "[]");
+        service.applyHeaders(headers, "actual-api-key", "[]", WireProtocol.OPENAI);
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer actual-api-key");
     }
@@ -50,7 +54,7 @@ class ProviderRequestHeaderServiceTests {
     void applyHeadersIgnoresInvalidRulesWithoutRemovingDefaultAuthentication() {
         HttpHeaders headers = new HttpHeaders();
 
-        service.applyHeaders(headers, "actual-api-key", "not-json");
+        service.applyHeaders(headers, "actual-api-key", "not-json", WireProtocol.OPENAI);
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer actual-api-key");
     }
@@ -94,7 +98,7 @@ class ProviderRequestHeaderServiceTests {
                   {"key":"Cookie","value":"/del/"},
                   {"key":"X-Trace-Id","value":"provider-trace"}
                 ]
-                """, true);
+                """, true, WireProtocol.OPENAI);
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Provider provider-api-key");
         assertThat(headers).doesNotContainKey(HttpHeaders.COOKIE);
@@ -111,9 +115,107 @@ class ProviderRequestHeaderServiceTests {
         downstreamHeaders.set("X-Trace-Id", "trace-123");
 
         HttpHeaders headers = new HttpHeaders();
-        service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false);
+        service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false,
+                WireProtocol.OPENAI);
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
         assertThat(headers.getFirst("X-Trace-Id")).isEqualTo("trace-123");
+    }
+
+    /**
+     * 鉴权头按出站协议装配：写本协议那一个、删另一个。
+     *
+     * 判据是上游协议而非下游协议 —— 翻译路线上两者不同，而鉴权头必须匹配真正收到
+     * 这个请求的那一端。这些用例同时钉住「删噪音」：另一种协议的鉴权头无论来自下游透传
+     * 还是翻译残留，都不该出站。
+     */
+    @Nested
+    class AuthenticationHeadersByUpstreamProtocol {
+
+        @Test
+        void openAiUpstreamSendsBearerAndDropsAnthropicKey() {
+            HttpHeaders headers = new HttpHeaders();
+
+            service.applyHeaders(headers, "provider-api-key", "[]", WireProtocol.OPENAI);
+
+            assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
+            assertThat(headers).doesNotContainKey(ANTHROPIC_KEY_HEADER);
+        }
+
+        @Test
+        void anthropicUpstreamSendsApiKeyAndDropsAuthorization() {
+            HttpHeaders headers = new HttpHeaders();
+
+            service.applyHeaders(headers, "provider-api-key", "[]", WireProtocol.ANTHROPIC);
+
+            assertThat(headers.getFirst(ANTHROPIC_KEY_HEADER)).isEqualTo("provider-api-key");
+            assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);
+        }
+
+        /** 下游按 Anthropic 惯例带来的 x-api-key 不得泄露给 OpenAI 上游。 */
+        @Test
+        void openAiUpstreamDropsForwardedDownstreamAnthropicKey() {
+            HttpHeaders downstreamHeaders = new HttpHeaders();
+            downstreamHeaders.set(ANTHROPIC_KEY_HEADER, "downstream-leaked-key");
+            downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-gateway-key");
+
+            HttpHeaders headers = new HttpHeaders();
+            service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false,
+                    WireProtocol.OPENAI);
+
+            assertThat(headers).doesNotContainKey(ANTHROPIC_KEY_HEADER);
+            assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
+        }
+
+        /**
+         * 下游携带 x-api-key 时，供应商 key 仍必须覆盖它。
+         *
+         * 这一条曾经不成立：x-api-key 那一侧是「缺失才设」，下游带了就补不进去，
+         * 请求会带着下游的值打到上游，而排查时 Authorization 看起来是对的。
+         */
+        @Test
+        void anthropicUpstreamOverridesForwardedDownstreamApiKey() {
+            HttpHeaders downstreamHeaders = new HttpHeaders();
+            downstreamHeaders.set(ANTHROPIC_KEY_HEADER, "downstream-leaked-key");
+            downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-gateway-key");
+
+            HttpHeaders headers = new HttpHeaders();
+            service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false,
+                    WireProtocol.ANTHROPIC);
+
+            assertThat(headers.getFirst(ANTHROPIC_KEY_HEADER)).isEqualTo("provider-api-key");
+            assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);
+        }
+
+        /**
+         * 规则层保留最终决定权：需要双头并存的中转站可以把被删的那个加回来。
+         *
+         * 装配刻意在规则之前执行，正是为了留出这个出口 —— 默认给协议上正确的那一种，
+         * 特例交给规则。
+         */
+        @Test
+        void headerRulesCanRestoreTheDroppedAuthenticationHeader() {
+            HttpHeaders headers = new HttpHeaders();
+
+            service.applyHeaders(headers, "provider-api-key", """
+                    [{"key":"Authorization","value":"Bearer {apiKey}"}]
+                    """, WireProtocol.ANTHROPIC);
+
+            assertThat(headers.getFirst(ANTHROPIC_KEY_HEADER)).isEqualTo("provider-api-key");
+            assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
+        }
+
+        /** 规则也能反向删掉本协议的鉴权头，用于自带凭据在别处的上游。 */
+        @Test
+        void headerRulesCanDeleteTheProtocolAuthenticationHeader() {
+            HttpHeaders headers = new HttpHeaders();
+
+            service.applyHeaders(headers, "provider-api-key", """
+                    [{"key":"x-api-key","value":"/del/"}]
+                    """, WireProtocol.ANTHROPIC);
+
+            assertThat(headers).doesNotContainKey(ANTHROPIC_KEY_HEADER);
+            assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);
+        }
     }
 }

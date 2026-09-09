@@ -7,12 +7,15 @@ import { CallLogDetail } from '@/components/calllog'
 import { prependWithCursorShift } from '@/features/call-log/pagination'
 import { createCoalescingSync } from '@/features/call-log/sync'
 import type { DetailItem } from '@/types/calllog'
+import type { WireProtocol } from '@/types/protocol'
 
 interface LogItem {
   id: number
   provider_key: string
   model_name: string
   is_stream: number
+  downstream_protocol: WireProtocol
+  upstream_protocol: WireProtocol
   status_code: number
   created_at: string
 }
@@ -124,6 +127,15 @@ function getStatusClass(code: number): string {
   if (code >= 400 && code < 500) return 'warning'
   if (code >= 500) return 'error'
   return 'default'
+}
+
+function formatCallType(log: LogItem): string {
+  const upstream = log.upstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
+  const downstream = log.downstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
+  const protocol = upstream === downstream
+    ? (upstream === 'A' ? 'Anthropic' : 'OpenAI')
+    : `${upstream}→${downstream}`
+  return `${log.is_stream ? '流式' : '非流'}: ${protocol}`
 }
 
 /**
@@ -292,8 +304,8 @@ onUnmounted(() => {
             <div class="log-item-content">
               <div class="log-item-header">
                 <span class="log-provider">{{ log.provider_key }}</span>
-                <span class="log-stream-tag" :class="{ 'log-stream-tag--stream': log.is_stream }">
-                  {{ log.is_stream ? '流式' : '非流式' }}
+                <span class="log-call-type" :title="`上游 ${log.upstream_protocol} → 下游 ${log.downstream_protocol}`">
+                  {{ formatCallType(log) }}
                 </span>
                 <span class="log-status">{{ log.status_code }}</span>
               </div>
@@ -483,30 +495,22 @@ onUnmounted(() => {
 }
 
 /*
-  流式/非流式徽章：紧跟供应商名，故 header 从 space-between 改为 gap + 状态码 auto 左边距。
-  否则三个元素会被均匀分散，徽章飘到行中间读不出它在修饰谁。
+  调用类型与状态码共同锚定到卡片右侧：它不是独立的状态标签，而是本次调用的
+  线路元信息。与状态码共用等宽数字、字号和颜色，阅读时自然合成一组。
  */
-.log-stream-tag {
+.log-call-type {
   flex-shrink: 0;
-  padding: 1px 6px;
+  margin-left: auto;
   font-family: $font-body;
-  font-size: 11px;
-  font-weight: 500;
-  border-radius: 999px;
-  background: rgba($text-muted, 0.12);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
   color: $text-muted;
   white-space: nowrap;
-
-  &--stream {
-    background: rgba($accent, 0.15);
-    color: $accent;
-  }
 }
 
 .log-status {
   flex-shrink: 0;
-  /* 状态码保持贴右：header 已改用 gap 让徽章紧跟供应商，右对齐改由本列自己承担 */
-  margin-left: auto;
+  margin-left: $space-xs;
   font-family: $font-body;
   font-size: 13px;
   font-variant-numeric: tabular-nums;

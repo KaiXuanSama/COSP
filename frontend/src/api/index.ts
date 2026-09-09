@@ -69,4 +69,15 @@ export function fetchLogDetail(id: number) {
   return http.get(`/logs/${id}`)
 }
 
+/**
+ * 用后端生产引擎计算请求体规则的转换结果。
+ *
+ * 编辑器的预览走这个端点而非前端自带一份引擎实现：预览的价值全在于「所见即将发生」，
+ * 而两份独立实现靠纪律保持一致防不住漂移。这里传的是单个规则组的规则列表与它的调试样本，
+ * 后端不做协议筛选 —— 「适用协议」是规则组自己的属性，替用户筛掉正在编辑的组只会让预览变空白。
+ */
+export function previewRequestBodyRules(previewBody: Record<string, unknown>, rules: unknown[]) {
+  return http.post('/request-body-rules/preview', { previewBody, rules })
+}
+
 export default http

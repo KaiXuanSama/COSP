@@ -39,6 +39,7 @@ class ApiCallLogRepositoryGeneratedKeyTests {
         jdbcTemplate = new JdbcTemplate(dataSource);
         jdbcTemplate.execute("CREATE TABLE api_call_log ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT, model_name TEXT, is_stream INTEGER NOT NULL DEFAULT 0, "
+                + "downstream_protocol TEXT NOT NULL DEFAULT 'OPENAI', upstream_protocol TEXT NOT NULL DEFAULT 'OPENAI', "
                 + "status_code INTEGER NOT NULL DEFAULT 0, request_headers TEXT, request_body TEXT, response_headers TEXT, response_body TEXT, "
                 + "chunks TEXT, duration_ms INTEGER, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         repository = new ApiCallLogRepository(jdbcTemplate, new ObjectMapper(), new LogEventPublisher());
@@ -110,8 +111,31 @@ class ApiCallLogRepositoryGeneratedKeyTests {
         assertThat(row.get("is_stream")).isEqualTo(0);
         assertThat(((Number) row.get("status_code")).intValue()).isEqualTo(200);
         assertThat(row.get("response_body")).isEqualTo("{\"choices\":[]}");
+        assertThat(row.get("downstream_protocol")).isEqualTo("OPENAI");
+        assertThat(row.get("upstream_protocol")).isEqualTo("OPENAI");
         assertThat(((Number) row.get("duration_ms")).longValue()).isEqualTo(321L);
         assertThat(row.get("request_headers")).asString().contains("Authorization");
+    }
+
+    @Test
+    void explicitProtocolsPersistForEveryLogShape() {
+        Long nonStream = repository.saveNonStream("anthropic", "claude", "ANTHROPIC", "ANTHROPIC",
+                Map.of(), Map.of(), Map.of(), 200, "{\"content\":[]}", 1L);
+        Long stream = repository.saveStream("openai", "gpt", "OPENAI", "OPENAI",
+                Map.of(), Map.of(), Map.of(), 200, List.of("[DONE]"), 2L);
+        Long streamError = repository.saveStreamWithError("anthropic", "claude", "ANTHROPIC", "ANTHROPIC",
+                Map.of(), Map.of(), Map.of(), 200, List.of("message_stop"),
+                Map.of(), 500, "error", 3L);
+
+        assertProtocols(nonStream, "ANTHROPIC", "ANTHROPIC");
+        assertProtocols(stream, "OPENAI", "OPENAI");
+        assertProtocols(streamError, "ANTHROPIC", "ANTHROPIC");
+    }
+
+    private void assertProtocols(Long id, String downstream, String upstream) {
+        Map<String, Object> row = repository.findLogById(id);
+        assertThat(row.get("downstream_protocol")).isEqualTo(downstream);
+        assertThat(row.get("upstream_protocol")).isEqualTo(upstream);
     }
 
     @Test

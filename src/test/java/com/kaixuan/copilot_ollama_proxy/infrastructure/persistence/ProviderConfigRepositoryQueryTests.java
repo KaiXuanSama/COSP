@@ -32,11 +32,21 @@ class ProviderConfigRepositoryQueryTests {
         jdbcTemplate.execute("CREATE TABLE provider_config ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0, "
                 + "base_url TEXT NOT NULL DEFAULT '', "
+                + "supported_protocols TEXT NOT NULL DEFAULT '[\"OPENAI\",\"ANTHROPIC\"]' "
+                + "CHECK (json_valid(supported_protocols)), "
+                + "anthropic_base_url TEXT NOT NULL DEFAULT '', "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         jdbcTemplate.execute("CREATE TABLE provider_model ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, "
-                + "context_size INTEGER NOT NULL DEFAULT 0, max_output_tokens INTEGER NOT NULL DEFAULT 128000, caps_tools INTEGER NOT NULL DEFAULT 0, "
-                + "caps_vision INTEGER NOT NULL DEFAULT 0, reasoning_effort TEXT NOT NULL DEFAULT 'Medium', sort_order INTEGER NOT NULL DEFAULT 0)");
+                + "context_size INTEGER NOT NULL DEFAULT 0, "
+                + "max_output_tokens TEXT NOT NULL DEFAULT '{\"max_output_tokens\":4000,\"overwrite_mode\":\"fallback\"}' "
+                + "CHECK (json_valid(max_output_tokens)), caps_tools INTEGER NOT NULL DEFAULT 0, "
+                + "caps_vision INTEGER NOT NULL DEFAULT 0, reasoning_effort TEXT NOT NULL DEFAULT 'Medium', "
+                + "thinking_mode TEXT NOT NULL DEFAULT "
+                + "'{\"thinking_type\":\"adaptive\",\"overwrite_mode\":\"fallback\"}' "
+                + "CHECK (json_valid(thinking_mode)), "
+                + "thinking_budget_tokens INTEGER NOT NULL DEFAULT -1, "
+                + "sort_order INTEGER NOT NULL DEFAULT 0)");
         jdbcTemplate.execute("CREATE TABLE provider_api_key ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, key_uuid TEXT NOT NULL UNIQUE, provider_id INTEGER NOT NULL, key_name TEXT NOT NULL DEFAULT '', "
                 + "encrypted_api_key TEXT NOT NULL, nonce TEXT NOT NULL, encryption_version INTEGER NOT NULL DEFAULT 1, is_active INTEGER NOT NULL DEFAULT 0, "

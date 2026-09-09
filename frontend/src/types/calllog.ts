@@ -5,6 +5,7 @@
  * 都要消费同一份详情结构，再加上公共详情组件 CallLogDetail.vue，
  * 三处若各自声明会在字段增减时静默漂移。
  */
+import type { WireProtocol } from './protocol'
 
 /**
  * 调用 token 用量（来自独立的 api_call_usage 表，经详情端点的 usage 字段回传）。
@@ -32,6 +33,8 @@ export interface DetailItem {
   provider_key: string
   model_name: string
   is_stream: number
+  downstream_protocol: WireProtocol
+  upstream_protocol: WireProtocol
   status_code: number
   request_headers: string | null
   request_body: string | null

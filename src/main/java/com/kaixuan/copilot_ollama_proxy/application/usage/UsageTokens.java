@@ -9,7 +9,7 @@ package com.kaixuan.copilot_ollama_proxy.application.usage;
  *   <li>{@code 0} —— 上游报告了该字段但值为零；对"缓存命中率"应显示真实 0%。</li>
  * </ul>
  *
- * <p>解析一律按"字段存在性"进行（见 {@link UsageParser}），绝不使用 {@code asInt(0)}，
+ * <p>解析一律按"字段存在性"进行（见各协议的 usage 解析器），绝不使用 {@code asInt(0)}，
  * 否则会把"缺失"与"0"抹平，毁掉上述区分。
  *
  * <p>{@code total_tokens} 不在此列——它是 {@code prompt + completion} 的派生值，

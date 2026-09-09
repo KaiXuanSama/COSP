@@ -2,6 +2,9 @@ package com.kaixuan.copilot_ollama_proxy.application.provider;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.AnthropicThinkingSetting;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRow;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
@@ -23,6 +26,27 @@ import java.util.TreeSet;
 /** 管理后台供应商配置用例。 */
 @Service
 public class ProviderAdminService {
+
+    /**
+     * 展示名派生不出路由标识时的错误提示。
+     *
+     * {@link #toProviderKey} 只保留 ASCII 字母数字，所以纯中文或全角名称
+     * （如「深度求索」「ＭｉＭｏ」）会得到空串。空串在 SQLite 里能通过
+     * {@code NOT NULL} 约束照常入库，随后引发两个隐蔽故障：模型在 Copilot 侧
+     * 失去 {@code [provider-key]} 前缀而无法精确路由；且 {@code UNIQUE} 约束
+     * 使第二个这类供应商被拒绝时，报出与展示名不符的「名称已存在」。
+     * 故必须在入库前拦掉。前端另有同源提示，此处是防止绕过界面直接调接口。
+     */
+    static final String EMPTY_PROVIDER_KEY_ERROR = "供应商名称需包含至少一个英文字母或数字，用于生成路由标识";
+
+    /**
+     * 可声明的线路协议白名单。
+     *
+     * <p>与 {@link ProviderRequestTransformService} 里规则组的同名白名单同理：校验的是
+     * <strong>外部输入的字符串</strong>，用 {@code WireProtocol.valueOf} 会把非法值变成异常控制流，
+     * 而这里要的是「集合包含判断 + 统一错误消息」。
+     */
+    private static final Set<String> SUPPORTED_PROTOCOLS = Set.of("OPENAI", "ANTHROPIC");
 
     private final ProviderConfigRepository providerConfigRepository;
     private final ProviderApiKeyRepository providerApiKeyRepository;
@@ -78,8 +102,68 @@ public class ProviderAdminService {
             providerConfigRepository.saveProviderConfigWithModels(providerKey, value(form, "baseUrl", "").trim(),
                     parseApiKeyInputs(value(form, "apiKeys", "[]").trim(), value(form, "activeKeyUuid", "").trim()),
                     parseModels(form));
+            try {
+                saveProtocolsFromForm(providerKey, form);
+            } catch (IllegalArgumentException exception) {
+                return Outcome.badRequest(exception.getMessage());
+            }
             return Outcome.ok(Map.of("ok", true));
         }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 从表单写入协议配置；字段未出现时保持原值。
+     *
+     * <p>三条保存路径（新建弹窗、改名弹窗、编辑抽屉）共用这一份，因为「未提供即保留」
+     * 这个语义在任何一条路径上被写错，后果都是同一个：一次无关的保存把协议支持抹平。
+     *
+     * @throws IllegalArgumentException 协议集合不是合法的协议名数组
+     */
+    private void saveProtocolsFromForm(String providerKey, MultiValueMap<String, String> form) {
+        String rawAnthropicBaseUrl = form.getFirst("anthropicBaseUrl");
+        providerConfigRepository.updateProviderProtocols(providerKey,
+                parseSupportedProtocols(form.getFirst("supportedProtocolsJson")),
+                rawAnthropicBaseUrl == null ? null : rawAnthropicBaseUrl.trim());
+    }
+
+    /**
+     * 校验并规范化协议集合表单值。
+     *
+     * <p>返回 {@code null} 表示<strong>表单没带这个字段</strong>，交由仓储保留原值；
+     * 而非「清成空集」。当前管理后台前端尚未提交该字段，若把缺失当清空，
+     * 任何一次普通的供应商编辑都会把协议支持抹平，而空集会让该供应商的全部调用被拒。
+     *
+     * <p>空串与空白同样视为「未提供」—— 表单里一个未填的隐藏域发出来就是空串，
+     * 把它读成「用户声明了什么」是错的。确实要表达空集就传字面的 {@code []}。
+     *
+     * @throws IllegalArgumentException 不是 JSON 字符串数组，或含未知协议名
+     */
+    private String parseSupportedProtocols(String rawJson) {
+        if (rawJson == null || rawJson.isBlank()) {
+            return null;
+        }
+        JsonNode parsed;
+        try {
+            parsed = objectMapper.readTree(rawJson);
+        } catch (Exception exception) {
+            throw new IllegalArgumentException("协议支持配置不是合法 JSON");
+        }
+        if (!parsed.isArray()) {
+            throw new IllegalArgumentException("协议支持配置必须是数组");
+        }
+        Set<String> normalized = new TreeSet<>();
+        for (JsonNode element : parsed) {
+            String name = element.isTextual() ? element.asText().trim().toUpperCase() : "";
+            if (!SUPPORTED_PROTOCOLS.contains(name)) {
+                throw new IllegalArgumentException("不支持的线路协议: " + element.asText());
+            }
+            normalized.add(name);
+        }
+        try {
+            return objectMapper.writeValueAsString(normalized);
+        } catch (Exception exception) {
+            throw new IllegalArgumentException("协议支持配置序列化失败");
+        }
     }
 
     public Mono<Outcome> addProvider(MultiValueMap<String, String> form) {
@@ -87,6 +171,7 @@ public class ProviderAdminService {
             String name = value(form, "displayName", "").trim();
             if (name.isEmpty()) return Outcome.badRequest("供应商名称不能为空");
             String providerKey = toProviderKey(name);
+            if (providerKey.isEmpty()) return Outcome.badRequest(EMPTY_PROVIDER_KEY_ERROR);
             if (providerConfigRepository.findByKey(providerKey) != null) return Outcome.badRequest("该供应商名称已存在");
             try {
                 providerRequestTransformService.createProvider(providerKey, name, value(form, "baseUrl", "").trim(),
@@ -94,6 +179,7 @@ public class ProviderAdminService {
                         defaultIfBlank(form.getFirst("bodyTemplateKeysJson"), ProviderRequestTransformService.DEFAULT_TEMPLATE_KEYS_JSON),
                         defaultIfBlank(form.getFirst("bodyPreviewJson"), ProviderRequestTransformService.DEFAULT_BODY_PREVIEW_JSON),
                         defaultIfBlank(form.getFirst("bodyRulesJson"), ProviderRequestTransformService.EMPTY_BODY_RULES_JSON));
+                saveProtocolsFromForm(providerKey, form);
                 return Outcome.ok(Map.of("ok", true, "providerKey", providerKey, "displayName", name));
             } catch (IllegalArgumentException exception) {
                 return Outcome.badRequest(exception.getMessage());
@@ -115,6 +201,7 @@ public class ProviderAdminService {
             ProviderConfigRow existing = providerConfigRepository.findByKey(providerKey);
             if (existing == null) return Outcome.badRequest("供应商不存在");
             String newProviderKey = toProviderKey(name);
+            if (newProviderKey.isEmpty()) return Outcome.badRequest(EMPTY_PROVIDER_KEY_ERROR);
             if (!newProviderKey.equals(providerKey) && providerConfigRepository.findByKey(newProviderKey) != null) {
                 return Outcome.badRequest("该供应商名称已存在");
             }
@@ -124,6 +211,9 @@ public class ProviderAdminService {
                         defaultIfBlank(form.getFirst("bodyTemplateKeysJson"), ProviderRequestTransformService.DEFAULT_TEMPLATE_KEYS_JSON),
                         defaultIfBlank(form.getFirst("bodyPreviewJson"), ProviderRequestTransformService.DEFAULT_BODY_PREVIEW_JSON),
                         defaultIfBlank(form.getFirst("bodyRulesJson"), ProviderRequestTransformService.EMPTY_BODY_RULES_JSON));
+                // 用改名后的 key 定位：上一行可能刚把 provider_key 改掉，用旧 key 会匹配不到任何行
+                // 而 UPDATE 不报错，表现为协议配置静默丢失。
+                saveProtocolsFromForm(newProviderKey, form);
                 return Outcome.ok(Map.of("ok", true, "providerKey", newProviderKey, "displayName", name));
             } catch (IllegalArgumentException exception) {
                 return Outcome.badRequest(exception.getMessage());
@@ -138,6 +228,11 @@ public class ProviderAdminService {
         view.put("displayName", provider.displayName());
         view.put("enabled", provider.enabled());
         view.put("baseUrl", provider.baseUrl());
+        // 协议支持以数组而非 JSON 字符串形式返回：前端拿到就能直接绑多选控件，
+        // 不必再做一次 JSON.parse 并处理它可能失败。规则集那几个字段保持字符串是因为它们
+        // 在前端也以字符串形式回传，而协议集合没有这个对称需求。
+        view.put("supportedProtocols", parseProtocolsForView(provider.supportedProtocolsJson()));
+        view.put("anthropicBaseUrl", provider.anthropicBaseUrl() == null ? "" : provider.anthropicBaseUrl());
         view.put("updatedAt", provider.updatedAt());
         view.put("models", provider.models());
         view.put("apiKeys", buildMaskedApiKeys(provider.id()));
@@ -150,6 +245,36 @@ public class ProviderAdminService {
         transformView.put("bodyRulesJson", transform == null ? ProviderRequestTransformService.EMPTY_BODY_RULES_JSON : transform.bodyRulesJson());
         view.put("requestTransform", transformView);
         return view;
+    }
+
+    /**
+     * 把协议集合 JSON 解成供前端直接使用的列表。
+     *
+     * <p>解不开时回退到两种协议都有，与
+     * {@code ProviderProtocolSupport} 的宽容口径保持一致 —— 否则会出现「界面上看不到勾选，
+     * 实际却两条线路都能跑」这种说不通的状态。显式的空数组仍如实返回空列表。
+     */
+    private List<String> parseProtocolsForView(String supportedProtocolsJson) {
+        List<String> fallback = List.of("OPENAI", "ANTHROPIC");
+        if (supportedProtocolsJson == null || supportedProtocolsJson.isBlank()) {
+            return fallback;
+        }
+        try {
+            JsonNode parsed = objectMapper.readTree(supportedProtocolsJson);
+            if (!parsed.isArray()) {
+                return fallback;
+            }
+            List<String> protocols = new ArrayList<>();
+            for (JsonNode element : parsed) {
+                String name = element.isTextual() ? element.asText().trim().toUpperCase() : "";
+                if (SUPPORTED_PROTOCOLS.contains(name) && !protocols.contains(name)) {
+                    protocols.add(name);
+                }
+            }
+            return protocols;
+        } catch (Exception exception) {
+            return fallback;
+        }
     }
 
     private List<Map<String, Object>> buildMaskedApiKeys(int providerId) {
@@ -206,10 +331,25 @@ public class ProviderAdminService {
             model.put("modelName", value(form, prefix + index + "].name", "").trim());
             model.put("enabled", "on".equals(form.getFirst(prefix + index + "].enabled")));
             model.put("contextSize", value(form, prefix + index + "].contextSize", "0").trim());
-            model.put("maxOutputTokens", value(form, prefix + index + "].maxOutputTokens", "128000").trim());
+            // 与思考深度同样收敛成 V9 JSON：表单可能提交 V9 JSON，也可能是旧前端的裸整数。
+            model.put("maxOutputTokens", MaxOutputTokensSetting
+                    .parse(value(form, prefix + index + "].maxOutputTokens", "").trim(), objectMapper)
+                    .serialize());
             model.put("capsTools", "on".equals(form.getFirst(prefix + index + "].capsTools")));
             model.put("capsVision", "on".equals(form.getFirst(prefix + index + "].capsVision")));
-            model.put("reasoningEffort", value(form, prefix + index + "].reasoningEffort", "Medium").trim());
+            // 收敛成规范的 V2 JSON：表单提交的可能是 V2 JSON、旧的裸档位、甚至遗留的 None，
+            // 在入库前统一形态，读取侧才不必长期兼容三种写法。
+            model.put("reasoningEffort", ReasoningEffortSetting
+                    .parse(value(form, prefix + index + "].reasoningEffort", "").trim(), objectMapper)
+                    .serialize());
+            // 思考方式与预算（V10）。两者分属两列，但要一起 parse —— record 的构造器
+            // 把非正预算归一为哨兵，分开处理就得在这里再写一遗那个规则。
+            AnthropicThinkingSetting thinking = AnthropicThinkingSetting.parse(
+                    value(form, prefix + index + "].thinkingMode", "").trim(),
+                    parsePositiveInt(value(form, prefix + index + "].thinkingBudgetTokens", "")),
+                    objectMapper);
+            model.put("thinkingMode", thinking.serialize());
+            model.put("thinkingBudgetTokens", thinking.budgetTokens());
             models.add(model);
         }
         return models;
@@ -218,6 +358,24 @@ public class ProviderAdminService {
     private String value(MultiValueMap<String, String> form, String key, String defaultValue) {
         String value = form.getFirst(key);
         return value == null ? defaultValue : value;
+    }
+
+    /**
+     * 解析一个可选的正整数表单值，空值与非数字返回 0。
+     *
+     * <p>返回 0 而不是哨兵：归一成哨兵是
+     * {@link AnthropicThinkingSetting} 构造器的职责，这里只负责把表单字符串
+     * 变成一个数，不重复一遗那个规则。
+     */
+    private static int parsePositiveInt(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException exception) {
+            return 0;
+        }
     }
 
     private String maskApiKey(String key) {

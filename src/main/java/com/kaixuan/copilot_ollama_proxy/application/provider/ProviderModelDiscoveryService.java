@@ -1,12 +1,14 @@
 package com.kaixuan.copilot_ollama_proxy.application.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRow;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderRequestTransformRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderRequestTransformRow;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
@@ -23,6 +25,10 @@ import java.util.Optional;
  */
 @Service
 public class ProviderModelDiscoveryService {
+
+    /** Anthropic 必需的版本头，与上游聊天链路取同一个值。 */
+    private static final String ANTHROPIC_VERSION_HEADER = "anthropic-version";
+    private static final String ANTHROPIC_VERSION_VALUE = "2023-06-01";
 
     private final ProviderConfigRepository providerConfigRepository;
     private final ProviderApiKeyRepository providerApiKeyRepository;
@@ -59,7 +65,7 @@ public class ProviderModelDiscoveryService {
             .flatMap(prepared -> prepared.isEmpty()
                         ? Mono.just(badRequest("指定的 API Key 不存在或已被删除，请重新选择。"))
                 : forwardModelsRequest(command.baseUrl(), prepared.get().apiKey(), command.modelPullPath(),
-                    prepared.get().headerRulesJson()));
+                    prepared.get().headerRulesJson(), command.protocol()));
     }
 
     private ModelPullRequest prepareModelPullRequest(String providerKey, String submittedApiKey, String keyUuid) {
@@ -90,11 +96,12 @@ public class ProviderModelDiscoveryService {
     }
 
     private Mono<ResponseEntity<Object>> forwardModelsRequest(String rawBaseUrl, String apiKey, String rawModelPullPath,
-                                                               String headerRulesJson) {
+                                                               String headerRulesJson, WireProtocol protocol) {
         String requestUrl = providerRequestHeaderService.buildRequestUrl(rawBaseUrl, normalizeModelPullPath(rawModelPullPath));
         return webClientBuilder.clone().defaultHeaders(headers -> {
             headers.setAccept(List.of(MediaType.APPLICATION_JSON));
-            providerRequestHeaderService.applyHeaders(headers, apiKey, headerRulesJson);
+            providerRequestHeaderService.applyHeaders(headers, apiKey, headerRulesJson, protocol);
+            applyProtocolHeaders(headers, protocol);
         }).build().get().uri(requestUrl).exchangeToMono(response -> response.bodyToMono(String.class).defaultIfEmpty("")
                 .map(responseBody -> {
                     ResponseEntity.BodyBuilder builder = ResponseEntity.status(response.statusCode().value());
@@ -139,6 +146,33 @@ public class ProviderModelDiscoveryService {
         return message == null || message.isBlank() ? "连接上游服务失败" : "连接上游服务失败: " + message;
     }
 
+    /**
+     * 补上目标协议特有的非鉴权请求头。
+     *
+     * <h2>为何拉取模型也要分协议</h2>
+     * 两个协议的模型列表端点<strong>路径完全相同</strong>（都是 {@code GET /v1/models}），
+     * 只有请求头不同：Anthropic 把 {@code anthropic-version} 列为必需头，缺失时官方 API 返回 400。
+     * 若不分协议，从一个只有 Anthropic 端点的供应商拉模型就会稳定得到 400，
+     * 而错误消息会指向「地址不对」—— 地址其实是对的。
+     *
+     * <h2>鉴权头不在这里</h2>
+     * 它由 {@code ProviderRequestHeaderService} 按出站协议统一装配（写本协议那一个、
+     * 删另一个），本方法只补版本头。这一处曾有一份「双认证头」副本，与聊天链路各写一遍；
+     * 收归一处后，模型拉取与聊天用的是同一套鉴权口径 —— 拉取能通而聊天 401
+     * （或反之）这类只能靠对比两处代码才能解释的现象因此不再可能。
+     *
+     * <p>版本头只在缺失时设置，因此供应商自定义头规则（已在 {@code applyHeaders} 里生效）
+     * 仍能覆盖它 —— 某些中转站要求特定版本号。
+     */
+    private void applyProtocolHeaders(HttpHeaders headers, WireProtocol protocol) {
+        if (protocol != WireProtocol.ANTHROPIC) {
+            return;
+        }
+        if (!headers.containsKey(ANTHROPIC_VERSION_HEADER)) {
+            headers.set(ANTHROPIC_VERSION_HEADER, ANTHROPIC_VERSION_VALUE);
+        }
+    }
+
     private String normalizeModelPullPath(String rawModelPullPath) {
         String path = rawModelPullPath == null ? "" : rawModelPullPath.trim();
         if (path.isBlank()) {
@@ -151,12 +185,35 @@ public class ProviderModelDiscoveryService {
         return ResponseEntity.badRequest().body(Map.of("ok", false, "error", message));
     }
 
-    public record ModelPullCommand(String baseUrl, String apiKey, String keyUuid, String modelPullPath) {
+    /**
+     * @param protocol 拉取走哪条线路协议；缺失或认不得时按 OpenAI 处理
+     */
+    public record ModelPullCommand(String baseUrl, String apiKey, String keyUuid, String modelPullPath,
+                                   WireProtocol protocol) {
         public ModelPullCommand {
             baseUrl = baseUrl == null ? "" : baseUrl.trim();
             apiKey = apiKey == null ? "" : apiKey.trim();
             keyUuid = keyUuid == null ? "" : keyUuid.trim();
             modelPullPath = modelPullPath == null ? "" : modelPullPath.trim();
+            protocol = protocol == null ? WireProtocol.OPENAI : protocol;
+        }
+
+        /**
+         * 从请求体的字符串解出协议，认不得一律按 OpenAI。
+         *
+         * <p>不报错而静默回退：拉取模型是一个辅助操作，因一个认不得的协议名就拒绝整个请求
+         * 比「按默认协议试一下」更让人因惑 —— 且 OpenAI 是绝大多数供应商的形态。
+         */
+        public static WireProtocol parseProtocol(String raw) {
+            if (raw == null || raw.isBlank()) {
+                return WireProtocol.OPENAI;
+            }
+            for (WireProtocol candidate : WireProtocol.values()) {
+                if (candidate.name().equalsIgnoreCase(raw.trim())) {
+                    return candidate;
+                }
+            }
+            return WireProtocol.OPENAI;
         }
     }
 

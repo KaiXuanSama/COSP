@@ -15,6 +15,8 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import JsonViewer from './JsonViewer.vue'
 import ChunksViewer from './ChunksViewer.vue'
 import type { CollapseRule } from './JsonNode.vue'
+import { parseChunkViews } from './chunkViews'
+import { formatCacheHitRate } from '@/features/call-log/cacheHitRate'
 import type { DetailItem, UsageDetail } from '@/types/calllog'
 
 const props = withDefaults(
@@ -34,7 +36,16 @@ const props = withDefaults(
 )
 
 const jsonModal = ref({ show: false, title: '', content: null as unknown, collapseRule: 'none' as CollapseRule })
-const chunksModal = ref({ show: false, chunks: [] as string[] })
+const chunksModal = ref({
+  show: false,
+  chunks: [] as string[],
+  /** 上游原始事件；仅跨协议翻译时存在，null 表示直连。 */
+  upstreamChunks: null as string[] | null,
+  /** 逐事件产帧数，两栗对齐的唯一依据。 */
+  frameCounts: null as number[] | null,
+  // 解析规则跟**下游**协议：落库的 chunk 是下游实际收到的形态。
+  downstreamProtocol: 'OPENAI' as DetailItem['downstream_protocol'],
+})
 
 // ── 格式化 ──────────────────────────────────────────────
 
@@ -113,19 +124,21 @@ function formatTtfb(usage: UsageDetail | null): string {
   return formatDuration(usage.ttfb_ms)
 }
 
+function formatCallType(detail: DetailItem): string {
+  const upstream = detail.upstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
+  const downstream = detail.downstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
+  const protocol = upstream === downstream
+    ? (upstream === 'A' ? 'Anthropic' : 'OpenAI')
+    : `${upstream}→${downstream}`
+  return `${detail.is_stream ? '流式' : '非流'}: ${protocol}`
+}
+
 /**
- * 缓存命中占比 = 缓存命中 token / 输入 token。
- *
- * 不落库为独立列（派生值），此处前端计算。严格区分 null 与 0：
- * - 缓存或输入任一为 null（上游未提供）→ '—'，表示无从计算，而非 0%；
- * - 缓存为 0 且输入有值 → '0%'，这是上游报告的真实未命中。
- * 输入为 0 时无法做除法，同样显示 '—'。
+ * 缓存命中占比。不落库为独立列（派生值），此处前端计算；口径由后端统一，
+ * 算法说明见 `features/call-log/cacheHitRate.ts` —— 列表页共用同一份。
  */
-function formatCacheHitRate(usage: UsageDetail | null): string {
-  if (!usage) return '—'
-  const { cached_tokens: cached, prompt_tokens: prompt } = usage
-  if (cached == null || prompt == null || prompt === 0) return '—'
-  return `${((cached / prompt) * 100).toFixed(1)}%`
+function cacheHitRateOf(usage: UsageDetail | null): string {
+  return formatCacheHitRate(usage)
 }
 
 // ── usage 原始数据浮窗 ──────────────────────────────────
@@ -250,17 +263,21 @@ function openJsonModal(title: string, content: unknown, collapseRule: CollapseRu
 }
 
 /**
- * 打开 chunks 查看器
+ * 打开 chunks 查看器。
+ *
+ * 落库的 chunks 列有两种形状（直连的裸数组、跨协议的带标记对象），
+ * 形状分派在 `parseChunkViews` 里，这里只负责传给查看器。
  */
 function openChunksModal(rawChunks: string | null) {
   if (!rawChunks) return
-  let parsed: string[] = []
-  try {
-    parsed = JSON.parse(rawChunks)
-  } catch {
-    parsed = [rawChunks]
+  const views = parseChunkViews(rawChunks)
+  chunksModal.value = {
+    show: true,
+    chunks: views.downstream,
+    upstreamChunks: views.upstream,
+    frameCounts: views.frameCounts,
+    downstreamProtocol: props.detail.downstream_protocol,
   }
-  chunksModal.value = { show: true, chunks: parsed }
 }
 
 onMounted(() => {
@@ -281,8 +298,12 @@ onUnmounted(() => {
         <div class="detail-meta-title">
           <span class="detail-provider">{{ props.detail.provider_key }}</span>
           <span class="detail-model">{{ props.detail.model_name }}</span>
-          <span class="detail-stream-tag" :class="{ 'detail-stream-tag--stream': props.detail.is_stream }">
-            {{ props.detail.is_stream ? '流式' : '非流式' }}
+          <span
+            class="detail-call-tag"
+            :class="{ 'detail-call-tag--stream': props.detail.is_stream }"
+            :title="`上游 ${props.detail.upstream_protocol} → 下游 ${props.detail.downstream_protocol}`"
+          >
+            {{ formatCallType(props.detail) }}
           </span>
         </div>
       </div>
@@ -318,7 +339,7 @@ onUnmounted(() => {
       </span>
       <span class="detail-usage-cell">
         <span class="detail-usage-label">缓存占比</span>
-        <span class="detail-usage-value">{{ formatCacheHitRate(props.detail.usage) }}</span>
+        <span class="detail-usage-value">{{ cacheHitRateOf(props.detail.usage) }}</span>
       </span>
       <span class="detail-usage-cell">
         <span class="detail-usage-label">总计</span>
@@ -421,6 +442,9 @@ onUnmounted(() => {
     <ChunksViewer
       v-model:show="chunksModal.show"
       :chunks="chunksModal.chunks"
+      :downstream-protocol="chunksModal.downstreamProtocol"
+      :upstream-chunks="chunksModal.upstreamChunks"
+      :frame-counts="chunksModal.frameCounts"
     />
 
     <!--
@@ -488,7 +512,7 @@ onUnmounted(() => {
   color: $text-body;
 }
 
-.detail-stream-tag {
+.detail-call-tag {
   display: inline-flex;
   align-items: center;
   padding: 1px 6px;

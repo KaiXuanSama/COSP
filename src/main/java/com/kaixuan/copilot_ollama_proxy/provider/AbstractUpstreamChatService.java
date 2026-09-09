@@ -1,18 +1,21 @@
 package com.kaixuan.copilot_ollama_proxy.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageParser;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.OpenAiContentDetector;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.OpenAiUsageParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -75,7 +78,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 开闸前逐帧缓存不下发，出现实质载荷即整批释放并当轮不再拦截；整轮未开闸则抛
  * {@link EmptyUpstreamResponseException}，走上面那条<strong>同一份</strong>重试预算。
  * 耗尽后把最后一轮的帧原样放行给下游，与其他失败的耗尽行为保持一致。
- * 判定口径见 {@link UpstreamChunkContentDetector}。
+ * 判定口径见 {@link OpenAiContentDetector}。
  */
 public abstract class AbstractUpstreamChatService {
 
@@ -243,7 +246,7 @@ public abstract class AbstractUpstreamChatService {
                 // isRetryableFailure 已认 EmptyUpstreamResponseException，无需第二套重试实现。
                 .flatMap(entity -> {
                     String body = entity.getBody();
-                    if (UpstreamChunkContentDetector.hasMeaningfulNonStreamPayload(objectMapper, body)) {
+                    if (OpenAiContentDetector.hasMeaningfulNonStreamPayload(objectMapper, body)) {
                         return Mono.just(entity);
                     }
                     log.warn("{} 上游空响应（无正文/思考链/工具调用），body 长度 {}，将按重试预算重发 [{}] {}",
@@ -350,7 +353,7 @@ public abstract class AbstractUpstreamChatService {
      * 包括值为空的那些，这类纯删除也需要把清洗结果写回。
      */
     private boolean hasReasoningAliasKey(Map<String, Object> message) {
-        for (String key : UpstreamChunkContentDetector.REASONING_KEYS) {
+        for (String key : OpenAiContentDetector.REASONING_KEYS) {
             if (!"reasoning_content".equals(key) && message.containsKey(key)) {
                 return true;
             }
@@ -455,7 +458,7 @@ public abstract class AbstractUpstreamChatService {
                     if (gateOpen.get()) {
                         return Flux.just(frame);
                     }
-                    if (UpstreamChunkContentDetector.hasMeaningfulPayload(objectMapper, frame.data())) {
+                    if (OpenAiContentDetector.hasMeaningfulPayload(objectMapper, frame.data())) {
                         gateOpen.set(true);
                         // 整批释放：缓存帧按到达顺序在前，当前帧在后，下游看到的顺序与上游一致。
                         List<ServerSentEvent<String>> released = new ArrayList<>(heldFrames);
@@ -551,7 +554,7 @@ public abstract class AbstractUpstreamChatService {
                     // 以免被 gate 暂扣的帧让 ttfb 虚高。语义仍是"首 chunk"而非"首正文"，
                     // 故纯思考、纯工具调用等无正文响应同样能测得。
                     // 从上游原始 chunk 提取 usage 原始 JSON（通常在尾 chunk）；有则记录供成功收尾落库。
-                    String rawUsage = UsageParser.extractUsageRawJson(objectMapper, raw);
+                    String rawUsage = OpenAiUsageParser.extractUsageRawJson(objectMapper, raw);
                     if (rawUsage != null) {
                         usageRaw.set(rawUsage);
                     }
@@ -628,8 +631,11 @@ public abstract class AbstractUpstreamChatService {
         return webClientBuilder.clone()
             .clientConnector(new ReactorClientHttpConnector(capturingHttpClient))
             .baseUrl(normalizedUrl).defaultHeaders(headers -> {
+                // 出站协议恒为 OPENAI：本管道就是 OpenAI 上游管道。
+                // 鉴权装配据此写 Authorization 并删掉 x-api-key（下游透传或翻译残留的噪音）。
                 providerRequestHeaderService.applyHeaders(
-                    headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream);
+                    headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream,
+                    WireProtocol.OPENAI);
         }).filter((request, next) -> {
             capturedHeaders.clear();
             capturedHeaders.putAll(providerRequestHeaderService.createLogSnapshot(request.headers()));
@@ -639,6 +645,21 @@ public abstract class AbstractUpstreamChatService {
 
     /**
     * 准备请求体，解析模型名称，设置流式标志，并应用当前供应商的请求体规则。
+     *
+     * <h2>为何 null 清洗必须在规则之后</h2>
+     * 两件事都依赖这个顺序：
+     * <ol>
+     *   <li><strong>规则产生的 null 不能发给上游。</strong>「设置字段值」留空即置 null，
+     *       若先清洗后执行规则，那个 null 会原样出站；而部分上游对多余的 null 字段并不宽容。</li>
+     *   <li><strong>规则看到的输入要与编辑器预览一致。</strong>预览里规则直接作用于用户粘贴的
+     *       请求体，不做任何 null 剥离；若运行时先清洗，同一条 {@code exists} 条件就会
+     *       「预览命中、线上不命中」—— 预览一旦会说谎，它的全部价值就没了。</li>
+     * </ol>
+     *
+     * <p>与 {@code GenericAnthropicChatService.prepareRequestBody} 的顺序保持一致 ——
+     * 两侧都是「协议归一化 → 规则 → null 清洗」。这不是巧合而是必须：同一条规则在两条线路上
+     * 应当产生同一种结果，否则「换个协议试试」会得到无法解释的差异。
+     *
      * @param openAiRequest 请求体的初始 Map 结构
      * @param stream 是否启用流式响应
      * @param model 模型名称
@@ -650,17 +671,10 @@ public abstract class AbstractUpstreamChatService {
         String resolvedModel = resolveModel(body.get("model"), model);
         body.put("model", resolvedModel);
         body.put("stream", stream);
-        // 如果请求中没有指定 reasoning_effort，从模型配置中读取
-        if (!body.containsKey("reasoning_effort")) {
-            String effort = resolveReasoningEffort(resolvedModel, provider);
-            if (effort != null) {
-                body.put("reasoning_effort", effort);
-            } else {
-                body.remove("reasoning_effort");
-            }
-        }
-        body.values().removeIf(Objects::isNull);
+        // 思考深度按模型配置的注入模式处理：覆写 / 透传 / 删除。
+        resolveReasoningEffort(resolvedModel, provider).applyTo(body);
         customizeRequestBody(body, resolvedModel, provider);
+        body.values().removeIf(Objects::isNull);
         return body;
     }
 
@@ -672,7 +686,8 @@ public abstract class AbstractUpstreamChatService {
     private Long saveNonStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, String responseBody, long startTime) {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        return apiCallLog.saveNonStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, responseBody, duration);
+        return apiCallLog.saveNonStream(providerKey, modelName, reqHeaders, requestBody, respHeaders,
+                statusCode, responseBody, duration);
     }
 
     /**
@@ -683,7 +698,8 @@ public abstract class AbstractUpstreamChatService {
     private Long saveStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders, Map<String, Object> requestBody, Map<String, String> respHeaders, int statusCode, List<String> chunks, long startTime) {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
-        return apiCallLog.saveStream(providerKey, modelName, reqHeaders, requestBody, respHeaders, statusCode, chunks, duration);
+        return apiCallLog.saveStream(providerKey, modelName, reqHeaders, requestBody, respHeaders,
+                statusCode, chunks, duration);
     }
 
     /**
@@ -715,9 +731,9 @@ public abstract class AbstractUpstreamChatService {
                                     String fullBody, Integer ttfbMs) {
         try {
             if (apiCallUsage == null) return;
-            String usageRaw = UsageParser.extractUsageRawJson(objectMapper, fullBody);
+            String usageRaw = OpenAiUsageParser.extractUsageRawJson(objectMapper, fullBody);
             if (usageRaw == null) return; // 无 usage：不写（方案 a）
-            UsageTokens tokens = UsageParser.parseUsageObject(objectMapper, usageRaw);
+            UsageTokens tokens = OpenAiUsageParser.parseUsageObject(objectMapper, usageRaw);
             apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw, tokens, ttfbMs);
         } finally {
             // finally 语义：无论用量是否实际写入，用量流程走完即宣告该次调用的记录就绪。
@@ -740,7 +756,7 @@ public abstract class AbstractUpstreamChatService {
         try {
             if (apiCallUsage == null) return;
             if (usageRaw == null) return; // 无 usage：不写（方案 a）
-            UsageTokens tokens = UsageParser.parseUsageObject(objectMapper, usageRaw);
+            UsageTokens tokens = OpenAiUsageParser.parseUsageObject(objectMapper, usageRaw);
             apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw, tokens, ttfbMs);
         } finally {
             // finally 语义：无论用量是否实际写入，用量流程走完即宣告该次调用的记录就绪。
@@ -798,19 +814,22 @@ public abstract class AbstractUpstreamChatService {
     }
 
     /**
-     * 从运行时模型配置中读取思考深度。如果未找到，返回 medium。
+     * 从运行时模型配置中读取思考深度设置。
+     *
+     * <h2>模型未配置时给默认值而非跳过</h2>
+     * 找不到匹配的模型仍返回 {@link ReasoningEffortSetting#defaults()}（中等档位 + 透传），
+     * 与旧实现的硬编码 {@code "medium"} 保持一致。这个兜底值是可疑的 —— 对一个未配置的、
+     * 可能根本不是思考模型的模型名，凭空注入 {@code reasoning_effort} 未必正确 ——
+     * 但改变它会影响所有「模型名带前缀但库里查不到」的调用，不属于本次改动范围。
      */
-    private String resolveReasoningEffort(String resolvedModel, ProviderRuntimeConfiguration provider) {
+    private ReasoningEffortSetting resolveReasoningEffort(String resolvedModel,
+                                                         ProviderRuntimeConfiguration provider) {
         for (var m : provider.models()) {
             if (resolvedModel.equals(m.modelName())) {
-                String effort = m.reasoningEffort();
-                if (effort == null || effort.isBlank() || "none".equalsIgnoreCase(effort.trim())) {
-                    return null;
-                }
-                return effort.toLowerCase();
+                return ReasoningEffortSetting.parse(m.reasoningEffort(), objectMapper);
             }
         }
-        return "medium";
+        return ReasoningEffortSetting.defaults();
     }
 
     /**
@@ -1200,8 +1219,8 @@ public abstract class AbstractUpstreamChatService {
      */
     private String extractReasoning(Map<String, Object> delta) {
         // 与空响应 gate 的判定共用同一份清单：gate 工作在清洗之前，必须逐个检查兼容字段。
-        // 新增兼容字段时改 UpstreamChunkContentDetector.REASONING_KEYS 一处即可，两侧同步生效。
-        String[] keys = UpstreamChunkContentDetector.REASONING_KEYS;
+        // 新增兼容字段时改 OpenAiContentDetector.REASONING_KEYS 一处即可，两侧同步生效。
+        String[] keys = OpenAiContentDetector.REASONING_KEYS;
         for (String key : keys) {
             Object value = delta.get(key);
             if (value instanceof String str && !str.isBlank()) {
