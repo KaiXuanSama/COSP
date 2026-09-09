@@ -32,6 +32,8 @@ export interface Provider {
   providerKey: string
   displayName: string
   enabled: boolean
+  /** 该供应商的出站请求是否使用全局代理地址。 */
+  useProxy: boolean
   /** OpenAI 协议的请求地址。 */
   baseUrl: string | null
   /**
@@ -131,6 +133,16 @@ export const useProviderStore = defineStore('providers', () => {
       providers.value[providerKey].enabled = enabled
     } else {
       // 本地尚无此 provider 记录，重新拉取全量
+      await fetchAll()
+    }
+  }
+
+  async function toggleProviderProxy(providerKey: string, useProxy: boolean) {
+    await http.post(`/providers/${providerKey}/proxy`, { useProxy })
+    if (providers.value[providerKey]) {
+      providers.value[providerKey].useProxy = useProxy
+    } else {
+      // 改名后的 key 尚未进入本地列表时，以后端全量结果为准。
       await fetchAll()
     }
   }
@@ -259,5 +271,5 @@ export const useProviderStore = defineStore('providers', () => {
     await fetchAll()
   }
 
-  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchRuntimeConfig, saveRetryMaxAttempts, saveProxyAddress, setGatewayAuthEnabled, revealGatewayApiKey, regenerateGatewayApiKey, addProvider, deleteProvider, updateProvider }
+  return { providers, loading, fakeVersion, fetchAll, toggleProvider, toggleProviderProxy, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchRuntimeConfig, saveRetryMaxAttempts, saveProxyAddress, setGatewayAuthEnabled, revealGatewayApiKey, regenerateGatewayApiKey, addProvider, deleteProvider, updateProvider }
 })

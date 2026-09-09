@@ -259,6 +259,7 @@ public class ProviderAdminService {
         view.put("providerKey", provider.providerKey());
         view.put("displayName", provider.displayName());
         view.put("enabled", provider.enabled());
+        view.put("useProxy", provider.useProxy());
         view.put("baseUrl", provider.baseUrl());
         // 协议支持以数组而非 JSON 字符串形式返回：前端拿到就能直接绑多选控件，
         // 不必再做一次 JSON.parse 并处理它可能失败。规则集那几个字段保持字符串是因为它们

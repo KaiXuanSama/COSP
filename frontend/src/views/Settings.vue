@@ -334,6 +334,7 @@ const editingProviderKey = ref<string | null>(null)
 const providerBaseUrl = ref('')
 const providerAnthropicBaseUrl = ref('')
 const providerProtocols = ref<WireProtocol[]>([...DEFAULT_NEW_PROVIDER_PROTOCOLS])
+const providerUseProxy = ref(false)
 const showPresetModal = ref(false)
 
 /**
@@ -455,6 +456,7 @@ function clearProviderForm() {
   providerBaseUrl.value = ''
   providerAnthropicBaseUrl.value = ''
   providerProtocols.value = [...DEFAULT_NEW_PROVIDER_PROTOCOLS]
+  providerUseProxy.value = false
   mirroringAnthropicBaseUrl.value = false
   providerHeaders.value = []
   requestBodyEditorState.value = createProviderDefaultEditorState()
@@ -483,6 +485,7 @@ function resetProviderAdvanced() {
   providerBaseUrl.value = ''
   providerAnthropicBaseUrl.value = ''
   providerProtocols.value = [...DEFAULT_NEW_PROVIDER_PROTOCOLS]
+  providerUseProxy.value = false
   mirroringAnthropicBaseUrl.value = false
   editingProviderKey.value = null
 }
@@ -498,6 +501,7 @@ function openEditProviderModal(key: string) {
   providerBaseUrl.value = provider?.baseUrl || ''
   providerAnthropicBaseUrl.value = provider?.anthropicBaseUrl || ''
   providerProtocols.value = normalizeProtocols(provider?.supportedProtocols)
+  providerUseProxy.value = provider?.useProxy ?? false
   mirroringAnthropicBaseUrl.value = false
   if (provider) {
     try {
@@ -575,12 +579,17 @@ async function saveProvider() {
     const protocolPayload = buildProtocolPayload()
     if (editingProviderKey.value) {
       // 编辑模式
+      const oldKey = editingProviderKey.value
+      const previousUseProxy = providerStore.providers[oldKey]?.useProxy ?? false
       await providerStore.updateProvider(
-        editingProviderKey.value, name, headerRulesJson, baseUrl, requestTransform, protocolPayload,
+        oldKey, name, headerRulesJson, baseUrl, requestTransform, protocolPayload,
       )
       // 更新前端元数据
-      const oldKey = editingProviderKey.value
       const newKey = toProviderKey(name)
+      if (providerUseProxy.value !== previousUseProxy) {
+        // updateProvider 可能同时改名，因此代理专项接口必须使用改名后的 key。
+        await providerStore.toggleProviderProxy(newKey, providerUseProxy.value)
+      }
       const metaUpdate = { displayName: name, apiUrlPlaceholder: baseUrl || 'https://api.example.com/v1' }
       if (newKey !== oldKey && providerMeta.value[oldKey]) {
         providerMeta.value[newKey] = { ...providerMeta.value[oldKey], ...metaUpdate }
@@ -1009,8 +1018,13 @@ function removeModel(index: number) {
 
       <template #footer>
         <div class="provider-modal-footer">
-          <n-button @click="showProviderModal = false; resetProviderAdvanced()">取消</n-button>
-          <n-button type="primary" @click="saveProvider">{{ editingProviderKey ? '应用' : '添加' }}</n-button>
+          <n-checkbox v-if="editingProviderKey" v-model:checked="providerUseProxy" class="provider-proxy-checkbox">
+            启用代理
+          </n-checkbox>
+          <div class="provider-modal-footer-actions">
+            <n-button @click="showProviderModal = false; resetProviderAdvanced()">取消</n-button>
+            <n-button type="primary" @click="saveProvider">{{ editingProviderKey ? '应用' : '添加' }}</n-button>
+          </div>
         </div>
       </template>
     </n-modal>
@@ -1560,7 +1574,16 @@ function removeModel(index: number) {
 
 .provider-modal-footer {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  gap: $space-sm;
+}
+
+.provider-proxy-checkbox {
+  margin-right: auto;
+}
+
+.provider-modal-footer-actions {
+  display: flex;
   gap: $space-sm;
 }
 
