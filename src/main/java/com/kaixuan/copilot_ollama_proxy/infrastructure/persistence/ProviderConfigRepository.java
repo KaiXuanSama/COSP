@@ -101,6 +101,23 @@ public class ProviderConfigRepository {
     }
 
     /**
+     * 更新供应商的出站代理开关（{@code use_proxy}）。
+     *
+     * <p>单列更新，不碰其它字段：代理开关是与 {@code enabled} / {@code base_url} 正交的维度，
+     * 前端有独立的启停入口。找不到该 {@code providerKey} 时静默不更新（0 行），
+     * 与其它单列更新一致 —— 调用方在此之前已确认供应商存在。
+     *
+     * @param providerKey 供应商标识
+     * @param useProxy    是否走代理
+     */
+    public void updateProviderProxy(String providerKey, boolean useProxy) {
+        jdbcTemplate.update(
+            "UPDATE provider_config SET use_proxy = ?, "
+                + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?",
+            useProxy ? 1 : 0, providerKey);
+    }
+
+    /**
      * 仅更新服务商的 base_url，不修改 enabled 状态，也不涉及 API Key。
      * 如果指定的 providerKey 不存在，则自动插入一条新记录（enabled = 0）。
      * @return 对应的 provider_config.id
@@ -220,7 +237,7 @@ public class ProviderConfigRepository {
 
     private List<ProviderConfigRow> loadProvidersWithModels(String providerKey, boolean activeOnly, boolean enabledModelsOnly) {
         StringBuilder sql = new StringBuilder("SELECT pc.id, pc.provider_key, pc.display_name, pc.enabled, pc.base_url,")
-                .append(" pc.supported_protocols, pc.anthropic_base_url, pc.updated_at,")
+                .append(" pc.supported_protocols, pc.anthropic_base_url, pc.use_proxy, pc.updated_at,")
                 .append(" pm.id AS model_id, pm.provider_id AS model_provider_id, pm.model_name, pm.enabled AS model_enabled,")
                 .append(" pm.context_size, pm.max_output_tokens, pm.caps_tools, pm.caps_vision, pm.reasoning_effort,")
                 .append(" pm.thinking_mode, pm.thinking_budget_tokens, pm.sort_order")
@@ -255,6 +272,9 @@ public class ProviderConfigRepository {
                     (String) row.get("base_url"),
                     (String) row.get("supported_protocols"),
                     (String) row.get("anthropic_base_url"),
+                    // 未迁移的库里这一列不存在，取到 null；归一为 false（直连）而非报错 ——
+                    // 与 use_proxy 列默认 0 同义，让「V11 之前的库」和「新库默认值」表现一致。
+                    row.get("use_proxy") instanceof Number useProxy && useProxy.intValue() == 1,
                     (String) row.get("updated_at")
             ));
 
@@ -301,6 +321,7 @@ public class ProviderConfigRepository {
                     provider.baseUrl,
                     provider.supportedProtocolsJson,
                     provider.anthropicBaseUrl,
+                    provider.useProxy,
                     provider.updatedAt,
                     provider.models
             ));
@@ -390,11 +411,12 @@ public class ProviderConfigRepository {
         private final String baseUrl;
         private final String supportedProtocolsJson;
         private final String anthropicBaseUrl;
+        private final boolean useProxy;
         private final String updatedAt;
         private final List<ProviderModelRow> models = new ArrayList<>();
 
         private MutableProviderConfig(int id, String providerKey, String displayName, boolean enabled, String baseUrl,
-                                      String supportedProtocolsJson, String anthropicBaseUrl,
+                                      String supportedProtocolsJson, String anthropicBaseUrl, boolean useProxy,
                                       String updatedAt) {
             this.id = id;
             this.providerKey = providerKey;
@@ -403,6 +425,7 @@ public class ProviderConfigRepository {
             this.baseUrl = baseUrl;
             this.supportedProtocolsJson = supportedProtocolsJson;
             this.anthropicBaseUrl = anthropicBaseUrl;
+            this.useProxy = useProxy;
             this.updatedAt = updatedAt;
         }
     }

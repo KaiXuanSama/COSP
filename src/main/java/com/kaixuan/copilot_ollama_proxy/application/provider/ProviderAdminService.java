@@ -52,17 +52,20 @@ public class ProviderAdminService {
     private final ProviderApiKeyRepository providerApiKeyRepository;
     private final ProviderRequestTransformRepository providerRequestTransformRepository;
     private final ProviderRequestTransformService providerRequestTransformService;
+    private final OutboundProxyTargetProjector proxyTargetProjector;
     private final ObjectMapper objectMapper;
 
     public ProviderAdminService(ProviderConfigRepository providerConfigRepository,
                                 ProviderApiKeyRepository providerApiKeyRepository,
                                 ProviderRequestTransformRepository providerRequestTransformRepository,
                                 ProviderRequestTransformService providerRequestTransformService,
+                                OutboundProxyTargetProjector proxyTargetProjector,
                                 ObjectMapper objectMapper) {
         this.providerConfigRepository = providerConfigRepository;
         this.providerApiKeyRepository = providerApiKeyRepository;
         this.providerRequestTransformRepository = providerRequestTransformRepository;
         this.providerRequestTransformService = providerRequestTransformService;
+        this.proxyTargetProjector = proxyTargetProjector;
         this.objectMapper = objectMapper;
     }
 
@@ -93,7 +96,27 @@ public class ProviderAdminService {
             ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
             String baseUrl = provider == null || provider.baseUrl() == null ? "" : provider.baseUrl();
             providerConfigRepository.saveProvider(providerKey, enabled, baseUrl);
+            // enabled 变化不影响代理目标归属（目标按 host 投影，与启停无关），此处无需重投影。
             return Map.<String, Object>of("providerKey", providerKey, "enabled", enabled);
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 切换供应商的出站代理开关。
+     *
+     * <p>写库后<strong>同线程立即重投影</strong>代理目标集合：这是让开关真正生效的一步，
+     * 少了它，{@code use_proxy} 只是改了个数据库位，{@code OutboundProxyDecider} 的内存
+     * 目标集合不会更新，下一个连接仍按旧集合判定。重投影是阻塞 JDBC，正好搭这条
+     * {@code boundedElastic} 便车，与写库处于同一逻辑收尾。
+     *
+     * @param providerKey 供应商标识
+     * @param useProxy    是否走代理
+     */
+    public Mono<Map<String, Object>> toggleProviderProxy(String providerKey, boolean useProxy) {
+        return Mono.fromCallable(() -> {
+            providerConfigRepository.updateProviderProxy(providerKey, useProxy);
+            proxyTargetProjector.reprojectProxiedTargets();
+            return Map.<String, Object>of("providerKey", providerKey, "useProxy", useProxy);
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
@@ -107,6 +130,9 @@ public class ProviderAdminService {
             } catch (IllegalArgumentException exception) {
                 return Outcome.badRequest(exception.getMessage());
             }
+            // base_url / anthropic_base_url 可能在此变更，端点变了就得重投影，
+            // 否则代理仍指向旧 host:port。use_proxy 没变也要投——投影读的是当前全表，幂等。
+            proxyTargetProjector.reprojectProxiedTargets();
             return Outcome.ok(Map.of("ok", true));
         }).subscribeOn(Schedulers.boundedElastic());
     }
@@ -180,6 +206,8 @@ public class ProviderAdminService {
                         defaultIfBlank(form.getFirst("bodyPreviewJson"), ProviderRequestTransformService.DEFAULT_BODY_PREVIEW_JSON),
                         defaultIfBlank(form.getFirst("bodyRulesJson"), ProviderRequestTransformService.EMPTY_BODY_RULES_JSON));
                 saveProtocolsFromForm(providerKey, form);
+                // 新建供应商默认 use_proxy=0，不会立即进入代理集；但仍重投影一次保持集合与全表一致。
+                proxyTargetProjector.reprojectProxiedTargets();
                 return Outcome.ok(Map.of("ok", true, "providerKey", providerKey, "displayName", name));
             } catch (IllegalArgumentException exception) {
                 return Outcome.badRequest(exception.getMessage());
@@ -190,6 +218,8 @@ public class ProviderAdminService {
     public Mono<Map<String, Object>> deleteProvider(String providerKey) {
         return Mono.fromCallable(() -> {
             providerConfigRepository.deleteByKey(providerKey);
+            // 删除也是一种撤销路径：被删供应商若曾开代理，它的端点必须从集合里移走，否则成陈旧目标。
+            proxyTargetProjector.reprojectProxiedTargets();
             return Map.<String, Object>of("ok", true);
         }).subscribeOn(Schedulers.boundedElastic());
     }
@@ -214,6 +244,8 @@ public class ProviderAdminService {
                 // 用改名后的 key 定位：上一行可能刚把 provider_key 改掉，用旧 key 会匹配不到任何行
                 // 而 UPDATE 不报错，表现为协议配置静默丢失。
                 saveProtocolsFromForm(newProviderKey, form);
+                // 改名会换掉 provider_key、base_url 可能也变，两者都影响代理目标归属，重投影。
+                proxyTargetProjector.reprojectProxiedTargets();
                 return Outcome.ok(Map.of("ok", true, "providerKey", newProviderKey, "displayName", name));
             } catch (IllegalArgumentException exception) {
                 return Outcome.badRequest(exception.getMessage());

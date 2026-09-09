@@ -3,7 +3,6 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.config;
 import io.netty.resolver.DefaultAddressResolverGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
@@ -53,20 +52,13 @@ public class WebClientConfig implements WebFluxConfigurer {
     /** 内存编解码缓冲上限：64MB，足以容纳 Copilot 大上下文请求与上游大响应。 */
     private static final int MAX_IN_MEMORY_SIZE = 64 * 1024 * 1024;
 
-    /** 出站代理主机；留空即禁用代理。 */
-    private final String proxyHost;
+    /** 代理端点默认端口 —— 仅当地址只给了 host 没给 port 时兜底。 */
+    private static final int DEFAULT_PROXY_PORT = 7890;
 
-    /** 出站代理端口，仅在 {@link #proxyHost} 非空时生效。 */
-    private final int proxyPort;
-
-    /** 逐目标回答「这个目标要不要绕过代理」。 */
+    /** 出站代理决策中心：既持有代理地址，又逐目标回答「这个目标要不要绕过代理」。 */
     private final OutboundProxyDecider proxyDecider;
 
-    public WebClientConfig(@Value("${http.proxy.host:}") String proxyHost,
-                           @Value("${http.proxy.port:7890}") int proxyPort,
-                           OutboundProxyDecider proxyDecider) {
-        this.proxyHost = proxyHost == null ? "" : proxyHost.trim();
-        this.proxyPort = proxyPort;
+    public WebClientConfig(OutboundProxyDecider proxyDecider) {
         this.proxyDecider = proxyDecider;
     }
 
@@ -90,10 +82,20 @@ public class WebClientConfig implements WebFluxConfigurer {
      * <p>双客户端方案需要处理 Bean 歧义、改三个出站注入点，代理地址变更时还要清连接池缓存；
      * 当前方案这三项都不需要。
      *
+     * <h2>ProxyProvider 永久装上，走不走由谓词现答</h2>
+     * 本 Bean 在启动时创建一次，而代理地址在 {@code app_config} 里、运行时可改。因此
+     * <strong>不能</strong>用「启动时地址是否为空」来决定装不装 {@code ProxyProvider} ——
+     * 那会让「启动时没配、运行时才配」的地址永远不生效。正确做法是永久装上，把「有没有代理」
+     * 让给 {@link OutboundProxyDecider#isDirect} 现答：地址为空时它对一切目标返回直连，
+     * {@code ProxyProvider} 挂着也等于没挂。
+     *
      * <h2>地址每次连接现读</h2>
      * 用 {@code socketAddress(Supplier)} 而非 {@code host()} + {@code port()}：前者每次建连时求值，
-     * 代理地址改了不用重启也不用清缓存。这为后续把地址搬到数据库（管理后台可改）预留了位置；
-     * 现阶段仍从配置读，求值结果恒定。
+     * 于是设置页改了地址不用重启、不用清缓存，下一个连接就用新值。地址真源是
+     * {@code app_config}，由 {@link OutboundProxyDecider#currentProxyAddress} 现读。
+     *
+     * <p>Supplier 只在 {@code isDirect} 判为「走代理」后才会被 Netty 调用，所以进到这里时
+     * 地址必非空；但仍防御性处理空值（回退回环占位），避免万一的竞态让它构造出通配地址。
      *
      * <p>不用 {@code address(...)}：它的两个重载均已弃用，由
      * {@code socketAddress(...)} 取代 —— 后者把类型从 {@code InetSocketAddress}
@@ -139,24 +141,42 @@ public class WebClientConfig implements WebFluxConfigurer {
      */
     @Bean
     public HttpClient httpClient() {
-        if (proxyHost.isEmpty()) {
-            log.info("[WebClient] 未配置出站代理地址，全部出站请求直连");
-            return HttpClient.create().resolver(DefaultAddressResolverGroup.INSTANCE);
-        }
-        if (!proxyDecider.isEnabled()) {
-            log.info("[WebClient] 出站代理总闸已关闭（http.proxy.enabled=false），全部出站请求直连");
-            return HttpClient.create().resolver(DefaultAddressResolverGroup.INSTANCE);
-        }
-        log.info("[WebClient] 出站代理已启用 {}:{}（DNS 仍由本机解析），具体目标是否走代理由 OutboundProxyDecider 逐个判定",
-                proxyHost, proxyPort);
+        log.info("[WebClient] 出站代理由 OutboundProxyDecider 逐个目标判定（地址来自 app_config，"
+                + "DNS 始终由本机解析）；未配置代理地址或供应商未开开关时该目标直连");
         return HttpClient.create()
                 .resolver(DefaultAddressResolverGroup.INSTANCE)
                 .proxy(spec -> spec.type(ProxyProvider.Proxy.HTTP)
-                        // Supplier 形式：每次建连现读，为地址热更新预留位置。
+                        // Supplier 形式：每次建连现读代理地址，设置页改了下一个连接即生效。
                         // 必须用普通构造（已解析），createUnresolved 会让每个请求抛
                         // UnresolvedAddressException，详见上方说明。
-                        .socketAddress(() -> new InetSocketAddress(proxyHost, proxyPort))
+                        .socketAddress(this::currentProxyEndpoint)
                         .nonProxyHostsPredicate(proxyDecider::isDirect));
+    }
+
+    /**
+     * 从决策中心现读代理端点并解析成已解析的 {@link InetSocketAddress}。
+     *
+     * <p>只在谓词判为「走代理」后被调用，因此正常情况下地址必非空。空值回退到回环占位
+     * （{@code 127.0.0.1:7890}）只是防御性兜底，防止万一的竞态构造出通配地址 ——
+     * 真要没有代理，谓词早已让目标直连，这里根本到不了。
+     */
+    private InetSocketAddress currentProxyEndpoint() {
+        String address = proxyDecider.currentProxyAddress();
+        if (address == null || address.isBlank()) {
+            return new InetSocketAddress("127.0.0.1", DEFAULT_PROXY_PORT);
+        }
+        String host = address.trim();
+        int port = DEFAULT_PROXY_PORT;
+        int colon = host.lastIndexOf(':');
+        if (colon > 0) {
+            try {
+                port = Integer.parseInt(host.substring(colon + 1).trim());
+            } catch (NumberFormatException ignored) {
+                // 端口段不是数字：保留默认端口，host 仍取冒号前的部分。
+            }
+            host = host.substring(0, colon).trim();
+        }
+        return new InetSocketAddress(host, port);
     }
 
     /**

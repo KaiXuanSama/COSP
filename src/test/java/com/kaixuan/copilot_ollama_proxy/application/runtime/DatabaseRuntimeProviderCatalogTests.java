@@ -24,7 +24,7 @@ class DatabaseRuntimeProviderCatalogTests {
         ProviderRequestTransformRepository requestTransformRepository = mock(ProviderRequestTransformRepository.class);
         ProviderConfigRow provider = new ProviderConfigRow(
                 42, "mimo-user", "Mimo User", true, "https://api.example/v1",
-                "[\"OPENAI\",\"ANTHROPIC\"]", "",
+                "[\"OPENAI\",\"ANTHROPIC\"]", "", false,
                 "2026-07-18T00:00:00", List.of(new ProviderModelRow(
                         1, 42, "mimo-v2.5-pro", true, 32768,
                         "{\"max_output_tokens\":8192,\"overwrite_mode\":\"fallback\"}",
@@ -61,7 +61,7 @@ class DatabaseRuntimeProviderCatalogTests {
         String maxOutputJson = "{\"max_output_tokens\":8192,\"overwrite_mode\":\"override\"}";
         ProviderConfigRow provider = new ProviderConfigRow(
                 42, "mimo-user", "Mimo User", true, "https://api.example/v1",
-                "[\"ANTHROPIC\"]", "",
+                "[\"ANTHROPIC\"]", "", false,
                 "2026-07-18T00:00:00", List.of(new ProviderModelRow(
                         1, 42, "mimo-v2.5-pro", true, 32768,
                         maxOutputJson, true, false, "Medium",
@@ -92,7 +92,7 @@ class DatabaseRuntimeProviderCatalogTests {
         ProviderRequestTransformRepository requestTransformRepository = mock(ProviderRequestTransformRepository.class);
         ProviderConfigRow provider = new ProviderConfigRow(
                 42, "mimo-user", "Mimo User", true, "https://api.example/v1",
-                "[\"ANTHROPIC\"]", "",
+                "[\"ANTHROPIC\"]", "", false,
                 "2026-07-18T00:00:00", List.of(new ProviderModelRow(
                         1, 42, "mimo-v2.5-pro", true, 32768,
                         null, true, false, "Medium", null, -1, 0)));
@@ -116,7 +116,7 @@ class DatabaseRuntimeProviderCatalogTests {
         ProviderRequestTransformRepository requestTransformRepository = mock(ProviderRequestTransformRepository.class);
         ProviderConfigRow provider = new ProviderConfigRow(
                 42, "mimo-user", "Mimo User", true, "https://api.example/v1",
-                "[\"OPENAI\",\"ANTHROPIC\"]", "",
+                "[\"OPENAI\",\"ANTHROPIC\"]", "", false,
                 "2026-07-18T00:00:00", List.of());
         when(providerConfigRepository.findAllActiveProvidersWithEnabledModels()).thenReturn(List.of(provider));
         when(providerApiKeyRepository.resolveActiveApiKey(42)).thenReturn("test-key");

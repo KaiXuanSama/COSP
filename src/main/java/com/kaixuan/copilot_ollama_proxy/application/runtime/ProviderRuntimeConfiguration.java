@@ -13,11 +13,16 @@ import java.util.List;
  * 正如规则集由规则引擎解析）。更实际的原因是包依赖 —— {@code WireProtocol} 在
  * {@code application.protocol}，而那个包已经依赖本包；若本 record 反过来引用枚举，
  * 两个包就互相依赖了。
+ *
+ * <h2>useProxy 只是标记，判定不在这里</h2>
+ * 本字段只表达「这个供应商想不想走代理」，真正「走不走」由
+ * {@code OutboundProxyDecider} 按目标地址判定，且还取决于 app_config 是否配了代理地址。
+ * 快照只负责把开关如实带出来，投影成代理目标集合是 {@code DatabaseRuntimeProviderCatalog} 的事。
  */
 public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey,
                                            List<ProviderRuntimeModel> models, String headerRulesJson,
                                            String bodyRulesJson, String supportedProtocolsJson,
-                                           String anthropicBaseUrl) {
+                                           String anthropicBaseUrl, boolean useProxy) {
 
     /** 空规则集（V2）。 */
     private static final String EMPTY_BODY_RULES_JSON = "{\"version\":2,\"groups\":[]}";
@@ -45,7 +50,7 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
     public ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey,
                                         List<ProviderRuntimeModel> models) {
         this(providerKey, baseUrl, apiKey, models, "[]", EMPTY_BODY_RULES_JSON,
-                DEFAULT_SUPPORTED_PROTOCOLS_JSON, "");
+                DEFAULT_SUPPORTED_PROTOCOLS_JSON, "", false);
     }
 
     /**
@@ -57,7 +62,21 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
                                         List<ProviderRuntimeModel> models, String headerRulesJson,
                                         String bodyRulesJson) {
         this(providerKey, baseUrl, apiKey, models, headerRulesJson, bodyRulesJson,
-                DEFAULT_SUPPORTED_PROTOCOLS_JSON, "");
+                DEFAULT_SUPPORTED_PROTOCOLS_JSON, "", false);
+    }
+
+    /**
+     * 创建带完整协议配置、但默认不走代理的运行时供应商配置。
+     *
+     * <p>保留这个八参重载是为了让只关心协议维度的调用方（多数测试夹具）不必写出 {@code useProxy}。
+     * 代理开关是 V11 才加入的正交维度，默认 {@code false}（直连）与该字段落库前的行为一致。
+     */
+    public ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey,
+                                        List<ProviderRuntimeModel> models, String headerRulesJson,
+                                        String bodyRulesJson, String supportedProtocolsJson,
+                                        String anthropicBaseUrl) {
+        this(providerKey, baseUrl, apiKey, models, headerRulesJson, bodyRulesJson,
+                supportedProtocolsJson, anthropicBaseUrl, false);
     }
 
     public ProviderRuntimeConfiguration {
