@@ -36,6 +36,7 @@ import {
   newKeyValue,
   officialPresets,
   relayPresets,
+  resolveActiveKeyIndex,
   resolveActiveValue,
   resolvePullCredential,
   resolvePullModelsErrorMessage,
@@ -716,6 +717,12 @@ async function saveEditPanel() {
     apiKeys: JSON.stringify(toApiKeyPayloads(editForm.value.apiKeys)),
     activeKeyUuid: isNewKeyValue(editForm.value.activeKeyUuid) ? '' : editForm.value.activeKeyUuid,
     ...toModelFormParams(editForm.value.models),
+  }
+  // 激活项是尚未落库的新增条目时，activeKeyUuid 被清成空串（它此刻没有 keyUuid）。
+  // 用它在提交数组中的下标兜底表达激活意图，后端按下标命中；否则会回退到第一条旧 Key。
+  const activeKeyIndex = resolveActiveKeyIndex(editForm.value.activeKeyUuid)
+  if (activeKeyIndex !== null) {
+    params.activeKeyIndex = String(activeKeyIndex)
   }
   try {
     await providerStore.saveProviderConfig(key, params)

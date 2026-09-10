@@ -136,10 +136,55 @@ export function resolvePullCredential(
  * 删除条目后重新确定激活项。
  *
  * 原激活项仍在则保持不变；否则回落到第一条。列表空了返回空串。
+ *
+ * <h2>为何要单独判「新增未保存项」仍在</h2>
+ * 激活项可能是一条尚未落库的新增条目，此时 `currentActive` 是它的临时 value
+ * （`__new_N`，N 为其在数组中的下标）。这类条目 `isPersisted=false`，若只按
+ * `keyUuid` 判存活，它会被当成「已消失」而回落到第一条 —— 这正是「新增并选中它、
+ * 保存后却回退到旧 Key」那个 bug 在前端的一半。因此这里对临时 value 单独判：
+ * 只要对应下标仍是一条未持久化的条目，就保持选中。
  */
 export function resolveActiveValue(entries: ApiKeyEntry[], currentActive: string): string {
   const stillExists = entries.some(entry => isPersisted(entry) && entry.keyUuid === currentActive)
   if (stillExists) return currentActive
+  // 临时 value：对应下标仍是未持久化条目时保持选中，不因它没有 keyUuid 就被判为消失。
+  if (isNewKeyValue(currentActive)) {
+    const index = parseNewKeyIndex(currentActive)
+    if (index !== null && index < entries.length && !isPersisted(entries[index])) {
+      return currentActive
+    }
+  }
   if (entries.length === 0) return ''
   return entries[0].keyUuid || newKeyValue(0)
+}
+
+/**
+ * 从临时 value（`__new_N`）解析出下标 N。
+ *
+ * 非临时 value 或格式不合法时返回 `null`。
+ */
+export function parseNewKeyIndex(value: string): number | null {
+  if (!isNewKeyValue(value)) return null
+  const raw = value.slice(NEW_KEY_VALUE_PREFIX.length)
+  const index = Number.parseInt(raw, 10)
+  return Number.isInteger(index) && index >= 0 && String(index) === raw ? index : null
+}
+
+/**
+ * 解析激活项在<strong>提交数组</strong>中的下标，供后端在 `activeKeyUuid` 匹配不到时兜底。
+ *
+ * <h2>为何需要这个下标</h2>
+ * 激活项全程用 `keyUuid` 标识，但新增条目在落库前<strong>没有 `keyUuid`</strong>，
+ * 「激活这条还没保存的新条目」这个意图在 `activeKeyUuid` 上无处表达（临时 value
+ * 提交前会被清空）。于是后端只能兜底把第一条设为激活 —— 表现就是「新增并选中它、
+ * 保存成功、却回退到旧 Key」。
+ *
+ * <p>提交数组的顺序与 `apiKeyOptions` / `toApiKeyPayloads` 完全一致（都按
+ * `apiKeys` 数组序），因此临时 value 里的下标就是提交数组的下标，可原样交给后端。
+ *
+ * @param activeValue 抽屉下拉当前选中的 value（`keyUuid` 或临时 value）
+ * @returns 激活项是新增未保存项时返回其下标；否则返回 `null`（此时靠 `activeKeyUuid` 即可）
+ */
+export function resolveActiveKeyIndex(activeValue: string): number | null {
+  return parseNewKeyIndex(activeValue)
 }
