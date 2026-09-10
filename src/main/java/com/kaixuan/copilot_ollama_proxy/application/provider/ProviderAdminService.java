@@ -102,24 +102,8 @@ public class ProviderAdminService {
     }
 
     /**
-     * 切换供应商的出站代理开关。
-     *
-     * <p>写库后<strong>同线程立即重投影</strong>代理目标集合：这是让开关真正生效的一步，
-     * 少了它，{@code use_proxy} 只是改了个数据库位，{@code OutboundProxyDecider} 的内存
-     * 目标集合不会更新，下一个连接仍按旧集合判定。重投影是阻塞 JDBC，正好搭这条
-     * {@code boundedElastic} 便车，与写库处于同一逻辑收尾。
-     *
-     * @param providerKey 供应商标识
-     * @param useProxy    是否走代理
+     * 保存供应商配置与模型列表（编辑抽屉路径）。
      */
-    public Mono<Map<String, Object>> toggleProviderProxy(String providerKey, boolean useProxy) {
-        return Mono.fromCallable(() -> {
-            providerConfigRepository.updateProviderProxy(providerKey, useProxy);
-            proxyTargetProjector.reprojectProxiedTargets();
-            return Map.<String, Object>of("providerKey", providerKey, "useProxy", useProxy);
-        }).subscribeOn(Schedulers.boundedElastic());
-    }
-
     public Mono<Outcome> saveProviderConfig(String providerKey, MultiValueMap<String, String> form) {
         return Mono.fromCallable(() -> {
             providerConfigRepository.saveProviderConfigWithModels(providerKey, value(form, "baseUrl", "").trim(),
@@ -130,11 +114,60 @@ public class ProviderAdminService {
             } catch (IllegalArgumentException exception) {
                 return Outcome.badRequest(exception.getMessage());
             }
+            // 该路径（编辑抽屉）当前不提交 useProxy，因此这一步通常什么都不做；
+            // 保留调用是为了让三条保存路径对这个字段的语义一致 —— 谁带了就写，没带就保留。
+            saveProxyFromForm(providerKey, form);
             // base_url / anthropic_base_url 可能在此变更，端点变了就得重投影，
             // 否则代理仍指向旧 host:port。use_proxy 没变也要投——投影读的是当前全表，幂等。
             proxyTargetProjector.reprojectProxiedTargets();
             return Outcome.ok(Map.of("ok", true));
         }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 从表单写入代理开关；字段未出现时保持原值。
+     *
+     * <p>与 {@link #saveProtocolsFromForm} 同一路子，并入新建 / 修改两条保存路径。
+     * 曾经这一步由前端在保存完成<strong>之后</strong>另调一次专项接口，
+     * 那样两次写入不在同一个请求里：第二次失败会留下「供应商已保存但代理开关未生效」
+     * 的中间状态，而前端已经弹过成功提示。
+     *
+     * <h2>为何用 null 表达「未提供」</h2>
+     * 布尔字段比字符串更容易出错：表单里一个没勾上的复选框可能根本不发该字段，
+     * 也可能发个空串。若把两者都当成 {@code false}，那么任何一条不带该字段的保存路径
+     * （比如编辑抽屉里只改模型）都会把用户已开的代理静默关掉。
+     * 因此只有显式的 {@code true} / {@code false} 才算声明，其余一律保留。
+     *
+     * @return true 表示确实写入了（调用方据此决定要不要重投影）
+     */
+    private boolean saveProxyFromForm(String providerKey, MultiValueMap<String, String> form) {
+        Boolean useProxy = parseUseProxy(form.getFirst("useProxy"));
+        if (useProxy == null) {
+            return false;
+        }
+        providerConfigRepository.updateProviderProxy(providerKey, useProxy);
+        return true;
+    }
+
+    /**
+     * 解析代理开关表单值。
+     *
+     * <p>{@code null}（含空串与空白）表示未提供，由调用方保留原值。
+     * 只认 {@code true} / {@code false} 两个字面量（大小写不敏感），
+     * 其余取值同样当成未提供 —— 看不懂的值宁可不改，也不要猜成 false。
+     */
+    private static Boolean parseUseProxy(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String normalized = raw.trim().toLowerCase();
+        if ("true".equals(normalized)) {
+            return Boolean.TRUE;
+        }
+        if ("false".equals(normalized)) {
+            return Boolean.FALSE;
+        }
+        return null;
     }
 
     /**
@@ -206,7 +239,10 @@ public class ProviderAdminService {
                         defaultIfBlank(form.getFirst("bodyPreviewJson"), ProviderRequestTransformService.DEFAULT_BODY_PREVIEW_JSON),
                         defaultIfBlank(form.getFirst("bodyRulesJson"), ProviderRequestTransformService.EMPTY_BODY_RULES_JSON));
                 saveProtocolsFromForm(providerKey, form);
-                // 新建供应商默认 use_proxy=0，不会立即进入代理集；但仍重投影一次保持集合与全表一致。
+                // 代理开关与供应商本体同一次写入，不再由前端保存后补一次专项请求。
+                saveProxyFromForm(providerKey, form);
+                // 新建默认 use_proxy=0，但表单可能已经带了 true；无论哪种都重投影一次
+                // 保持集合与全表一致（投影读的是当前全表，幂等）。
                 proxyTargetProjector.reprojectProxiedTargets();
                 return Outcome.ok(Map.of("ok", true, "providerKey", providerKey, "displayName", name));
             } catch (IllegalArgumentException exception) {
@@ -244,6 +280,9 @@ public class ProviderAdminService {
                 // 用改名后的 key 定位：上一行可能刚把 provider_key 改掉，用旧 key 会匹配不到任何行
                 // 而 UPDATE 不报错，表现为协议配置静默丢失。
                 saveProtocolsFromForm(newProviderKey, form);
+                // 同样用改名后的 key：旧 key 已不存在，UPDATE 会匹配 0 行且不报错，
+                // 表现为代理开关静默丢失。
+                saveProxyFromForm(newProviderKey, form);
                 // 改名会换掉 provider_key、base_url 可能也变，两者都影响代理目标归属，重投影。
                 proxyTargetProjector.reprojectProxiedTargets();
                 return Outcome.ok(Map.of("ok", true, "providerKey", newProviderKey, "displayName", name));

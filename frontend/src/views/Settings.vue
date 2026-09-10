@@ -580,16 +580,14 @@ async function saveProvider() {
     if (editingProviderKey.value) {
       // 编辑模式
       const oldKey = editingProviderKey.value
-      const previousUseProxy = providerStore.providers[oldKey]?.useProxy ?? false
+      // 代理开关随保存一并提交，不再保存完再补一次专项请求 ——
+      // 那样两次写入不在同一个请求里，第二次失败会留下半完成状态。
       await providerStore.updateProvider(
         oldKey, name, headerRulesJson, baseUrl, requestTransform, protocolPayload,
+        providerUseProxy.value,
       )
       // 更新前端元数据
       const newKey = toProviderKey(name)
-      if (providerUseProxy.value !== previousUseProxy) {
-        // updateProvider 可能同时改名，因此代理专项接口必须使用改名后的 key。
-        await providerStore.toggleProviderProxy(newKey, providerUseProxy.value)
-      }
       const metaUpdate = { displayName: name, apiUrlPlaceholder: baseUrl || 'https://api.example.com/v1' }
       if (newKey !== oldKey && providerMeta.value[oldKey]) {
         providerMeta.value[newKey] = { ...providerMeta.value[oldKey], ...metaUpdate }
@@ -601,9 +599,10 @@ async function saveProvider() {
       resetProviderAdvanced()
       message.success(`已修改供应商「${name}」`)
     } else {
-      // 新增模式
+      // 新增模式：代理开关与供应商同一次请求建立，不存在「建好了但开关没生效」的中间态。
       const res = await providerStore.addProvider(
         name, headerRulesJson, baseUrl, requestTransform, protocolPayload,
+        providerUseProxy.value,
       )
       providerMeta.value[res.providerKey] = {
         displayName: name,
@@ -1018,7 +1017,8 @@ function removeModel(index: number) {
 
       <template #footer>
         <div class="provider-modal-footer">
-          <n-checkbox v-if="editingProviderKey" v-model:checked="providerUseProxy" class="provider-proxy-checkbox">
+          <!-- 两种模式都显示：新增时也得能当场定代理，否则只能先存再进来改一次。 -->
+          <n-checkbox v-model:checked="providerUseProxy" class="provider-proxy-checkbox">
             启用代理
           </n-checkbox>
           <div class="provider-modal-footer-actions">
@@ -1582,9 +1582,16 @@ function removeModel(index: number) {
   margin-right: auto;
 }
 
+/**
+ * 按钮靠右不得依赖左侧元素的 margin-right: auto。
+ *
+ * 曾经只有复选框那一个撑开器，而它带 v-if —— 新增模式下不渲染，按钮就滑到了左边。
+ * 自己声明 margin-left: auto 后，无论左侧有没有东西都靠右。
+ */
 .provider-modal-footer-actions {
   display: flex;
   gap: $space-sm;
+  margin-left: auto;
 }
 
 .provider-name-row {

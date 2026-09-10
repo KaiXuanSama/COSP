@@ -36,18 +36,6 @@ public class ProviderAdminController {
         return providerAdminService.toggleProvider(providerKey, Boolean.TRUE.equals(body.get("enabled")));
     }
 
-    /**
-     * 切换供应商的出站代理开关。
-     *
-     * <p>与 {@code /toggle}（启停供应商）分开：代理开关是正交维度，前端也是独立入口。
-     * 请求体形如 {@code { "useProxy": true }}。
-     */
-    @PostMapping("/config/api/providers/{providerKey}/proxy")
-    public Mono<Map<String, Object>> toggleProviderProxy(@PathVariable String providerKey,
-                                                         @RequestBody Map<String, Object> body) {
-        return providerAdminService.toggleProviderProxy(providerKey, Boolean.TRUE.equals(body.get("useProxy")));
-    }
-
     @PostMapping("/config/api/providers/{providerKey}/config")
     public Mono<ResponseEntity<Map<String, Object>>> saveProviderConfig(@PathVariable String providerKey,
                                                                          ServerWebExchange exchange) {
