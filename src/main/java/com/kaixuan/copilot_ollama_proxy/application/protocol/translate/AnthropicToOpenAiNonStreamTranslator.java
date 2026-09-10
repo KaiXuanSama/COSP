@@ -74,7 +74,11 @@ final class AnthropicToOpenAiNonStreamTranslator {
         Map<String, Object> choice = new LinkedHashMap<>();
         choice.put("index", 0);
         choice.put("message", message);
-        choice.put("finish_reason", StopReasonMapper.toFinishReason(text(root, "stop_reason")));
+        // 与流式同口径：带 tool_calls 时终止原因必须是 tool_calls，优先于 stop_reason 的映射结果。
+        // 否则会产出自相矛盾的响应 —— 消息里挂着完整工具调用，却告诉下游回答被截断，
+        // 下游（Copilot）据此放弃执行工具。详见 AnthropicToOpenAiStreamTranslator.resolveFinishReason。
+        choice.put("finish_reason", resolveFinishReason(
+                StopReasonMapper.toFinishReason(text(root, "stop_reason")), !toolCalls.isEmpty()));
 
         Map<String, Object> response = new LinkedHashMap<>();
         // id 原样透传上游的 msg_xxx，不套 chatcmpl- 前缀：那样做只是伪装成 OpenAI 生成的，
@@ -96,6 +100,28 @@ final class AnthropicToOpenAiNonStreamTranslator {
         }
 
         return serialize(response);
+    }
+
+    /**
+     * 决定最终的 {@code finish_reason}：有工具调用时一律 {@code tool_calls}。
+     *
+     * <p>OpenAI 语义要求含完整 {@code tool_calls} 的响应把 {@code finish_reason} 报成
+     * {@code tool_calls}，优先级高于 {@code length} / {@code stop}。此前这里直接采用
+     * {@link StopReasonMapper} 的结果，于是上游用 {@code max_tokens} 之类的原因收尾时，
+     * 同一个 choice 里会既挂着完整工具调用、又声称回答被截断 —— 下游据此放弃执行工具。
+     *
+     * <p>只有 {@code stop_reason: "tool_use"} 时两者恰好一致，这也是缺陷长期没暴露的原因：
+     * 测试只覆盖了那一种终止原因。
+     *
+     * <p>{@code mapped} 可能为 null（上游没给 stop_reason）。此时若有工具调用仍然给出
+     * {@code tool_calls}：非流式响应是一次性完整报文，工具调用已经齐全，
+     * 没有理由把终止原因留空让下游去猜。
+     *
+     * @param mapped       上游 stop_reason 的映射结果，可为 null
+     * @param hasToolCalls 本次响应是否含 tool_calls
+     */
+    private static String resolveFinishReason(String mapped, boolean hasToolCalls) {
+        return hasToolCalls ? "tool_calls" : mapped;
     }
 
     /**

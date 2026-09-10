@@ -39,6 +39,8 @@ const MODELS = [
   { id: 'at-tool-multi-split', desc: '三个工具各自参数分片，block index 从 1 起（验证稠密重映射 + 拼接）' },
   { id: 'at-tool-interleaved', desc: '两个工具的参数分片交错发送（刻意非规范，压 index 映射）' },
   { id: 'at-tool-no-args', desc: '工具无参数，零个 input_json_delta（下游只应收到 name 帧）' },
+  { id: 'at-tool-then-max-tokens', desc: '完整工具调用 + stop_reason: max_tokens（A2O 的 finish_reason 必须是 tool_calls）' },
+  { id: 'at-tool-then-context-exceeded', desc: '完整工具调用 + 非标 model_context_window_exceeded（线上实测形态）' },
   { id: 'at-thinking-only', desc: '纯 thinking，无正文（对照组：不应判空）' },
   { id: 'at-empty-content', desc: '非流式：200 + content: []（应空响应兜底重发）' },
   { id: 'at-empty-usage-zero', desc: '非流式：空 content + 全 0 usage（应兜底；usage 不是判据）' },
@@ -433,6 +435,51 @@ function writeToolNoArgsStream(res, id, model) {
   log(`✓ at-tool-no-args 流完成  model=${model}  零个 input_json_delta`);
 }
 
+/**
+ * 完整工具调用 + 一个**非 `tool_use`** 的 stop_reason。
+ *
+ * <p>这是 A2O `finish_reason` 覆盖规则的复现器（响应侧契约第 8.1 节）。
+ * OpenAI 语义要求含完整 `tool_calls` 的响应把 `finish_reason` 报成 `tool_calls`，
+ * 优先于 `length` / `stop`。Copilot 收到 `length` 会判定回答被截断，于是
+ * **放弃执行已经拿到的完整工具调用**并结束对话 —— 且全链路无任何报错。
+ *
+ * <p>工具块在这里是**正常闭合**的（参数完整 + `content_block_stop`），
+ * 所以「截断」这个结论只可能来自 stop_reason 的直译，而不是真的残缺。
+ *
+ * <p>两个 stop_reason 都要覆盖：`max_tokens` 是标准值，
+ * `model_context_window_exceeded` 是线上实测那次撑爆上下文时上游给的非标值。
+ * 前者证明这不是某个非标值的专属问题 —— 只针对一个值打补丁换个 stop_reason 就会再犯。
+ *
+ * @param stopReason 收尾用的 stop_reason，刻意不是 tool_use
+ */
+function writeToolThenStopReasonStream(res, id, model, stopReason) {
+  writeSseHead(res);
+  const args = JSON.stringify({
+    todoList: [
+      { id: 1, status: 'in-progress', title: '定位图片兼容规则' },
+      { id: 2, status: 'not-started', title: '汇总成因与方案' },
+    ],
+  });
+  const parts = sliceJson(args, 16);
+
+  writeEvent(res, messageStart(id, model, 309971));
+  // 先给一段正文，与实测序列一致（正文 + 工具调用同时存在）。
+  writeEvent(res, textBlockStart(0));
+  writeEvent(res, textDelta(0, '先核对默认规则与执行顺序，确认在哪一步丢失。'));
+  writeEvent(res, blockStop(0));
+  // 工具块正常闭合：参数齐全，content_block_stop 到达。
+  writeEvent(res, namedToolBlockStart(1, 'toolu_finish_reason', 'manage_todo_list'));
+  for (const part of parts) {
+    writeEvent(res, inputJsonDelta(1, part));
+  }
+  writeEvent(res, blockStop(1));
+  writeEvent(res, messageDelta(209, stopReason));
+  writeEvent(res, messageStop());
+  res.end();
+  log(`✓ 工具调用 + stop_reason=${stopReason} 流完成  model=${model}  `
+    + `期望下游 finish_reason=tool_calls`);
+}
+
 /** 纯思考链流：对照组，不应被 COSP 判为空。 */
 function writeThinkingOnlyStream(res, id, model) {
   writeSseHead(res);
@@ -518,6 +565,22 @@ function nonStreamToolNoArgs(res, id, model) {
   sendJson(res, 200, messageBody(id, model, [
     { type: 'tool_use', id: 'toolu_noargs_1', name: 'get_current_time', input: {} },
   ], 'tool_use', usage(19, 8)), 'at-tool-no-args 已返回无参工具', model);
+}
+
+/**
+ * finish_reason 覆盖场景的非流式对照。
+ *
+ * <p>非流式侧有同一个缺陷且更直白：翻译器上一行刚判断过 `tool_calls` 非空并写入，
+ * 下一行却直接采用 stop_reason 的映射结果。结果是同一个 choice 里既挂着完整工具调用、
+ * 又声称回答被截断。
+ */
+function nonStreamToolThenStopReason(res, id, model, stopReason) {
+  sendJson(res, 200, messageBody(id, model, [
+    { type: 'text', text: '先核对默认规则与执行顺序。' },
+    { type: 'tool_use', id: 'toolu_finish_reason', name: 'manage_todo_list',
+      input: { todoList: [{ id: 1, status: 'in-progress', title: '定位图片兼容规则' }] } },
+  ], stopReason, usage(309971, 209)),
+  `工具调用 + stop_reason=${stopReason}，期望下游 finish_reason=tool_calls`, model);
 }
 
 function nonStreamThinkingOnly(res, id, model) {
@@ -610,6 +673,12 @@ function handleMessages(req, res, body) {
     case 'at-tool-multi-split': return stream ? writeToolMultiSplitStream(res, id, model) : nonStreamToolMultiSplit(res, id, model);
     case 'at-tool-interleaved': return stream ? writeToolInterleavedStream(res, id, model) : nonStreamToolInterleaved(res, id, model);
     case 'at-tool-no-args': return stream ? writeToolNoArgsStream(res, id, model) : nonStreamToolNoArgs(res, id, model);
+    case 'at-tool-then-max-tokens': return stream
+      ? writeToolThenStopReasonStream(res, id, model, 'max_tokens')
+      : nonStreamToolThenStopReason(res, id, model, 'max_tokens');
+    case 'at-tool-then-context-exceeded': return stream
+      ? writeToolThenStopReasonStream(res, id, model, 'model_context_window_exceeded')
+      : nonStreamToolThenStopReason(res, id, model, 'model_context_window_exceeded');
     case 'at-thinking-only': return stream ? writeThinkingOnlyStream(res, id, model) : nonStreamThinkingOnly(res, id, model);
     case 'at-empty-content': return stream ? streamEmpty(res, id, model, false) : nonStreamEmpty(res, id, model, false);
     case 'at-empty-usage-zero': return stream ? streamEmpty(res, id, model, true) : nonStreamEmpty(res, id, model, true);

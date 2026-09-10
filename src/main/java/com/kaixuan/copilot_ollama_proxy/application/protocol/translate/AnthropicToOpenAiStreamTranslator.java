@@ -237,8 +237,8 @@ final class AnthropicToOpenAiStreamTranslator {
         String stopReason = text(delta, "stop_reason");
         state.recordStopReason(stopReason);
 
-        String finishReason = StopReasonMapper.toFinishReason(stopReason);
-        if (finishReason == null) {
+        String mapped = StopReasonMapper.toFinishReason(stopReason);
+        if (mapped == null) {
             // 只带 usage 的 message_delta：没有可告知下游的状态变化，不产帧。
             return List.of();
         }
@@ -248,7 +248,36 @@ final class AnthropicToOpenAiStreamTranslator {
         }
         // 只发 finish chunk，不在这里带 usage —— usage 由 finalizeStream 统一发出，
         // 否则正常路径会产出两个 usage chunk（见 usageFrame 的说明）。
-        return List.of(finishChunk(state, finishReason));
+        return List.of(finishChunk(state, resolveFinishReason(state, mapped)));
+    }
+
+    /**
+     * 决定最终的 {@code finish_reason} —— 两条收尾路径唯一的决策处。
+     *
+     * <h2>为什么工具调用能覆盖上游的终止原因</h2>
+     * OpenAI 语义要求：响应含完整 {@code tool_calls} 时 {@code finish_reason} 必须是
+     * {@code tool_calls}，优先级高于 {@code length} / {@code stop}。下游（Copilot）据此
+     * 决定要不要执行工具：收到 {@code length} 会判定回答被截断，于是<strong>放弃执行
+     * 已经拿到的完整工具调用</strong>并结束对话。这个故障没有任何异常，只表现为
+     * 「工具齐全却没被调用」。
+     *
+     * <p>曾经这个判断只存在于 {@link #finalizeStream} 的兜底分支，正常路径
+     * （{@code message_delta} 带了 stop_reason）直接采用 {@link StopReasonMapper} 的结果。
+     * 于是出现了一个反直觉的不对称：上游<strong>不发</strong> message_delta 直接断连时结果正确，
+     * 而上游规矩地发了终止原因反倒会丢工具。收敛到这里就是为了消除那半个缺失的判断。
+     *
+     * <p>触发它不需要非标 stop_reason：任何非 {@code tool_use} 的终止原因（标准的
+     * {@code max_tokens}、{@code end_turn} 都算）配上工具调用都会复现，因此
+     * <strong>不能</strong>只针对某一个 stop_reason 值打补丁。
+     *
+     * <p>反过来，没见过工具调用时必须原样返回映射结果：这里的职责是「工具调用优先」，
+     * 而不是把所有终止原因都改写成 {@code tool_calls}。
+     *
+     * @param mapped {@link StopReasonMapper} 对上游 stop_reason 的映射结果，非 null
+     * @return 本轮见过工具调用时返回 {@code tool_calls}，否则返回 {@code mapped}
+     */
+    private static String resolveFinishReason(A2OStreamState state, String mapped) {
+        return state.sawToolCall() ? "tool_calls" : mapped;
     }
 
     private List<String> onError(JsonNode root) {
@@ -283,7 +312,9 @@ final class AnthropicToOpenAiStreamTranslator {
         if (state.claimFinalize()) {
             String finishReason;
             if (state.sawSubstantiveOutput()) {
-                finishReason = state.sawToolCall() ? "tool_calls" : "length";
+                // 与正常路径共用 resolveFinishReason：上游没给终止原因，本轮的默认判定是
+                // 「截断」（length），工具调用优先的规则由同一个方法施加。
+                finishReason = resolveFinishReason(state, "length");
                 log.warn("A2O 翻译收尾：上游未发送 message_delta 终止原因，按截断处理（finish_reason={}）",
                         finishReason);
             } else {

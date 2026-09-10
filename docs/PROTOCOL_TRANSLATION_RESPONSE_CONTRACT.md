@@ -317,6 +317,30 @@ COSP 有 `[provider-key] model` 前缀路由。如果把上游返回的裸 `deep
 `finish_reason` **只在 `message_delta` 发出**。`stop_reason` 为 null 时发不带
 `finish_reason` 的帧（Anthropic 允许 `message_delta` 只带 usage）。
 
+### 8.1 工具调用优先于上表的映射结果
+
+**本轮产出了 `tool_calls` 时，`finish_reason` 一律是 `tool_calls`**，覆盖上表对
+`stop_reason` 的映射。OpenAI 语义要求含完整工具调用的响应这样报，优先级高于
+`length` / `stop`；下游（Copilot）据此决定要不要执行工具，收到 `length` 会判定回答被
+截断，于是**放弃执行已经拿到的完整工具调用**并结束对话。这个故障不抛异常、日志干净，
+只表现为「工具齐全却没被调用」。
+
+流式与非流式都遵守，决策各自收敛在一个方法里
+（`AnthropicToOpenAiStreamTranslator.resolveFinishReason` /
+`AnthropicToOpenAiNonStreamTranslator.resolveFinishReason`）。
+
+两个不显然的点：
+
+- **不能只针对某一个 `stop_reason` 值打补丁。** 实测那次是撑爆上下文、上游用非标
+  `model_context_window_exceeded` 收尾，但任何非 `tool_use` 的终止原因（标准的
+  `max_tokens`、`end_turn` 都算）配上工具调用都会复现。只补一个值就换个 stop_reason 再犯。
+- **曾经这个判断只存在于收尾兜底分支**（第 6.2 节第 2 档），正常路径直取映射结果。
+  于是出现反直觉的不对称：上游**不发** `message_delta` 直接断连时结果正确，规矩地发了
+  终止原因反而丢工具。修复即是把两条路径的决策合到一处，不要再让它们各判一次。
+
+没见过工具调用时必须原样返回映射结果 —— 这条规则是「工具调用优先」，
+不是把所有终止原因都改写成 `tool_calls`。
+
 ---
 
 ## 9. usage 换算（影响计费）
@@ -544,7 +568,7 @@ A2O 需要的状态（已剔除 sub2api 因走 Responses IR 而引入的账本�
 | `sentRole` | 保证 role 帧只发一次 |
 | `nextToolIndex` + `anthropicIndex → toolIndex` map | 两个索引域的桥（第 4 节） |
 | `blockTypeByIndex` | 识别 hosted 块、redacted_thinking |
-| `sawToolCall` | 收尾时兜底 `finish_reason` 用 |
+| `sawToolCall` | 决定 `finish_reason` 用，两条收尾路径共用，见第 8.1 节 |
 | `stopReason` | `message_delta` 写、收尾读 |
 | `inputTokens` / `outputTokens` / `cacheRead` / `cacheCreation` | usage 累加器（第 9.1 节） |
 | `includeUsage` | 来自 `TranslationContext` |

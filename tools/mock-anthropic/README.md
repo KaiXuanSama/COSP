@@ -97,6 +97,39 @@ curl.exe -N -s -X POST http://localhost:11434/v1/chat/completions `
 > 该 provider 的 `supported_protocols` 必须包含 `ANTHROPIC`，否则调度器会直接
 > 报「不支持该线路」而非走翻译。
 
+**两个容易踩的坑**：
+
+- **模型名要带 `[mock-anthropic] ` 前缀**。`ProviderRouteResolver` 对无前缀模型名
+  只在唯一匹配时才放行，存在同名模型时会路由到别的供应商 —— 表现为“改了 mock 却没效果”，
+  而且可能**真的花钱**。
+- **`Set-Content -Encoding utf8` 在 PowerShell 5.1 会写 BOM**，mock 的 JSON 解析拿不到
+  `model` 字段而静默回退到默认场景（返回 `at-normal` 的内容）。用
+  `[System.IO.File]::WriteAllText(path, json, (New-Object System.Text.UTF8Encoding $false))`
+  写无 BOM 文件。
+
+### finish_reason 覆盖规则（响应侧契约第 8.1 节）
+
+`at-tool-then-max-tokens` 与 `at-tool-then-context-exceeded` 专门复现
+「**完整**工具调用配上一个非 `tool_use` 的 stop_reason」。期望下游拿到
+`finish_reason: "tool_calls"` —— 若是 `length`，Copilot 会判定回答被截断、
+**放弃执行已经拿到的完整工具调用**并结束对话，且全链路无任何报错。
+
+两个场景的工具块都是**正常闭合**的（参数完整 + `content_block_stop`），
+所以「截断」这个结论只可能来自 stop_reason 的直译。
+
+为什么要两个值：`max_tokens` 是标准值，`model_context_window_exceeded` 是线上实测那次
+撑爆上下文时上游给的非标值。前者证明这不是某个非标值的专属问题 ——
+**只针对一个值打补丁，换个 stop_reason 就会再犯**。
+
+实测记录（2026-09-10，修复后）：
+
+| 请求 | finish_reason |
+| --- | --- |
+| `at-tool-then-max-tokens` 流式 | `tool_calls` ✅ |
+| `at-tool-then-context-exceeded` 流式 | `tool_calls` ✅ |
+| `at-tool-then-max-tokens` 非流式 | `tool_calls` ✅ |
+| `at-normal` 流式（对照，无工具） | `stop` ✅ 未被误改 |
+
 ### 绕过 COSP 直接打 mock
 
 调试 mock 本身的形状时更快，但要自己带版本头：
@@ -121,6 +154,8 @@ curl.exe -s -X POST http://localhost:8083/v1/messages `
 | `at-tool-multi-split` | 三工具分片，block index 从 1 起 | tool index 稠密重映射为 0/1/2 |
 | `at-tool-interleaved` | 两工具参数分片交错 | 两段各自独立拼接，互不污染 |
 | `at-tool-no-args` | 工具无参数，零个 `input_json_delta` | 只有一个带 `name` 的帧，不凭空补 `{}` |
+| `at-tool-then-max-tokens` | 完整工具调用 + `stop_reason: max_tokens` | A2O `finish_reason` = **`tool_calls`**（不是 `length`）|
+| `at-tool-then-context-exceeded` | 同上，但用非标 `model_context_window_exceeded` | 同上；线上实测过的形态 |
 | `at-thinking-only` | 纯 `thinking`，无正文 | **不**兜底（对照组） |
 | `at-empty-content` | 非流式 `content: []` / 流式仅控制事件 | 空响应兜底，自动重发 |
 | `at-empty-usage-zero` | 空内容 + 全 0 usage | 空响应兜底（**usage 不是判据**） |

@@ -105,6 +105,40 @@ class AnthropicToOpenAiResponseTranslatorTests {
             assertThat(translateNonStreamRaw(upstream)).contains("\"finish_reason\":\"tool_calls\"");
         }
 
+        /**
+         * 带 tool_calls 时 finish_reason 必须是 {@code tool_calls}，与流式同口径。
+         *
+         * <p>此前只覆盖了 {@code stop_reason: "tool_use"}（映射后本就等于 tool_calls，
+         * 掩盖了缺陷）。上游用别的终止原因收尾时，这里会把 tool_calls 和一个
+         * {@code length} 一起交给下游，自相矛盾：消息里有完整工具调用，
+         * 终止原因却说回答被截断。
+         */
+        @Test
+        void toolCallsOverrideMappedStopReason() throws Exception {
+            String upstream = """
+                    {"id":"msg_1","model":"claude-x","stop_reason":"max_tokens",
+                     "content":[{"type":"tool_use","id":"toolu_1","name":"get_weather",
+                                 "input":{"city":"北京"}}]}
+                    """;
+
+            JsonNode choice = translateNonStream(upstream).path("choices").get(0);
+
+            assertThat(choice.path("message").path("tool_calls")).hasSize(1);
+            assertThat(choice.path("finish_reason").asText()).isEqualTo("tool_calls");
+        }
+
+        /** 没有工具调用时，stop_reason 的映射结果照常生效。 */
+        @Test
+        void mappedStopReasonSurvivesWithoutToolCalls() throws Exception {
+            String upstream = """
+                    {"id":"msg_1","model":"claude-x","stop_reason":"max_tokens",
+                     "content":[{"type":"text","text":"半句"}]}
+                    """;
+
+            assertThat(translateNonStream(upstream).path("choices").get(0)
+                    .path("finish_reason").asText()).isEqualTo("length");
+        }
+
         /** 无参工具调用是合法形态，input 缺失映射成空对象而非报错。 */
         @Test
         void missingToolInputBecomesEmptyObject() throws Exception {
@@ -540,6 +574,116 @@ class AnthropicToOpenAiResponseTranslatorTests {
                     """), false);
 
             assertThat(finishChunk(chunks)).contains("\"finish_reason\":\"some_new_reason\"");
+        }
+
+        /**
+         * 本轮产出了工具调用时，finish_reason 必须是 {@code tool_calls} —— 即使上游的
+         * stop_reason 映射成了别的值。
+         *
+         * <p>OpenAI 语义：响应含完整 tool_calls 时 finish_reason 优先 {@code tool_calls}，
+         * 高于 length / stop。Copilot 收到 {@code length} 会判定回答被截断，
+         * 于是<strong>不执行工具</strong>并掐断对话 —— 表现为「工具明明齐全却没被调用」，
+         * 且全链路无任何报错。
+         *
+         * <p>这条路径此前是缺口：兜底收尾（{@link #truncatedStreamWithToolCallIsReportedAsToolCalls}）
+         * 查了 sawToolCall，而上游"规矩地"发了带 stop_reason 的 message_delta 时走的正常路径
+         * 却只看 stop_reason。反直觉的结果是上游越规矩越容易踩中。
+         */
+        @Test
+        void toolCallOverridesMappedStopReasonOnTheNormalPath() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"content_block_start","index":0,
+                     "content_block":{"type":"tool_use","id":"toolu_a","name":"manage_todo_list"}}
+                    """,
+                    """
+                    {"type":"content_block_delta","index":0,
+                     "delta":{"type":"input_json_delta","partial_json":"{\\"x\\":1}"}}
+                    """,
+                    """
+                    {"type":"content_block_stop","index":0}
+                    """,
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}
+                    """), false);
+
+            assertThat(finishChunk(chunks)).contains("\"finish_reason\":\"tool_calls\"");
+        }
+
+        /**
+         * 实测复现：撑爆上下文时上游用非标 {@code model_context_window_exceeded} 收尾。
+         *
+         * <p>该值本身被 {@link StopReasonMapper} 正确映射成 {@code length}（这没错），
+         * 但本轮的工具调用参数完整、块也正常闭合，因此终止原因仍应是 {@code tool_calls}。
+         *
+         * <p>单独钉这个值是因为它是线上实际踩到的那次；但它<strong>不是</strong>专属触发器 ——
+         * 上一个用例已经证明换成标准 {@code max_tokens} 同样复现，所以修复不能只针对这一个值。
+         */
+        @Test
+        void toolCallOverridesContextWindowExceededFromRealTrace() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"content_block_delta","index":0,
+                     "delta":{"type":"text_delta","text":"先核对规则，确认在哪一步丢失。"}}
+                    """,
+                    """
+                    {"type":"content_block_start","index":1,
+                     "content_block":{"type":"tool_use","id":"toolu_real","name":"manage_todo_list"}}
+                    """,
+                    """
+                    {"type":"content_block_delta","index":1,
+                     "delta":{"type":"input_json_delta","partial_json":"{\\"todoList\\":[]}"}}
+                    """,
+                    """
+                    {"type":"content_block_stop","index":1}
+                    """,
+                    """
+                    {"type":"message_delta",
+                     "delta":{"stop_reason":"model_context_window_exceeded"},
+                     "usage":{"input_tokens":372000,"output_tokens":209}}
+                    """), false);
+
+            assertThat(finishChunk(chunks)).contains("\"finish_reason\":\"tool_calls\"");
+        }
+
+        /**
+         * 没有工具调用时不受影响：stop_reason 的映射结果照常生效。
+         *
+         * <p>与上两条一起构成完整的判定 —— 覆盖只发生在「本轮真有工具调用」时，
+         * 而不是把所有 length 都改写成 tool_calls。
+         */
+        @Test
+        void mappedStopReasonSurvivesWhenNoToolCallWasSeen() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"content_block_delta","index":0,
+                     "delta":{"type":"text_delta","text":"半句"}}
+                    """,
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}
+                    """), false);
+
+            assertThat(finishChunk(chunks)).contains("\"finish_reason\":\"length\"");
+        }
+
+        /**
+         * {@code end_turn} 配上工具调用同样要改写成 {@code tool_calls}。
+         *
+         * <p>这一条锁住「优先级高于 stop」那一半：只处理 length 是不够的，
+         * 正常结束的语义同样会让 Copilot 认为不需要执行工具。
+         */
+        @Test
+        void toolCallOverridesEndTurn() {
+            List<String> chunks = collectStream(List.of(
+                    """
+                    {"type":"content_block_start","index":0,
+                     "content_block":{"type":"tool_use","id":"toolu_a","name":"tool_a"}}
+                    """,
+                    """
+                    {"type":"message_delta","delta":{"stop_reason":"end_turn"}}
+                    """), false);
+
+            assertThat(finishChunk(chunks)).contains("\"finish_reason\":\"tool_calls\"");
         }
     }
 
