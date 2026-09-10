@@ -23,6 +23,15 @@ export interface CallLifecycleEvent {
   chunkCount: number
   /** 重试次数（RETRYING 阶段有意义，表示即将进行的第几次重试，其余为 0）。 */
   attempt: number
+  /**
+   * 下游协议名（`OPENAI` / `ANTHROPIC`），`null`/缺失表示尚未确定。
+   *
+   * 后端分两步给：控制器发 RECEIVED 时不带（上游协议要等路由与调度完成后才有结论），
+   * 随后由发布器补写并重发一条带齐两个协议的事件。
+   */
+  downstreamProtocol?: string | null
+  /** 上游协议名，`null`/缺失表示尚未确定。 */
+  upstreamProtocol?: string | null
   timestamp: number
 }
 
@@ -35,6 +44,21 @@ export interface CallToast {
   chunkCount: number
   /** 当前重试次数（RETRYING 阶段展示用）。 */
   attempt: number
+  /** 下游协议名；空串表示尚未确定（后端补写前）。 */
+  downstreamProtocol: string
+  /** 上游协议名；空串表示尚未确定。 */
+  upstreamProtocol: string
+  /**
+   * 本次调用的起始服务端毫秒时间戳 —— 「流存在时间」的计时起点。
+   *
+   * 取首个事件（RECEIVED）的 timestamp，此后**不再被后续事件改写**（整轮不变量）。
+   * 用服务端时间而非前端接收时刻，是为了让晚订阅的前端也看到真实已用时：
+   * 若调用已跑了 30 秒才打开面板，快照补发的事件时间戳就是 30 秒前，
+   * 显示 `00:30` 才是对的；用前端当前时刻会显示成刚发起。
+   */
+  startTimestamp: number
+  /** 终态事件的毫秒时间戳；非终态为 null。用于把计时**定格**在结束那一刻。 */
+  endTimestamp: number | null
   /** 是否正在退场淡出（COMPLETED/FAILED 后短暂保留再移除）。 */
   leaving: boolean
 
@@ -47,10 +71,52 @@ export function isTerminalPhase(phase: CallPhase): boolean {
 }
 
 /**
+ * 把毫秒时长格式化成 `分:秒`（两位补零，如 `03:07`）。
+ *
+ * 超过 60 分钟不进位到时：`mm` 位继续增长（`75:30`），调用面板看的是「这次跑了多久」，
+ * 引入 `hh:mm:ss` 只会让绝大多数在一分钟内的调用多出两个恒为 `0` 的字符。
+ * 负数（服务端与浏览器时钟不同步时可能出现）归零，避免显示 `-01:-30` 这类乱码。
+ */
+export function formatElapsed(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
+/**
+ * 协议名 → 缩写（`OPENAI` → `O`，`ANTHROPIC` → `A`）。
+ *
+ * 未知协议取首字母，为空返回空串 —— 后端将来加第三种协议时前端不必同步改动就能显示。
+ */
+export function protocolAbbreviation(protocol: string): string {
+  if (!protocol) return ''
+  const known: Record<string, string> = { OPENAI: 'O', ANTHROPIC: 'A' }
+  return known[protocol.toUpperCase()] ?? protocol.charAt(0).toUpperCase()
+}
+
+/**
+ * 拼出路径标记文本：同协议为单字母（`O`），跨协议为 `O→A` 形态。
+ *
+ * <p>箭头方向是<strong>请求翻译的方向</strong>（下游 → 上游），与 AGENTS.md 里
+ * O2A / A2O 的命名同向：`O→A` 表示下游 OpenAI、上游 Anthropic，由
+ * `OpenAiToAnthropicRequestTranslator` 改写去程请求。上游协议未知（后端尚未补写）时
+ * 只显示下游字母，不显示半截箭头。
+ */
+export function protocolPathLabel(downstreamProtocol: string, upstreamProtocol: string): string {
+  const downstream = protocolAbbreviation(downstreamProtocol)
+  const upstream = protocolAbbreviation(upstreamProtocol)
+  if (!downstream) return ''
+  if (!upstream) return downstream
+  if (downstream === upstream) return downstream
+  return `${downstream}→${upstream}`
+}
+
+/**
  * 把一个生命周期事件归并进已有的 Toast。
  *
  * <p>抽成模块级纯函数而非留在 store 内部：它有几条不显而易见的字段级规则
- * （终态不被迟到的 CHUNK 覆盖、stream 是不变量、chunkCount 只增不减），
+ * （终态不被迟到的 CHUNK 覆盖、stream/协议/起始时间是不变量、chunkCount 只增不减），
  * 那些规则靠读代码保不住，靠单测才行。
  *
  * @param toasts 当前 Toast 列表（就地修改元素，需插入时返回新数组）
@@ -69,6 +135,10 @@ export function mergeLifecycleEvent(toasts: CallToast[], event: CallLifecycleEve
         stream: event.stream,
         chunkCount: event.chunkCount,
         attempt: event.attempt,
+        downstreamProtocol: event.downstreamProtocol ?? '',
+        upstreamProtocol: event.upstreamProtocol ?? '',
+        startTimestamp: event.timestamp,
+        endTimestamp: isTerminalPhase(event.phase) ? event.timestamp : null,
         leaving: false,
       },
     ]
@@ -94,6 +164,21 @@ export function mergeLifecycleEvent(toasts: CallToast[], event: CallLifecycleEve
   // RETRYING 携带的重试次数需同步；其余阶段 attempt 为 0，不覆盖已有值。
   if (event.attempt > 0) {
     existing.attempt = event.attempt
+  }
+  // 协议信息是「从无到有」的单向填充，不是每帧覆盖：
+  // 后端只在调度完成时补发一次带齐两个协议的事件，其余事件（含 provider 层发的
+  // CONNECTED / CHUNK）都不带协议字段。若写成无条件覆盖，第一次补写后的下一帧就会
+  // 把它清空，Tag 闪一下就没。因此只在本地为空且事件带来非空值时写入。
+  if (!existing.downstreamProtocol && event.downstreamProtocol) {
+    existing.downstreamProtocol = event.downstreamProtocol
+  }
+  if (!existing.upstreamProtocol && event.upstreamProtocol) {
+    existing.upstreamProtocol = event.upstreamProtocol
+  }
+  // 起始时间同样是不变量：取首个事件的时间戳，后续事件一律不覆盖（见字段注释）。
+  // 终态到来时定格结束时刻，让 linger 期间「流存在时间」停住而不是继续爬。
+  if (existing.endTimestamp === null && isTerminalPhase(event.phase)) {
+    existing.endTimestamp = event.timestamp
   }
   return toasts
 }

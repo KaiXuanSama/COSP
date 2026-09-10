@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.application.openai;
 
+import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchDecision;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
@@ -15,6 +16,7 @@ import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.provider.DownstreamLogView;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -54,6 +56,15 @@ public class ChatCompletionService {
     private final AnthropicToOpenAiResponseTranslator a2oTranslator;
 
     /**
+     * 调用生命周期事件通知器，由 Spring 可选注入。
+     *
+     * <p>用途单一：调度结论出来后把协议信息补给生命周期事件，供前端 Toast 显示路径标记。
+     * 可选注入（与 provider 层同一范式）—— 单元测试直接 new 本类时不关心这条链路，
+     * 缺省即不发。
+     */
+    private CallLifecycleNotifier lifecycleNotifier;
+
+    /**
      * 创建聊天补全应用服务。
      *
      * @param providerRouteResolver 供应商模型路由解析器
@@ -77,6 +88,31 @@ public class ChatCompletionService {
         this.a2oTranslator = a2oTranslator;
     }
 
+    @Autowired(required = false)
+    public void setLifecycleNotifier(CallLifecycleNotifier lifecycleNotifier) {
+        this.lifecycleNotifier = lifecycleNotifier;
+    }
+
+    /**
+     * 把调度结论补进生命周期事件，供前端 Toast 渲染路径标记（如「O→A」）。
+     *
+     * <p>调用时机必须在 {@code dispatch} 之后、真正的上游调用之前：过了这一步才知道
+     * 上游协议，而再往后就是网络等待，晚补会让前端先看到没有标记的 Toast。
+     *
+     * <p>失败静默忽略 —— 事件推送是 best-effort 的观测链路，任何异常都不能影响聊天数据流。
+     */
+    private void notifyProtocols(String requestId, ProtocolDispatchDecision decision) {
+        if (lifecycleNotifier == null || requestId == null) {
+            return;
+        }
+        try {
+            lifecycleNotifier.recordProtocols(requestId, DOWNSTREAM_PROTOCOL.name(),
+                    decision.upstreamProtocol().name());
+        } catch (Exception exception) {
+            // 观测链路失败不影响调用本身。
+        }
+    }
+
     /**
      * 执行非流式聊天补全。
      *
@@ -98,6 +134,8 @@ public class ChatCompletionService {
         }
         ProtocolDispatchDecision decision =
                 protocolDispatchManager.dispatch(DOWNSTREAM_PROTOCOL, route.provider());
+        // 调度结论出来了：把下游/上游协议补进生命周期事件，前端 Toast 才能显示路径标记。
+        notifyProtocols(requestId, decision);
         
         // 同协议直连，原请求体不变。
         if (!decision.translationNeeded()) {
@@ -164,6 +202,8 @@ public class ChatCompletionService {
         }
         ProtocolDispatchDecision decision =
                 protocolDispatchManager.dispatch(DOWNSTREAM_PROTOCOL, route.provider());
+        // 同非流式：结论出来后立刻补协议信息，前端 Tag 不必等到上游响应。
+        notifyProtocols(requestId, decision);
         
         // 同协议直连，原请求体不变。
         if (!decision.translationNeeded()) {

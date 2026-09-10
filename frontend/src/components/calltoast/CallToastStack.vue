@@ -15,8 +15,15 @@
  * 主动断连通过右键调用项触发，始终可用——后端取消端点不看任何「超时」标志，
  * 故前端也不需要计时器或 canCancel 字段。
  */
-import { computed, ref } from 'vue'
-import { useCallLifecycleStore, type CallToast, type CallPhase } from '@/stores/callLifecycle'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import {
+  formatElapsed,
+  protocolPathLabel,
+  useCallLifecycleStore,
+  type CallToast,
+  type CallPhase,
+} from '@/stores/callLifecycle'
+import { WIRE_PROTOCOL_LABELS, isWireProtocol } from '@/types/protocol'
 
 const store = useCallLifecycleStore()
 
@@ -29,6 +36,76 @@ const orderedToasts = computed(() => [...store.toasts].slice().reverse())
 
 /** 面板展开与否。 */
 const panelOpen = ref(false)
+
+/**
+ * 计时用的「当前时刻」，由下方的每秒 tick 驱动。
+ *
+ * 只在面板展开且确有进行中调用时更新：面板没打开就没人看得到这个数字，
+ * 常驻定时器是白耗电；全部调用都到终态后时间已定格在 `endTimestamp`，也不再需要它。
+ */
+const now = ref(Date.now())
+
+/** 每秒 tick 的间隔。 */
+const TICK_INTERVAL = 1000
+
+let ticker: ReturnType<typeof setInterval> | null = null
+
+/**
+ * 按「面板已展开且有进行中调用」启停计时器。
+ *
+ * 启动时立即对齐一次 `now`：否则开关面板后会先显示上次留下的旧数字，整整一秒后才跳正。
+ */
+function syncTicker() {
+  const shouldRun = panelOpen.value && activeCount.value > 0
+  if (shouldRun && !ticker) {
+    now.value = Date.now()
+    ticker = setInterval(() => {
+      now.value = Date.now()
+    }, TICK_INTERVAL)
+  } else if (!shouldRun && ticker) {
+    clearInterval(ticker)
+    ticker = null
+  }
+}
+
+watch([panelOpen, activeCount], syncTicker)
+
+onBeforeUnmount(() => {
+  if (ticker) {
+    clearInterval(ticker)
+    ticker = null
+  }
+})
+
+/**
+ * 本次调用的已用时文本（`分:秒`）。
+ *
+ * 终态用 `endTimestamp` 定格 —— Toast 在淡出前还要停留两秒多，若继续用当前时刻，
+ * 那条「已完成」的调用时间还会一直涨，读起来像是还在跑。
+ */
+function elapsedText(toast: CallToast): string {
+  return formatElapsed((toast.endTimestamp ?? now.value) - toast.startTimestamp)
+}
+
+/** 路径标记的缩写文本（`O` / `A` / `O→A`），无协议信息时为空串（不渲染）。 */
+function protocolPath(toast: CallToast): string {
+  return protocolPathLabel(toast.downstreamProtocol, toast.upstreamProtocol)
+}
+
+/**
+ * 路径标记的完整说明（悬停可见）。
+ *
+ * 缩写本身没有自解释性，而这里的箭头方向是本页最容易读反的一处 —— 它是
+ * **请求翻译的方向**（下游 → 上游），与后端 O2A / A2O 的命名同向。
+ */
+function protocolTitle(toast: CallToast): string {
+  const name = (protocol: string) => (isWireProtocol(protocol) ? WIRE_PROTOCOL_LABELS[protocol] : protocol)
+  const downstream = name(toast.downstreamProtocol)
+  const upstream = name(toast.upstreamProtocol)
+  if (!downstream) return ''
+  if (!upstream || downstream === upstream) return `下游与上游同为 ${downstream} 协议，直连无需翻译`
+  return `下游 ${downstream} → 上游 ${upstream}（箭头为请求翻译方向）`
+}
 
 /** 徽标状态点颜色：取进行中调用里最值得注意的阶段，空时用中性灰。 */
 const badgePhaseClass = computed(() => {
@@ -179,8 +256,21 @@ function closeMenu() {
             <span class="call-toast-item__dot" :class="phaseClass(toast.phase)"
               :data-pulsing="isPulsing(toast.phase) ? 'true' : 'false'"></span>
             <div class="call-toast-item__body">
-              <div class="call-toast-item__model">{{ toast.model }}</div>
-              <div class="call-toast-item__text">{{ phaseText(toast) }}</div>
+              <div class="call-toast-item__model">
+                <!--
+                  路径标记：模型名左侧的缩写胶囊（O / A / O→A）。
+                  箭头方向是**请求翻译的方向**（下游 → 上游），与后端 O2A / A2O 命名同向；
+                  后端补写协议前（空串）不渲染，避免先显示半截标记再跳。
+                -->
+                <span v-if="protocolPath(toast)" class="call-toast-item__path" :title="protocolTitle(toast)">{{
+                  protocolPath(toast) }}</span>
+                <span class="call-toast-item__name">{{ toast.model }}</span>
+              </div>
+              <div class="call-toast-item__text">
+                <span class="call-toast-item__phase">{{ phaseText(toast) }}</span>
+                <span class="call-toast-item__elapsed" title="本次调用已用时（从下游发起请求计）">{{
+                  elapsedText(toast) }}</span>
+              </div>
             </div>
           </div>
         </transition-group>
@@ -380,6 +470,9 @@ function closeMenu() {
 }
 
 .call-toast-item__model {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-family: $font-mono;
   font-size: 11px;
   font-weight: 500;
@@ -390,10 +483,64 @@ function closeMenu() {
   margin-bottom: 2px;
 }
 
+/* 模型名本体：与路径标记同处一行，宽度不足时只让名字省略。 */
+.call-toast-item__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+  路径标记（O / A / O→A）：模型名左侧的小胶囊。
+  定宽收缩为 0 —— 缩写只有一两个字符，不该在窄面板里被模型名挤掉，
+  它是判断「这次走的哪条线路」的唯一线索。
+*/
+.call-toast-item__path {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  height: 15px;
+  border-radius: 4px;
+  font-family: $font-mono;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  color: $accent;
+  background: $accent-light;
+  border: 1px solid rgba(194, 122, 62, 0.22);
+  cursor: help;
+}
+
 .call-toast-item__text {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: $space-sm;
   font-family: $font-body;
   font-size: 13px;
   color: $text-body;
+}
+
+/* 阶段文案：宽度不足时先省略它，而不是把右侧的已用时挤走。 */
+.call-toast-item__phase {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+  已用时（分:秒）：第二行最右侧。
+  等宽字体 + 固定宽度兜底，避免数字变化时整行左右抖动。
+*/
+.call-toast-item__elapsed {
+  flex-shrink: 0;
+  font-family: $font-mono;
+  font-size: 12px;
+  color: $text-muted;
+  font-variant-numeric: tabular-nums;
+  cursor: help;
 }
 
 .call-toast-panel__empty {

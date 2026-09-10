@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.application.anthropic;
 
+import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchDecision;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
@@ -7,6 +8,7 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -55,12 +57,44 @@ public class MessagesService {
     private final ProtocolDispatchManager protocolDispatchManager;
     private final GenericAnthropicChatService anthropicChatService;
 
+    /**
+     * 调用生命周期事件通知器，由 Spring 可选注入。
+     *
+     * <p>用途单一：调度结论出来后把协议信息补给生命周期事件，供前端 Toast 显示路径标记。
+     * 可选注入（与 provider 层同一范式）—— 单元测试直接 new 本类时不关心这条链路，
+     * 缺省即不发。当前 A2O 方向尚未实现，标记会显示为「A→O」后再收 FAILED，
+     * 这恰好让人一眼看出是哪条线路缺实现。
+     */
+    private CallLifecycleNotifier lifecycleNotifier;
+
     public MessagesService(ProviderRouteResolver providerRouteResolver,
                            ProtocolDispatchManager protocolDispatchManager,
                            GenericAnthropicChatService anthropicChatService) {
         this.providerRouteResolver = providerRouteResolver;
         this.protocolDispatchManager = protocolDispatchManager;
         this.anthropicChatService = anthropicChatService;
+    }
+
+    @Autowired(required = false)
+    public void setLifecycleNotifier(CallLifecycleNotifier lifecycleNotifier) {
+        this.lifecycleNotifier = lifecycleNotifier;
+    }
+
+    /**
+     * 把调度结论补进生命周期事件，供前端 Toast 渲染路径标记（如「A→O」）。
+     *
+     * <p>失败静默忽略 —— 事件推送是 best-effort 的观测链路，任何异常都不能影响聊天数据流。
+     */
+    private void notifyProtocols(String requestId, ProtocolDispatchDecision decision) {
+        if (lifecycleNotifier == null || requestId == null) {
+            return;
+        }
+        try {
+            lifecycleNotifier.recordProtocols(requestId, DOWNSTREAM_PROTOCOL.name(),
+                    decision.upstreamProtocol().name());
+        } catch (Exception exception) {
+            // 观测链路失败不影响调用本身。
+        }
     }
 
     /**
@@ -84,6 +118,10 @@ public class MessagesService {
         }
         ProtocolDispatchDecision decision =
                 protocolDispatchManager.dispatch(DOWNSTREAM_PROTOCOL, route.provider());
+        // 调度结论出来了：补协议信息供前端 Toast 显示「A」或「A→O」路径标记。
+        // 刻意放在抛未实现异常之前 —— 那样失败 Toast 上仍能看到「A→O」，
+        // 一眼认出是这条跨协议线路缺实现，而不是某个笼统的上游错误。
+        notifyProtocols(requestId, decision);
         // TODO(待实现) A2O 请求翻译（去程）+ O2A 响应翻译（回程）。
         //  两者是同一条链的两半，缺一半这条路就不可用，因此不拆开计划。
         //  接线约束与流式难点见类注释，契约见
@@ -115,6 +153,8 @@ public class MessagesService {
         }
         ProtocolDispatchDecision decision =
                 protocolDispatchManager.dispatch(DOWNSTREAM_PROTOCOL, route.provider());
+        // 同非流式：结论出来即补，前端 Tag 不必等到上游响应。
+        notifyProtocols(requestId, decision);
         // TODO(待实现) 同非流式的 A2O 请求 + O2A 响应。流式还多一层帧数不对等：
         //  合成 message_start / content_block_start 等源里不存在的结构，且顺序必须合法。
         if (decision.translationNeeded()) {
