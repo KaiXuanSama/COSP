@@ -16,6 +16,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetti
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
+import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.provider.DownstreamLogView;
@@ -105,6 +106,8 @@ public class GenericAnthropicChatService {
     private ApiCallLogService apiCallLog;
     private ApiCallUsageService apiCallUsage;
     private CallLifecycleNotifier lifecycleNotifier;
+    /** 静默重试协调器，由 Spring 可选注入；管理后台右键 Toast 触发时重新发起当前上游请求。 */
+    private CallRetryRegistry callRetryRegistry;
     private RetryPolicyService retryPolicyService;
     private WebClient.Builder webClientBuilder = WebClient.builder();
     private HttpClient httpClient = HttpClient.create();
@@ -130,6 +133,11 @@ public class GenericAnthropicChatService {
     @Autowired(required = false)
     public void setLifecycleNotifier(CallLifecycleNotifier lifecycleNotifier) {
         this.lifecycleNotifier = lifecycleNotifier;
+    }
+
+    @Autowired(required = false)
+    public void setCallRetryRegistry(CallRetryRegistry callRetryRegistry) {
+        this.callRetryRegistry = callRetryRegistry;
     }
 
     @Autowired(required = false)
@@ -306,13 +314,18 @@ public class GenericAnthropicChatService {
      * （透传上游真实返回），而重发的新一轮会追加在后面 —— 对 Anthropic 客户端而言，
      * 一个未收到 {@code message_stop} 的消息序列后接新序列，是可判别的。
      *
-     * <h2>不接手动（静默）重试</h2>
-     * {@code CallRetryRegistry} + {@code takeUntilOther} 那套只接在 OpenAI 流式上。
-     * 它需要在流中途切断并重发，而 Anthropic 客户端是事件状态机：一个未收到
+     * <h2>手动（静默）重试已接入</h2>
+     * {@code CallRetryRegistry} + {@code takeUntilOther}，与 OpenAI 侧同构。
+     *
+     * <p>曾经刻意不接，理由是「Anthropic 客户端是事件状态机：一个未收到
      * {@code message_stop} 的序列后接一个全新的 {@code message_start}，对严格客户端
-     * 是否合法尚未验证。前置条件是拿到真实客户端的行为证据，不是翻译层完工
-     * （翻译层已落地，这一项仍不具备条件）。前端已用 {@code v-if="menuTarget.stream"}
-     * 隐藏不可用的菜单项，因此没有「点了没反应」的体验问题。
+     * 是否合法尚未验证」。那个顾虑<strong>只对 ANTHROPIC → ANTHROPIC 直连成立</strong>；
+     * O2A 路线（下游 OpenAI、上游 Anthropic）的下游拿到的是翻译后的 OpenAI chunk，
+     * 与 OpenAI 直连的重试语义完全一致，本就不受这条限制约束。
+     *
+     * <p>现按功能完整性优先，两条路线一并接入：不接的那一侧会让前端菜单项
+     * （条件只看是否流式，看不到上游协议）表现为「点了没反应、无任何报错」，
+     * 那比直连场景下的理论风险更明确地有害。
      */
     protected Flux<String> messagesStream(Map<String, Object> request, String model,
                                           ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
@@ -447,9 +460,37 @@ public class GenericAnthropicChatService {
                     return Flux.fromIterable(emptyResponse.bufferedFrames());
                 });
 
-        return attempt
+        // 静默重试循环：与 OpenAI 侧同构。把重试信号挂到<strong>整轮尝试</strong>
+        // （含 retryWhen 的 backoff 等待）上，使请求进行中与退避等待两个阶段都能被信号中断。
+        // 被中断的轮次以无值完成收场，若标志为真则递归重发；每次重发都注册新鲜的信号，
+        // 因此可以连续点击。下游断连时整个链被取消，递归随之终止。
+        //
+        // 不消耗 retryWhen 的预算：那条预算属于「COSP 自己判定的失败」，
+        // 而这里是管理员的显式意图，两者不该互相挤占。
+        AtomicBoolean silentRetryRequested = new AtomicBoolean(false);
+        AtomicReference<Flux<String>> attemptLoopRef = new AtomicReference<>();
+        Flux<String> attemptLoop = Flux.defer(() -> {
+                    Mono<Void> silentRetrySignal = callRetryRegistry == null || requestId == null
+                            ? Mono.never()
+                            : callRetryRegistry.register(requestId)
+                                    .doOnSuccess(v -> silentRetryRequested.set(true));
+                    return attempt.takeUntilOther(silentRetrySignal);
+                })
+                .concatWith(Flux.defer(() -> {
+                    if (silentRetryRequested.compareAndSet(true, false)) {
+                        log.info("静默重试：重新发起 Anthropic 上游请求 [{}] {}", model, requestId);
+                        return attemptLoopRef.get();
+                    }
+                    return Flux.<String>empty();
+                }));
+        attemptLoopRef.set(attemptLoop);
+
+        return attemptLoop
                 // 成功往返收尾：仅在非错误终结时落一条成功记录。
                 .doFinally(signal -> {
+                    if (callRetryRegistry != null && requestId != null) {
+                        callRetryRegistry.remove(requestId);
+                    }
                     if (emptyResponsePassthrough.get()) {
                         return;
                     }
