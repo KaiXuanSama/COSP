@@ -16,6 +16,7 @@ import { fetchLogs, fetchLogDetail } from '@/api'
 import { prependWithCursorShift } from '@/features/call-log/pagination'
 import { createCoalescingSync } from '@/features/call-log/sync'
 import { formatCacheHitRate } from '@/features/call-log/cacheHitRate'
+import { ttfbSeverity } from '@/features/call-log/ttfbSeverity'
 import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 import { CallLogDetail } from '@/components/calllog'
 import type { DetailItem } from '@/types/calllog'
@@ -283,6 +284,17 @@ function statusClass(code: number): string {
   return 'default'
 }
 
+/**
+ * 首字时长的档位类名；正常档返回空串（不上色，保持列默认色）。
+ *
+ * 阈值与档位判定在 `features/call-log/ttfbSeverity.ts`，详情组件共用同一份 ——
+ * 两处各写一遍阈值迟早漂移。这里只负责把档位翻译成本组件的类名。
+ */
+function ttfbClass(ms: number | null): string {
+  const severity = ttfbSeverity(ms)
+  return severity === 'normal' ? '' : `col-ttfb--${severity}`
+}
+
 function formatCallType(row: UsageLogItem): string {
   const upstream = row.upstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
   const downstream = row.downstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
@@ -412,7 +424,7 @@ onUnmounted(() => {
                     {{ formatCallType(row) }}
                   </span>
                 </td>
-                <td class="col-ttfb">{{ formatDuration(row.ttfb_ms) }}</td>
+                <td class="col-ttfb" :class="ttfbClass(row.ttfb_ms)">{{ formatDuration(row.ttfb_ms) }}</td>
                 <td class="col-timing-sep" aria-hidden="true">/</td>
                 <td class="col-total">{{ formatDuration(row.duration_ms) }}</td>
                 <td class="col-num">{{ formatTokens(row.prompt_tokens) }}</td>
@@ -708,6 +720,26 @@ th.col-num {
 .col-total {
   text-align: left;
   padding-left: 0;
+}
+
+/*
+  首字时长档位：达到 20s / 40s / 60s 依次转暗黄 / 暗橙 / 暗红。
+  三色都取自主题的功能色（$warning / $accent / $danger），刻意用暗色而非鲜亮告警色 ——
+  这一列会同时出现多行着色，高饱和色会把视线从模型名与耗时上拽走。
+
+  选择器带上 .usage-table 是为了在特异性上压过上面的 `.usage-table td` 的 color，
+  与 .col-timing-sep 同一个理由。档位判定见 features/call-log/ttfbSeverity.ts。
+*/
+.usage-table .col-ttfb--warn {
+  color: $warning;
+}
+
+.usage-table .col-ttfb--slow {
+  color: $accent;
+}
+
+.usage-table .col-ttfb--critical {
+  color: $danger;
 }
 
 /*
