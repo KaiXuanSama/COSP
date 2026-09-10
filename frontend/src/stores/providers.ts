@@ -218,6 +218,17 @@ export const useProviderStore = defineStore('providers', () => {
     return res.data.apiKey || ''
   }
 
+  /**
+   * 按 keyUuid 解密回传单条供应商 API Key 的明文（供复制到剪贴板）。
+   *
+   * <p>明文不随列表常驻，仅在用户显式点击复制时按需拉取；端点受管理后台 JWT 保护。
+   * 供应商或 keyUuid 不存在时后端回 404，这里沿用 axios 异常上抛。
+   */
+  async function revealProviderApiKey(providerKey: string, keyUuid: string): Promise<string> {
+    const res = await http.get(`/providers/${providerKey}/keys/${keyUuid}/reveal`)
+    return res.data.apiKey || ''
+  }
+
   // 重新生成 Key，返回明文与脱敏值（一次性显示 + 复制）
   async function regenerateGatewayApiKey(): Promise<GeneratedGatewayKey> {
     const res = await http.post('/gateway-auth/regenerate')
@@ -275,5 +286,5 @@ export const useProviderStore = defineStore('providers', () => {
     await fetchAll()
   }
 
-  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchRuntimeConfig, saveRetryMaxAttempts, saveProxyAddress, setGatewayAuthEnabled, revealGatewayApiKey, regenerateGatewayApiKey, addProvider, deleteProvider, updateProvider }
+  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchRuntimeConfig, saveRetryMaxAttempts, saveProxyAddress, setGatewayAuthEnabled, revealGatewayApiKey, revealProviderApiKey, regenerateGatewayApiKey, addProvider, deleteProvider, updateProvider }
 })

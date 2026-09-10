@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.api;
 
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderAdminService;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -41,6 +42,28 @@ public class ProviderAdminController {
                                                                          ServerWebExchange exchange) {
         return exchange.getFormData().flatMap(form -> providerAdminService.saveProviderConfig(providerKey, form))
                 .map(this::toResponse);
+    }
+
+    /**
+     * 按 keyUuid 解密回传单条 API Key 的明文（供复制到剪贴板）。
+     *
+     * <p>与网关 Key 的 reveal 同一安全口径：列表接口只返回脱敏值，明文仅在管理员
+     * 显式点击复制时按需解密回传。端点位于 {@code /config/**} 之下，受管理后台
+     * JWT 保护；供应商或 keyUuid 不存在时返回 404。
+     *
+     * @return {@code { apiKey }}
+     */
+    @GetMapping("/config/api/providers/{providerKey}/keys/{keyUuid}/reveal")
+    public Mono<ResponseEntity<Map<String, Object>>> revealProviderApiKey(@PathVariable String providerKey,
+                                                                           @PathVariable String keyUuid) {
+        return providerAdminService.revealProviderApiKey(providerKey, keyUuid)
+                .map(key -> {
+                    if (key.isEmpty()) {
+                        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                                .body(Map.<String, Object>of("ok", false, "error", "API Key 不存在"));
+                    }
+                    return ResponseEntity.ok(Map.<String, Object>of("apiKey", key));
+                });
     }
 
     @Deprecated

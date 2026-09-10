@@ -459,6 +459,33 @@ public class ProviderAdminService {
     }
 
     /**
+     * 按 keyUuid 解密并返回单条 API Key 的明文，供前端复制。
+     *
+     * <p>与网关 Key 的 {@code reveal} 同一安全口径：明文<strong>不随列表接口返回</strong>，
+     * 只在管理员显式点击复制时按需解密回传，且本端点位于 {@code /config/**} 之下，
+     * 受管理后台 JWT 保护。解密复用 {@link ProviderApiKeyRepository#decrypt}，
+     * 没有另起一套加解密逻辑。
+     *
+     * @param providerKey 供应商路由标识
+     * @param keyUuid     目标 API Key 的 UUID
+     * @return 明文 Key；供应商不存在、keyUuid 不匹配时返回空串（调用方据此回 404）
+     */
+    public Mono<String> revealProviderApiKey(String providerKey, String keyUuid) {
+        return Mono.fromCallable(() -> {
+            ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
+            if (provider == null || keyUuid == null || keyUuid.isBlank()) {
+                return "";
+            }
+            for (ProviderApiKeyRow row : providerApiKeyRepository.findByProviderId(provider.id())) {
+                if (keyUuid.equals(row.keyUuid())) {
+                    return providerApiKeyRepository.decrypt(row);
+                }
+            }
+            return "";
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
      * 解析一个可选的非负下标表单值。
      *
      * <p>空值、非数字或负数一律返回 {@code -1}（表示「未指定」），

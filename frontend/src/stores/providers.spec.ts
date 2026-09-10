@@ -74,4 +74,28 @@ describe('provider proxy state', () => {
     const body = vi.mocked(http.put).mock.calls[0][1] as string
     expect(new URLSearchParams(body).has('useProxy')).toBe(false)
   })
+
+  /**
+   * 单条供应商 Key 的明文揭示：请求路径携带 providerKey 与 keyUuid，
+   * 返回值只取 apiKey 字段（明文不随列表常驻，按需拉取一次）。
+   */
+  it('reveals provider api key plaintext via per-key endpoint', async () => {
+    const store = useProviderStore()
+    vi.mocked(http.get).mockResolvedValue({ data: { apiKey: 'sk-plaintext' } })
+
+    const plaintext = await store.revealProviderApiKey('relay', 'uuid-1')
+
+    expect(plaintext).toBe('sk-plaintext')
+    expect(vi.mocked(http.get)).toHaveBeenCalledWith('/providers/relay/keys/uuid-1/reveal')
+  })
+
+  /** keyUuid 需作为路径段原样透传，不能拼丢或编码。 */
+  it('passes providerKey and keyUuid through as path segments', async () => {
+    const store = useProviderStore()
+    vi.mocked(http.get).mockResolvedValue({ data: { apiKey: 'x' } })
+
+    await store.revealProviderApiKey('mi-mimo', 'abc-123')
+
+    expect(vi.mocked(http.get)).toHaveBeenCalledWith('/providers/mi-mimo/keys/abc-123/reveal')
+  })
 })

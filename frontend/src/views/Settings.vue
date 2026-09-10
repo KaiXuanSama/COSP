@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { NCard, NCheckbox, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NSelect, NDropdown, useMessage } from 'naive-ui'
 import ProviderModelsSection from '@/components/settings/ProviderModelsSection.vue'
 import RequestBodyRuleEditor from '@/components/settings/request-body-rules/RequestBodyRuleEditor.vue'
@@ -8,6 +8,7 @@ import type { RequestBodyEditorState } from '@/features/request-body-rules/edito
 import { countRules } from '@/features/request-body-rules/editorState'
 import { migrateRuleSet } from '@/features/request-body-rules/migration'
 import { WIRE_PROTOCOL_LABELS, type WireProtocol } from '@/types/protocol'
+import { copyToClipboard } from '@/utils/clipboard'
 import {
   ANTHROPIC_ENDPOINT_SUFFIX,
   DEFAULT_NEW_PROVIDER_PROTOCOLS,
@@ -31,7 +32,9 @@ import {
   shouldMirrorOnFocus,
   toggleProtocol,
   hasChanges as pullDiffHasChanges,
+  hasPlaintext,
   isNewKeyValue,
+  isPersisted,
   keepMeaningfulEntries,
   newKeyValue,
   officialPresets,
@@ -293,6 +296,11 @@ async function handleProviderContextSelect(action: 'edit' | 'disable') {
 
 const showApiKeyModal = ref(false)
 const editingApiKeys = ref<ApiKeyEntry[]>([])
+const copyingApiKey = ref(false)
+/** 每行是否处于「明文显示」状态（仅对新增未保存条目有意义，按数组下标索引）。 */
+const revealedApiKeyRows = ref<Set<number>>(new Set())
+/** 每行复制操作的在途标记，避免重复点击。 */
+const copyingApiKeyRows = ref<Set<number>>(new Set())
 
 /** 构建下拉选项，value 使用 keyUuid（新增未保存项用临时标记） */
 const apiKeyOptions = computed(() =>
@@ -302,8 +310,48 @@ const apiKeyOptions = computed(() =>
   }))
 )
 
+/**
+ * 当前选中项的 keyUuid；选中新增未保存项（临时 value）时为空。
+ *
+ * 复制按钮依赖它判断可用性：明文只对<strong>已保存</strong>的 Key 有揭示意义，
+ * 新增未保存的条目后端还没有它的密文，无法 reveal。
+ */
+const activeKeyUuidForCopy = computed(() => {
+  const value = editForm.value.activeKeyUuid
+  return value && !isNewKeyValue(value) ? value : null
+})
+
+/**
+ * 复制当前选中 Key 的明文到剪贴板。
+ *
+ * <p>明文不随列表常驻，仅在点击时按需调 reveal 端点取一次；取完直接写剪贴板，
+ * 前端不长期持有。与网关 Key 的复制同一交互范式（Preferences.vue copyGatewayKey）。
+ */
+async function copyActiveApiKey() {
+  if (!editingKey.value || !activeKeyUuidForCopy.value) {
+    message.warning('请先选择一条已保存的 API Key')
+    return
+  }
+  copyingApiKey.value = true
+  try {
+    const plaintext = await providerStore.revealProviderApiKey(editingKey.value, activeKeyUuidForCopy.value)
+    if (!plaintext) {
+      message.warning('该 Key 无明文可复制')
+      return
+    }
+    const ok = await copyToClipboard(plaintext)
+    message[ok ? 'success' : 'error'](ok ? 'API Key 已复制到剪贴板' : '复制失败')
+  } catch {
+    message.error('复制失败，请重试')
+  } finally {
+    copyingApiKey.value = false
+  }
+}
+
 function openApiKeyModal() {
   editingApiKeys.value = editForm.value.apiKeys.map(k => ({ ...k }))
+  revealedApiKeyRows.value = new Set()
+  copyingApiKeyRows.value = new Set()
   showApiKeyModal.value = true
 }
 
@@ -313,16 +361,117 @@ function addApiKeyEntry() {
 
 function removeApiKeyEntry(index: number) {
   editingApiKeys.value.splice(index, 1)
+  // 删除后行下标整体前移，按下标记忆的显示/复制状态一并失效，清空重建。
+  revealedApiKeyRows.value = new Set()
+  copyingApiKeyRows.value = new Set()
+}
+
+/**
+ * 某一行是否以「显示 / 隐藏明文」方式呈现。
+ *
+ * <p>判据是<strong>输入框里有没有用户自己输入的内容</strong>，而非这条 Key 是否已保存：
+ * <ul>
+ *   <li>新增未保存条目 —— 明文就在 `entry.apiKey` 里，本就要能切换查看；</li>
+ *   <li>已保存但<strong>输入了新明文</strong>（「已保存待改」）—— 此刻输入框里是用户
+ *       刚敲进去的值，同样是隐藏状态，需要能临时看一下核对；</li>
+ *   <li>已保存且未输入新明文 —— 输入框是空的，没什么可显示，走复制模式。</li>
+ * </ul>
+ * 因此「已保存」行会随输入行为在复制 / 显示之间<strong>临时切换</strong>：输入内容后
+ * 变显示、清空后变回复制。这正是判据用 `hasPlaintext` 而不是 `isPersisted` 的原因。
+ */
+function isRowRevealable(entry: ApiKeyEntry): boolean {
+  return hasPlaintext(entry) || !isPersisted(entry)
+}
+
+/** 某一行当前是否处于明文显示状态。 */
+function isRowRevealed(index: number): boolean {
+  return revealedApiKeyRows.value.has(index)
+}
+
+/**
+ * 「显示 / 隐藏」明文切换。
+ *
+ * <p>明文就在 `entry.apiKey` 里，不需要调后端 reveal：切换输入框的 password/text
+ * 类型即可。只有 {@link isRowRevealable} 为真的行会渲染这个按钮；已保存且未输入新明文的
+ * 行走复制模式 —— 它们的明文在后端密文里，复制时按需 reveal。
+ */
+function toggleRowReveal(index: number) {
+  const next = new Set(revealedApiKeyRows.value)
+  if (next.has(index)) {
+    next.delete(index)
+  } else {
+    next.add(index)
+  }
+  revealedApiKeyRows.value = next
+}
+
+/**
+ * 明文被清空时收回该行的「已展开」标记。
+ *
+ * <p>不收回会出现不一致：点「显示」→ 清空输入框 → 按钮变回复制（内容已隐藏），
+ * 但展开标记仍按下标留着 —— 用户重新输入时内容会<em>直接明文可见</em>，像是隐藏
+ * 状态没记住。清空即视为「这行不再有可显示的内容」，标记一并收回，下次输入回到
+ * 默认隐藏、需再点一次「显示」。
+ *
+ * <p>只在标记数变化时赋值，避免每次敲键都触发无谓的重渲染。
+ */
+watch(editingApiKeys, (rows) => {
+  const kept = new Set<number>()
+  rows.forEach((entry, index) => {
+    if (hasPlaintext(entry) && revealedApiKeyRows.value.has(index)) {
+      kept.add(index)
+    }
+  })
+  if (kept.size !== revealedApiKeyRows.value.size) {
+    revealedApiKeyRows.value = kept
+  }
+}, { deep: true })
+
+/**
+ * 复制某一行已保存 Key 的明文到剪贴板。
+ *
+ * <p>复用抽屉复制同一安全口径：明文不随列表常驻，点击时按需调 reveal 端点取一次。
+ * 已保存条目在输入框里也可能有用户新输入的明文，但复制语义是「复制后端已保存的
+ * 明文」—— 那才是这条 Key 的真实值；新明文在保存前不参与 reveal。
+ */
+async function copyApiKeyRow(index: number) {
+  const entry = editingApiKeys.value[index]
+  if (!entry?.keyUuid || !editingKey.value) {
+    message.warning('请选择一条已保存的 API Key')
+    return
+  }
+  const nextCopying = new Set(copyingApiKeyRows.value)
+  nextCopying.add(index)
+  copyingApiKeyRows.value = nextCopying
+  try {
+    const plaintext = await providerStore.revealProviderApiKey(editingKey.value, entry.keyUuid)
+    if (!plaintext) {
+      message.warning('该 Key 无明文可复制')
+      return
+    }
+    const ok = await copyToClipboard(plaintext)
+    message[ok ? 'success' : 'error'](ok ? 'API Key 已复制到剪贴板' : '复制失败')
+  } catch {
+    message.error('复制失败，请重试')
+  } finally {
+    const cleared = new Set(copyingApiKeyRows.value)
+    cleared.delete(index)
+    copyingApiKeyRows.value = cleared
+  }
 }
 
 function saveApiKeyModal() {
   const valid = keepMeaningfulEntries(editingApiKeys.value)
   editForm.value.apiKeys = valid
   editForm.value.activeKeyUuid = resolveActiveValue(valid, editForm.value.activeKeyUuid)
+  revealedApiKeyRows.value = new Set()
+  copyingApiKeyRows.value = new Set()
   showApiKeyModal.value = false
 }
 
 function cancelApiKeyModal() {
+  revealedApiKeyRows.value = new Set()
+  copyingApiKeyRows.value = new Set()
   showApiKeyModal.value = false
 }
 
@@ -1189,7 +1338,29 @@ function removeModel(index: number) {
               style="flex: 1;"
               :disabled="editForm.apiKeys.length === 0"
             />
-            <n-button @click="openApiKeyModal" size="small">管理</n-button>
+            <n-button size="small" :disabled="!activeKeyUuidForCopy || copyingApiKey"
+              :title="activeKeyUuidForCopy ? '复制所选 API Key 的明文到剪贴板' : '请先选择一条已保存的 API Key'"
+              @click="copyActiveApiKey">
+              <template #icon>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              </template>
+              {{ copyingApiKey ? '复制中…' : '复制' }}
+            </n-button>
+            <n-button @click="openApiKeyModal" size="small">
+              <template #icon>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="7.5" cy="15.5" r="5.5" />
+                  <path d="m21 2-9.6 9.6" />
+                  <path d="m15.5 7.5 3 3L22 7l-3-3" />
+                </svg>
+              </template>
+              管理
+            </n-button>
           </div>
         </div>
 
@@ -1209,9 +1380,46 @@ function removeModel(index: number) {
         <div v-for="(entry, index) in editingApiKeys" :key="index"
           style="display: flex; gap: 8px; align-items: center;">
           <n-input v-model:value="entry.name" placeholder="名称" style="flex: 0 0 120px;" />
-          <n-input v-model:value="entry.apiKey" type="password"
+          <n-input v-model:value="entry.apiKey"
+            :type="isRowRevealable(entry) && isRowRevealed(index) ? 'text' : 'password'"
             :placeholder="entry.masked ? `已保存：${entry.masked}（留空不修改）` : 'API Key'"
             style="flex: 1;" />
+          <template v-if="isRowRevealable(entry)">
+            <n-button size="small" quaternary
+              :class="['api-key-row-btn', { 'api-key-row-btn--active': isRowRevealed(index) }]"
+              :disabled="!hasPlaintext(entry)"
+              :title="hasPlaintext(entry) ? (isRowRevealed(index) ? '隐藏明文' : '显示明文') : '输入 API Key 后可显示'"
+              @click="toggleRowReveal(index)" style="flex-shrink: 0;">
+              <template #icon>
+                <svg v-if="isRowRevealed(index)" width="13" height="13" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                  aria-hidden="true">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                </svg>
+                <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </template>
+              {{ isRowRevealed(index) ? '隐藏' : '显示' }}
+            </n-button>
+          </template>
+          <template v-else>
+            <n-button size="small" quaternary class="api-key-row-btn" :disabled="copyingApiKeyRows.has(index)"
+              title="复制已保存的 API Key 明文到剪贴板"
+              @click="copyApiKeyRow(index)" style="flex-shrink: 0;">
+              <template #icon>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              </template>
+              {{ copyingApiKeyRows.has(index) ? '复制中…' : '复制' }}
+            </n-button>
+          </template>
           <n-button size="small" quaternary type="error" @click="removeApiKeyEntry(index)"
             style="flex-shrink: 0;">删除</n-button>
         </div>
@@ -1682,6 +1890,33 @@ function removeModel(index: number) {
 /* 未改名的正常态：仅陈述事实，不需要强调 */
 .provider-key-preview--ok {
   border-left-color: $success;
+}
+
+/* ── API Key 管理模态框的行内操作 ── */
+
+/* 复制 / 显示按钮。
+   naive-ui 把 --n-text-color 作为内联样式写在按钮上，优先级高于 scoped class 里的同名变量覆盖，
+   而主题里那个值是给深色实心按钮配的浅色前景（#f5f3ee）—— quaternary 只把背景改透明、前景仍用它，
+   落在白色卡片上等于隐形。所以这里显式给出 border / background / color，绕开 naive 变量链
+   （与 Preferences.vue 的 .key-action-btn 同一处理）。 */
+.api-key-row-btn {
+  border: 1px solid $border;
+  background: $bg;
+  color: $text-body !important;
+  transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+
+  &:hover:not(.n-button--disabled) {
+    border-color: $accent;
+    background: $accent-mid;
+    color: $accent !important;
+  }
+}
+
+/* 明文已展开：按钮转强调色，提示「再点一次就是隐藏」。 */
+.api-key-row-btn--active {
+  border-color: $accent;
+  background: $accent-light;
+  color: $accent !important;
 }
 
 /* ── 预设供应商列表 ── */
