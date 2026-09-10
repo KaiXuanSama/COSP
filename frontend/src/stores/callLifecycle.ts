@@ -40,6 +40,64 @@ export interface CallToast {
 
 }
 
+/** 终态：完成 / 失败 / 客户端断连 / 主动取消，均需安排 Toast 淡出移除。 */
+export function isTerminalPhase(phase: CallPhase): boolean {
+  return phase === 'COMPLETED' || phase === 'FAILED' || phase === 'CANCELED'
+    || phase === 'ABORTED'
+}
+
+/**
+ * 把一个生命周期事件归并进已有的 Toast。
+ *
+ * <p>抽成模块级纯函数而非留在 store 内部：它有几条不显而易见的字段级规则
+ * （终态不被迟到的 CHUNK 覆盖、stream 是不变量、chunkCount 只增不减），
+ * 那些规则靠读代码保不住，靠单测才行。
+ *
+ * @param toasts 当前 Toast 列表（就地修改元素，需插入时返回新数组）
+ * @param event 新到的事件
+ * @returns 归并后的列表（可能与入参同一引用）
+ */
+export function mergeLifecycleEvent(toasts: CallToast[], event: CallLifecycleEvent): CallToast[] {
+  const existing = toasts.find((t) => t.requestId === event.requestId)
+  if (!existing) {
+    return [
+      ...toasts,
+      {
+        requestId: event.requestId,
+        phase: event.phase,
+        model: event.model,
+        stream: event.stream,
+        chunkCount: event.chunkCount,
+        attempt: event.attempt,
+        leaving: false,
+      },
+    ]
+  }
+
+  // 终态事件不应被迟到的中间事件覆盖（节流下终态可能先于最后一个 CHUNK 到达）。
+  if (isTerminalPhase(existing.phase) && event.phase === 'CHUNK') {
+    return toasts
+  }
+  existing.phase = event.phase
+  existing.model = event.model
+  // stream 刻意不更新：它是**整轮不变量**，首帧确定后不该再变。
+  //
+  // 后端两个控制器当前都自洽（非流式各帧传请求体的 stream，流式各帧传字面 true），
+  // 所以无条件覆盖眼下也不会出错。但这个字段是「静默重试菜单项是否显示」的唯一判据
+  // （CallToastStack 的 v-if="menuTarget.stream"），一旦某个阶段漏传或传错，
+  // 菜单项会在调用途中凭空出现或消失 —— 那种缺陷只在特定时序下复现，很难查。
+  //
+  // 与下面 chunkCount / attempt 的保护是同一个道理：能表达成不变量的就不要留成可变量。
+  if (event.chunkCount > existing.chunkCount) {
+    existing.chunkCount = event.chunkCount
+  }
+  // RETRYING 携带的重试次数需同步；其余阶段 attempt 为 0，不覆盖已有值。
+  if (event.attempt > 0) {
+    existing.attempt = event.attempt
+  }
+  return toasts
+}
+
 /** SSE 端点路径（相对 http.baseURL）。走认证，token 由 createAuthEventSource 以 Bearer header 附带。 */
 const CALLS_STREAM_PATH = '/calls/stream'
 /** 终态（COMPLETED/FAILED）Toast 在淡出前的停留时长（毫秒）。 */
@@ -86,37 +144,7 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
    * - 终态（COMPLETED/FAILED/CANCELED）：安排延迟淡出移除。
    */
   function applyEvent(event: CallLifecycleEvent) {
-    const existing = toasts.value.find((t) => t.requestId === event.requestId)
-
-    if (existing) {
-      // 终态事件不应被迟到的中间事件覆盖（节流下终态可能先于最后一个 CHUNK 到达）。
-      if (isTerminalPhase(existing.phase) && event.phase === 'CHUNK') {
-        return
-      }
-      existing.phase = event.phase
-      existing.model = event.model
-      existing.stream = event.stream
-      if (event.chunkCount > existing.chunkCount) {
-        existing.chunkCount = event.chunkCount
-      }
-      // RETRYING 携带的重试次数需同步；其余阶段 attempt 为 0，不覆盖已有值。
-      if (event.attempt > 0) {
-        existing.attempt = event.attempt
-      }
-    } else {
-      toasts.value = [
-        ...toasts.value,
-        {
-          requestId: event.requestId,
-          phase: event.phase,
-          model: event.model,
-          stream: event.stream,
-          chunkCount: event.chunkCount,
-          attempt: event.attempt,
-          leaving: false,
-        },
-      ]
-    }
+    toasts.value = mergeLifecycleEvent(toasts.value, event)
 
     if (isTerminalPhase(event.phase)) {
       scheduleRemoval(event.requestId)
@@ -147,12 +175,6 @@ export const useCallLifecycleStore = defineStore('callLifecycle', () => {
     } catch {
       // 重试请求失败（如调用已自然结束），静默忽略。
     }
-  }
-
-  /** 终态：完成 / 失败 / 客户端断连 / 主动取消，均需安排 Toast 淡出移除。 */
-  function isTerminalPhase(phase: CallPhase): boolean {
-    return phase === 'COMPLETED' || phase === 'FAILED' || phase === 'CANCELED'
-      || phase === 'ABORTED'
   }
 
   /** 为终态 Toast 安排延迟淡出与移除；重复终态事件只保留最初的定时器。 */
