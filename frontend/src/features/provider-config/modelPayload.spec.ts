@@ -71,10 +71,10 @@ describe('buildEditableModel', () => {
     // 新建模型的默认是 medium + 兜底、与 4K + 兜底。
     expect(parseReasoningEffortConfig(model.reasoningEffort))
       .toEqual({ effort: 'Medium', mode: 'fallback' })
-    // 4K 而非 128K：V9 迁移把存量 128K 一律下调为 4K，默认值必须跟上——
-    // 否则新建模型会拿到一个迁移刚刚判定为「过大」的值。
+    // 64K 对齐 Claude CLI 的默认请求上限，与后端
+    // `MaxOutputTokensSetting.DEFAULT_MAX_OUTPUT_TOKENS` 必须一致。
     expect(parseMaxOutputConfig(model.maxOutputTokens))
-      .toEqual({ maxOutputTokens: 4000, mode: 'fallback' })
+      .toEqual({ maxOutputTokens: 64000, mode: 'fallback' })
     // 新建行的思考方式与预算与列默认值逐一对应：adaptive + 兜底 + 哨兵。
     // 预算展示成 -1 而非空串：那就是提交后存进库里的值，两边应当一致。
     expect(parseAnthropicThinkingConfig(model.thinkingMode, model.thinkingBudgetTokens))
@@ -136,10 +136,10 @@ describe('toEditableModel', () => {
       thinkingBudgetTokens: undefined as unknown as number,
     })
     expect(model.contextSize).toBe('0')
-    // 最大输出与 contextSize 不同，缺省取 4K 而非 0：
+    // 最大输出与 contextSize 不同，缺省取默认上限而非 0：
     // 它的列约束要求 json_valid，“未配置”无法用 0 表达——那个语义已由模式承担。
     expect(parseMaxOutputConfig(model.maxOutputTokens))
-      .toEqual({ maxOutputTokens: 4000, mode: 'fallback' })
+      .toEqual({ maxOutputTokens: 64000, mode: 'fallback' })
     expect(parseReasoningEffortConfig(model.reasoningEffort))
       .toEqual({ effort: 'Medium', mode: 'fallback' })
   })
@@ -172,12 +172,12 @@ describe('toModelFormParams', () => {
     expect(params['models[0].capsVision']).toBe('')
   })
 
-  it('空 contextSize 回退 0，空 maxOutputTokens 回退 4K 兜底 JSON', () => {
+  it('空 contextSize 回退 0，空 maxOutputTokens 回退默认兜底 JSON', () => {
     const params = toModelFormParams([model({ contextSize: '', maxOutputTokens: '' })])
     expect(params['models[0].contextSize']).toBe('0')
     // 下发的必须是 JSON 而非裸整数：列上有 json_valid 约束。
     expect(params['models[0].maxOutputTokens'])
-      .toBe('{"max_output_tokens":4000,"overwrite_mode":"fallback"}')
+      .toBe('{"max_output_tokens":64000,"overwrite_mode":"fallback"}')
   })
 
   it('reasoningEffort 为空时不下发该键，交由后端取默认值', () => {

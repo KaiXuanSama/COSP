@@ -65,12 +65,12 @@ export const MAX_OUTPUT_OVERWRITE_MODE_HINTS = buildOverwriteModeHints('上限')
 export const DEFAULT_MAX_OUTPUT_OVERWRITE_MODE: MaxOutputOverwriteMode = 'fallback'
 
 /**
- * 默认上限取 4000。
+ * 默认上限取 64000，对齐 Claude CLI 的默认请求上限。
  *
- * 与 V9 迁移把存量 128K 一律下调为 4K 保持一致 —— 若默认值仍留在 128000，
- * 新建模型会拿到一个迁移刚刚判定为「过大」的值。
+ * 必须与后端 `MaxOutputTokensSetting.DEFAULT_MAX_OUTPUT_TOKENS` 保持一致：
+ * 两侧不一致时新建模型会出现「界面显示一个值、存进去又是另一个」的错位。
  */
-export const DEFAULT_MAX_OUTPUT_TOKENS = 4000
+export const DEFAULT_MAX_OUTPUT_TOKENS = 64000
 
 /**
  * 可选预设。

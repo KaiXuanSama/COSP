@@ -94,7 +94,7 @@ describe('serializeMaxOutputConfig', () => {
 
   it('非法上限在序列化时也收敛为默认值', () => {
     expect(serializeMaxOutputConfig({ maxOutputTokens: 0, mode: 'override' }))
-      .toBe('{"max_output_tokens":4000,"overwrite_mode":"override"}')
+      .toBe('{"max_output_tokens":64000,"overwrite_mode":"override"}')
   })
 })
 

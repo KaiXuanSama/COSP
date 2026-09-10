@@ -64,12 +64,16 @@ public record MaxOutputTokensSetting(int maxOutputTokens, Mode mode) {
     public static final String TOKENS_KEY = "max_output_tokens";
 
     /**
-     * 默认上限取 4000。
+     * 默认上限取 64000，对齐 Claude CLI 的默认请求上限。
      *
-     * <p>与 V9 迁移把存量 128K 一律下调为 4K 保持一致 —— 若默认值仍留在 128000，
-     * 新建模型会拿到一个迁移刚刚判定为「过大」的值。
+     * <p>曾经取 4000，理由是「与 V9 迁移把存量 128K 下调为 4K 保持一致」。那个类比不成立：
+     * V9 的下调处理的是「存量值过大」这个历史问题，而新建模型的默认值回答的是「一个合理的
+     * 输出预算是多少」—— 4K 对当下的模型偏小，会让回复在末尾被截断。
+     *
+     * <p><strong>不要因此去改 V9 迁移里的 4000 字面量</strong>：那是已发生的历史，
+     * 已升级过的库不会重放，改了只会让新库与旧库产生不一致。
      */
-    private static final int DEFAULT_MAX_OUTPUT_TOKENS = 4000;
+    private static final int DEFAULT_MAX_OUTPUT_TOKENS = 64000;
 
     private static final Mode DEFAULT_MODE = Mode.FALLBACK;
 

@@ -55,18 +55,23 @@ class MaxOutputTokensSettingTests {
                     .isEqualTo(512000);
         }
 
-        /** 0 在旧形态里表示「未配置」，到 V9 该语义由模式承担，归一化成默认值。 */
+        /**
+         * 0 在旧形态里表示「未配置」，到 V9 该语义由模式承担，归一化成默认值。
+         *
+         * <p>下面几条用例里的 64000 都是「当前默认上限」，不是任意样本 ——
+         * 改动 {@code DEFAULT_MAX_OUTPUT_TOKENS} 时这几处跟着改。
+         */
         @Test
         void zeroAndNegativeFallBackToDefaultTokens() {
-            assertThat(MaxOutputTokensSetting.parse("0", objectMapper).maxOutputTokens()).isEqualTo(4000);
-            assertThat(MaxOutputTokensSetting.parse("-1", objectMapper).maxOutputTokens()).isEqualTo(4000);
+            assertThat(MaxOutputTokensSetting.parse("0", objectMapper).maxOutputTokens()).isEqualTo(64000);
+            assertThat(MaxOutputTokensSetting.parse("-1", objectMapper).maxOutputTokens()).isEqualTo(64000);
         }
 
         @Test
         void blankAndNullFallBackToDefaults() {
             for (String raw : new String[] {null, "", "   "}) {
                 MaxOutputTokensSetting setting = MaxOutputTokensSetting.parse(raw, objectMapper);
-                assertThat(setting.maxOutputTokens()).isEqualTo(4000);
+                assertThat(setting.maxOutputTokens()).isEqualTo(64000);
                 assertThat(setting.mode()).isEqualTo(MaxOutputTokensSetting.Mode.FALLBACK);
             }
         }
@@ -75,9 +80,9 @@ class MaxOutputTokensSettingTests {
         @Test
         void malformedInputFallsBackToDefaultsInsteadOfThrowing() {
             assertThat(MaxOutputTokensSetting.parse("{\"max_output_tokens\":", objectMapper).maxOutputTokens())
-                    .isEqualTo(4000);
+                    .isEqualTo(64000);
             assertThat(MaxOutputTokensSetting.parse("not-a-number", objectMapper).maxOutputTokens())
-                    .isEqualTo(4000);
+                    .isEqualTo(64000);
         }
 
         @Test
@@ -94,7 +99,7 @@ class MaxOutputTokensSettingTests {
         void nullObjectMapperStillHandlesLegacyFormat() {
             assertThat(MaxOutputTokensSetting.parse("8000", null).maxOutputTokens()).isEqualTo(8000);
             assertThat(MaxOutputTokensSetting.parse("{\"max_output_tokens\":8000}", null).maxOutputTokens())
-                    .isEqualTo(4000);
+                    .isEqualTo(64000);
         }
     }
 

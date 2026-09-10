@@ -163,7 +163,7 @@ class SchemaMigrationRunnerTests {
         assertThat(reasoningEffortOf(jdbcTemplate, "m"))
                 .isEqualTo("{\"reasoning_effort\":\"medium\",\"overwrite_mode\":\"fallback\"}");
         assertThat(maxOutputOf(jdbcTemplate, "m"))
-                .isEqualTo("{\"max_output_tokens\":4000,\"overwrite_mode\":\"fallback\"}");
+                .isEqualTo("{\"max_output_tokens\":64000,\"overwrite_mode\":\"fallback\"}");
         // 与升级库同口径：新库建出来的供应商也必须默认直连。
         assertThat(useProxyOf(jdbcTemplate, "p")).isZero();
     }

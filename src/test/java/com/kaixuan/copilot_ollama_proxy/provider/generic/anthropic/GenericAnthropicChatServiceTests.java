@@ -249,14 +249,14 @@ class GenericAnthropicChatServiceTests {
      * {@code max_tokens} 必填 —— 下游没带时要补，否则上游 400。
      *
      * <p>这个路由的模型列表是空的，因此走「模型未配置 → {@code defaults()}」那条分支，
-     * 补的是 4K。钉具体值而非只判 {@code > 0}：默认值变了应当有用例提醒。
+     * 补的是当前默认上限 64K。钉具体值而非只判 {@code > 0}：默认值变了应当有用例提醒。
      */
     @Test
     void maxTokensIsAlwaysPresent() throws Exception {
         realService().exposeMessages(newRequest(), routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
 
         assertThat(objectMapper.readTree(capturedBody.get()).path("max_tokens").asInt())
-                .isEqualTo(4000);
+                .isEqualTo(64000);
     }
 
     /**
@@ -394,8 +394,8 @@ class GenericAnthropicChatServiceTests {
 
         realService().exposeMessages(newRequest(), route).block(Duration.ofSeconds(10));
 
-        // 默认是 4K + 兜底，下游没带所以补默认值；关键是没有用那个 8000。
-        assertThat(objectMapper.readTree(capturedBody.get()).path("max_tokens").asInt()).isEqualTo(4000);
+        // 默认是 64K + 兜底，下游没带所以补默认值；关键是没有用那个 8000。
+        assertThat(objectMapper.readTree(capturedBody.get()).path("max_tokens").asInt()).isEqualTo(64000);
     }
 
     /**
