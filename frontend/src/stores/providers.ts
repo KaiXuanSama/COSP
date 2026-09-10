@@ -32,6 +32,8 @@ export interface Provider {
   providerKey: string
   displayName: string
   enabled: boolean
+  /** 该供应商的出站请求是否使用全局代理地址。 */
+  useProxy: boolean
   /** OpenAI 协议的请求地址。 */
   baseUrl: string | null
   /**
@@ -83,6 +85,18 @@ function appendProtocolFields(formData: URLSearchParams, protocols?: ProviderPro
   formData.append('anthropicBaseUrl', protocols.anthropicBaseUrl)
 }
 
+/**
+ * 把代理开关写进表单；未传时不发该字段。
+ *
+ * <p>与 `appendProtocolFields` 同一约定：后端把「字段未出现」视为保留原值。
+ * 因此只有调用方明确给出 true/false 才发 —— `undefined` 表示「这条路径不管代理」，
+ * 比如编辑抽屉只改模型时，不应顺手把用户已开的代理关掉。
+ */
+function appendUseProxyField(formData: URLSearchParams, useProxy?: boolean) {
+  if (useProxy === undefined) return
+  formData.append('useProxy', String(useProxy))
+}
+
 export interface GatewayAuthStatus {
   enabled: boolean
   maskedKey: string
@@ -104,6 +118,8 @@ export interface RuntimeConfigView {
   fakeVersion: string
   gatewayAuth: GatewayAuthStatus
   retryPolicy: RetryPolicyView
+  /** 出站代理地址，形如 host:port；空串表示未配置代理。 */
+  upstreamProxyAddress: string
 }
 
 export const useProviderStore = defineStore('providers', () => {
@@ -155,7 +171,7 @@ export const useProviderStore = defineStore('providers', () => {
     fakeVersion.value = version
   }
 
-  // 聚合读取全部运行时配置（伪造版本号 + 下游鉴权状态 + 重试策略），一次调用拿全部显示信息。
+  // 聚合读取全部运行时配置（伪造版本号 + 下游鉴权状态 + 重试策略 + 出站代理），一次调用拿全部显示信息。
   // 敏感值已在后端脱敏；明文 Key 仍只经 reveal / regenerate 按需获取。
   async function fetchRuntimeConfig(): Promise<RuntimeConfigView> {
     const res = await http.get('/runtime-config')
@@ -174,11 +190,19 @@ export const useProviderStore = defineStore('providers', () => {
         defaultValue: retry.defaultValue ?? 5,
         maxConfigurable: retry.maxConfigurable ?? 100,
       },
+      upstreamProxyAddress: typeof res.data.upstreamProxyAddress === 'string'
+        ? res.data.upstreamProxyAddress
+        : '',
     }
   }
 
   async function saveRetryMaxAttempts(maxAttempts: number) {
     await http.post('/retry-policy', null, { params: { maxAttempts } })
+  }
+
+  /** 专项写入出站代理地址；与其它运行时配置一样统一使用 query string。 */
+  async function saveProxyAddress(address: string) {
+    await http.post('/proxy-address', null, { params: { address } })
   }
 
   // ==================== 下游鉴权（网关 API Key）====================
@@ -207,7 +231,7 @@ export const useProviderStore = defineStore('providers', () => {
 
   async function addProvider(displayName: string, headerRulesJson: string,
                                    baseUrl: string, requestTransform: ProviderRequestTransformInput,
-                                   protocols?: ProviderProtocolInput) {
+                                   protocols?: ProviderProtocolInput, useProxy?: boolean) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
     formData.append('headerRulesJson', headerRulesJson)
@@ -216,6 +240,7 @@ export const useProviderStore = defineStore('providers', () => {
     formData.append('bodyPreviewJson', requestTransform.bodyPreviewJson)
     formData.append('bodyRulesJson', requestTransform.bodyRulesJson)
     appendProtocolFields(formData, protocols)
+    appendUseProxyField(formData, useProxy)
     const res = await http.post('/providers', formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
@@ -233,7 +258,7 @@ export const useProviderStore = defineStore('providers', () => {
   async function updateProvider(providerKey: string, displayName: string,
                                       headerRulesJson: string, baseUrl: string,
                                       requestTransform: ProviderRequestTransformInput,
-                                      protocols?: ProviderProtocolInput) {
+                                      protocols?: ProviderProtocolInput, useProxy?: boolean) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
     formData.append('headerRulesJson', headerRulesJson)
@@ -242,6 +267,7 @@ export const useProviderStore = defineStore('providers', () => {
     formData.append('bodyPreviewJson', requestTransform.bodyPreviewJson)
     formData.append('bodyRulesJson', requestTransform.bodyRulesJson)
     appendProtocolFields(formData, protocols)
+    appendUseProxyField(formData, useProxy)
     await http.put(`/providers/${providerKey}`, formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
@@ -249,5 +275,5 @@ export const useProviderStore = defineStore('providers', () => {
     await fetchAll()
   }
 
-  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchRuntimeConfig, saveRetryMaxAttempts, setGatewayAuthEnabled, revealGatewayApiKey, regenerateGatewayApiKey, addProvider, deleteProvider, updateProvider }
+  return { providers, loading, fakeVersion, fetchAll, toggleProvider, saveProviderConfig, pullProviderModels, saveFakeVersion, fetchRuntimeConfig, saveRetryMaxAttempts, saveProxyAddress, setGatewayAuthEnabled, revealGatewayApiKey, regenerateGatewayApiKey, addProvider, deleteProvider, updateProvider }
 })

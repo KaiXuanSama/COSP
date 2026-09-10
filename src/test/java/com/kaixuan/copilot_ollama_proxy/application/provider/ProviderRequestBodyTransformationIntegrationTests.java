@@ -183,7 +183,8 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 + "display_name TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0, "
                 + "base_url TEXT NOT NULL DEFAULT '', "
                 + "supported_protocols TEXT NOT NULL DEFAULT '[\"OPENAI\",\"ANTHROPIC\"]', "
-                + "anthropic_base_url TEXT NOT NULL DEFAULT '', updated_at TEXT)");
+                + "anthropic_base_url TEXT NOT NULL DEFAULT '', "
+                + "use_proxy INTEGER NOT NULL DEFAULT 0, updated_at TEXT)");
         jdbcTemplate.execute("CREATE TABLE provider_model ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, "
                 + "enabled INTEGER NOT NULL DEFAULT 0, context_size INTEGER NOT NULL DEFAULT 8192, "

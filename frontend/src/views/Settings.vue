@@ -334,6 +334,7 @@ const editingProviderKey = ref<string | null>(null)
 const providerBaseUrl = ref('')
 const providerAnthropicBaseUrl = ref('')
 const providerProtocols = ref<WireProtocol[]>([...DEFAULT_NEW_PROVIDER_PROTOCOLS])
+const providerUseProxy = ref(false)
 const showPresetModal = ref(false)
 
 /**
@@ -455,6 +456,7 @@ function clearProviderForm() {
   providerBaseUrl.value = ''
   providerAnthropicBaseUrl.value = ''
   providerProtocols.value = [...DEFAULT_NEW_PROVIDER_PROTOCOLS]
+  providerUseProxy.value = false
   mirroringAnthropicBaseUrl.value = false
   providerHeaders.value = []
   requestBodyEditorState.value = createProviderDefaultEditorState()
@@ -483,6 +485,7 @@ function resetProviderAdvanced() {
   providerBaseUrl.value = ''
   providerAnthropicBaseUrl.value = ''
   providerProtocols.value = [...DEFAULT_NEW_PROVIDER_PROTOCOLS]
+  providerUseProxy.value = false
   mirroringAnthropicBaseUrl.value = false
   editingProviderKey.value = null
 }
@@ -498,6 +501,7 @@ function openEditProviderModal(key: string) {
   providerBaseUrl.value = provider?.baseUrl || ''
   providerAnthropicBaseUrl.value = provider?.anthropicBaseUrl || ''
   providerProtocols.value = normalizeProtocols(provider?.supportedProtocols)
+  providerUseProxy.value = provider?.useProxy ?? false
   mirroringAnthropicBaseUrl.value = false
   if (provider) {
     try {
@@ -575,11 +579,14 @@ async function saveProvider() {
     const protocolPayload = buildProtocolPayload()
     if (editingProviderKey.value) {
       // 编辑模式
+      const oldKey = editingProviderKey.value
+      // 代理开关随保存一并提交，不再保存完再补一次专项请求 ——
+      // 那样两次写入不在同一个请求里，第二次失败会留下半完成状态。
       await providerStore.updateProvider(
-        editingProviderKey.value, name, headerRulesJson, baseUrl, requestTransform, protocolPayload,
+        oldKey, name, headerRulesJson, baseUrl, requestTransform, protocolPayload,
+        providerUseProxy.value,
       )
       // 更新前端元数据
-      const oldKey = editingProviderKey.value
       const newKey = toProviderKey(name)
       const metaUpdate = { displayName: name, apiUrlPlaceholder: baseUrl || 'https://api.example.com/v1' }
       if (newKey !== oldKey && providerMeta.value[oldKey]) {
@@ -592,9 +599,10 @@ async function saveProvider() {
       resetProviderAdvanced()
       message.success(`已修改供应商「${name}」`)
     } else {
-      // 新增模式
+      // 新增模式：代理开关与供应商同一次请求建立，不存在「建好了但开关没生效」的中间态。
       const res = await providerStore.addProvider(
         name, headerRulesJson, baseUrl, requestTransform, protocolPayload,
+        providerUseProxy.value,
       )
       providerMeta.value[res.providerKey] = {
         displayName: name,
@@ -1009,8 +1017,14 @@ function removeModel(index: number) {
 
       <template #footer>
         <div class="provider-modal-footer">
-          <n-button @click="showProviderModal = false; resetProviderAdvanced()">取消</n-button>
-          <n-button type="primary" @click="saveProvider">{{ editingProviderKey ? '应用' : '添加' }}</n-button>
+          <!-- 两种模式都显示：新增时也得能当场定代理，否则只能先存再进来改一次。 -->
+          <n-checkbox v-model:checked="providerUseProxy" class="provider-proxy-checkbox">
+            启用代理
+          </n-checkbox>
+          <div class="provider-modal-footer-actions">
+            <n-button @click="showProviderModal = false; resetProviderAdvanced()">取消</n-button>
+            <n-button type="primary" @click="saveProvider">{{ editingProviderKey ? '应用' : '添加' }}</n-button>
+          </div>
         </div>
       </template>
     </n-modal>
@@ -1560,8 +1574,24 @@ function removeModel(index: number) {
 
 .provider-modal-footer {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
   gap: $space-sm;
+}
+
+.provider-proxy-checkbox {
+  margin-right: auto;
+}
+
+/**
+ * 按钮靠右不得依赖左侧元素的 margin-right: auto。
+ *
+ * 曾经只有复选框那一个撑开器，而它带 v-if —— 新增模式下不渲染，按钮就滑到了左边。
+ * 自己声明 margin-left: auto 后，无论左侧有没有东西都靠右。
+ */
+.provider-modal-footer-actions {
+  display: flex;
+  gap: $space-sm;
+  margin-left: auto;
 }
 
 .provider-name-row {

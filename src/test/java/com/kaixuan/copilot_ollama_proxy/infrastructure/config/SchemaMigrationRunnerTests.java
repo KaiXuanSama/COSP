@@ -153,7 +153,7 @@ class SchemaMigrationRunnerTests {
         assertThat(indexExists(jdbcTemplate, "idx_api_call_usage_created")).isTrue();
         assertThat(columnNames(jdbcTemplate, "api_call_log")).contains("payload_trimmed");
         assertThat(columnNames(jdbcTemplate, "provider_config"))
-                .contains("supported_protocols", "anthropic_base_url");
+                .contains("supported_protocols", "anthropic_base_url", "use_proxy");
         assertThat(columnNames(jdbcTemplate, "provider_model")).contains("reasoning_effort_schema");
         // 新库的两个默认 JSON 须与迁移后的规范形态逐字一致，
         // 否则「全库同形态」只在升级库成立而新库不成立。
@@ -164,6 +164,8 @@ class SchemaMigrationRunnerTests {
                 .isEqualTo("{\"reasoning_effort\":\"medium\",\"overwrite_mode\":\"fallback\"}");
         assertThat(maxOutputOf(jdbcTemplate, "m"))
                 .isEqualTo("{\"max_output_tokens\":4000,\"overwrite_mode\":\"fallback\"}");
+        // 与升级库同口径：新库建出来的供应商也必须默认直连。
+        assertThat(useProxyOf(jdbcTemplate, "p")).isZero();
     }
 
     @Test
@@ -1104,6 +1106,87 @@ class SchemaMigrationRunnerTests {
                 .isInstanceOf(DataAccessException.class);
     }
 
+    // ==================== V11：供应商出站代理开关 ====================
+
+    /**
+     * V10 库升级到 V11 后新增 {@code use_proxy}，且存量供应商默认<strong>不</strong>走代理。
+     *
+     * <p>默认 0 是本迁移的核心断言：代理开关是需要用户显式选择的能力，默认开启会让升级瞬间
+     * 所有出站流量改道 —— 迁移不得改变运行时行为。
+     */
+    @Test
+    void v10DatabaseGainsUseProxyColumnDefaultingToDirect() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV9ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 10);
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, base_url) VALUES ('existing', 'https://a.test')");
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+        assertThat(columnNames(jdbcTemplate, "provider_config")).contains("use_proxy");
+        // ADD COLUMN ... NOT NULL DEFAULT 会把默认值应用到所有已有行，无需回填 UPDATE。
+        assertThat(useProxyOf(jdbcTemplate, "existing")).isZero();
+    }
+
+    /**
+     * {@code use_proxy} 只接受 0 与 1。
+     *
+     * <p>与 {@code enabled} 同一口径：布尔列在 SQLite 里没有原生类型，不加 CHECK 就能塞进
+     * 任意整数，读取侧只能靠「非 0 即真」去猜，而那会让 {@code 2} 这类脏数据静默生效。
+     */
+    @Test
+    void v11UseProxyColumnRejectsValuesOutsideZeroAndOne() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV9ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 10);
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "INSERT INTO provider_config (provider_key, base_url, use_proxy) "
+                        + "VALUES ('bad-proxy-flag', 'https://a.test', 2)"))
+                .isInstanceOf(DataAccessException.class);
+        // 两个合法值都必须放行。
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, base_url, use_proxy) "
+                + "VALUES ('proxied', 'https://a.test', 1)");
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, base_url, use_proxy) "
+                + "VALUES ('direct', 'https://b.test', 0)");
+        assertThat(useProxyOf(jdbcTemplate, "proxied")).isEqualTo(1);
+        assertThat(useProxyOf(jdbcTemplate, "direct")).isZero();
+    }
+
+    /**
+     * 重跑 V11 不会把用户打开的代理开关关回去。
+     *
+     * <p>{@code addColumnIfNotExists} 让 DDL 幂等，但真正要钉的是「没有回填 UPDATE」——
+     * 若迁移体里写了一条无条件的 {@code UPDATE ... SET use_proxy = 0}，第二次运行会把用户
+     * 打开的开关静默关掉，而这个缺陷只在跑两遍时显形。
+     */
+    @Test
+    void v11MigrationRerunPreservesUserEnabledProxy() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        createV88ProviderConfigTable(jdbcTemplate);
+        createV9ProviderModelTable(jdbcTemplate);
+        createV87RequestTransformTable(jdbcTemplate);
+        seedV86SchemaVersion(jdbcTemplate, 10);
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, base_url) VALUES ('configured', 'https://a.test')");
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        // 模拟用户在界面上打开代理开关。
+        jdbcTemplate.update("UPDATE provider_config SET use_proxy = 1 WHERE provider_key = 'configured'");
+
+        runner.run(null);
+
+        assertThat(useProxyOf(jdbcTemplate, "configured")).isEqualTo(1);
+    }
+
     // ==================== 跨版本升级只执行缺失的迁移 ====================
     //
     // 以下两个用例锁定同一个不变量：库版本落后于代码版本时，只能执行区间内缺失的迁移，
@@ -1615,6 +1698,13 @@ class SchemaMigrationRunnerTests {
                                 Integer.class, modelName);
         }
 
+        /** 读某个供应商的代理开关原始整数值，便于断言 0/1 而非布尔转换后的结果。 */
+        private int useProxyOf(JdbcTemplate jdbcTemplate, String providerKey) {
+                return jdbcTemplate.queryForObject(
+                                "SELECT use_proxy FROM provider_config WHERE provider_key = ?",
+                                Integer.class, providerKey);
+        }
+
         /** 插一行带指定最大输出值的模型，模型名即用例里的标签。 */
         private void seedMaxOutput(JdbcTemplate jdbcTemplate, String modelName, int rawMaxOutput) {
                 jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, max_output_tokens) "
@@ -1735,6 +1825,10 @@ class SchemaMigrationRunnerTests {
                         // 的歧义，列存在就说明迁移执行过。
                         assertThat(columnNames(jdbcTemplate, "provider_model"))
                                 .contains("thinking_mode", "thinking_budget_tokens");
+                }
+                if (version >= 11) {
+                        // 同为纯新增列，断言列名即可。
+                        assertThat(columnNames(jdbcTemplate, "provider_config")).contains("use_proxy");
                 }
         }
 }
