@@ -27,7 +27,7 @@ class OutboundProxyTargetProjectorTests {
 
     private static ProviderConfigRow provider(String key, String baseUrl, String anthropicBaseUrl, boolean useProxy) {
         return new ProviderConfigRow(1, key, key, true, baseUrl,
-                "[\"OPENAI\",\"ANTHROPIC\"]", anthropicBaseUrl, useProxy, "2026-09-09T00:00:00", List.of());
+                "[\"CHAT\",\"MESSAGES\"]", anthropicBaseUrl, useProxy, "2026-09-09T00:00:00", List.of());
     }
 
     private OutboundProxyDecider project(List<ProviderConfigRow> providers) {

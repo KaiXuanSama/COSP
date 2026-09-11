@@ -32,7 +32,7 @@ class RepositoryUpsertTests {
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, "
                 + "display_name TEXT NOT NULL DEFAULT '', "
                 + "enabled INTEGER NOT NULL DEFAULT 0, base_url TEXT NOT NULL DEFAULT '', "
-                + "supported_protocols TEXT NOT NULL DEFAULT '[\"OPENAI\",\"ANTHROPIC\"]' "
+                + "supported_protocols TEXT NOT NULL DEFAULT '[\"CHAT\",\"MESSAGES\"]' "
                 + "CHECK (json_valid(supported_protocols)), "
                 + "anthropic_base_url TEXT NOT NULL DEFAULT '', "
                 + "use_proxy INTEGER NOT NULL DEFAULT 0 CHECK (use_proxy IN (0, 1)), "
@@ -111,16 +111,16 @@ class RepositoryUpsertTests {
     @Test
     void protocolUpdateWritesOnlyTheFieldsThatWereProvided() {
         providerConfigRepository.saveProvider("mimo", true, "https://api.example");
-        providerConfigRepository.updateProviderProtocols("mimo", "[\"OPENAI\"]", "https://ant.example");
+        providerConfigRepository.updateProviderProtocols("mimo", "[\"CHAT\"]", "https://ant.example");
 
         providerConfigRepository.updateProviderProtocols("mimo", null, "https://ant2.example");
         ProviderConfigRow afterUrlOnly = providerConfigRepository.findByKey("mimo");
-        assertThat(afterUrlOnly.supportedProtocolsJson()).isEqualTo("[\"OPENAI\"]");
+        assertThat(afterUrlOnly.supportedProtocolsJson()).isEqualTo("[\"CHAT\"]");
         assertThat(afterUrlOnly.anthropicBaseUrl()).isEqualTo("https://ant2.example");
 
-        providerConfigRepository.updateProviderProtocols("mimo", "[\"OPENAI\",\"ANTHROPIC\"]", null);
+        providerConfigRepository.updateProviderProtocols("mimo", "[\"CHAT\",\"MESSAGES\"]", null);
         ProviderConfigRow afterProtocolsOnly = providerConfigRepository.findByKey("mimo");
-        assertThat(afterProtocolsOnly.supportedProtocolsJson()).isEqualTo("[\"OPENAI\",\"ANTHROPIC\"]");
+        assertThat(afterProtocolsOnly.supportedProtocolsJson()).isEqualTo("[\"CHAT\",\"MESSAGES\"]");
         assertThat(afterProtocolsOnly.anthropicBaseUrl()).isEqualTo("https://ant2.example");
     }
 
@@ -134,14 +134,14 @@ class RepositoryUpsertTests {
     @Test
     void normalConfigSaveDoesNotResetProtocolConfiguration() {
         providerConfigRepository.saveProvider("mimo", true, "https://api.example");
-        providerConfigRepository.updateProviderProtocols("mimo", "[\"ANTHROPIC\"]", "https://ant.example");
+        providerConfigRepository.updateProviderProtocols("mimo", "[\"MESSAGES\"]", "https://ant.example");
 
         providerConfigRepository.updateProviderConfig("mimo", "https://new.example");
         providerConfigRepository.updateProviderProtocols("mimo", null, null);
 
         ProviderConfigRow row = providerConfigRepository.findByKey("mimo");
         assertThat(row.baseUrl()).isEqualTo("https://new.example");
-        assertThat(row.supportedProtocolsJson()).isEqualTo("[\"ANTHROPIC\"]");
+        assertThat(row.supportedProtocolsJson()).isEqualTo("[\"MESSAGES\"]");
         assertThat(row.anthropicBaseUrl()).isEqualTo("https://ant.example");
     }
 

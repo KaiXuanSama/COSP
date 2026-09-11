@@ -635,7 +635,7 @@ public abstract class AbstractUpstreamChatService {
                 // 鉴权装配据此写 Authorization 并删掉 x-api-key（下游透传或翻译残留的噪音）。
                 providerRequestHeaderService.applyHeaders(
                     headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream,
-                    WireProtocol.OPENAI);
+                    WireProtocol.CHAT);
         }).filter((request, next) -> {
             capturedHeaders.clear();
             capturedHeaders.putAll(providerRequestHeaderService.createLogSnapshot(request.headers()));

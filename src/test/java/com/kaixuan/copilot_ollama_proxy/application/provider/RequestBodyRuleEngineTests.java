@@ -28,7 +28,7 @@ class RequestBodyRuleEngineTests {
      * 协议筛选由尾部一组专门的用例覆盖。
      */
     private RequestBodyRuleEngine.TransformResult transform(Map<String, Object> input, String bodyRulesJson) {
-        return engine.transform(input, bodyRulesJson, WireProtocol.OPENAI);
+        return engine.transform(input, bodyRulesJson, WireProtocol.CHAT);
     }
 
     @Test
@@ -165,12 +165,12 @@ class RequestBodyRuleEngineTests {
         RequestBodyRuleEngine.TransformResult result = transform(input, """
                 {"version":2,"groups":[
                   {"id":"second","name":"\u540e\u6267\u884c","order":1,"enabled":true,
-                   "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                   "protocols":["CHAT"],"templateKeys":["custom"],"previewBody":{},
                    "rules":[{"id":"r2","order":0,"field":"marker","array":false,"conditional":false,
                     "conditionMode":"all","conditions":[],
                     "operations":[{"type":"set_value","value":"last-wins"}]}]},
                   {"id":"first","name":"\u5148\u6267\u884c","order":0,"enabled":true,
-                   "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                   "protocols":["CHAT"],"templateKeys":["custom"],"previewBody":{},
                    "rules":[{"id":"r1","order":0,"field":"marker","array":false,"conditional":false,
                     "conditionMode":"all","conditions":[],
                     "operations":[{"type":"set_value","value":"first"}]}]}
@@ -189,7 +189,7 @@ class RequestBodyRuleEngineTests {
         RequestBodyRuleEngine.TransformResult result = transform(input, """
                 {"version":2,"groups":[
                   {"id":"off","name":"\u5df2\u7981\u7528","order":0,"enabled":false,
-                   "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                   "protocols":["CHAT"],"templateKeys":["custom"],"previewBody":{},
                    "rules":[{"id":"r1","order":0,"field":"marker","array":false,"conditional":false,
                     "conditionMode":"all","conditions":[],
                     "operations":[{"type":"set_value","value":"should-not-apply"}]}]}
@@ -219,21 +219,21 @@ class RequestBodyRuleEngineTests {
         String rules = """
                 {"version":2,"groups":[
                   {"id":"openai-only","name":"o","order":0,"enabled":true,
-                   "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                   "protocols":["CHAT"],"templateKeys":["custom"],"previewBody":{},
                    "rules":[{"id":"r1","order":0,"field":"marker","array":false,"conditional":false,
                     "conditionMode":"all","conditions":[],
                     "operations":[{"type":"set_value","value":"from-openai"}]}]},
                   {"id":"anthropic-only","name":"a","order":1,"enabled":true,
-                   "protocols":["ANTHROPIC"],"templateKeys":["custom"],"previewBody":{},
+                   "protocols":["MESSAGES"],"templateKeys":["custom"],"previewBody":{},
                    "rules":[{"id":"r2","order":0,"field":"marker","array":false,"conditional":false,
                     "conditionMode":"all","conditions":[],
                     "operations":[{"type":"set_value","value":"from-anthropic"}]}]}
                 ]}
                 """;
 
-        assertThat(engine.transform(input, rules, WireProtocol.OPENAI).output())
+        assertThat(engine.transform(input, rules, WireProtocol.CHAT).output())
                 .containsEntry("marker", "from-openai");
-        assertThat(engine.transform(input, rules, WireProtocol.ANTHROPIC).output())
+        assertThat(engine.transform(input, rules, WireProtocol.MESSAGES).output())
                 .containsEntry("marker", "from-anthropic");
     }
 
@@ -255,9 +255,9 @@ class RequestBodyRuleEngineTests {
                 ]}
                 """;
 
-        assertThat(engine.transform(input, rules, WireProtocol.OPENAI).output())
+        assertThat(engine.transform(input, rules, WireProtocol.CHAT).output())
                 .containsEntry("marker", "applied");
-        assertThat(engine.transform(input, rules, WireProtocol.ANTHROPIC).output())
+        assertThat(engine.transform(input, rules, WireProtocol.MESSAGES).output())
                 .containsEntry("marker", "applied");
     }
 
@@ -279,9 +279,9 @@ class RequestBodyRuleEngineTests {
                 ]}
                 """;
 
-        assertThat(engine.transform(input, rules, WireProtocol.OPENAI).output())
+        assertThat(engine.transform(input, rules, WireProtocol.CHAT).output())
                 .containsEntry("marker", "kept");
-        assertThat(engine.transform(input, rules, WireProtocol.ANTHROPIC).output())
+        assertThat(engine.transform(input, rules, WireProtocol.MESSAGES).output())
                 .containsEntry("marker", "kept");
     }
 
@@ -301,9 +301,9 @@ class RequestBodyRuleEngineTests {
                 ]}
                 """;
 
-        assertThat(engine.transform(input, rules, WireProtocol.OPENAI).output())
+        assertThat(engine.transform(input, rules, WireProtocol.CHAT).output())
                 .containsEntry("temperature", 0.9);
-        assertThat(engine.transform(input, rules, WireProtocol.ANTHROPIC).output())
+        assertThat(engine.transform(input, rules, WireProtocol.MESSAGES).output())
                 .containsEntry("temperature", 0.1);
     }
 

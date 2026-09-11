@@ -165,7 +165,7 @@ public class ProviderModelDiscoveryService {
      * 仍能覆盖它 —— 某些中转站要求特定版本号。
      */
     private void applyProtocolHeaders(HttpHeaders headers, WireProtocol protocol) {
-        if (protocol != WireProtocol.ANTHROPIC) {
+        if (protocol != WireProtocol.MESSAGES) {
             return;
         }
         if (!headers.containsKey(ANTHROPIC_VERSION_HEADER)) {
@@ -195,7 +195,7 @@ public class ProviderModelDiscoveryService {
             apiKey = apiKey == null ? "" : apiKey.trim();
             keyUuid = keyUuid == null ? "" : keyUuid.trim();
             modelPullPath = modelPullPath == null ? "" : modelPullPath.trim();
-            protocol = protocol == null ? WireProtocol.OPENAI : protocol;
+            protocol = protocol == null ? WireProtocol.CHAT : protocol;
         }
 
         /**
@@ -206,14 +206,14 @@ public class ProviderModelDiscoveryService {
          */
         public static WireProtocol parseProtocol(String raw) {
             if (raw == null || raw.isBlank()) {
-                return WireProtocol.OPENAI;
+                return WireProtocol.CHAT;
             }
             for (WireProtocol candidate : WireProtocol.values()) {
                 if (candidate.name().equalsIgnoreCase(raw.trim())) {
                     return candidate;
                 }
             }
-            return WireProtocol.OPENAI;
+            return WireProtocol.CHAT;
         }
     }
 

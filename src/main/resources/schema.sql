@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS provider_config (
     base_url         TEXT         NOT NULL DEFAULT '', -- OpenAI 协议的 API 基础 URL
     -- 该供应商支持的线路协议集合（JSON 字符串数组，元素取值同 WireProtocol 枚举名）。
     -- 空数组表示「一种都不支持」，是显式的非法配置：调度器会明确报错而非静默回退。
-    supported_protocols TEXT      NOT NULL DEFAULT '["OPENAI","ANTHROPIC"]' CHECK (json_valid(supported_protocols)),
+    supported_protocols TEXT      NOT NULL DEFAULT '["CHAT","MESSAGES"]' CHECK (json_valid(supported_protocols)),
     -- Anthropic 协议的独立 API 基础 URL；为空时回退到 base_url。
     -- 独立成列而非从 base_url 推导：中转站的 Anthropic 端点位置不可预测（有的在 /v1/messages，
     -- 有的在根路径），继续猜只会让「配了却调不通」这类问题无从排查。
@@ -155,8 +155,10 @@ CREATE TABLE IF NOT EXISTS api_call_log (
     provider_key    VARCHAR(30),                   -- 服务商标识，如 deepseek / mimo
     model_name      VARCHAR(100),                  -- 模型名称
     is_stream       INTEGER      NOT NULL DEFAULT 0 CHECK (is_stream IN (0, 1)), -- 是否流式（0=否，1=是）
-    downstream_protocol TEXT     NOT NULL DEFAULT 'OPENAI' CHECK (downstream_protocol IN ('OPENAI', 'ANTHROPIC')), -- 下游请求线路协议
-    upstream_protocol   TEXT     NOT NULL DEFAULT 'OPENAI' CHECK (upstream_protocol IN ('OPENAI', 'ANTHROPIC')), -- 实际上游线路协议
+    -- 上下游线路协议，取值同 WireProtocol 枚举名（按各自的 API 路径全称命名）。
+    -- 白名单含尚未实现的 RESPONSES：多一个合法值零成本，而重建这张日志表两次有实际风险。
+    downstream_protocol TEXT     NOT NULL DEFAULT 'CHAT' CHECK (downstream_protocol IN ('CHAT', 'RESPONSES', 'MESSAGES')), -- 下游请求线路协议
+    upstream_protocol   TEXT     NOT NULL DEFAULT 'CHAT' CHECK (upstream_protocol IN ('CHAT', 'RESPONSES', 'MESSAGES')), -- 实际上游线路协议
     status_code     INTEGER,                        -- HTTP 响应状态码
     request_headers TEXT,                           -- JSON 格式的请求头
     request_body    TEXT,                           -- JSON 格式的请求体

@@ -46,7 +46,7 @@ public class ProviderAdminService {
      * <strong>外部输入的字符串</strong>，用 {@code WireProtocol.valueOf} 会把非法值变成异常控制流，
      * 而这里要的是「集合包含判断 + 统一错误消息」。
      */
-    private static final Set<String> SUPPORTED_PROTOCOLS = Set.of("OPENAI", "ANTHROPIC");
+    private static final Set<String> SUPPORTED_PROTOCOLS = Set.of("CHAT", "MESSAGES");
 
     private final ProviderConfigRepository providerConfigRepository;
     private final ProviderApiKeyRepository providerApiKeyRepository;
@@ -328,7 +328,7 @@ public class ProviderAdminService {
      * 实际却两条线路都能跑」这种说不通的状态。显式的空数组仍如实返回空列表。
      */
     private List<String> parseProtocolsForView(String supportedProtocolsJson) {
-        List<String> fallback = List.of("OPENAI", "ANTHROPIC");
+        List<String> fallback = List.of("CHAT", "MESSAGES");
         if (supportedProtocolsJson == null || supportedProtocolsJson.isBlank()) {
             return fallback;
         }

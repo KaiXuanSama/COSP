@@ -129,7 +129,7 @@ class GenericAnthropicChatServiceTests {
         ResolvedProviderRoute route = new ResolvedProviderRoute(
                 new ProviderRuntimeConfiguration("anthro", "https://openai.invalid/v1", "test-key",
                         List.of(), "[]", "{\"version\":2,\"groups\":[]}",
-                        "[\"OPENAI\",\"ANTHROPIC\"]", baseUrlWithV1()),
+                        "[\"CHAT\",\"MESSAGES\"]", baseUrlWithV1()),
                 "claude-x", "[anthro] claude-x");
 
         realService().exposeMessages(newRequest(), route).block(Duration.ofSeconds(10));
@@ -143,7 +143,7 @@ class GenericAnthropicChatServiceTests {
         ResolvedProviderRoute route = new ResolvedProviderRoute(
                 new ProviderRuntimeConfiguration("anthro", baseUrlWithV1(), "test-key",
                         List.of(), "[]", "{\"version\":2,\"groups\":[]}",
-                        "[\"OPENAI\",\"ANTHROPIC\"]", baseUrlRoot()),
+                        "[\"CHAT\",\"MESSAGES\"]", baseUrlRoot()),
                 "claude-x", "[anthro] claude-x");
 
         realService().exposeMessages(newRequest(), route).block(Duration.ofSeconds(10));
@@ -166,7 +166,7 @@ class GenericAnthropicChatServiceTests {
      *
      * <p>本服务的出站协议恒为 Anthropic，因此发 {@code x-api-key} 并删掉
      * {@code Authorization} —— 后者在这条链路上是噪音，可能来自下游透传，
-     * 也可能来自 O2A 翻译路线。装配规则见
+     * 也可能来自 C2M 翻译路线。装配规则见
      * {@code ProviderRequestHeaderService.applyAuthenticationHeaders}；
      * 需要双头并存的中转站可用请求头规则把 {@code Authorization} 加回来，
      * 那条出口由 {@code ProviderRequestHeaderServiceTests} 覆盖。
@@ -405,7 +405,7 @@ class GenericAnthropicChatServiceTests {
      * 下游把 OpenAI 的字段发给了 Anthropic 端点，本属畸形请求。兜底档仍把它认作
      * 「下游已表态」而不注入自己的档位，随后那个字段被剥离 —— 净效果是这次不发深度。
      * 这比把它改写成 {@code output_config.effort}（替下游猜意图）或忽略表态直接覆写
-     * （兜底静默退化成覆写）都更保守。翻译线路不受影响：O2A 翻译器已经把档位
+     * （兜底静默退化成覆写）都更保守。翻译线路不受影响：C2M 翻译器已经把档位
      * 写进 {@code output_config.effort}，这一份只是供判定的兼容副本。
      *
      * <h2>思考方式不受这个字段影响</h2>
@@ -644,7 +644,7 @@ class GenericAnthropicChatServiceTests {
         String rules = """
                 {"version":2,"groups":[
                   {"id":"ant","name":"Anthropic","order":0,"enabled":true,
-                   "protocols":["ANTHROPIC"],"templateKeys":["custom"],"previewBody":{},
+                   "protocols":["MESSAGES"],"templateKeys":["custom"],"previewBody":{},
                    "rules":[{"id":"r1","order":0,"field":"system","array":false,"conditional":false,
                     "conditionMode":"all","conditions":[],
                     "operations":[{"type":"set_value","value":"被规则改写"}]}]}
@@ -664,7 +664,7 @@ class GenericAnthropicChatServiceTests {
         String rules = """
                 {"version":2,"groups":[
                   {"id":"oai","name":"OpenAI","order":0,"enabled":true,
-                   "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                   "protocols":["CHAT"],"templateKeys":["custom"],"previewBody":{},
                    "rules":[{"id":"r1","order":0,"field":"model","array":false,"conditional":false,
                     "conditionMode":"all","conditions":[],
                     "operations":[{"type":"set_value","value":"should-not-apply"}]}]}
@@ -691,7 +691,7 @@ class GenericAnthropicChatServiceTests {
         String rules = """
                 {"version":2,"groups":[
                   {"id":"ant","name":"Anthropic","order":0,"enabled":true,
-                   "protocols":["ANTHROPIC"],"templateKeys":["custom"],"previewBody":{},
+                   "protocols":["MESSAGES"],"templateKeys":["custom"],"previewBody":{},
                    "rules":[{"id":"r1","order":0,"field":"temperature","array":false,"conditional":false,
                     "conditionMode":"all","conditions":[],
                     "operations":[{"type":"set_value"}]}]}

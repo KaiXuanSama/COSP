@@ -141,7 +141,7 @@ public class ProviderRequestHeaderService {
      */
     private void applyAuthenticationHeaders(HttpHeaders headers, String apiKey, WireProtocol upstreamProtocol) {
         String resolvedKey = apiKey == null ? "" : apiKey;
-        if (upstreamProtocol == WireProtocol.ANTHROPIC) {
+        if (upstreamProtocol == WireProtocol.MESSAGES) {
             headers.set(ANTHROPIC_API_KEY_HEADER, resolvedKey);
             headers.remove(HttpHeaders.AUTHORIZATION);
             return;

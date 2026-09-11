@@ -601,7 +601,7 @@ class ReasoningEffortSettingTests {
             assertThat(body).containsOnlyKeys("model");
         }
 
-        /** 删除档要同时清掉原生字段与 O2A 留下的兼容副本。 */
+        /** 删除档要同时清掉原生字段与 C2M 留下的兼容副本。 */
         @Test
         void deleteRemovesBothEffortForms() {
             Map<String, Object> body = new LinkedHashMap<>();

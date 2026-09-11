@@ -37,9 +37,9 @@ import java.util.Map;
  * @see <a href="file:../../../../../../../../../docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md">
  *      响应侧协议翻译契约</a>
  */
-final class AnthropicToOpenAiStreamTranslator {
+final class MessagesToChatStreamTranslator {
 
-    private static final Logger log = LoggerFactory.getLogger(AnthropicToOpenAiStreamTranslator.class);
+    private static final Logger log = LoggerFactory.getLogger(MessagesToChatStreamTranslator.class);
 
     /** Chat Completions 里没有对等物的 hosted 工具块，显式跳过而非落到 default。 */
     private static final List<String> HOSTED_BLOCK_PREFIXES = List.of(
@@ -48,7 +48,7 @@ final class AnthropicToOpenAiStreamTranslator {
 
     private final ObjectMapper objectMapper;
 
-    AnthropicToOpenAiStreamTranslator(ObjectMapper objectMapper) {
+    MessagesToChatStreamTranslator(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
     }
 
@@ -59,7 +59,7 @@ final class AnthropicToOpenAiStreamTranslator {
      * @param state     本轮往返的状态，由调用方在重试重订阅时重建
      * @return 零到多个下游 chunk 的 JSON 字符串；解析失败返回空列表
      */
-    List<String> translateEvent(String eventData, A2OStreamState state) {
+    List<String> translateEvent(String eventData, M2CStreamState state) {
         if (eventData == null || eventData.isBlank()) {
             return List.of();
         }
@@ -69,7 +69,7 @@ final class AnthropicToOpenAiStreamTranslator {
         } catch (Exception exception) {
             // 单个事件解析失败不该中断整条流：上游可能夹了个我们没见过的形态，
             // 而已经发出的内容对下游仍然有效。记一条日志，跳过这个事件。
-            log.warn("A2O 翻译跳过无法解析的上游事件: {}", exception.getMessage());
+            log.warn("M2C 翻译跳过无法解析的上游事件: {}", exception.getMessage());
             return List.of();
         }
 
@@ -90,7 +90,7 @@ final class AnthropicToOpenAiStreamTranslator {
             // error 事件的处置在调用方（需要区分「SSE 头是否已发出」），这里只记录。
             case "error" -> onError(root);
             default -> {
-                log.debug("A2O 翻译忽略未知上游事件类型: {}", type);
+                log.debug("M2C 翻译忽略未知上游事件类型: {}", type);
                 yield List.of();
             }
         };
@@ -101,7 +101,7 @@ final class AnthropicToOpenAiStreamTranslator {
      *
      * <p>同时从这里取上游的 message id 与首批 usage（输入 token 与缓存明细都在这个事件里）。
      */
-    private List<String> onMessageStart(JsonNode root, A2OStreamState state) {
+    private List<String> onMessageStart(JsonNode root, M2CStreamState state) {
         JsonNode message = root.get("message");
         if (message != null) {
             state.adoptUpstreamId(text(message, "id"));
@@ -122,7 +122,7 @@ final class AnthropicToOpenAiStreamTranslator {
      * <p>text 与 thinking 的块声明对 Chat 协议毫无意义（它没有块概念），
      * 产出空 delta 帧只是噪声。参考实现 new-api 因为 fall-through 会发出这种噪声帧。
      */
-    private List<String> onContentBlockStart(JsonNode root, A2OStreamState state) {
+    private List<String> onContentBlockStart(JsonNode root, M2CStreamState state) {
         int blockIndex = intValue(root, "index", -1);
         JsonNode block = root.get("content_block");
         String blockType = text(block, "type");
@@ -134,11 +134,11 @@ final class AnthropicToOpenAiStreamTranslator {
         if ("redacted_thinking".equals(blockType)) {
             // 内容已被上游加密，没有可展示的明文。记一条 warning：
             // 用户看到内容凭空变少时，日志里要有痕迹（契约第 5.2 节）。
-            log.warn("A2O 翻译跳过 redacted_thinking 块（内容已加密，无明文可传递），index={}", blockIndex);
+            log.warn("M2C 翻译跳过 redacted_thinking 块（内容已加密，无明文可传递），index={}", blockIndex);
             return List.of();
         }
         if (isHostedBlock(blockType)) {
-            log.debug("A2O 翻译跳过 hosted 工具块 {}（Chat 协议无对等物），index={}", blockType, blockIndex);
+            log.debug("M2C 翻译跳过 hosted 工具块 {}（Chat 协议无对等物），index={}", blockType, blockIndex);
             return List.of();
         }
         if (!"tool_use".equals(blockType)) {
@@ -155,7 +155,7 @@ final class AnthropicToOpenAiStreamTranslator {
     /**
      * {@code content_block_delta} —— 内容的主要载体。
      */
-    private List<String> onContentBlockDelta(JsonNode root, A2OStreamState state) {
+    private List<String> onContentBlockDelta(JsonNode root, M2CStreamState state) {
         JsonNode delta = root.get("delta");
         String deltaType = text(delta, "type");
         if (deltaType == null) {
@@ -171,17 +171,17 @@ final class AnthropicToOpenAiStreamTranslator {
             // 吸收但不产帧，也不注入替代内容 —— 参考实现把它映射成一个换行符塞进
             // 思考流，那个换行会成为下游看到的真实内容，是凭空多出来的（契约第 5.1 节）。
             case "signature_delta" -> {
-                log.debug("A2O 翻译丢弃 signature_delta（Chat 协议无承载位置，跨协议无法回放）");
+                log.debug("M2C 翻译丢弃 signature_delta（Chat 协议无承载位置，跨协议无法回放）");
                 yield List.of();
             }
             default -> {
-                log.debug("A2O 翻译忽略未知 delta 类型: {}", deltaType);
+                log.debug("M2C 翻译忽略未知 delta 类型: {}", deltaType);
                 yield List.of();
             }
         };
     }
 
-    private List<String> emitText(JsonNode delta, A2OStreamState state) {
+    private List<String> emitText(JsonNode delta, M2CStreamState state) {
         String value = text(delta, "text");
         if (value == null || value.isEmpty()) {
             return List.of();
@@ -190,7 +190,7 @@ final class AnthropicToOpenAiStreamTranslator {
         return List.of(chunk(state, OpenAiResponseShapes.contentDelta(value), null));
     }
 
-    private List<String> emitThinking(JsonNode delta, A2OStreamState state) {
+    private List<String> emitThinking(JsonNode delta, M2CStreamState state) {
         String value = text(delta, "thinking");
         if (value == null || value.isEmpty()) {
             return List.of();
@@ -207,7 +207,7 @@ final class AnthropicToOpenAiStreamTranslator {
      * <strong>不能用 block index 本身</strong>——那是另一个索引域（契约第 4 节）。
      * 查不到就丢弃并记日志，不猜一个序号：猜错会让参数拼到别的工具上。
      */
-    private List<String> emitToolArguments(JsonNode delta, int blockIndex, A2OStreamState state) {
+    private List<String> emitToolArguments(JsonNode delta, int blockIndex, M2CStreamState state) {
         String partialJson = text(delta, "partial_json");
         if (partialJson == null || partialJson.isEmpty()) {
             return List.of();
@@ -216,7 +216,7 @@ final class AnthropicToOpenAiStreamTranslator {
         if (toolIndex == null) {
             String blockType = state.blockType(blockIndex);
             if (blockType == null || !isHostedBlock(blockType)) {
-                log.warn("A2O 翻译丢弃 input_json_delta：block index {} 没有对应的工具声明（blockType={}）",
+                log.warn("M2C 翻译丢弃 input_json_delta：block index {} 没有对应的工具声明（blockType={}）",
                         blockIndex, blockType);
             }
             return List.of();
@@ -230,7 +230,7 @@ final class AnthropicToOpenAiStreamTranslator {
      * <p>{@code stop_reason} 为 null 时仍产出一帧（不带 finish_reason）：
      * Anthropic 允许 {@code message_delta} 只携带 usage。
      */
-    private List<String> onMessageDelta(JsonNode root, A2OStreamState state) {
+    private List<String> onMessageDelta(JsonNode root, M2CStreamState state) {
         state.usage().merge(root.get("usage"));
 
         JsonNode delta = root.get("delta");
@@ -276,13 +276,13 @@ final class AnthropicToOpenAiStreamTranslator {
      * @param mapped {@link StopReasonMapper} 对上游 stop_reason 的映射结果，非 null
      * @return 本轮见过工具调用时返回 {@code tool_calls}，否则返回 {@code mapped}
      */
-    private static String resolveFinishReason(A2OStreamState state, String mapped) {
+    private static String resolveFinishReason(M2CStreamState state, String mapped) {
         return state.sawToolCall() ? "tool_calls" : mapped;
     }
 
     private List<String> onError(JsonNode root) {
         JsonNode error = root.get("error");
-        log.warn("A2O 翻译收到上游流内错误事件: type={}, message={}",
+        log.warn("M2C 翻译收到上游流内错误事件: type={}, message={}",
                 text(error, "type"), text(error, "message"));
         // 流内错误的处置需要知道 SSE 头是否已发出，那是调用方的信息。
         // 这里只记录，不擅自产出帧或吞掉错误。
@@ -306,7 +306,7 @@ final class AnthropicToOpenAiStreamTranslator {
      * （{@code EmptyUpstreamResponseException}），走到这里说明重试已经耗尽或本轮有内容，
      * 收尾的职责只是让下游拿到一个结构完整的流。
      */
-    List<String> finalizeStream(A2OStreamState state) {
+    List<String> finalizeStream(M2CStreamState state) {
         List<String> frames = new ArrayList<>(3);
 
         if (state.claimFinalize()) {
@@ -315,11 +315,11 @@ final class AnthropicToOpenAiStreamTranslator {
                 // 与正常路径共用 resolveFinishReason：上游没给终止原因，本轮的默认判定是
                 // 「截断」（length），工具调用优先的规则由同一个方法施加。
                 finishReason = resolveFinishReason(state, "length");
-                log.warn("A2O 翻译收尾：上游未发送 message_delta 终止原因，按截断处理（finish_reason={}）",
+                log.warn("M2C 翻译收尾：上游未发送 message_delta 终止原因，按截断处理（finish_reason={}）",
                         finishReason);
             } else {
                 finishReason = "stop";
-                log.warn("A2O 翻译收尾：上游未产出任何实质内容，发出空的终止帧");
+                log.warn("M2C 翻译收尾：上游未产出任何实质内容，发出空的终止帧");
             }
             frames.add(finishChunk(state, finishReason));
         }
@@ -335,7 +335,7 @@ final class AnthropicToOpenAiStreamTranslator {
      * <p>它可能来自 {@code message_delta}（正常路径），也可能来自
      * {@link #finalizeStream} 的截断兜底，两处共用同一形态。
      */
-    private String finishChunk(A2OStreamState state, String finishReason) {
+    private String finishChunk(M2CStreamState state, String finishReason) {
         return chunk(state, OpenAiResponseShapes.finishDelta(), finishReason);
     }
 
@@ -362,7 +362,7 @@ final class AnthropicToOpenAiStreamTranslator {
      *
      * <p>只在下游明确要求（{@code stream_options.include_usage}）且真的有 usage 时发出。
      */
-    private List<String> usageFrame(A2OStreamState state) {
+    private List<String> usageFrame(M2CStreamState state) {
         if (!state.includeUsage() || !state.usage().hasUsage()) {
             return List.of();
         }
@@ -372,7 +372,7 @@ final class AnthropicToOpenAiStreamTranslator {
         return List.of(serialize(chunk));
     }
 
-    private String chunk(A2OStreamState state, Map<String, Object> delta, String finishReason) {
+    private String chunk(M2CStreamState state, Map<String, Object> delta, String finishReason) {
         Map<String, Object> chunk = OpenAiResponseShapes.chunk(
                 state.id(), state.model(), state.created(),
                 OpenAiResponseShapes.deltaChoice(delta, finishReason));
@@ -385,7 +385,7 @@ final class AnthropicToOpenAiStreamTranslator {
         } catch (Exception exception) {
             // 我们自己构造的 Map 序列化不出去属于编程错误。
             // 不抛异常中断整条流——返回一个语法合法的空 chunk，让流能走完。
-            log.error("A2O 翻译序列化 chunk 失败: {}", exception.getMessage());
+            log.error("M2C 翻译序列化 chunk 失败: {}", exception.getMessage());
             return "{}";
         }
     }

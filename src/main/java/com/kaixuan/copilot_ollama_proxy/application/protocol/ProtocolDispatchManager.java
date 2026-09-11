@@ -25,7 +25,7 @@ import java.util.Set;
  * <h2>三条规则现在都可达</h2>
  * V8.8 把协议支持落库之后本类不再是纯接缝：规则 2 由「只勾了一种协议、下游打另一个端点」
  * 触发，规则 3 由显式空集合触发。规则 2 的两个方向<strong>处境不同</strong> ——
- * 下游 OpenAI + 上游 Anthropic（O2A 去程 + A2O 回程）已实现并实测，
+ * 下游 OpenAI + 上游 Anthropic（C2M 去程 + M2C 回程）已实现并实测，
  * 反方向仍由调用方抛 {@link ProtocolTranslationNotSupportedException}。
  * 本类不区分这个差异：它只回答「要不要翻译」，谁有实现是调用方的事。
  *
@@ -59,7 +59,7 @@ public class ProtocolDispatchManager {
         // 规则 2：下游协议不被支持，改用供应商支持的其它协议并标记需要翻译。
         //
         // 本类只给结论，不判断该组合有没有实现 —— 那是调用方的事，且两个方向的状态不同：
-        //   下游 OPENAI + 上游 ANTHROPIC：ChatCompletionService 已挂 O2A 去程 + A2O 回程；
+        //   下游 OPENAI + 上游 ANTHROPIC：ChatCompletionService 已挂 C2M 去程 + M2C 回程；
         //   下游 ANTHROPIC + 上游 OPENAI：MessagesService 抛 ProtocolTranslationNotSupportedException。
         // 翻译器一律套在上游服务外侧（装饰器），因而在 retryWhen 之外 ——
         // 空响应判定与落库看到的必须是上游原生形态。

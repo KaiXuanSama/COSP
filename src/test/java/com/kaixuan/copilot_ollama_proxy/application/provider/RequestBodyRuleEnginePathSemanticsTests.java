@@ -123,14 +123,14 @@ class RequestBodyRuleEnginePathSemanticsTests {
 
         String rules = """
                 {"version":2,"groups":[{"id":"g","name":"g","order":0,"enabled":true,
-                 "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                 "protocols":["CHAT"],"templateKeys":["custom"],"previewBody":{},
                  "rules":[{"id":"r","order":0,"field":"marker","array":false,"conditional":true,
                   "conditionMode":"all","conditions":[{"path":"./opts","operator":"equals",
                    "value":{"a":1,"b":2}}],
                   "operations":[{"type":"set_value","value":"after"}]}]}]}
                 """;
 
-        assertThat(engine.transform(input, rules, WireProtocol.OPENAI).output())
+        assertThat(engine.transform(input, rules, WireProtocol.CHAT).output())
                 .containsEntry("marker", "after");
     }
 
@@ -141,7 +141,7 @@ class RequestBodyRuleEnginePathSemanticsTests {
     void setValueCreatesAbsentField() {
         Map<String, Object> output = engine.transform(
                 Map.of("model", "m"), singleOperationRuleSet("added", "set_value", "\"value\":42"),
-                WireProtocol.OPENAI).output();
+                WireProtocol.CHAT).output();
 
         assertThat(output).containsEntry("added", 42);
     }
@@ -151,7 +151,7 @@ class RequestBodyRuleEnginePathSemanticsTests {
     void deleteOnAbsentFieldIsNoOp() {
         RequestBodyRuleEngine.TransformResult result = engine.transform(
                 Map.of("model", "m"), singleOperationRuleSet("absent", "delete", null),
-                WireProtocol.OPENAI);
+                WireProtocol.CHAT);
 
         assertThat(result.output()).containsExactlyEntriesOf(Map.of("model", "m"));
         assertThat(result.warnings()).isEmpty();
@@ -163,7 +163,7 @@ class RequestBodyRuleEnginePathSemanticsTests {
         RequestBodyRuleEngine.TransformResult result = engine.transform(
                 Map.of("model", "m"),
                 singleOperationRuleSet("absent", "edit_object", "\"rules\":[]"),
-                WireProtocol.OPENAI);
+                WireProtocol.CHAT);
 
         assertThat(result.output()).doesNotContainKey("absent");
         assertThat(result.warnings()).isEmpty();
@@ -177,11 +177,11 @@ class RequestBodyRuleEnginePathSemanticsTests {
         RequestBodyRuleEngine.TransformResult result = engine.transform(
                 Map.of("messages", "not-an-array"), """
                         {"version":2,"groups":[{"id":"g","name":"g","order":0,"enabled":true,
-                         "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                         "protocols":["CHAT"],"templateKeys":["custom"],"previewBody":{},
                          "rules":[{"id":"r","order":0,"field":"messages","array":true,
                           "conditional":false,"conditionMode":"all","conditions":[],
                           "operations":[{"type":"edit_object","rules":[]}]}]}]}
-                        """, WireProtocol.OPENAI);
+                        """, WireProtocol.CHAT);
 
         assertThat(result.output()).containsEntry("messages", "not-an-array");
         assertThat(result.warnings()).isEmpty();
@@ -195,14 +195,14 @@ class RequestBodyRuleEnginePathSemanticsTests {
 
         Map<String, Object> output = engine.transform(input, """
                 {"version":2,"groups":[{"id":"g","name":"g","order":0,"enabled":true,
-                 "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                 "protocols":["CHAT"],"templateKeys":["custom"],"previewBody":{},
                  "rules":[{"id":"r","order":0,"field":"messages","array":true,
                   "conditional":false,"conditionMode":"all","conditions":[],
                   "operations":[{"type":"edit_object","rules":[
                     {"id":"n","order":0,"field":"role","array":false,"conditional":false,
                      "conditionMode":"all","conditions":[],
                      "operations":[{"type":"set_value","value":"user"}]}]}]}]}]}
-                """, WireProtocol.OPENAI).output();
+                """, WireProtocol.CHAT).output();
 
         List<?> messages = (List<?>) output.get("messages");
         assertThat(messages.get(0)).isEqualTo("plain");
@@ -220,16 +220,16 @@ class RequestBodyRuleEnginePathSemanticsTests {
     @Test
     void setValuePreservesJsonTypes() {
         assertThat(engine.transform(Map.of("x", "old"),
-                singleOperationRuleSet("x", "set_value", "\"value\":0.7"), WireProtocol.OPENAI).output())
+                singleOperationRuleSet("x", "set_value", "\"value\":0.7"), WireProtocol.CHAT).output())
                 .containsEntry("x", 0.7);
         assertThat(engine.transform(Map.of("x", "old"),
-                singleOperationRuleSet("x", "set_value", "\"value\":true"), WireProtocol.OPENAI).output())
+                singleOperationRuleSet("x", "set_value", "\"value\":true"), WireProtocol.CHAT).output())
                 .containsEntry("x", true);
         assertThat(engine.transform(Map.of("x", "old"),
-                singleOperationRuleSet("x", "set_value", "\"value\":\"0.7\""), WireProtocol.OPENAI).output())
+                singleOperationRuleSet("x", "set_value", "\"value\":\"0.7\""), WireProtocol.CHAT).output())
                 .containsEntry("x", "0.7");
         assertThat(engine.transform(Map.of("x", "old"),
-                singleOperationRuleSet("x", "set_value", "\"value\":{\"a\":[1,2]}"), WireProtocol.OPENAI).output())
+                singleOperationRuleSet("x", "set_value", "\"value\":{\"a\":[1,2]}"), WireProtocol.CHAT).output())
                 .containsEntry("x", Map.of("a", List.of(1, 2)));
     }
 
@@ -239,12 +239,12 @@ class RequestBodyRuleEnginePathSemanticsTests {
     private Map<String, Object> transformWithExistsOn(Map<String, Object> input, String path) {
         String rules = """
                 {"version":2,"groups":[{"id":"g","name":"g","order":0,"enabled":true,
-                 "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                 "protocols":["CHAT"],"templateKeys":["custom"],"previewBody":{},
                  "rules":[{"id":"r","order":0,"field":"marker","array":false,"conditional":true,
                   "conditionMode":"all","conditions":[{"path":"%s","operator":"exists","value":null}],
                   "operations":[{"type":"set_value","value":"after"}]}]}]}
                 """.formatted(path);
-        return engine.transform(input, rules, WireProtocol.OPENAI).output();
+        return engine.transform(input, rules, WireProtocol.CHAT).output();
     }
 
     /** 构造只含一条规则、一个操作的 V2 规则集。 */
@@ -254,7 +254,7 @@ class RequestBodyRuleEnginePathSemanticsTests {
                 : "{\"type\":\"%s\",%s}".formatted(operationType, extraOperationJson);
         return """
                 {"version":2,"groups":[{"id":"g","name":"g","order":0,"enabled":true,
-                 "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                 "protocols":["CHAT"],"templateKeys":["custom"],"previewBody":{},
                  "rules":[{"id":"r","order":0,"field":"%s","array":false,"conditional":false,
                   "conditionMode":"all","conditions":[],"operations":[%s]}]}]}
                 """.formatted(field, operation);

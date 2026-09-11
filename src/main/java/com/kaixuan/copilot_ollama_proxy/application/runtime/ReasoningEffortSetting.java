@@ -388,7 +388,7 @@ public record ReasoningEffortSetting(String effort, Mode mode) {
      * <ul>
      *   <li>{@code thinking} —— 与 OpenAI 侧同一判据，含显式 {@code disabled}；</li>
      *   <li>{@code output_config.effort} —— Anthropic 的原生深度字段；</li>
-     *   <li>{@code reasoning_effort} —— O2A 翻译器刻意保留的兼容副本。
+     *   <li>{@code reasoning_effort} —— C2M 翻译器刻意保留的兼容副本。
      *       翻译路线上它与 {@code output_config.effort} 必然同时存在，所以这一条只在
      *       <strong>直连</strong>线路上才单独起作用：那时下游把 OpenAI 的字段发给了
      *       Anthropic 端点，属于畸形请求。仍按「表过态」处理 —— 兜底档的含义是

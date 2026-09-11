@@ -98,7 +98,7 @@ public final class RequestBodyRuleEngine {
      *   <li>V2 {@code {version:2, groups:[...]}} —— 规则装在「规则组」里，每组声明适用线路协议。</li>
      * </ul>
      *
-     * <p>V1 只在 {@link WireProtocol#OPENAI} 下执行：那些规则的字段路径是照 OpenAI 请求体写的
+     * <p>V1 只在 {@link WireProtocol#CHAT} 下执行：那些规则的字段路径是照 OpenAI 请求体写的
      * （{@code messages} 里含 system、无 {@code max_tokens}），作用在 Anthropic 请求体上多数
      * 匹配不到 —— 静默失效比不执行更难排查。这与前端迁移把 V1 归一为
      * {@code protocols:['OPENAI']} 单组是同一个判断。写入路径已不再接受 V1，
@@ -124,7 +124,7 @@ public final class RequestBodyRuleEngine {
             }
             int version = ruleSet.path("version").asInt(-1);
             if (version == 1 && ruleSet.path("rules").isArray()) {
-                return protocol == WireProtocol.OPENAI ? sortedRules(ruleSet.path("rules")) : List.of();
+                return protocol == WireProtocol.CHAT ? sortedRules(ruleSet.path("rules")) : List.of();
             }
             if (version == 2 && ruleSet.path("groups").isArray()) {
                 return flattenGroups(ruleSet.path("groups"), protocol);

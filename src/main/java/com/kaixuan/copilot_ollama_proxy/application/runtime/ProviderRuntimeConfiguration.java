@@ -34,7 +34,7 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
      * 后者表示用户声明「一种协议都不支持」，调度器会明确报错，不该被悄悄补成全集 ——
      * 那会让「配置为空集」这一非法状态永远无法被发现。
      */
-    public static final String DEFAULT_SUPPORTED_PROTOCOLS_JSON = "[\"OPENAI\",\"ANTHROPIC\"]";
+    public static final String DEFAULT_SUPPORTED_PROTOCOLS_JSON = "[\"CHAT\",\"MESSAGES\"]";
 
     /**
      * 创建无自定义转换的运行时供应商配置。

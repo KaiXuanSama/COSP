@@ -17,20 +17,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
- * A2O 响应翻译。
+ * M2C 响应翻译。
  *
  * <p>重点覆盖契约第 13.1 节点名的、三个参考项目<strong>都没有测试覆盖</strong>的路径：
  * tool index 双索引域重映射、多个 thinking 块的累积、signature 不产帧、
  * usage 两事件合并且 0 不覆盖、流结束三档收尾、重试重订阅后状态重置。
  */
-class AnthropicToOpenAiResponseTranslatorTests {
+class MessagesToChatResponseTranslatorTests {
 
     /** 上游真实模型名（不含供应商前缀）。 */
     private static final String UPSTREAM_MODEL = "deepseek-v4-flash";
 
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final AnthropicToOpenAiResponseTranslator translator =
-            new AnthropicToOpenAiResponseTranslator(objectMapper);
+    private final MessagesToChatResponseTranslator translator =
+            new MessagesToChatResponseTranslator(objectMapper);
 
     // ==================== 非流式 ====================
 
@@ -731,7 +731,7 @@ class AnthropicToOpenAiResponseTranslatorTests {
          * usage chunk 只能有<strong>一个</strong>。
          *
          * <p>曾经的缺陷：{@code message_delta} 带 {@code stop_reason} 时跟着 finish chunk
-         * 发一个，流结束时 {@link AnthropicToOpenAiStreamTranslator#finalizeStream}
+         * 发一个，流结束时 {@link MessagesToChatStreamTranslator#finalizeStream}
          * 又补一个。宽容的客户端拿后者覆盖前者所以看不出问题，但那是两条相同的计费记录。
          *
          * <p>原先的 {@code usageChunkHasEmptyChoicesArrayAndFollowsFinishChunk} 抓不到 ——
@@ -859,7 +859,7 @@ class AnthropicToOpenAiResponseTranslatorTests {
     /**
      * 用实测抓包的完整事件序列做一次端到端断言。
      *
-     * <p>序列来自 O2A 落地后对 DeepSeek Anthropic 端点的真实调用，
+     * <p>序列来自 C2M 落地后对 DeepSeek Anthropic 端点的真实调用，
      * 含 thinking 块占 index 0、signature_delta、text 块占 index 1。
      */
     @Test

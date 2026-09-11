@@ -22,7 +22,7 @@ import java.util.Map;
  * Messages 应用服务 —— 服务下游的 Anthropic 协议端点。
  *
  * <p>与 {@code ChatCompletionService} 结构对称：解析路由 → 协议调度 → 委托上游执行器。
- * 差别只在下游协议固定为 {@link WireProtocol#ANTHROPIC}，以及委托对象是
+ * 差别只在下游协议固定为 {@link WireProtocol#MESSAGES}，以及委托对象是
  * {@link GenericAnthropicChatService}。
  *
  * <h2>路由规则与 OpenAI 端点完全一致</h2>
@@ -32,7 +32,7 @@ import java.util.Map;
  * 由调度管理器处理。
  *
  * <h2>与 OpenAI 端点的真实差异：本服务只有直连一条路</h2>
- * A2O 请求翻译（下游 {@code /v1/messages} + 上游只有 OpenAI）<strong>尚未实现</strong>，
+ * M2C 请求翻译（下游 {@code /v1/messages} + 上游只有 OpenAI）<strong>尚未实现</strong>，
  * 因此需要翻译时抛 {@link ProtocolTranslationNotSupportedException}（控制器译为 400）。
  * 反方向（下游 OpenAI + 上游 Anthropic）已在 {@code ChatCompletionService} 落地。
  * 落地时翻译器必须套在上游服务<strong>外侧</strong>：重试、落库、usage 提取都留在
@@ -55,7 +55,7 @@ public class MessagesService {
     private static final Logger log = LoggerFactory.getLogger(MessagesService.class);
 
     /** 本服务服务的下游端点协议，固定不变。 */
-    private static final WireProtocol DOWNSTREAM_PROTOCOL = WireProtocol.ANTHROPIC;
+    private static final WireProtocol DOWNSTREAM_PROTOCOL = WireProtocol.MESSAGES;
 
     private final ProviderRouteResolver providerRouteResolver;
     private final ProtocolDispatchManager protocolDispatchManager;
@@ -66,7 +66,7 @@ public class MessagesService {
      *
      * <p>用途单一：调度结论出来后把协议信息补给生命周期事件，供前端 Toast 显示路径标记。
      * 可选注入（与 provider 层同一范式）—— 单元测试直接 new 本类时不关心这条链路，
-     * 缺省即不发。当前 A2O 方向尚未实现，标记会显示为「A→O」后再收 FAILED，
+     * 缺省即不发。当前 M2C 方向尚未实现，标记会显示为「A→O」后再收 FAILED，
      * 这恰好让人一眼看出是哪条线路缺实现。
      */
     private CallLifecycleNotifier lifecycleNotifier;
@@ -130,7 +130,7 @@ public class MessagesService {
         // 刻意放在抛未实现异常之前 —— 那样失败 Toast 上仍能看到「A→O」，
         // 一眼认出是这条跨协议线路缺实现，而不是某个笼统的上游错误。
         notifyProtocols(requestId, decision);
-        // TODO(待实现) A2O 请求翻译（去程）+ O2A 响应翻译（回程）。
+        // TODO(待实现) M2C 请求翻译（去程）+ C2M 响应翻译（回程）。
         //  两者是同一条链的两半，缺一半这条路就不可用，因此不拆开计划。
         //  接线约束与流式难点见类注释，契约见
         //  docs/PROTOCOL_TRANSLATION_CONTRACT.md（请求侧）与
@@ -163,7 +163,7 @@ public class MessagesService {
                 protocolDispatchManager.dispatch(DOWNSTREAM_PROTOCOL, route.provider());
         // 同非流式：结论出来即补，前端 Tag 不必等到上游响应。
         notifyProtocols(requestId, decision);
-        // TODO(待实现) 同非流式的 A2O 请求 + O2A 响应。流式还多一层帧数不对等：
+        // TODO(待实现) 同非流式的 M2C 请求 + C2M 响应。流式还多一层帧数不对等：
         //  合成 message_start / content_block_start 等源里不存在的结构，且顺序必须合法。
         if (decision.translationNeeded()) {
             return Flux.error(new ProtocolTranslationNotSupportedException(

@@ -41,7 +41,7 @@ class ProviderRequestBodyTransformationIntegrationTests {
     private static final String RULES = """
             {"version":2,"groups":[{
               "id":"g-openai","name":"OpenAI 规则组","order":0,"enabled":true,
-              "protocols":["OPENAI"],"templateKeys":["base"],"previewBody":{},
+              "protocols":["CHAT"],"templateKeys":["base"],"previewBody":{},
               "rules":[{
                 "id":"rewrite-temperature","order":0,"field":"temperature","array":false,
                 "conditional":false,"conditionMode":"all","conditions":[],
@@ -182,7 +182,7 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, "
                 + "display_name TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0, "
                 + "base_url TEXT NOT NULL DEFAULT '', "
-                + "supported_protocols TEXT NOT NULL DEFAULT '[\"OPENAI\",\"ANTHROPIC\"]', "
+                + "supported_protocols TEXT NOT NULL DEFAULT '[\"CHAT\",\"MESSAGES\"]', "
                 + "anthropic_base_url TEXT NOT NULL DEFAULT '', "
                 + "use_proxy INTEGER NOT NULL DEFAULT 0, updated_at TEXT)");
         jdbcTemplate.execute("CREATE TABLE provider_model ("

@@ -170,7 +170,7 @@ public class GenericAnthropicChatService {
      * 因此现有调用方（包括测试）无需改动。
      */
     private static final DownstreamLogView DIRECT_VIEW =
-            DownstreamLogView.direct(WireProtocol.ANTHROPIC.name());
+            DownstreamLogView.direct(WireProtocol.MESSAGES.name());
 
     /** 非流式，接受应用层已解析的路由。直连路线。 */
     public Mono<String> messages(Map<String, Object> request, ResolvedProviderRoute route,
@@ -320,7 +320,7 @@ public class GenericAnthropicChatService {
      * <p>曾经刻意不接，理由是「Anthropic 客户端是事件状态机：一个未收到
      * {@code message_stop} 的序列后接一个全新的 {@code message_start}，对严格客户端
      * 是否合法尚未验证」。那个顾虑<strong>只对 ANTHROPIC → ANTHROPIC 直连成立</strong>；
-     * O2A 路线（下游 OpenAI、上游 Anthropic）的下游拿到的是翻译后的 OpenAI chunk，
+     * C2M 路线（下游 OpenAI、上游 Anthropic）的下游拿到的是翻译后的 OpenAI chunk，
      * 与 OpenAI 直连的重试语义完全一致，本就不受这条限制约束。
      *
      * <p>现按功能完整性优先，两条路线一并接入：不接的那一侧会让前端菜单项
@@ -581,10 +581,10 @@ public class GenericAnthropicChatService {
                     // 装配鉴权头、供应商头规则含 {apiKey} 占位与删除标记）。
                     // 出站协议恒为 ANTHROPIC：本服务只打 Anthropic 端点，因此鉴权装配
                     // 写 x-api-key 并删掉 Authorization —— 后者在这条链路上是噪音，
-                    // 可能来自下游透传，也可能来自 O2A 翻译路线（下游说 OpenAI、上游走这里）。
+                    // 可能来自下游透传，也可能来自 C2M 翻译路线（下游说 OpenAI、上游走这里）。
                     providerRequestHeaderService.applyHeaders(
                             headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream,
-                            WireProtocol.ANTHROPIC);
+                            WireProtocol.MESSAGES);
                     // Anthropic 必需的版本头。放在 applyHeaders 之后，
                     // 使供应商头规则仍可覆盖它（某些中转站要求特定版本）。
                     if (!headers.containsKey(ANTHROPIC_VERSION_HEADER)) {
@@ -639,7 +639,7 @@ public class GenericAnthropicChatService {
      * <p>但要在 {@code removeIf(Objects::isNull)} 之前：规则可能把某个字段显式设为 null，
      * 而 Anthropic 对多余的 null 字段并不宽容，最终清洗必须是链条的最后一步。
      *
-     * <p>协议筛选由引擎完成：只有声明适用 {@link WireProtocol#ANTHROPIC} 的规则组才会执行。
+     * <p>协议筛选由引擎完成：只有声明适用 {@link WireProtocol#MESSAGES} 的规则组才会执行。
      * 库里那些照 OpenAI 结构写的旧规则被归一为「仅 OPENAI」，因此不会在此静默匹配失败。
      */
     private Map<String, Object> prepareRequestBody(Map<String, Object> request, boolean stream,
@@ -659,7 +659,7 @@ public class GenericAnthropicChatService {
             resolveThinking(resolvedModel, provider).applyTo(body);
         }
 
-        // reasoning_effort 是 OpenAI 的字段名；O2A 翻译器把它映射到 output_config.effort
+        // reasoning_effort 是 OpenAI 的字段名；C2M 翻译器把它映射到 output_config.effort
         // 后刻意保留了一份兼容副本，供上面两个设置层判定「下游已表态」。
         // 因此这一行必须在设置层之后：提前剥会让兜底档把一个已表态的请求当成未表态，
         // 静默退化成覆写档。
@@ -717,7 +717,7 @@ public class GenericAnthropicChatService {
      */
     private void applyBodyRules(Map<String, Object> body, ProviderRuntimeConfiguration provider) {
         RequestBodyRuleEngine.TransformResult result = requestBodyRuleEngine.transform(
-                body, provider.bodyRulesJson(), WireProtocol.ANTHROPIC);
+                body, provider.bodyRulesJson(), WireProtocol.MESSAGES);
         body.clear();
         body.putAll(result.output());
         for (RequestBodyRuleEngine.TransformWarning warning : result.warnings()) {
@@ -1034,7 +1034,7 @@ public class GenericAnthropicChatService {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
         return apiCallLog.saveNonStream(providerKey, modelName,
-                logView.downstreamProtocol(), WireProtocol.ANTHROPIC.name(),
+                logView.downstreamProtocol(), WireProtocol.MESSAGES.name(),
                 reqHeaders, requestBody, respHeaders,
                 statusCode, responseBody, duration);
     }
@@ -1053,7 +1053,7 @@ public class GenericAnthropicChatService {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
         return apiCallLog.saveStream(providerKey, modelName,
-                logView.downstreamProtocol(), WireProtocol.ANTHROPIC.name(),
+                logView.downstreamProtocol(), WireProtocol.MESSAGES.name(),
                 reqHeaders, requestBody, respHeaders,
                 statusCode, logView.viewChunks(chunks), duration);
     }
@@ -1066,7 +1066,7 @@ public class GenericAnthropicChatService {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
         return apiCallLog.saveStreamWithError(providerKey, modelName,
-                logView.downstreamProtocol(), WireProtocol.ANTHROPIC.name(),
+                logView.downstreamProtocol(), WireProtocol.MESSAGES.name(),
                 reqHeaders, requestBody, respHeaders, statusCode,
                 logView.viewChunks(chunks), errorHeaders,
                 errorCode, errorBody, duration);

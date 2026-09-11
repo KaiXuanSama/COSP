@@ -50,7 +50,7 @@ class CallLifecyclePublisherProtocolTests {
 
         publisher.publish(first);
         publisher.publish(CallLifecycleEvent.of("r1", CallPhase.CHUNK, "m", true, 3));
-        publisher.recordProtocols("r1", "OPENAI", "ANTHROPIC");
+        publisher.recordProtocols("r1", "CHAT", "MESSAGES");
 
         assertThat(collected).hasSize(3);
         assertThat(collected.get(0).phase()).isEqualTo(CallPhase.RECEIVED);
@@ -60,8 +60,8 @@ class CallLifecyclePublisherProtocolTests {
         assertThat(resent.phase()).isEqualTo(CallPhase.CHUNK);
         assertThat(resent.chunkCount()).isEqualTo(3);
         assertThat(resent.model()).isEqualTo("m");
-        assertThat(resent.downstreamProtocol()).isEqualTo("OPENAI");
-        assertThat(resent.upstreamProtocol()).isEqualTo("ANTHROPIC");
+        assertThat(resent.downstreamProtocol()).isEqualTo("CHAT");
+        assertThat(resent.upstreamProtocol()).isEqualTo("MESSAGES");
     }
 
     @Test
@@ -70,7 +70,7 @@ class CallLifecyclePublisherProtocolTests {
         CallLifecycleEvent first = received("r2", "m");
 
         publisher.publish(first);
-        publisher.recordProtocols("r2", "OPENAI", "ANTHROPIC");
+        publisher.recordProtocols("r2", "CHAT", "MESSAGES");
 
         assertThat(collected).hasSize(2);
         // 前端拿时间戳当「流存在时间」的起点，重发刷新它会让已跑的调用显示成刚刚开始。
@@ -81,7 +81,7 @@ class CallLifecyclePublisherProtocolTests {
     void ignoresSupplementForUnknownRequestId() {
         List<CallLifecycleEvent> collected = subscribe();
 
-        publisher.recordProtocols("ghost", "OPENAI", "ANTHROPIC");
+        publisher.recordProtocols("ghost", "CHAT", "MESSAGES");
 
         assertThat(collected).isEmpty();
     }
@@ -92,7 +92,7 @@ class CallLifecyclePublisherProtocolTests {
 
         publisher.publish(received("r3", "m"));
         publisher.publish(CallLifecycleEvent.of("r3", CallPhase.COMPLETED, "m", true, 5));
-        publisher.recordProtocols("r3", "OPENAI", "ANTHROPIC");
+        publisher.recordProtocols("r3", "CHAT", "MESSAGES");
 
         // 只有原本那两条；终态补协议不重发，否则收尾中的 Toast 会重新活跃。
         assertThat(collected).hasSize(2);
@@ -102,29 +102,29 @@ class CallLifecyclePublisherProtocolTests {
     @Test
     void snapshotCarriesSupplementedProtocols() {
         publisher.publish(received("r4", "m"));
-        publisher.recordProtocols("r4", "ANTHROPIC", "OPENAI");
+        publisher.recordProtocols("r4", "MESSAGES", "CHAT");
 
         // 快照供晚订阅的前端补历史，必须带上已补写的协议，否则刷新页面后 Tag 消失。
         assertThat(publisher.snapshot())
                 .singleElement()
                 .satisfies(event -> {
-                    assertThat(event.downstreamProtocol()).isEqualTo("ANTHROPIC");
-                    assertThat(event.upstreamProtocol()).isEqualTo("OPENAI");
+                    assertThat(event.downstreamProtocol()).isEqualTo("MESSAGES");
+                    assertThat(event.upstreamProtocol()).isEqualTo("CHAT");
                 });
     }
 
     @Test
     void nullProtocolsLeaveExistingValuesUntouched() {
         publisher.publish(received("r5", "m"));
-        publisher.recordProtocols("r5", "OPENAI", "ANTHROPIC");
+        publisher.recordProtocols("r5", "CHAT", "MESSAGES");
         // null 表示「不改写该字段」，用于只确定一侧的场景。
         publisher.recordProtocols("r5", null, null);
 
         assertThat(publisher.snapshot())
                 .singleElement()
                 .satisfies(event -> {
-                    assertThat(event.downstreamProtocol()).isEqualTo("OPENAI");
-                    assertThat(event.upstreamProtocol()).isEqualTo("ANTHROPIC");
+                    assertThat(event.downstreamProtocol()).isEqualTo("CHAT");
+                    assertThat(event.upstreamProtocol()).isEqualTo("MESSAGES");
                 });
     }
 }

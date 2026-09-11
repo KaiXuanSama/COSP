@@ -12,7 +12,7 @@ import java.util.Map;
 /**
  * OpenAI Chat Completions 消息数组 → Anthropic Messages 消息数组。
  *
- * <p>本类只做消息结构，不碰顶层字段。拆出来是因为消息是 O2A 里唯一有
+ * <p>本类只做消息结构，不碰顶层字段。拆出来是因为消息是 C2M 里唯一有
  * <strong>结构性不变式</strong>的部分：顶层字段各自独立，逐个搬运即可，
  * 而消息之间有邻接与交替约束（见 {@link ToolPairingNormalizer}）。
  *
@@ -238,7 +238,7 @@ final class MessageTranslator {
      * <p>早期这里调 {@code stringify} 压平，而它只取文本块，于是 agent 调
      * {@code view_image} 之类工具读到的图片在这一步被静默丢弃：那张图只存在于
      * {@code role: tool} 消息的 {@code content} 里，压平之后剩下的只有一段
-     * 描述图片位置的文字。表现是「O2A 路线上模型看不见图，而 OpenAI 直连能看见」。
+     * 描述图片位置的文字。表现是「C2M 路线上模型看不见图，而 OpenAI 直连能看见」。
      *
      * <p>顺带一提，OpenAI 侧那条把「图片 tool 消息」整条改成普通 user 消息的
      * 请求体规则<strong>不适用于这条线路</strong>，也不该被搬进翻译层：它是针对

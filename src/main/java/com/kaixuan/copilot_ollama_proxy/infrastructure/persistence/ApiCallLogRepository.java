@@ -31,6 +31,16 @@ public class ApiCallLogRepository implements ApiCallLogService {
 
     private static final Logger log = LoggerFactory.getLogger(ApiCallLogRepository.class);
 
+    /**
+     * 未显式给出协议时落库的默认值，取值同 {@code WireProtocol.CHAT}。
+     *
+     * <p>写成本层的常量而不是引用那个枚举：{@code infrastructure} 不依赖
+     * {@code application}，为一个字面量倒转依赖方向不值得。代价是重命名协议时
+     * 编译器发现不了这里 —— 故与 {@code schema.sql} 的列默认值一并记在
+     * 协议重命名规划文档的检索清单里。
+     */
+    private static final String DEFAULT_PROTOCOL = "CHAT";
+
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final LogEventPublisher logEventPublisher;
@@ -49,7 +59,8 @@ public class ApiCallLogRepository implements ApiCallLogService {
     public Long saveNonStream(String providerKey, String modelName,
                               Map<String, String> requestHeaders, Map<String, Object> requestBody,
                               Map<String, String> responseHeaders, int statusCode, String responseBody, long durationMs) {
-        return saveNonStream(providerKey, modelName, "OPENAI", "OPENAI", requestHeaders, requestBody,
+        return saveNonStream(providerKey, modelName, DEFAULT_PROTOCOL, DEFAULT_PROTOCOL,
+                requestHeaders, requestBody,
                 responseHeaders, statusCode, responseBody, durationMs);
     }
 
@@ -73,7 +84,8 @@ public class ApiCallLogRepository implements ApiCallLogService {
     public Long saveStream(String providerKey, String modelName,
                            Map<String, String> requestHeaders, Map<String, Object> requestBody,
                            Map<String, String> responseHeaders, int statusCode, List<String> chunks, long durationMs) {
-        return saveStream(providerKey, modelName, "OPENAI", "OPENAI", requestHeaders, requestBody,
+        return saveStream(providerKey, modelName, DEFAULT_PROTOCOL, DEFAULT_PROTOCOL,
+                requestHeaders, requestBody,
                 responseHeaders, statusCode, chunks, durationMs);
     }
 
@@ -121,7 +133,8 @@ public class ApiCallLogRepository implements ApiCallLogService {
                                     Map<String, String> requestHeaders, Map<String, Object> requestBody,
                                     Map<String, String> responseHeaders, int statusCode, List<String> chunks,
                                     Map<String, String> errorHeaders, int errorCode, String errorBody, long durationMs) {
-        return saveStreamWithError(providerKey, modelName, "OPENAI", "OPENAI", requestHeaders, requestBody,
+        return saveStreamWithError(providerKey, modelName, DEFAULT_PROTOCOL, DEFAULT_PROTOCOL,
+                requestHeaders, requestBody,
                 responseHeaders, statusCode, chunks, errorHeaders, errorCode, errorBody, durationMs);
     }
 

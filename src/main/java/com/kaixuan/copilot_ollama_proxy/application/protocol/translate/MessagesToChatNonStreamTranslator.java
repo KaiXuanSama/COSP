@@ -28,11 +28,11 @@ import java.util.Map;
  * @see <a href="file:../../../../../../../../../docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md">
  *      响应侧协议翻译契约</a>
  */
-final class AnthropicToOpenAiNonStreamTranslator {
+final class MessagesToChatNonStreamTranslator {
 
     private final ObjectMapper objectMapper;
 
-    AnthropicToOpenAiNonStreamTranslator(ObjectMapper objectMapper) {
+    MessagesToChatNonStreamTranslator(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
     }
 
@@ -76,7 +76,7 @@ final class AnthropicToOpenAiNonStreamTranslator {
         choice.put("message", message);
         // 与流式同口径：带 tool_calls 时终止原因必须是 tool_calls，优先于 stop_reason 的映射结果。
         // 否则会产出自相矛盾的响应 —— 消息里挂着完整工具调用，却告诉下游回答被截断，
-        // 下游（Copilot）据此放弃执行工具。详见 AnthropicToOpenAiStreamTranslator.resolveFinishReason。
+        // 下游（Copilot）据此放弃执行工具。详见 MessagesToChatStreamTranslator.resolveFinishReason。
         choice.put("finish_reason", resolveFinishReason(
                 StopReasonMapper.toFinishReason(text(root, "stop_reason")), !toolCalls.isEmpty()));
 

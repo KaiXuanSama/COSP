@@ -111,25 +111,25 @@ class ApiCallLogRepositoryGeneratedKeyTests {
         assertThat(row.get("is_stream")).isEqualTo(0);
         assertThat(((Number) row.get("status_code")).intValue()).isEqualTo(200);
         assertThat(row.get("response_body")).isEqualTo("{\"choices\":[]}");
-        assertThat(row.get("downstream_protocol")).isEqualTo("OPENAI");
-        assertThat(row.get("upstream_protocol")).isEqualTo("OPENAI");
+        assertThat(row.get("downstream_protocol")).isEqualTo("CHAT");
+        assertThat(row.get("upstream_protocol")).isEqualTo("CHAT");
         assertThat(((Number) row.get("duration_ms")).longValue()).isEqualTo(321L);
         assertThat(row.get("request_headers")).asString().contains("Authorization");
     }
 
     @Test
     void explicitProtocolsPersistForEveryLogShape() {
-        Long nonStream = repository.saveNonStream("anthropic", "claude", "ANTHROPIC", "ANTHROPIC",
+        Long nonStream = repository.saveNonStream("anthropic", "claude", "MESSAGES", "MESSAGES",
                 Map.of(), Map.of(), Map.of(), 200, "{\"content\":[]}", 1L);
-        Long stream = repository.saveStream("openai", "gpt", "OPENAI", "OPENAI",
+        Long stream = repository.saveStream("openai", "gpt", "CHAT", "CHAT",
                 Map.of(), Map.of(), Map.of(), 200, List.of("[DONE]"), 2L);
-        Long streamError = repository.saveStreamWithError("anthropic", "claude", "ANTHROPIC", "ANTHROPIC",
+        Long streamError = repository.saveStreamWithError("anthropic", "claude", "MESSAGES", "MESSAGES",
                 Map.of(), Map.of(), Map.of(), 200, List.of("message_stop"),
                 Map.of(), 500, "error", 3L);
 
-        assertProtocols(nonStream, "ANTHROPIC", "ANTHROPIC");
-        assertProtocols(stream, "OPENAI", "OPENAI");
-        assertProtocols(streamError, "ANTHROPIC", "ANTHROPIC");
+        assertProtocols(nonStream, "MESSAGES", "MESSAGES");
+        assertProtocols(stream, "CHAT", "CHAT");
+        assertProtocols(streamError, "MESSAGES", "MESSAGES");
     }
 
     private void assertProtocols(Long id, String downstream, String upstream) {

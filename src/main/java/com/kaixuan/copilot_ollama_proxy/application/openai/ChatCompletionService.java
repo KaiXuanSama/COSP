@@ -8,8 +8,8 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslation
 import com.kaixuan.copilot_ollama_proxy.application.protocol.RequestTranslationException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslatedRequest;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.AnthropicToOpenAiResponseTranslator;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.OpenAiToAnthropicRequestTranslator;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.MessagesToChatResponseTranslator;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ChatToMessagesRequestTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
@@ -31,9 +31,9 @@ import java.util.Map;
  *
  * 负责解析供应商模型路由，经协议调度管理器确认走法后委托上游执行器完成调用。
  *
- * <p>本服务的下游协议恒为 {@link WireProtocol#OPENAI}（由它服务的端点决定）；
+ * <p>本服务的下游协议恒为 {@link WireProtocol#CHAT}（由它服务的端点决定）；
  * 上游协议由 {@link ProtocolDispatchManager} 按供应商支持情况得出。两条路都活：
- * 供应商支持 OpenAI 时直连，只支持 Anthropic 时走 O2A 去程 + A2O 回程翻译。
+ * 供应商支持 OpenAI 时直连，只支持 Anthropic 时走 C2M 去程 + M2C 回程翻译。
  *
  * <h2>为何两个方法体都裹在 defer 里</h2>
  * 路由解析、协议调度与请求翻译都是<strong>同步</strong>调用，且都会抛异常
@@ -50,14 +50,14 @@ public class ChatCompletionService {
     private static final Logger log = LoggerFactory.getLogger(ChatCompletionService.class);
 
     /** 本服务服务的下游端点协议，固定不变。 */
-    private static final WireProtocol DOWNSTREAM_PROTOCOL = WireProtocol.OPENAI;
+    private static final WireProtocol DOWNSTREAM_PROTOCOL = WireProtocol.CHAT;
 
     private final ProviderRouteResolver providerRouteResolver;
     private final ProtocolDispatchManager protocolDispatchManager;
     private final GenericOpenAiChatService genericOpenAiChatService;
     private final GenericAnthropicChatService genericAnthropicChatService;
-    private final OpenAiToAnthropicRequestTranslator o2aTranslator;
-    private final AnthropicToOpenAiResponseTranslator a2oTranslator;
+    private final ChatToMessagesRequestTranslator c2mTranslator;
+    private final MessagesToChatResponseTranslator m2cTranslator;
 
     /**
      * 调用生命周期事件通知器，由 Spring 可选注入。
@@ -75,21 +75,21 @@ public class ChatCompletionService {
      * @param protocolDispatchManager 协议调度管理器
      * @param genericOpenAiChatService OpenAI 上游执行器
      * @param genericAnthropicChatService Anthropic 上游执行器
-     * @param o2aTranslator O2A 请求翻译器（去程）
-     * @param a2oTranslator A2O 响应翻译器（回程）
+     * @param c2mTranslator C2M 请求翻译器（去程）
+     * @param m2cTranslator M2C 响应翻译器（回程）
      */
     public ChatCompletionService(ProviderRouteResolver providerRouteResolver,
                                  ProtocolDispatchManager protocolDispatchManager,
                                  GenericOpenAiChatService genericOpenAiChatService,
                                  GenericAnthropicChatService genericAnthropicChatService,
-                                 OpenAiToAnthropicRequestTranslator o2aTranslator,
-                                 AnthropicToOpenAiResponseTranslator a2oTranslator) {
+                                 ChatToMessagesRequestTranslator c2mTranslator,
+                                 MessagesToChatResponseTranslator m2cTranslator) {
         this.providerRouteResolver = providerRouteResolver;
         this.protocolDispatchManager = protocolDispatchManager;
         this.genericOpenAiChatService = genericOpenAiChatService;
         this.genericAnthropicChatService = genericAnthropicChatService;
-        this.o2aTranslator = o2aTranslator;
-        this.a2oTranslator = a2oTranslator;
+        this.c2mTranslator = c2mTranslator;
+        this.m2cTranslator = m2cTranslator;
     }
 
     @Autowired(required = false)
@@ -159,8 +159,8 @@ public class ChatCompletionService {
         //
         // 模型名传下游原始的 model（含 [provider-key] 前缀）而非上游返回的裸名：
         // 本服务按前缀路由，把裸名透给下游会让它下一轮路由失败（第 7 节）。
-        if (decision.upstreamProtocol() == WireProtocol.ANTHROPIC) {
-            TranslatedRequest translated = o2aTranslator.translateRequest(openAiRequest);
+        if (decision.upstreamProtocol() == WireProtocol.MESSAGES) {
+            TranslatedRequest translated = c2mTranslator.translateRequest(openAiRequest);
             // 非流式不改写 chunk：响应体是单一字符串，日志里记上游原文
             // 比记翻译后的更有用 —— 后者可以由前者推导，反之不行。
             // 流式不同：帧序列的切分方式无法从上游事件反推，见下方流式分支。
@@ -170,7 +170,7 @@ public class ChatCompletionService {
             Mono<String> upstream = genericAnthropicChatService.messages(
                     translated.body(), route, downstreamHeaders, requestId,
                     DownstreamLogView.protocolOnly(DOWNSTREAM_PROTOCOL.name()));
-            return a2oTranslator.translateResponse(upstream);
+            return m2cTranslator.translateResponse(upstream);
         }
         
         // 其它协议组合：当前只有 OPENAI 与 ANTHROPIC 两种，走不到这里。
@@ -223,9 +223,9 @@ public class ChatCompletionService {
         // 帧数不对等（第 2 节）：message_start 产 1 帧（唯一带 role），
         // content_block_start/stop 与 signature_delta 产 0 帧，
         // 而 [DONE] 由流结束触发而非 message_stop。
-        if (decision.upstreamProtocol() == WireProtocol.ANTHROPIC) {
-            TranslatedRequest translated = o2aTranslator.translateRequest(openAiRequest);
-            // 落库视图：下游协议记 OPENAI，且 chunk 记翻译后的形态。
+        if (decision.upstreamProtocol() == WireProtocol.MESSAGES) {
+            TranslatedRequest translated = c2mTranslator.translateRequest(openAiRequest);
+            // 落库视图：下游协议记 CHAT，且 chunk 记翻译后的形态。
             // 流式必须重译而不能只记上游事件：帧数不对等（零帧/一帧/多帧），
             // 从上游事件反推不出下游到底收到了几帧、长什么样。
             // frameCounts 让日志页能把两栏按事件对齐 —— 零帧事件右侧留占位。
@@ -233,13 +233,13 @@ public class ChatCompletionService {
             DownstreamLogView logView = new DownstreamLogView(
                     DOWNSTREAM_PROTOCOL.name(),
                     chunks -> {
-                        var log = a2oTranslator.translateChunksForLog(
+                        var log = m2cTranslator.translateChunksForLog(
                                 chunks, route.model(), translated.context().includeUsage());
                         return ChunkLogPayload.translated(log.translated(), chunks, log.frameCounts());
                     });
             Flux<String> upstream = genericAnthropicChatService.messagesStream(
                     translated.body(), route, downstreamHeaders, requestId, logView);
-            return a2oTranslator.translateStream(upstream, route.model(), translated.context());
+            return m2cTranslator.translateStream(upstream, route.model(), translated.context());
         }
         
         return Flux.error(new ProtocolTranslationNotSupportedException(

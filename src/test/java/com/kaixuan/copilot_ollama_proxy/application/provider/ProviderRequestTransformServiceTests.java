@@ -100,7 +100,7 @@ class ProviderRequestTransformServiceTests {
                 TEMPLATE_KEYS, PREVIEW, RULES);
         String updatedHeaderRules = "[{\"key\":\"x-token\",\"value\":\"new\"}]";
         String updatedRules = "{\"version\":2,\"groups\":[{\"id\":\"g1\",\"name\":\"OpenAI \u89c4\u5219\u7ec4\",\"order\":0,"
-                + "\"enabled\":true,\"protocols\":[\"OPENAI\"],\"templateKeys\":[\"custom\"],"
+                + "\"enabled\":true,\"protocols\":[\"CHAT\"],\"templateKeys\":[\"custom\"],"
                 + "\"previewBody\":{\"temperature\":0.2},"
                 + "\"rules\":[{\"id\":\"r1\",\"order\":0,"
                 + "\"field\":\"temperature\",\"array\":false,\"conditional\":false,"
@@ -207,7 +207,7 @@ class ProviderRequestTransformServiceTests {
     @Test
     void duplicateRuleGroupIdIsRejected() {
         String group = "{\"id\":\"same\",\"name\":\"g\",\"order\":0,\"enabled\":true,"
-                + "\"protocols\":[\"OPENAI\"],\"templateKeys\":[\"base\"],\"previewBody\":{},\"rules\":[]}";
+                + "\"protocols\":[\"CHAT\"],\"templateKeys\":[\"base\"],\"previewBody\":{},\"rules\":[]}";
 
         assertThatThrownBy(() -> service.createProvider(
                 "dup", "Dup", "https://dup.example/v1", HEADER_RULES,
@@ -221,7 +221,7 @@ class ProviderRequestTransformServiceTests {
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, "
                 + "display_name TEXT NOT NULL DEFAULT '', "
                 + "enabled INTEGER NOT NULL DEFAULT 0, base_url TEXT NOT NULL DEFAULT '', "
-                + "supported_protocols TEXT NOT NULL DEFAULT '[\"OPENAI\",\"ANTHROPIC\"]' "
+                + "supported_protocols TEXT NOT NULL DEFAULT '[\"CHAT\",\"MESSAGES\"]' "
                 + "CHECK (json_valid(supported_protocols)), "
                 + "anthropic_base_url TEXT NOT NULL DEFAULT '', "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");

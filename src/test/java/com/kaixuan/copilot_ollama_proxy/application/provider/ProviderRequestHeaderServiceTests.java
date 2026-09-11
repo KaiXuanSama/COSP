@@ -26,7 +26,7 @@ class ProviderRequestHeaderServiceTests {
                   {"key":"X-Provider","value":"generic"},
                   {"key":"X-Remove","value":"/del/"}
                 ]
-                """, WireProtocol.OPENAI);
+                """, WireProtocol.CHAT);
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Custom actual-api-key");
         assertThat(headers.getFirst("X-Provider")).isEqualTo("generic");
@@ -37,7 +37,7 @@ class ProviderRequestHeaderServiceTests {
     void applyHeadersUsesBearerAuthenticationWhenThereAreNoRules() {
         HttpHeaders headers = new HttpHeaders();
 
-        service.applyHeaders(headers, "actual-api-key", "[]", WireProtocol.OPENAI);
+        service.applyHeaders(headers, "actual-api-key", "[]", WireProtocol.CHAT);
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer actual-api-key");
     }
@@ -54,7 +54,7 @@ class ProviderRequestHeaderServiceTests {
     void applyHeadersIgnoresInvalidRulesWithoutRemovingDefaultAuthentication() {
         HttpHeaders headers = new HttpHeaders();
 
-        service.applyHeaders(headers, "actual-api-key", "not-json", WireProtocol.OPENAI);
+        service.applyHeaders(headers, "actual-api-key", "not-json", WireProtocol.CHAT);
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer actual-api-key");
     }
@@ -98,7 +98,7 @@ class ProviderRequestHeaderServiceTests {
                   {"key":"Cookie","value":"/del/"},
                   {"key":"X-Trace-Id","value":"provider-trace"}
                 ]
-                """, true, WireProtocol.OPENAI);
+                """, true, WireProtocol.CHAT);
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Provider provider-api-key");
         assertThat(headers).doesNotContainKey(HttpHeaders.COOKIE);
@@ -116,7 +116,7 @@ class ProviderRequestHeaderServiceTests {
 
         HttpHeaders headers = new HttpHeaders();
         service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false,
-                WireProtocol.OPENAI);
+                WireProtocol.CHAT);
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
         assertThat(headers.getFirst("X-Trace-Id")).isEqualTo("trace-123");
@@ -136,7 +136,7 @@ class ProviderRequestHeaderServiceTests {
         void openAiUpstreamSendsBearerAndDropsAnthropicKey() {
             HttpHeaders headers = new HttpHeaders();
 
-            service.applyHeaders(headers, "provider-api-key", "[]", WireProtocol.OPENAI);
+            service.applyHeaders(headers, "provider-api-key", "[]", WireProtocol.CHAT);
 
             assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
             assertThat(headers).doesNotContainKey(ANTHROPIC_KEY_HEADER);
@@ -146,7 +146,7 @@ class ProviderRequestHeaderServiceTests {
         void anthropicUpstreamSendsApiKeyAndDropsAuthorization() {
             HttpHeaders headers = new HttpHeaders();
 
-            service.applyHeaders(headers, "provider-api-key", "[]", WireProtocol.ANTHROPIC);
+            service.applyHeaders(headers, "provider-api-key", "[]", WireProtocol.MESSAGES);
 
             assertThat(headers.getFirst(ANTHROPIC_KEY_HEADER)).isEqualTo("provider-api-key");
             assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);
@@ -161,7 +161,7 @@ class ProviderRequestHeaderServiceTests {
 
             HttpHeaders headers = new HttpHeaders();
             service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false,
-                    WireProtocol.OPENAI);
+                    WireProtocol.CHAT);
 
             assertThat(headers).doesNotContainKey(ANTHROPIC_KEY_HEADER);
             assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
@@ -181,7 +181,7 @@ class ProviderRequestHeaderServiceTests {
 
             HttpHeaders headers = new HttpHeaders();
             service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false,
-                    WireProtocol.ANTHROPIC);
+                    WireProtocol.MESSAGES);
 
             assertThat(headers.getFirst(ANTHROPIC_KEY_HEADER)).isEqualTo("provider-api-key");
             assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);
@@ -199,7 +199,7 @@ class ProviderRequestHeaderServiceTests {
 
             service.applyHeaders(headers, "provider-api-key", """
                     [{"key":"Authorization","value":"Bearer {apiKey}"}]
-                    """, WireProtocol.ANTHROPIC);
+                    """, WireProtocol.MESSAGES);
 
             assertThat(headers.getFirst(ANTHROPIC_KEY_HEADER)).isEqualTo("provider-api-key");
             assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
@@ -212,7 +212,7 @@ class ProviderRequestHeaderServiceTests {
 
             service.applyHeaders(headers, "provider-api-key", """
                     [{"key":"x-api-key","value":"/del/"}]
-                    """, WireProtocol.ANTHROPIC);
+                    """, WireProtocol.MESSAGES);
 
             assertThat(headers).doesNotContainKey(ANTHROPIC_KEY_HEADER);
             assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);

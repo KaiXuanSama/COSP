@@ -43,7 +43,7 @@ public class ProviderRequestTransformService {
      * 用 {@code valueOf} 会把非法值变成异常控制流，而这里要的是与其他三个白名单一致的
      * 「集合包含判断 + 统一错误消息」。
      */
-    private static final Set<String> PROTOCOLS = Set.of("OPENAI", "ANTHROPIC");
+    private static final Set<String> PROTOCOLS = Set.of("CHAT", "MESSAGES");
 
     private final ProviderConfigRepository providerConfigRepository;
     private final ProviderRequestTransformRepository requestTransformRepository;

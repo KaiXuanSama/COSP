@@ -15,7 +15,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * {@link OpenAiToAnthropicRequestTranslator} 的单元测试。
+ * {@link ChatToMessagesRequestTranslator} 的单元测试。
  *
  * <p>本测试类覆盖契约里的两条必须先钉测试的不变式（第 8.1 节）：
  * <ol>
@@ -25,13 +25,13 @@ import static org.junit.jupiter.api.Assertions.*;
  *       三步顺序（第 3.5 节）</li>
  * </ol>
  */
-class OpenAiToAnthropicRequestTranslatorTests {
+class ChatToMessagesRequestTranslatorTests {
 
-    private OpenAiToAnthropicRequestTranslator translator;
+    private ChatToMessagesRequestTranslator translator;
 
     @BeforeEach
     void setUp() {
-        translator = new OpenAiToAnthropicRequestTranslator(new ObjectMapper());
+        translator = new ChatToMessagesRequestTranslator(new ObjectMapper());
     }
 
     @Nested

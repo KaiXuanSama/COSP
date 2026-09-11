@@ -24,19 +24,19 @@ class ProtocolDispatchManagerTests {
 
     @Test
     void openAiDownstreamGoesDirectWhenProviderSupportsOpenAi() {
-        ProtocolDispatchDecision decision = manager.dispatch(WireProtocol.OPENAI, provider("[\"OPENAI\"]"));
+        ProtocolDispatchDecision decision = manager.dispatch(WireProtocol.CHAT, provider("[\"CHAT\"]"));
 
-        assertThat(decision.downstreamProtocol()).isEqualTo(WireProtocol.OPENAI);
-        assertThat(decision.upstreamProtocol()).isEqualTo(WireProtocol.OPENAI);
+        assertThat(decision.downstreamProtocol()).isEqualTo(WireProtocol.CHAT);
+        assertThat(decision.upstreamProtocol()).isEqualTo(WireProtocol.CHAT);
         assertThat(decision.translationNeeded()).isFalse();
     }
 
     @Test
     void anthropicDownstreamGoesDirectWhenProviderSupportsAnthropic() {
-        ProtocolDispatchDecision decision = manager.dispatch(WireProtocol.ANTHROPIC, provider("[\"ANTHROPIC\"]"));
+        ProtocolDispatchDecision decision = manager.dispatch(WireProtocol.MESSAGES, provider("[\"MESSAGES\"]"));
 
-        assertThat(decision.downstreamProtocol()).isEqualTo(WireProtocol.ANTHROPIC);
-        assertThat(decision.upstreamProtocol()).isEqualTo(WireProtocol.ANTHROPIC);
+        assertThat(decision.downstreamProtocol()).isEqualTo(WireProtocol.MESSAGES);
+        assertThat(decision.upstreamProtocol()).isEqualTo(WireProtocol.MESSAGES);
         assertThat(decision.translationNeeded()).isFalse();
     }
 
@@ -47,9 +47,9 @@ class ProtocolDispatchManagerTests {
      */
     @Test
     void bothProtocolsSupportedStillPrefersSameNameOverTranslation() {
-        ProviderRuntimeConfiguration provider = provider("[\"OPENAI\",\"ANTHROPIC\"]");
+        ProviderRuntimeConfiguration provider = provider("[\"CHAT\",\"MESSAGES\"]");
         assertThat(ProviderProtocolSupport.of(provider))
-                .containsExactlyInAnyOrder(WireProtocol.OPENAI, WireProtocol.ANTHROPIC);
+                .containsExactlyInAnyOrder(WireProtocol.CHAT, WireProtocol.MESSAGES);
 
         for (WireProtocol downstream : WireProtocol.values()) {
             ProtocolDispatchDecision decision = manager.dispatch(downstream, provider);
@@ -68,18 +68,18 @@ class ProtocolDispatchManagerTests {
      */
     @Test
     void anthropicDownstreamNeedsTranslationWhenProviderOnlySupportsOpenAi() {
-        ProtocolDispatchDecision decision = manager.dispatch(WireProtocol.ANTHROPIC, provider("[\"OPENAI\"]"));
+        ProtocolDispatchDecision decision = manager.dispatch(WireProtocol.MESSAGES, provider("[\"CHAT\"]"));
 
-        assertThat(decision.downstreamProtocol()).isEqualTo(WireProtocol.ANTHROPIC);
-        assertThat(decision.upstreamProtocol()).isEqualTo(WireProtocol.OPENAI);
+        assertThat(decision.downstreamProtocol()).isEqualTo(WireProtocol.MESSAGES);
+        assertThat(decision.upstreamProtocol()).isEqualTo(WireProtocol.CHAT);
         assertThat(decision.translationNeeded()).isTrue();
     }
 
     @Test
     void openAiDownstreamNeedsTranslationWhenProviderOnlySupportsAnthropic() {
-        ProtocolDispatchDecision decision = manager.dispatch(WireProtocol.OPENAI, provider("[\"ANTHROPIC\"]"));
+        ProtocolDispatchDecision decision = manager.dispatch(WireProtocol.CHAT, provider("[\"MESSAGES\"]"));
 
-        assertThat(decision.upstreamProtocol()).isEqualTo(WireProtocol.ANTHROPIC);
+        assertThat(decision.upstreamProtocol()).isEqualTo(WireProtocol.MESSAGES);
         assertThat(decision.translationNeeded()).isTrue();
     }
 
@@ -94,7 +94,7 @@ class ProtocolDispatchManagerTests {
         ProviderRuntimeConfiguration provider = provider("[]");
 
         assertThat(ProviderProtocolSupport.of(provider)).isEmpty();
-        assertThatThrownBy(() -> manager.dispatch(WireProtocol.OPENAI, provider))
+        assertThatThrownBy(() -> manager.dispatch(WireProtocol.CHAT, provider))
                 // 独立类型让控制器能精确识别并给 400；仍是 IllegalStateException 的子类，
                 // 因此任何只认父类型的兜底逻辑行为不变。
                 .isInstanceOf(NoSupportedProtocolException.class)
@@ -110,22 +110,22 @@ class ProtocolDispatchManagerTests {
         ProviderRuntimeConfiguration provider =
                 new ProviderRuntimeConfiguration("legacy", "https://example.org", "key", List.of());
 
-        assertThat(ProviderProtocolSupport.supports(provider, WireProtocol.OPENAI)).isTrue();
-        assertThat(ProviderProtocolSupport.supports(provider, WireProtocol.ANTHROPIC)).isTrue();
+        assertThat(ProviderProtocolSupport.supports(provider, WireProtocol.CHAT)).isTrue();
+        assertThat(ProviderProtocolSupport.supports(provider, WireProtocol.MESSAGES)).isTrue();
     }
 
     /** 未知协议名被忽略而非让整个供应商不可用；剩下的可识别协议照常生效。 */
     @Test
     void unknownProtocolNamesAreIgnoredWhileKnownOnesStillApply() {
-        assertThat(ProviderProtocolSupport.of(provider("[\"OPENAI\",\"GRPC\"]")))
-                .containsExactly(WireProtocol.OPENAI);
+        assertThat(ProviderProtocolSupport.of(provider("[\"CHAT\",\"GRPC\"]")))
+                .containsExactly(WireProtocol.CHAT);
     }
 
     /** 不是数组的脏配置保守放行为全集：宁可在上游失败，也不要本地全面拒绍。 */
     @Test
     void malformedProtocolConfigurationFallsBackToBothProtocols() {
-        assertThat(ProviderProtocolSupport.of(provider("\"OPENAI\"")))
-                .containsExactlyInAnyOrder(WireProtocol.OPENAI, WireProtocol.ANTHROPIC);
+        assertThat(ProviderProtocolSupport.of(provider("\"CHAT\"")))
+                .containsExactlyInAnyOrder(WireProtocol.CHAT, WireProtocol.MESSAGES);
     }
 
     private ProviderRuntimeConfiguration provider(String supportedProtocolsJson) {

@@ -206,13 +206,13 @@ class RequestBodyRuleEngineEqualsSemanticsTests {
 
         String rules = """
                 {"version":2,"groups":[{"id":"g","name":"g","order":0,"enabled":true,
-                 "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                 "protocols":["CHAT"],"templateKeys":["custom"],"previewBody":{},
                  "rules":[{"id":"r","order":0,"field":"marker","array":false,"conditional":true,
                   "conditionMode":"all","conditions":[{"path":"./probe","operator":"equals"}],
                   "operations":[{"type":"set_value","value":"after"}]}]}]}
                 """;
 
-        assertThat(engine.transform(input, rules, WireProtocol.OPENAI).output())
+        assertThat(engine.transform(input, rules, WireProtocol.CHAT).output())
                 .containsEntry("marker", "before");
     }
 
@@ -226,11 +226,11 @@ class RequestBodyRuleEngineEqualsSemanticsTests {
     private Map<String, Object> transformWithEquals(Map<String, Object> input, String path, String valueJson) {
         String rules = """
                 {"version":2,"groups":[{"id":"g","name":"g","order":0,"enabled":true,
-                 "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                 "protocols":["CHAT"],"templateKeys":["custom"],"previewBody":{},
                  "rules":[{"id":"r","order":0,"field":"marker","array":false,"conditional":true,
                   "conditionMode":"all","conditions":[{"path":"%s","operator":"equals","value":%s}],
                   "operations":[{"type":"set_value","value":"after"}]}]}]}
                 """.formatted(path, valueJson);
-        return engine.transform(input, rules, WireProtocol.OPENAI).output();
+        return engine.transform(input, rules, WireProtocol.CHAT).output();
     }
 }

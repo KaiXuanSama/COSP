@@ -3,8 +3,8 @@ package com.kaixuan.copilot_ollama_proxy.application.protocol;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.AnthropicToOpenAiResponseTranslator;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.OpenAiToAnthropicRequestTranslator;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.MessagesToChatResponseTranslator;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ChatToMessagesRequestTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
@@ -70,8 +70,8 @@ class ChatDispatchErrorSignalTests {
         // 如何抵达下游」，mock 掉它就把被测行为一起 mock 掉了。
         chatCompletionService = new ChatCompletionService(routeResolver, dispatchManager,
                 openAiChatService, anthropicChatService,
-                new OpenAiToAnthropicRequestTranslator(objectMapper),
-                new AnthropicToOpenAiResponseTranslator(objectMapper));
+                new ChatToMessagesRequestTranslator(objectMapper),
+                new MessagesToChatResponseTranslator(objectMapper));
         messagesService = new MessagesService(routeResolver, dispatchManager, anthropicChatService);
     }
 
@@ -121,30 +121,30 @@ class ChatDispatchErrorSignalTests {
     }
 
     /**
-     * A2O 请求翻译未实现时的那条错误同样必须走信号。
+     * M2C 请求翻译未实现时的那条错误同样必须走信号。
      *
      * <p>这条路径在加 defer 之前也是坏的：{@code Mono.error(...)} 本身安全，
      * 但它前面的 {@code dispatch(...)} 不是，所以整个方法体必须一起进 defer。
      */
     @Nested
-    @DisplayName("下游 Anthropic 而供应商只有 OpenAI（A2O 请求翻译未实现）")
+    @DisplayName("下游 Anthropic 而供应商只有 OpenAI（M2C 请求翻译未实现）")
     class TranslationNotSupported {
 
         @Test
         @DisplayName("非流式以 onError 抵达并点名供应商与协议")
         void nonStream() {
-            givenRoute("[\"OPENAI\"]");
+            givenRoute("[\"CHAT\"]");
 
             Throwable error = assertErrorSignal(() -> messagesService.messages(
                             Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-5"),
                     ProtocolTranslationNotSupportedException.class, "relay-x");
-            assertThat(error).hasMessageContaining("ANTHROPIC");
+            assertThat(error).hasMessageContaining("MESSAGES");
         }
 
         @Test
         @DisplayName("流式以 onError 抵达")
         void stream() {
-            givenRoute("[\"OPENAI\"]");
+            givenRoute("[\"CHAT\"]");
 
             assertErrorSignal(() -> messagesService.messagesStream(
                             Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-6"),
@@ -153,7 +153,7 @@ class ChatDispatchErrorSignalTests {
     }
 
     /**
-     * O2A 请求翻译失败（下游请求本身无法表达成 Anthropic 协议）。
+     * C2M 请求翻译失败（下游请求本身无法表达成 Anthropic 协议）。
      *
      * <p>这是最容易被忽略的一条：前两组的异常来自调度器，而本组来自<strong>翻译器</strong>，
      * 位置在 {@code translateRequest} 那一行 —— 即使调度成功、供应商配置完全正常，
@@ -161,7 +161,7 @@ class ChatDispatchErrorSignalTests {
      * {@code messages[0].role} 这样的字段路径，正是它必须抵达下游的理由。
      */
     @Nested
-    @DisplayName("O2A 请求翻译失败")
+    @DisplayName("C2M 请求翻译失败")
     class RequestTranslationFailure {
 
         /** 未知 role 是契约第 6.1 节列出的四类硬失败之一。 */
@@ -172,7 +172,7 @@ class ChatDispatchErrorSignalTests {
         @Test
         @DisplayName("非流式以 onError 抵达且消息带字段路径")
         void nonStream() {
-            givenRoute("[\"ANTHROPIC\"]");
+            givenRoute("[\"MESSAGES\"]");
 
             Throwable error = assertErrorSignal(() -> chatCompletionService.chatCompletion(
                             BAD_ROLE_REQUEST, "m", HttpHeaders.EMPTY, "req-7"),
@@ -184,7 +184,7 @@ class ChatDispatchErrorSignalTests {
         @Test
         @DisplayName("流式以 onError 抵达且消息带字段路径")
         void stream() {
-            givenRoute("[\"ANTHROPIC\"]");
+            givenRoute("[\"MESSAGES\"]");
 
             assertErrorSignal(() -> chatCompletionService.chatCompletionStream(
                             BAD_ROLE_REQUEST, "m", HttpHeaders.EMPTY, "req-8"),
@@ -204,7 +204,7 @@ class ChatDispatchErrorSignalTests {
 
         @Test
         void openAiNonStreamStillDelegatesToUpstream() {
-            givenRoute("[\"OPENAI\"]");
+            givenRoute("[\"CHAT\"]");
             given(openAiChatService.chatCompletion(any(), any(), any(), any()))
                     .willReturn(Mono.just("{\"ok\":true}"));
 
@@ -215,7 +215,7 @@ class ChatDispatchErrorSignalTests {
 
         @Test
         void anthropicStreamStillDelegatesToUpstream() {
-            givenRoute("[\"ANTHROPIC\"]");
+            givenRoute("[\"MESSAGES\"]");
             given(anthropicChatService.messagesStream(any(), any(), any(), any()))
                     .willReturn(Flux.just("event-1"));
 

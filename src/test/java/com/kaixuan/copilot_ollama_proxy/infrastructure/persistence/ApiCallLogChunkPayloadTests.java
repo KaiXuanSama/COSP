@@ -53,7 +53,7 @@ class ApiCallLogChunkPayloadTests {
     /** 直连：落成裸数组，与历史数据同形，前端现有解析路径不受影响。 */
     @Test
     void directCallStoresBareArray() throws Exception {
-        Long id = repository.saveStream("deepseek", "model-x", "ANTHROPIC", "ANTHROPIC",
+        Long id = repository.saveStream("deepseek", "model-x", "MESSAGES", "MESSAGES",
                 Map.of(), Map.of(), Map.of(), 200,
                 ChunkLogPayload.direct(List.of("{\"a\":1}", "[DONE]")), 100L);
 
@@ -72,7 +72,7 @@ class ApiCallLogChunkPayloadTests {
                 "{\"type\":\"content_block_delta\"}");
         List<String> translated = List.of("{\"object\":\"chat.completion.chunk\"}", "[DONE]");
 
-        Long id = repository.saveStream("deepseek", "model-x", "OPENAI", "ANTHROPIC",
+        Long id = repository.saveStream("deepseek", "model-x", "CHAT", "MESSAGES",
                 Map.of(), Map.of(), Map.of(), 200,
                 ChunkLogPayload.translated(translated, upstream, List.of(1, 1)), 100L);
 
@@ -103,7 +103,7 @@ class ApiCallLogChunkPayloadTests {
                 "{\"type\":\"content_block_delta\"}");
         List<Integer> frameCounts = List.of(1, 0, 0, 1);
 
-        Long id = repository.saveStream("deepseek", "model-x", "OPENAI", "ANTHROPIC",
+        Long id = repository.saveStream("deepseek", "model-x", "CHAT", "MESSAGES",
                 Map.of(), Map.of(), Map.of(), 200,
                 ChunkLogPayload.translated(List.of("a", "b", "[DONE]"), upstream, frameCounts),
                 100L);
@@ -121,7 +121,7 @@ class ApiCallLogChunkPayloadTests {
     /** 错误路径同样支持两形，否则失败调用会丢掉上游证据。 */
     @Test
     void errorPathAlsoStoresBothViews() throws Exception {
-        Long id = repository.saveStreamWithError("deepseek", "model-x", "OPENAI", "ANTHROPIC",
+        Long id = repository.saveStreamWithError("deepseek", "model-x", "CHAT", "MESSAGES",
                 Map.of(), Map.of(), Map.of(), 200,
                 ChunkLogPayload.translated(List.of("{\"x\":1}"), List.of("{\"type\":\"ping\"}"),
                         List.of(0)),
@@ -138,11 +138,11 @@ class ApiCallLogChunkPayloadTests {
      */
     @Test
     void trimClearsBothViewsBecauseTheyShareOneColumn() {
-        repository.saveStream("deepseek", "model-x", "OPENAI", "ANTHROPIC",
+        repository.saveStream("deepseek", "model-x", "CHAT", "MESSAGES",
                 Map.of(), Map.of(), Map.of(), 200,
                 ChunkLogPayload.translated(List.of("{\"x\":1}"), List.of("{\"y\":2}"), List.of(1)),
                 100L);
-        repository.saveStream("deepseek", "model-x", "OPENAI", "ANTHROPIC",
+        repository.saveStream("deepseek", "model-x", "CHAT", "MESSAGES",
                 Map.of(), Map.of(), Map.of(), 200,
                 ChunkLogPayload.translated(List.of("{\"x\":2}"), List.of("{\"y\":3}"), List.of(1)),
                 100L);
