@@ -107,7 +107,8 @@ public class ProviderAdminService {
     public Mono<Outcome> saveProviderConfig(String providerKey, MultiValueMap<String, String> form) {
         return Mono.fromCallable(() -> {
             providerConfigRepository.saveProviderConfigWithModels(providerKey, value(form, "baseUrl", "").trim(),
-                    parseApiKeyInputs(value(form, "apiKeys", "[]").trim(), value(form, "activeKeyUuid", "").trim()),
+                    parseApiKeyInputs(value(form, "apiKeys", "[]").trim(), value(form, "activeKeyUuid", "").trim(),
+                            parseOptionalIndex(value(form, "activeKeyIndex", "").trim())),
                     parseModels(form));
             try {
                 saveProtocolsFromForm(providerKey, form);
@@ -362,7 +363,29 @@ public class ProviderAdminService {
         return result;
     }
 
-    private List<ProviderApiKeyRepository.ApiKeyInput> parseApiKeyInputs(String apiKeysJson, String activeKeyUuid) {
+    /**
+     * 解析 API Key 输入列表并确定激活项。
+     *
+     * <h2>激活项的三级判定</h2>
+     * <ol>
+     *   <li>按 {@code activeKeyUuid} 精确匹配 —— 已保存的 Key 用它标识；</li>
+     *   <li>都匹配不上时按 {@code activeKeyIndex} 命中对应下标 —— 覆盖「激活项是一条
+     *       尚未落库的新增条目」这个场景：它此刻没有 {@code keyUuid}，无法用 uuid 表达，
+     *       前端改用它在提交数组中的下标传达意图；</li>
+     *   <li>仍确定不了才兜底第一条。</li>
+     * </ol>
+     *
+     * <p>第二级是「新增并选中它、保存成功却回退到旧 Key」这个 bug 的修复点：过去只有
+     * uuid 一条路，新增条目的 uuid 为空，于是永远落到兜底把第一条（通常是旧 Key）设为
+     * 激活。下标由前端 {@code resolveActiveKeyIndex} 从临时 value 解析而来，与本方法
+     * 遍历的数组同序。
+     *
+     * @param apiKeysJson    Key 列表 JSON（数组）
+     * @param activeKeyUuid  激活项的 keyUuid；新增未保存项为空串
+     * @param activeKeyIndex 激活项在数组中的下标；{@code -1} 表示前端未指定（靠 uuid 即可）
+     */
+    private List<ProviderApiKeyRepository.ApiKeyInput> parseApiKeyInputs(String apiKeysJson, String activeKeyUuid,
+                                                                         int activeKeyIndex) {
         List<ProviderApiKeyRepository.ApiKeyInput> inputs = new ArrayList<>();
         try {
             JsonNode array = objectMapper.readTree(apiKeysJson);
@@ -376,9 +399,12 @@ public class ProviderAdminService {
                         node.hasNonNull("name") ? node.get("name").asText() : "",
                         node.hasNonNull("apiKey") ? node.get("apiKey").asText() : null, active));
             }
+            // uuid 没命中任何项：先试下标（新增未保存项走这条），再兜底第一条。
             if (!activeFound && !inputs.isEmpty()) {
-                ProviderApiKeyRepository.ApiKeyInput first = inputs.get(0);
-                inputs.set(0, new ProviderApiKeyRepository.ApiKeyInput(first.keyUuid(), first.keyName(), first.plaintext(), true));
+                int target = (activeKeyIndex >= 0 && activeKeyIndex < inputs.size()) ? activeKeyIndex : 0;
+                ProviderApiKeyRepository.ApiKeyInput chosen = inputs.get(target);
+                inputs.set(target, new ProviderApiKeyRepository.ApiKeyInput(
+                        chosen.keyUuid(), chosen.keyName(), chosen.plaintext(), true));
             }
             return inputs;
         } catch (Exception exception) {
@@ -430,6 +456,52 @@ public class ProviderAdminService {
     private String value(MultiValueMap<String, String> form, String key, String defaultValue) {
         String value = form.getFirst(key);
         return value == null ? defaultValue : value;
+    }
+
+    /**
+     * 按 keyUuid 解密并返回单条 API Key 的明文，供前端复制。
+     *
+     * <p>与网关 Key 的 {@code reveal} 同一安全口径：明文<strong>不随列表接口返回</strong>，
+     * 只在管理员显式点击复制时按需解密回传，且本端点位于 {@code /config/**} 之下，
+     * 受管理后台 JWT 保护。解密复用 {@link ProviderApiKeyRepository#decrypt}，
+     * 没有另起一套加解密逻辑。
+     *
+     * @param providerKey 供应商路由标识
+     * @param keyUuid     目标 API Key 的 UUID
+     * @return 明文 Key；供应商不存在、keyUuid 不匹配时返回空串（调用方据此回 404）
+     */
+    public Mono<String> revealProviderApiKey(String providerKey, String keyUuid) {
+        return Mono.fromCallable(() -> {
+            ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
+            if (provider == null || keyUuid == null || keyUuid.isBlank()) {
+                return "";
+            }
+            for (ProviderApiKeyRow row : providerApiKeyRepository.findByProviderId(provider.id())) {
+                if (keyUuid.equals(row.keyUuid())) {
+                    return providerApiKeyRepository.decrypt(row);
+                }
+            }
+            return "";
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 解析一个可选的非负下标表单值。
+     *
+     * <p>空值、非数字或负数一律返回 {@code -1}（表示「未指定」），
+     * 让 {@link #parseApiKeyInputs} 走 uuid 优先、否则兜底第一条的原有路径。
+     * 越界下标不在这里拦 —— 那里已按 {@code inputs.size()} 判定，避免两处各写一遍边界。
+     */
+    private static int parseOptionalIndex(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return -1;
+        }
+        try {
+            int index = Integer.parseInt(raw.trim());
+            return index >= 0 ? index : -1;
+        } catch (NumberFormatException exception) {
+            return -1;
+        }
     }
 
     /**

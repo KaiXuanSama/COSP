@@ -22,6 +22,8 @@ export {
   keepMeaningfulEntries,
   maskApiKey,
   newKeyValue,
+  parseNewKeyIndex,
+  resolveActiveKeyIndex,
   resolveActiveValue,
   resolvePullCredential,
   toApiKeyPayloads,

@@ -36,8 +36,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * 终态事件（COMPLETED/FAILED/CANCELED/ABORTED）移除。SSE 连接建立时先 {@link #snapshot} 补发，
  * 使新订阅者立即看到所有进行中的调用（包括卡死的，从而可被取消）。
  *
- * <p>该 map 还兼作<strong>模型展示名的基准</strong>：事件从控制器与 provider 层两处发出，
- * 模型名口径不同，故 {@link #publish} 统一改写为首个事件所用的名字，见 {@code withDisplayModel}。
+ * <p>该 map 还兼作两件事的基准：
+ * <ul>
+ *   <li><strong>模型展示名</strong>：事件从控制器与 provider 层两处发出，模型名口径不同，
+ *       故 {@link #publish} 统一改写为首个事件所用的名字，见 {@code withDisplayModel}；</li>
+ *   <li><strong>协议信息补写目标</strong>：上游协议要等应用层调度完才有结论，届时由
+ *       {@link #recordProtocols} 改写这条在途事件并重发，前端据此补上路径标记。</li>
+ * </ul>
  */
 @Component
 public class CallLifecyclePublisher implements CallLifecycleNotifier {
@@ -84,6 +89,28 @@ public class CallLifecyclePublisher implements CallLifecycleNotifier {
     /** 订阅实时生命周期事件流。 */
     public Flux<CallLifecycleEvent> events() {
         return sink.asFlux();
+    }
+
+    /**
+     * 补齐一次调用的协议信息并重发，让前端补上路径标记。
+     *
+     * <p>只改写在途事件：应用层调用本方法时，控制器早已同步发过 RECEIVED，正常情况下
+     * {@link #inFlight} 必有记录。若已无记录（调用已终态、或该请求压根没发过事件），
+     * 直接忽略 —— 给一条已收尾的 Toast 补协议毫无意义，重发还会让它重新活跃。
+     *
+     * <p>重发的是「当前最新那条事件」而非新造 RECEIVED：阶段必须保持不动，
+     * 否则前端会把一条已经产生 chunk 的调用倒回「下游发出请求」。时间戳同样保持不变
+     * （{@link CallLifecycleEvent#withProtocols} 已保证），它是前端计时起点。
+     *
+     * <p>协议字段为 {@code null} 表示不改写该字段（见 {@code withProtocols}）。
+     */
+    @Override
+    public void recordProtocols(String requestId, String downstreamProtocol, String upstreamProtocol) {
+        CallLifecycleEvent updated = inFlight.computeIfPresent(requestId,
+                (id, event) -> event.withProtocols(downstreamProtocol, upstreamProtocol));
+        if (updated != null) {
+            sink.tryEmitNext(updated);
+        }
     }
 
     /**

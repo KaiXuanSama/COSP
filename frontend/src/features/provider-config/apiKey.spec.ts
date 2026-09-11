@@ -8,6 +8,8 @@ import {
   keepMeaningfulEntries,
   maskApiKey,
   newKeyValue,
+  parseNewKeyIndex,
+  resolveActiveKeyIndex,
   resolveActiveValue,
   resolvePullCredential,
   toApiKeyPayloads,
@@ -151,6 +153,54 @@ describe('resolveActiveValue', () => {
 
   it('首项为未保存草稿时给出临时 value', () => {
     expect(resolveActiveValue([draft('sk-x')], 'gone')).toBe(newKeyValue(0))
+  })
+
+  it('激活项是新增未保存项时保持选中（不因无 keyUuid 而回退旧 Key）', () => {
+    // 这是 bug 的前端一半：旧 Key 在位（index 0），新增项在 index 1 且被选中。
+    // 修复前会因新增项 !isPersisted 而判它消失，回退到 u1。
+    const entries = [persisted('u1'), draft('sk-fresh')]
+    expect(resolveActiveValue(entries, newKeyValue(1))).toBe(newKeyValue(1))
+  })
+
+  it('临时 value 下标已变成已持久化项时不再保持，回退第一条', () => {
+    // 下标 0 对应的是已持久化项，不应被当成新增项保留。
+    const entries = [persisted('u1')]
+    expect(resolveActiveValue(entries, newKeyValue(0))).toBe('u1')
+  })
+
+  it('临时 value 下标越界时回退第一条', () => {
+    const entries = [persisted('u1'), draft('sk-fresh')]
+    expect(resolveActiveValue(entries, newKeyValue(9))).toBe('u1')
+  })
+})
+
+describe('parseNewKeyIndex', () => {
+  it('从临时 value 解析出下标', () => {
+    expect(parseNewKeyIndex(newKeyValue(0))).toBe(0)
+    expect(parseNewKeyIndex(newKeyValue(3))).toBe(3)
+  })
+
+  it('非临时 value 返回 null', () => {
+    expect(parseNewKeyIndex('u1')).toBeNull()
+    expect(parseNewKeyIndex('')).toBeNull()
+  })
+
+  it('格式不合法的临时 value 返回 null', () => {
+    expect(parseNewKeyIndex('__new_')).toBeNull()
+    expect(parseNewKeyIndex('__new_abc')).toBeNull()
+    expect(parseNewKeyIndex('__new_1.5')).toBeNull()
+    expect(parseNewKeyIndex('__new_-1')).toBeNull()
+  })
+})
+
+describe('resolveActiveKeyIndex', () => {
+  it('激活项是新增项时给出其下标（供后端兜底）', () => {
+    expect(resolveActiveKeyIndex(newKeyValue(1))).toBe(1)
+  })
+
+  it('激活项是已保存 Key 时返回 null（靠 activeKeyUuid 即可）', () => {
+    expect(resolveActiveKeyIndex('u1')).toBeNull()
+    expect(resolveActiveKeyIndex('')).toBeNull()
   })
 })
 

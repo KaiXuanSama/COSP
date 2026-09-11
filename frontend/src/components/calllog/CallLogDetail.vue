@@ -17,6 +17,7 @@ import ChunksViewer from './ChunksViewer.vue'
 import type { CollapseRule } from './JsonNode.vue'
 import { parseChunkViews } from './chunkViews'
 import { formatCacheHitRate } from '@/features/call-log/cacheHitRate'
+import { ttfbSeverity } from '@/features/call-log/ttfbSeverity'
 import type { DetailItem, UsageDetail } from '@/types/calllog'
 
 const props = withDefaults(
@@ -122,6 +123,17 @@ function formatTotalTokens(usage: UsageDetail | null): string {
 function formatTtfb(usage: UsageDetail | null): string {
   if (!usage || usage.ttfb_ms == null) return '—'
   return formatDuration(usage.ttfb_ms)
+}
+
+/**
+ * 首字时长的档位类名；正常档返回空串（不上色，继承 .detail-timing 的弱化色）。
+ *
+ * 阈值与档位判定在 `features/call-log/ttfbSeverity.ts`，与列表页共用同一份 ——
+ * 两处各写一遍阈值迟早漂移。这里只负责把档位翻译成本组件的类名。
+ */
+function ttfbClass(usage: UsageDetail | null): string {
+  const severity = ttfbSeverity(usage?.ttfb_ms)
+  return severity === 'normal' ? '' : `detail-ttfb--${severity}`
 }
 
 function formatCallType(detail: DetailItem): string {
@@ -308,7 +320,12 @@ onUnmounted(() => {
         </div>
       </div>
       <div class="detail-meta-sub">
-        <span class="detail-timing" title="首字响应时长 / 总响应时长">{{ formatTtfb(props.detail.usage) }} / {{ formatDuration(props.detail.duration_ms) }}</span>
+        <!--
+          首字时长单独包一层 span 才能只给它上色 —— 档位色不该染到斜杠与总耗时上，
+          后者没有「慢不慢」的阈值口径。
+        -->
+        <span class="detail-timing" title="首字响应时长 / 总响应时长"><span
+          :class="ttfbClass(props.detail.usage)">{{ formatTtfb(props.detail.usage) }}</span> / {{ formatDuration(props.detail.duration_ms) }}</span>
         <span class="detail-time">{{ formatTime(props.detail.created_at) }}</span>
       </div>
     </div>
@@ -550,6 +567,24 @@ onUnmounted(() => {
   color: $text-muted;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/*
+  首字时长档位：达到 20s / 40s / 60s 依次转暗黄 / 暗橙 / 暗红。
+  与列表页同一套阈值与色值（判定见 features/call-log/ttfbSeverity.ts），
+  用主题功能色的暗色版本，与整体低饱和暖色调一致。正常档不给类名，
+  于是它继承 .detail-timing 的弱化色，与斜杠、总耗时连成一组。
+*/
+.detail-ttfb--warn {
+  color: $warning;
+}
+
+.detail-ttfb--slow {
+  color: $accent;
+}
+
+.detail-ttfb--critical {
+  color: $danger;
 }
 
 /*
