@@ -20,7 +20,7 @@ import { ttfbSeverity } from '@/features/call-log/ttfbSeverity'
 import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
 import { CallLogDetail } from '@/components/calllog'
 import type { DetailItem } from '@/types/calllog'
-import type { WireProtocol } from '@/types/protocol'
+import { formatCallTypeLabel, formatCallTypeTitle, type WireProtocol } from '@/types/protocol'
 
 /**
  * 消费者视角的一行。
@@ -295,13 +295,14 @@ function ttfbClass(ms: number | null): string {
   return severity === 'normal' ? '' : `col-ttfb--${severity}`
 }
 
+/** 调用类型标记。箭头是响应翻译方向（上游 → 下游），方向语义见 `formatCallTypeLabel`。 */
 function formatCallType(row: UsageLogItem): string {
-  const upstream = row.upstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
-  const downstream = row.downstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
-  const protocol = upstream === downstream
-    ? (upstream === 'A' ? 'Anthropic' : 'OpenAI')
-    : `${upstream}→${downstream}`
-  return `${row.is_stream ? '流式' : '非流'}: ${protocol}`
+  return formatCallTypeLabel(row.upstream_protocol, row.downstream_protocol, row.is_stream)
+}
+
+/** 标记的悬停说明，写明「响应翻译」与两侧全名，消除箭头方向的歧义。 */
+function callTypeTitle(row: UsageLogItem): string {
+  return formatCallTypeTitle(row.upstream_protocol, row.downstream_protocol)
 }
 
 /** 状态码 -1 是空响应兜底的占位值，直接显示数字会让人误以为是 HTTP 码。 */
@@ -418,7 +419,7 @@ onUnmounted(() => {
                 <td class="col-model" :title="row.model_name">{{ row.model_name }}</td>
                 <td
                   class="col-call-type"
-                  :title="`上游 ${row.upstream_protocol} → 下游 ${row.downstream_protocol}`"
+                  :title="callTypeTitle(row)"
                 >
                   <span class="call-type-tag" :class="{ 'call-type-tag--stream': row.is_stream }">
                     {{ formatCallType(row) }}

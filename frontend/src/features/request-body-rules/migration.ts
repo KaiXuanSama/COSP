@@ -72,7 +72,7 @@ function legacyGroup(rules: FieldRule[], legacy: LegacyEditorFields): RuleGroup 
     name: LEGACY_GROUP_NAME,
     order: 0,
     enabled: true,
-    protocols: ['OPENAI'],
+    protocols: ['CHAT'],
     templateKeys: normalizeTemplateKeys(legacy.templateKeys),
     previewBody: isRecord(legacy.previewBody)
       ? (legacy.previewBody as Record<string, unknown>)

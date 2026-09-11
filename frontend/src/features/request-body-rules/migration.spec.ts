@@ -10,7 +10,7 @@ describe('规则集 V1 → V2 迁移', () => {
     expect(result.version).toBe(2)
     expect(result.groups).toHaveLength(1)
     expect(result.groups[0]!.name).toBe(LEGACY_GROUP_NAME)
-    expect(result.groups[0]!.protocols).toEqual(['OPENAI'])
+    expect(result.groups[0]!.protocols).toEqual(['CHAT'])
     expect(result.groups[0]!.rules).toEqual(MIMO_EXAMPLE_RULESET.rules)
   })
 
@@ -44,7 +44,7 @@ describe('规则集 V1 → V2 迁移', () => {
       groups: [{ id: 'g1', name: '组', order: 0, enabled: true, rules: [] }],
     })
 
-    expect(result.groups[0]!.protocols).toEqual(['OPENAI', 'ANTHROPIC'])
+    expect(result.groups[0]!.protocols).toEqual(['CHAT', 'MESSAGES'])
   })
 
   it('丢弃 protocols 里无法识别的值', () => {
@@ -55,12 +55,12 @@ describe('规则集 V1 → V2 迁移', () => {
         name: '组',
         order: 0,
         enabled: true,
-        protocols: ['OPENAI', 'GEMINI', 'OPENAI'],
+        protocols: ['CHAT', 'GEMINI', 'CHAT'],
         rules: [],
       }],
     })
 
-    expect(result.groups[0]!.protocols).toEqual(['OPENAI'])
+    expect(result.groups[0]!.protocols).toEqual(['CHAT'])
   })
 
   it('V2 组缺少 id 时补一个稳定 ID', () => {

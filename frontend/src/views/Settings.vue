@@ -97,7 +97,7 @@ const editMirroringAnthropicBaseUrl = ref(false)
  * 「取消勾选 OpenAI」的瞬间两行交换位置，用户正在编辑的输入框跳到另一行去 ——
  * 那个跳动没有任何信息价值，纯粹是布局规则的副作用。
  */
-const editPrimaryProtocol = ref<WireProtocol>('OPENAI')
+const editPrimaryProtocol = ref<WireProtocol>('CHAT')
 
 /** 第二行地址是否展开。 */
 const editUrlsExpanded = ref(false)
@@ -144,11 +144,11 @@ function setEditProtocolEnabled(protocol: WireProtocol, enabled: boolean) {
 
 /** 按协议读地址。Anthropic 的空值不在这里回退 —— 输入框要如实显示空，占位符负责说明。 */
 function editBaseUrlOf(protocol: WireProtocol) {
-  return protocol === 'ANTHROPIC' ? editForm.value.anthropicBaseUrl : editForm.value.baseUrl
+  return protocol === 'MESSAGES' ? editForm.value.anthropicBaseUrl : editForm.value.baseUrl
 }
 
 function onEditBaseUrlInput(protocol: WireProtocol, value: string) {
-  if (protocol === 'ANTHROPIC') {
+  if (protocol === 'MESSAGES') {
     editForm.value.anthropicBaseUrl = value
     // 用户亲手改过，联动立即终止，否则他的输入会被下一次同步覆盖。
     editMirroringAnthropicBaseUrl.value = false
@@ -162,24 +162,24 @@ function onEditBaseUrlInput(protocol: WireProtocol, value: string) {
 
 /** 进入 OpenAI 地址框时拍下「Anthropic 当前是否为空」，作为本轮编辑的联动依据。 */
 function onEditBaseUrlFocus(protocol: WireProtocol) {
-  if (protocol === 'OPENAI') {
+  if (protocol === 'CHAT') {
     editMirroringAnthropicBaseUrl.value = shouldMirrorOnFocus(editForm.value.anthropicBaseUrl)
   }
 }
 
 const PROTOCOL_ROW_LABELS: Record<WireProtocol, string> = {
-  OPENAI: 'OpenAI 请求Url',
-  ANTHROPIC: 'Anthropic 请求Url',
+  CHAT: 'OpenAI 请求Url',
+  MESSAGES: 'Anthropic 请求Url',
 }
 
 const PROTOCOL_ROW_PLACEHOLDERS: Record<WireProtocol, string> = {
-  OPENAI: 'https://api.example.com/v1',
-  ANTHROPIC: '留空则与 OpenAI 地址相同',
+  CHAT: 'https://api.example.com/v1',
+  MESSAGES: '留空则与 OpenAI 地址相同',
 }
 
 /** 端点预览文案；地址为空时退回占位模板，不拼出只剩路径的半成品。 */
 function editEndpointHintOf(protocol: WireProtocol) {
-  if (protocol === 'ANTHROPIC') {
+  if (protocol === 'MESSAGES') {
     return describeEndpoint(
       editForm.value.anthropicBaseUrl || editForm.value.baseUrl, ANTHROPIC_ENDPOINT_SUFFIX,
     ) || `\${anthropic_url}${ANTHROPIC_ENDPOINT_SUFFIX}`
@@ -1104,9 +1104,9 @@ function removeModel(index: number) {
             <span class="endpoint-hint" :title="openAiEndpointHint">{{ openAiEndpointHint }}</span>
           </div>
           <div class="protocol-url-row">
-            <n-checkbox :checked="isProtocolEnabled('OPENAI')"
-              :title="`启用 ${WIRE_PROTOCOL_LABELS.OPENAI} 协议`"
-              @update:checked="setProtocolEnabled('OPENAI', $event)" />
+            <n-checkbox :checked="isProtocolEnabled('CHAT')"
+              :title="`启用 ${WIRE_PROTOCOL_LABELS.CHAT} 协议`"
+              @update:checked="setProtocolEnabled('CHAT', $event)" />
             <n-input :value="providerBaseUrl" placeholder="https://api.example.com/v1"
               @update:value="onOpenAiBaseUrlInput" @focus="onOpenAiBaseUrlFocus" />
           </div>
@@ -1119,9 +1119,9 @@ function removeModel(index: number) {
             <span class="endpoint-hint" :title="anthropicEndpointHint">{{ anthropicEndpointHint }}</span>
           </div>
           <div class="protocol-url-row">
-            <n-checkbox :checked="isProtocolEnabled('ANTHROPIC')"
-              :title="`启用 ${WIRE_PROTOCOL_LABELS.ANTHROPIC} 协议`"
-              @update:checked="setProtocolEnabled('ANTHROPIC', $event)" />
+            <n-checkbox :checked="isProtocolEnabled('MESSAGES')"
+              :title="`启用 ${WIRE_PROTOCOL_LABELS.MESSAGES} 协议`"
+              @update:checked="setProtocolEnabled('MESSAGES', $event)" />
             <n-input :value="providerAnthropicBaseUrl" placeholder="留空则与 OpenAI 地址相同"
               @update:value="onAnthropicBaseUrlInput" />
           </div>

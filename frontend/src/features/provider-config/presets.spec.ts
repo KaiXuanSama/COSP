@@ -66,7 +66,7 @@ describe('presetRuleSetV2', () => {
   // 预设规则的字段路径是照 OpenAI 请求体写的，作用在 Anthropic 上多数匹配不到。
   // 只勾 OPENAI 是刻意的：静默失效比不执行更难排查。
   it('规则组只适用 OpenAI 线路', () => {
-    expect(presetRuleSetV2(MIMO_EXAMPLE_RULESET).groups[0].protocols).toEqual(['OPENAI'])
+    expect(presetRuleSetV2(MIMO_EXAMPLE_RULESET).groups[0].protocols).toEqual(['CHAT'])
   })
 
   it('组内带上图片兼容模板与对应预览样本', () => {
@@ -148,7 +148,7 @@ describe('createProviderDefaultEditorState', () => {
   it('默认带一个仅适用 OpenAI 的图片兼容规则组', () => {
     const state = createProviderDefaultEditorState()
     expect(state.rules.groups).toHaveLength(1)
-    expect(state.rules.groups[0].protocols).toEqual(['OPENAI'])
+    expect(state.rules.groups[0].protocols).toEqual(['CHAT'])
     expect(state.rules.groups[0].templateKeys).toContain('message-tool-image')
   })
 

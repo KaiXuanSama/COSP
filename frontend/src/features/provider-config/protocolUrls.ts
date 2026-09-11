@@ -14,7 +14,7 @@ import { ALL_WIRE_PROTOCOLS, isWireProtocol, type WireProtocol } from '@/types/p
  * 多数中转站的 Anthropic 端点与 OpenAI 同源，勾上后不通至多是上游报错，
  * 而默认不勾会让「明明支持却调不通」变成需要用户自己发现的问题。
  */
-export const DEFAULT_NEW_PROVIDER_PROTOCOLS: readonly WireProtocol[] = ['OPENAI', 'ANTHROPIC']
+export const DEFAULT_NEW_PROVIDER_PROTOCOLS: readonly WireProtocol[] = ['CHAT', 'MESSAGES']
 
 /**
  * 把后端回传的协议集合归一化成前端可用的数组。
@@ -120,15 +120,15 @@ export const ANTHROPIC_ENDPOINT_SUFFIX = '/messages'
  * 跳到另一行去 —— 而这个跳动没有任何信息价值，纯粹是布局规则的副作用。
  */
 export function resolvePrimaryProtocol(protocols: readonly WireProtocol[]): WireProtocol {
-  if (!protocols.includes('OPENAI') && protocols.includes('ANTHROPIC')) {
-    return 'ANTHROPIC'
+  if (!protocols.includes('CHAT') && protocols.includes('MESSAGES')) {
+    return 'MESSAGES'
   }
-  return 'OPENAI'
+  return 'CHAT'
 }
 
 /** 按首行协议排出两行的显示顺序。 */
 export function orderProtocolRows(primary: WireProtocol): WireProtocol[] {
-  return primary === 'ANTHROPIC' ? ['ANTHROPIC', 'OPENAI'] : ['OPENAI', 'ANTHROPIC']
+  return primary === 'MESSAGES' ? ['MESSAGES', 'CHAT'] : ['CHAT', 'MESSAGES']
 }
 
 /** 拉取模型时选定的线路。 */
@@ -160,15 +160,15 @@ export function resolveModelPullTarget(
   openAiBaseUrl: string,
   anthropicBaseUrl: string,
 ): ModelPullTarget | null {
-  if (protocols.includes('OPENAI')) {
-    return { protocol: 'OPENAI', baseUrl: openAiBaseUrl.trim() }
+  if (protocols.includes('CHAT')) {
+    return { protocol: 'CHAT', baseUrl: openAiBaseUrl.trim() }
   }
-  if (protocols.includes('ANTHROPIC')) {
+  if (protocols.includes('MESSAGES')) {
     // 空串回退到 OpenAI 地址，与后端 resolveAnthropicBaseUrl 同口径：
     // 「留空即与 OpenAI 相同」在界面上是一句提示，在这里必须是同一条规则，
     // 否则用户会看到「提示说相同，但拉取报地址为空」。
     const trimmed = anthropicBaseUrl.trim()
-    return { protocol: 'ANTHROPIC', baseUrl: trimmed || openAiBaseUrl.trim() }
+    return { protocol: 'MESSAGES', baseUrl: trimmed || openAiBaseUrl.trim() }
   }
   return null
 }

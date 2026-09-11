@@ -98,7 +98,7 @@ function validateRuleGroup(value: unknown, path: string, ids: Set<string>): stri
   if (!Array.isArray(value.protocols)) return `${path}.protocols 必须是数组`
   for (let index = 0; index < value.protocols.length; index += 1) {
     if (!isWireProtocol(value.protocols[index])) {
-      return `${path}.protocols[${index}] 必须为 "OPENAI" 或 "ANTHROPIC"`
+      return `${path}.protocols[${index}] 必须为 "CHAT" 或 "MESSAGES"`
     }
   }
   if (!Array.isArray(value.templateKeys)) return `${path}.templateKeys 必须是数组`

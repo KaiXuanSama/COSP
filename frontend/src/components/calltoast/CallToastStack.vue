@@ -23,7 +23,7 @@ import {
   type CallToast,
   type CallPhase,
 } from '@/stores/callLifecycle'
-import { WIRE_PROTOCOL_LABELS, isWireProtocol } from '@/types/protocol'
+import { protocolDisplayName } from '@/types/protocol'
 
 const store = useCallLifecycleStore()
 
@@ -87,7 +87,7 @@ function elapsedText(toast: CallToast): string {
   return formatElapsed((toast.endTimestamp ?? now.value) - toast.startTimestamp)
 }
 
-/** 路径标记的缩写文本（`O` / `A` / `O→A`），无协议信息时为空串（不渲染）。 */
+/** 路径标记的缩写文本（`C` / `M` / `C→M`），无协议信息时为空串（不渲染）。 */
 function protocolPath(toast: CallToast): string {
   return protocolPathLabel(toast.downstreamProtocol, toast.upstreamProtocol)
 }
@@ -96,15 +96,19 @@ function protocolPath(toast: CallToast): string {
  * 路径标记的完整说明（悬停可见）。
  *
  * 缩写本身没有自解释性，而这里的箭头方向是本页最容易读反的一处 —— 它是
- * **请求翻译的方向**（下游 → 上游），与后端 O2A / A2O 的命名同向。
+ * **请求翻译的方向**（下游 → 上游），与后端 C2M / M2C 的命名同向。
+ *
+ * <p>文案刻意与日志的 `formatCallTypeTitle` 对称：那边写「响应翻译」、这边写
+ * 「请求翻译」，同一次跨协议调用在两处显示相反的箭头正是因为这两个视角不同
+ * （Toast 面向调用者，日志面向执行翻译的 COSP 自己）。开头就点明是哪一种翻译，
+ * 读者不必记住哪个界面用哪个方向 —— 这也是这两个气泡存在的唯一理由。
  */
 function protocolTitle(toast: CallToast): string {
-  const name = (protocol: string) => (isWireProtocol(protocol) ? WIRE_PROTOCOL_LABELS[protocol] : protocol)
-  const downstream = name(toast.downstreamProtocol)
-  const upstream = name(toast.upstreamProtocol)
+  const downstream = protocolDisplayName(toast.downstreamProtocol)
+  const upstream = protocolDisplayName(toast.upstreamProtocol)
   if (!downstream) return ''
-  if (!upstream || downstream === upstream) return `下游与上游同为 ${downstream} 协议，直连无需翻译`
-  return `下游 ${downstream} → 上游 ${upstream}（箭头为请求翻译方向）`
+  if (!upstream || downstream === upstream) return `下游与上游同为 ${downstream}，直连无需翻译`
+  return `请求翻译 ${downstream} → ${upstream}（下游 → 上游）`
 }
 
 /** 徽标状态点颜色：取进行中调用里最值得注意的阶段，空时用中性灰。 */
@@ -259,7 +263,7 @@ function closeMenu() {
               <div class="call-toast-item__model">
                 <!--
                   路径标记：模型名左侧的缩写胶囊（O / A / O→A）。
-                  箭头方向是**请求翻译的方向**（下游 → 上游），与后端 O2A / A2O 命名同向；
+                  箭头方向是**请求翻译的方向**（下游 → 上游），与后端 C2M / M2C 命名同向；
                   后端补写协议前（空串）不渲染，避免先显示半截标记再跳。
                 -->
                 <span v-if="protocolPath(toast)" class="call-toast-item__path" :title="protocolTitle(toast)">{{

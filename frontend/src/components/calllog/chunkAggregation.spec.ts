@@ -36,7 +36,7 @@ describe('aggregateChunks', () => {
         }],
       }),
       '[DONE]',
-    ], 'OPENAI')
+    ], 'CHAT')
 
     expect(segments).toEqual([
       { type: 'thinking', text: '先分析。' },
@@ -90,7 +90,7 @@ describe('aggregateChunks', () => {
       JSON.stringify({ choices: [{ delta: { content: '这个文件的内容。' } }] }),
       JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }),
       '[DONE]',
-    ], 'OPENAI')
+    ], 'CHAT')
 
     expect(segments).toEqual([
       {
@@ -125,7 +125,7 @@ describe('aggregateChunks', () => {
       }),
       JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }),
       '[DONE]',
-    ], 'OPENAI')
+    ], 'CHAT')
 
     expect(segments).toEqual([
       { type: 'content', text: '我来看一下这个文件的内容。' },
@@ -164,7 +164,7 @@ describe('aggregateChunks', () => {
       }),
       JSON.stringify({ choices: [{ delta: { content: '读完了。' } }] }),
       '[DONE]',
-    ], 'OPENAI')
+    ], 'CHAT')
 
     expect(segments.map(s => s.type)).toEqual(['content', 'tool_calls', 'content'])
     expect(segments[0].text).toBe('先看文件。')
@@ -189,7 +189,7 @@ describe('aggregateChunks', () => {
       JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"a' } }] } }] }),
       JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'bc"}' } }] } }] }),
       '[DONE]',
-    ], 'OPENAI')
+    ], 'CHAT')
 
     expect(segments).toHaveLength(1)
     expect(segments[0].toolCalls).toEqual([{
@@ -213,7 +213,7 @@ describe('aggregateChunks', () => {
         }],
       }),
       '[DONE]',
-    ], 'OPENAI')
+    ], 'CHAT')
 
     expect(segments).toHaveLength(1)
     expect(segments[0].toolCalls).toHaveLength(2)
@@ -260,7 +260,7 @@ describe('aggregateChunks', () => {
         delta: { type: 'text_delta', text: '这是正文。' },
       }),
       JSON.stringify({ type: 'message_stop' }),
-    ], 'ANTHROPIC')
+    ], 'MESSAGES')
 
     expect(segments).toEqual([
       { type: 'thinking', text: '先分析。' },
@@ -309,7 +309,7 @@ describe('aggregateChunks', () => {
         delta: { type: 'text_delta', text: '我来看一下。' },
       }),
       JSON.stringify({ type: 'message_stop' }),
-    ], 'ANTHROPIC')
+    ], 'MESSAGES')
 
     expect(segments.map(s => s.type)).toEqual(['tool_calls', 'content'])
   })
@@ -320,7 +320,7 @@ describe('aggregateChunks', () => {
       JSON.stringify({ type: 'message_start', message: {} }),
       JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn' } }),
       JSON.stringify({ type: 'message_stop' }),
-    ], 'ANTHROPIC')).toEqual([])
+    ], 'MESSAGES')).toEqual([])
   })
 
   /**
@@ -347,7 +347,7 @@ describe('aggregateChunks', () => {
       '[DONE]',
     ]
 
-    expect(aggregateChunks(translatedChunks, 'OPENAI')).toEqual([
+    expect(aggregateChunks(translatedChunks, 'CHAT')).toEqual([
       { type: 'thinking', text: '先想一下' },
       { type: 'content', text: '好' },
     ])

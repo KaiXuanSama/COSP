@@ -2,6 +2,11 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import http from '@/api'
 import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
+import { protocolAbbreviation } from '@/types/protocol'
+
+// 缩写映射的真源在 @/types/protocol（协议标识的唯一真源，见那里的注释）。
+// 这里转出一次是为了让 Toast 相关的消费者只依赖本模块，无需同时 import 两处。
+export { protocolAbbreviation }
 
 /** 单次调用的生命周期阶段，与后端 CallPhase 枚举一一对应。 */
 export type CallPhase =
@@ -85,23 +90,15 @@ export function formatElapsed(milliseconds: number): string {
 }
 
 /**
- * 协议名 → 缩写（`OPENAI` → `O`，`ANTHROPIC` → `A`）。
- *
- * 未知协议取首字母，为空返回空串 —— 后端将来加第三种协议时前端不必同步改动就能显示。
- */
-export function protocolAbbreviation(protocol: string): string {
-  if (!protocol) return ''
-  const known: Record<string, string> = { OPENAI: 'O', ANTHROPIC: 'A' }
-  return known[protocol.toUpperCase()] ?? protocol.charAt(0).toUpperCase()
-}
-
-/**
- * 拼出路径标记文本：同协议为单字母（`O`），跨协议为 `O→A` 形态。
+ * 拼出路径标记文本：同协议为单字母（`C`），跨协议为 `C→M` 形态。
  *
  * <p>箭头方向是<strong>请求翻译的方向</strong>（下游 → 上游），与 AGENTS.md 里
- * O2A / A2O 的命名同向：`O→A` 表示下游 OpenAI、上游 Anthropic，由
- * `OpenAiToAnthropicRequestTranslator` 改写去程请求。上游协议未知（后端尚未补写）时
+ * C2M / M2C 的命名同向：`C→M` 表示下游 Chat Completions、上游 Anthropic，由
+ * `ChatToMessagesRequestTranslator` 改写去程请求。上游协议未知（后端尚未补写）时
  * 只显示下游字母，不显示半截箭头。
+ *
+ * <p>缩写映射本身在 `@/types/protocol` —— 那里是协议标识的唯一真源，本函数只负责
+ * 把两个缩写拼成路径形态。
  */
 export function protocolPathLabel(downstreamProtocol: string, upstreamProtocol: string): string {
   const downstream = protocolAbbreviation(downstreamProtocol)

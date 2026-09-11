@@ -17,26 +17,26 @@ import {
 
 describe('normalizeProtocols', () => {
   it('保留后端给出的协议并按固定顺序排列', () => {
-    expect(normalizeProtocols(['ANTHROPIC', 'OPENAI'])).toEqual(['OPENAI', 'ANTHROPIC'])
+    expect(normalizeProtocols(['MESSAGES', 'CHAT'])).toEqual(['CHAT', 'MESSAGES'])
   })
 
   it('大小写与空白被归一化', () => {
-    expect(normalizeProtocols([' openai '])).toEqual(['OPENAI'])
+    expect(normalizeProtocols([' chat '])).toEqual(['CHAT'])
   })
 
   it('去重', () => {
-    expect(normalizeProtocols(['OPENAI', 'OPENAI'])).toEqual(['OPENAI'])
+    expect(normalizeProtocols(['CHAT', 'CHAT'])).toEqual(['CHAT'])
   })
 
   // 后端对「读不懂」的配置回退为全集，前端必须同口径 —— 否则界面显示没勾选、
   // 实际两条线路都能跑，用户看到的和发生的不是一回事。
   it('字段缺失或不是数组时回退为两种协议', () => {
-    expect(normalizeProtocols(undefined)).toEqual(['OPENAI', 'ANTHROPIC'])
-    expect(normalizeProtocols('OPENAI')).toEqual(['OPENAI', 'ANTHROPIC'])
+    expect(normalizeProtocols(undefined)).toEqual(['CHAT', 'MESSAGES'])
+    expect(normalizeProtocols('CHAT')).toEqual(['CHAT', 'MESSAGES'])
   })
 
   it('数组里全是脏值时同样回退为两种协议', () => {
-    expect(normalizeProtocols(['GEMINI', 42])).toEqual(['OPENAI', 'ANTHROPIC'])
+    expect(normalizeProtocols(['GEMINI', 42])).toEqual(['CHAT', 'MESSAGES'])
   })
 
   // 空数组是用户主动声明的非法状态，必须在界面上如实显示才能被改回来；
@@ -48,25 +48,25 @@ describe('normalizeProtocols', () => {
 
 describe('toggleProtocol', () => {
   it('勾选后按固定顺序排列而非追加到末尾', () => {
-    expect(toggleProtocol(['ANTHROPIC'], 'OPENAI', true)).toEqual(['OPENAI', 'ANTHROPIC'])
+    expect(toggleProtocol(['MESSAGES'], 'CHAT', true)).toEqual(['CHAT', 'MESSAGES'])
   })
 
   it('取消勾选移除该项', () => {
-    expect(toggleProtocol(['OPENAI', 'ANTHROPIC'], 'ANTHROPIC', false)).toEqual(['OPENAI'])
+    expect(toggleProtocol(['CHAT', 'MESSAGES'], 'MESSAGES', false)).toEqual(['CHAT'])
   })
 
   it('可以取消到空集，由调用方决定是否拦下', () => {
-    expect(toggleProtocol(['OPENAI'], 'OPENAI', false)).toEqual([])
+    expect(toggleProtocol(['CHAT'], 'CHAT', false)).toEqual([])
   })
 
   it('重复勾选不产生重复项', () => {
-    expect(toggleProtocol(['OPENAI'], 'OPENAI', true)).toEqual(['OPENAI'])
+    expect(toggleProtocol(['CHAT'], 'CHAT', true)).toEqual(['CHAT'])
   })
 })
 
 describe('protocolsToJson', () => {
   it('序列化为固定顺序的 JSON 数组', () => {
-    expect(protocolsToJson(['ANTHROPIC', 'OPENAI'])).toBe('["OPENAI","ANTHROPIC"]')
+    expect(protocolsToJson(['MESSAGES', 'CHAT'])).toBe('["CHAT","MESSAGES"]')
   })
 
   // 后端把空串当作「未提供，保留原值」，只有字面的 [] 才表示空集。
@@ -133,44 +133,44 @@ describe('describeEndpoint', () => {
 
 describe('DEFAULT_NEW_PROVIDER_PROTOCOLS', () => {
   it('新建供应商默认勾选两个协议', () => {
-    expect(DEFAULT_NEW_PROVIDER_PROTOCOLS).toEqual(['OPENAI', 'ANTHROPIC'])
+    expect(DEFAULT_NEW_PROVIDER_PROTOCOLS).toEqual(['CHAT', 'MESSAGES'])
   })
 })
 
 describe('resolvePrimaryProtocol', () => {
   it('两个都启用时 OpenAI 在首行', () => {
-    expect(resolvePrimaryProtocol(['OPENAI', 'ANTHROPIC'])).toBe('OPENAI')
+    expect(resolvePrimaryProtocol(['CHAT', 'MESSAGES'])).toBe('CHAT')
   })
 
   it('只启用 OpenAI 时在首行', () => {
-    expect(resolvePrimaryProtocol(['OPENAI'])).toBe('OPENAI')
+    expect(resolvePrimaryProtocol(['CHAT'])).toBe('CHAT')
   })
 
   // 折叠状态下只看得见第一行，若它恒为 OpenAI，一个只走 Anthropic 的供应商
   // 展开前看到的是一个自己禁用了的地址，等于没有信息。
   it('OpenAI 禁用而 Anthropic 启用时把 Anthropic 提到首行', () => {
-    expect(resolvePrimaryProtocol(['ANTHROPIC'])).toBe('ANTHROPIC')
+    expect(resolvePrimaryProtocol(['MESSAGES'])).toBe('MESSAGES')
   })
 
   it('一个都没启用时仍给 OpenAI，不留无行可显的状态', () => {
-    expect(resolvePrimaryProtocol([])).toBe('OPENAI')
+    expect(resolvePrimaryProtocol([])).toBe('CHAT')
   })
 })
 
 describe('orderProtocolRows', () => {
   it('首行为 OpenAI 时的顺序', () => {
-    expect(orderProtocolRows('OPENAI')).toEqual(['OPENAI', 'ANTHROPIC'])
+    expect(orderProtocolRows('CHAT')).toEqual(['CHAT', 'MESSAGES'])
   })
 
   it('首行为 Anthropic 时的顺序', () => {
-    expect(orderProtocolRows('ANTHROPIC')).toEqual(['ANTHROPIC', 'OPENAI'])
+    expect(orderProtocolRows('MESSAGES')).toEqual(['MESSAGES', 'CHAT'])
   })
 
   it('两行总是都在，只是次序不同', () => {
-    for (const primary of ['OPENAI', 'ANTHROPIC'] as const) {
+    for (const primary of ['CHAT', 'MESSAGES'] as const) {
       expect(orderProtocolRows(primary)).toHaveLength(2)
-      expect(orderProtocolRows(primary)).toContain('OPENAI')
-      expect(orderProtocolRows(primary)).toContain('ANTHROPIC')
+      expect(orderProtocolRows(primary)).toContain('CHAT')
+      expect(orderProtocolRows(primary)).toContain('MESSAGES')
     }
   })
 })
@@ -182,25 +182,25 @@ describe('resolveModelPullTarget', () => {
   // 两个协议的模型列表端点路径完全相同，无法从响应判断上游以哪种协议作答，
   // 所以「让用户选」没有参考价值 —— 固定优先 OpenAI 是唯一不需要用户判断的规则。
   it('两个都启用时用 OpenAI', () => {
-    expect(resolveModelPullTarget(['OPENAI', 'ANTHROPIC'], openai, ant))
-      .toEqual({ protocol: 'OPENAI', baseUrl: openai })
+    expect(resolveModelPullTarget(['CHAT', 'MESSAGES'], openai, ant))
+      .toEqual({ protocol: 'CHAT', baseUrl: openai })
   })
 
   it('只启用 OpenAI 时用 OpenAI', () => {
-    expect(resolveModelPullTarget(['OPENAI'], openai, ant))
-      .toEqual({ protocol: 'OPENAI', baseUrl: openai })
+    expect(resolveModelPullTarget(['CHAT'], openai, ant))
+      .toEqual({ protocol: 'CHAT', baseUrl: openai })
   })
 
   it('只启用 Anthropic 时退到 Anthropic 地址', () => {
-    expect(resolveModelPullTarget(['ANTHROPIC'], openai, ant))
-      .toEqual({ protocol: 'ANTHROPIC', baseUrl: ant })
+    expect(resolveModelPullTarget(['MESSAGES'], openai, ant))
+      .toEqual({ protocol: 'MESSAGES', baseUrl: ant })
   })
 
   // 界面上「留空则与 OpenAI 相同」是一句提示，这里必须是同一条规则，
   // 否则用户会看到「提示说相同，但拉取报地址为空」。
   it('只启用 Anthropic 且其地址为空时回退到 OpenAI 地址', () => {
-    expect(resolveModelPullTarget(['ANTHROPIC'], openai, '   '))
-      .toEqual({ protocol: 'ANTHROPIC', baseUrl: openai })
+    expect(resolveModelPullTarget(['MESSAGES'], openai, '   '))
+      .toEqual({ protocol: 'MESSAGES', baseUrl: openai })
   })
 
   // 随便挑一个地址发出去，会让「没启用协议」这个真正的问题被一个上游错误掩盖。
@@ -209,6 +209,6 @@ describe('resolveModelPullTarget', () => {
   })
 
   it('地址两侧空白被去掉', () => {
-    expect(resolveModelPullTarget(['OPENAI'], `  ${openai}  `, '')?.baseUrl).toBe(openai)
+    expect(resolveModelPullTarget(['CHAT'], `  ${openai}  `, '')?.baseUrl).toBe(openai)
   })
 })

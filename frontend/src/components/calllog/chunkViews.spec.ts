@@ -102,8 +102,8 @@ describe('parseChunkViews', () => {
 
 describe('upstreamProtocolOf', () => {
   it('derives the opposite protocol', () => {
-    expect(upstreamProtocolOf('OPENAI')).toBe('ANTHROPIC')
-    expect(upstreamProtocolOf('ANTHROPIC')).toBe('OPENAI')
+    expect(upstreamProtocolOf('CHAT')).toBe('MESSAGES')
+    expect(upstreamProtocolOf('MESSAGES')).toBe('CHAT')
   })
 })
 

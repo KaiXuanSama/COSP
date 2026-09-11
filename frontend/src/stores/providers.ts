@@ -67,7 +67,7 @@ export interface ProviderRequestTransformInput {
 
 /** 协议配置的提交载荷。 */
 export interface ProviderProtocolInput {
-  /** JSON 字符串数组，如 `["OPENAI"]`。 */
+  /** JSON 字符串数组，如 `["CHAT"]`。 */
   supportedProtocolsJson: string
   /** Anthropic 独立地址；空串表示回退到 OpenAI 地址。 */
   anthropicBaseUrl: string

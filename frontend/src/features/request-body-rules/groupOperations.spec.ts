@@ -14,7 +14,7 @@ function group(id: string, order: number): RuleGroup {
     name: id,
     order,
     enabled: true,
-    protocols: ['OPENAI'],
+    protocols: ['CHAT'],
     templateKeys: ['base'],
     previewBody: {},
     rules: [],

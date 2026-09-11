@@ -43,7 +43,7 @@ interface AnthropicBlock {
  * 所有事件都匹配不上，规整视图会空掉。
  */
 export function aggregateChunks(chunks: string[], downstreamProtocol: WireProtocol): ChunkSegment[] {
-  return downstreamProtocol === 'ANTHROPIC'
+  return downstreamProtocol === 'MESSAGES'
     ? aggregateAnthropicChunks(chunks)
     : aggregateOpenAiChunks(chunks)
 }

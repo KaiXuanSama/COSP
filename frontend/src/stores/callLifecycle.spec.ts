@@ -119,23 +119,23 @@ describe('mergeLifecycleEvent', () => {
    * 若写成每帧覆盖，补写后的下一帧就会把它清空 —— Tag 闪一下就没。
    */
   it('协议信息一旦写入就不再被不带协议的事件清空', () => {
-    const toasts = [toast({ downstreamProtocol: 'OPENAI', upstreamProtocol: 'ANTHROPIC' })]
+    const toasts = [toast({ downstreamProtocol: 'CHAT', upstreamProtocol: 'MESSAGES' })]
 
     mergeLifecycleEvent(toasts, event({ phase: 'CHUNK', chunkCount: 4, upstreamProtocol: null }))
 
-    expect(toasts[0].downstreamProtocol).toBe('OPENAI')
-    expect(toasts[0].upstreamProtocol).toBe('ANTHROPIC')
+    expect(toasts[0].downstreamProtocol).toBe('CHAT')
+    expect(toasts[0].upstreamProtocol).toBe('MESSAGES')
   })
 
   it('协议信息可从空补写为完整值', () => {
     const merged = mergeLifecycleEvent([], event({
       phase: 'RECEIVED',
-      downstreamProtocol: 'OPENAI',
-      upstreamProtocol: 'ANTHROPIC',
+      downstreamProtocol: 'CHAT',
+      upstreamProtocol: 'MESSAGES',
     }))
 
-    expect(merged[0].downstreamProtocol).toBe('OPENAI')
-    expect(merged[0].upstreamProtocol).toBe('ANTHROPIC')
+    expect(merged[0].downstreamProtocol).toBe('CHAT')
+    expect(merged[0].upstreamProtocol).toBe('MESSAGES')
   })
 
   /**
@@ -207,31 +207,36 @@ describe('formatElapsed', () => {
 
 describe('protocolPathLabel', () => {
   it('同协议直连只显示单个字母', () => {
-    expect(protocolPathLabel('OPENAI', 'OPENAI')).toBe('O')
-    expect(protocolPathLabel('ANTHROPIC', 'ANTHROPIC')).toBe('A')
+    expect(protocolPathLabel('CHAT', 'CHAT')).toBe('C')
+    expect(protocolPathLabel('MESSAGES', 'MESSAGES')).toBe('M')
   })
 
   /**
-   * 箭头方向是**请求翻译的方向**（下游 → 上游），与后端 O2A / A2O 命名同向。
+   * 箭头方向是**请求翻译的方向**（下游 → 上游），与后端 C2M / M2C 命名同向。
    * 反了会让人以为是响应翻译方向，排查线路问题时读到的结论正好相反。
    */
   it('跨协议显示下游→上游，即请求翻译方向', () => {
-    expect(protocolPathLabel('OPENAI', 'ANTHROPIC')).toBe('O→A')
-    expect(protocolPathLabel('ANTHROPIC', 'OPENAI')).toBe('A→O')
+    expect(protocolPathLabel('CHAT', 'MESSAGES')).toBe('C→M')
+    expect(protocolPathLabel('MESSAGES', 'CHAT')).toBe('M→C')
   })
 
   it('上游未知时只显示下游字母，不出现半截箭头', () => {
-    expect(protocolPathLabel('OPENAI', '')).toBe('O')
+    expect(protocolPathLabel('CHAT', '')).toBe('C')
   })
 
   it('下游未知时返回空串（整个标记不渲染）', () => {
-    expect(protocolPathLabel('', 'ANTHROPIC')).toBe('')
+    expect(protocolPathLabel('', 'MESSAGES')).toBe('')
     expect(protocolPathLabel('', '')).toBe('')
   })
 
+  /**
+   * `RESPONSES` 是<strong>下一步</strong>才会加进 {@link WireProtocol} 的协议，此处刻意
+   * 用它测未知分支：`R` 恰好就是它将来的正式缩写，因此这个用例在第二步落地后仍然成立，
+   * 只是从「未知协议兜底」变成「已知协议查表」—— 两条路径给出同一个答案才是对的。
+   */
   it('未知协议取首字母，后端加新协议时前端不必同步改动', () => {
     expect(protocolAbbreviation('RESPONSES')).toBe('R')
-    expect(protocolPathLabel('RESPONSES', 'OPENAI')).toBe('R→O')
+    expect(protocolPathLabel('RESPONSES', 'CHAT')).toBe('R→C')
   })
 })
 

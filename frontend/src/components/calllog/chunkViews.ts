@@ -173,7 +173,7 @@ export function hasComparisonView(views: ChunkViews): boolean {
  * 因此直接取反。将来加第三种协议时这里要改成由后端明确给出。
  */
 export function upstreamProtocolOf(downstreamProtocol: WireProtocol): WireProtocol {
-  return downstreamProtocol === 'OPENAI' ? 'ANTHROPIC' : 'OPENAI'
+  return downstreamProtocol === 'CHAT' ? 'MESSAGES' : 'CHAT'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
