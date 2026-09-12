@@ -1,10 +1,10 @@
 # 协议翻译契约（请求侧）
 
-> **状态**：O2A（下游 OpenAI → 上游 Anthropic）请求侧**已实现并经实流量验证**，见
-> `OpenAiToAnthropicRequestTranslator` 与 `ChatCompletionService` 两处分支；
-> A2O（下游 `/v1/messages` + 上游 OpenAI）请求侧**尚未实现**，
+> **状态**：C2M（下游 OpenAI → 上游 Anthropic）请求侧**已实现并经实流量验证**，见
+> `ChatToMessagesRequestTranslator` 与 `ChatCompletionService` 两处分支；
+> M2C（下游 `/v1/messages` + 上游 OpenAI）请求侧**尚未实现**，
 > `MessagesService` 的翻译分支仍抛 `ProtocolTranslationNotSupportedException`。
-> 本文档因此既是已实现说明（O2A）也是设计契约（A2O）。
+> 本文档因此既是已实现说明（C2M）也是设计契约（M2C）。
 >
 > 标注了实测日期的段落是已验证的事实，其余是约束。已实测：多轮工具链（见响应侧契约第 1 节）、
 > 工具结果带图的多模态识别（3.4.2）。
@@ -12,7 +12,7 @@
 > 相关：[AGENTS.md](../AGENTS.md)、[思考链回放调查](COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)、
 > [供应商适配史](PROVIDER_ADAPTATIONS.md)
 
-O2A = OpenAI Chat Completions → Anthropic Messages；A2O = 反向。
+C2M = OpenAI Chat Completions → Anthropic Messages；M2C = 反向。
 本文档只覆盖**请求体**。响应与 SSE 侧留待后续，但第 7 节规定了请求侧必须为它留的出口。
 
 ---
@@ -31,7 +31,7 @@ O2A = OpenAI Chat Completions → Anthropic Messages；A2O = 反向。
 
 翻译（本契约）
   下游 OpenAI 请求
-    → ★ 纯字段翻译 O2A（下游没说的字段留空，不推导）
+    → ★ 纯字段翻译 C2M（下游没说的字段留空，不推导）
     → 协议归一化
     → 设置层（兜底档在这里补上 thinking 等字段）
     → 请求体与请求头规则
@@ -57,7 +57,7 @@ O2A = OpenAI Chat Completions → Anthropic Messages；A2O = 反向。
 
 ### 1.3 规则组按上游协议筛选
 
-翻译路线上生效的是 `ANTHROPIC` 规则组，**不是**用户下游说的 `OPENAI`。规则的字段路径照最终
+翻译路线上生效的是 `MESSAGES` 规则组，**不是**用户下游说的 `CHAT`。规则的字段路径照最终
 出站形态写，这是唯一自洽的选择。但它与用户直觉相反，UI 上必须说清楚。
 
 ---
@@ -95,7 +95,7 @@ body.remove("reasoning_effort");
 
 ---
 
-## 3. 字段映射表（O2A）
+## 3. 字段映射表（C2M）
 
 处置列的取值：**映射**（有对应物）、**丢弃**（静默，见第 5 节）、**报错**（拒绝该请求）。
 
@@ -178,7 +178,7 @@ SDK 里该字段是 `Union[str, Iterable[Content]]`，其中 `Content` 含 `Imag
 
 **这条曾经写错过。** 早期实现调 `stringify` 压平，而它只取文本块，于是 agent 调
 `view_image` 之类工具读到的图片在这一步被静默丢弃 —— 那张图只存在于 `role: tool` 消息的
-`content` 里。表现是「O2A 路线上模型看不见图，而 OpenAI 直连能看见」，且日志里
+`content` 里。表现是「C2M 路线上模型看不见图，而 OpenAI 直连能看见」，且日志里
 `tool_result.content` 只剩一段描述图片位置的文字，没有 base64。
 
 **不要把 OpenAI 侧的「图片工具兼容规则」搬进翻译层。** 那条规则（把含图的 tool 消息整条
@@ -187,7 +187,7 @@ SDK 里该字段是 `Union[str, Iterable[Content]]`，其中 `Content` 含 `Imag
 见 3.4.2）**，照协议把图片放进 `tool_result` 就够了 —— 无需为 Anthropic 侧再写一条兼容规则。
 
 若将来遇到某个 Anthropic 中转站确实也认不出，那属于「这个上游需要什么」，用仅适用
-`ANTHROPIC` 的请求体规则表达（那时规则层能表达，因为报文已是 Anthropic 形态）。
+`MESSAGES` 的请求体规则表达（那时规则层能表达，因为报文已是 Anthropic 形态）。
 
 参考项目在这一点上都不完整，可以对照但不要照抄：one-api 的 `tool_result` 分支整个包在
 `if message.IsStringContent()` 里，多模态 tool 消息会丢掉 `tool_result` 与 `tool_use_id`
@@ -262,7 +262,7 @@ merge → pair → merge
 
 不要互相套用。COSP 的档位清单是 `Off / Minimal / Low / Medium / High / Xhigh / Max`。
 
-### 4.2 O2A 思考映射
+### 4.2 C2M 思考映射
 
 | 下游 OpenAI | Anthropic |
 |---|---|
@@ -272,7 +272,7 @@ merge → pair → merge
 
 `Minimal` 在 Anthropic 侧无对应档。**原样发出**，由上游用错误码回答（见 4.5）。
 
-### 4.3 A2O 思考映射
+### 4.3 M2C 思考映射
 
 | 下游 Anthropic | OpenAI |
 |---|---|
@@ -303,8 +303,8 @@ merge → pair → merge
 new-api 那张表**永不产出 minimal / xhigh / max**，经一次中转 `minimal` 就被抹成 `low`，
 往返不一致。两家都把 `output_config.effort` 排优先级 1、budget 反推排 2，自己也知道后者是兜底。
 
-**结论**：A2O 只在 `output_config.effort` 存在时翻译深度，否则不发 `reasoning_effort`。
-用户若需要 `budget_tokens`，用仅适用 ANTHROPIC 的请求体规则显式表达。
+**结论**：M2C 只在 `output_config.effort` 存在时翻译深度，否则不发 `reasoning_effort`。
+用户若需要 `budget_tokens`，用仅适用 MESSAGES 的请求体规则显式表达。
 
 ### 4.5 不做自动降级
 
@@ -336,8 +336,8 @@ cc-switch 有个折中值得记录但不采纳：只在**已知枚举**模式下
 reasoning item，sub2api 的注释最清楚：`encrypted_content` 不透明，带 `content` 数组的形态
 也一并丢，否则 `reasoning_text` 塞进去直接 400。
 
-**本契约的处置**：O2A 丢弃 assistant 消息里的思考内容，不尝试重建 `thinking` 块。
-A2O 丢弃 `thinking` / `redacted_thinking` 块。
+**本契约的处置**：C2M 丢弃 assistant 消息里的思考内容，不尝试重建 `thinking` 块。
+M2C 丢弃 `thinking` / `redacted_thinking` 块。
 
 Copilot BYOK 会回传上一轮思考内容，因此**翻译路线上开启 extended thinking 且带工具时会硬失败**。
 这不是「翻译得不够漂亮」，是会被上游直接拒绝。落地前先复核
@@ -352,10 +352,10 @@ Copilot BYOK 会回传上一轮思考内容，因此**翻译路线上开启 exte
 三家的机制都是结构体白名单——未声明的字段在反序列化时就消失，转换层根本看不到，
 因此「静默丢弃」是事实上的行业默认。
 
-O2A 丢弃：`frequency_penalty`、`presence_penalty`、`n`、`logprobs`、`top_logprobs`、`seed`、
+C2M 丢弃：`frequency_penalty`、`presence_penalty`、`n`、`logprobs`、`top_logprobs`、`seed`、
 `response_format`、`logit_bias`、`user`、`stream_options`、`parallel_tool_calls`。
 
-A2O 丢弃：`metadata`、`mcp_servers`、`container`、`context_management`、`service_tier`、
+M2C 丢弃：`metadata`、`mcp_servers`、`container`、`context_management`、`service_tier`、
 顶层 `cache_control`。
 
 必须显式丢弃而非留着：链条末尾只有 `removeIf(Objects::isNull)`，**非 null 的多余字段会原样
@@ -378,7 +378,7 @@ A2O 丢弃：`metadata`、`mcp_servers`、`container`、`context_management`、`
 
 - new-api 在 `parallel_tool_calls: false` 时**凭空造** `tool_choice: {type: "auto"}` 来挂
   `disable_parallel_tool_use` 开关——下游只想关并行调用，却被追加了一个它没要求的工具选择策略
-- sub2api A2O 硬编码注入 `parallel_tool_calls: true`
+- sub2api M2C 硬编码注入 `parallel_tool_calls: true`
 
 本契约：下游没表态的字段就是不存在，交给设置层。
 
@@ -473,10 +473,10 @@ A2O 丢弃：`metadata`、`mcp_servers`、`container`、`context_management`、`
 7. 响应与 SSE 侧 —— 已另立契约，见
    [PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md](./PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md)
 
-前六项已完成（O2A 请求侧）。实际执行顺序随后调整为先做 **A2O 响应**而非 A2O 请求，
-理由见响应侧契约第 0 节：补上响应翻译才能让 O2A 这条链端到端可用。
+前六项已完成（C2M 请求侧）。实际执行顺序随后调整为先做 **M2C 响应**而非 M2C 请求，
+理由见响应侧契约第 0 节：补上响应翻译才能让 C2M 这条链端到端可用。
 
-第 3 项（`tool_result` content 形态）是后补的：O2A 请求侧最初落地时压平了该字段，直到
+第 3 项（`tool_result` content 形态）是后补的：C2M 请求侧最初落地时压平了该字段，直到
 agent 用工具读图的场景暴露出来才修，已于 2026-09-08 实测通过（见 3.4.2）。教训是
 **「这个字段的目标形态是字符串」这个判断要按协议查证，不要按已见过的输入推断** ——
 当时见过的 tool 消息都是纯文本的。
@@ -492,8 +492,8 @@ agent 用工具读图的场景暴露出来才修，已于 2026-09-08 实测通�
   `output_config.effort`**，而是被认作「已表态」后剥离，净效果是该次不发深度。
   那属于下游把 OpenAI 字段发给 Anthropic 端点的畸形请求，改写它等于替下游猜意图。
   翻译线路不受影响 —— 翻译器已把档位写进 `output_config.effort`，保留的那份只供判定。
-- 单测尚未覆盖 A2O 请求方向（未实现）。O2A 请求侧见
-  `OpenAiToAnthropicRequestTranslatorTests`，Anthropic 侧两个思考维度的四档注入见
+- 单测尚未覆盖 M2C 请求方向（未实现）。C2M 请求侧见
+  `ChatToMessagesRequestTranslatorTests`，Anthropic 侧两个思考维度的四档注入见
   `ReasoningEffortSettingTests.Anthropic注入模式` 与 `GenericAnthropicChatServiceTests`。
 
 ---
@@ -504,8 +504,8 @@ agent 用工具读图的场景暴露出来才修，已于 2026-09-08 实测通�
 
 | 项目 | 形态 | 请求侧入口 |
 |---|---|---|
-| new-api | O2A / A2O 两两互转 | `relaykit/relayconvert/internal/oai_chat/to_claude_messages_req.go`、`internal/claude_messages/to_oai_chat_req.go`；档位引擎 `reasoning/{claude,intent,suffix}.go` |
-| sub2api | 以 OpenAI Responses 为中枢 IR，O2A 两段链式；A2O 另有直连 bridge | `backend/internal/pkg/apicompat/`，配对修复在 `responses_to_anthropic_request.go` |
+| new-api | C2M / M2C 两两互转 | `relaykit/relayconvert/internal/oai_chat/to_claude_messages_req.go`、`internal/claude_messages/to_oai_chat_req.go`；档位引擎 `reasoning/{claude,intent,suffix}.go` |
+| sub2api | 以 OpenAI Responses 为中枢 IR，C2M 两段链式；M2C 另有直连 bridge | `backend/internal/pkg/apicompat/`，配对修复在 `responses_to_anthropic_request.go` |
 | cc-switch | 代理层做真实转换；`thinkingLevelMap` 是给 Pi CLI 写配置、自身不执行翻译 | `src-tauri/src/proxy/providers/transform_codex_anthropic.rs`、`transform.rs` |
 
 ### 9.1 值得借鉴（已纳入本契约）
