@@ -35,6 +35,7 @@ class ProviderConfigRepositoryQueryTests {
                 + "supported_protocols TEXT NOT NULL DEFAULT '[\"CHAT\",\"MESSAGES\"]' "
                 + "CHECK (json_valid(supported_protocols)), "
                 + "anthropic_base_url TEXT NOT NULL DEFAULT '', "
+                + "responses_base_url TEXT NOT NULL DEFAULT '', "
                 + "use_proxy INTEGER NOT NULL DEFAULT 0 CHECK (use_proxy IN (0, 1)), "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         jdbcTemplate.execute("CREATE TABLE provider_model ("

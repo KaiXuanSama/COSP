@@ -35,6 +35,7 @@ class RepositoryUpsertTests {
                 + "supported_protocols TEXT NOT NULL DEFAULT '[\"CHAT\",\"MESSAGES\"]' "
                 + "CHECK (json_valid(supported_protocols)), "
                 + "anthropic_base_url TEXT NOT NULL DEFAULT '', "
+                + "responses_base_url TEXT NOT NULL DEFAULT '', "
                 + "use_proxy INTEGER NOT NULL DEFAULT 0 CHECK (use_proxy IN (0, 1)), "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         jdbcTemplate.execute("CREATE TABLE provider_model ("
@@ -107,21 +108,56 @@ class RepositoryUpsertTests {
         assertThat(row.baseUrl()).isEqualTo("https://new.example");
     }
 
-    /** 协议配置写入按字段独立生效，未提供的那个保持原值。 */
+    /**
+     * 协议配置写入按字段独立生效，未提供的那些保持原值。
+     *
+     * <p>三个字段各改一次并断言另两个不动：SQL 是按参数动态拼的，
+     * 「只改一个」这条路径每加一个字段就多一种拼法，而拼错的症状是静默覆盖。
+     */
     @Test
     void protocolUpdateWritesOnlyTheFieldsThatWereProvided() {
         providerConfigRepository.saveProvider("mimo", true, "https://api.example");
-        providerConfigRepository.updateProviderProtocols("mimo", "[\"CHAT\"]", "https://ant.example");
+        providerConfigRepository.updateProviderProtocols("mimo", "[\"CHAT\"]",
+                "https://ant.example", "https://resp.example");
 
-        providerConfigRepository.updateProviderProtocols("mimo", null, "https://ant2.example");
-        ProviderConfigRow afterUrlOnly = providerConfigRepository.findByKey("mimo");
-        assertThat(afterUrlOnly.supportedProtocolsJson()).isEqualTo("[\"CHAT\"]");
-        assertThat(afterUrlOnly.anthropicBaseUrl()).isEqualTo("https://ant2.example");
+        providerConfigRepository.updateProviderProtocols("mimo", null, "https://ant2.example", null);
+        ProviderConfigRow afterAnthropicOnly = providerConfigRepository.findByKey("mimo");
+        assertThat(afterAnthropicOnly.supportedProtocolsJson()).isEqualTo("[\"CHAT\"]");
+        assertThat(afterAnthropicOnly.anthropicBaseUrl()).isEqualTo("https://ant2.example");
+        assertThat(afterAnthropicOnly.responsesBaseUrl()).isEqualTo("https://resp.example");
 
-        providerConfigRepository.updateProviderProtocols("mimo", "[\"CHAT\",\"MESSAGES\"]", null);
+        providerConfigRepository.updateProviderProtocols("mimo", null, null, "https://resp2.example");
+        ProviderConfigRow afterResponsesOnly = providerConfigRepository.findByKey("mimo");
+        assertThat(afterResponsesOnly.supportedProtocolsJson()).isEqualTo("[\"CHAT\"]");
+        assertThat(afterResponsesOnly.anthropicBaseUrl()).isEqualTo("https://ant2.example");
+        assertThat(afterResponsesOnly.responsesBaseUrl()).isEqualTo("https://resp2.example");
+
+        providerConfigRepository.updateProviderProtocols("mimo", "[\"CHAT\",\"MESSAGES\",\"RESPONSES\"]",
+                null, null);
         ProviderConfigRow afterProtocolsOnly = providerConfigRepository.findByKey("mimo");
-        assertThat(afterProtocolsOnly.supportedProtocolsJson()).isEqualTo("[\"CHAT\",\"MESSAGES\"]");
+        assertThat(afterProtocolsOnly.supportedProtocolsJson())
+                .isEqualTo("[\"CHAT\",\"MESSAGES\",\"RESPONSES\"]");
         assertThat(afterProtocolsOnly.anthropicBaseUrl()).isEqualTo("https://ant2.example");
+        assertThat(afterProtocolsOnly.responsesBaseUrl()).isEqualTo("https://resp2.example");
+    }
+
+    /**
+     * 空串是「清空、回退 base_url」，与 {@code null}（不改）不是一回事。
+     *
+     * <p>这个区分是两个端点字段的核心语义：调用方为了「字段齐全」而发空串就等于
+     * 替用户清空了配置。仓储层必须如实执行两种指令，不能把空串也当成「没提供」。
+     */
+    @Test
+    void blankEndpointClearsWhileNullPreserves() {
+        providerConfigRepository.saveProvider("mimo", true, "https://api.example");
+        providerConfigRepository.updateProviderProtocols("mimo", null,
+                "https://ant.example", "https://resp.example");
+
+        providerConfigRepository.updateProviderProtocols("mimo", null, "", null);
+
+        ProviderConfigRow row = providerConfigRepository.findByKey("mimo");
+        assertThat(row.anthropicBaseUrl()).isEmpty();
+        assertThat(row.responsesBaseUrl()).isEqualTo("https://resp.example");
     }
 
     /**
@@ -134,15 +170,17 @@ class RepositoryUpsertTests {
     @Test
     void normalConfigSaveDoesNotResetProtocolConfiguration() {
         providerConfigRepository.saveProvider("mimo", true, "https://api.example");
-        providerConfigRepository.updateProviderProtocols("mimo", "[\"MESSAGES\"]", "https://ant.example");
+        providerConfigRepository.updateProviderProtocols("mimo", "[\"MESSAGES\"]",
+                "https://ant.example", "https://resp.example");
 
         providerConfigRepository.updateProviderConfig("mimo", "https://new.example");
-        providerConfigRepository.updateProviderProtocols("mimo", null, null);
+        providerConfigRepository.updateProviderProtocols("mimo", null, null, null);
 
         ProviderConfigRow row = providerConfigRepository.findByKey("mimo");
         assertThat(row.baseUrl()).isEqualTo("https://new.example");
         assertThat(row.supportedProtocolsJson()).isEqualTo("[\"MESSAGES\"]");
         assertThat(row.anthropicBaseUrl()).isEqualTo("https://ant.example");
+        assertThat(row.responsesBaseUrl()).isEqualTo("https://resp.example");
     }
 
     /** 代理开关默认关闭，读写往返一致，且不受其它字段更新影响。 */

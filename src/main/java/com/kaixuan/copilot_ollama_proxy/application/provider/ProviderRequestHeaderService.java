@@ -138,6 +138,13 @@ public class ProviderRequestHeaderService {
      * 需要双头并存的中转站可以用规则把另一个加回来，需要非 Bearer 形态的可以用
      * {@code {apiKey}} 占位改写。这与「规则层承载全部上游特例」的分层一致 ——
      * 默认给出协议上正确的那一种，特例交给规则。
+     *
+     * <h2>分支写成「只挑出 MESSAGES」而非逐协议列举</h2>
+     * {@link WireProtocol#RESPONSES} 与 {@link WireProtocol#CHAT} 同为 OpenAI 系接口，
+     * 都用 {@code Authorization: Bearer}，因此 Responses 落到 else 分支<strong>恰好正确</strong>。
+     * 保持否定式判断让新加入的 OpenAI 系协议自动落到正确的一侧；改成逐协议 {@code switch} 后
+     * 漏掉某个协议的症状是上游 401，而其余线路一切正常 —— 最难联想到成因的形态。
+     * {@code ProviderRequestHeaderServiceTests} 已显式钉住 Responses 走 Bearer。
      */
     private void applyAuthenticationHeaders(HttpHeaders headers, String apiKey, WireProtocol upstreamProtocol) {
         String resolvedKey = apiKey == null ? "" : apiKey;

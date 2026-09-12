@@ -184,6 +184,7 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 + "base_url TEXT NOT NULL DEFAULT '', "
                 + "supported_protocols TEXT NOT NULL DEFAULT '[\"CHAT\",\"MESSAGES\"]', "
                 + "anthropic_base_url TEXT NOT NULL DEFAULT '', "
+                + "responses_base_url TEXT NOT NULL DEFAULT '', "
                 + "use_proxy INTEGER NOT NULL DEFAULT 0, updated_at TEXT)");
         jdbcTemplate.execute("CREATE TABLE provider_model ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, "

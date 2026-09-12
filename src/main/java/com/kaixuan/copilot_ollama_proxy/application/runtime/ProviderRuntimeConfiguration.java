@@ -22,24 +22,28 @@ import java.util.List;
 public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey,
                                            List<ProviderRuntimeModel> models, String headerRulesJson,
                                            String bodyRulesJson, String supportedProtocolsJson,
-                                           String anthropicBaseUrl, boolean useProxy) {
+                                           String anthropicBaseUrl, String responsesBaseUrl, boolean useProxy) {
 
     /** 空规则集（V2）。 */
     private static final String EMPTY_BODY_RULES_JSON = "{\"version\":2,\"groups\":[]}";
 
     /**
-     * 协议集合缺失时的回退值：两种协议都支持。
+     * 协议集合缺失时的回退值：全部协议都支持。
      *
      * <p>只在<strong>字段为空</strong>时使用，与显式的空数组 {@code []} 是两回事：
      * 后者表示用户声明「一种协议都不支持」，调度器会明确报错，不该被悄悄补成全集 ——
      * 那会让「配置为空集」这一非法状态永远无法被发现。
+     *
+     * <p>元素取<strong>字母序</strong>，与 {@code schema.sql} 的 DEFAULT 及
+     * {@code ProviderAdminService} 的 {@code TreeSet} 落库口径逐字一致 —— 三处分叉会让
+     * 「新库默认值」「升级后的库」「保存过一次的供应商」在直接查库时看起来是三种配置。
      */
-    public static final String DEFAULT_SUPPORTED_PROTOCOLS_JSON = "[\"CHAT\",\"MESSAGES\"]";
+    public static final String DEFAULT_SUPPORTED_PROTOCOLS_JSON = "[\"CHAT\",\"MESSAGES\",\"RESPONSES\"]";
 
     /**
      * 创建无自定义转换的运行时供应商配置。
      *
-     * <p>协议集合与 Anthropic 端点取默认值：两种协议都支持、端点回退到 {@code baseUrl}，
+     * <p>协议集合与两个独立端点取默认值：全部协议都支持、端点回退到 {@code baseUrl}，
      * 与协议支持落库之前的行为完全一致。
      *
      * @param providerKey 供应商标识
@@ -50,7 +54,7 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
     public ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey,
                                         List<ProviderRuntimeModel> models) {
         this(providerKey, baseUrl, apiKey, models, "[]", EMPTY_BODY_RULES_JSON,
-                DEFAULT_SUPPORTED_PROTOCOLS_JSON, "", false);
+                DEFAULT_SUPPORTED_PROTOCOLS_JSON, "", "", false);
     }
 
     /**
@@ -62,21 +66,22 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
                                         List<ProviderRuntimeModel> models, String headerRulesJson,
                                         String bodyRulesJson) {
         this(providerKey, baseUrl, apiKey, models, headerRulesJson, bodyRulesJson,
-                DEFAULT_SUPPORTED_PROTOCOLS_JSON, "", false);
+                DEFAULT_SUPPORTED_PROTOCOLS_JSON, "", "", false);
     }
 
     /**
-     * 创建带完整协议配置、但默认不走代理的运行时供应商配置。
+     * 创建带协议集合与 Anthropic 端点、其余维度取默认值的运行时供应商配置。
      *
-     * <p>保留这个八参重载是为了让只关心协议维度的调用方（多数测试夹具）不必写出 {@code useProxy}。
-     * 代理开关是 V11 才加入的正交维度，默认 {@code false}（直连）与该字段落库前的行为一致。
+     * <p>保留这个八参重载是为了让只关心「协议集合 + Anthropic 端点」的调用方（多数测试夹具）
+     * 不必写出后加入的两个正交维度。它们的默认值都与各自落库前的行为一致：
+     * Responses 端点空串（回退 {@code baseUrl}）、{@code useProxy} 为 {@code false}（直连）。
      */
     public ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey,
                                         List<ProviderRuntimeModel> models, String headerRulesJson,
                                         String bodyRulesJson, String supportedProtocolsJson,
                                         String anthropicBaseUrl) {
         this(providerKey, baseUrl, apiKey, models, headerRulesJson, bodyRulesJson,
-                supportedProtocolsJson, anthropicBaseUrl, false);
+                supportedProtocolsJson, anthropicBaseUrl, "", false);
     }
 
     public ProviderRuntimeConfiguration {
@@ -90,6 +95,7 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
         supportedProtocolsJson = (supportedProtocolsJson == null || supportedProtocolsJson.isBlank())
             ? DEFAULT_SUPPORTED_PROTOCOLS_JSON : supportedProtocolsJson;
         anthropicBaseUrl = anthropicBaseUrl == null ? "" : anthropicBaseUrl;
+        responsesBaseUrl = responsesBaseUrl == null ? "" : responsesBaseUrl;
     }
 
     /**
@@ -100,6 +106,18 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
      */
     public String resolveAnthropicBaseUrl() {
         return anthropicBaseUrl.isBlank() ? baseUrl : anthropicBaseUrl;
+    }
+
+    /**
+     * 解析出 Responses 线路实际使用的基础地址。
+     *
+     * <p>回退规则与 {@link #resolveAnthropicBaseUrl()} 相同，但<strong>常态不同</strong>：
+     * 多数中转站根本没有独立的 Responses 端点，因此「留空回退 {@code baseUrl}」在这条线路上
+     * 是常见情形而非例外。V13 迁移为存量供应商回填了 {@code base_url} 原值，
+     * 那只是为了让界面上能直接看到当前生效地址，不改变本方法的语义。
+     */
+    public String resolveResponsesBaseUrl() {
+        return responsesBaseUrl.isBlank() ? baseUrl : responsesBaseUrl;
     }
 
     public boolean supportsModel(String modelName) {

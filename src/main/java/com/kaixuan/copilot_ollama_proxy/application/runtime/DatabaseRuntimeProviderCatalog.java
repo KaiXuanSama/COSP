@@ -49,6 +49,7 @@ public class DatabaseRuntimeProviderCatalog implements RuntimeProviderCatalog {
                         : ProviderRequestTransformService.EMPTY_BODY_RULES_JSON,
                 source.supportedProtocolsJson(),
                 source.anthropicBaseUrl() != null ? source.anthropicBaseUrl() : "",
+                source.responsesBaseUrl() != null ? source.responsesBaseUrl() : "",
                 source.useProxy()
         );
     }

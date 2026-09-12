@@ -68,21 +68,30 @@ public class ProviderConfigRepository {
     }
 
     /**
-     * 更新供应商的线路协议配置（支持的协议集合与 Anthropic 独立端点）。
+     * 更新供应商的线路协议配置（支持的协议集合与两个独立端点）。
      *
-     * <p><strong>两个参数都按「null 表示不改」处理</strong>，而非「null 表示清空」。
-     * 协议配置目前只由后端接口写入，管理后台表单尚未提交这两个字段；若按「未提供即清空」
-     * 处理，任何一次普通的供应商编辑都会把用户配好的协议支持抹平，而这个字段一旦被清成
-     * 空数组，该供应商的所有调用都会被调度器拒绝 —— 一次无关的保存造成全面不可用，
-     * 是最难联想到成因的那类故障。
+     * <p><strong>三个参数都按「null 表示不改」处理</strong>，而非「null 表示清空」。
+     * 若按「未提供即清空」处理，任何一次普通的供应商编辑都会把用户配好的协议支持抹平，
+     * 而这个字段一旦被清成空数组，该供应商的所有调用都会被调度器拒绝 ——
+     * 一次无关的保存造成全面不可用，是最难联想到成因的那类故障。
+     *
+     * <p>两个端点的「空串」不是「不改」而是<strong>真实的修改</strong>：清空即声明
+     * 「回退到 base_url」。这个区分必须由调用方守住 —— 为了「字段齐全」而发空串
+     * 就等于替用户清空了配置。
+     *
+     * <h2>为何是三个平铺参数而不是一个入参对象</h2>
+     * 三个「null 表示不改」的同类型参数已经开始难读，换成 record 会更清晰。
+     * 但那会波及三条保存路径与它们的测试，而本次改动的主题是加一个端点维度 ——
+     * 顺手做会让 diff 混进一堆与 Responses 无关的改动。留待真有第四个字段时一起改。
      *
      * @param providerKey             供应商标识
      * @param supportedProtocolsJson  协议集合 JSON 字符串数组；null 表示保留原值
      * @param anthropicBaseUrl        Anthropic 独立端点；null 表示保留原值，空串表示回退到 base_url
+     * @param responsesBaseUrl        Responses 独立端点；null 表示保留原值，空串表示回退到 base_url
      */
     public void updateProviderProtocols(String providerKey, String supportedProtocolsJson,
-                                        String anthropicBaseUrl) {
-        if (supportedProtocolsJson == null && anthropicBaseUrl == null) {
+                                        String anthropicBaseUrl, String responsesBaseUrl) {
+        if (supportedProtocolsJson == null && anthropicBaseUrl == null && responsesBaseUrl == null) {
             return;
         }
         List<Object> arguments = new ArrayList<>();
@@ -94,6 +103,10 @@ public class ProviderConfigRepository {
         if (anthropicBaseUrl != null) {
             sql.append("anthropic_base_url = ?, ");
             arguments.add(anthropicBaseUrl);
+        }
+        if (responsesBaseUrl != null) {
+            sql.append("responses_base_url = ?, ");
+            arguments.add(responsesBaseUrl);
         }
         sql.append("updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?");
         arguments.add(providerKey);
@@ -237,7 +250,8 @@ public class ProviderConfigRepository {
 
     private List<ProviderConfigRow> loadProvidersWithModels(String providerKey, boolean activeOnly, boolean enabledModelsOnly) {
         StringBuilder sql = new StringBuilder("SELECT pc.id, pc.provider_key, pc.display_name, pc.enabled, pc.base_url,")
-                .append(" pc.supported_protocols, pc.anthropic_base_url, pc.use_proxy, pc.updated_at,")
+                .append(" pc.supported_protocols, pc.anthropic_base_url, pc.responses_base_url,")
+                .append(" pc.use_proxy, pc.updated_at,")
                 .append(" pm.id AS model_id, pm.provider_id AS model_provider_id, pm.model_name, pm.enabled AS model_enabled,")
                 .append(" pm.context_size, pm.max_output_tokens, pm.caps_tools, pm.caps_vision, pm.reasoning_effort,")
                 .append(" pm.thinking_mode, pm.thinking_budget_tokens, pm.sort_order")
@@ -272,6 +286,7 @@ public class ProviderConfigRepository {
                     (String) row.get("base_url"),
                     (String) row.get("supported_protocols"),
                     (String) row.get("anthropic_base_url"),
+                    (String) row.get("responses_base_url"),
                     // 未迁移的库里这一列不存在，取到 null；归一为 false（直连）而非报错 ——
                     // 与 use_proxy 列默认 0 同义，让「V11 之前的库」和「新库默认值」表现一致。
                     row.get("use_proxy") instanceof Number useProxy && useProxy.intValue() == 1,
@@ -321,6 +336,7 @@ public class ProviderConfigRepository {
                     provider.baseUrl,
                     provider.supportedProtocolsJson,
                     provider.anthropicBaseUrl,
+                    provider.responsesBaseUrl,
                     provider.useProxy,
                     provider.updatedAt,
                     provider.models
@@ -411,12 +427,14 @@ public class ProviderConfigRepository {
         private final String baseUrl;
         private final String supportedProtocolsJson;
         private final String anthropicBaseUrl;
+        private final String responsesBaseUrl;
         private final boolean useProxy;
         private final String updatedAt;
         private final List<ProviderModelRow> models = new ArrayList<>();
 
         private MutableProviderConfig(int id, String providerKey, String displayName, boolean enabled, String baseUrl,
-                                      String supportedProtocolsJson, String anthropicBaseUrl, boolean useProxy,
+                                      String supportedProtocolsJson, String anthropicBaseUrl,
+                                      String responsesBaseUrl, boolean useProxy,
                                       String updatedAt) {
             this.id = id;
             this.providerKey = providerKey;
@@ -425,6 +443,7 @@ public class ProviderConfigRepository {
             this.baseUrl = baseUrl;
             this.supportedProtocolsJson = supportedProtocolsJson;
             this.anthropicBaseUrl = anthropicBaseUrl;
+            this.responsesBaseUrl = responsesBaseUrl;
             this.useProxy = useProxy;
             this.updatedAt = updatedAt;
         }

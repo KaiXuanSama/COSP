@@ -22,10 +22,14 @@ import java.util.Set;
  * 把每个开了开关的供应商的<strong>端点地址</strong>解析出来，汇成一个集合，
  * 决策中心便能在建连时用纯地址判定。
  *
- * <h2>两个端点都要投影</h2>
- * 一个供应商可能有两个不同的上游端点：OpenAI 线路的 {@code base_url} 与 Anthropic 线路的
- * {@code anthropic_base_url}（后者为空时回退到前者）。两条线路的出站连接都应遵守该供应商的
- * 代理开关，所以两个端点都要投影 —— 只投 {@code base_url} 会让 Anthropic 直连线路漏掉代理。
+ * <h2>三个端点都要投影</h2>
+ * 一个供应商可能有三个不同的上游端点：Chat 线路的 {@code base_url}、Anthropic 线路的
+ * {@code anthropic_base_url}、Responses 线路的 {@code responses_base_url}
+ * （后两者为空时回退到前者）。三条线路的出站连接都应遵守该供应商的代理开关，
+ * 所以三个端点都要投影 —— 漏掉任一个都会让那条直连线路绕过代理。
+ *
+ * <p>漏投的症状<strong>特别难认</strong>：用户开了代理，其余线路正常、只有一条直连出去，
+ * 看起来像「代理时好时坏」而不是配置缺了一行。新增线路协议时必须同步这里。
  *
  * <h2>整体重投影，不做增量</h2>
  * 每次配置变更后重新扫全表投影一次全集，而非针对单个供应商增删。原因与
@@ -59,12 +63,24 @@ public class OutboundProxyTargetProjector {
                 continue;
             }
             addTarget(targets, provider.baseUrl());
-            // anthropic_base_url 为空时回退 base_url —— 与运行时解析口径一致，
-            // 避免「配置里没单独填 Anthropic 端点」的供应商漏掉它实际会连的那个地址。
-            String anthropic = provider.anthropicBaseUrl();
-            addTarget(targets, anthropic == null || anthropic.isBlank() ? provider.baseUrl() : anthropic);
+            // 两个独立端点为空时回退 base_url —— 与运行时的 resolveXxxBaseUrl 同口径，
+            // 避免「配置里没单独填」的供应商漏掉它实际会连的那个地址。
+            // 集合去重，因此回退到同一个地址时不会重复投影。
+            addTarget(targets, fallbackToBaseUrl(provider.anthropicBaseUrl(), provider.baseUrl()));
+            addTarget(targets, fallbackToBaseUrl(provider.responsesBaseUrl(), provider.baseUrl()));
         }
         proxyDecider.replaceProxiedTargets(targets);
+    }
+
+    /**
+     * 协议专属端点为空时回退到 {@code base_url}。
+     *
+     * <p>与 {@code ProviderRuntimeConfiguration.resolveAnthropicBaseUrl} /
+     * {@code resolveResponsesBaseUrl} 必须同口径：投影按 {@code host:port} 精确匹配，
+     * 这里算出的地址与运行时实际连的地址不一致就等于没配代理。
+     */
+    private static String fallbackToBaseUrl(String protocolBaseUrl, String baseUrl) {
+        return protocolBaseUrl == null || protocolBaseUrl.isBlank() ? baseUrl : protocolBaseUrl;
     }
 
     /**

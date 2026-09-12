@@ -152,6 +152,24 @@ class ProviderRequestHeaderServiceTests {
             assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);
         }
 
+        /**
+         * Responses 上游走 Bearer，与 Chat 同侧。
+         *
+         * <p>实现是 {@code if (upstream == MESSAGES) 写 x-api-key else 写 Authorization}，
+         * 因此 Responses 落到 else 分支 —— <strong>恰好正确</strong>，因为它是 OpenAI 的接口。
+         * 但这个「恰好」依赖那个 {@code if} 现在的形状：改成按协议逐个 {@code case} 时，
+         * 漏掉 RESPONSES 的症状是上游 401，而 Chat 线路一切正常。故显式钉住。
+         */
+        @Test
+        void responsesUpstreamSendsBearerLikeChatBecauseItIsAnOpenAiEndpoint() {
+            HttpHeaders headers = new HttpHeaders();
+
+            service.applyHeaders(headers, "provider-api-key", "[]", WireProtocol.RESPONSES);
+
+            assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
+            assertThat(headers).doesNotContainKey(ANTHROPIC_KEY_HEADER);
+        }
+
         /** 下游按 Anthropic 惯例带来的 x-api-key 不得泄露给 OpenAI 上游。 */
         @Test
         void openAiUpstreamDropsForwardedDownstreamAnthropicKey() {

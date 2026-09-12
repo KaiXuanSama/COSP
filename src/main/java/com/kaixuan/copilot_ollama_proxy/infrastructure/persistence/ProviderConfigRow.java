@@ -14,12 +14,13 @@ import java.util.List;
  * @param baseUrl             OpenAI 协议的 API 基础地址
  * @param supportedProtocolsJson 支持的线路协议集合（JSON 字符串数组原文）
  * @param anthropicBaseUrl    Anthropic 协议的独立基础地址，空串表示回退到 {@code baseUrl}
+ * @param responsesBaseUrl    OpenAI Responses 协议的独立基础地址，空串表示回退到 {@code baseUrl}
  * @param useProxy            该供应商的出站请求是否经由 HTTP 代理（对应 use_proxy 列）
  * @param updatedAt           更新时间
  * @param models              关联的模型列表
  */
 public record ProviderConfigRow(int id, String providerKey, String displayName, boolean enabled, String baseUrl,
-                                String supportedProtocolsJson, String anthropicBaseUrl, boolean useProxy,
-                                String updatedAt,
+                                String supportedProtocolsJson, String anthropicBaseUrl, String responsesBaseUrl,
+                                boolean useProxy, String updatedAt,
                                 List<ProviderModelRow> models) {
 }

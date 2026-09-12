@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.application.provider;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.AnthropicThinkingSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
@@ -17,6 +18,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -46,7 +48,7 @@ public class ProviderAdminService {
      * <strong>外部输入的字符串</strong>，用 {@code WireProtocol.valueOf} 会把非法值变成异常控制流，
      * 而这里要的是「集合包含判断 + 统一错误消息」。
      */
-    private static final Set<String> SUPPORTED_PROTOCOLS = Set.of("CHAT", "MESSAGES");
+    private static final Set<String> SUPPORTED_PROTOCOLS = Set.of("CHAT", "MESSAGES", "RESPONSES");
 
     private final ProviderConfigRepository providerConfigRepository;
     private final ProviderApiKeyRepository providerApiKeyRepository;
@@ -177,13 +179,19 @@ public class ProviderAdminService {
      * <p>三条保存路径（新建弹窗、改名弹窗、编辑抽屉）共用这一份，因为「未提供即保留」
      * 这个语义在任何一条路径上被写错，后果都是同一个：一次无关的保存把协议支持抹平。
      *
+     * <p>两个端点字段的 {@code null}（未提供）与空串（清空、回退 base_url）语义不同，
+     * 所以 trim 只在字段确实存在时做 —— 对 {@code null} 调 trim 会 NPE，
+     * 而把 {@code null} 归一成空串则等于替用户清空了配置。
+     *
      * @throws IllegalArgumentException 协议集合不是合法的协议名数组
      */
     private void saveProtocolsFromForm(String providerKey, MultiValueMap<String, String> form) {
         String rawAnthropicBaseUrl = form.getFirst("anthropicBaseUrl");
+        String rawResponsesBaseUrl = form.getFirst("responsesBaseUrl");
         providerConfigRepository.updateProviderProtocols(providerKey,
                 parseSupportedProtocols(form.getFirst("supportedProtocolsJson")),
-                rawAnthropicBaseUrl == null ? null : rawAnthropicBaseUrl.trim());
+                rawAnthropicBaseUrl == null ? null : rawAnthropicBaseUrl.trim(),
+                rawResponsesBaseUrl == null ? null : rawResponsesBaseUrl.trim());
     }
 
     /**
@@ -306,6 +314,7 @@ public class ProviderAdminService {
         // 在前端也以字符串形式回传，而协议集合没有这个对称需求。
         view.put("supportedProtocols", parseProtocolsForView(provider.supportedProtocolsJson()));
         view.put("anthropicBaseUrl", provider.anthropicBaseUrl() == null ? "" : provider.anthropicBaseUrl());
+        view.put("responsesBaseUrl", provider.responsesBaseUrl() == null ? "" : provider.responsesBaseUrl());
         view.put("updatedAt", provider.updatedAt());
         view.put("models", provider.models());
         view.put("apiKeys", buildMaskedApiKeys(provider.id()));
@@ -323,12 +332,19 @@ public class ProviderAdminService {
     /**
      * 把协议集合 JSON 解成供前端直接使用的列表。
      *
-     * <p>解不开时回退到两种协议都有，与
-     * {@code ProviderProtocolSupport} 的宽容口径保持一致 —— 否则会出现「界面上看不到勾选，
-     * 实际却两条线路都能跑」这种说不通的状态。显式的空数组仍如实返回空列表。
+     * <p>解不开时回退到<strong>全部协议</strong>，与 {@code ProviderProtocolSupport} 的宽容口径
+     * 保持一致 —— 否则会出现「界面上看不到勾选，实际却那条线路能跑」这种说不通的状态。
+     * 显式的空数组仍如实返回空列表。
+     *
+     * <p>回退值取自 {@link WireProtocol#values()} 而非硬编码：这个列表必须与
+     * {@code ProviderProtocolSupport.OPTIMISTIC_ALL} 是同一个集合，硬编码会在加协议时分叉，
+     * 而分叉的症状正是上面那句「界面与实际不一致」。
+     *
+     * <p>顺序取<strong>枚举声明序</strong>（语义序，两个 OpenAI 接口相邻）而非落库的字母序：
+     * 这个列表是给界面用的，展示顺序与落库顺序本就是两件事。
      */
     private List<String> parseProtocolsForView(String supportedProtocolsJson) {
-        List<String> fallback = List.of("CHAT", "MESSAGES");
+        List<String> fallback = Arrays.stream(WireProtocol.values()).map(Enum::name).toList();
         if (supportedProtocolsJson == null || supportedProtocolsJson.isBlank()) {
             return fallback;
         }

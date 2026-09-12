@@ -11,12 +11,12 @@ import java.util.Set;
  * 供应商支持的<strong>上游线路协议</strong>集合。
  *
  * <h2>为何是集合而不是单值</h2>
- * 一个中转站可以同时提供 OpenAI 兼容与 Anthropic 两套端点，用单值枚举无法表达
- * 「两者都支持」。而一旦支持集合，「同名协议优先直连」就成了有意义的规则 ——
- * 下游打 OpenAI 端点、供应商两种都支持时走 OpenAI 直连，不必绕翻译。
+ * 一个中转站可以同时提供多套端点（Chat Completions、Responses、Anthropic Messages），
+ * 用单值枚举无法表达「都支持」。而一旦支持集合，「同名协议优先直连」就成了有意义的规则 ——
+ * 下游打 chat 端点、供应商多种都支持时走 chat 直连，不必绕翻译。
  *
  * <p>不设「偏好哪个协议」的额外配置：若某供应商的 Anthropic 端点有问题，
- * 取消勾选它即可表达「强制走 OpenAI + 翻译」，无需第二个维度。
+ * 取消勾选它即可表达「强制走其它线路 + 翻译」，无需第二个维度。
  *
  * <h2>V8.8 起读数据库</h2>
  * 取值来自 {@code provider_config.supported_protocols}（JSON 字符串数组）。
@@ -39,11 +39,22 @@ public final class ProviderProtocolSupport {
     private static final Logger log = LoggerFactory.getLogger(ProviderProtocolSupport.class);
 
     /**
-     * 解析失败或字段缺失时的回退：两种协议都支持。
+     * 解析失败或字段缺失时的回退：全部协议都支持。
      *
-     * <p>用 {@code EnumSet.allOf} 而非硬编码两个值，纯粹是让常量与枚举保持同源，
-     * 不为「将来可能有第三种协议」做准备 —— OpenAI 与 Anthropic 已是事实标准，
-     * 第三种协议出现的概率极低。
+     * <p><strong>这里曾写着「不为将来可能有第三种协议做准备，它出现的概率极低」。</strong>
+     * 那个事实判断已被 {@link WireProtocol#RESPONSES} 推翻，因此理由重写。
+     *
+     * <h2>为何仍然是 {@code allOf} 而不是硬编码子集</h2>
+     * 三处口径必须一致，而 {@code allOf} 正是那个统一口径的表达：
+     * <ul>
+     *   <li>{@code schema.sql} 的 DEFAULT 是全集；</li>
+     *   <li>V13 迁移为存量供应商追加 {@code RESPONSES}，回填结果也是全集；</li>
+     *   <li>本常量作为解析失败的回退。</li>
+     * </ul>
+     *
+     * <p>三者同源于同一条产品决定：<strong>默认全勾，不通就让用户看到上游报错并取消勾选。</strong>
+     * 可感知的失败优于沉默的不可用 —— 默认不勾会让「支持却调不通」变成需要用户
+     * 自己想到去勾的隐藏状态。硬编码子集就会让这三处分叉。
      */
     private static final Set<WireProtocol> OPTIMISTIC_ALL = EnumSet.allOf(WireProtocol.class);
 
@@ -84,7 +95,7 @@ public final class ProviderProtocolSupport {
         }
         String trimmed = json.trim();
         if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
-            log.warn("供应商 {} 的协议支持配置不是 JSON 数组，按两种协议都支持处理: {}", providerKey, json);
+            log.warn("供应商 {} 的协议支持配置不是 JSON 数组，按全部协议都支持处理: {}", providerKey, json);
             return OPTIMISTIC_ALL;
         }
         String body = trimmed.substring(1, trimmed.length() - 1).trim();
@@ -106,7 +117,7 @@ public final class ProviderProtocolSupport {
             protocols.add(protocol);
         }
         if (protocols.isEmpty()) {
-            log.warn("供应商 {} 的协议支持配置没有任何可识别的协议，按两种协议都支持处理: {}",
+            log.warn("供应商 {} 的协议支持配置没有任何可识别的协议，按全部协议都支持处理: {}",
                     providerKey, json);
             return OPTIMISTIC_ALL;
         }

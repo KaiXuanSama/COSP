@@ -41,20 +41,26 @@ class ProtocolDispatchManagerTests {
     }
 
     /**
-     * 同名优先：两种都支持时不该绕翻译。
+     * 同名优先：勾了的协议都该直连，不绕翻译。
      *
-     * <p>若它被写成「按枚举顺序取第一个支持的协议」，Anthropic 下游就会被错误地判成需要翻译。
+     * <p>若它被写成「按某个固定顺序取第一个支持的协议」，Anthropic 下游就会被错误地判成需要翻译。
+     *
+     * <p>遍历范围是<strong>勾选集</strong>而非 {@code values()}：本用例的命题是「同名优先」，
+     * 只对该供应商声明支持的协议成立。没勾的那些本就该走翻译分支，那是
+     * {@link #anthropicDownstreamNeedsTranslationWhenProviderOnlySupportsOpenAi()} 一类用例的事。
+     * 曾经遍历 {@code values()} 而恰好通过，那是因为当时勾选集等于全集 ——
+     * 第三个协议加入后这个巧合就消失了。
      */
     @Test
-    void bothProtocolsSupportedStillPrefersSameNameOverTranslation() {
+    void everySupportedProtocolPrefersSameNameOverTranslation() {
         ProviderRuntimeConfiguration provider = provider("[\"CHAT\",\"MESSAGES\"]");
         assertThat(ProviderProtocolSupport.of(provider))
                 .containsExactlyInAnyOrder(WireProtocol.CHAT, WireProtocol.MESSAGES);
 
-        for (WireProtocol downstream : WireProtocol.values()) {
+        for (WireProtocol downstream : ProviderProtocolSupport.of(provider)) {
             ProtocolDispatchDecision decision = manager.dispatch(downstream, provider);
             assertThat(decision.translationNeeded())
-                    .as("下游 %s 在两种协议都支持时应直连", downstream)
+                    .as("下游 %s 已被该供应商声明支持，应直连", downstream)
                     .isFalse();
             assertThat(decision.upstreamProtocol()).isEqualTo(downstream);
         }
@@ -104,14 +110,20 @@ class ProtocolDispatchManagerTests {
                 .hasMessageContaining("至少勾选一种协议");
     }
 
-    /** 字段缺失回退为全集，等同 V8.8 之前的行为；不与显式空集合混淆。 */
+    /**
+     * 字段缺失回退为<strong>全集</strong>，等同 V8.8 之前的行为；不与显式空集合混淆。
+     *
+     * <p>断言写成「等于 {@code values()} 全集」而非逐个列举：这个回退的语义就是「全部」，
+     * 与 {@code schema.sql} 的 DEFAULT、V13 迁移的回填是同一个集合。
+     * 逐个列举会让加协议时忘改这里的行为悄悄退化成子集。
+     */
     @Test
-    void missingProtocolConfigurationFallsBackToBothProtocols() {
+    void missingProtocolConfigurationFallsBackToAllProtocols() {
         ProviderRuntimeConfiguration provider =
                 new ProviderRuntimeConfiguration("legacy", "https://example.org", "key", List.of());
 
-        assertThat(ProviderProtocolSupport.supports(provider, WireProtocol.CHAT)).isTrue();
-        assertThat(ProviderProtocolSupport.supports(provider, WireProtocol.MESSAGES)).isTrue();
+        assertThat(ProviderProtocolSupport.of(provider))
+                .containsExactlyInAnyOrder(WireProtocol.values());
     }
 
     /** 未知协议名被忽略而非让整个供应商不可用；剩下的可识别协议照常生效。 */
@@ -123,9 +135,82 @@ class ProtocolDispatchManagerTests {
 
     /** 不是数组的脏配置保守放行为全集：宁可在上游失败，也不要本地全面拒绍。 */
     @Test
-    void malformedProtocolConfigurationFallsBackToBothProtocols() {
+    void malformedProtocolConfigurationFallsBackToAllProtocols() {
         assertThat(ProviderProtocolSupport.of(provider("\"CHAT\"")))
-                .containsExactlyInAnyOrder(WireProtocol.CHAT, WireProtocol.MESSAGES);
+                .containsExactlyInAnyOrder(WireProtocol.values());
+    }
+
+    // ==================== Responses 协议加入后的三条约束 ====================
+
+    /** Responses 下游在供应商支持它时直连，与另两条线路同规则。 */
+    @Test
+    void responsesDownstreamGoesDirectWhenProviderSupportsResponses() {
+        ProtocolDispatchDecision decision =
+                manager.dispatch(WireProtocol.RESPONSES, provider("[\"RESPONSES\"]"));
+
+        assertThat(decision.downstreamProtocol()).isEqualTo(WireProtocol.RESPONSES);
+        assertThat(decision.upstreamProtocol()).isEqualTo(WireProtocol.RESPONSES);
+        assertThat(decision.translationNeeded()).isFalse();
+    }
+
+    /**
+     * V13 迁移后的常态配置（三条全勾）下，每条下游线路都直连、都不翻译。
+     *
+     * <p>这是接受「迁移为存量供应商全量追加 RESPONSES」的关键支撑：追加第三个元素
+     * <strong>不得</strong>影响另两条已在使用的线路。规则 1（同名优先）保证了这一点，
+     * 但那依赖「集合里多出来的元素不参与判断」，所以要显式钉住。
+     */
+    @Test
+    void allThreeProtocolsSupportedKeepsEveryDownstreamDirect() {
+        ProviderRuntimeConfiguration provider = provider("[\"CHAT\",\"MESSAGES\",\"RESPONSES\"]");
+        assertThat(ProviderProtocolSupport.of(provider))
+                .containsExactlyInAnyOrder(WireProtocol.values());
+
+        for (WireProtocol downstream : WireProtocol.values()) {
+            ProtocolDispatchDecision decision = manager.dispatch(downstream, provider);
+            assertThat(decision.translationNeeded())
+                    .as("下游 %s 在三条协议都支持时应直连", downstream)
+                    .isFalse();
+            assertThat(decision.upstreamProtocol()).isEqualTo(downstream);
+        }
+    }
+
+    /**
+     * 候选有多个时按 {@code TRANSLATION_FALLBACK_ORDER} 挑，而非枚举声明序。
+     *
+     * <p>这是三个协议才出现的分支，也是回退序常量存在的唯一理由。两处断言各自独立：
+     * <ul>
+     *   <li>下游 CHAT、候选 {MESSAGES, RESPONSES} → 挑 MESSAGES。
+     *       <strong>枚举声明序是 CHAT, RESPONSES, MESSAGES，会挑 RESPONSES</strong> ——
+     *       而 C2M 已实现、C2R 未实现，挑错的代价是一个本能跑的调用抛「未实现」。
+     *       这一条同时证明「用了回退序」与「回退序的排法是对的」。</li>
+     *   <li>下游 MESSAGES、候选 {CHAT, RESPONSES} → 挑 CHAT，兼容面最广。</li>
+     * </ul>
+     */
+    @Test
+    void translationTargetFollowsFallbackOrderNotEnumDeclarationOrder() {
+        ProtocolDispatchDecision fromChat =
+                manager.dispatch(WireProtocol.CHAT, provider("[\"MESSAGES\",\"RESPONSES\"]"));
+        assertThat(fromChat.translationNeeded()).isTrue();
+        assertThat(fromChat.upstreamProtocol()).isEqualTo(WireProtocol.MESSAGES);
+
+        ProtocolDispatchDecision fromMessages =
+                manager.dispatch(WireProtocol.MESSAGES, provider("[\"CHAT\",\"RESPONSES\"]"));
+        assertThat(fromMessages.translationNeeded()).isTrue();
+        assertThat(fromMessages.upstreamProtocol()).isEqualTo(WireProtocol.CHAT);
+    }
+
+    /**
+     * 回退序必须覆盖<strong>全部</strong>协议，否则某个候选永远选不上。
+     *
+     * <p>加第四个协议时若忘了把它加进回退序，症状是「只勾了那一个协议的供应商」在
+     * 跨协议请求下抛 {@code NoSupportedProtocolException} —— 而它明明声明了支持，
+     * 错误消息会把人引向「去勾选协议」这个已经做过的动作。
+     */
+    @Test
+    void fallbackOrderCoversEveryProtocol() {
+        assertThat(ProtocolDispatchManager.TRANSLATION_FALLBACK_ORDER)
+                .containsExactlyInAnyOrder(WireProtocol.values());
     }
 
     private ProviderRuntimeConfiguration provider(String supportedProtocolsJson) {

@@ -163,6 +163,14 @@ public class ProviderModelDiscoveryService {
      *
      * <p>版本头只在缺失时设置，因此供应商自定义头规则（已在 {@code applyHeaders} 里生效）
      * 仍能覆盖它 —— 某些中转站要求特定版本号。
+     *
+     * <h2>判断写成「排除 MESSAGES」而非「列举需要版本头的协议」</h2>
+     * {@link WireProtocol#RESPONSES} 与 {@link WireProtocol#CHAT} 同为 OpenAI 系接口：
+     * 同一个 {@code GET /v1/models}、同一个 {@code Authorization} 头、都<strong>不能</strong>
+     * 带 {@code anthropic-version}。现在这个否定式判断让新加入的 OpenAI 系协议自动落到
+     * 正确的一侧，而改成逐协议 {@code switch} 就得记着为每个新协议补一条 ——
+     * 漏掉的症状是给一个 OpenAI 端点发了 Anthropic 的版本头，多数中转站会忽略它，
+     * 于是错误要等到某个严格上游才暴露。
      */
     private void applyProtocolHeaders(HttpHeaders headers, WireProtocol protocol) {
         if (protocol != WireProtocol.MESSAGES) {
