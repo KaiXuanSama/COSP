@@ -89,23 +89,22 @@ export const WIRE_PROTOCOL_URL_LABELS: Record<WireProtocol, string> = {
 }
 
 /**
- * **请求体规则引擎**当前支持的协议，是 {@link ALL_WIRE_PROTOCOLS} 的子集。
+ * **请求体规则引擎**支持的协议，与后端 `ProviderRequestTransformService.PROTOCOLS`
+ * 逐项对应。
  *
- * <h2>为何需要一个子集常量</h2>
- * 后端 `ProviderRequestTransformService` 的协议白名单只有 `CHAT` 与 `MESSAGES`，
- * 保存含其它协议的规则组会被它拒掉（400「不支持的线路协议」）。
- * 而规则组的 `protocols` 默认铺全集（「未声明即全协议」的具体化），
- * 若那个全集直接取 {@link ALL_WIRE_PROTOCOLS}，**新建一个规则组就会保存失败** ——
- * 用户什么都没配错，却看到一个协议名不被支持的报错。
+ * <h2>为何保留这个常量，即使它当前等于 {@link ALL_WIRE_PROTOCOLS}</h2>
+ * 两者语义不同：{@link ALL_WIRE_PROTOCOLS} 是「系统认识哪些协议」（地址配置、协议勾选、
+ * 日志展示），本常量是「规则引擎能对哪些协议生效」，而后者受**后端白名单**约束。
  *
- * <p>因此这里刻意与 {@link ALL_WIRE_PROTOCOLS} 分离：前者是「系统认识哪些协议」，
- * 本常量是「规则引擎能对哪些协议生效」。
+ * <p>它曾短暂地是真子集：Responses 加入系统后、后端白名单放开之前，
+ * 规则组若铺上全集会在保存时被拒（400「不支持的线路协议」）—— 用户什么都没配错。
+ * 那段时间证明了这两个概念确实会分叉，因此即使现在数值相同也不合并。
+ *
+ * <p>两处必须同一批改：只改前端会让用户勾了之后保存报错，只改后端则界面上勾不到、
+ * 规则永远不会对那条线路生效。
  */
-// TODO(待实现) Responses 线路的请求体改写规则。落地时把 'RESPONSES' 加进本常量，
-//  并同步后端 ProviderRequestTransformService.PROTOCOLS 的白名单。
-//  两处必须同一批改：先改前端会让用户勾了之后保存报「不支持的线路协议」，
-//  先改后端则界面上根本勾不到，规则永远不会对那条线路生效。
-export const RULE_ENGINE_WIRE_PROTOCOLS: readonly WireProtocol[] = ['CHAT', 'MESSAGES']
+export const RULE_ENGINE_WIRE_PROTOCOLS: readonly WireProtocol[] =
+  ['CHAT', 'MESSAGES', 'RESPONSES']
 
 /**
  * 线路协议的单字母缩写，用于空间紧张处（调用 Toast 的路径标记、日志列表的类型列）。

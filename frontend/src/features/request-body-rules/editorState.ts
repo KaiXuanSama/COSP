@@ -27,8 +27,9 @@ export function createDefaultRequestBodyEditorState(): RequestBodyEditorState {
 /**
  * 创建一个新规则组，默认适用于规则引擎支持的全部线路协议。
  *
- * <p>用 {@link RULE_ENGINE_WIRE_PROTOCOLS} 而非 `ALL_WIRE_PROTOCOLS`：后端的规则组
- * 协议白名单是后者的子集，铺上全集会让新建规则组在保存时直接 400。
+ * <p>用 {@link RULE_ENGINE_WIRE_PROTOCOLS} 而非 `ALL_WIRE_PROTOCOLS`：默认值必须落在
+ * **后端白名单**内，而那是一个独立的约束。两者当前数值相同，但曾经分叉（
+ * Responses 加入系统后、后端放开白名单之前），那时铺全集会让新建规则组直接 400。
  */
 export function createRuleGroup(order: number): RuleGroup {
   return {

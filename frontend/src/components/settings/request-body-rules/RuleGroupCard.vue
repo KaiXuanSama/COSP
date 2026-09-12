@@ -54,10 +54,14 @@ const message = useMessage()
 /**
  * 「适用协议」的可选项。
  *
- * <p>取 `RULE_ENGINE_WIRE_PROTOCOLS` 而非全部协议：后端规则引擎的白名单只认这几个，
- * 把 Responses 摆进选项里会让用户勾了之后在保存时收到「不支持的线路协议」——
- * 一个由界面主动提供却又被拒绝的选择。Responses 的请求体改写落地时，
- * 把它加进那个常量并同步后端白名单，本处自动跟随。
+ * <p>取 `RULE_ENGINE_WIRE_PROTOCOLS` 而非 `ALL_WIRE_PROTOCOLS`：这个下拉的取值必须与
+ * **后端白名单**一致，而那是一个独立于「系统认识哪些协议」的约束。两者当前数值相同，
+ * 但曾短暂分叉（Responses 加入系统后、后端放开白名单之前），那段时间里用错常量会让
+ * 界面主动提供一个保存时被拒的选择。
+ *
+ * <p>Responses 选项现在可用，但 `POST /v1/responses` 端点<strong>尚未接入</strong>——
+ * 因此那些规则组暂时不会被执行。这是有意的先行：请求体改写是接一个新中转站时
+ * 最先需要配置的能力，等端点落地才放开会让用户在端点上线当天才能开始配。
  */
 const PROTOCOL_OPTIONS = RULE_ENGINE_WIRE_PROTOCOLS.map((protocol) => ({
   label: WIRE_PROTOCOL_LABELS[protocol],

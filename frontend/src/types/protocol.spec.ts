@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   ALL_WIRE_PROTOCOLS,
+  RULE_ENGINE_WIRE_PROTOCOLS,
   WIRE_PROTOCOL_DESCRIPTIONS,
   WIRE_PROTOCOL_URL_LABELS,
   formatCallTypeLabel,
@@ -240,5 +241,39 @@ describe('ALL_WIRE_PROTOCOLS', () => {
     expect(WIRE_PROTOCOL_DESCRIPTIONS.RESPONSES).toContain('OpenAI')
     expect(WIRE_PROTOCOL_DESCRIPTIONS.RESPONSES).toContain('两个不同的接口')
     expect(WIRE_PROTOCOL_DESCRIPTIONS.MESSAGES).toContain('Anthropic')
+  })
+})
+
+describe('RULE_ENGINE_WIRE_PROTOCOLS', () => {
+  /**
+   * 必须与后端 `ProviderRequestTransformService.PROTOCOLS` 逐项对应。
+   *
+   * 这条断言写死三个值而非比对 `ALL_WIRE_PROTOCOLS`：两者语义不同（前者受后端白名单
+   * 约束，后者是「系统认识哪些协议」），当前数值相同纯属两处都放开了。
+   * 若写成比对，将来某个新协议加进系统但后端规则引擎还没支持时，这条断言会自动通过 ——
+   * 而那正是需要它失败的时刻。
+   */
+  it('与后端规则组白名单同源，含尚未接入端点的 RESPONSES', () => {
+    expect(RULE_ENGINE_WIRE_PROTOCOLS).toEqual(['CHAT', 'MESSAGES', 'RESPONSES'])
+  })
+
+  /** 每一项都必须是合法协议标识，否则后端会以「不支持的线路协议」拒掉保存。 */
+  it('每一项都是合法协议标识', () => {
+    for (const protocol of RULE_ENGINE_WIRE_PROTOCOLS) {
+      expect(isWireProtocol(protocol)).toBe(true)
+    }
+  })
+
+  /**
+   * 必须是 `ALL_WIRE_PROTOCOLS` 的子集（当前恰好相等）。
+   *
+   * 反过来不成立：系统可以认识一个规则引擎还不支持的协议（那正是 Responses 落地过程中
+   * 短暂存在过的状态），但规则引擎不能支持一个系统不认识的协议 —— 那种取值存进库里，
+   * `groupAppliesTo` 按协议名匹配时永远命中不了，规则会静默失效。
+   */
+  it('是全部协议的子集', () => {
+    for (const protocol of RULE_ENGINE_WIRE_PROTOCOLS) {
+      expect(ALL_WIRE_PROTOCOLS).toContain(protocol)
+    }
   })
 })

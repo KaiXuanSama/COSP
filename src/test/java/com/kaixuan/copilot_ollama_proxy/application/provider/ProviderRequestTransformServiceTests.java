@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.application.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderRequestTransformRepository;
@@ -19,6 +20,8 @@ import org.sqlite.SQLiteDataSource;
 
 import javax.sql.DataSource;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -201,6 +204,81 @@ class ProviderRequestTransformServiceTests {
                 TEMPLATE_KEYS, PREVIEW, rules))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("不支持的线路协议");
+    }
+
+    /**
+     * 旧协议名同样被拦下。
+     *
+     * <p>V12 把它们重命名掉了，库里已不存在。若白名单放行，一份从旧版本导出的规则集
+     * 能被存进来，而 {@code RequestBodyRuleEngine.groupAppliesTo} 按新名匹配 ——
+     * 那个组会静默永不生效，而保存时没有任何提示。
+     */
+    @Test
+    void preV12ProtocolNamesInRuleGroupAreRejected() {
+        for (String legacyName : new String[] {"OPENAI", "ANTHROPIC"}) {
+            String rules = "{\"version\":2,\"groups\":[{\"id\":\"g1\",\"name\":\"g\",\"order\":0,"
+                    + "\"enabled\":true,\"protocols\":[\"" + legacyName + "\"],"
+                    + "\"templateKeys\":[\"base\"],\"previewBody\":{},\"rules\":[]}]}";
+
+            assertThatThrownBy(() -> service.createProvider(
+                    "legacy-" + legacyName, "Legacy", "https://legacy.example/v1", HEADER_RULES,
+                    TEMPLATE_KEYS, PREVIEW, rules))
+                    .as("旧协议名 %s 应被拒绝", legacyName)
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("不支持的线路协议");
+        }
+    }
+
+    /**
+     * 三条线路协议都可声明，含尚未接入端点的 {@code RESPONSES}。
+     *
+     * <p>Responses 的规则组当前<strong>不会被执行</strong>（{@code POST /v1/responses} 还没有），
+     * 但保存必须先放开：规则引擎按协议名筛组，是协议无关的，加一个取值不需要引擎改动；
+     * 而请求体改写恰恰是接一个新中转站时最先需要的能力，等端点落地才放开会让那段时间里
+     * 用户在界面上根本看不到这个选项。
+     *
+     * <p>断言遍历 {@code WireProtocol.values()} 而非列举三个字面量：白名单的语义就是
+     * 「全部线路协议」，逐个列举会让将来加协议时忘改这里的行为退化成子集，
+     * 而那个退化的症状是「界面能勾但保存报错」。
+     */
+    @Test
+    void everyWireProtocolCanBeDeclaredByRuleGroup() {
+        for (WireProtocol protocol : WireProtocol.values()) {
+            String rules = "{\"version\":2,\"groups\":[{\"id\":\"g1\",\"name\":\"g\",\"order\":0,"
+                    + "\"enabled\":true,\"protocols\":[\"" + protocol.name() + "\"],"
+                    + "\"templateKeys\":[\"base\"],\"previewBody\":{},\"rules\":[]}]}";
+
+            int providerId = service.createProvider(
+                    "ok-" + protocol.name().toLowerCase(), protocol.name(),
+                    "https://ok.example/v1", HEADER_RULES, TEMPLATE_KEYS, PREVIEW, rules);
+
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT body_rules_json FROM provider_request_transform WHERE provider_id = ?",
+                    String.class, providerId))
+                    .as("%s 的规则组应原样落库", protocol)
+                    .contains("\"" + protocol.name() + "\"");
+        }
+    }
+
+    /** 一个组同时声明多条线路：全集也要能存下来，那是「未指定即全选」的具体化。 */
+    @Test
+    void ruleGroupCanDeclareAllProtocolsAtOnce() {
+        String allNames = Arrays.stream(WireProtocol.values())
+                .map(protocol -> "\"" + protocol.name() + "\"")
+                .collect(Collectors.joining(","));
+        String rules = "{\"version\":2,\"groups\":[{\"id\":\"g1\",\"name\":\"g\",\"order\":0,"
+                + "\"enabled\":true,\"protocols\":[" + allNames + "],"
+                + "\"templateKeys\":[\"base\"],\"previewBody\":{},\"rules\":[]}]}";
+
+        int providerId = service.createProvider(
+                "all-protocols", "All", "https://all.example/v1", HEADER_RULES, TEMPLATE_KEYS, PREVIEW, rules);
+
+        String saved = jdbcTemplate.queryForObject(
+                "SELECT body_rules_json FROM provider_request_transform WHERE provider_id = ?",
+                String.class, providerId);
+        for (WireProtocol protocol : WireProtocol.values()) {
+            assertThat(saved).contains("\"" + protocol.name() + "\"");
+        }
     }
 
     /** 重复的规则组 ID 被拒绝 —— 前端用它做列表 key，重复会让渲染错乱。 */

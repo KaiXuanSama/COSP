@@ -120,8 +120,8 @@ function emptyGroup(index: number): RuleGroup {
 /**
  * 规范化规则组的适用协议。
  *
- * <p>字段缺失时铺 {@link RULE_ENGINE_WIRE_PROTOCOLS} 而非全部协议：
- * 那个子集才是后端规则引擎接受的取值集合，铺全集会让一次无关的保存 400。
+ * <p>字段缺失时铺 {@link RULE_ENGINE_WIRE_PROTOCOLS}：那是后端规则引擎接受的取值集合，
+ * 与「系统认识哪些协议」是两个约束。用错会让一次无关的保存 400。
  */
 function normalizeProtocols(raw: unknown): WireProtocol[] {
   if (!Array.isArray(raw)) return [...RULE_ENGINE_WIRE_PROTOCOLS]

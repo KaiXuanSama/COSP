@@ -212,29 +212,44 @@ class RequestBodyRuleEngineTests {
 
     // ==================== 协议筛选 ====================
 
-    /** 只执行 protocols 包含当前线路的组。 */
+    /**
+     * 只执行 protocols 包含当前线路的组。
+     *
+     * <p>三条线路各有一个专属组，因此这条用例同时证明「命中的执行了」与
+     * 「没命中的没执行」—— 若筛选完全失效，最后一个组会覆盖前面所有组的写入，
+     * 三次断言里至少两次失败。
+     */
     @Test
     void onlyGroupsDeclaringCurrentProtocolAreExecuted() {
         Map<String, Object> input = Map.of("marker", "none");
         String rules = """
                 {"version":2,"groups":[
-                  {"id":"openai-only","name":"o","order":0,"enabled":true,
+                  {"id":"chat-only","name":"c","order":0,"enabled":true,
                    "protocols":["CHAT"],"templateKeys":["custom"],"previewBody":{},
                    "rules":[{"id":"r1","order":0,"field":"marker","array":false,"conditional":false,
                     "conditionMode":"all","conditions":[],
-                    "operations":[{"type":"set_value","value":"from-openai"}]}]},
-                  {"id":"anthropic-only","name":"a","order":1,"enabled":true,
+                    "operations":[{"type":"set_value","value":"from-chat"}]}]},
+                  {"id":"messages-only","name":"m","order":1,"enabled":true,
                    "protocols":["MESSAGES"],"templateKeys":["custom"],"previewBody":{},
                    "rules":[{"id":"r2","order":0,"field":"marker","array":false,"conditional":false,
                     "conditionMode":"all","conditions":[],
-                    "operations":[{"type":"set_value","value":"from-anthropic"}]}]}
+                    "operations":[{"type":"set_value","value":"from-messages"}]}]},
+                  {"id":"responses-only","name":"r","order":2,"enabled":true,
+                   "protocols":["RESPONSES"],"templateKeys":["custom"],"previewBody":{},
+                   "rules":[{"id":"r3","order":0,"field":"marker","array":false,"conditional":false,
+                    "conditionMode":"all","conditions":[],
+                    "operations":[{"type":"set_value","value":"from-responses"}]}]}
                 ]}
                 """;
 
         assertThat(engine.transform(input, rules, WireProtocol.CHAT).output())
-                .containsEntry("marker", "from-openai");
+                .containsEntry("marker", "from-chat");
         assertThat(engine.transform(input, rules, WireProtocol.MESSAGES).output())
-                .containsEntry("marker", "from-anthropic");
+                .containsEntry("marker", "from-messages");
+        // Responses 端点尚未接入，因此这条路径当前没有生产调用方 —— 但引擎侧必须先就绪，
+        // 否则端点落地那天才发现筛选不认这个协议名。
+        assertThat(engine.transform(input, rules, WireProtocol.RESPONSES).output())
+                .containsEntry("marker", "from-responses");
     }
 
     /**
@@ -255,10 +270,13 @@ class RequestBodyRuleEngineTests {
                 ]}
                 """;
 
-        assertThat(engine.transform(input, rules, WireProtocol.CHAT).output())
-                .containsEntry("marker", "applied");
-        assertThat(engine.transform(input, rules, WireProtocol.MESSAGES).output())
-                .containsEntry("marker", "applied");
+        // 遍历 values() 而非列举：「全协议适用」这个命题本身就是对全集而言的，
+        // 列举会让新增协议时这条断言退化成只盖子集。
+        for (WireProtocol protocol : WireProtocol.values()) {
+            assertThat(engine.transform(input, rules, protocol).output())
+                    .as("缺失 protocols 的组应对 %s 生效", protocol)
+                    .containsEntry("marker", "applied");
+        }
     }
 
     /**
@@ -279,20 +297,26 @@ class RequestBodyRuleEngineTests {
                 ]}
                 """;
 
-        assertThat(engine.transform(input, rules, WireProtocol.CHAT).output())
-                .containsEntry("marker", "kept");
-        assertThat(engine.transform(input, rules, WireProtocol.MESSAGES).output())
-                .containsEntry("marker", "kept");
+        for (WireProtocol protocol : WireProtocol.values()) {
+            assertThat(engine.transform(input, rules, protocol).output())
+                    .as("空 protocols 的组在 %s 上也不得执行", protocol)
+                    .containsEntry("marker", "kept");
+        }
     }
 
     /**
-     * V1 规则集只在 OpenAI 线路执行。
+     * V1 规则集<strong>只在 CHAT 线路执行</strong>。
      *
-     * <p>V1 规则的字段路径是照 OpenAI 请求体写的，作用在 Anthropic 请求体上
-     * 多数匹配不到 —— 静默失效比不执行更难排查。
+     * <p>V1 规则写于「只有一种协议」的年代，字段路径是照 Chat Completions 请求体写的，
+     * 作用在 Anthropic 请求体上多数匹配不到，而 Responses 的形态差得更远 ——
+     * 静默失效比不执行更难排查。
+     *
+     * <p>非 CHAT 的那一侧遍历 {@code values()}：这条规则的意图是「只放 CHAT」，
+     * 因此将来新增的任何协议都应落在不执行的那一侧 —— V1 规则不可能是为一个
+     * 当时还不存在的协议写的。
      */
     @Test
-    void legacyV1RuleSetIsSkippedOnNonOpenAiProtocol() {
+    void legacyV1RuleSetOnlyAppliesToChatProtocol() {
         Map<String, Object> input = Map.of("temperature", 0.1);
         String rules = """
                 {"version":1,"rules":[
@@ -303,8 +327,14 @@ class RequestBodyRuleEngineTests {
 
         assertThat(engine.transform(input, rules, WireProtocol.CHAT).output())
                 .containsEntry("temperature", 0.9);
-        assertThat(engine.transform(input, rules, WireProtocol.MESSAGES).output())
-                .containsEntry("temperature", 0.1);
+        for (WireProtocol protocol : WireProtocol.values()) {
+            if (protocol == WireProtocol.CHAT) {
+                continue;
+            }
+            assertThat(engine.transform(input, rules, protocol).output())
+                    .as("V1 规则不得在 %s 上执行", protocol)
+                    .containsEntry("temperature", 0.1);
+        }
     }
 
     @SuppressWarnings("unchecked")

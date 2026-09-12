@@ -98,11 +98,18 @@ public final class RequestBodyRuleEngine {
      *   <li>V2 {@code {version:2, groups:[...]}} —— 规则装在「规则组」里，每组声明适用线路协议。</li>
      * </ul>
      *
-     * <p>V1 只在 {@link WireProtocol#CHAT} 下执行：那些规则的字段路径是照 OpenAI 请求体写的
-     * （{@code messages} 里含 system、无 {@code max_tokens}），作用在 Anthropic 请求体上多数
-     * 匹配不到 —— 静默失效比不执行更难排查。这与前端迁移把 V1 归一为
-     * {@code protocols:['OPENAI']} 单组是同一个判断。写入路径已不再接受 V1，
-     * 但读取仍需兼容：迁移未跑完的窗口里若不认 V1，既有规则会全部静默失效。
+     * <p>V1 <strong>只在 {@link WireProtocol#CHAT} 下执行</strong>：那些规则写于「只有一种协议」
+     * 的年代，字段路径是照 Chat Completions 请求体写的（{@code messages} 里含 system、
+     * 无 {@code max_tokens}）。作用在 Anthropic 请求体上多数匹配不到，而 Responses 的形态
+     * 差得更远（{@code input} 而非 {@code messages}）—— 静默失效比不执行更难排查。
+     * 这与前端迁移把 V1 归一为「仅 CHAT」单组是同一个判断。
+     *
+     * <p>因此新增协议时这里<strong>不需要改动</strong>：判断写成「仅 CHAT 放行」而非
+     * 「排除某几个协议」，新协议自动落到不执行的一侧，而那正是正确的一侧 ——
+     * V1 规则不可能是为一个当时还不存在的协议写的。
+     *
+     * <p>写入路径已不再接受 V1，但读取仍需兼容：迁移未跑完的窗口里若不认 V1，
+     * 既有规则会全部静默失效。
      *
      * <p>保持全局 {@code order} 语义：组内规则的 {@code order} 只在组内有效，跨组顺序由组的
      * {@code order} 决定，因此展平必须逐组排序后依次追加，而不能把所有规则混在一起按
