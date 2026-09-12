@@ -108,6 +108,38 @@ public record ReasoningEffortSetting(String effort, Mode mode) {
     public static final String OUTPUT_CONFIG_EFFORT_KEY = "effort";
 
     /**
+     * OpenAI <strong>Responses</strong> 协议承载思考深度的字段名。
+     *
+     * <p>形态是 {@code reasoning: {"effort": "high"}} —— 与 Chat 的扁平
+     * {@code reasoning_effort} 和 Anthropic 的 {@code output_config.effort} 都不同。
+     * 三条线路读<strong>同一列配置</strong>，只有出站字段各异。
+     *
+     * <p>这个容器还承载其它设置（如 {@code summary}），因此增删都必须只动
+     * {@link #REASONING_EFFORT_KEY} 一个键，见 {@link #removeResponsesEffort}。
+     */
+    public static final String REASONING_FIELD = "reasoning";
+
+    /** {@link #REASONING_FIELD} 里承载档位的键名。 */
+    public static final String REASONING_EFFORT_KEY = "effort";
+
+    /**
+     * Responses 协议里「不思考」的档位取值。
+     *
+     * <h2>这是三条线路里唯一有原生「不思考」取值的</h2>
+     * {@code reasoning.effort} <strong>支持</strong> {@code "none"}，已在调研中于
+     * new-api 的 {@code EffortNone} 常量与 {@code ParseEffort} 一手核对。
+     *
+     * <p>因此 {@link #EFFORT_OFF} 档在这条线路上直接映射为本值，
+     * 而不必像 Chat 与 Anthropic 那样借 {@code thinking:{"type":"disabled"}} ——
+     * 那个字段是那两个协议的方言，Responses 里没有它。
+     *
+     * <p>反过来也要记住：{@code none} <strong>不是</strong> Chat 的
+     * {@code reasoning_effort} 的合法取值。三种协议的形态不可互相套用，
+     * 见 {@link #EFFORT_OFF} 的说明。
+     */
+    public static final String EFFORT_NONE = "none";
+
+    /**
      * 「不思考」档位的界面标识。
      *
      * <h2>它不是一个 {@code reasoning_effort} 取值</h2>
@@ -466,6 +498,120 @@ public record ReasoningEffortSetting(String effort, Mode mode) {
     /** 取一份可写的 {@code output_config}，下游已有则保留其它键。 */
     private static Map<String, Object> mutableOutputConfig(Map<String, Object> body) {
         return body.get(OUTPUT_CONFIG_FIELD) instanceof Map<?, ?> existing
+                ? copyStringKeyed(existing)
+                : new LinkedHashMap<>();
+    }
+
+    // ==================== OpenAI Responses 线路 ====================
+
+    /**
+     * 按当前模式把思考深度写入 <strong>OpenAI Responses</strong> 请求体。
+     *
+     * <h2>三条线路里映射最干净的一条</h2>
+     * <pre>
+     * Chat       深度 → reasoning_effort: "high"        off 档借 thinking:{"type":"disabled"}
+     * Messages   深度 → output_config: {"effort":...}   off 档借 thinking:{"type":"disabled"}
+     * Responses  深度 → reasoning: {"effort": "high"}   off 档 → reasoning: {"effort":"none"}
+     * </pre>
+     *
+     * <p><strong>{@code off} 档在这条线路上有原生表达。</strong>{@code reasoning.effort}
+     * 支持 {@code "none"}（已在调研中于 new-api 的 {@code EffortNone} 一手核对），
+     * 因此不必像另两条线路那样借 {@code thinking} 字段 —— 那个字段是 Chat 与
+     * Anthropic 的方言，Responses 协议里根本没有它。
+     *
+     * <p>由此带来两处简化，都体现在返回类型上：本方法返回 {@code void} 而
+     * {@link #applyToAnthropic} 返回 {@code boolean}。那个布尔是用来告诉调用方
+     * 「我写了 disabled，思考方式那一维请跳过」，而这里既不写 {@code thinking}、
+     * Responses 侧也没有第二个思考维度需要协调。
+     *
+     * <h2>「下游已表态」只看一个字段</h2>
+     * 判据是 {@code reasoning.effort} 是否存在，不看 {@code thinking} ——
+     * 后者不是这个协议的字段，下游若发了它，那是畸形请求而非表态。
+     * 也不像 Anthropic 侧那样兼看 {@code reasoning_effort}：那个兼容副本是 C2M 翻译器
+     * 刻意留下的，而 C2R 翻译尚未实现，这条线路上目前只有直连。
+     *
+     * <p>与 {@link #downstreamHasAnthropicOpinion} 同一细节：空的 {@code reasoning}
+     * 容器不算表态。那个容器还承载 {@code summary} 等其它设置，仅仅出现它
+     * 不代表下游对深度有意见。
+     *
+     * @param body 请求体，原地修改
+     */
+    public void applyToResponses(Map<String, Object> body) {
+        switch (mode) {
+            case OVERRIDE -> {
+                // 先清后写：与另两条线路一致。这里只需清一个字段，因为 off 档也写在同一处。
+                removeResponsesEffort(body);
+                writeConfiguredResponsesEffort(body);
+            }
+            case FALLBACK -> {
+                if (!downstreamHasResponsesOpinion(body)) {
+                    writeConfiguredResponsesEffort(body);
+                }
+            }
+            case PASSTHROUGH -> {
+                // 下游带什么就是什么，没带也不补。显式写出这个空分支的理由同 applyTo。
+            }
+            case DELETE -> removeResponsesEffort(body);
+        }
+    }
+
+    /**
+     * 下游是否已就「思考多深」表达过意见（Responses 形态）。
+     *
+     * <p>显式 {@code null} 也算表态（与另两条线路的 {@code containsKey} 判据一致，
+     * 那个 null 由调用方末尾的清洗移除）；对象形态则要求真的带了 {@code effort}。
+     */
+    private static boolean downstreamHasResponsesOpinion(Map<String, Object> body) {
+        if (!body.containsKey(REASONING_FIELD)) {
+            return false;
+        }
+        return !(body.get(REASONING_FIELD) instanceof Map<?, ?> reasoning)
+                || reasoning.containsKey(REASONING_EFFORT_KEY);
+    }
+
+    /**
+     * 把配置的档位写成 Responses 能懂的形态。
+     *
+     * <p>{@code off} 档映射为 {@code "none"} —— 这是 Responses 协议的原生取值，
+     * 与另两条线路借 {@code thinking} 字段形成对比。
+     *
+     * <p>不校验其余档位是否落在 Responses 支持的集合内（官方目前是
+     * {@code minimal}/{@code low}/{@code medium}/{@code high}）：{@code xhigh} 之类
+     * <strong>原样发出</strong>由上游用错误码回答，与另两条线路同一原则 ——
+     * 本服务不做自动降级、不按模型名猜能力。
+     */
+    private void writeConfiguredResponsesEffort(Map<String, Object> body) {
+        Map<String, Object> reasoning = mutableReasoning(body);
+        reasoning.put(REASONING_EFFORT_KEY, EFFORT_OFF.equals(effort) ? EFFORT_NONE : effort);
+        body.put(REASONING_FIELD, reasoning);
+    }
+
+    /**
+     * 只摘掉 {@code reasoning.effort}，保留容器里的其它键。
+     *
+     * <p>摘完为空则连容器一起移除 —— 理由同 {@link #removeAnthropicEffort}：
+     * 一个空的 {@code reasoning} 是纯噪声，而某些上游对多余字段并不宽容。
+     * 但 {@code summary} 等其它键必须留着，它们与深度正交。
+     */
+    private static void removeResponsesEffort(Map<String, Object> body) {
+        if (!(body.get(REASONING_FIELD) instanceof Map<?, ?> existing)) {
+            // 下游可能把它写成非对象（畸形）或显式 null；两种情况都直接移除，
+            // 因为删除档与覆写档的语义都是「这里不该留下下游的深度表达」。
+            body.remove(REASONING_FIELD);
+            return;
+        }
+        Map<String, Object> reasoning = copyStringKeyed(existing);
+        reasoning.remove(REASONING_EFFORT_KEY);
+        if (reasoning.isEmpty()) {
+            body.remove(REASONING_FIELD);
+        } else {
+            body.put(REASONING_FIELD, reasoning);
+        }
+    }
+
+    /** 取一份可写的 {@code reasoning}，下游已有则保留其它键。 */
+    private static Map<String, Object> mutableReasoning(Map<String, Object> body) {
+        return body.get(REASONING_FIELD) instanceof Map<?, ?> existing
                 ? copyStringKeyed(existing)
                 : new LinkedHashMap<>();
     }

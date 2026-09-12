@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.application.protocol;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.MessagesToChatResponseTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ChatToMessagesRequestTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
@@ -10,6 +11,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfi
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericResponsesChatService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -55,8 +57,10 @@ class ChatDispatchErrorSignalTests {
     private ProviderRouteResolver routeResolver;
     private GenericOpenAiChatService openAiChatService;
     private GenericAnthropicChatService anthropicChatService;
+    private GenericResponsesChatService responsesChatService;
     private ChatCompletionService chatCompletionService;
     private MessagesService messagesService;
+    private ResponsesService responsesService;
 
     @BeforeEach
     void setUp() {
@@ -64,6 +68,7 @@ class ChatDispatchErrorSignalTests {
         routeResolver = mock(ProviderRouteResolver.class);
         openAiChatService = mock(GenericOpenAiChatService.class);
         anthropicChatService = mock(GenericAnthropicChatService.class);
+        responsesChatService = mock(GenericResponsesChatService.class);
         ProtocolDispatchManager dispatchManager = new ProtocolDispatchManager();
 
         // 翻译器用真实实例而非 mock：本测试要验证的正是「真实翻译器抛出的异常
@@ -73,6 +78,7 @@ class ChatDispatchErrorSignalTests {
                 new ChatToMessagesRequestTranslator(objectMapper),
                 new MessagesToChatResponseTranslator(objectMapper));
         messagesService = new MessagesService(routeResolver, dispatchManager, anthropicChatService);
+        responsesService = new ResponsesService(routeResolver, dispatchManager, responsesChatService);
     }
 
     @Nested
@@ -118,6 +124,26 @@ class ChatDispatchErrorSignalTests {
                             Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-4"),
                     NoSupportedProtocolException.class, "至少勾选一种协议");
         }
+
+        @Test
+        @DisplayName("非流式 Responses 以 onError 抵达而非组装期抛出")
+        void responsesNonStream() {
+            givenRoute("[]");
+
+            assertErrorSignal(() -> responsesService.responses(
+                            Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-4a"),
+                    NoSupportedProtocolException.class, "relay-x");
+        }
+
+        @Test
+        @DisplayName("流式 Responses 以 onError 抵达而非组装期抛出")
+        void responsesStream() {
+            givenRoute("[]");
+
+            assertErrorSignal(() -> responsesService.responsesStream(
+                            Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-4b"),
+                    NoSupportedProtocolException.class, "relay-x");
+        }
     }
 
     /**
@@ -148,6 +174,39 @@ class ChatDispatchErrorSignalTests {
 
             assertErrorSignal(() -> messagesService.messagesStream(
                             Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-6"),
+                    ProtocolTranslationNotSupportedException.class, "relay-x");
+        }
+    }
+
+    /**
+     * 下游 Responses 而供应商没勾 Responses。
+     *
+     * <p>R2C / R2M 翻译尚未实现，因此这条路径当前总是抛未实现。它仍需要走信号：
+     * 异常里带着供应商标识与两侧协议名，那句话是用户弄清「该去勾哪个选项」的唯一依据。
+     * 逆向方向（供应商只有 Responses、下游说 Chat）同样未实现，由 {@code CHAT} 那组覆盖。
+     */
+    @Nested
+    @DisplayName("下游 Responses 而供应商没勾（R2C / R2M 未实现）")
+    class ResponsesTranslationNotSupported {
+
+        @Test
+        @DisplayName("非流式以 onError 抵达并点名供应商与协议")
+        void nonStream() {
+            givenRoute("[\"CHAT\"]");
+
+            Throwable error = assertErrorSignal(() -> responsesService.responses(
+                            Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-6a"),
+                    ProtocolTranslationNotSupportedException.class, "relay-x");
+            assertThat(error).hasMessageContaining("RESPONSES");
+        }
+
+        @Test
+        @DisplayName("流式以 onError 抵达")
+        void stream() {
+            givenRoute("[\"MESSAGES\"]");
+
+            assertErrorSignal(() -> responsesService.responsesStream(
+                            Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-6b"),
                     ProtocolTranslationNotSupportedException.class, "relay-x");
         }
     }
@@ -221,6 +280,29 @@ class ChatDispatchErrorSignalTests {
 
             assertThat(messagesService.messagesStream(
                     Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-10")
+                    .collectList().block())
+                    .containsExactly("event-1");
+        }
+
+        @Test
+        void responsesNonStreamStillDelegatesToUpstream() {
+            givenRoute("[\"RESPONSES\"]");
+            given(responsesChatService.responses(any(), any(), any(), any()))
+                    .willReturn(Mono.just("{\"ok\":true}"));
+
+            assertThat(responsesService.responses(
+                    Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-11").block())
+                    .isEqualTo("{\"ok\":true}");
+        }
+
+        @Test
+        void responsesStreamStillDelegatesToUpstream() {
+            givenRoute("[\"RESPONSES\"]");
+            given(responsesChatService.responsesStream(any(), any(), any(), any()))
+                    .willReturn(Flux.just("event-1"));
+
+            assertThat(responsesService.responsesStream(
+                    Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-12")
                     .collectList().block())
                     .containsExactly("event-1");
         }

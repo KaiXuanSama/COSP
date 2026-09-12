@@ -20,6 +20,7 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
 import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService.EncryptedValue;
@@ -54,6 +55,10 @@ class GatewayAuthFilterTests {
 
     @SuppressWarnings("removal")
     @MockBean
+    private ResponsesService responsesService;
+
+    @SuppressWarnings("removal")
+    @MockBean
     private AppConfigRepository appConfigRepository;
 
     @Autowired
@@ -72,6 +77,9 @@ class GatewayAuthFilterTests {
         given(messagesService.messages(anyMap(), anyString(),
                 any(HttpHeaders.class), anyString()))
                 .willReturn(Mono.just("{\"id\":\"msg_test\",\"type\":\"message\"}"));
+        given(responsesService.responses(anyMap(), anyString(),
+                any(HttpHeaders.class), anyString()))
+                .willReturn(Mono.just("{\"id\":\"resp_test\",\"object\":\"response\"}"));
     }
 
     /** 在 mock 仓库中写入「已开启 + 指定明文 Key」的配置。 */
@@ -99,6 +107,16 @@ class GatewayAuthFilterTests {
             spec = spec.header(HttpHeaders.AUTHORIZATION, "Bearer " + bearer);
         }
         return spec.bodyValue("{\"model\":\"test-model\",\"max_tokens\":100,\"messages\":[]}").exchange();
+    }
+
+    /** 打 Responses 端点，与上两个对称。 */
+    private WebTestClient.ResponseSpec postResponses(String bearer) {
+        WebTestClient.RequestBodySpec spec = webTestClient.post().uri("/v1/responses")
+                .contentType(MediaType.APPLICATION_JSON);
+        if (bearer != null) {
+            spec = spec.header(HttpHeaders.AUTHORIZATION, "Bearer " + bearer);
+        }
+        return spec.bodyValue("{\"model\":\"test-model\",\"input\":\"hi\"}").exchange();
     }
 
     @Test
@@ -173,5 +191,39 @@ class GatewayAuthFilterTests {
     void anthropicEndpointPassesThroughWhenAuthDisabled() {
         given(appConfigRepository.findConfigValue(ENABLED_KEY)).willReturn("false");
         postMessages(null).expectStatus().isOk();
+    }
+
+    // ---------- Responses 端点 ----------
+
+    /**
+     * Responses 端点同样受保护。
+     *
+     * <p>这组用例是「新增聊天端点时必須同步改白名单」的唯一自动化保障。
+     * 漏加的症状在未开启鉴权时<strong>完全无症状</strong>（本来就该放行），
+     * 开启后才会表现为「换个端点即可绕过鉴权」—— 而那时已经是安全问题了。
+     */
+    @Test
+    void responsesEndpointWithoutAuthorizationReturns401() {
+        enableWithKey(VALID_KEY);
+        postResponses(null).expectStatus().isUnauthorized();
+    }
+
+    @Test
+    void responsesEndpointWithWrongKeyReturns401() {
+        enableWithKey(VALID_KEY);
+        postResponses("cosp-wrong-key").expectStatus().isUnauthorized();
+    }
+
+    /** 三个端点共用同一把网关 Key —— 它保护的是「谁能用这个代理」，与协议无关。 */
+    @Test
+    void responsesEndpointAcceptsTheSameGatewayKey() {
+        enableWithKey(VALID_KEY);
+        postResponses(VALID_KEY).expectStatus().isOk();
+    }
+
+    @Test
+    void responsesEndpointPassesThroughWhenAuthDisabled() {
+        given(appConfigRepository.findConfigValue(ENABLED_KEY)).willReturn("false");
+        postResponses(null).expectStatus().isOk();
     }
 }

@@ -664,4 +664,207 @@ class ReasoningEffortSettingTests {
             return ((Map<String, Object>) body.get("thinking")).get("type");
         }
     }
+
+    /**
+     * Responses 线路的注入模式。
+     *
+     * <p>三条线路读<strong>同一列配置</strong>、共用四档语义，只有出站字段不同：
+     * <pre>
+     * Chat       reasoning_effort: "high"        off 档借 thinking:{"type":"disabled"}
+     * Messages   output_config: {"effort":...}   off 档借 thinking:{"type":"disabled"}
+     * Responses  reasoning: {"effort": "high"}   off 档 → reasoning: {"effort":"none"}
+     * </pre>
+     *
+     * <p>本组的重点是最后一列 —— 这是三条线路里<strong>唯一有原生「不思考」取值</strong>的，
+     * 因此不必借 {@code thinking} 那个方言字段（Responses 协议里根本没有它）。
+     */
+    @Nested
+    class Responses注入模式 {
+
+        @Test
+        void overrideWritesReasoningEffort() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("model", "gpt-5");
+
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.OVERRIDE)
+                    .applyToResponses(body);
+
+            assertThat(effortOf(body)).isEqualTo("high");
+            // 绝不写另两条线路的字段名 —— 上游认不出来，等于这一维没生效。
+            assertThat(body).doesNotContainKey("reasoning_effort");
+            assertThat(body).doesNotContainKey("output_config");
+        }
+
+        /**
+         * <strong>本组最重要的一条：{@code off} 档映射为原生的 {@code "none"}。</strong>
+         *
+         * <p>另两条线路必须借 {@code thinking:{"type":"disabled"}}，因为它们的深度字段
+         * 没有表达「别思考」的取值。Responses 的 {@code reasoning.effort} 支持
+         * {@code "none"}（已在调研中于 new-api 的 {@code EffortNone} 一手核对），
+         * 所以这里<strong>不</strong>写 {@code thinking} —— 写了反而是往一个 OpenAI
+         * Responses 请求体里塞 Anthropic / Chat 的方言字段。
+         */
+        @Test
+        void offTierMapsToNativeNoneWithoutThinkingField() {
+            Map<String, Object> body = new LinkedHashMap<>();
+
+            new ReasoningEffortSetting("off", ReasoningEffortSetting.Mode.OVERRIDE)
+                    .applyToResponses(body);
+
+            assertThat(effortOf(body)).isEqualTo("none");
+            assertThat(body).doesNotContainKey("thinking");
+        }
+
+        /** 兜底档：下游没带时注入。 */
+        @Test
+        void fallbackInjectsWhenDownstreamSilent() {
+            Map<String, Object> body = new LinkedHashMap<>();
+
+            new ReasoningEffortSetting("low", ReasoningEffortSetting.Mode.FALLBACK)
+                    .applyToResponses(body);
+
+            assertThat(effortOf(body)).isEqualTo("low");
+        }
+
+        /** 兜底档：下游已带 effort 时不覆盖。 */
+        @Test
+        void fallbackRespectsDownstreamEffort() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("reasoning", new LinkedHashMap<>(Map.of("effort", "minimal")));
+
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.FALLBACK)
+                    .applyToResponses(body);
+
+            assertThat(effortOf(body)).isEqualTo("minimal");
+        }
+
+        /**
+         * <strong>空的 {@code reasoning} 容器不算表态。</strong>
+         *
+         * <p>那个容器还承载 {@code summary} 等其它设置，仅仅出现它不代表下游对深度有意见。
+         * 判错的症状是用户配了兜底档却发现档位永不注入 —— 只因为下游带了
+         * {@code reasoning:{"summary":"auto"}}。这与 Anthropic 侧 {@code output_config}
+         * 的处理是同一条规则。
+         */
+        @Test
+        void fallbackInjectsWhenReasoningContainerHasNoEffort() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("reasoning", new LinkedHashMap<>(Map.of("summary", "auto")));
+
+            new ReasoningEffortSetting("medium", ReasoningEffortSetting.Mode.FALLBACK)
+                    .applyToResponses(body);
+
+            assertThat(effortOf(body)).isEqualTo("medium");
+            // 其它键必须保留 —— 它与深度正交。
+            assertThat(reasoningOf(body)).containsEntry("summary", "auto");
+        }
+
+        /** 显式 null 也算表态（与另两条线路的 containsKey 判据一致）。 */
+        @Test
+        void fallbackTreatsExplicitNullAsOpinion() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("reasoning", null);
+
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.FALLBACK)
+                    .applyToResponses(body);
+
+            assertThat(body.get("reasoning")).isNull();
+        }
+
+        /** 透传档：下游带什么就是什么，没带也不补。 */
+        @Test
+        void passthroughLeavesBodyUntouched() {
+            Map<String, Object> withEffort = new LinkedHashMap<>();
+            withEffort.put("reasoning", new LinkedHashMap<>(Map.of("effort", "low")));
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.PASSTHROUGH)
+                    .applyToResponses(withEffort);
+            assertThat(effortOf(withEffort)).isEqualTo("low");
+
+            Map<String, Object> empty = new LinkedHashMap<>();
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.PASSTHROUGH)
+                    .applyToResponses(empty);
+            assertThat(empty).doesNotContainKey("reasoning");
+        }
+
+        /** 删除档：整个容器不留 —— 用于收到该字段就 400 的上游。 */
+        @Test
+        void deleteRemovesEffortAndEmptyContainer() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("reasoning", new LinkedHashMap<>(Map.of("effort", "high")));
+
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.DELETE)
+                    .applyToResponses(body);
+
+            assertThat(body).doesNotContainKey("reasoning");
+        }
+
+        /**
+         * 删除档只摘 {@code effort}，容器里的其它键保留。
+         *
+         * <p>整字段清空等于替另一个维度做决定 —— {@code summary} 与深度正交。
+         */
+        @Test
+        void deleteKeepsOtherReasoningKeys() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("reasoning", new LinkedHashMap<>(Map.of("effort", "high", "summary", "auto")));
+
+            new ReasoningEffortSetting("high", ReasoningEffortSetting.Mode.DELETE)
+                    .applyToResponses(body);
+
+            assertThat(reasoningOf(body)).containsEntry("summary", "auto")
+                    .doesNotContainKey("effort");
+        }
+
+        /** 覆写档同样只重建 effort，保留其它键。 */
+        @Test
+        void overrideKeepsOtherReasoningKeys() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("reasoning", new LinkedHashMap<>(Map.of("effort", "low", "summary", "detailed")));
+
+            new ReasoningEffortSetting("xhigh", ReasoningEffortSetting.Mode.OVERRIDE)
+                    .applyToResponses(body);
+
+            assertThat(effortOf(body)).isEqualTo("xhigh");
+            assertThat(reasoningOf(body)).containsEntry("summary", "detailed");
+        }
+
+        /**
+         * 不校验档位是否落在 Responses 支持的集合内。
+         *
+         * <p>官方目前是 {@code minimal}/{@code low}/{@code medium}/{@code high}，
+         * {@code xhigh} 原样发出由上游用错误码回答 —— 与另两条线路同一原则，
+         * 本服务不做自动降级、不按模型名猜能力。上一条用例已顺带覆盖了 {@code xhigh}，
+         * 这条显式声明这个意图，防止有人加一层校验。
+         */
+        @Test
+        void tierOutsideResponsesRangeIsSentVerbatim() {
+            Map<String, Object> body = new LinkedHashMap<>();
+
+            new ReasoningEffortSetting("max", ReasoningEffortSetting.Mode.OVERRIDE)
+                    .applyToResponses(body);
+
+            assertThat(effortOf(body)).isEqualTo("max");
+        }
+
+        /** 下游把 {@code reasoning} 写成非对象（畸形）时，覆写档仍能重建出正确形态。 */
+        @Test
+        void overrideRecoversFromMalformedReasoningField() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("reasoning", "high");
+
+            new ReasoningEffortSetting("low", ReasoningEffortSetting.Mode.OVERRIDE)
+                    .applyToResponses(body);
+
+            assertThat(effortOf(body)).isEqualTo("low");
+        }
+
+        @SuppressWarnings("unchecked")
+        private Map<String, Object> reasoningOf(Map<String, Object> body) {
+            return (Map<String, Object>) body.get("reasoning");
+        }
+
+        private Object effortOf(Map<String, Object> body) {
+            return reasoningOf(body).get("effort");
+        }
+    }
 }
