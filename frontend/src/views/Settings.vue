@@ -7,12 +7,17 @@ import { useProviderStore, type ApiKeyEntry } from '@/stores/providers'
 import type { RequestBodyEditorState } from '@/features/request-body-rules/editorState'
 import { countRules } from '@/features/request-body-rules/editorState'
 import { migrateRuleSet } from '@/features/request-body-rules/migration'
-import { WIRE_PROTOCOL_LABELS, type WireProtocol } from '@/types/protocol'
+import {
+  ALL_WIRE_PROTOCOLS,
+  WIRE_PROTOCOL_DESCRIPTIONS,
+  WIRE_PROTOCOL_LABELS,
+  WIRE_PROTOCOL_URL_LABELS,
+  type WireProtocol,
+} from '@/types/protocol'
 import { copyToClipboard } from '@/utils/clipboard'
 import {
-  ANTHROPIC_ENDPOINT_SUFFIX,
   DEFAULT_NEW_PROVIDER_PROTOCOLS,
-  OPENAI_ENDPOINT_SUFFIX,
+  WIRE_PROTOCOL_ENDPOINT_SUFFIXES,
   aggregatorPresets,
   applyPullDiff,
   buildEditableModel,
@@ -23,7 +28,7 @@ import {
   displayKey,
   extractModelNames,
   findPreset,
-  mirrorAnthropicBaseUrl,
+  mirrorBaseUrl,
   normalizeProtocols,
   orderProtocolRows,
   protocolsToJson,
@@ -76,6 +81,7 @@ const editingKey = ref<string | null>(null)
 const editForm = ref({
   baseUrl: '',
   anthropicBaseUrl: '',
+  responsesBaseUrl: '',
   protocols: [...DEFAULT_NEW_PROVIDER_PROTOCOLS] as WireProtocol[],
   apiKeys: [] as ApiKeyEntry[],
   activeKeyUuid: '' as string,
@@ -83,12 +89,20 @@ const editForm = ref({
 })
 
 /**
- * 抽屉里 OpenAI 地址编辑是否联动 Anthropic 地址。
+ * 抽屉里 Chat 地址编辑联动哪些协议专属地址。
  *
- * 与弹窗同一套逻辑但各自持有状态：两个界面可以先后打开，共用一个快照会让
- * 在弹窗里的一次聚焦影响抽屉的联动行为。
+ * <p>**每条被联动的线路各持一个状态**，不能共用一个布尔：Anthropic 有值而 Responses
+ * 为空是常见组合（前者多与 Chat 同源、后者多半用不上），共用一个快照会让其中一条
+ * 要么该联动却不联动、要么不该联动却被覆写。
+ *
+ * <p>与弹窗各自持有状态：两个界面可以先后打开，共用会让在弹窗里的一次聚焦
+ * 影响抽屉的联动行为。
  */
-const editMirroringAnthropicBaseUrl = ref(false)
+const editMirroringBaseUrl = ref<Record<WireProtocol, boolean>>({
+  CHAT: false,
+  RESPONSES: false,
+  MESSAGES: false,
+})
 
 /**
  * 折叠时显示在第一行的协议。
@@ -142,50 +156,72 @@ function setEditProtocolEnabled(protocol: WireProtocol, enabled: boolean) {
   editForm.value.protocols = toggleProtocol(editForm.value.protocols, protocol, enabled)
 }
 
-/** 按协议读地址。Anthropic 的空值不在这里回退 —— 输入框要如实显示空，占位符负责说明。 */
+/**
+ * 按协议读地址。
+ *
+ * <p>协议专属地址的空值**不在这里回退**到 Chat 地址 —— 输入框要如实显示空，
+ * 占位符负责说明「留空则与 Chat 相同」。回退只发生在端点预览与实际请求里。
+ */
 function editBaseUrlOf(protocol: WireProtocol) {
-  return protocol === 'MESSAGES' ? editForm.value.anthropicBaseUrl : editForm.value.baseUrl
+  if (protocol === 'MESSAGES') return editForm.value.anthropicBaseUrl
+  if (protocol === 'RESPONSES') return editForm.value.responsesBaseUrl
+  return editForm.value.baseUrl
 }
 
 function onEditBaseUrlInput(protocol: WireProtocol, value: string) {
   if (protocol === 'MESSAGES') {
     editForm.value.anthropicBaseUrl = value
     // 用户亲手改过，联动立即终止，否则他的输入会被下一次同步覆盖。
-    editMirroringAnthropicBaseUrl.value = false
+    editMirroringBaseUrl.value.MESSAGES = false
+    return
+  }
+  if (protocol === 'RESPONSES') {
+    editForm.value.responsesBaseUrl = value
+    editMirroringBaseUrl.value.RESPONSES = false
     return
   }
   editForm.value.baseUrl = value
-  editForm.value.anthropicBaseUrl = mirrorAnthropicBaseUrl(
-    value, editMirroringAnthropicBaseUrl.value, editForm.value.anthropicBaseUrl,
+  // Chat 是联动的源：一次输入可能同时同步两条线路，各按自己的联动状态决定。
+  editForm.value.anthropicBaseUrl = mirrorBaseUrl(
+    value, editMirroringBaseUrl.value.MESSAGES, editForm.value.anthropicBaseUrl,
+  )
+  editForm.value.responsesBaseUrl = mirrorBaseUrl(
+    value, editMirroringBaseUrl.value.RESPONSES, editForm.value.responsesBaseUrl,
   )
 }
 
-/** 进入 OpenAI 地址框时拍下「Anthropic 当前是否为空」，作为本轮编辑的联动依据。 */
+/** 进入 Chat 地址框时拍下「各协议地址当前是否为空」，作为本轮编辑的联动依据。 */
 function onEditBaseUrlFocus(protocol: WireProtocol) {
-  if (protocol === 'CHAT') {
-    editMirroringAnthropicBaseUrl.value = shouldMirrorOnFocus(editForm.value.anthropicBaseUrl)
+  if (protocol !== 'CHAT') {
+    return
   }
+  editMirroringBaseUrl.value.MESSAGES = shouldMirrorOnFocus(editForm.value.anthropicBaseUrl)
+  editMirroringBaseUrl.value.RESPONSES = shouldMirrorOnFocus(editForm.value.responsesBaseUrl)
 }
 
-const PROTOCOL_ROW_LABELS: Record<WireProtocol, string> = {
-  CHAT: 'OpenAI 请求Url',
-  MESSAGES: 'Anthropic 请求Url',
-}
-
+/**
+ * 协议专属地址留空时的占位说明。
+ *
+ * <p>Chat 是联动的源，它自己没有可回退的对象，因此给一个示例地址而非「留空则…」。
+ */
 const PROTOCOL_ROW_PLACEHOLDERS: Record<WireProtocol, string> = {
   CHAT: 'https://api.example.com/v1',
-  MESSAGES: '留空则与 OpenAI 地址相同',
+  RESPONSES: '留空则与 Chat 地址相同',
+  MESSAGES: '留空则与 Chat 地址相同',
 }
 
-/** 端点预览文案；地址为空时退回占位模板，不拼出只剩路径的半成品。 */
+/**
+ * 端点预览文案；地址为空时退回占位模板，不拼出只剩路径的半成品。
+ *
+ * <p>协议专属地址为空时用 Chat 地址预览，与后端 `resolveXxxBaseUrl` 同口径 ——
+ * 「留空即与 Chat 相同」在占位符里是一句提示，在这里必须是同一条规则，
+ * 否则用户会看到「提示说相同，但预览是个占位模板」。
+ */
 function editEndpointHintOf(protocol: WireProtocol) {
-  if (protocol === 'MESSAGES') {
-    return describeEndpoint(
-      editForm.value.anthropicBaseUrl || editForm.value.baseUrl, ANTHROPIC_ENDPOINT_SUFFIX,
-    ) || `\${anthropic_url}${ANTHROPIC_ENDPOINT_SUFFIX}`
-  }
-  return describeEndpoint(editForm.value.baseUrl, OPENAI_ENDPOINT_SUFFIX)
-    || `\${openai_url}${OPENAI_ENDPOINT_SUFFIX}`
+  const suffix = WIRE_PROTOCOL_ENDPOINT_SUFFIXES[protocol]
+  const configured = editBaseUrlOf(protocol)
+  const effective = protocol === 'CHAT' ? configured : configured || editForm.value.baseUrl
+  return describeEndpoint(effective, suffix) || `\${base_url}${suffix}`
 }
 const pullingModels = ref(false)
 
@@ -483,26 +519,44 @@ const providerAdvancedExpanded = ref(false)
 const editingProviderKey = ref<string | null>(null)
 const providerBaseUrl = ref('')
 const providerAnthropicBaseUrl = ref('')
+const providerResponsesBaseUrl = ref('')
 const providerProtocols = ref<WireProtocol[]>([...DEFAULT_NEW_PROVIDER_PROTOCOLS])
 const providerUseProxy = ref(false)
 const showPresetModal = ref(false)
 
 /**
- * 本轮 OpenAI 地址编辑是否联动 Anthropic 地址。
+ * 本轮 Chat 地址编辑联动哪些协议专属地址。
  *
- * 在获得焦点时一次性拍快照，而不是每次输入时重新判空 —— 后者会让 Anthropic
+ * 在获得焦点时一次性拍快照，而不是每次输入时重新判空 —— 后者会让目标地址
  * 在同步到第一个字符后就不再为空，于是永远停在一个字母上。
+ *
+ * **每条线路各持一个状态**，理由同抽屉侧的 `editMirroringBaseUrl`。
  */
-const mirroringAnthropicBaseUrl = ref(false)
+const mirroringBaseUrl = ref<Record<WireProtocol, boolean>>({
+  CHAT: false,
+  RESPONSES: false,
+  MESSAGES: false,
+})
 
-/** 端点预览文案；地址为空时退回占位模板，不拼出只剩路径的半成品。 */
-const openAiEndpointHint = computed(() =>
-  describeEndpoint(providerBaseUrl.value, OPENAI_ENDPOINT_SUFFIX) || `\${openai_url}${OPENAI_ENDPOINT_SUFFIX}`
-)
-const anthropicEndpointHint = computed(() =>
-  describeEndpoint(providerAnthropicBaseUrl.value, ANTHROPIC_ENDPOINT_SUFFIX)
-    || `\${anthropic_url}${ANTHROPIC_ENDPOINT_SUFFIX}`
-)
+/** 弹窗里各协议地址的当前值，按协议索引以便模板用 v-for 渲染。 */
+const providerBaseUrls = computed<Record<WireProtocol, string>>(() => ({
+  CHAT: providerBaseUrl.value,
+  RESPONSES: providerResponsesBaseUrl.value,
+  MESSAGES: providerAnthropicBaseUrl.value,
+}))
+
+/**
+ * 端点预览文案；地址为空时退回占位模板，不拼出只剩路径的半成品。
+ *
+ * <p>与抽屉侧 `editEndpointHintOf` 同口径：协议专属地址为空时用 Chat 地址预览，
+ * 与后端 `resolveXxxBaseUrl` 一致。
+ */
+function providerEndpointHintOf(protocol: WireProtocol) {
+  const suffix = WIRE_PROTOCOL_ENDPOINT_SUFFIXES[protocol]
+  const configured = providerBaseUrls.value[protocol]
+  const effective = protocol === 'CHAT' ? configured : configured || providerBaseUrl.value
+  return describeEndpoint(effective, suffix) || `\${base_url}${suffix}`
+}
 
 function isProtocolEnabled(protocol: WireProtocol) {
   return providerProtocols.value.includes(protocol)
@@ -512,29 +566,52 @@ function setProtocolEnabled(protocol: WireProtocol, enabled: boolean) {
   providerProtocols.value = toggleProtocol(providerProtocols.value, protocol, enabled)
 }
 
-/** 进入 OpenAI 地址输入框：拍下「Anthropic 当前是否为空」作为本轮编辑的联动依据。 */
-function onOpenAiBaseUrlFocus() {
-  mirroringAnthropicBaseUrl.value = shouldMirrorOnFocus(providerAnthropicBaseUrl.value)
+/** 进入 Chat 地址输入框：拍下「各协议地址当前是否为空」作为本轮编辑的联动依据。 */
+function onProviderBaseUrlFocus(protocol: WireProtocol) {
+  if (protocol !== 'CHAT') {
+    return
+  }
+  mirroringBaseUrl.value.MESSAGES = shouldMirrorOnFocus(providerAnthropicBaseUrl.value)
+  mirroringBaseUrl.value.RESPONSES = shouldMirrorOnFocus(providerResponsesBaseUrl.value)
 }
 
-function onOpenAiBaseUrlInput(value: string) {
+/**
+ * 写入某条线路的地址。
+ *
+ * <p>Chat 是联动的源，一次输入可能同时同步另两条；其余协议被用户亲手改过时
+ * 联动立即终止 —— 否则他的输入会被下一次同步覆盖。
+ */
+function onProviderBaseUrlInput(protocol: WireProtocol, value: string) {
+  if (protocol === 'MESSAGES') {
+    providerAnthropicBaseUrl.value = value
+    mirroringBaseUrl.value.MESSAGES = false
+    return
+  }
+  if (protocol === 'RESPONSES') {
+    providerResponsesBaseUrl.value = value
+    mirroringBaseUrl.value.RESPONSES = false
+    return
+  }
   providerBaseUrl.value = value
-  providerAnthropicBaseUrl.value = mirrorAnthropicBaseUrl(
-    value, mirroringAnthropicBaseUrl.value, providerAnthropicBaseUrl.value,
+  providerAnthropicBaseUrl.value = mirrorBaseUrl(
+    value, mirroringBaseUrl.value.MESSAGES, providerAnthropicBaseUrl.value,
+  )
+  providerResponsesBaseUrl.value = mirrorBaseUrl(
+    value, mirroringBaseUrl.value.RESPONSES, providerResponsesBaseUrl.value,
   )
 }
 
-/** 用户亲自改过 Anthropic 地址，联动立即终止—— 否则他的输入会被下一次同步覆盖。 */
-function onAnthropicBaseUrlInput(value: string) {
-  providerAnthropicBaseUrl.value = value
-  mirroringAnthropicBaseUrl.value = false
+/** 重置全部联动快照，用于清空表单与打开编辑弹窗。 */
+function resetMirroringBaseUrl() {
+  mirroringBaseUrl.value = { CHAT: false, RESPONSES: false, MESSAGES: false }
 }
 
-/** 协议配置的提交载荷。 */
+/** 协议配置的提交载荷。三个字段必须都发，漏发会让那一项静默保留旧值。 */
 function buildProtocolPayload() {
   return {
     supportedProtocolsJson: protocolsToJson(providerProtocols.value),
     anthropicBaseUrl: providerAnthropicBaseUrl.value.trim(),
+    responsesBaseUrl: providerResponsesBaseUrl.value.trim(),
   }
 }
 
@@ -592,7 +669,8 @@ function applyPreset(label: string) {
     providerName.value = values.displayName
     providerBaseUrl.value = values.baseUrl
     providerAnthropicBaseUrl.value = values.anthropicBaseUrl
-    mirroringAnthropicBaseUrl.value = false
+    providerResponsesBaseUrl.value = values.responsesBaseUrl
+    resetMirroringBaseUrl()
     providerHeaders.value = values.headers
     requestBodyEditorState.value = values.editorState
     providerAdvancedExpanded.value = true
@@ -605,9 +683,10 @@ function clearProviderForm() {
   providerName.value = ''
   providerBaseUrl.value = ''
   providerAnthropicBaseUrl.value = ''
+  providerResponsesBaseUrl.value = ''
   providerProtocols.value = [...DEFAULT_NEW_PROVIDER_PROTOCOLS]
   providerUseProxy.value = false
-  mirroringAnthropicBaseUrl.value = false
+  resetMirroringBaseUrl()
   providerHeaders.value = []
   requestBodyEditorState.value = createProviderDefaultEditorState()
   providerAdvancedExpanded.value = false
@@ -634,9 +713,10 @@ function resetProviderAdvanced() {
   requestBodyEditorState.value = createProviderDefaultEditorState()
   providerBaseUrl.value = ''
   providerAnthropicBaseUrl.value = ''
+  providerResponsesBaseUrl.value = ''
   providerProtocols.value = [...DEFAULT_NEW_PROVIDER_PROTOCOLS]
   providerUseProxy.value = false
-  mirroringAnthropicBaseUrl.value = false
+  resetMirroringBaseUrl()
   editingProviderKey.value = null
 }
 
@@ -650,9 +730,10 @@ function openEditProviderModal(key: string) {
   requestBodyEditorState.value = createProviderDefaultEditorState()
   providerBaseUrl.value = provider?.baseUrl || ''
   providerAnthropicBaseUrl.value = provider?.anthropicBaseUrl || ''
+  providerResponsesBaseUrl.value = provider?.responsesBaseUrl || ''
   providerProtocols.value = normalizeProtocols(provider?.supportedProtocols)
   providerUseProxy.value = provider?.useProxy ?? false
-  mirroringAnthropicBaseUrl.value = false
+  resetMirroringBaseUrl()
   if (provider) {
     try {
       const headerRules = JSON.parse(provider.requestTransform?.headerRulesJson || '[]')
@@ -835,12 +916,13 @@ function openEditPanel(key: string) {
     editForm.value = {
       baseUrl: p.baseUrl || providerMeta.value[key]?.apiUrlPlaceholder || '',
       anthropicBaseUrl: p.anthropicBaseUrl || '',
+      responsesBaseUrl: p.responsesBaseUrl || '',
       protocols: normalizeProtocols(p.supportedProtocols),
       apiKeys,
       activeKeyUuid: activeEntry?.keyUuid || apiKeys[0]?.keyUuid || '',
       models: p.models.map(toEditableModel),
     }
-    editMirroringAnthropicBaseUrl.value = false
+    editMirroringBaseUrl.value = { CHAT: false, RESPONSES: false, MESSAGES: false }
     // 首行协议与折叠状态都以「打开时」为准：之后勾选变化不重排，避免输入框跳位。
     editPrimaryProtocol.value = resolvePrimaryProtocol(editForm.value.protocols)
     editUrlsExpanded.value = false
@@ -862,6 +944,7 @@ async function saveEditPanel() {
   const params: Record<string, string> = {
     baseUrl: editForm.value.baseUrl,
     anthropicBaseUrl: editForm.value.anthropicBaseUrl.trim(),
+    responsesBaseUrl: editForm.value.responsesBaseUrl.trim(),
     supportedProtocolsJson: protocolsToJson(editForm.value.protocols),
     apiKeys: JSON.stringify(toApiKeyPayloads(editForm.value.apiKeys)),
     activeKeyUuid: isNewKeyValue(editForm.value.activeKeyUuid) ? '' : editForm.value.activeKeyUuid,
@@ -903,11 +986,13 @@ async function pullModels() {
     return
   }
 
-  // 拉取走哪条线路由启用状态决定，不让用户选：两个协议的模型列表端点路径完全相同
+  // 拉取走哪条线路由启用状态决定，不让用户选：三个协议的模型列表端点路径完全相同
   // （都是 GET /v1/models），无法从响应判断上游以哪种协议作答，所以「选线路」没有参考依据。
-  const target = resolveModelPullTarget(
-    editForm.value.protocols, editForm.value.baseUrl, editForm.value.anthropicBaseUrl,
-  )
+  const target = resolveModelPullTarget(editForm.value.protocols, {
+    CHAT: editForm.value.baseUrl,
+    RESPONSES: editForm.value.responsesBaseUrl,
+    MESSAGES: editForm.value.anthropicBaseUrl,
+  })
   if (!target) {
     message.warning('请先启用至少一个协议再拉取模型')
     return
@@ -1097,33 +1182,30 @@ function removeModel(index: number) {
       </div>
 
       <div v-if="providerAdvancedExpanded" class="advanced-panel">
-        <!-- OpenAI 请求 Url -->
-        <div class="advanced-section">
+        <!--
+          三条线路的请求地址。用 v-for 而非展开写三遍：这里没有折叠动画（弹窗纵向空间
+          够用），因此不像抽屉那样受 Transition「只接受单个子元素」的限制。
+          顺序取 ALL_WIRE_PROTOCOLS，它跟随后端的翻译回退优先级 ——
+          用户会把从上到下的排列读成优先级，让两者一致才不会误导。
+        -->
+        <div v-for="protocol in ALL_WIRE_PROTOCOLS" :key="protocol" class="advanced-section">
           <div class="advanced-section-header">
-            <span class="advanced-section-title">OpenAI 请求Url</span>
-            <span class="endpoint-hint" :title="openAiEndpointHint">{{ openAiEndpointHint }}</span>
+            <!-- 标题只写短名，气泡负责解释三者关系 —— 尤其 Chat 与 Responses 同属 OpenAI。 -->
+            <span class="advanced-section-title" :title="WIRE_PROTOCOL_DESCRIPTIONS[protocol]">
+              {{ WIRE_PROTOCOL_URL_LABELS[protocol] }}
+            </span>
+            <span class="endpoint-hint" :title="providerEndpointHintOf(protocol)">
+              {{ providerEndpointHintOf(protocol) }}
+            </span>
           </div>
           <div class="protocol-url-row">
-            <n-checkbox :checked="isProtocolEnabled('CHAT')"
-              :title="`启用 ${WIRE_PROTOCOL_LABELS.CHAT} 协议`"
-              @update:checked="setProtocolEnabled('CHAT', $event)" />
-            <n-input :value="providerBaseUrl" placeholder="https://api.example.com/v1"
-              @update:value="onOpenAiBaseUrlInput" @focus="onOpenAiBaseUrlFocus" />
-          </div>
-        </div>
-
-        <!-- Anthropic 请求 Url -->
-        <div class="advanced-section">
-          <div class="advanced-section-header">
-            <span class="advanced-section-title">Anthropic 请求Url</span>
-            <span class="endpoint-hint" :title="anthropicEndpointHint">{{ anthropicEndpointHint }}</span>
-          </div>
-          <div class="protocol-url-row">
-            <n-checkbox :checked="isProtocolEnabled('MESSAGES')"
-              :title="`启用 ${WIRE_PROTOCOL_LABELS.MESSAGES} 协议`"
-              @update:checked="setProtocolEnabled('MESSAGES', $event)" />
-            <n-input :value="providerAnthropicBaseUrl" placeholder="留空则与 OpenAI 地址相同"
-              @update:value="onAnthropicBaseUrlInput" />
+            <n-checkbox :checked="isProtocolEnabled(protocol)"
+              :title="`启用 ${WIRE_PROTOCOL_LABELS[protocol]} 协议`"
+              @update:checked="setProtocolEnabled(protocol, $event)" />
+            <n-input :value="providerBaseUrls[protocol]"
+              :placeholder="PROTOCOL_ROW_PLACEHOLDERS[protocol]"
+              @update:value="(val: string) => onProviderBaseUrlInput(protocol, val)"
+              @focus="onProviderBaseUrlFocus(protocol)" />
           </div>
         </div>
 
@@ -1263,19 +1345,22 @@ function removeModel(index: number) {
       <n-drawer-content :title="editingKey ? providerMeta[editingKey]?.displayName : ''" closable
         @close="closeEditPanel">
         <!--
-          两个协议地址共处一个容器：左侧是地址行，右侧是展开控件。
+          三条线路的协议地址共处一个容器：左侧是地址行，右侧是展开控件。
           折叠时只显示首行（由打开时的启用状态决定是谁），把纵向空间让给模型列表。
         -->
         <div class="field-group protocol-urls">
           <div class="protocol-urls__rows">
             <!--
-              首行与次行显式写出而非用 v-for：Transition 只接受单个子元素，
-              而只有次行参与折叠动画。两者内容结构相同但仅此两处，
-              重复的代价小于为了消重再引入一层组件与 props 传递。
+              首行单独写出、其余行放进折叠区：Transition 只接受单个子元素，
+              而只有折叠区参与动画。折叠区内部用 v-for —— 加入第三条线路后
+              「其余行」不再是固定的一行，展开写死会在下次加协议时再改一遍。
             -->
             <div class="protocol-urls__row">
               <div class="field-label-row">
-                <label class="field-label">{{ PROTOCOL_ROW_LABELS[editProtocolRows[0]] }}</label>
+                <!-- 标题只写短名，气泡负责解释三者关系。 -->
+                <label class="field-label" :title="WIRE_PROTOCOL_DESCRIPTIONS[editProtocolRows[0]]">
+                  {{ WIRE_PROTOCOL_URL_LABELS[editProtocolRows[0]] }}
+                </label>
                 <span class="endpoint-hint" :title="editEndpointHintOf(editProtocolRows[0])">
                   {{ editEndpointHintOf(editProtocolRows[0]) }}
                 </span>
@@ -1290,28 +1375,32 @@ function removeModel(index: number) {
               </div>
             </div>
             <!--
-              次行外面多一层 __collapse：grid-template-rows 过渡要求过渡元素自身是
+              折叠区外面多一层 __collapse：grid-template-rows 过渡要求过渡元素自身是
               grid 容器、且内容位于单个可裁剪的子元素中。若直接把 __row 作为过渡元素，
               它的两个子 div（标签行、输入行）会各占一个轨道，收缩时只有第一个轨道在动。
+              这一层现在还多担了一个职责：把 v-for 出来的多行收进单个过渡子元素。
             -->
             <Transition name="protocol-url-slide"
               @enter="onProtocolRowEnter" @after-enter="onProtocolRowAfterEnter"
               @leave="onProtocolRowLeave">
               <div v-if="editUrlsExpanded" class="protocol-urls__collapse">
-                <div class="protocol-urls__row">
+                <div v-for="protocol in editProtocolRows.slice(1)" :key="protocol"
+                  class="protocol-urls__row">
                   <div class="field-label-row">
-                    <label class="field-label">{{ PROTOCOL_ROW_LABELS[editProtocolRows[1]] }}</label>
-                    <span class="endpoint-hint" :title="editEndpointHintOf(editProtocolRows[1])">
-                      {{ editEndpointHintOf(editProtocolRows[1]) }}
+                    <label class="field-label" :title="WIRE_PROTOCOL_DESCRIPTIONS[protocol]">
+                      {{ WIRE_PROTOCOL_URL_LABELS[protocol] }}
+                    </label>
+                    <span class="endpoint-hint" :title="editEndpointHintOf(protocol)">
+                      {{ editEndpointHintOf(protocol) }}
                     </span>
                   </div>
                   <div class="protocol-url-row">
-                    <n-input :value="editBaseUrlOf(editProtocolRows[1])"
-                      :placeholder="PROTOCOL_ROW_PLACEHOLDERS[editProtocolRows[1]]"
-                      @update:value="(val: string) => onEditBaseUrlInput(editProtocolRows[1], val)"
-                      @focus="onEditBaseUrlFocus(editProtocolRows[1])" />
-                    <n-checkbox :checked="isEditProtocolEnabled(editProtocolRows[1])"
-                      @update:checked="setEditProtocolEnabled(editProtocolRows[1], $event)">启用</n-checkbox>
+                    <n-input :value="editBaseUrlOf(protocol)"
+                      :placeholder="PROTOCOL_ROW_PLACEHOLDERS[protocol]"
+                      @update:value="(val: string) => onEditBaseUrlInput(protocol, val)"
+                      @focus="onEditBaseUrlFocus(protocol)" />
+                    <n-checkbox :checked="isEditProtocolEnabled(protocol)"
+                      @update:checked="setEditProtocolEnabled(protocol, $event)">启用</n-checkbox>
                   </div>
                 </div>
               </div>
@@ -1319,9 +1408,10 @@ function removeModel(index: number) {
           </div>
           <button type="button" class="protocol-urls__toggle"
             :class="{ 'protocol-urls__toggle--expanded': editUrlsExpanded }"
-            :title="editUrlsExpanded ? '收起另一个协议地址' : '展开另一个协议地址'"
+            :title="editUrlsExpanded ? '收起其余协议地址' : '展开其余协议地址'"
             :aria-expanded="editUrlsExpanded"
             @click="editUrlsExpanded = !editUrlsExpanded">
+
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <polyline points="6 9 12 15 18 9" />
@@ -1488,14 +1578,20 @@ function removeModel(index: number) {
 }
 
 /**
- * 次行的折叠包装层。
+ * 其余行的折叠包装层。
  *
- * 间距落在这一层而非行本身：它是被过渡的那个元素，`margin-top` 只有挂在这里
- * 才能与高度一起被插值掉。
+ * 与首行之间的间距落在这一层而非行本身：它是被过渡的那个元素，`margin-top` 只有
+ * 挂在这里才能与高度一起被插值掉。
+ *
+ * <p>内部行之间用 `gap`：那些行同时出现同时消失，不像整个包装层那样需要单独过渡
+ * 间距 —— 包装层的 `max-height` 已经把它们连带 gap 一起裁掉了。
  */
 .protocol-urls__collapse {
   min-width: 0;
   margin-top: $space-sm;
+  display: flex;
+  flex-direction: column;
+  gap: $space-sm;
 }
 
 /**
@@ -1577,7 +1673,7 @@ function removeModel(index: number) {
  * 标签与端点预览同一行。
  *
  * 这里的标签不能沿用 `.field-label` 的 `text-transform: uppercase` —— 那会把
- * 「OpenAI 请求Url」显示成「OPENAI 请求URL」，而协议名的大小写是它的正式写法。
+ * 「Chat 请求Url」显示成「CHAT 请求URL」，而接口名的大小写是它的正式写法。
  */
 .field-label-row {
   display: flex;
@@ -2006,7 +2102,7 @@ function removeModel(index: number) {
   font-size: 13px;
   font-weight: 600;
   color: $text-body;
-  // 标题不参与压缩：地址一长，该被截断的是右侧提示而不是「OpenAI 请求Url」。
+  // 标题不参与压缩：地址一长，该被截断的是右侧提示而不是「Chat 请求Url」。
   flex: 0 0 auto;
 }
 

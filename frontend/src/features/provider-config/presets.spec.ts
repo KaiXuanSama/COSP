@@ -90,22 +90,44 @@ describe('toPresetFormValues', () => {
     expect(values.baseUrl).toBe('https://api.xiaomimimo.com/v1')
   })
 
-  // 两个地址同源是当前的乐观假设；回退而不留空是因为空字符串会触发输入框联动，
-  // 那会让用户选了预设后一碰 OpenAI 地址框就把 Anthropic 那一格重写掉。
-  it('预设未单独声明 Anthropic 地址时与 OpenAI 同源', () => {
+  /**
+   * 两个协议专属地址在预设未声明时都回退为 Chat 地址。
+   *
+   * 回退而不留空是因为空字符串会触发输入框联动 —— 那会让用户选了预设后一碰
+   * Chat 地址框就把那一格重写掉，看上去像预设没生效。
+   *
+   * Responses 也照抄，尽管多数中转站没有这个端点：这里填的是「用哪个地址」，
+   * 而「用不用」由协议勾选决定。
+   */
+  it('预设未单独声明协议地址时与 Chat 同源', () => {
     const values = toPresetFormValues(findPreset('MiMo')!)
     expect(values.anthropicBaseUrl).toBe('https://api.xiaomimimo.com/v1')
+    expect(values.responsesBaseUrl).toBe('https://api.xiaomimimo.com/v1')
   })
 
-  it('预设显式声明的 Anthropic 地址优先', () => {
+  it('预设显式声明的协议地址优先', () => {
     const values = toPresetFormValues({
       label: 'Split',
-      baseUrl: 'https://openai.example/v1',
+      baseUrl: 'https://chat.example/v1',
       anthropicBaseUrl: 'https://anthropic.example',
+      responsesBaseUrl: 'https://responses.example',
       headers: [],
     })
-    expect(values.baseUrl).toBe('https://openai.example/v1')
+    expect(values.baseUrl).toBe('https://chat.example/v1')
     expect(values.anthropicBaseUrl).toBe('https://anthropic.example')
+    expect(values.responsesBaseUrl).toBe('https://responses.example')
+  })
+
+  /** 一个声明、一个未声明时各按各自的规则，不会互相影响。 */
+  it('只声明其中一个时另一个仍回退到 Chat', () => {
+    const values = toPresetFormValues({
+      label: 'Partial',
+      baseUrl: 'https://chat.example/v1',
+      responsesBaseUrl: 'https://responses.example',
+      headers: [],
+    })
+    expect(values.anthropicBaseUrl).toBe('https://chat.example/v1')
+    expect(values.responsesBaseUrl).toBe('https://responses.example')
   })
 
   it('请求头为拷贝，编辑不回写预设常量', () => {

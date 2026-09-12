@@ -27,7 +27,11 @@ import {
 } from '@/features/request-body-rules/requestBodyTemplates'
 import type { RequestBodyTemplateKey } from '@/features/request-body-rules/requestBodyTemplates'
 import { buildDiffTree } from '@/features/request-body-rules/diff'
-import { ALL_WIRE_PROTOCOLS, WIRE_PROTOCOL_LABELS, type WireProtocol } from '@/types/protocol'
+import {
+  RULE_ENGINE_WIRE_PROTOCOLS,
+  WIRE_PROTOCOL_LABELS,
+  type WireProtocol,
+} from '@/types/protocol'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
 import DiffJsonNode from './DiffJsonNode.vue'
 
@@ -47,7 +51,15 @@ const emit = defineEmits<{
 
 const message = useMessage()
 
-const PROTOCOL_OPTIONS = ALL_WIRE_PROTOCOLS.map((protocol) => ({
+/**
+ * 「适用协议」的可选项。
+ *
+ * <p>取 `RULE_ENGINE_WIRE_PROTOCOLS` 而非全部协议：后端规则引擎的白名单只认这几个，
+ * 把 Responses 摆进选项里会让用户勾了之后在保存时收到「不支持的线路协议」——
+ * 一个由界面主动提供却又被拒绝的选择。Responses 的请求体改写落地时，
+ * 把它加进那个常量并同步后端白名单，本处自动跟随。
+ */
+const PROTOCOL_OPTIONS = RULE_ENGINE_WIRE_PROTOCOLS.map((protocol) => ({
   label: WIRE_PROTOCOL_LABELS[protocol],
   value: protocol,
 }))

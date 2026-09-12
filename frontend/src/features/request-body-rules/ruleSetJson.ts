@@ -5,7 +5,7 @@ import type {
   RuleCondition,
   RuleSetV2,
 } from './types'
-import { ALL_WIRE_PROTOCOLS, isWireProtocol } from '@/types/protocol'
+import { RULE_ENGINE_WIRE_PROTOCOLS, isWireProtocol } from '@/types/protocol'
 
 /** 规则集 JSON 解析结果。 */
 export type RuleSetJsonParseResult =
@@ -39,7 +39,7 @@ export function formatRuleListAsRuleSetJson(rules: FieldRule[]): string {
       name: '示例规则组',
       order: 0,
       enabled: true,
-      protocols: [...ALL_WIRE_PROTOCOLS],
+      protocols: [...RULE_ENGINE_WIRE_PROTOCOLS],
       templateKeys: ['custom'],
       previewBody: {},
       rules,

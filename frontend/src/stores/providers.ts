@@ -43,8 +43,10 @@ export interface Provider {
    * 由 `normalizeProtocols` 回退为两种都支持。
    */
   supportedProtocols?: WireProtocol[]
-  /** Anthropic 协议的独立地址；空串表示回退到 {@link baseUrl}。 */
+  /** Anthropic Messages 协议的独立地址；空串表示回退到 {@link baseUrl}。 */
   anthropicBaseUrl?: string
+  /** OpenAI Responses 协议的独立地址；空串表示回退到 {@link baseUrl}。 */
+  responsesBaseUrl?: string
   requestTransform?: ProviderRequestTransform
   apiKeys: ApiKeyEntry[]
   models: ProviderModel[]
@@ -67,22 +69,28 @@ export interface ProviderRequestTransformInput {
 
 /** 协议配置的提交载荷。 */
 export interface ProviderProtocolInput {
-  /** JSON 字符串数组，如 `["CHAT"]`。 */
+  /** JSON 字符串数组，如 `["CHAT","RESPONSES"]`。 */
   supportedProtocolsJson: string
-  /** Anthropic 独立地址；空串表示回退到 OpenAI 地址。 */
+  /** Anthropic Messages 独立地址；空串表示回退到 Chat 地址。 */
   anthropicBaseUrl: string
+  /** OpenAI Responses 独立地址；空串表示回退到 Chat 地址。 */
+  responsesBaseUrl: string
 }
 
 /**
  * 把协议配置写进表单；未传时一个字段都不发。
  *
  * <p>后端把「字段未出现」视为保留原值，因此不传 = 不改。绝不能为了「字段齐全」
- * 而发空串—— 空串的 `anthropicBaseUrl` 会被当成「清空，回退到 base_url」，那是真实的修改。
+ * 而发空串 —— 空串的地址字段会被当成「清空，回退到 base_url」，那是真实的修改。
+ *
+ * <p>反过来说：一旦调用方传了 `protocols`，三个字段就都要发。漏发某一个不会报错，
+ * 而是让那一项静默保留旧值 —— 用户在界面上清空了地址却发现没生效。
  */
 function appendProtocolFields(formData: URLSearchParams, protocols?: ProviderProtocolInput) {
   if (!protocols) return
   formData.append('supportedProtocolsJson', protocols.supportedProtocolsJson)
   formData.append('anthropicBaseUrl', protocols.anthropicBaseUrl)
+  formData.append('responsesBaseUrl', protocols.responsesBaseUrl)
 }
 
 /**

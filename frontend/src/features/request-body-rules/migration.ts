@@ -14,7 +14,7 @@ import type { FieldRule, RuleGroup, RuleSetV2 } from './types'
 import { generateRuleGroupId } from './types'
 import type { RequestBodyTemplateKey } from './requestBodyTemplates'
 import { composeRequestBodyTemplate, DEFAULT_TEMPLATE_KEYS } from './requestBodyTemplates'
-import { ALL_WIRE_PROTOCOLS, isWireProtocol, type WireProtocol } from '@/types/protocol'
+import { RULE_ENGINE_WIRE_PROTOCOLS, isWireProtocol, type WireProtocol } from '@/types/protocol'
 
 /** 由 V1 迁移而来的规则组名称。 */
 export const LEGACY_GROUP_NAME = 'OpenAI 规则组'
@@ -110,15 +110,21 @@ function emptyGroup(index: number): RuleGroup {
     name: `规则组 ${index + 1}`,
     order: index,
     enabled: true,
-    protocols: [...ALL_WIRE_PROTOCOLS],
+    protocols: [...RULE_ENGINE_WIRE_PROTOCOLS],
     templateKeys: [...DEFAULT_TEMPLATE_KEYS],
     previewBody: composeRequestBodyTemplate(DEFAULT_TEMPLATE_KEYS),
     rules: [],
   }
 }
 
+/**
+ * 规范化规则组的适用协议。
+ *
+ * <p>字段缺失时铺 {@link RULE_ENGINE_WIRE_PROTOCOLS} 而非全部协议：
+ * 那个子集才是后端规则引擎接受的取值集合，铺全集会让一次无关的保存 400。
+ */
 function normalizeProtocols(raw: unknown): WireProtocol[] {
-  if (!Array.isArray(raw)) return [...ALL_WIRE_PROTOCOLS]
+  if (!Array.isArray(raw)) return [...RULE_ENGINE_WIRE_PROTOCOLS]
   const seen = new Set<WireProtocol>()
   for (const item of raw) {
     if (isWireProtocol(item)) seen.add(item)

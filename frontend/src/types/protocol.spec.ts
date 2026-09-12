@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   ALL_WIRE_PROTOCOLS,
+  WIRE_PROTOCOL_DESCRIPTIONS,
+  WIRE_PROTOCOL_URL_LABELS,
   formatCallTypeLabel,
   formatCallTypeTitle,
   isWireProtocol,
@@ -25,29 +27,34 @@ import {
 describe('protocolAbbreviation', () => {
   it('已知协议查表取缩写', () => {
     expect(protocolAbbreviation('CHAT')).toBe('C')
+    expect(protocolAbbreviation('RESPONSES')).toBe('R')
     expect(protocolAbbreviation('MESSAGES')).toBe('M')
   })
 
   it('大小写不敏感', () => {
     expect(protocolAbbreviation('chat')).toBe('C')
+    expect(protocolAbbreviation('responses')).toBe('R')
     expect(protocolAbbreviation('Messages')).toBe('M')
   })
 
   /**
    * 兜底取首字母，为「后端加了新协议、前端尚未同步」准备：宁可显示一个可读的字母，
    * 也不要空白或崩溃。
+   *
+   * 这里刻意不再用 `RESPONSES` 举例 —— 它现在走查表（见上一条）。兜底路径需要一个
+   * **真正未知**的标识才测得到，否则这条断言会随着协议加入而悄悄变成查表的重复测试。
    */
   it('未知协议取首字母', () => {
-    expect(protocolAbbreviation('RESPONSES')).toBe('R')
     expect(protocolAbbreviation('gemini')).toBe('G')
+    expect(protocolAbbreviation('COMPLETIONS')).toBe('C')
   })
 
   /**
-   * 这个兜底在协议重命名时顺带兜过一次存量数据。迁移（服务重启）之前库里还是
-   * 旧标识，查表落空走首字母，恰好得到与重命名前一致的 `O` / `A`。
+   * 这个兜底兜过两次真实的存量数据，都是巧合而非设计：
+   * - V12 重命名（服务重启）之前库里还是旧标识，走首字母恰好得到 `O` / `A`；
+   * - V13 之后、前端加 `RESPONSES` 之前，走首字母得到 `R`，与现在查表结果相同。
    *
-   * 那是巧合而非设计 —— 记在这里是为了防止有人把它当成「旧名兼容层」而依赖它。
-   * 旧标识在 V12 迁移后已不存在于库中。
+   * 记在这里是为了防止有人把它当成「兼容层」而依赖它。旧标识在 V12 迁移后已不存在于库中。
    */
   it('旧协议标识落到首字母兜底，恰好得到 O / A（巧合，非兼容设计）', () => {
     expect(protocolAbbreviation('OPENAI')).toBe('O')
@@ -62,12 +69,13 @@ describe('protocolAbbreviation', () => {
 describe('protocolDisplayName', () => {
   it('取各自的官方叫法', () => {
     expect(protocolDisplayName('CHAT')).toBe('Chat Completions API')
+    expect(protocolDisplayName('RESPONSES')).toBe('Responses API')
     expect(protocolDisplayName('MESSAGES')).toBe('Anthropic API')
   })
 
-  /** 未知标识原样返回：显示 `RESPONSES` 仍比显示空白有用。 */
+  /** 未知标识原样返回：显示原文仍比显示空白有用。 */
   it('未知协议原样返回', () => {
-    expect(protocolDisplayName('RESPONSES')).toBe('RESPONSES')
+    expect(protocolDisplayName('GEMINI')).toBe('GEMINI')
   })
 
   it('空值返回空串', () => {
@@ -107,10 +115,17 @@ describe('formatCallTypeLabel', () => {
     expect(formatCallTypeLabel('CHAT', 'CHAT', false)).toContain('非流')
   })
 
-  /** 后端加第三种协议时，前端在同步改动之前也要给出可读结果。 */
-  it('未知协议走缩写兜底', () => {
+  /** Responses 加入后同样走查表：跨协议给缩写箭头，同协议给展示名。 */
+  it('Responses 与另两条线路同规则', () => {
     expect(formatCallTypeLabel('RESPONSES', 'CHAT', true)).toBe('流式: R→C')
-    expect(formatCallTypeLabel('RESPONSES', 'RESPONSES', true)).toBe('流式: RESPONSES')
+    expect(formatCallTypeLabel('CHAT', 'RESPONSES', false)).toBe('非流: C→R')
+    expect(formatCallTypeLabel('RESPONSES', 'RESPONSES', true)).toBe('流式: Responses API')
+  })
+
+  /** 后端加第四种协议时，前端在同步改动之前也要给出可读结果。 */
+  it('未知协议走缩写兜底', () => {
+    expect(formatCallTypeLabel('GEMINI', 'CHAT', true)).toBe('流式: G→C')
+    expect(formatCallTypeLabel('GEMINI', 'GEMINI', true)).toBe('流式: GEMINI')
   })
 })
 
@@ -146,8 +161,9 @@ describe('formatCallTypeTitle', () => {
 })
 
 describe('isWireProtocol', () => {
-  it('只认当前的两个标识', () => {
+  it('认当前的三个标识', () => {
     expect(isWireProtocol('CHAT')).toBe(true)
+    expect(isWireProtocol('RESPONSES')).toBe(true)
     expect(isWireProtocol('MESSAGES')).toBe(true)
   })
 
@@ -158,7 +174,7 @@ describe('isWireProtocol', () => {
   it('旧标识与未知值一律非法', () => {
     expect(isWireProtocol('OPENAI')).toBe(false)
     expect(isWireProtocol('ANTHROPIC')).toBe(false)
-    expect(isWireProtocol('RESPONSES')).toBe(false)
+    expect(isWireProtocol('GEMINI')).toBe(false)
     expect(isWireProtocol('chat')).toBe(false)
     expect(isWireProtocol(null)).toBe(false)
     expect(isWireProtocol(42)).toBe(false)
@@ -167,18 +183,62 @@ describe('isWireProtocol', () => {
 
 describe('ALL_WIRE_PROTOCOLS', () => {
   /**
-   * 顺序即界面顺序（协议多选、地址行排列）。固定下来是因为多处按它排序，
-   * 顺序变了会让界面上两行输入框互换位置。
+   * 顺序即界面顺序（协议多选、地址行排列），而**用户会把它读成优先级**。
+   *
+   * 因此它必须与后端 `ProtocolDispatchManager.TRANSLATION_FALLBACK_ORDER` 逐项一致。
+   * 曾经取语义序（`CHAT, RESPONSES, MESSAGES`，两个 OpenAI 接口相邻），那样更好读，
+   * 但会让人预期「上游同时支持 M 与 R、下游打 C」时选 R —— 而实际选的是 M
+   * （C2M 已实现，C2R 未实现）。
+   *
+   * 这条断言写死顺序而非比对某个常量：它要拦的正是「有人为了好读把它改回语义序」。
    */
-  it('顺序固定为 CHAT 在前', () => {
-    expect(ALL_WIRE_PROTOCOLS).toEqual(['CHAT', 'MESSAGES'])
+  it('顺序跟随翻译回退优先级，而非语义分组', () => {
+    expect(ALL_WIRE_PROTOCOLS).toEqual(['CHAT', 'MESSAGES', 'RESPONSES'])
   })
 
-  it('每个成员都能通过类型守卫，且都有缩写与展示名', () => {
+  it('每个成员都能通过类型守卫，且都有缩写、展示名、短标题与说明', () => {
     for (const protocol of ALL_WIRE_PROTOCOLS) {
       expect(isWireProtocol(protocol)).toBe(true)
       expect(protocolAbbreviation(protocol)).toHaveLength(1)
       expect(protocolDisplayName(protocol)).not.toBe(protocol)
+      expect(WIRE_PROTOCOL_URL_LABELS[protocol]).toContain('请求Url')
+      expect(WIRE_PROTOCOL_DESCRIPTIONS[protocol].length).toBeGreaterThan(0)
     }
+  })
+
+  /** 缩写必须互不相同，否则日志里的 `X→Y` 标记会指向两条不同的线路。 */
+  it('三个缩写互不相同', () => {
+    const abbreviations = ALL_WIRE_PROTOCOLS.map(protocol => protocolAbbreviation(protocol))
+    expect(new Set(abbreviations).size).toBe(ALL_WIRE_PROTOCOLS.length)
+  })
+
+  /**
+   * 短标题取接口名而非厂商名。
+   *
+   * 曾经写作「OpenAI 请求Url」「Anthropic 请求Url」，两行都是厂商名；而 Responses
+   * 同属 OpenAI，沿用厂商名就会出现两行都叫「OpenAI」。断言里排除厂商名是为了
+   * 防止有人改回去。
+   */
+  it('短标题用接口名，不出现厂商名', () => {
+    expect(WIRE_PROTOCOL_URL_LABELS.CHAT).toBe('Chat 请求Url')
+    expect(WIRE_PROTOCOL_URL_LABELS.RESPONSES).toBe('Responses 请求Url')
+    expect(WIRE_PROTOCOL_URL_LABELS.MESSAGES).toBe('Messages 请求Url')
+    for (const protocol of ALL_WIRE_PROTOCOLS) {
+      expect(WIRE_PROTOCOL_URL_LABELS[protocol]).not.toContain('OpenAI')
+      expect(WIRE_PROTOCOL_URL_LABELS[protocol]).not.toContain('Anthropic')
+    }
+  })
+
+  /**
+   * 说明气泡要点明 CHAT 与 RESPONSES 的关系。
+   *
+   * 这是气泡存在的主要理由：两者同属 OpenAI，光看短名容易以为是新旧版本的同一个东西，
+   * 而它们的报文形态与事件模型都不通用。
+   */
+  it('说明气泡点明两个 OpenAI 接口的区别', () => {
+    expect(WIRE_PROTOCOL_DESCRIPTIONS.CHAT).toContain('OpenAI')
+    expect(WIRE_PROTOCOL_DESCRIPTIONS.RESPONSES).toContain('OpenAI')
+    expect(WIRE_PROTOCOL_DESCRIPTIONS.RESPONSES).toContain('两个不同的接口')
+    expect(WIRE_PROTOCOL_DESCRIPTIONS.MESSAGES).toContain('Anthropic')
   })
 })

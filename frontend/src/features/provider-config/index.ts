@@ -129,11 +129,13 @@ export {
 } from './maxOutput'
 
 export {
-  ANTHROPIC_ENDPOINT_SUFFIX,
+  CHAT_ENDPOINT_SUFFIX,
   DEFAULT_NEW_PROVIDER_PROTOCOLS,
-  OPENAI_ENDPOINT_SUFFIX,
+  MESSAGES_ENDPOINT_SUFFIX,
+  RESPONSES_ENDPOINT_SUFFIX,
+  WIRE_PROTOCOL_ENDPOINT_SUFFIXES,
   describeEndpoint,
-  mirrorAnthropicBaseUrl,
+  mirrorBaseUrl,
   normalizeProtocols,
   orderProtocolRows,
   protocolsToJson,
