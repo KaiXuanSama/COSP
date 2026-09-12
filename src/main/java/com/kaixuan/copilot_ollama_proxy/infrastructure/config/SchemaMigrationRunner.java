@@ -48,7 +48,8 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final double V9_VERSION = 9;
     private static final double V10_VERSION = 10;
     private static final double V11_VERSION = 11;
-    private static final double CURRENT_SCHEMA_VERSION = 12;
+    private static final double V12_VERSION = 12;
+    private static final double CURRENT_SCHEMA_VERSION = 13;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -80,6 +81,15 @@ public class SchemaMigrationRunner implements ApplicationRunner {
      * 收窄是用户的决定，不是迁移的决定 —— 前端新建表单可以只默认勾 OpenAI。
      */
     private static final String DEFAULT_SUPPORTED_PROTOCOLS_JSON = "[\"OPENAI\",\"ANTHROPIC\"]";
+    /**
+     * V13 为存量供应商追加的协议名。
+     *
+     * <p>刻意用字面量而不引用 {@code WireProtocol.RESPONSES.name()}：本迁移落地时那个枚举值
+     * <strong>还不存在</strong>（枚举加值是下一步），而历史迁移本就该固化它那个年代的字面量 ——
+     * 将来枚举被重命名时，已执行过的迁移不该跟着变。V12 的 {@code V12_PROTOCOL_RENAME}
+     * 同理，那里的 {@code OPENAI} / {@code ANTHROPIC} 也是已不存在的名字。
+     */
+    private static final String V13_RESPONSES_PROTOCOL = "RESPONSES";
     /** 当前思考深度配置的结构版本，与 {@code reasoning_effort_schema} 列取值一致。 */
     private static final int CURRENT_REASONING_EFFORT_VERSION = 2;
     /**
@@ -293,8 +303,10 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         this::migrateToV10ThinkingMode),
                 new MigrationStep(V11_VERSION, "供应商新增出站代理开关",
                         this::migrateToV11ProviderProxy),
-                new MigrationStep(CURRENT_SCHEMA_VERSION, "线路协议按 API 路径全称重命名",
-                        this::migrateToV12ProtocolRename));
+                new MigrationStep(V12_VERSION, "线路协议按 API 路径全称重命名",
+                        this::migrateToV12ProtocolRename),
+                new MigrationStep(CURRENT_SCHEMA_VERSION, "供应商新增 Responses 端点与协议支持",
+                        this::migrateToV13ResponsesProtocol));
     }
 
     /**
@@ -358,7 +370,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                     CURRENT_SCHEMA_VERSION,
                     formatVersion(CURRENT_SCHEMA_VERSION)
                             + " 架构基线：统一供应商实现、token 用量表、日志载荷瘦身与线路协议、"
-                            + "请求体规则分组、供应商协议支持与 Anthropic 端点、"
+                            + "请求体规则分组、供应商协议支持与 Anthropic / Responses 端点、"
                             + "思考深度与最大输出注入模式、Anthropic 思考方式与预算"));
         log.info("[SchemaMigration] 已建立 {} 架构基线", formatVersion(CURRENT_SCHEMA_VERSION));
     }
@@ -1090,7 +1102,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         renameProtocolsInBodyRules();
         jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
                 + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
-                CURRENT_SCHEMA_VERSION, "V12 增量迁移：线路协议按 API 路径全称重命名");
+                V12_VERSION, "V12 增量迁移：线路协议按 API 路径全称重命名");
     }
 
     /**
@@ -1286,6 +1298,126 @@ public class SchemaMigrationRunner implements ApplicationRunner {
      */
     private static String quoted(String value) {
         return "\"" + value + "\"";
+    }
+
+    /**
+     * V13：供应商新增 Responses 端点列，并为存量供应商追加 {@code RESPONSES} 协议支持。
+     *
+     * <p>本迁移是「为 COSP 增加 OpenAI Responses API 直连」三步中的第一步，落地后
+     * <strong>没有任何代码读取新列</strong>，两条现有线路行为不变 —— 枚举值与端点接线在后续步骤。
+     *
+     * <h2>为何不需要重建表</h2>
+     * 与 V11 同类：纯新增列，没有任何已有列的类型、默认值或 CHECK 发生变化，
+     * {@code ALTER TABLE ADD COLUMN} 足够。也因此不碰 {@code provider_config} 的校验触发器
+     * —— 那两个触发器只在 INSERT / UPDATE 时校验行，而 {@code ADD COLUMN} 两者都不是。
+     * 但 {@link #appendResponsesProtocolForV13()} 里的 UPDATE 会碰上它们，见那个方法。
+     *
+     * <h2>{@code api_call_log} 不在本迁移的范围内</h2>
+     * V12 重建那张表时已把 {@code RESPONSES} 写进两个协议列的 CHECK 白名单
+     * （见 {@link #API_CALL_LOG_DDL_V12}），当时的判断正是「多一个暂时用不到的合法取值零成本，
+     * 而为了它再重建一次同一张表要重新承担一遍风险」。这笔预留在此处到账。
+     *
+     * <h2>本迁移落地后会刷 warn，这是已知中间态</h2>
+     * {@code ProviderProtocolSupport.parse} 对未知协议名是「忽略并 warn」而非报错，
+     * 因此在枚举值加入之前，本迁移写进库的 {@code RESPONSES} 每次读取都会刷一条 warn。
+     * 集合里还有 CHAT 与 MESSAGES，所以<strong>不会</strong>落到「没有可识别协议 → 回退全集」
+     * 那条路，两条现有线路的行为不受影响。
+     *
+     * <p>顺序不能倒过来（先加枚举值再迁移）：那样中间态下前端能勾选一个数据库
+     * 尚未接受的协议名。
+     */
+    private void migrateToV13ResponsesProtocol() {
+        if (tableExists("provider_config")) {
+            addColumnIfNotExists("provider_config", "responses_base_url", "TEXT NOT NULL DEFAULT ''");
+            dropTrigger("trg_provider_config_validate_update");
+            backfillResponsesBaseUrlForV13();
+            appendResponsesProtocolForV13();
+            createProviderConfigValidationTriggers();
+        }
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+                CURRENT_SCHEMA_VERSION, "V13 增量迁移：供应商新增 Responses 端点与协议支持");
+    }
+
+    /**
+     * 为存量供应商回填 {@code responses_base_url = base_url}。
+     *
+     * <h2>回填理由与 V8.8 只有一半相同</h2>
+     * V8.8 回填 {@code anthropic_base_url} 有两条理由，其中<strong>第一条在这里不成立</strong>：
+     * 那条是「升级前的行为正是用 base_url 拼 /messages，照抄原值才能让该行为在新的读取路径下
+     * 保持不变」。而 Responses 线路在本迁移之前<strong>根本不存在</strong>，没有需要保持的行为。
+     *
+     * <p>成立的是第二条：显式写入让用户在界面上直接看到当前生效的地址，而不是一个空输入框
+     * 加一句「留空则复用」—— 后者要理解回退规则才能读懂。这一条足以支撑回填。
+     *
+     * <p>把 V8.8 那段「保持存量行为」的说辞抄过来会是个假理由，因此单独成方法并写清差异。
+     *
+     * <p>只回填 NULL 与空串：{@code ADD COLUMN} 已把已有行填成空串默认值，
+     * 而重跑迁移时不该覆盖用户此后改过的配置。
+     *
+     * <p><strong>调用方已摘掉行级校验触发器</strong>，理由见
+     * {@link #migrateToV13ResponsesProtocol()}。本方法不自己摘 —— 两处各摘一次会让摘装配对
+     * 变成两组，而它们本来就是同一个事实的两个受害者。
+     */
+    private void backfillResponsesBaseUrlForV13() {
+        if (!columnExists("provider_config", "base_url")) {
+            return;
+        }
+        jdbcTemplate.update("UPDATE provider_config SET responses_base_url = base_url "
+                + "WHERE (responses_base_url IS NULL OR trim(responses_base_url) = '') "
+                + "AND base_url IS NOT NULL AND trim(base_url) <> ''");
+    }
+
+    /**
+     * 为存量供应商的协议集合追加 {@code RESPONSES}。
+     *
+     * <h2>为何默认全勾，而不是让用户自己去勾</h2>
+     * 与前端 {@code DEFAULT_NEW_PROVIDER_PROTOCOLS} 同一条既有原则：勾上后不通至多是上游报错，
+     * 用户能<strong>感知</strong>到并取消勾选；默认不勾则让「支持却调不通」变成需要用户自己
+     * 想到去勾的隐藏状态，那是更差的失败模式。可感知的失败优于沉默的不可用。
+     *
+     * <p>追加不影响两条现有线路，这是接受该方案的关键支撑。调度规则 1 是「同名协议优先直连」：
+     * 下游打 {@code /v1/chat/completions} 命中 CHAT、打 {@code /v1/messages} 命中 MESSAGES，
+     * 都不受集合里多出来的第三个元素影响。只有下游真的去打 {@code /v1/responses} 时才会
+     * 直连到一个可能不存在的端点并拿到 404 —— 那正是预期的、可感知的失败。
+     *
+     * <h2>显式空数组不动</h2>
+     * {@code []} 是用户主动声明的「哪条线路都不要」，其全部价值在于<strong>可被发现</strong>
+     * （调度器会明确报错而非静默回退）。往里塞一个 RESPONSES 会把一个被用户禁用的供应商
+     * 变成部分可用，而用户不会知道自己的配置被改了 —— 迁移不得改变用户意图。
+     *
+     * <p>脏数据（非 JSON、非数组）同样不动：运行时本就回退全集（届时已含 RESPONSES），
+     * 迁移不必也不该猜一个读不懂的配置想表达什么。
+     *
+     * <h2>为何用 SQL 而非逐行读改</h2>
+     * 与 V8.9 相反：那次的转换逻辑（按四种历史形态分别解析档位）SQL 无法表达，
+     * 而这里只是「数组末尾追加一个元素」，SQLite 的 JSON1 函数完整覆盖，
+     * 且能在同一条语句里表达上面三类值的区分。
+     *
+     * <p>{@code NOT EXISTS} 子句保证幂等：重跑迁移不会追加第二个 RESPONSES。
+     *
+     * <p><strong>追加到末尾恰好保持字母序是巧合</strong>，因为 {@code RESPONSES} 的首字母 R
+     * 排在 CHAT 与 MESSAGES 之后。之所以在意字母序：{@code ProviderAdminService} 用
+     * {@code TreeSet} 落库，两处顺序一致才能让「新建的」与「保存过的」供应商在直接查库时
+     * 看起来相同。加入第四个协议时不能想当然地继续用追加。
+     */
+    private void appendResponsesProtocolForV13() {
+        if (!columnExists("provider_config", "supported_protocols")) {
+            return;
+        }
+        // 调用方已摘掉行级校验触发器，理由见 migrateToV13ResponsesProtocol()。
+        int updated = jdbcTemplate.update(
+                "UPDATE provider_config "
+                        + "SET supported_protocols = json_insert(supported_protocols, '$[#]', ?) "
+                        + "WHERE json_valid(supported_protocols) "
+                        + "AND json_type(supported_protocols) = 'array' "
+                        + "AND json_array_length(supported_protocols) > 0 "
+                        + "AND NOT EXISTS (SELECT 1 FROM json_each(supported_protocols) WHERE value = ?)",
+                V13_RESPONSES_PROTOCOL, V13_RESPONSES_PROTOCOL);
+        if (updated > 0) {
+            log.info("[SchemaMigration] V13 已为 {} 个供应商追加 {} 协议支持",
+                    updated, V13_RESPONSES_PROTOCOL);
+        }
     }
 
     /**

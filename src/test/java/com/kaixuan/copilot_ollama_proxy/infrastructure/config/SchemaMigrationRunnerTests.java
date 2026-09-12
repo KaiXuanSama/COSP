@@ -155,7 +155,7 @@ class SchemaMigrationRunnerTests {
         assertThat(indexExists(jdbcTemplate, "idx_api_call_usage_created")).isTrue();
         assertThat(columnNames(jdbcTemplate, "api_call_log")).contains("payload_trimmed");
         assertThat(columnNames(jdbcTemplate, "provider_config"))
-                .contains("supported_protocols", "anthropic_base_url", "use_proxy");
+                .contains("supported_protocols", "anthropic_base_url", "responses_base_url", "use_proxy");
         assertThat(columnNames(jdbcTemplate, "provider_model")).contains("reasoning_effort_schema");
         // 新库的两个默认 JSON 须与迁移后的规范形态逐字一致，
         // 否则「全库同形态」只在升级库成立而新库不成立。
@@ -538,7 +538,10 @@ class SchemaMigrationRunnerTests {
     @Test
     void v11DatabaseRenamesProtocolLiteralsEverywhereDuringV12Migration() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
-        seedDatabaseAtPreviousVersion(jdbcTemplate);
+        // 显式钉住 V11：本用例要写入 V12 之前的旧协议名，而那些字面量在 V12 之后
+        // 就是非法值了（新表的 CHECK 白名单只收新名）。用自动前移的 fixture 会让它在
+        // V13 加入后直接报 CHECK 失败 —— 对“需要某个特定版本形态”的用例，版本必须写死。
+        seedDatabaseAtVersion(jdbcTemplate, 11);
         // 三处存量数据，全部使用 V12 之前的协议名。
         jdbcTemplate.update("INSERT INTO api_call_log "
                 + "(provider_key, model_name, is_stream, downstream_protocol, upstream_protocol, "
@@ -583,12 +586,13 @@ class SchemaMigrationRunnerTests {
         assertThat(((Number) trimmedRow.get("status_code")).intValue()).isEqualTo(200);
 
         // ② 供应商协议集合：全集与单协议都要改，且元素顺序不变。
-        assertThat(jdbcTemplate.queryForObject(
-                "SELECT supported_protocols FROM provider_config WHERE provider_key = 'relay'",
-                String.class)).isEqualTo("[\"CHAT\",\"MESSAGES\"]");
-        assertThat(jdbcTemplate.queryForObject(
-                "SELECT supported_protocols FROM provider_config WHERE provider_key = 'claude-only'",
-                String.class)).isEqualTo("[\"MESSAGES\"]");
+        // 尾部的 RESPONSES 是紧随其后的 V13 追加的 —— 本用例从 V11 一路跑到当前版本，
+        // 断言的是终态。V12 的职责（重命名）体现在前面那些元素上：只要 OPENAI / ANTHROPIC
+        // 一个不剩，重命名就是彻底的。
+        assertThat(protocolsOf(jdbcTemplate, "relay"))
+                .isEqualTo("[\"CHAT\",\"MESSAGES\",\"RESPONSES\"]");
+        assertThat(protocolsOf(jdbcTemplate, "claude-only"))
+                .isEqualTo("[\"MESSAGES\",\"RESPONSES\"]");
 
         // ③ 规则组的适用协议：藏在 JSON 里，是最容易漏的一处。
         // 既断言新名到位，也断言旧名一个不剩 —— 只查前者的话，「只改了第一个组」这种
@@ -602,6 +606,174 @@ class SchemaMigrationRunnerTests {
         // 重建会带走索引，必须显式重建 —— 少了它们日志分页会退化成全表扫描。
         assertThat(indexExists(jdbcTemplate, "idx_api_call_log_created_id")).isTrue();
         assertThat(indexExists(jdbcTemplate, "idx_api_call_log_provider_created_id")).isTrue();
+    }
+
+    // ==================== V13：Responses 端点与协议支持 ====================
+
+    /**
+     * V12 库升到 V13：新列到位、回填 {@code base_url}，且协议集合追加 {@code RESPONSES}。
+     *
+     * <p>这是 V13 的主用例，覆盖 §3.3 划定的三类值 —— 它们的失败形态各不相同：
+     * <ul>
+     *   <li>非空数组漏追加 → Responses 线路默认不可用，用户要自己想到去勾（本次要避免的正是这个）；</li>
+     *   <li><strong>空数组被追加</strong> → 一个被用户主动禁用的供应商变成部分可用，
+     *       而用户不知道配置被改了；</li>
+     *   <li>脏数据被改 → 迁移在猜一个读不懂的配置想表达什么。</li>
+     * </ul>
+     *
+     * <p>同时断言重复执行结果不变：{@code NOT EXISTS} 子句是幂等性的唯一保障，
+     * 少了它每次重启都会追加一个新的 RESPONSES 元素。
+     */
+    @Test
+    void v12DatabaseAddsResponsesEndpointAndProtocolDuringV13Migration() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        seedDatabaseAtPreviousVersion(jdbcTemplate);
+        jdbcTemplate.update("INSERT INTO provider_config "
+                + "(provider_key, display_name, base_url, supported_protocols) "
+                + "VALUES ('relay', '中转站', 'https://relay.example.com/v1', ?)",
+                "[\"CHAT\",\"MESSAGES\"]");
+        jdbcTemplate.update("INSERT INTO provider_config "
+                + "(provider_key, display_name, base_url, supported_protocols) "
+                + "VALUES ('chat-only', '仅 Chat', 'https://c.example.com', ?)",
+                "[\"CHAT\"]");
+        jdbcTemplate.update("INSERT INTO provider_config "
+                + "(provider_key, display_name, base_url, supported_protocols) "
+                + "VALUES ('disabled-all', '全部禁用', 'https://d.example.com', ?)",
+                "[]");
+        jdbcTemplate.update("INSERT INTO provider_config "
+                + "(provider_key, display_name, base_url, supported_protocols) "
+                + "VALUES ('blank-url', '无地址', '', ?)",
+                "[\"CHAT\"]");
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        runner.run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+        assertThat(columnNames(jdbcTemplate, "provider_config")).contains("responses_base_url");
+
+        // ① 非空数组：追加到末尾。恰好保持字母序（R 排在 C、M 之后）。
+        assertThat(protocolsOf(jdbcTemplate, "relay")).isEqualTo("[\"CHAT\",\"MESSAGES\",\"RESPONSES\"]");
+        assertThat(protocolsOf(jdbcTemplate, "chat-only")).isEqualTo("[\"CHAT\",\"RESPONSES\"]");
+
+        // ② 显式空数组：一个字符都不许变。用 isEqualTo 而非 doesNotContain("RESPONSES") ——
+        // 后者在 [] 被改成 ["CHAT"] 这种错误下仍然通过，钉不住「不改用户意图」。
+        assertThat(protocolsOf(jdbcTemplate, "disabled-all")).isEqualTo("[]");
+
+        // ③ 端点回填：照抄 base_url 原值；base_url 为空时保持空串（空串即回退到 base_url）。
+        assertThat(responsesBaseUrlOf(jdbcTemplate, "relay")).isEqualTo("https://relay.example.com/v1");
+        assertThat(responsesBaseUrlOf(jdbcTemplate, "blank-url")).isEmpty();
+    }
+
+    /**
+     * 脏协议配置不被 V13 触碰。
+     *
+     * <p>运行时对读不懂的配置本就回退全集（届时已含 RESPONSES），因此迁移没有必要去猜；
+     * 而一旦去猜，一个畸形值会被悄悄改成某个看起来正常的形态，掩盖掉「这里的配置是坏的」
+     * 这个真正需要被发现的事实。
+     *
+     * <p>非数组 JSON 单独造一行：{@code json_valid} 对 {@code "CHAT"} 这种裸字符串为真，
+     * 只判 {@code json_valid} 会让 {@code json_insert} 把它变成一个语义全新的对象。
+     * 这正是实现里要额外判 {@code json_type = 'array'} 的原因。
+     */
+    @Test
+    void v13LeavesMalformedProtocolConfigurationUntouched() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        seedDatabaseAtPreviousVersion(jdbcTemplate);
+        // 合法 JSON 但不是数组：json_valid 为真，唯有 json_type 能把它挡住。
+        jdbcTemplate.update("INSERT INTO provider_config "
+                + "(provider_key, display_name, base_url, supported_protocols) "
+                + "VALUES ('not-array', '非数组', 'https://n.example.com', ?)",
+                "\"CHAT\"");
+        jdbcTemplate.update("INSERT INTO provider_config "
+                + "(provider_key, display_name, base_url, supported_protocols) "
+                + "VALUES ('json-object', '对象形态', 'https://o.example.com', ?)",
+                "{\"protocols\":[\"CHAT\"]}");
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThat(protocolsOf(jdbcTemplate, "not-array")).isEqualTo("\"CHAT\"");
+        assertThat(protocolsOf(jdbcTemplate, "json-object")).isEqualTo("{\"protocols\":[\"CHAT\"]}");
+    }
+
+    /**
+     * 已含 {@code RESPONSES} 的行不重复追加，且用户此后改过的配置不被冲掉。
+     *
+     * <p>两件事一起测是因为它们由同一个 {@code NOT EXISTS} 子句保证：
+     * 少了它，重启一次就多一个 RESPONSES 元素，而那个数组会无限增长。
+     */
+    @Test
+    void v13DoesNotDuplicateProtocolOrOverwriteLaterEdits() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        seedDatabaseAtPreviousVersion(jdbcTemplate);
+        jdbcTemplate.update("INSERT INTO provider_config "
+                + "(provider_key, display_name, base_url, supported_protocols) "
+                + "VALUES ('relay', '中转站', 'https://relay.example.com/v1', ?)",
+                "[\"CHAT\"]");
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        // 用户升级后自己取消了 Responses 并改了端点 —— 重跑迁移不得把这两处改回去。
+        jdbcTemplate.update("UPDATE provider_config SET supported_protocols = '[\"CHAT\"]', "
+                + "responses_base_url = 'https://responses.example' WHERE provider_key = 'relay'");
+        runner.run(null);
+
+        assertThat(protocolsOf(jdbcTemplate, "relay")).isEqualTo("[\"CHAT\"]");
+        assertThat(responsesBaseUrlOf(jdbcTemplate, "relay")).isEqualTo("https://responses.example");
+    }
+
+    /**
+     * V13 的 UPDATE 不被 {@code provider_config} 的行级校验触发器挡住。
+     *
+     * <p>那两个触发器校验 {@code NEW} 整行而非只校验被 SET 的列，因此库里留着
+     * {@code enabled = 2} 这类 V3 之前的脏值时，本次只改协议集合的 UPDATE 也会被 ABORT。
+     * V7.1、V9 与 V12 都踩过同一个坑，这条用例把 V13 也钉住。
+     *
+     * <p>顺带断言脏值本身没被「顺手修正」：那超出本次迁移的职责，
+     * 且会静默改变某个供应商的启用状态。
+     */
+    @Test
+    void v13SurvivesRowLevelValidationTriggerWithLegacyDirtyEnabledValue() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        seedDatabaseAtPreviousVersion(jdbcTemplate);
+        jdbcTemplate.update("INSERT INTO provider_config "
+                + "(provider_key, display_name, base_url, supported_protocols) "
+                + "VALUES ('dirty', '脏值', 'https://dirty.example.com', ?)",
+                "[\"CHAT\"]");
+        // 绕过触发器写入脏值，模拟某些升级路径上 V3 数据清洗被跳过的库。
+        jdbcTemplate.execute("DROP TRIGGER IF EXISTS trg_provider_config_validate_update");
+        jdbcTemplate.update("UPDATE provider_config SET enabled = 2 WHERE provider_key = 'dirty'");
+        jdbcTemplate.execute("CREATE TRIGGER trg_provider_config_validate_update "
+                + "BEFORE UPDATE ON provider_config WHEN NEW.enabled NOT IN (0, 1) "
+                + "BEGIN SELECT RAISE(ABORT, '数据约束校验失败: provider_config'); END");
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        assertThat(protocolsOf(jdbcTemplate, "dirty")).isEqualTo("[\"CHAT\",\"RESPONSES\"]");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT enabled FROM provider_config WHERE provider_key = 'dirty'", Integer.class))
+                .isEqualTo(2);
+        // 触发器必须装回去，否则其余字段的校验会静默失效。
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "UPDATE provider_config SET enabled = 3 WHERE provider_key = 'dirty'"))
+                .isInstanceOf(DataAccessException.class);
+    }
+
+    /** 新库的协议默认值与端点列须与升级库逐字一致，否则「全库同形态」只在一侧成立。 */
+    @Test
+    void freshSchemaDefaultsMatchV13UpgradedShape() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        new ResourceDatabasePopulator(new ClassPathResource("schema.sql"))
+                .execute(jdbcTemplate.getDataSource());
+
+        newMigrationRunner(jdbcTemplate).run(null);
+
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, display_name, enabled, base_url) "
+                + "VALUES ('fresh', 'Fresh', 1, 'https://fresh.example/v1')");
+        assertThat(protocolsOf(jdbcTemplate, "fresh")).isEqualTo("[\"CHAT\",\"MESSAGES\",\"RESPONSES\"]");
+        // 新库不回填：DDL 默认空串，语义即「回退到 base_url」，与升级库留空的那些行一致。
+        assertThat(responsesBaseUrlOf(jdbcTemplate, "fresh")).isEmpty();
     }
 
     // ==================== V8.7：请求体规则分组 ====================
@@ -783,9 +955,10 @@ class SchemaMigrationRunnerTests {
                 .contains("supported_protocols", "anthropic_base_url");
         Map<String, Object> relay = jdbcTemplate.queryForMap(
                 "SELECT supported_protocols, anthropic_base_url FROM provider_config WHERE provider_key = 'relay'");
-        // V8.8 回填的是 ["CHAT","MESSAGES"]，V12 又把两个名字重命名。本用例跑完整迁移链，
-        // 故断言的是终态；「回填全集」这个语义本身没变 —— 变的只是全集里两个元素的写法。
-        assertThat(relay.get("supported_protocols")).isEqualTo("[\"CHAT\",\"MESSAGES\"]");
+        // V8.8 回填的是当时的全集，V12 重命名了两个元素，V13 又追加了 RESPONSES。
+        // 本用例跑完整迁移链，故断言的是终态；「回填全集」这个语义本身没变 ——
+        // 变的只是全集包含哪几个元素、怎么写。
+        assertThat(relay.get("supported_protocols")).isEqualTo("[\"CHAT\",\"MESSAGES\",\"RESPONSES\"]");
         assertThat(relay.get("anthropic_base_url")).isEqualTo("https://relay.example/v1");
         // base_url 本就为空的供应商没有可照抄的地址，保持空串即「回退到 base_url」，语义一致。
         assertThat(jdbcTemplate.queryForObject(
@@ -1378,7 +1551,9 @@ class SchemaMigrationRunnerTests {
     @Test
     void crossVersionUpgradeKeepsProtocolOfTruncatedOpenAiLogWrittenAfterV86() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
-        seedDatabaseAtPreviousVersion(jdbcTemplate);
+        // 同样显式钉住 V11：下面要插入旧协议名。而且这个用例的锰利度本身也依赖
+        // “缺失的迁移恰好是 V12 重命名”（见方法注释），fixture 前移会让那一层证明失效。
+        seedDatabaseAtVersion(jdbcTemplate, 11);
         // 一条 V8.6 之后写入的流式 Chat 调用：上游中途截断，因此 chunks 里没有 [DONE]。
         // 两个协议列由应用层填写，值是正确的（此时库还在 V12 之前，用的是旧协议名）。
         jdbcTemplate.update("INSERT INTO api_call_log "
@@ -1747,14 +1922,28 @@ class SchemaMigrationRunnerTests {
          * V9 起是 1），只有注册表的顺序才是「前一版」的权威定义。
          */
         private void seedDatabaseAtPreviousVersion(JdbcTemplate jdbcTemplate) {
+                List<Double> versions = newMigrationRunner(jdbcTemplate).registeredMigrationVersions();
+                seedDatabaseAtVersion(jdbcTemplate, versions.get(versions.size() - 2));
+        }
+
+        /**
+         * 造出一个停在<strong>指定</strong>已注册版本的库。
+         *
+         * <p>{@link #seedDatabaseAtPreviousVersion} 会随新版本加入自动前移，那正是它的价值 ——
+         * 「最新那个迁移是唯一该跑的」这个不变量与版本号无关。但有些用例需要的恰恰是某个
+         * <strong>特定</strong>版本的形态，此时自动前移会让它们悄悄失去意义甚至直接失败：
+         * 比如要构造 V12 之前的旧协议名字面量，一旦 fixture 前移到 V12，那些字面量就撞上
+         * V12 已经建好的 CHECK 白名单了。这类用例应当显式钉住版本并写清为什么。
+         *
+         * @param version 目标版本，必须是注册表里的某一项
+         */
+        private void seedDatabaseAtVersion(JdbcTemplate jdbcTemplate, double version) {
                 createLegacySchema(jdbcTemplate);
                 seedLegacyData(jdbcTemplate);
-                List<Double> versions = newMigrationRunner(jdbcTemplate).registeredMigrationVersions();
-                double previous = versions.get(versions.size() - 2);
-                newMigrationRunner(jdbcTemplate).migrateThrough(previous);
+                newMigrationRunner(jdbcTemplate).migrateThrough(version);
                 assertThat(jdbcTemplate.queryForObject(
                                 "SELECT version FROM schema_version WHERE id = 1", Double.class))
-                                .isEqualTo(previous);
+                                .isEqualTo(version);
         }
 
         private void createCurrentProviderAssociations(JdbcTemplate jdbcTemplate) {
@@ -1860,6 +2049,25 @@ class SchemaMigrationRunnerTests {
                 return jdbcTemplate.queryForObject(
                                 "SELECT use_proxy FROM provider_config WHERE provider_key = ?",
                                 Integer.class, providerKey);
+        }
+
+        /**
+         * 读某个供应商的协议集合<strong>原文</strong>。
+         *
+         * <p>刻意返回字符串而不解析成集合：元素顺序与空数组形态都是要断言的内容，
+         * 解析成 {@code Set} 会把这两点抹掉。
+         */
+        private String protocolsOf(JdbcTemplate jdbcTemplate, String providerKey) {
+                return jdbcTemplate.queryForObject(
+                                "SELECT supported_protocols FROM provider_config WHERE provider_key = ?",
+                                String.class, providerKey);
+        }
+
+        /** 读某个供应商的 Responses 端点；空串表示回退到 {@code base_url}。 */
+        private String responsesBaseUrlOf(JdbcTemplate jdbcTemplate, String providerKey) {
+                return jdbcTemplate.queryForObject(
+                                "SELECT responses_base_url FROM provider_config WHERE provider_key = ?",
+                                String.class, providerKey);
         }
 
         /** 插一行带指定最大输出值的模型，模型名即用例里的标签。 */

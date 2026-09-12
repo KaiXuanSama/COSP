@@ -22,11 +22,18 @@ CREATE TABLE IF NOT EXISTS provider_config (
     base_url         TEXT         NOT NULL DEFAULT '', -- OpenAI 协议的 API 基础 URL
     -- 该供应商支持的线路协议集合（JSON 字符串数组，元素取值同 WireProtocol 枚举名）。
     -- 空数组表示「一种都不支持」，是显式的非法配置：调度器会明确报错而非静默回退。
-    supported_protocols TEXT      NOT NULL DEFAULT '["CHAT","MESSAGES"]' CHECK (json_valid(supported_protocols)),
+    -- 默认三条全勾：勾上后不通至多是上游报错，用户能感知并取消勾选；默认不勾则让
+    -- 「支持却调不通」变成需要用户自己想到去勾的隐藏状态。元素顺序取字母序，与
+    -- ProviderAdminService 的 TreeSet 落库口径一致 —— 否则新建的与保存过的供应商查库时形态不同。
+    supported_protocols TEXT      NOT NULL DEFAULT '["CHAT","MESSAGES","RESPONSES"]' CHECK (json_valid(supported_protocols)),
     -- Anthropic 协议的独立 API 基础 URL；为空时回退到 base_url。
     -- 独立成列而非从 base_url 推导：中转站的 Anthropic 端点位置不可预测（有的在 /v1/messages，
     -- 有的在根路径），继续猜只会让「配了却调不通」这类问题无从排查。
     anthropic_base_url  TEXT      NOT NULL DEFAULT '',
+    -- OpenAI Responses 协议的独立 API 基础 URL；为空时回退到 base_url。
+    -- 独立成列的理由同 anthropic_base_url，但有一处不同：多数中转站根本没有 Responses 端点，
+    -- 因此「留空回退 base_url」在这条线路上是常态而非例外。
+    responses_base_url  TEXT      NOT NULL DEFAULT '',
     -- 该供应商的出站请求是否经由 HTTP 代理。默认 0（直连）：代理是需要用户显式选择的能力，
     -- 默认开启会让升级后所有出站流量突然改道。代理地址本身存在 app_config，不在这里。
     use_proxy        INTEGER      NOT NULL DEFAULT 0 CHECK (use_proxy IN (0, 1)),
