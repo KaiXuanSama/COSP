@@ -195,22 +195,57 @@ public final class RequestBodyRuleEngine {
         }
     }
 
+    /**
+     * 数组模式：对每个<strong>满足条件</strong>的元素执行操作。
+     *
+     * <h2>「删除字段」在数组模式下语义是「移除该元素」</h2>
+     * 条件的存在意义正是<em>选中元素</em>，因此删除落在元素这一层；要删元素<strong>内部</strong>
+     * 的字段，用 {@code edit_object} 的嵌套规则表达（那层的规则是标量模式，语义仍是删字段）。
+     * 两种语义共用同一个 {@code delete} 操作名，由 {@code array} 开关决定作用层级 ——
+     * 这也让「无条件删掉整个数组字段」与「删掉数组里的某些元素」各有唯一的表达方式。
+     *
+     * <p>没匹配到任何元素是<strong>正常的空操作</strong>而非错误：规则的用途本就是
+     * 「上游带了某个东西才处理」，不带就该原样放行。因此这里不产生告警 ——
+     * 否则每一条防御性规则都会在日志里刷出噪音。
+     *
+     * <h2>移除必须延后到遍历结束</h2>
+     * 边遍历边删会让后续下标整体前移：{@code [a,b]} 两项都匹配时只删得掉 {@code a}，
+     * {@code b} 因下标坍缩而被跳过。因此先收集下标，遍历结束后再<strong>倒序</strong>移除 ——
+     * 倒序保证每次移除都不影响尚未处理的下标。
+     */
     private void executeArrayRule(ObjectNode scope, JsonNode rule, String field, String fieldPath,
                                   List<TransformWarning> warnings) {
         JsonNode array = scope.get(field);
         if (!(array instanceof ArrayNode arrayNode)) {
             return;
         }
+        String ruleId = rule.path("id").asText("");
+        List<JsonNode> ruleOperations = operations(rule);
+
+        List<Integer> removedIndices = new ArrayList<>();
         for (int index = 0; index < arrayNode.size(); index++) {
             JsonNode item = arrayNode.get(index);
             if (!(item instanceof ObjectNode element) || !conditionsMatch(element, rule)) {
                 continue;
             }
             String elementPath = fieldPath + "[" + index + "]";
-            for (JsonNode operation : operations(rule)) {
-                executeArrayOperation(element, operation, elementPath, rule.path("id").asText(""), warnings);
+            for (JsonNode operation : ruleOperations) {
+                if (isElementRemoval(operation)) {
+                    // 移除延后执行，理由见方法注释。
+                    removedIndices.add(index);
+                    continue;
+                }
+                executeArrayOperation(element, operation, elementPath, ruleId, warnings);
             }
         }
+        for (int position = removedIndices.size() - 1; position >= 0; position--) {
+            arrayNode.remove(removedIndices.get(position).intValue());
+        }
+    }
+
+    /** 该操作是否表示「移除被选中的数组元素」。 */
+    private static boolean isElementRemoval(JsonNode operation) {
+        return "delete".equals(operation.path("type").asText(""));
     }
 
     private void executeScalarRule(ObjectNode scope, JsonNode rule, String field, String fieldPath,
@@ -249,6 +284,14 @@ public final class RequestBodyRuleEngine {
         }
     }
 
+    /**
+     * 数组模式下对<strong>单个元素</strong>执行操作。
+     *
+     * <p>{@code delete} 不在此处：它在数组模式下的语义是「移除这个元素」，
+     * 需要改数组本身而非元素内容，因此由 {@link #executeArrayRule} 在遍历结束后统一处理。
+     * 这也解释了为什么本方法只认 {@code edit_object} ——
+     * {@code set_value} 是字段级操作，在「改动元素」这个层级上没有意义。
+     */
     private void executeArrayOperation(ObjectNode element, JsonNode operation, String fieldPath, String ruleId,
                                        List<TransformWarning> warnings) {
         String type = operation.path("type").asText("");
@@ -260,8 +303,6 @@ public final class RequestBodyRuleEngine {
             }
             case "set_value" -> warnings.add(new TransformWarning(
                     ruleId, fieldPath, "数组模式下\"设置字段值\"应通过嵌套规则定位字段"));
-            case "delete" -> warnings.add(new TransformWarning(
-                    ruleId, fieldPath, "数组模式下\"删除字段\"应通过嵌套规则定位字段"));
             default -> warnings.add(new TransformWarning(ruleId, fieldPath, "未知操作类型: " + type));
         }
     }

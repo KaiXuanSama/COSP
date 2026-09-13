@@ -52,11 +52,19 @@ const fieldOptions = computed<FieldOption[]>(() => {
 
 // ==================== 操作类型选项 ====================
 
-const operationTypeOptions = [
+/**
+ * 操作选项。
+ *
+ * 「删除」的文案随作用域变化：字段值为数组时它删的是**匹配到的元素**，
+ * 否则删的是字段本身。同一个操作类型在两种作用域下作用对象不同，
+ * 文案不区分会让人以为数组模式下删的是元素内部的字段 ——
+ * 那件事要用 `edit_object` 的嵌套规则表达。
+ */
+const operationTypeOptions = computed(() => [
   { label: '调整对象内容', value: 'edit_object' },
   { label: '设置字段值', value: 'set_value' },
-  { label: '删除字段', value: 'delete' },
-]
+  { label: props.rule.array ? '删除数组元素' : '删除字段', value: 'delete' },
+])
 
 const conditionOperatorOptions = [
   { label: '存在', value: 'exists' },
