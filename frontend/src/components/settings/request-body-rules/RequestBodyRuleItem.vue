@@ -9,6 +9,11 @@ import { computed } from 'vue'
 import { NSelect, NSwitch, NButton, NIcon } from 'naive-ui'
 import type { FieldRule, RuleCondition, ConditionOperator } from '@/features/request-body-rules/types'
 import { createEmptyRule, createEmptyCondition } from '@/features/request-body-rules/types'
+import {
+  generatePathOptions,
+  resolveConditionScope,
+  type PathOption,
+} from '@/features/request-body-rules/pathOptions'
 import JsonValueInput from './JsonValueInput.vue'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
 
@@ -120,24 +125,17 @@ const nestedRules = computed(() => {
   return op.rules || []
 })
 
+/**
+ * 嵌套规则的字段来源对象。
+ *
+ * <p>数组模式下取第一个对象元素作为字段来源；这与
+ * {@link resolveConditionScope} 用的是同一个取值口径（都委托给
+ * `firstObjectElement`），因此「字段下拉」与「条件路径下拉」看到的作用域一致 ——
+ * 早先两处各写一份，数组模式下两个下拉给出的路径作用域不同。
+ */
 const nestedScopeObject = computed<Record<string, unknown> | null>(() => {
   if (!props.scopeObject || !props.rule.field) return null
-  const val = props.scopeObject[props.rule.field]
-  if (props.rule.array) {
-    // 数组模式：取第一个对象元素作为字段来源
-    if (Array.isArray(val)) {
-      for (const item of val) {
-        if (item && typeof item === 'object' && !Array.isArray(item)) {
-          return item as Record<string, unknown>
-        }
-      }
-    }
-    return null
-  }
-  if (val && typeof val === 'object' && !Array.isArray(val)) {
-    return val as Record<string, unknown>
-  }
-  return null
+  return resolveConditionScope(props.scopeObject, props.rule)
 })
 
 function updateNestedRules(rules: FieldRule[]) {
@@ -172,55 +170,28 @@ function removeCondition(index: number) {
   })
 }
 
-/** 条件路径下拉选项：从当前作用域生成 */
-const conditionPathOptions = computed<FieldOption[]>(() => {
-  if (!props.scopeObject) return []
-  return generatePathOptions(props.scopeObject, '', 0)
+/**
+ * 条件路径下拉选项：从**条件求值所在的**作用域生成。
+ *
+ * <p>不是从 `scopeObject` 直接生成 —— 数组模式下条件相对数组元素求值，
+ * 而 `scopeObject` 是它的父对象。用错作用域会生成 `./tools[*]/type`，
+ * 那个路径引擎解析不了且**零告警**（「配了规则但没生效」）。
+ * 作用域规则的完整推导见 `pathOptions.ts` 的 `resolveConditionScope`。
+ */
+const conditionPathOptions = computed<PathOption[]>(() => {
+  const scope = conditionScope.value
+  return scope ? generatePathOptions(scope) : []
 })
 
-function generatePathOptions(
-  obj: Record<string, unknown>,
-  prefix: string,
-  depth: number,
-  seenPaths = new Set<string>(),
-): FieldOption[] {
-  if (depth > 2) return [] // 限制路径深度
-  const options: FieldOption[] = []
-  const addOption = (path: string) => {
-    if (seenPaths.has(path)) return
-    seenPaths.add(path)
-    options.push({ label: path, value: path })
-  }
-  for (const [key, val] of Object.entries(obj)) {
-    const path = prefix ? `${prefix}/${key}` : `./${key}`
-    if (Array.isArray(val)) {
-      const arrayPath = `${path}[*]`
-      addOption(arrayPath)
-      // 继续展开数组元素的子字段
-      for (const item of val) {
-        if (item && typeof item === 'object' && !Array.isArray(item)) {
-          options.push(...generatePathOptions(
-            item as Record<string, unknown>,
-            arrayPath,
-            depth + 1,
-            seenPaths,
-          ))
-        }
-      }
-    } else if (val && typeof val === 'object') {
-      addOption(path)
-      options.push(...generatePathOptions(
-        val as Record<string, unknown>,
-        path,
-        depth + 1,
-        seenPaths,
-      ))
-    } else {
-      addOption(path)
-    }
-  }
-  return options
-}
+/** 条件求值所在的作用域；null 表示无法从预览样本推断。 */
+const conditionScope = computed(() =>
+  resolveConditionScope(props.scopeObject, props.rule),
+)
+
+/** 目标字段在样本里存在、但形状无法用来生成路径选项。 */
+const conditionScopeUnavailable = computed(() =>
+  !conditionScope.value && !!(props.scopeObject && props.rule.field),
+)
 
 /**
  * 写回条件比较值。
@@ -378,6 +349,17 @@ function updateField(val: string) {
       </div>
       <div v-if="rule.conditions.length === 0" class="rule-conditions-empty">
         未添加条件（将始终执行）
+      </div>
+      <!--
+        作用域无法推断时的提示。
+
+        此时路径下拉是空的，但输入框可以手填（`tag` 选项允许输入未列出的值），
+        所以这不是阻断性错误 —— 但要说明为什么没有候选：用户看到空下拉会以为是缺陷。
+      -->
+      <div v-if="rule.conditions.length > 0 && conditionScopeUnavailable" class="rule-conditions-hint">
+        {{ rule.array
+          ? '预览样本中该字段不是数组、或元素不是对象，无法推断条件路径 —— 请手动填写（条件的作用域是数组元素，如 ./type）'
+          : '预览样本中该字段不是对象，无法推断条件路径 —— 请手动填写' }}
       </div>
     </div>
 
@@ -599,6 +581,19 @@ function updateField(val: string) {
   font-size: 11px;
   color: $text-muted;
   font-style: italic;
+}
+
+/**
+ * 作用域无法推断的提示。
+ *
+ * 不用 `.rule-conditions-empty` 那套斜体灰字：那条是「你没加条件」的中性说明，
+ * 而这条要让用户去改配置，混用同一套样式会让真正需要动作的提示看起来像装饰。
+ */
+.rule-conditions-hint {
+  font-size: 11px;
+  color: $warning;
+  line-height: 1.5;
+  margin-top: 2px;
 }
 
 .rule-nested {

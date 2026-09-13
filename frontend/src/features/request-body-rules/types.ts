@@ -15,9 +15,21 @@ import type { RequestBodyTemplateKey } from './requestBodyTemplates'
 /** 条件运算符。当前只实现 exists 和 equals。 */
 export type ConditionOperator = 'exists' | 'equals'
 
-/** 单个条件。 */
+/**
+ * 单个条件。
+ *
+ * <p><strong>路径的作用域是「条件求值所在的层」，不是请求体根</strong> ——
+ * 完整推导见 `pathOptions.ts` 的 `resolveConditionScope`。两个分支：
+ * <ul>
+ *   <li>{@code array: true} —— 条件是相对<strong>数组元素</strong>求值的，
+ *       写成 {@code ./type} 而非 {@code ./tools[*]/type}；后者引擎解析不了
+ *       且<strong>零告警</strong>。</li>
+ *   <li>{@code array: false} —— 相对当前作用域对象。顶层规则的作用域是请求体，
+ *       {@code edit_object} 内层规则的作用域是外层字段的值对象。</li>
+ * </ul>
+ */
 export interface RuleCondition {
-  /** 相对路径，以 ./ 开头，如 ./image_url 或 ./content[*]/image_url */
+  /** 相对路径，以 ./ 开头。数组模式下形如 ./type；标量模式下形如 ./format/type */
   path: string
   /** 运算符 */
   operator: ConditionOperator
