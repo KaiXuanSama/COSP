@@ -343,6 +343,108 @@ Copilot BYOK 会回传上一轮思考内容，因此**翻译路线上开启 exte
 这不是「翻译得不够漂亮」，是会被上游直接拒绝。落地前先复核
 [思考链回放调查](COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)。
 
+### 4.8 Responses 的加密思考：R2* / *2R 的硬前提（2026-09-13 实测）
+
+第 4.7 节讨论的是 Chat ↔ Messages 两侧**都没有可搬运的思考载体**，只能丢。Responses 不同 ——
+它有载体，但载体是**不透明密文**，于是问题从「无处可放」变成「放过去也没用、或者必须放」。
+
+#### 载体形态（实流量取证）
+
+`reasoning` item 在请求与响应里的形状**不同**，重建时不能混用：
+
+| 位置 | 字段 |
+|---|---|
+| 响应产出的 item | `{id, type, content, encrypted_content, summary, metadata, …}` |
+| Codex 回传的 item | `{type, id, summary: [], encrypted_content}` —— **没有 `content`** |
+
+`include: ["reasoning.encrypted_content"]` 是下游主动索要加密思考的信号，且它只在
+`store: false`（或 ZDR）时才有意义 —— 服务端没有状态可回退，密文就是先前思考的**唯一载体**。
+
+#### 三条硬约束
+
+**① 必须取 `output_item.done` 的密文，`added` 的不完整。**
+
+官方在 `encrypted_content` 条目下明文写着：流式时请用 `done` 事件里的完整 item，
+`added` 的可能不完整。实测坐实且差距很大（同一次调用）：
+
+| 调用 | `output_item.added` | `output_item.done` |
+|---|---|---|
+| 17092 | 1124 字符 | **4024** |
+| 17093 | 1124 | **1848** |
+| 17094 | 1124 | **3128** |
+
+两者的密文头尾完全不同（`gAAAAABqppFMbYSk…` vs `gAAAAABqppFcTP2u…`），
+**不是同一份被截断，是两次独立加密**。从 `added` 取会得到一份无法解密的密文，
+回传后上游可能直接 400 —— 静默失效。
+
+**② 密文绑定签发者，跨上游会解密失败。**
+
+xAI 的真实错误（`sub2api` 记录，并为其写了专门的错误识别）：
+
+```text
+{"code":"invalid-argument","error":"Could not decrypt the provided encrypted_content."}
+```
+
+因此故障转移切换上游时，前一个上游签发的密文必须**主动剥离**（sub2api 的
+`SanitizeOpenAICrossModeFailoverReasoning` 就是这件事）。含义是：**密文不可搬运到另一个上游**，
+这与「翻译到另一种协议」是同一类问题 —— 换了消费方，密文即失效。
+
+**③ 某些上游要求必须回传明文，缺失直接 400。**
+
+`sub2api/chatcompletions_responses_bridge.go` 记录的原文：
+
+> Codex histories may carry reasoning items with no plaintext summary (empty summary + opaque
+> encrypted_content, e.g. after remote compaction); **DeepSeek's thinking mode rejects such
+> histories with 400** "The `reasoning_content` in the thinking mode must be passed back to the API".
+
+这条最要命：它把「丢弃思考」从「降质」升级为**硬失败**。Responses → Chat 翻译时，
+加密思考在 Chat 格式里无处安放，而对话式上游拒绝没有 `reasoning_content` 的历史。
+
+#### 剥离的收益与代价（实测结论与直觉相反）
+
+**密文在后续请求里逐字节稳定**，它是可缓存前缀的一部分：
+
+| 来源 | reasoning item id | 长度 | 密文头（28 字符） |
+|---|---|---|---|
+| 17092 产出 | `rs_0d5584…b2af` | 4024 | `gAAAAABqppFcTP2uGZnXV3QymPei` |
+| 17093 回传 | `rs_0d5584…b2af` | **4024** | **完全相同** |
+| 17093 产出 | `rs_0d5584…b6e1` | 1848 | `gAAAAABqppGANDoNnGFujxQTWVZQ` |
+| 17094 回传 | `rs_0d5584…b6e1` | **1848** | **完全相同** |
+
+因此：
+
+- **剥离不会创造新的缓存命中** —— 它本来就在命中。
+- **反而让命中率百分比略降**：被剥掉的正是「前几轮产出、本轮命中」的缓存区 token，
+  分子分母同时减少但分母降得少。（不影响成本实质，缓存 token 单价本就低。）
+- **真正的收益只是绝对 token 数下降**。17094 回传了 5872 字符密文（4024+1848），
+  按 base64 约 4 字符/token 粗估 ≈ 1400 tokens，占该次 11152 的 13% —— **这是估算，
+  未经精确分词器验证**。
+- **操作注意**：中途开始剥离会造成一次全量 cache miss（前缀与之前建立的不同），
+  之后重新稳定。「先跑几轮再改策略」比「一开始就剥离」代价更高。
+
+#### sub2api 的解法（唯一见到的可用方案）
+
+它**缓存自己流出去的明文思考**，按 reasoning item 的 id 索引，翻译时用
+`ReasoningContentByID(itemID)` 钩子还原 `reasoning_content`。缓存未命中返回空串。
+
+即：密文不可读 → 那就在自己还看得见明文的时候存下来。代价是需要一个按 item id
+索引的思考缓存，而这正是本服务当前**刻意没有**的东西。
+
+#### 对本服务的含义
+
+[PROVIDER_ADAPTATIONS.md](./PROVIDER_ADAPTATIONS.md) 里那句
+「当前 GitHub Copilot 客户端负责跨请求回放 `reasoning_content`；COSP 不再缓存、注入或定期清理
+思考内容」的前提是 **Chat 线路 + Copilot BYOK** —— 那条路上客户端手上有明文，不需要代理代劳。
+
+但在 **Responses + 加密思考**下这个前提不成立：Codex 手上只有密文，无法回放明文。
+所以：
+
+- 直连 Responses（现状）**不受影响** —— 原样透传，本服务不解释密文。
+- 一旦做 R2C / R2M / C2R / M2R，**必须先决定**：剥离（接受 400 或降质）还是自己缓存明文
+  （接受一个思考缓存的维护成本）。这不是实现细节，是前置设计决策。
+
+**尚未决定，不在本契约给出结论。** 本节只固定实测事实与约束，避免下次从零调研。
+
 ---
 
 ## 5. 无对应物字段的处置
@@ -495,6 +597,10 @@ agent 用工具读图的场景暴露出来才修，已于 2026-09-08 实测通�
 - 单测尚未覆盖 M2C 请求方向（未实现）。C2M 请求侧见
   `ChatToMessagesRequestTranslatorTests`，Anthropic 侧两个思考维度的四档注入见
   `ReasoningEffortSettingTests.Anthropic注入模式` 与 `GenericAnthropicChatServiceTests`。
+- **Responses 的加密思考在翻译时剥离还是缓存明文** —— 三条硬约束见第 4.8 节。
+  这是 R2* / *2R 落地前必须先做的决策（不是实现细节）：剥离会遇到部分上游的 400，
+  缓存明文则要新增一个按 item id 索引的思考缓存，而那会推翻「COSP 不缓存思考」这条
+  现有决策。等 R2* 有实际需求时再定。
 
 ---
 
