@@ -29,7 +29,7 @@ export interface CallLifecycleEvent {
   /** 重试次数（RETRYING 阶段有意义，表示即将进行的第几次重试，其余为 0）。 */
   attempt: number
   /**
-   * 下游协议名（`OPENAI` / `ANTHROPIC`），`null`/缺失表示尚未确定。
+   * 下游协议名（`CHAT` / `MESSAGES` / `RESPONSES`），`null`/缺失表示尚未确定。
    *
    * 后端分两步给：控制器发 RECEIVED 时不带（上游协议要等路由与调度完成后才有结论），
    * 随后由发布器补写并重发一条带齐两个协议的事件。

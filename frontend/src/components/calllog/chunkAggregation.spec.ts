@@ -324,11 +324,11 @@ describe('aggregateChunks', () => {
   })
 
   /**
-   * 跨协议翻译（A→O）路线下，落库的 chunk 已经是 OpenAI 形态，
+   * 跨协议翻译（M2C）路线下，落库的 chunk 已经是 Chat 形态，
    * 因此必须按**下游**协议解析。
    *
-   * 早先这里传的是上游协议，导致 A→O 的日志按 Anthropic 规则去解析
-   * 已经翻译好的 OpenAI chunk，所有事件都匹配不上，规整视图显示「无可解析的响应数据」。
+   * 早先这里传的是上游协议，导致 M2C 的日志按 Anthropic 规则去解析
+   * 已经翻译好的 Chat chunk，所有事件都匹配不上，规整视图显示「无可解析的响应数据」。
    */
   it('parses translated OpenAI chunks from a cross-protocol call by downstream protocol', () => {
     const translatedChunks = [

@@ -60,11 +60,12 @@ export function migrateRuleSet(raw: unknown, legacy: LegacyEditorFields = {}): R
 }
 
 /**
- * 把 V1 的扁平规则列表包成单个「OpenAI 规则组」。
+ * 把 V1 的扁平规则列表包成单个「Chat 规则组」。
  *
- * 协议**只给 OPENAI** 而非两者全选：这些规则的字段路径是照 OpenAI 请求体写的
- * （`messages` 里含 system 条目、无 `max_tokens`），作用在 Anthropic 请求体上
- * 多数匹配不到 —— 静默失效比不执行更难排查。
+ * 协议**只给 `CHAT`** 而非全选：这些规则的字段路径是照 Chat 请求体写的
+ * （`messages` 里含 system 条目、无 `max_tokens`），作用在 Anthropic 或 Responses
+ * 请求体上多数匹配不到（后者连 `messages` 都没有，用的是 `input`）
+ * —— 静默失效比不执行更难排查。
  */
 function legacyGroup(rules: FieldRule[], legacy: LegacyEditorFields): RuleGroup {
   return {

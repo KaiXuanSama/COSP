@@ -74,9 +74,9 @@ export const IMAGE_COMPATIBILITY_TEMPLATE_KEYS: RequestBodyTemplateKey[] = ['mes
  * 把预设自带的 V1 规则集升为单组 V2，并挂上该组的调试样本。
  *
  * 走 `migrateRuleSet` 而不是手写包装：迁移函数已经确定了「V1 规则只适用
- * OpenAI」这一判断（规则里的字段路径是照 OpenAI 请求体写的，`messages` 含
- * system 条目、无 `max_tokens`，作用在 Anthropic 上多数匹配不到，静默失效
- * 比不执行更难排查）。预设与存量配置因此共享同一套升级语义，不会漂移。
+ * `CHAT`」这一判断（规则里的字段路径是照 Chat 请求体写的，`messages` 含
+ * system 条目、无 `max_tokens`，作用在 Anthropic 或 Responses 上多数匹配不到，
+ * 静默失效比不执行更难排查）。预设与存量配置因此共享同一套升级语义，不会漂移。
  */
 export function presetRuleSetV2(
   rules: RuleSet,

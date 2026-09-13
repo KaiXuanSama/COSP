@@ -75,7 +75,7 @@ public class GatewayAuthFilter implements WebFilter {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
-        // 仅拦截两个聊天端点的 POST，其它路径/方法一律直接放行。
+        // 仅拦截受保护路径的 POST，其它路径/方法一律直接放行。
         if (!isProtected(exchange)) {
             return chain.filter(exchange);
         }

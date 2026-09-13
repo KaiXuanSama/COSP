@@ -64,7 +64,7 @@ describe('presetRuleSetV2', () => {
   })
 
   // 预设规则的字段路径是照 OpenAI 请求体写的，作用在 Anthropic 上多数匹配不到。
-  // 只勾 OPENAI 是刻意的：静默失效比不执行更难排查。
+  // 只勾 `CHAT` 是刻意的：静默失效比不执行更难排查。
   it('规则组只适用 OpenAI 线路', () => {
     expect(presetRuleSetV2(MIMO_EXAMPLE_RULESET).groups[0].protocols).toEqual(['CHAT'])
   })

@@ -40,7 +40,7 @@ export interface Provider {
    * 该供应商声明支持的线路协议。
    *
    * 后端以**数组**返回（不是 JSON 字符串），可直接绑控件。旧后端或读不懂时可能缺失，
-   * 由 `normalizeProtocols` 回退为两种都支持。
+   * 由 `normalizeProtocols` 回退为全部协议都支持。
    */
   supportedProtocols?: WireProtocol[]
   /** Anthropic Messages 协议的独立地址；空串表示回退到 {@link baseUrl}。 */

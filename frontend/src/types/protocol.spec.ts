@@ -253,7 +253,7 @@ describe('RULE_ENGINE_WIRE_PROTOCOLS', () => {
    * 若写成比对，将来某个新协议加进系统但后端规则引擎还没支持时，这条断言会自动通过 ——
    * 而那正是需要它失败的时刻。
    */
-  it('与后端规则组白名单同源，含尚未接入端点的 RESPONSES', () => {
+  it('与后端规则组白名单同源', () => {
     expect(RULE_ENGINE_WIRE_PROTOCOLS).toEqual(['CHAT', 'MESSAGES', 'RESPONSES'])
   })
 
