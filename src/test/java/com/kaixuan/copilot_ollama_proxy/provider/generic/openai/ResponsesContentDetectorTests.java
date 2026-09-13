@@ -124,6 +124,30 @@ class ResponsesContentDetectorTests {
             assertThat(ResponsesContentDetector.hasMeaningfulPayload(objectMapper, body)).isTrue();
         }
 
+        /**
+         * {@code custom_tool_call} 的参数字段是 {@code input}，不是 {@code arguments}。
+         *
+         * <h2>这条用例是为了拆掉上一条的假绿</h2>
+         * 上一条的样本带了 {@code name}，而判定是「name 非空 <b>或</b> 参数非空」——
+         * 走 name 分支就返回 true 了，<strong>{@code input} 那条路径一行都没执行到</strong>。
+         * 于是「只认 arguments、不认 input」这个缺陷在一条绿色的
+         * 「自定义工具调用也算」用例下潜伏了下来。
+         *
+         * <p>因此这里<strong>刻意不给 name</strong>。官方定义是
+         * {@code CustomToolCall object { call_id, input, name, ... }} —— 用 {@code input}
+         * 而非 {@code arguments}，两种工具项的参数字段名不同。
+         *
+         * <p>判据：<strong>用「或」连接的分支，每一支都需要一个只能走那一支的样本。</strong>
+         */
+        @Test
+        void 只有input的自定义工具调用也算() {
+            String body = """
+                    {"output":[{"type":"custom_tool_call","call_id":"c1","input":"ls -la"}]}
+                    """;
+
+            assertThat(ResponsesContentDetector.hasMeaningfulPayload(objectMapper, body)).isTrue();
+        }
+
         /** 空 output 数组是最典型的空响应形态。 */
         @Test
         void 空output判空() {
@@ -165,12 +189,14 @@ class ResponsesContentDetectorTests {
         }
 
         /**
-         * 只有拒绝理由的 message 算实质载荷。<strong>缺口 B 的复现。</strong>
+         * 只有拒绍理由的 message 算实质载荷。<strong>2026-09-12 缺口 B 的回归。</strong>
          *
          * <p>官方 {@code ResponseOutputMessage.content} 是
          * {@code array of ResponseOutputText <b>or</b> ResponseOutputRefusal} ——
-         * 联合类型，拒绝时用 {@code refusal} 字段而非 {@code text}。
-         * 当前实现对 message 项只看 {@code text}。
+         * 联合类型，拒绍时用 {@code refusal} 字段而非 {@code text}。
+         * 当时的实现对 message 项<strong>只看</strong> {@code text}，于是一个正常的
+         * 拒答响应被当成空响应重发 5 次。现已由 {@code carrierHasContent} 两字段共用
+         * 一份口径，本用例钉的是「不能退回只认 text」。
          *
          * <p>形态照官方定义逐字写：{@code ResponseOutputRefusal object { refusal, type }}。
          */
@@ -189,8 +215,10 @@ class ResponsesContentDetectorTests {
          *
          * <p>这是最坏组合，也是最可能的真实组合：开启思考后请求一个会被拒绝的问题，
          * 上游会同时给出 reasoning 项与 refusal message 项。此时两个项都<strong>非空</strong>，
-         * 但当前实现两条路径都不认（思考只看 {@code summary}、message 只看 {@code text}），
-         * 于是整个响应被判成空 —— 一次完整、有内容、已计费的回复被当成上游故障重发。
+         * 而 2026-09-12 之前的实现两条路径都不认（思考只看 {@code summary}、
+         * message 只看 {@code text}），于是整个响应被判成空 —— 一次完整、有内容、
+         * 已计费的回复被当成上游故障重发。两条路径现已各自补齐，本用例钉的是
+         * 「两个缺口不能只修一个」。
          */
         @Test
         void 思考链与拒绝理由同时出现也算载荷() {
@@ -275,6 +303,74 @@ class ResponsesContentDetectorTests {
         void 工具参数增量算贡献() {
             assertThat(ResponsesContentDetector.eventHasPayload(objectMapper,
                     "{\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{\"}")).isTrue();
+        }
+
+        /**
+         * 工具参数<strong>定稿</strong>算贡献 —— 参数在顶层 {@code arguments}，不在 {@code delta}。
+         *
+         * <h2>这是 2026-09-13 修掉的缺口</h2>
+         * 工具参数与正文一样有两种到达方式：{@code .delta} 逐片发（上一条用例），
+         * {@code .done} 一次发全。此前只有正文的定稿字段（{@code text} / {@code refusal}）
+         * 进了判定表，工具参数的定稿字段漏在外面 —— 上一条用例的存在反而让人以为
+         * 「工具参数已经覆盖了」。
+         *
+         * <p>实测后果：一整轮只发定稿的工具调用流（created → output_item.added →
+         * arguments.done → output_item.done → completed）<strong>五个事件全判无载荷</strong>，
+         * 整轮 {@code sawPayload = false} → 判成空响应 → 重试 5 次 →
+         * 6 次计费调用、约 60 秒退避，耗尽后仍放行内容。症状是「调工具时特别慢、
+         * token 莫名偏高」，不报错，极难归因。
+         *
+         * <p>与 2026-09-12 思考链那次是同一个思维错误：官方写「A 或 B」只实现了 A。
+         */
+        @Test
+        void 工具参数定稿算贡献() {
+            assertThat(ResponsesContentDetector.eventHasPayload(objectMapper,
+                    "{\"type\":\"response.function_call_arguments.done\","
+                            + "\"arguments\":\"{\\\"city\\\":\\\"Hangzhou\\\"}\"}")).isTrue();
+        }
+
+        /**
+         * 自定义工具的输入定稿算贡献 —— 字段是 {@code input}。
+         *
+         * <p>{@code response.custom_tool_call_input.done} 把全文放在 {@code input} 里，
+         * 与 {@code function_call} 用 {@code arguments} 是平行的两支。
+         */
+        @Test
+        void 自定义工具输入定稿算贡献() {
+            assertThat(ResponsesContentDetector.eventHasPayload(objectMapper,
+                    "{\"type\":\"response.custom_tool_call_input.done\","
+                            + "\"input\":\"ls -la\"}")).isTrue();
+        }
+
+        /**
+         * 整轮回归：只发定稿的工具调用流必须被判成「有载荷」。
+         *
+         * <p>单事件用例证明「这个事件被认出来了」，这条证明<strong>整轮不会被判空</strong>
+         * —— 后者才是真正决定要不要重试的判据（调用方对一轮内所有事件做逻辑或）。
+         * 修复前这五个事件全部返回 false。
+         */
+        @Test
+        void 只发定稿的工具调用整轮不被判空() {
+            String[] stream = {
+                    "{\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}",
+                    "{\"type\":\"response.output_item.added\",\"output_index\":0,"
+                            + "\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\"}}",
+                    "{\"type\":\"response.function_call_arguments.done\",\"output_index\":0,"
+                            + "\"arguments\":\"{\\\"city\\\":\\\"Hangzhou\\\"}\"}",
+                    "{\"type\":\"response.output_item.done\",\"output_index\":0,"
+                            + "\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\"}}",
+                    "{\"type\":\"response.completed\",\"response\":{\"output\":["
+                            + "{\"type\":\"function_call\",\"call_id\":\"c1\"}]}}",
+            };
+
+            boolean sawPayload = false;
+            for (String event : stream) {
+                sawPayload |= ResponsesContentDetector.eventHasPayload(objectMapper, event);
+            }
+
+            assertThat(sawPayload)
+                    .as("只发定稿参数的一轮被判空 -> 会触发 5 次空响应重试")
+                    .isTrue();
         }
 
         /**

@@ -75,15 +75,44 @@ public final class ResponsesContentDetector {
     private static final String ITEM_CUSTOM_TOOL_CALL = "custom_tool_call";
 
     /**
-     * 定稿文本的字段名 —— 内容载体里承载完整文本的两个键。
+     * 定稿内容的字段名 —— 内容载体里承载「一次给全」的完整值的四个键。
      *
-     * <p>两个都要认，因为官方把「正文」与「拒绝理由」分成了两种元素类型：
-     * {@code ResponseOutputText} 用 {@code text}，
-     * {@code ResponseOutputRefusal object { refusal, type }} 用 {@code refusal}。
-     * 只认 {@code text} 时，一个「只含拒绝理由的 message」会被判成空响应
-     * 并重试 5 次 —— 而模型拒绝回答是正常行为，不是上游故障。
+     * <p>四个键分属三类实质载荷，但判据完全相同（有非空文本即算），故合成一张表：
+     * <ul>
+     *   <li>{@code text} / {@code refusal} —— <strong>正文</strong>。官方把「正文」与
+     *       「拒绝理由」分成了两种元素类型：{@code ResponseOutputText} 用 {@code text}，
+     *       {@code ResponseOutputRefusal object { refusal, type }} 用 {@code refusal}。
+     *       只认 {@code text} 时，一个「只含拒绝理由的 message」会被判成空响应
+     *       并重试 5 次 —— 而模型拒绝回答是正常行为，不是上游故障。</li>
+     *   <li>{@code arguments} / {@code input} —— <strong>工具调用参数</strong>。
+     *       同样是两种元素类型用两个键：{@code function_call} 用 {@code arguments}，
+     *       {@code CustomToolCall object { call_id, input, name }} 用 {@code input}。</li>
+     * </ul>
+     *
+     * <h2>为何工具参数必须进这张表（2026-09-13 补）</h2>
+     * 工具参数有两种到达方式，与正文一样分「增量」与「定稿」：
+     * {@code function_call_arguments.delta} 逐片发（{@code delta} 字段，已被
+     * {@link #hasDeltaContent} 覆盖），{@code function_call_arguments.done} 一次发全
+     * （{@code arguments} 字段，此前<strong>无人覆盖</strong>）。
+     *
+     * <p>缺口的后果与 2026-09-12 思考链那次逐字节相同：一次已经完整回答的工具调用
+     * 被判成空响应 → 重试 5 次 → 6 次计费调用、约 60 秒退避、6 条日志，
+     * 耗尽预算后仍放行内容。所以症状不是报错，而是「这个模型调工具时特别慢、
+     * token 莫名偏高」，极难归因。实测：只发 {@code arguments} 定稿的一整轮
+     * 五个事件全部判「无载荷」。
+     *
+     * <p>触发需要「上游用定稿风格发参数」<strong>且</strong>「{@code output_item} 里
+     * 没给 {@code name}」同时成立 —— 多数上游会带 {@code name}，靠
+     * {@link #outputItemHasPayload} 的 name 分支侥幸救回。这个「侥幸」正是它潜伏至今
+     * 的原因，不能当成安全边际。
+     *
+     * <h2>只有 Responses 需要这张表，另两侧不需要</h2>
+     * Chat 侧看 {@code tool_calls} 数组「含非空元素」、Anthropic 侧 {@code tool_use} 与
+     * {@code input_json_delta} 直接算有载荷 —— 两者都<strong>不依赖具体参数字段名</strong>，
+     * 因为参数嵌在一个可辨认的容器里。Responses 把参数摊在事件顶层的独立字段上，
+     * 才需要逐个字段名去认。这是协议形状差异，不是三侧口径分叉。
      */
-    private static final String[] FINALIZED_TEXT_FIELDS = {"text", "refusal"};
+    private static final String[] FINALIZED_CONTENT_FIELDS = {"text", "refusal", "arguments", "input"};
 
     private ResponsesContentDetector() {
     }
@@ -143,6 +172,11 @@ public final class ResponsesContentDetector {
      * 因此判据按<strong>字段名</strong>而非事件名：字段名在各类事件里含义稳定，
      * 而事件名会随协议演进增加（官方已有 62 个）。
      *
+     * <p><strong>三类载荷都有定稿形态，不只正文。</strong>工具参数同样分
+     * {@code function_call_arguments.delta}（逐片）与 {@code .done}（一次发全）。
+     * 只认正文的定稿字段、把工具参数漏在外面，等于上面这条只做了一半 ——
+     * 四个定稿字段现已汇总在 {@link #FINALIZED_CONTENT_FIELDS}。
+     *
      * @param eventData SSE data 字段的原始内容
      * @return 该事件带来了正文 / 思考链 / 工具调用之一返回 true；解析失败返回 true（保守放行）
      */
@@ -157,7 +191,8 @@ public final class ResponsesContentDetector {
                 return false;
             }
             // 位置一：内容直接摊在事件顶层。三类载荷的判据相同（内容字段非空），
-            // 故不按事件名分派 —— 增量事件给 delta、定稿事件给 text/refusal。
+            // 故不按事件名分派 —— 增量事件给 delta，定稿事件给 text / refusal
+            // （正文）或 arguments / input（工具参数）。
             if (carrierHasContent(root)) {
                 return true;
             }
@@ -166,7 +201,8 @@ public final class ResponsesContentDetector {
                 return true;
             }
             // 位置三：output_item.added / .done 携带完整 item。工具调用在此处
-            // name 已确定，算实质载荷 —— 与另两侧「tool_calls 含非空元素即算」同口径。
+            // name 或参数任一已确定即算实质载荷 —— 与另两侧「tool_calls 含非空元素
+            // 即算」同口径。
             if ("response.output_item.added".equals(type)
                     || "response.output_item.done".equals(type)) {
                 return outputItemHasPayload(root.get("item"));
@@ -207,7 +243,7 @@ public final class ResponsesContentDetector {
         if (carrier == null || !carrier.isObject()) {
             return false;
         }
-        return hasDeltaContent(carrier) || hasFinalizedText(carrier);
+        return hasDeltaContent(carrier) || hasFinalizedContent(carrier);
     }
 
     /**
@@ -232,12 +268,12 @@ public final class ResponsesContentDetector {
         return delta.isObject() && !delta.isEmpty();
     }
 
-    /** 载体是否带非空的定稿文本（{@link #FINALIZED_TEXT_FIELDS} 任一）。 */
-    private static boolean hasFinalizedText(JsonNode carrier) {
+    /** 载体是否带非空的定稿内容（{@link #FINALIZED_CONTENT_FIELDS} 任一）。 */
+    private static boolean hasFinalizedContent(JsonNode carrier) {
         if (carrier == null || !carrier.isObject()) {
             return false;
         }
-        for (String field : FINALIZED_TEXT_FIELDS) {
+        for (String field : FINALIZED_CONTENT_FIELDS) {
             if (isNonBlank(text(carrier, field))) {
                 return true;
             }
@@ -286,12 +322,18 @@ public final class ResponsesContentDetector {
             // 没有任何输出」的响应被判成正常。
             case ITEM_REASONING -> arrayHasContent(item.get("summary"))
                     || arrayHasContent(item.get("content"));
-            // 工具调用：name 或 arguments 任一非空即算。
+            // 工具调用：name 或参数任一非空即算。
             //
-            // arguments 也算是必要的：存在只发 arguments 增量而 item 声明里 name 为空的
-            // 上游（调研中 new-api 为此写了 pendingArgs 兜底），只认 name 会漏判。
+            // 参数也算是必要的：存在只发参数而 item 声明里 name 为空的上游
+            // （调研中 new-api 为此写了 pendingArgs 兜底），只认 name 会漏判。
+            //
+            // 两种工具项的参数字段名不同，因此委派给 hasFinalizedContent 而非
+            // 写死 `arguments`：官方 {@code CustomToolCall object { call_id, input, name }}
+            // 用的是 `input`。只认 `arguments` 时，一份只带 `input` 的 custom_tool_call
+            // 会被判空 —— 这一支曾因为测试样本带了 `name`（走 name 分支就结束）
+            // 而一直是假绿。
             case ITEM_FUNCTION_CALL, ITEM_CUSTOM_TOOL_CALL ->
-                    isNonBlank(text(item, "name")) || isNonBlank(text(item, "arguments"));
+                    isNonBlank(text(item, "name")) || hasFinalizedContent(item);
             // 其余 item 类型（web_search_call、file_search_call 等）是工具执行的痕迹，
             // 其结果已并入文本输出，本身不算独立载荷 —— 与 sub2api 的处理一致。
             default -> false;
