@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.api.openai;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
@@ -362,34 +363,143 @@ public class ResponsesController {
                 .body(errorBody("无法连接到上游服务"));
     }
 
-    /** 构造流式错误事件的 body，透传上游错误体。 */
+    /**
+     * 构造流式错误<strong>事件</strong>的 body。
+     *
+     * <h2>与非流式刻意不共用同一个 JSON 骨架</h2>
+     * 非流式的错误是一个普通 HTTP 响应体，用 Chat 形态
+     * （{@code {"error":{...}}}）合理 —— 两者同为 OpenAI 系，客户端错误解析代码通常共用。
+     * 但流式的错误是一个<strong>协议事件</strong>，得守事件的契约：Responses 客户端是
+     * 事件状态机，靠 {@code type} 分派。本方法上方那段 {@code map} 正是在把 JSON 的
+     * {@code type} 回填到 SSE 的 {@code event:} 行 —— 而 Chat 形态的错误体<strong>顶层
+     * 没有 {@code type}</strong>，只认 JSON 的客户端会把这帧当成无法分派的脏数据。
+     *
+     * <p>症状因此不是 400/502，而是<strong>流挂住、界面转圈不动</strong> ——
+     * 错误信息其实已经送到，只是客户端不认。排查时极易误判成超时或网络问题。
+     *
+     * <p>此前这里直接调 {@code errorBody}，就是踩在「一个方法服务两条契约不同的路」上。
+     *
+     * @see #streamErrorBody(String) 官方 {@code ResponseErrorEvent} 的形态
+     */
     private String errorEventBody(Throwable error, String model) {
         ProtocolTranslationNotSupportedException protocolException = findProtocolException(error);
         if (protocolException != null) {
             log.warn("协议不可用 [{}]: {}", model, protocolException.getMessage());
-            return errorBody(protocolException.getMessage());
+            return streamErrorBody(protocolException.getMessage());
         }
         NoSupportedProtocolException noProtocol = findNoSupportedProtocolException(error);
         if (noProtocol != null) {
             log.warn("供应商未配置任何协议 [{}]: {}", model, noProtocol.getMessage());
-            return errorBody(noProtocol.getMessage());
+            return streamErrorBody(noProtocol.getMessage());
         }
         WebClientResponseException responseException = findWebResponseException(error);
         if (responseException != null) {
+            String upstreamBody = responseException.getResponseBodyAsString();
             log.warn("上游 API 返回错误 [{}] {}: {}", model,
-                    responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
-            return responseException.getResponseBodyAsString();
+                    responseException.getStatusCode().value(), upstreamBody);
+            // 上游原文优先，但必须能被状态机分派 —— 直连 Responses 上游的 4xx 通常是
+            // REST 错误体（Chat 形态、顶层无 type），原样下发等于制造一帧脏数据。
+            // 已是合法 error 事件的（少数上游把 SSE 错误帧当响应体返回）则原样透传，
+            // 那才是最准确的信息。
+            return isResponsesErrorEvent(upstreamBody)
+                    ? upstreamBody
+                    : streamErrorBody(upstreamMessageOf(upstreamBody, responseException));
         }
         log.warn("上游 API 调用失败 [{}]: {}", model, error.getMessage());
-        return errorBody("无法连接到上游服务");
+        return streamErrorBody("无法连接到上游服务");
     }
 
     /**
-     * Responses 风格的错误体。
+     * 官方 {@code ResponseErrorEvent} 形态的错误事件体。
+     *
+     * <p>字段照官方定义逐字写 —— {@code ResponseErrorEvent object { code, message,
+     * param, sequence_number, type }}，且 {@code type} 恒为 {@code "error"}。
+     * 注意它是<strong>扁平</strong>结构，不是 Chat 那样把内容包进一个 {@code error}
+     * 对象里，也不是 Anthropic 那样「顶层 type + 嵌套 error」。三条线路的错误形态
+     * 两两不同，这就是不能共用骨架的根据。
+     *
+     * <p>{@code code} 与 {@code param} 按官方定义可为 null，本地错误无从填充，
+     * 显式写 null 而非省略 —— 客户端按定义读这两个键时，缺键与 null 的处理可能不同。
+     *
+     * <p>不带 {@code sequence_number}：那是上游对自己事件流的编号，本地生成的错误帧
+     * 没有真实序号可填，编一个反而会与上游已发出的编号冲突。官方把它列为必有字段，
+     * 但缺一个编号比给一个假编号安全 —— 客户端拿它做去重或排序时，假值会造成错序。
+     */
+    private String streamErrorBody(String message) {
+        // 走序列化而不拼字符串：理由同 errorBody —— message 内容不可控。
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("type", "error");
+        body.put("code", null);
+        body.put("message", message);
+        body.put("param", null);
+        try {
+            return objectMapper.writeValueAsString(body);
+        } catch (Exception exception) {
+            return "{\"type\":\"error\",\"code\":null,\"message\":\"上游调用失败\",\"param\":null}";
+        }
+    }
+
+    /** 上游错误体是否已经是一帧合法的 Responses {@code error} 事件。 */
+    private boolean isResponsesErrorEvent(String body) {
+        if (body == null || body.isBlank()) {
+            return false;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(body);
+            return root.isObject() && "error".equals(text(root, "type"));
+        } catch (Exception exception) {
+            return false;
+        }
+    }
+
+    /**
+     * 从上游错误体里取出可读消息，取不到时退回状态码描述。
+     *
+     * <p>上游原文不能整体丢弃 —— 它往往是唯一说明「为什么失败」的信息
+     * （余额不足、模型不存在、限流）。这里把它塞进符合协议的外壳里，
+     * 既让客户端能分派，又不丢诊断信息。
+     */
+    private String upstreamMessageOf(String body, WebClientResponseException exception) {
+        int status = exception.getStatusCode().value();
+        if (body == null || body.isBlank()) {
+            return "上游返回错误 " + status;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(body);
+            // Chat / Responses 形态：{"error":{"message":...}}；也兼容顶层 message。
+            String message = text(root.path("error"), "message");
+            if (message == null) {
+                message = text(root, "message");
+            }
+            if (message != null && !message.isBlank()) {
+                return message;
+            }
+        } catch (Exception exception1) {
+            // 非 JSON（HTML 错误页等）：原文可能很长且不可读，只带状态码更有用。
+        }
+        return "上游返回错误 " + status;
+    }
+
+    /** 读一个字符串字段；非对象或非文本返回 null。 */
+    private static String text(JsonNode node, String field) {
+        if (node == null || !node.isObject()) {
+            return null;
+        }
+        JsonNode value = node.get(field);
+        return value != null && value.isTextual() ? value.asText() : null;
+    }
+
+    /**
+     * <strong>非流式</strong>的错误响应体。
      *
      * <p>结构与 Chat 的 {@code {"error":{"message":...,"type":...}}} 相同 ——
      * 两者同为 OpenAI 系，客户端的错误解析代码通常共用。因此这里<strong>不</strong>照抄
      * Anthropic 那个外层多一个 {@code "type":"error"} 的形态。
+     *
+     * <p><strong>流式不要复用本方法</strong>：那条路要的是官方
+     * {@code ResponseErrorEvent}（扁平、顶层带 {@code type}），见
+     * {@link #streamErrorBody(String)}。这两条路的契约不同，共用会让流式帧无法被
+     * 事件状态机分派。
      */
     private String errorBody(String message) {
         // 走序列化而不拼字符串：message 可能来自异常消息（如协议不可用那条），

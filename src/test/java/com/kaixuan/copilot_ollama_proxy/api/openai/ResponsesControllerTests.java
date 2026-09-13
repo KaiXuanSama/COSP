@@ -21,6 +21,7 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -364,20 +365,105 @@ class ResponsesControllerTests {
          *
          * <p>流式响应的状态码在第一帧就提交了，之后再改状态码没有意义；
          * 客户端只能通过事件名识别失败。
+         *
+         * <h2>必须同时断言 JSON 顶层的 {@code type}</h2>
+         * 只断言 SSE 的 {@code event:} 名是不够的 —— 那正是这条用例此前放过一个缺陷的
+         * 原因：错误体当时是 Chat 形态（{@code {"error":{...}}}、顶层无 {@code type}），
+         * 而 Responses 客户端是事件状态机、靠 JSON 的 {@code type} 分派。
+         * 症状是流挂住而非报错，会被误判成超时。
          */
         @Test
-        void streamErrorIsSentAsErrorEvent() {
+        void streamErrorIsSentAsErrorEvent() throws Exception {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
                     .willReturn(Flux.error(new ProtocolTranslationNotSupportedException(
                             "relay-x", WireProtocol.RESPONSES, WireProtocol.MESSAGES)));
 
             List<ServerSentEvent<String>> events = streamEvents(streamRequest());
 
-            assertThat(events).singleElement()
-                    .satisfies(event -> {
-                        assertThat(event.event()).isEqualTo("error");
-                        assertThat(event.data()).contains("relay-x");
-                    });
+            assertThat(events).hasSize(1);
+            ServerSentEvent<String> event = events.get(0);
+            assertThat(event.event()).isEqualTo("error");
+
+            JsonNode body = new ObjectMapper().readTree(event.data());
+            // 官方 ResponseErrorEvent 是扁平结构且 type 恒为 "error"。
+            assertThat(body.path("type").asText()).isEqualTo("error");
+            assertThat(body.path("message").asText()).contains("relay-x");
+            // 不是 Chat 形态：内容不该被包进 error 对象里。
+            assertThat(body.has("error")).isFalse();
+            // code / param 按官方定义存在且可为 null —— 缺键与 null 对客户端可能不等价。
+            assertThat(body.has("code")).isTrue();
+            assertThat(body.path("code").isNull()).isTrue();
+            assertThat(body.has("param")).isTrue();
+        }
+
+        /**
+         * 上游 HTTP 错误的原文消息要保留，但外壳必须是合法 error 事件。
+         *
+         * <p>上游 4xx 体通常是 REST 错误（Chat 形态、顶层无 {@code type}）。原样下发
+         * 等于制造一帧状态机认不出的脏数据；整体丢弃则丢掉唯一说明「为什么失败」的
+         * 信息（余额不足、模型不存在、限流）。因此把消息搬进符合协议的外壳里。
+         */
+        @Test
+        void streamUpstreamErrorKeepsMessageInsideProtocolShape() throws Exception {
+            given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                    .willReturn(Flux.error(WebClientResponseException.create(
+                            402, "Payment Required", HttpHeaders.EMPTY,
+                            "{\"error\":{\"message\":\"余额不足\",\"type\":\"insufficient_quota\"}}"
+                                    .getBytes(StandardCharsets.UTF_8),
+                            StandardCharsets.UTF_8)));
+
+            List<ServerSentEvent<String>> events = streamEvents(streamRequest());
+
+            assertThat(events).hasSize(1);
+            JsonNode body = new ObjectMapper().readTree(events.get(0).data());
+            assertThat(body.path("type").asText()).isEqualTo("error");
+            assertThat(body.path("message").asText()).isEqualTo("余额不足");
+        }
+
+        /**
+         * 上游已给出合法 error 事件时原样透传。
+         *
+         * <p>少数上游把 SSE 错误帧当响应体返回。那份原文比本地重建的更准确
+         * （带 {@code code} / {@code param}），且它本就能被状态机分派，不该再包一层。
+         */
+        @Test
+        void streamUpstreamErrorEventIsPassedThroughVerbatim() throws Exception {
+            String upstream = "{\"type\":\"error\",\"code\":\"rate_limit_exceeded\","
+                    + "\"message\":\"slow down\",\"param\":null,\"sequence_number\":7}";
+            given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                    .willReturn(Flux.error(WebClientResponseException.create(
+                            429, "Too Many Requests", HttpHeaders.EMPTY,
+                            upstream.getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8)));
+
+            List<ServerSentEvent<String>> events = streamEvents(streamRequest());
+
+            assertThat(events).hasSize(1);
+            JsonNode body = new ObjectMapper().readTree(events.get(0).data());
+            assertThat(body.path("code").asText()).isEqualTo("rate_limit_exceeded");
+            // 上游自己的序号保留 —— 本地重建时刻意不编造这个字段。
+            assertThat(body.path("sequence_number").asInt()).isEqualTo(7);
+        }
+
+        /**
+         * 非 JSON 的上游错误体（HTML 错误页等）退回状态码描述。
+         *
+         * <p>原文可能是几 KB 的 HTML，塞进 message 里对客户端毫无用处，
+         * 还会把一帧事件撑得极大。
+         */
+        @Test
+        void streamNonJsonUpstreamErrorFallsBackToStatus() throws Exception {
+            given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                    .willReturn(Flux.error(WebClientResponseException.create(
+                            502, "Bad Gateway", HttpHeaders.EMPTY,
+                            "<html>502 Bad Gateway</html>".getBytes(StandardCharsets.UTF_8),
+                            StandardCharsets.UTF_8)));
+
+            List<ServerSentEvent<String>> events = streamEvents(streamRequest());
+
+            JsonNode body = new ObjectMapper().readTree(events.get(0).data());
+            assertThat(body.path("type").asText()).isEqualTo("error");
+            assertThat(body.path("message").asText()).contains("502");
+            assertThat(body.path("message").asText()).doesNotContain("<html>");
         }
 
         /** 错误体里的引号与换行不能把错误体本身变成非法 JSON。 */
