@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.provider.generic.openai;
 
-import java.util.Set;
+import java.util.Map;
 
 /**
  * OpenAI Responses 流的<strong>终态事件</strong>清单。
@@ -33,23 +33,57 @@ import java.util.Set;
  * <p><strong>宁可多收一个也不要漏</strong>：多收的代价是一个不该 finalize 的事件触发了
  * finalize（而 CAS 去重让重复 finalize 无害），漏收的代价是流式调用在前端永远显示
  * 「进行中」，直到上游关闭连接才由兜底层补上。
+ *
+ * <h2>「流结束了」与「结局是什么」是两个问题</h2>
+ * {@link #isTerminal} 只回答前者。七个事件里有三种截然不同的结局，
+ * 由 {@link #outcomeOf} 回答后者 —— 早先控制器只问了前一个问题就无条件发 COMPLETED，
+ * 于是上游明确说「我失败了」（{@code response.failed}）时前端显示的是「完成」。
+ *
+ * <p>这个能力是 Responses <strong>独有</strong>的：Chat 只有 {@code [DONE]}、
+ * Anthropic 只有 {@code message_stop}，从终止标记本身读不出结局，只能靠异常路径判定。
+ * Responses 把结局编进了事件名，不利用等于主动丢弃信息。
  */
 public final class ResponsesStreamEvents {
 
     /**
-     * 终态事件类型集合。
+     * 一条流的结局。
      *
-     * <p>用 {@code Set} 而非逐个 {@code equals}：清单有七项且还可能增加，
-     * 而这里要的正是「集合包含判断」。
+     * <p>与 {@code CallPhase} 刻意不是同一个类型：本类在 {@code provider} 层，
+     * 而 {@code CallPhase} 是对前端的生命周期契约。中间留一层映射，
+     * 让「协议怎么表达结局」与「界面怎么显示状态」各自演进。
      */
-    private static final Set<String> TERMINAL_TYPES = Set.of(
-            "response.completed",
-            "response.done",
-            "response.incomplete",
-            "response.failed",
-            "response.cancelled",
-            "response.canceled",
-            "error");
+    public enum Outcome {
+        /** 正常完成或被截断 —— 都产出了内容，对用户是「完成」。 */
+        SUCCESS,
+        /** 上游侧执行失败或报错。 */
+        FAILURE,
+        /** 上游侧取消。 */
+        CANCELLATION,
+    }
+
+    /**
+     * 终态事件类型 → 结局。
+     *
+     * <p>用 {@code Map} 而非 {@code switch}：清单要同时支撑「是否终态」的集合判断
+     * （{@link #isTerminal} 读它的键集）与结局查询，两处共用一份数据才不会漂移 ——
+     * 分成两份的症状是「新增一个终态事件只加进了其中一处」，而那不会报错。
+     */
+    private static final Map<String, Outcome> TERMINAL_OUTCOMES = Map.of(
+            // 正常完成，官方主路径。
+            "response.completed", Outcome.SUCCESS,
+            // 部分兼容端点用的简写形态。
+            "response.done", Outcome.SUCCESS,
+            // 达到 token 上限或被截断 —— 内容不完整但确实产出了，不是失败。
+            // 归入 SUCCESS 与 Chat 侧 `finish_reason: "length"` 同口径：
+            // 那边也不因截断而标失败。
+            "response.incomplete", Outcome.SUCCESS,
+            // 上游侧执行失败。
+            "response.failed", Outcome.FAILURE,
+            // 无 `response.` 前缀的错误事件。
+            "error", Outcome.FAILURE,
+            // 两种拼法都收，实测有上游只发其中一种。
+            "response.cancelled", Outcome.CANCELLATION,
+            "response.canceled", Outcome.CANCELLATION);
 
     private ResponsesStreamEvents() {
     }
@@ -60,6 +94,23 @@ public final class ResponsesStreamEvents {
      * @param type 事件的 {@code type} 字段；null 返回 false
      */
     public static boolean isTerminal(String type) {
-        return type != null && TERMINAL_TYPES.contains(type);
+        return type != null && TERMINAL_OUTCOMES.containsKey(type);
+    }
+
+    /**
+     * 该终态事件表示的结局。
+     *
+     * <p>非终态事件与 null 返回 {@link Outcome#SUCCESS}：调用方只在终态分支调用本方法，
+     * 而流被上游<strong>直接关闭</strong>（一个终态事件都没发）时兜底层拿不到事件类型 ——
+     * 那种情况按成功处理，与 Chat / Anthropic 的兜底层一致：连接正常关闭且已有内容，
+     * 没有任何证据表明它失败了。
+     *
+     * @param type 事件的 {@code type} 字段
+     */
+    public static Outcome outcomeOf(String type) {
+        if (type == null) {
+            return Outcome.SUCCESS;
+        }
+        return TERMINAL_OUTCOMES.getOrDefault(type, Outcome.SUCCESS);
     }
 }

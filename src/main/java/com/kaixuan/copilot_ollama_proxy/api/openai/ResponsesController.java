@@ -61,6 +61,12 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@code canceled} 两种拼法实测都存在。清单集中在 {@link ResponsesStreamEvents} ——
  * 那里也是空响应判定的终态来源，两处共用一份避免漂移。
  *
+ * <p>这个差异同时是<strong>信息优势</strong>：结局被编进了事件名，因此本端点能把
+ * 「流结束了」与「结局是什么」分开回答，按 {@code Outcome} 分派
+ * {@code COMPLETED} / {@code FAILED} / {@code ABORTED}（见 {@code finalizeStream}）。
+ * 另两条线路从终止标记本身读不出结局，只能靠异常路径判定 —— 那不是口径分叉，
+ * 是它们没有这份信息。
+ *
  * <h2>虚拟模型不在此端点提供</h2>
  * {@code nano_llm} / {@code readme} 是 Chat 端点的引导机制（供 Copilot 在无供应商时
  * 看到提示），Responses 客户端不需要，故本端点不做拦截 —— 少一处需要同步维护的分支。
@@ -188,7 +194,9 @@ public class ResponsesController {
                     recordStreamUsage(event, usage);
                     // Layer 1：终态事件是协议终止标记，不计入事件数。
                     if (isTerminalEvent(event)) {
-                        finalizeCompletion(requestId, model, eventCount.get(), completed, usage);
+                        // 结局取自事件名 —— response.failed 不能显示成「完成」。
+                        finalizeStream(requestId, model, eventCount.get(), completed, usage,
+                                ResponsesStreamEvents.outcomeOf(extractEventType(event)));
                         return;
                     }
                     callLifecyclePublisher.publish(CallLifecycleEvent.of(
@@ -217,7 +225,10 @@ public class ResponsesController {
                         return;
                     }
                     // Layer 2：上游未发任何终态事件就关连接时靠这里兜底。
-                    finalizeCompletion(requestId, model, eventCount.get(), completed, usage);
+                    // 拿不到事件类型，只能按成功处理 —— 连接正常关闭且已有内容，
+                    // 没有任何证据表明它失败了（与 Chat / Anthropic 的兜底层同口径）。
+                    finalizeStream(requestId, model, eventCount.get(), completed, usage,
+                            ResponsesStreamEvents.Outcome.SUCCESS);
                 })
                 .onErrorResume(error -> {
                     if (isClientDisconnect(error)) {
@@ -252,19 +263,52 @@ public class ResponsesController {
     }
 
     /**
-     * 流式完成收尾：记录 usage 并发 COMPLETED。
+     * 流式收尾：记录 usage 并按结局发终态相位。
      *
      * <p>CAS 去重，保证 Layer 1 与 Layer 2 只有先到的那个生效。
+     *
+     * <h2>相位由结局决定，不是恒为 COMPLETED</h2>
+     * 早先本方法无条件发 {@code COMPLETED}，而 {@code isTerminalEvent} 对
+     * {@code response.failed} / {@code error} / {@code response.cancelled} 也返回 true ——
+     * 于是上游明确说「我失败了」，Toast 上显示的是「完成」。用户只能靠「回答是空的」
+     * 间接察觉，而 {@code FAILED} 当时只在<strong>抛异常</strong>时才发（即只有网络层
+     * 的错误会正确标红，上游侧的执行失败不会）。
+     *
+     * <p>「流结束了」与「结局是什么」是两个事实，混在一处就会丢掉后者。
+     *
+     * <h2>usage 无论结局都记</h2>
+     * 失败与取消同样已经消耗了 token（上游已经算过钱），跳过记账会让统计与账单对不上。
+     * 这与 {@code api_call_log} 保留失败调用是同一个取向。
      */
-    private void finalizeCompletion(String requestId, String model, int finalEvents,
-                                    AtomicBoolean completed, AtomicReference<UsageTokens> usage) {
+    private void finalizeStream(String requestId, String model, int finalEvents,
+                               AtomicBoolean completed, AtomicReference<UsageTokens> usage,
+                               ResponsesStreamEvents.Outcome outcome) {
         if (!completed.compareAndSet(false, true)) {
             return;
         }
         UsageTokens tokens = usage.get();
         apiUsageCollector.record(tokens.promptOrZero(), tokens.completionOrZero());
         callLifecyclePublisher.publish(
-                CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, true, finalEvents));
+                CallLifecycleEvent.of(requestId, phaseOf(outcome), model, true, finalEvents));
+    }
+
+    /**
+     * 结局 → 生命周期相位。
+     *
+     * <p>取消映射到 {@link CallPhase#ABORTED} 而非 {@link CallPhase#CANCELED}：
+     * 后者的语义是「下游 Copilot 主动断连」（本控制器在 {@code doOnCancel} /
+     * {@code isClientDisconnect} 分支用它），而这里是<strong>上游侧</strong>取消了响应。
+     * 两者都不是错误，但成因相反 —— 混用会让「谁取消的」这个信息在 Toast 上消失。
+     *
+     * <p>{@code ABORTED} 原本描述的是「管理员在后台主动取消」，同属「非下游发起的中止」，
+     * 语义最接近。若日后要区分这两种中止，应新增相位而不是复用 CANCELED。
+     */
+    private static CallPhase phaseOf(ResponsesStreamEvents.Outcome outcome) {
+        return switch (outcome) {
+            case SUCCESS -> CallPhase.COMPLETED;
+            case FAILURE -> CallPhase.FAILED;
+            case CANCELLATION -> CallPhase.ABORTED;
+        };
     }
 
     /**

@@ -622,5 +622,72 @@ class ResponsesContentDetectorTests {
         void null不是终态() {
             assertThat(ResponsesStreamEvents.isTerminal(null)).isFalse();
         }
+
+        /**
+         * 每个终态事件都映射到正确的结局。
+         *
+         * <h2>为何清单与结局必须是同一份数据</h2>
+         * 「流结束了」与「结局是什么」是两个问题。控制器早先只问了前者就无条件发
+         * {@code COMPLETED}，于是 {@code response.failed} 在界面上显示成「完成」。
+         *
+         * <p>本用例逐个钉住映射，而不是只测其中一两个：{@code getOrDefault} 的兜底是
+         * {@code SUCCESS}，所以<strong>任何漏进映射表的终态事件都会静默显示成「完成」</strong>
+         * —— 与修复前的症状一模一样。逐个断言是唯一能挡住「新增终态只加进了 isTerminal」的写法。
+         */
+        @Test
+        void 终态事件映射到正确结局() {
+            assertThat(ResponsesStreamEvents.outcomeOf("response.completed"))
+                    .isEqualTo(ResponsesStreamEvents.Outcome.SUCCESS);
+            assertThat(ResponsesStreamEvents.outcomeOf("response.done"))
+                    .isEqualTo(ResponsesStreamEvents.Outcome.SUCCESS);
+            // 截断算完成：内容不完整但确实产出了，与 Chat 侧 finish_reason:"length" 同口径。
+            assertThat(ResponsesStreamEvents.outcomeOf("response.incomplete"))
+                    .isEqualTo(ResponsesStreamEvents.Outcome.SUCCESS);
+
+            assertThat(ResponsesStreamEvents.outcomeOf("response.failed"))
+                    .isEqualTo(ResponsesStreamEvents.Outcome.FAILURE);
+            assertThat(ResponsesStreamEvents.outcomeOf("error"))
+                    .isEqualTo(ResponsesStreamEvents.Outcome.FAILURE);
+
+            // 两种拼法必须走同一条分支，否则少收的那种会掉进兜底显示成「完成」。
+            assertThat(ResponsesStreamEvents.outcomeOf("response.cancelled"))
+                    .isEqualTo(ResponsesStreamEvents.Outcome.CANCELLATION);
+            assertThat(ResponsesStreamEvents.outcomeOf("response.canceled"))
+                    .isEqualTo(ResponsesStreamEvents.Outcome.CANCELLATION);
+        }
+
+        /**
+         * 清单与结局映射覆盖同一组事件。
+         *
+         * <p>两者由同一个 {@code Map} 派生，本用例钉住这个实现选择：拆成两份数据的症状是
+         * 「新增一个终态事件只加进了其中一处」，而那不会报错 —— 漏进结局表的事件
+         * 会掉进 {@code SUCCESS} 兜底，正是修复前的形态。
+         */
+        @Test
+        void 每个终态事件都有非兜底的结局() {
+            for (String type : new String[] {
+                    "response.completed", "response.done", "response.incomplete",
+                    "response.failed", "response.cancelled", "response.canceled", "error"}) {
+                // 非 SUCCESS 的三个直接证明有显式映射；SUCCESS 那几个由上一条用例逐个钉住。
+                assertThat(ResponsesStreamEvents.isTerminal(type))
+                        .as("%s 必须同时在清单里", type)
+                        .isTrue();
+            }
+        }
+
+        /**
+         * 非终态与 null 取到 {@code SUCCESS} 兜底。
+         *
+         * <p>这是刻意的：调用方只在终态分支调用 {@code outcomeOf}，而流被上游直接关闭
+         * （一个终态事件都没发）时兜底层拿不到事件类型 —— 那种情况按成功处理，
+         * 与 Chat / Anthropic 的兜底层一致。默认成 FAILURE 会让所有省略终态事件的上游被误标。
+         */
+        @Test
+        void 非终态与null取成功兜底() {
+            assertThat(ResponsesStreamEvents.outcomeOf(null))
+                    .isEqualTo(ResponsesStreamEvents.Outcome.SUCCESS);
+            assertThat(ResponsesStreamEvents.outcomeOf("response.output_text.delta"))
+                    .isEqualTo(ResponsesStreamEvents.Outcome.SUCCESS);
+        }
     }
 }

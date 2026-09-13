@@ -256,14 +256,19 @@ class ResponsesControllerTests {
         }
 
         /**
-         * {@code response.failed} 也是终态。
+         * {@code response.failed} 收尾成 {@code FAILED}，而不是「完成」。
          *
-         * <p>只认 {@code response.completed} 会让失败的流永远收不到收尾 ——
-         * Toast 悬挂在「已产生 N 个事件」。清单集中在 {@code ResponsesStreamEvents}，
-         * 那里也是空响应判定的终态来源。
+         * <h2>这条用例此前把缺陷钉成了正确行为</h2>
+         * 它原名 {@code failedEventIsAlsoTerminal}，断言的是
+         * {@code phase == COMPLETED} —— 出发点没错（失败的流也必须收尾，否则 Toast
+         * 悬挂在「已产生 N 个事件」），但顺手把「结局显示成完成」也固定下来了。
+         * 上游明确说「我失败了」，界面却显示成功，用户只能靠「回答是空的」间接察觉。
+         *
+         * <p>两个断言现在分开表达：<strong>要收尾</strong>（不悬挂），
+         * 且<strong>结局要对</strong>（不是 COMPLETED）。
          */
         @Test
-        void failedEventIsAlsoTerminal() {
+        void failedEventFinalizesAsFailed() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
                     .willReturn(Flux.just(
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
@@ -271,9 +276,97 @@ class ResponsesControllerTests {
 
             List<CallLifecycleEvent> lifecycle = collectLifecycle(() -> streamEvents(streamRequest()));
 
-            assertThat(lifecycle).filteredOn(e -> e.phase() == CallPhase.COMPLETED)
+            assertThat(lifecycle).filteredOn(e -> e.phase() == CallPhase.FAILED)
                     .singleElement()
                     .satisfies(e -> assertThat(e.chunkCount()).isEqualTo(1));
+            // 不能同时发 COMPLETED —— 那会让前端按先到的那个渲染，结果不确定。
+            assertThat(lifecycle).noneMatch(e -> e.phase() == CallPhase.COMPLETED);
+        }
+
+        /** 无前缀的 {@code error} 事件同样收尾成 {@code FAILED}。 */
+        @Test
+        void bareErrorEventFinalizesAsFailed() {
+            given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                    .willReturn(Flux.just(
+                            "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
+                            "{\"type\":\"error\",\"message\":\"upstream blew up\"}"));
+
+            List<CallLifecycleEvent> lifecycle = collectLifecycle(() -> streamEvents(streamRequest()));
+
+            assertThat(lifecycle).anyMatch(e -> e.phase() == CallPhase.FAILED);
+            assertThat(lifecycle).noneMatch(e -> e.phase() == CallPhase.COMPLETED);
+        }
+
+        /**
+         * 上游取消收尾成 {@code ABORTED}，不是 {@code CANCELED}。
+         *
+         * <p>{@code CANCELED} 的语义是「下游 Copilot 主动断连」，这里是<strong>上游侧</strong>
+         * 取消。两者都不是错误，但成因相反 —— 混用会让「谁取消的」这个信息消失。
+         */
+        @Test
+        void cancelledEventFinalizesAsAborted() {
+            given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                    .willReturn(Flux.just(
+                            "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
+                            "{\"type\":\"response.cancelled\",\"response\":{\"id\":\"r\"}}"));
+
+            List<CallLifecycleEvent> lifecycle = collectLifecycle(() -> streamEvents(streamRequest()));
+
+            assertThat(lifecycle).anyMatch(e -> e.phase() == CallPhase.ABORTED);
+            assertThat(lifecycle).noneMatch(e -> e.phase() == CallPhase.COMPLETED);
+        }
+
+        /**
+         * 另一种拼法 {@code response.canceled} 同样归入取消。
+         *
+         * <p>实测有上游只发其中一种。两种拼法必须走同一条分支，
+         * 否则少收的那种会掉进 SUCCESS 兜底而显示成「完成」。
+         */
+        @Test
+        void alternateCanceledSpellingFinalizesAsAborted() {
+            given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                    .willReturn(Flux.just("{\"type\":\"response.canceled\",\"response\":{\"id\":\"r\"}}"));
+
+            List<CallLifecycleEvent> lifecycle = collectLifecycle(() -> streamEvents(streamRequest()));
+
+            assertThat(lifecycle).anyMatch(e -> e.phase() == CallPhase.ABORTED);
+        }
+
+        /**
+         * 截断（{@code response.incomplete}）算完成，不算失败。
+         *
+         * <p>达到 token 上限时内容不完整但确实产出了。与 Chat 侧
+         * {@code finish_reason: "length"} 同口径 —— 那边也不因截断而标失败。
+         * 标成 FAILED 会让「问了个需要长回答的问题」看起来像上游故障。
+         */
+        @Test
+        void incompleteEventFinalizesAsCompleted() {
+            given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                    .willReturn(Flux.just(
+                            "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
+                            "{\"type\":\"response.incomplete\",\"response\":{\"id\":\"r\"}}"));
+
+            List<CallLifecycleEvent> lifecycle = collectLifecycle(() -> streamEvents(streamRequest()));
+
+            assertThat(lifecycle).anyMatch(e -> e.phase() == CallPhase.COMPLETED);
+            assertThat(lifecycle).noneMatch(e -> e.phase() == CallPhase.FAILED);
+        }
+
+        /**
+         * 上游一个终态事件都不发就关连接时，兜底层按成功处理。
+         *
+         * <p>Layer 2 拿不到事件类型，无从判断结局。按成功处理与 Chat / Anthropic 的
+         * 兜底层同口径：连接正常关闭且已有内容，没有任何证据表明它失败了。
+         * 若默认成 FAILED，所有省略终态事件的上游都会被误标。
+         */
+        @Test
+        void streamWithoutTerminalEventFallsBackToCompleted() {
+            given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                    .willReturn(Flux.just("{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}"));
+
+            List<CallLifecycleEvent> lifecycle = collectLifecycle(() -> streamEvents(streamRequest()));
+
+            assertThat(lifecycle).anyMatch(e -> e.phase() == CallPhase.COMPLETED);
         }
     }
 
