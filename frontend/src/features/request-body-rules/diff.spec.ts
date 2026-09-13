@@ -226,5 +226,63 @@ describe('buildDiffTree', () => {
       expect(list?.children).toHaveLength(260)
       expect(list?.status).toBe('changed')
     })
+
+    /**
+     * 「无锚点」输入不能卡住界面。
+     *
+     * <h2>为什么数组级上限挡不住这种输入</h2>
+     * 每个元素都被改写时 LCS 一个锚点都找不到，<strong>整个数组落进同一个间隙</strong>，
+     * 于是配对次数是 n×m 而非 n。数组级的 200 在这里等于 40000 次配对 ——
+     * 实测修复前 n=200 要 547ms，而 `buildDiffTree` 在 `computed` 里同步执行，
+     * 那就是界面冻住半秒。修法两条：指纹只算一次（纯缓存），以及给间隙单独设上限。
+     *
+     * <p>断言耗时而非只断言「不抛错」：这个缺陷的唯一症状就是慢，
+     * 不设时间上限的用例对它完全没有约束力。阈值取 150ms 而非实测的 14ms ——
+     * CI 机器与本机性能差异可能有数倍，留足余量后仍能挡住 547ms 那一档。
+     */
+    it('每个元素都被改写时不退化成秒级', () => {
+      const messageAt = (index: number, marker: string) => ({
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        content: [
+          { type: 'text', text: `第 ${index} 条消息的正文内容，长度中等` },
+          { type: 'image_url', image_url: { url: `https://example.com/${index}.png` } },
+        ],
+        metadata: { seq: index, marker },
+      })
+      const original = { messages: Array.from({ length: 200 }, (_, i) => messageAt(i, 'a')) }
+      const current = { messages: Array.from({ length: 200 }, (_, i) => messageAt(i, 'b')) }
+
+      const start = performance.now()
+      const tree = buildDiffTree(original, current)
+      const elapsed = performance.now() - start
+
+      expect(elapsed).toBeLessThan(150)
+      // 结果仍要正确：200 个元素逐位配对，全部标 changed。
+      const messages = tree.children?.find((c) => c.key === 'messages')
+      expect(messages?.children).toHaveLength(200)
+      expect(messages?.children?.every((c) => c.status === 'changed')).toBe(true)
+    })
+
+    /**
+     * 间隙退回下标对齐后，锚点仍然生效。
+     *
+     * <p>间隙级上限只作用于<strong>那一段</strong>，不能连带让整个数组退化 ——
+     * 否则一个长改写段会毁掉它前后所有相等元素的对齐。
+     */
+    it('长改写段退化时不影响两端的锚点', () => {
+      const filler = (i: number, marker: string) => ({ id: i, marker })
+      const original = {
+        list: ['head', ...Array.from({ length: 80 }, (_, i) => filler(i, 'a')), 'tail'],
+      }
+      const current = {
+        list: ['head', ...Array.from({ length: 80 }, (_, i) => filler(i, 'b')), 'tail'],
+      }
+
+      const list = buildDiffTree(original, current).children?.find((c) => c.key === 'list')
+      // 首尾两个相等元素被锚定，不受中间那 80 个改写元素的退化影响。
+      expect(list?.children?.[0]?.status).toBe('same')
+      expect(list?.children?.[list.children.length - 1]?.status).toBe('same')
+      expect(list?.children).toHaveLength(82)
+    })
   })
 })

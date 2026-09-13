@@ -72,11 +72,16 @@ type AlignedPair =
   | { readonly original: null; readonly current: number }
 
 /**
- * 走对齐算法的数组规模上限，超过则退回按下标逐位对齐。
+ * 走对齐算法的<strong>数组级</strong>规模上限，超过则整个数组退回按下标逐位对齐。
  *
- * 两级对齐都要 O(n×m) 的 DP 表，而 diff 在每次预览输入变化时同步重算。请求体里的
- * 数组（`messages` / `tools` / `content`）实际都是十几到几十个元素，这个上限只是
- * 防住「粘贴一份几千条消息的会话」把界面卡住，正常路径永远走不到。
+ * <p>LCS 要 O(n×m) 的 DP 表，而 diff 在每次预览输入变化时同步重算（`computed` 里，
+ * 会冻住界面）。请求体里的数组（`messages` / `tools` / `content`）实际都是十几到
+ * 几十个元素，这个上限只防极端粘贴。
+ *
+ * <p><strong>它挡不住间隙级的开销</strong>：锚点一个都找不到时整个数组落进同一个
+ * 间隙，配对次数是 n×m 而不是 n。那一级由 {@link RANGE_ALIGN_LIMIT} 单独把关 ——
+ * 早先这里的注释声称「防住粘贴几千条消息」，而实测 200 条就要 547ms，
+ * 因为漏算了这一级。两级各有各的规模，不能靠一个数字管住。
  */
 const ARRAY_ALIGN_LIMIT = 200
 
@@ -108,10 +113,11 @@ function stableFingerprint(value: unknown): string {
  * 找出两侧完全相等的元素，作为对齐的锚点（最长公共子序列）。
  *
  * 返回的下标对严格递增，因此可以直接把数组切成若干互不重叠的间隙。
+ *
+ * @param left 左侧元素的指纹，由调用方算好传入（见 {@link alignArrayElements}）
+ * @param right 右侧元素的指纹
  */
-function findEqualAnchors(original: readonly unknown[], current: readonly unknown[]): ElementAnchor[] {
-  const left = original.map(stableFingerprint)
-  const right = current.map(stableFingerprint)
+function findEqualAnchors(left: readonly string[], right: readonly string[]): ElementAnchor[] {
   const rows = left.length
   const columns = right.length
 
@@ -151,9 +157,20 @@ function findEqualAnchors(original: readonly unknown[], current: readonly unknow
  * 只看结构骨架，不做递归展开：同为对象时算键名的 Jaccard 系数，同为数组时比长度，
  * 标量则用等值。理由是这里只需要「哪两个更可能是同一个元素」这个相对排序，
  * 而不是精确的编辑距离 —— 后者的代价与收益在预览这个场景上完全不成比例。
+ *
+ * <h2>指纹由调用方传入，不在这里算</h2>
+ * 本函数在 O(n×m) 的双层循环内被调用。此前它每次都现算两侧指纹（即完整递归序列化
+ * 两个嵌套对象），于是「无锚点」输入下 n=200 要 547ms —— 而 `buildDiffTree` 在
+ * `computed` 里同步执行，那就是界面冻住半秒。改成复用 {@link alignArrayElements}
+ * 已经算好的指纹后降到毫秒级，且<strong>行为完全不变</strong>（纯缓存）。
  */
-function similarity(a: unknown, b: unknown): number {
-  if (stableFingerprint(a) === stableFingerprint(b)) return 1
+function similarity(
+  a: unknown,
+  b: unknown,
+  fingerprintA: string,
+  fingerprintB: string,
+): number {
+  if (fingerprintA === fingerprintB) return 1
 
   const aIsObject = isPlainObject(a)
   const bIsObject = isPlainObject(b)
@@ -188,16 +205,34 @@ function similarity(a: unknown, b: unknown): number {
 const SIMILARITY_THRESHOLD = 0.5
 
 /**
+ * 单个间隙内走相似度配对的规模上限，超过则该间隙退回按下标配对。
+ *
+ * <h2>为何需要一个独立于 {@link ARRAY_ALIGN_LIMIT} 的上限</h2>
+ * 数组级上限挡不住这里：锚点一个都找不到时（每个元素都被改写），<strong>整个数组会
+ * 落进同一个间隙</strong>，于是数组级的 200 在这里等于 200×200 = 40000 次配对。
+ * 这正是「注释声称防住几千条、实测 200 条就卡半秒」的成因 —— 两级各有各的规模。
+ *
+ * <p>有锚点时间隙天然很小（相邻锚点之间通常只有一两个元素），所以这个上限只在
+ * 病态输入上生效。取 60 是因为 60×60 = 3600 次配对在指纹已缓存后是亚毫秒级，
+ * 而正常请求体的连续改写段远达不到这个长度。
+ */
+const RANGE_ALIGN_LIMIT = 60
+
+/**
  * 在锚点之间的间隙内配对：按相似度贪心取最像的一对，剩下的算删除或新增。
  *
  * <p>间隙内两侧元素两两都不相等（相等的已被锚点吃掉），所以这里要回答的是
  * 「哪些是改写、哪些是纯增删」。按下标硬配会在「删除与改写并存」时错位 ——
  * 例如原始 `[drop, {mode:a}]` 变成 `[{mode:b}]`，下标 0 会把 `drop` 配给
  * `{mode:b}` 并标成改写，真正被改的那个元素反而显示为删除。
+ *
+ * @param fingerprints 两侧元素的指纹，由 {@link alignArrayElements} 算好传入 ——
+ *                     在这个双层循环里现算会成为热点（见 {@link similarity}）
  */
 function alignRange(
   original: readonly unknown[],
   current: readonly unknown[],
+  fingerprints: { readonly left: readonly string[]; readonly right: readonly string[] },
   originalStart: number,
   originalEnd: number,
   currentStart: number,
@@ -208,11 +243,18 @@ function alignRange(
   const pendingCurrent: number[] = []
   for (let j = currentStart; j < currentEnd; j++) pendingCurrent.push(j)
 
+  // 病态间隙（无锚点时整个数组落进这里）退回下标配对：宁可高亮退化，不要卡住界面。
+  if (pendingOriginal.length > RANGE_ALIGN_LIMIT || pendingCurrent.length > RANGE_ALIGN_LIMIT) {
+    return alignRangeByIndex(pendingOriginal, pendingCurrent)
+  }
+
   // 所有跨侧组合按相似度降序；打平时靠下标之差更小的优先，让配对结果稳定可预期
   const candidates: Array<{ original: number; current: number; score: number }> = []
   for (const i of pendingOriginal) {
     for (const j of pendingCurrent) {
-      const score = similarity(original[i], current[j])
+      const score = similarity(
+        original[i], current[j], fingerprints.left[i], fingerprints.right[j],
+      )
       if (score >= SIMILARITY_THRESHOLD) candidates.push({ original: i, current: j, score })
     }
   }
@@ -256,7 +298,7 @@ function alignRange(
   return pairs
 }
 
-/** 超过规模上限时的退路：按下标逐位配对。 */
+/** 超过数组级规模上限时的退路：整个数组按下标逐位配对。 */
 function alignByIndex(original: readonly unknown[], current: readonly unknown[]): AlignedPair[] {
   const pairs: AlignedPair[] = []
   const span = Math.max(original.length, current.length)
@@ -264,6 +306,30 @@ function alignByIndex(original: readonly unknown[], current: readonly unknown[])
     if (i >= current.length) pairs.push({ original: i, current: null })
     else if (i >= original.length) pairs.push({ original: null, current: i })
     else pairs.push({ original: i, current: i })
+  }
+  return pairs
+}
+
+/**
+ * 超过间隙级规模上限时的退路：把这一段内的下标按位次配对。
+ *
+ * <p>与 {@link alignByIndex} 的区别是它作用在<strong>一段区间</strong>上，配的是
+ * 传入的两串下标（可能不从 0 开始），而不是整个数组。
+ */
+function alignRangeByIndex(
+  pendingOriginal: readonly number[],
+  pendingCurrent: readonly number[],
+): AlignedPair[] {
+  const pairs: AlignedPair[] = []
+  const span = Math.max(pendingOriginal.length, pendingCurrent.length)
+  for (let offset = 0; offset < span; offset++) {
+    if (offset >= pendingCurrent.length) {
+      pairs.push({ original: pendingOriginal[offset], current: null })
+    } else if (offset >= pendingOriginal.length) {
+      pairs.push({ original: null, current: pendingCurrent[offset] })
+    } else {
+      pairs.push({ original: pendingOriginal[offset], current: pendingCurrent[offset] })
+    }
   }
   return pairs
 }
@@ -278,26 +344,39 @@ function alignByIndex(original: readonly unknown[], current: readonly unknown[])
  *
  * <p>反过来也不能只用 LCS：LCS 只认「相等 / 不相等」，一个元素被改写会被拆成
  * 「删一个 + 加一个」，丢掉「同一个元素变了」这层信息。两者结合才两种形态都对。
+ *
+ * <h2>指纹只算一次，贯穿两级</h2>
+ * 两级对齐都需要「这两个元素是否相等」。指纹在这里算一遍后同时喂给
+ * {@link findEqualAnchors} 与 {@link alignRange} —— 后者在 O(n×m) 循环里用它，
+ * 现算会让「无锚点」输入卡到半秒（实测 n=200 从 547ms 降到毫秒级）。
  */
 function alignArrayElements(original: readonly unknown[], current: readonly unknown[]): AlignedPair[] {
   if (original.length > ARRAY_ALIGN_LIMIT || current.length > ARRAY_ALIGN_LIMIT) {
     return alignByIndex(original, current)
   }
 
+  // 每个元素只序列化一次，两级对齐共用。
+  const fingerprints = {
+    left: original.map(stableFingerprint),
+    right: current.map(stableFingerprint),
+  }
+
   const pairs: AlignedPair[] = []
   let originalCursor = 0
   let currentCursor = 0
-  for (const anchor of findEqualAnchors(original, current)) {
-    pairs.push(
-      ...alignRange(original, current, originalCursor, anchor.original, currentCursor, anchor.current),
-    )
+  for (const anchor of findEqualAnchors(fingerprints.left, fingerprints.right)) {
+    pairs.push(...alignRange(
+      original, current, fingerprints,
+      originalCursor, anchor.original, currentCursor, anchor.current,
+    ))
     pairs.push(anchor)
     originalCursor = anchor.original + 1
     currentCursor = anchor.current + 1
   }
-  pairs.push(
-    ...alignRange(original, current, originalCursor, original.length, currentCursor, current.length),
-  )
+  pairs.push(...alignRange(
+    original, current, fingerprints,
+    originalCursor, original.length, currentCursor, current.length,
+  ))
   return pairs
 }
 
