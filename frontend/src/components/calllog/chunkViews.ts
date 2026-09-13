@@ -166,15 +166,19 @@ export function hasComparisonView(views: ChunkViews): boolean {
   return views.upstream !== null
 }
 
-/**
- * 对照视图里「上游那一侧」的解析协议。
+/*
+ * 这里曾有一个 `upstreamProtocolOf(downstreamProtocol)`，用「取反」推断上游协议
+ * （`CHAT ? MESSAGES : CHAT`），并在注释里写明「将来加第三种协议时这里要改成
+ * 由后端明确给出」。
  *
- * 下游协议已由调用方给出；上游只可能是另一个 —— 当前只有两种协议，
- * 因此直接取反。将来加第三种协议时这里要改成由后端明确给出。
+ * `RESPONSES` 接入后它对该协议返回 `CHAT`，于是一次 Responses **直连**会被当成
+ * 跨协议翻译：对照栏标题写错上游协议名，`semanticConsistency` 按错协议解析上游侧、
+ * 必然判成不一致，界面弹出「上下游语义不一致，翻译可能丢失或改写了内容」这个假警报。
+ *
+ * 已按那条注释说的办 —— 删掉推断，改由调用方传入。后端本来就在
+ * `api_call_log.upstream_protocol` 里给了真值，`DetailItem` 也早有该字段，
+ * 只是传 props 时没往下带。协议数量以后再增加也不会有第二次这种漂移。
  */
-export function upstreamProtocolOf(downstreamProtocol: WireProtocol): WireProtocol {
-  return downstreamProtocol === 'CHAT' ? 'MESSAGES' : 'CHAT'
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null

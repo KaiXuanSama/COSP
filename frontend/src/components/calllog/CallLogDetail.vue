@@ -47,6 +47,14 @@ const chunksModal = ref({
   frameCounts: null as number[] | null,
   // 解析规则跟**下游**协议：落库的 chunk 是下游实际收到的形态。
   downstreamProtocol: 'CHAT' as DetailItem['downstream_protocol'],
+  /**
+   * 上游协议，供对照栅解析上游那一侧。
+   *
+   * 必须从落库记录取，不能由下游协议推断 —— 取反推断在三种协议下
+   * 会把直连误判成跨协议翻译。初值与下游相同（即「按直连处理」），
+   * 弹窗打开前不会被读到。
+   */
+  upstreamProtocol: 'CHAT' as DetailItem['upstream_protocol'],
 })
 
 // ── 格式化 ──────────────────────────────────────────────
@@ -292,6 +300,7 @@ function openChunksModal(rawChunks: string | null) {
     upstreamChunks: views.upstream,
     frameCounts: views.frameCounts,
     downstreamProtocol: props.detail.downstream_protocol,
+    upstreamProtocol: props.detail.upstream_protocol,
   }
 }
 
@@ -463,6 +472,7 @@ onUnmounted(() => {
       v-model:show="chunksModal.show"
       :chunks="chunksModal.chunks"
       :downstream-protocol="chunksModal.downstreamProtocol"
+      :upstream-protocol="chunksModal.upstreamProtocol"
       :upstream-chunks="chunksModal.upstreamChunks"
       :frame-counts="chunksModal.frameCounts"
     />
