@@ -1,11 +1,31 @@
 import { describe, expect, it } from 'vitest'
 import {
+  JSON_VALUE_TYPE_OPTIONS,
   defaultJsonValueText,
   formatJsonValueText,
   inferJsonValueType,
   parseJsonValue,
   sanitizeNumberInput,
 } from './jsonValueEditing'
+
+describe('类型档位选项', () => {
+  /**
+   * 标签必须体现「对象也能选这一档」。
+   *
+   * 曾经叫「列表」而实际接受对象，界面于是与行为矛盾：用户选了它、填了对象，
+   * 输入框下方仍报「必须是 JSON 数组」—— 唯一的出路是绕开可视化编辑器去 JSON 视图手写。
+   */
+  it('结构体档位的标签同时提到对象与列表', () => {
+    const label = JSON_VALUE_TYPE_OPTIONS.find((option) => option.value === 'list')?.label
+    expect(label).toContain('对象')
+    expect(label).toContain('列表')
+  })
+
+  it('五个档位齐全且取值唯一', () => {
+    expect(JSON_VALUE_TYPE_OPTIONS.map((option) => option.value))
+      .toEqual(['string', 'number', 'list', 'boolean', 'null'])
+  })
+})
 
 describe('设置字段值的类型推断', () => {
   it('按 JSON 值本身反推类型', () => {
@@ -19,9 +39,11 @@ describe('设置字段值的类型推断', () => {
     expect(inferJsonValueType([1, 2])).toBe('list')
   })
 
-  /** 对象没有对应档位，退到列表让用户至少能看到并编辑原文。 */
-  it('对象值退化为列表档位', () => {
+  /** 对象与数组同属「对象/列表」档 —— 该档承载的是 JSON 结构体而非仅数组。 */
+  it('对象值归入对象列表档位', () => {
     expect(inferJsonValueType({ a: 1 })).toBe('list')
+    expect(inferJsonValueType({})).toBe('list')
+    expect(inferJsonValueType({ type: 'json_object' })).toBe('list')
   })
 })
 
@@ -98,7 +120,7 @@ describe('设置字段值的解析', () => {
     expect(parseJsonValue('随便写', 'null')).toEqual({ value: null, error: '' })
   })
 
-  it('列表档位解析 JSON 数组并保留元素类型', () => {
+  it('对象列表档位解析 JSON 数组并保留元素类型', () => {
     expect(parseJsonValue('[12.38, false, "hello world", null]', 'list')).toEqual({
       value: [12.38, false, 'hello world', null],
       error: '',
@@ -106,11 +128,35 @@ describe('设置字段值的解析', () => {
     expect(parseJsonValue('[]', 'list')).toEqual({ value: [], error: '' })
   })
 
-  it('列表档位拒绝非数组与语法错误', () => {
-    expect(parseJsonValue('{"a":1}', 'list').error).toBe('必须是 JSON 数组，以 [ 开头、] 结尾')
-    expect(parseJsonValue('"abc"', 'list').error).toBe('必须是 JSON 数组，以 [ 开头、] 结尾')
-    expect(parseJsonValue('[1,', 'list').error).toContain('列表 JSON 语法错误')
-    expect(parseJsonValue('', 'list').error).toContain('请输入列表')
+  /**
+   * 对象与数组同档。
+   *
+   * 真实需求：把 `text.format` 整体替换成 `{"type":"json_object"}` —— 上游只接受
+   * `text` / `json_object` 两种取值，而 `json_schema` 形态还带着 `name` / `schema`
+   * / `strict`，只改 `type` 会留下矛盾的多余字段。整体替换是唯一干净的表达。
+   */
+  it('对象列表档位接受 JSON 对象', () => {
+    expect(parseJsonValue('{"type":"json_object"}', 'list')).toEqual({
+      value: { type: 'json_object' },
+      error: '',
+    })
+    expect(parseJsonValue('{}', 'list')).toEqual({ value: {}, error: '' })
+    expect(parseJsonValue('{"a":{"b":[1,2]}}', 'list')).toEqual({
+      value: { a: { b: [1, 2] } },
+      error: '',
+    })
+  })
+
+  /** 标量各有专属档位，出现在这一档只可能是选错了，因此明确拒绝而非含糊放行。 */
+  it('对象列表档位拒绝标量与语法错误', () => {
+    expect(parseJsonValue('"abc"', 'list').error).toBe('必须是对象或列表，以 { 或 [ 开头')
+    expect(parseJsonValue('123', 'list').error).toBe('必须是对象或列表，以 { 或 [ 开头')
+    expect(parseJsonValue('true', 'list').error).toBe('必须是对象或列表，以 { 或 [ 开头')
+    // JSON 的 null 是合法值但不是结构体 —— null 有自己的档位。
+    expect(parseJsonValue('null', 'list').error).toBe('必须是对象或列表，以 { 或 [ 开头')
+    expect(parseJsonValue('[1,', 'list').error).toContain('JSON 语法错误')
+    expect(parseJsonValue('{"a":', 'list').error).toContain('JSON 语法错误')
+    expect(parseJsonValue('', 'list').error).toContain('请输入对象或列表')
   })
 
   /** 渲染与解析在每个档位上互为逆操作。 */
@@ -124,6 +170,9 @@ describe('设置字段值的解析', () => {
       [false, 'boolean'],
       [null, 'null'],
       [[1, 'a', null, false], 'list'],
+      [{ type: 'json_object' }, 'list'],
+      [{ a: { b: [1, 2] } }, 'list'],
+      [{}, 'list'],
     ]
     for (const [value, type] of cases) {
       const text = formatJsonValueText(value, type)

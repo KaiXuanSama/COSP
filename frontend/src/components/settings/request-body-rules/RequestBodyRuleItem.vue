@@ -552,7 +552,7 @@ function updateField(val: string) {
 .cond-path {
   flex: 1 1 auto;
   width: auto;
-  min-width: 200px;
+  min-width: 180px;
 }
 
 .cond-op {
@@ -563,18 +563,26 @@ function updateField(val: string) {
 /**
  * 比较值区。
  *
- * 比原先的单输入框宽（内含类型档位 + 取值控件），故让它与路径下拉争抢剩余空间；
- * 路径的 min-width 相应从 240 降到 200，两者在窄容器下都还能读。
+ * 比原先的单输入框宽（内含类型档位 + 取值控件），故让它与路径下拉争抢剩余空间。
+ * 档位下拉加宽后基准从 260 提到 290，路径的 min-width 相应从 200 降到 180 ——
+ * 路径是可搜索下拉且内容通常较长，它损失的可读性由 `title` 悬浮提示兜住，
+ * 而档位被截断则完全无从辨认（截断处正好落在「对象/列」）。
  */
 .cond-value {
-  flex: 1 1 260px;
-  min-width: 200px;
-  max-width: 340px;
+  flex: 1 1 290px;
+  min-width: 220px;
+  max-width: 360px;
 }
 
-/** 档位下拉在条件行里收窄：这一行控件比「设置字段值」那行多一个。 */
+/**
+ * 条件行的档位下拉。
+ *
+ * 比「设置字段值」那行窄 8px：这一行多一个操作符下拉，横向更紧。
+ * 116px 仍够放满「对象/列表」——`n-select` 的 38px 内边距加箭头区之外还剩 78px，
+ * 而 5 个 14px 汉字约需 70px。低于 108px 就会重新开始截断。
+ */
 .cond-value :deep(.cond-value-type) {
-  width: 84px;
+  width: 116px;
 }
 
 .cond-value-placeholder {

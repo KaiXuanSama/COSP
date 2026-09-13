@@ -2,7 +2,7 @@
 /**
  * JsonValueInput — 带类型档位的 JSON 值输入。
  *
- * 左侧下拉选类型（字符串 / 数值 / 列表 / 布尔 / null），右侧按类型给出对应控件。
+ * 左侧下拉选类型（字符串 / 数值 / 对象或列表 / 布尔 / null），右侧按类型给出对应控件。
  * 「设置字段值」与「条件 · 等于」共用本组件 —— 两者面对的都是「用户想表达哪个 JSON 值」
  * 这同一个问题，各写一套只会让同样的语义在两处慢慢分叉。
  *
@@ -80,7 +80,7 @@ const placeholder = computed(() => {
     case 'number':
       return '如 0.7 或 -2'
     case 'list':
-      return '如 [12.38, false, "hello world", null]'
+      return '如 {"type":"json_object"} 或 [12.38, false, "hi", null]'
     case 'null':
       return 'null'
     default:
@@ -174,8 +174,16 @@ defineExpose({ displayError })
   gap: 6px;
 }
 
+/**
+ * 档位下拉宽度。
+ *
+ * 124px 是按最长档位「对象/列表」量出来的下限：`n-select` 自身占掉
+ * 12px 左内边距 + 26px 右侧箭头区，留给文字的只有 width - 38px；
+ * 5 个 14px 汉字约需 70px，96px 时可用区仅 58px，于是被截成「对象/列...」。
+ * 加档位或改档位名时要重新核这个值。
+ */
 .json-value-type {
-  width: 96px;
+  width: 124px;
   flex-shrink: 0;
 }
 
