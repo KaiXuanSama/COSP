@@ -103,10 +103,16 @@ describe('formatCallTypeLabel', () => {
     expect(formatCallTypeLabel('CHAT', 'MESSAGES', true)).toBe('流式: C→M')
   })
 
-  /** 同协议只需回答「说的哪种话」，展示名比缩写好读，且没有翻译发生。 */
-  it('同协议直连给展示名而非箭头', () => {
-    expect(formatCallTypeLabel('CHAT', 'CHAT', true)).toBe('流式: Chat Completions API')
-    expect(formatCallTypeLabel('MESSAGES', 'MESSAGES', false)).toBe('非流: Anthropic API')
+  /**
+   * 同协议直连给单个字母，与跨协议的缩写箭头同属一套体系。
+   *
+   * <p>早先直连给的是展示全名（`Chat Completions API`），与跨协议的缩写混在同一列里 ——
+   * 列宽被最长的那个撑开，而这一列的职责只是「扫一眼是哪种调用」。
+   * 全名没有丢，它在 {@link formatCallTypeTitle} 的气泡里。
+   */
+  it('同协议直连给单个字母', () => {
+    expect(formatCallTypeLabel('CHAT', 'CHAT', true)).toBe('流式: C')
+    expect(formatCallTypeLabel('MESSAGES', 'MESSAGES', false)).toBe('非流: M')
   })
 
   it('流式标记随 isStream，数字与布尔都接受', () => {
@@ -116,17 +122,44 @@ describe('formatCallTypeLabel', () => {
     expect(formatCallTypeLabel('CHAT', 'CHAT', false)).toContain('非流')
   })
 
-  /** Responses 加入后同样走查表：跨协议给缩写箭头，同协议给展示名。 */
+  /** Responses 加入后同样走查表：跨协议给缩写箭头，同协议给单个字母。 */
   it('Responses 与另两条线路同规则', () => {
     expect(formatCallTypeLabel('RESPONSES', 'CHAT', true)).toBe('流式: R→C')
     expect(formatCallTypeLabel('CHAT', 'RESPONSES', false)).toBe('非流: C→R')
-    expect(formatCallTypeLabel('RESPONSES', 'RESPONSES', true)).toBe('流式: Responses API')
+    expect(formatCallTypeLabel('RESPONSES', 'RESPONSES', true)).toBe('流式: R')
+  })
+
+  /**
+   * 三条线路的缩写必须互异。
+   *
+   * <p>直连显示单字母后这条从「锦上添花」变成**必需**：两个协议若映射到同一个字母，
+   * 它们的直连标记就完全无法区分了。跨协议时箭头两端的字母同源，同样依赖这个前提。
+   */
+  it('三条线路的缩写互异', () => {
+    const abbreviations = ['CHAT', 'MESSAGES', 'RESPONSES'].map(protocolAbbreviation)
+
+    expect(new Set(abbreviations).size).toBe(abbreviations.length)
   })
 
   /** 后端加第四种协议时，前端在同步改动之前也要给出可读结果。 */
   it('未知协议走缩写兜底', () => {
     expect(formatCallTypeLabel('GEMINI', 'CHAT', true)).toBe('流式: G→C')
-    expect(formatCallTypeLabel('GEMINI', 'GEMINI', true)).toBe('流式: GEMINI')
+    expect(formatCallTypeLabel('GEMINI', 'GEMINI', true)).toBe('流式: G')
+  })
+
+  /**
+   * 已知边界：首字母相同的未知协议会与已知协议撞成同一个标记。
+   *
+   * <p>钉住它是**已知且接受**的，而不是把它测成正确行为：`COMPLETIONS` 与 `CHAT`
+   * 都显示 `C`，只靠标记分不出来。这个窗口只说「后端已加、前端未同步」，
+   * 两处通常同批改；真要区分只能退回显示全名，那会破坏单字母体系。
+   * 真正兜住歧义的是 title 气泡 —— 它始终给全名。
+   */
+  it('未知协议与已知协议首字母撞车是已知边界', () => {
+    expect(protocolAbbreviation('COMPLETIONS')).toBe(protocolAbbreviation('CHAT'))
+    // 撞车只影响标记；气泡仍能区分。
+    expect(formatCallTypeTitle('COMPLETIONS', 'COMPLETIONS'))
+      .toBe('上游与下游同为 COMPLETIONS，直连无需翻译')
   })
 })
 

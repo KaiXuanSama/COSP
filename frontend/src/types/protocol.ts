@@ -136,6 +136,15 @@ export function isWireProtocol(value: unknown): value is WireProtocol {
  *   与现在查表的结果相同。
  *
  * 记下来是为了防止有人把它当成「兼容层」而依赖它 —— 它只是让未同步期间的界面可读。
+ *
+ * <h2>已知边界：兜底字母可能与已知协议撞车</h2>
+ * 查表值与首字母同处一个字母空间，因此一个首字母相同的未知协议会与已知协议显示成
+ * 同一个标记 —— 例如假想的 `COMPLETIONS` 与 `CHAT` 都是 `C`
+ * （`protocol.spec.ts` 有一条断言钉住这个撞车是**已知**的）。
+ *
+ * <p>不为此加区分手段：这个窗口只说「后端已加、前端未同步」，而两处通常同批改；
+ * 真要区分只能退回显示全名，那就把 {@link formatCallTypeLabel} 好不容易统一的
+ * 单字母体系又破了。真正兜住歧义的是 title 气泡 —— 它始终给全名。
  */
 export function protocolAbbreviation(protocol: string): string {
   if (!protocol) return ''
@@ -156,11 +165,18 @@ export function protocolDisplayName(protocol: string): string {
 }
 
 /**
- * 一次调用的「类型」标签：`流式: Chat Completions API` / `非流: M→C`。
+ * 一次调用的「类型」标签：`流式: C` / `非流: M→C`。
  *
- * <h2>同协议给全名、跨协议给缩写</h2>
- * 同协议时那一列只需回答「说的哪种话」，展示名最好读；跨协议时要回答的是「从哪翻到哪」，
- * 全名拼起来会长到撑破列宽（`Anthropic API→Chat Completions API`），缩写箭头反而更清楚。
+ * <h2>两种形态都出自同一套字母体系</h2>
+ * 直连给单个字母（`C` / `M` / `R`），跨协议给缩写箭头（`M→C`）。
+ *
+ * <p>早先直连给的是展示全名（`Chat Completions API`），而跨协议给缩写 ——
+ * 两套体系混在同一列里。后果是这一列的宽度被最长的那个撑开（`Anthropic API`），
+ * 而它的职责只是「扫一眼这次是哪种调用」，不需要知道协议的官方叫法。
+ *
+ * <p>全名并没有丢：{@link formatCallTypeTitle} 的气泡里写着，悬停即得。
+ * 而且 {@link WIRE_PROTOCOL_ABBREVIATIONS} 的文档本就写明它服务于
+ * 「调用 Toast 的路径标记、日志列表的类型列」，直连场景没用它是遗漏。
  *
  * <h2>箭头方向是「响应翻译」，与调用 Toast 刻意相反</h2>
  * 日志的箭头是 <strong>上游 → 下游</strong>（响应翻译方向），Toast 的是
@@ -191,9 +207,7 @@ export function formatCallTypeLabel(
 ): string {
   const source = protocolAbbreviation(sourceProtocol)
   const target = protocolAbbreviation(targetProtocol)
-  const protocol = source === target
-    ? protocolDisplayName(sourceProtocol)
-    : `${source}→${target}`
+  const protocol = source === target ? source : `${source}→${target}`
   return `${isStream ? '流式' : '非流'}: ${protocol}`
 }
 
