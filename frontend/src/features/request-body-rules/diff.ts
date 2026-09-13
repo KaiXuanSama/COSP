@@ -54,6 +54,253 @@ function jsonEquals(a: unknown, b: unknown): boolean {
   return true
 }
 
+/** 两侧完全相等的一对元素，充当对齐锚点。 */
+interface ElementAnchor {
+  readonly original: number
+  readonly current: number
+}
+
+/**
+ * 数组元素两侧配对结果。
+ *
+ * 两个下标同时存在表示这两个元素互相对应（相等或被改写）；
+ * 只有一侧则表示该元素被删除或新增。
+ */
+type AlignedPair =
+  | ElementAnchor
+  | { readonly original: number; readonly current: null }
+  | { readonly original: null; readonly current: number }
+
+/**
+ * 走对齐算法的数组规模上限，超过则退回按下标逐位对齐。
+ *
+ * 两级对齐都要 O(n×m) 的 DP 表，而 diff 在每次预览输入变化时同步重算。请求体里的
+ * 数组（`messages` / `tools` / `content`）实际都是十几到几十个元素，这个上限只是
+ * 防住「粘贴一份几千条消息的会话」把界面卡住，正常路径永远走不到。
+ */
+const ARRAY_ALIGN_LIMIT = 200
+
+/**
+ * 元素的稳定指纹，用于 LCS 里的相等判定。
+ *
+ * 与 {@link jsonEquals} 语义一致（键序无关的深比较），但把 O(n×m) 次深比较换成
+ * O(n+m) 次序列化加 O(n×m) 次字符串比较 —— 数组元素往往是带嵌套的对象，
+ * 直接在 DP 内层做深比较会成为热点。
+ *
+ * 前提是数据来自 JSON（预览输入走 `JSON.parse`，输出是后端返回的 JSON），
+ * 因此不存在 `NaN` / `Infinity` / 函数这些 `JSON.stringify` 会压成 `null` 的值。
+ */
+function stableFingerprint(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? 'undefined'
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableFingerprint).join(',')}]`
+  }
+  const object = value as Record<string, unknown>
+  const entries = Object.keys(object)
+    .sort()
+    .map((childKey) => `${JSON.stringify(childKey)}:${stableFingerprint(object[childKey])}`)
+  return `{${entries.join(',')}}`
+}
+
+/**
+ * 找出两侧完全相等的元素，作为对齐的锚点（最长公共子序列）。
+ *
+ * 返回的下标对严格递增，因此可以直接把数组切成若干互不重叠的间隙。
+ */
+function findEqualAnchors(original: readonly unknown[], current: readonly unknown[]): ElementAnchor[] {
+  const left = original.map(stableFingerprint)
+  const right = current.map(stableFingerprint)
+  const rows = left.length
+  const columns = right.length
+
+  // lengths[i][j] = left[i..] 与 right[j..] 的 LCS 长度
+  const lengths: number[][] = Array.from({ length: rows + 1 }, () =>
+    new Array<number>(columns + 1).fill(0),
+  )
+  for (let i = rows - 1; i >= 0; i--) {
+    for (let j = columns - 1; j >= 0; j--) {
+      lengths[i][j] =
+        left[i] === right[j]
+          ? lengths[i + 1][j + 1] + 1
+          : Math.max(lengths[i + 1][j], lengths[i][j + 1])
+    }
+  }
+
+  const anchors: ElementAnchor[] = []
+  let i = 0
+  let j = 0
+  while (i < rows && j < columns) {
+    if (left[i] === right[j]) {
+      anchors.push({ original: i, current: j })
+      i++
+      j++
+    } else if (lengths[i + 1][j] >= lengths[i][j + 1]) {
+      i++
+    } else {
+      j++
+    }
+  }
+  return anchors
+}
+
+/**
+ * 两个元素的相似度，值域 [0, 1]，1 表示相等。
+ *
+ * 只看结构骨架，不做递归展开：同为对象时算键名的 Jaccard 系数，同为数组时比长度，
+ * 标量则用等值。理由是这里只需要「哪两个更可能是同一个元素」这个相对排序，
+ * 而不是精确的编辑距离 —— 后者的代价与收益在预览这个场景上完全不成比例。
+ */
+function similarity(a: unknown, b: unknown): number {
+  if (stableFingerprint(a) === stableFingerprint(b)) return 1
+
+  const aIsObject = isPlainObject(a)
+  const bIsObject = isPlainObject(b)
+  if (aIsObject && bIsObject) {
+    const keysA = Object.keys(a)
+    const keysB = new Set(Object.keys(b))
+    if (keysA.length === 0 && keysB.size === 0) return 1
+    let shared = 0
+    for (const key of keysA) {
+      if (keysB.has(key)) shared++
+    }
+    const union = keysA.length + keysB.size - shared
+    return union === 0 ? 0 : shared / union
+  }
+
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const longest = Math.max(a.length, b.length)
+    return longest === 0 ? 1 : Math.min(a.length, b.length) / longest
+  }
+
+  // 余下的情形要么类型不同（对象 vs 标量），要么是两个不等的标量。
+  // 都当作毫不相干：把它们配成「改写」只会让 diff 变成一堆无意义的逐字段增删。
+  return 0
+}
+
+/**
+ * 两个元素是否足够像，可以判定为「同一个元素被改写」。
+ *
+ * 门槛取「过半键名相同」。低于它更可能是两个不同的元素恰好落在相邻位置，
+ * 配成改写会把 diff 变成一团逐字段的增删噪声，不如直接显示删除加新增。
+ */
+const SIMILARITY_THRESHOLD = 0.5
+
+/**
+ * 在锚点之间的间隙内配对：按相似度贪心取最像的一对，剩下的算删除或新增。
+ *
+ * <p>间隙内两侧元素两两都不相等（相等的已被锚点吃掉），所以这里要回答的是
+ * 「哪些是改写、哪些是纯增删」。按下标硬配会在「删除与改写并存」时错位 ——
+ * 例如原始 `[drop, {mode:a}]` 变成 `[{mode:b}]`，下标 0 会把 `drop` 配给
+ * `{mode:b}` 并标成改写，真正被改的那个元素反而显示为删除。
+ */
+function alignRange(
+  original: readonly unknown[],
+  current: readonly unknown[],
+  originalStart: number,
+  originalEnd: number,
+  currentStart: number,
+  currentEnd: number,
+): AlignedPair[] {
+  const pendingOriginal: number[] = []
+  for (let i = originalStart; i < originalEnd; i++) pendingOriginal.push(i)
+  const pendingCurrent: number[] = []
+  for (let j = currentStart; j < currentEnd; j++) pendingCurrent.push(j)
+
+  // 所有跨侧组合按相似度降序；打平时靠下标之差更小的优先，让配对结果稳定可预期
+  const candidates: Array<{ original: number; current: number; score: number }> = []
+  for (const i of pendingOriginal) {
+    for (const j of pendingCurrent) {
+      const score = similarity(original[i], current[j])
+      if (score >= SIMILARITY_THRESHOLD) candidates.push({ original: i, current: j, score })
+    }
+  }
+  candidates.sort(
+    (a, b) =>
+      b.score - a.score ||
+      Math.abs(a.original - a.current) - Math.abs(b.original - b.current) ||
+      a.original - b.original,
+  )
+
+  const matchedOriginal = new Map<number, number>()
+  const partnerOfCurrent = new Map<number, number>()
+  for (const candidate of candidates) {
+    if (matchedOriginal.has(candidate.original) || partnerOfCurrent.has(candidate.current)) continue
+    matchedOriginal.set(candidate.original, candidate.current)
+    partnerOfCurrent.set(candidate.current, candidate.original)
+  }
+
+  // 按 current 的顺序输出，未配对的 original 就近插入，保证读起来仍是一份 JSON
+  const pairs: AlignedPair[] = []
+  let originalCursor = 0
+  for (const j of pendingCurrent) {
+    const partner = partnerOfCurrent.get(j)
+    if (partner === undefined) {
+      pairs.push({ original: null, current: j })
+      continue
+    }
+    while (originalCursor < pendingOriginal.length && pendingOriginal[originalCursor] < partner) {
+      const orphan = pendingOriginal[originalCursor]
+      if (!matchedOriginal.has(orphan)) pairs.push({ original: orphan, current: null })
+      originalCursor++
+    }
+    pairs.push({ original: partner, current: j })
+    if (pendingOriginal[originalCursor] === partner) originalCursor++
+  }
+  while (originalCursor < pendingOriginal.length) {
+    const orphan = pendingOriginal[originalCursor]
+    if (!matchedOriginal.has(orphan)) pairs.push({ original: orphan, current: null })
+    originalCursor++
+  }
+  return pairs
+}
+
+/** 超过规模上限时的退路：按下标逐位配对。 */
+function alignByIndex(original: readonly unknown[], current: readonly unknown[]): AlignedPair[] {
+  const pairs: AlignedPair[] = []
+  const span = Math.max(original.length, current.length)
+  for (let i = 0; i < span; i++) {
+    if (i >= current.length) pairs.push({ original: i, current: null })
+    else if (i >= original.length) pairs.push({ original: null, current: i })
+    else pairs.push({ original: i, current: i })
+  }
+  return pairs
+}
+
+/**
+ * 配对两个数组的元素：先用相等元素锚定，间隙内再按相似度配对。
+ *
+ * <h2>为什么不能只按下标</h2>
+ * 删掉数组中间或开头的一个元素后，它之后的所有元素都会左移一位。纯下标对齐会把
+ * 「删了 1 个元素」渲染成「每个元素都被改写 + 末尾元素整体删除」—— 规则本身没错，
+ * 但预览会指向完全错误的位置。锚定相等元素能把位移消化掉。
+ *
+ * <p>反过来也不能只用 LCS：LCS 只认「相等 / 不相等」，一个元素被改写会被拆成
+ * 「删一个 + 加一个」，丢掉「同一个元素变了」这层信息。两者结合才两种形态都对。
+ */
+function alignArrayElements(original: readonly unknown[], current: readonly unknown[]): AlignedPair[] {
+  if (original.length > ARRAY_ALIGN_LIMIT || current.length > ARRAY_ALIGN_LIMIT) {
+    return alignByIndex(original, current)
+  }
+
+  const pairs: AlignedPair[] = []
+  let originalCursor = 0
+  let currentCursor = 0
+  for (const anchor of findEqualAnchors(original, current)) {
+    pairs.push(
+      ...alignRange(original, current, originalCursor, anchor.original, currentCursor, anchor.current),
+    )
+    pairs.push(anchor)
+    originalCursor = anchor.original + 1
+    currentCursor = anchor.current + 1
+  }
+  pairs.push(
+    ...alignRange(original, current, originalCursor, original.length, currentCursor, current.length),
+  )
+  return pairs
+}
+
 /**
  * 对比 original 与 current，生成 DiffNode 树。
  *
@@ -68,20 +315,16 @@ export function buildDiffTree(original: unknown, current: unknown, key: string |
   }
 
   if (Array.isArray(original) && Array.isArray(current)) {
-    const children: DiffNode[] = []
-    const maxLen = Math.max(original.length, current.length)
-    for (let i = 0; i < maxLen; i++) {
-      const hasOriginal = i < original.length
-      const hasCurrent = i < current.length
-      // 数组元素不展示键名，避免出现 "0": / "1": 序号前缀
-      if (hasOriginal && !hasCurrent) {
-        children.push(wrapAsDeleted(null, original[i]))
-      } else if (!hasOriginal && hasCurrent) {
-        children.push(wrapAsStatus(null, current[i], 'added'))
-      } else {
-        children.push(buildDiffTree(original[i], current[i], null))
+    // 数组元素不展示键名，避免出现 "0": / "1": 序号前缀
+    const children = alignArrayElements(original, current).map((pair) => {
+      if (pair.current === null) {
+        return wrapAsDeleted(null, original[pair.original])
       }
-    }
+      if (pair.original === null) {
+        return wrapAsStatus(null, current[pair.current], 'added')
+      }
+      return buildDiffTree(original[pair.original], current[pair.current], null)
+    })
     const status: DiffStatus = children.some((c) => c.status !== 'same') ? 'changed' : 'same'
     return { key, status, kind: 'array', value: current, children }
   }
