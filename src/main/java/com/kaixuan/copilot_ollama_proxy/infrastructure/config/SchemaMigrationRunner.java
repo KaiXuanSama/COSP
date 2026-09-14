@@ -12,6 +12,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -27,8 +29,27 @@ import java.util.stream.Collectors;
  *
  * 每个迁移在独立事务中执行，成功后写入 schema_version。新数据库由 schema.sql
  * 直接创建最终结构，旧数据库则通过这里补齐列、转换数据并增加约束与索引。
+ *
+ * <h2>必须是第一个跑的 ApplicationRunner</h2>
+ * {@code @Order(HIGHEST_PRECEDENCE)} 不是可选的美化，而是<strong>正确性要求</strong>：
+ * 其它 Runner（{@code ProxyConfigBootstrap} 等）会在启动期读表，而它们要读的列可能正是
+ * 本次迁移才补上的。迁移没跑完就查询 = {@code no such column} 启动失败。
+ *
+ * <p>曾经这里<strong>没有</strong> {@code @Order}，靠的是「默认顺序在前」这个错误假设。
+ * Spring 对 {@code ApplicationRunner} 按 {@code @Order} <strong>升序</strong>执行，
+ * 而无注解的 Bean 取 {@link Ordered#LOWEST_PRECEDENCE}（{@code Integer.MAX_VALUE}）——
+ * 是最<em>大</em>值，因此本迁移器排在所有带 {@code @Order} 的 Runner <strong>之后</strong>。
+ *
+ * <p>这个缺陷潜伏了两个版本：V11 加 {@code use_proxy} 时没暴露，因为先在另一台机器上
+ * 迁移过、库里已有那列；直到 V13 加 {@code responses_base_url} 遇到一个真正停留在旧版本的库，
+ * 才在 {@code ProxyConfigBootstrap} 的查询上炸出 {@code no such column}。
+ * <strong>症状是「换个分支就启动失败」，而不是「迁移报错」</strong> —— 迁移压根还没开始。
+ *
+ * <p>因此新增启动期 Runner 时不必再算「我该排在迁移之后吗」：迁移恒定第一，
+ * 其余 Runner 无论有无 {@code @Order} 都在它之后。
  */
 @Component
+@Order(Ordered.HIGHEST_PRECEDENCE)
 public class SchemaMigrationRunner implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(SchemaMigrationRunner.class);

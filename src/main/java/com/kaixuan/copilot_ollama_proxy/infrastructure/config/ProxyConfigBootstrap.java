@@ -26,8 +26,17 @@ import org.springframework.stereotype.Component;
  * 直连。启动投影一次消除这个空窗。
  *
  * <h2>顺序</h2>
- * {@code @Order} 放到较大值，确保排在 {@code SchemaMigrationRunner}（默认顺序）之后：
- * 迁移把 {@code use_proxy} 列补齐、基线建好之后再读，才不会在空库或缺列的库上查询失败。
+ * 本类必须在 {@code SchemaMigrationRunner} <strong>之后</strong>运行：它读的
+ * {@code use_proxy} / {@code responses_base_url} 等列可能正是那次迁移才补上的，
+ * 早于迁移查询会直接 {@code no such column} 让整个应用启动失败。
+ *
+ * <p>该次序由<strong>迁移器自己</strong>的 {@code @Order(HIGHEST_PRECEDENCE)} 保证，
+ * 不靠本类这个 {@code @Order(100)}。此处的 100 只表达「不必最早」，没有别的含义。
+ *
+ * <p>这段注释曾写着「{@code @Order} 放到较大值，确保排在迁移器（默认顺序）之后」——
+ * <strong>方向是反的</strong>：{@code ApplicationRunner} 按 {@code @Order} 升序执行，
+ * 无注解的迁移器取 {@code LOWEST_PRECEDENCE}（最大值），于是本类反而跑在了它前面。
+ * 那个错误假设直到 V13 才暴露，成因见迁移器的类注释。
  */
 @Component
 @Order(100)
