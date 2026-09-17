@@ -246,6 +246,112 @@ class GenericAnthropicChatServiceTests {
     }
 
     /**
+     * 顶层 {@code system} 是<strong>数组</strong>时（Claude CLI 的真实形态），
+     * 不能被 messages 里的 system 消息顶掉。
+     *
+     * <h2>真实报文</h2>
+     * Claude CLI 2.1.263 的 {@code system} 是三个块，后两块带
+     * {@code cache_control:{type:"ephemeral"}} 用于提示词缓存：
+     * <pre>
+     * "system": [
+     *   {"type":"text","text":"x-anthropic-billing-header: ..."},
+     *   {"type":"text","text":"You are Claude Code...","cache_control":{"type":"ephemeral"}},
+     *   {"type":"text","text":"&lt;11000 字的系统提示词&gt;","cache_control":{"type":"ephemeral"}}
+     * ]
+     * </pre>
+     * 同一请求的 {@code messages} 末尾还有一条 {@code role:"system"} 的消息
+     * （{@code mid-conversation-system-2026-04-07} beta，内容是延迟工具的告知）。
+     *
+     * <h2>这个组合曾经丢光整个系统提示词</h2>
+     * 抬升逻辑先判断「顶层已有 system 就保留」，但那个判断只认 {@code instanceof String}。
+     * 数组形态因而既不进 {@code systemText}，又会被随后的
+     * {@code body.put("system", systemText.toString())} <strong>整体覆盖</strong> ——
+     * 结果是发往上游的 {@code system} 只剩那条延迟工具告知，11000 字的系统提示词与
+     * {@code cache_control} 一起消失，而请求本身仍然 200，不会报任何错。
+     *
+     * <p>触发需要两个条件同时成立：数组形态的顶层 system、messages 里有 system 消息。
+     * 缺任一个都不会走到那行 {@code put}，这也正是它长期没被发现的原因 ——
+     * 已有的抬升用例全是字符串形态。
+     */
+    @Test
+    void arrayFormTopLevelSystemSurvivesLiftedSystemMessage() throws Exception {
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("system", List.of(
+                Map.of("type", "text", "text", "billing-header"),
+                Map.of("type", "text", "text", "You are Claude Code",
+                        "cache_control", Map.of("type", "ephemeral")),
+                Map.of("type", "text", "text", "完整系统提示词",
+                        "cache_control", Map.of("type", "ephemeral"))));
+        request.put("messages", List.of(
+                Map.of("role", "user", "content", "hi"),
+                Map.of("role", "system", "content", "延迟工具告知")));
+
+        realService().exposeMessages(request, routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
+
+        JsonNode system = objectMapper.readTree(capturedBody.get()).path("system");
+        assertThat(system.isArray())
+                .as("顶层 system 是数组时不能被降级成字符串，否则 cache_control 一并丢失")
+                .isTrue();
+
+        List<String> texts = new java.util.ArrayList<>();
+        system.forEach((node) -> texts.add(node.path("text").asText()));
+        assertThat(texts)
+                .as("原有的系统提示词块必须全部保留")
+                .contains("billing-header", "You are Claude Code", "完整系统提示词");
+        assertThat(String.join("\n", texts))
+                .as("messages 里抬上来的 system 消息要追加，而不是取代")
+                .contains("延迟工具告知");
+        assertThat(system.get(2).path("cache_control").path("type").asText())
+                .as("提示词缓存的 cache_control 必须原样跟着走")
+                .isEqualTo("ephemeral");
+    }
+
+    /**
+     * 数组形态下，多条 system 消息合并成<strong>一个</strong>追加块。
+     *
+     * <p>逐条追加会造出 N 个模块，而它们表达的是同一件事 —— 空行拼接成一个块既与
+     * 字符串形态的拼接语义一致，也不给上游平白多加缓存断点的候选位置。
+     */
+    @Test
+    void arrayFormSystemCombinesLiftedMessagesIntoOneBlock() throws Exception {
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("system", List.of(Map.of("type", "text", "text", "已有块")));
+        request.put("messages", List.of(
+                Map.of("role", "system", "content", "第一条"),
+                Map.of("role", "user", "content", "hi"),
+                Map.of("role", "system", "content", "第二条")));
+
+        realService().exposeMessages(request, routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
+
+        JsonNode system = objectMapper.readTree(capturedBody.get()).path("system");
+        assertThat(system).hasSize(2);
+        assertThat(system.get(1).path("text").asText()).isEqualTo("第一条\n\n第二条");
+    }
+
+    /**
+     * 没有可抬升的 system 消息时，数组形态的顶层 {@code system} <strong>一个字节都不动</strong>。
+     *
+     * <p>这条路径在缺陷期间是正常的，因此它防的不是那个具体缺陷，而是「修完就顺手
+     * 统一成某一种输出形态」这类后续回归 —— 数组与字符串的差异对上游是有意义的。
+     */
+    @Test
+    void arrayFormSystemIsUntouchedWhenNoSystemMessageExists() throws Exception {
+        List<Map<String, Object>> original = List.of(
+                Map.of("type", "text", "text", "块一"),
+                Map.of("type", "text", "text", "块二",
+                        "cache_control", Map.of("type", "ephemeral")));
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("system", original);
+        request.put("messages", List.of(Map.of("role", "user", "content", "hi")));
+
+        realService().exposeMessages(request, routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
+
+        JsonNode system = objectMapper.readTree(capturedBody.get()).path("system");
+        assertThat(system).hasSize(2);
+        assertThat(system.get(1).path("cache_control").path("type").asText()).isEqualTo("ephemeral");
+    }
+
+    /**
      * {@code max_tokens} 必填 —— 下游没带时要补，否则上游 400。
      *
      * <p>这个路由的模型列表是空的，因此走「模型未配置 → {@code defaults()}」那条分支，

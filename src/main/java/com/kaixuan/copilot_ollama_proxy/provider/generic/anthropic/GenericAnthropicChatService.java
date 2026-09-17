@@ -731,34 +731,85 @@ public class GenericAnthropicChatService {
      *
      * <p>若请求已带顶层 {@code system}，则保留它并把 messages 里的追加在后面 ——
      * 下游可能两种形态都用了，丢掉任何一份都会改变语义。
+     *
+     * <h2>顶层 system 是数组时不能降级成字符串</h2>
+     * Anthropic 允许 {@code system} 是块数组，Claude CLI 就是这么发的：
+     * 三个 {@code {type:"text"}} 块，后两块带 {@code cache_control:{type:"ephemeral"}}，
+     * 表示「到此块为止的内容可缓存」。把它压成字符串会<strong>连缓存断点一起丢掉</strong>，
+     * 每条请求都退化成缓存未命中。
+     *
+     * <p>早先这里的保留判据是 {@code instanceof String}，数组形态因此既不进拼接缓冲、
+     * 又会被末尾那句 {@code put} <strong>整体覆盖</strong> —— 发往上游的 {@code system}
+     * 只剩 messages 里抬上来的那一小段，上万字的系统提示词无声消失，而请求仍然 200。
+     * 触发需要「数组形态顶层 system」与「messages 里有 system 消息」同时成立，
+     * 缺任一个都走不到那句 {@code put}，所以它藏了很久：既有的抬升用例全是字符串形态。
+     *
+     * <p>抬升内容一律<strong>追加到末尾</strong>而非插入开头：数组里每个块都可能带缓存标记，
+     * 改动任何已有块的内容都会让它之后的内容全部缓存失效。
      */
     @SuppressWarnings("unchecked")
     private void extractSystemPrompt(Map<String, Object> body) {
         if (!(body.get("messages") instanceof List<?> rawMessages)) {
             return;
         }
-        StringBuilder systemText = new StringBuilder();
-        if (body.get("system") instanceof String existing && !existing.isBlank()) {
-            systemText.append(existing);
-        }
+        // 已有的顶层 system 与抬升内容分开收集：前者要按原形态落地（数组仍是数组），
+        // 后者一律并入它的末尾。合成一个缓冲就会逼两者共用一个输出形态，
+        // 那正是数组被降级成字符串的原因。
+        Object existingSystem = body.get("system");
+        StringBuilder liftedText = new StringBuilder();
         List<Object> kept = new java.util.ArrayList<>();
         for (Object item : rawMessages) {
             if (item instanceof Map<?, ?> raw && "system".equals(raw.get("role"))) {
                 String text = stringifyContent(((Map<String, Object>) raw).get("content"));
                 if (text != null && !text.isBlank()) {
-                    if (!systemText.isEmpty()) {
-                        systemText.append("\n\n");
+                    if (!liftedText.isEmpty()) {
+                        liftedText.append("\n\n");
                     }
-                    systemText.append(text);
+                    liftedText.append(text);
                 }
                 continue;
             }
             kept.add(item);
         }
         body.put("messages", kept);
-        if (!systemText.isEmpty()) {
-            body.put("system", systemText.toString());
+
+        // 没有可抬升的内容时顶层 system 原样不动 —— 包括「本来就没有」和「空块」两种情形，
+        // 后者也无需为无内容的消息凭空造一个字段。
+        if (!liftedText.isEmpty()) {
+            body.put("system", mergeSystem(existingSystem, liftedText.toString()));
         }
+    }
+
+    /**
+     * 把抬升出来的 system 文本并入已有的顶层 {@code system}。
+     *
+     * <p>三种形态，判据与 {@link #stringifyContent} 对 content 的处理同构：
+     * <ul>
+     *   <li><strong>数组</strong> —— 追加一个新的 {@code text} 块，保持数组形态不变。
+     *       不合并进已有块：那会改变已有块的文本，令其缓存标记覆盖的范围失效。</li>
+     *   <li><strong>非空字符串</strong> —— 用空行拼接，这是下游同时提供两种形态时的既有语义。</li>
+     *   <li><strong>缺失、空串或其它类型</strong> —— 以抬升内容为准。
+     *       第三种实际不会出现（Anthropic 只接受字符串与数组），按此处理是为了与
+     *       「抬升前」的行为保持一致，不在这里新增判断分支。</li>
+     * </ul>
+     *
+     * @param existingSystem 顶层原有的 {@code system}，可能为 null
+     * @param lifted          从 messages 抬升上来的文本，保证非空
+     */
+    private static Object mergeSystem(Object existingSystem, String lifted) {
+        if (existingSystem instanceof List<?> blocks) {
+            List<Object> merged = new java.util.ArrayList<>(blocks);
+            // 用可变 Map 而非 Map.of：规则引擎若需改写这个块，不可变集合会直接抛异常。
+            Map<String, Object> appended = new java.util.LinkedHashMap<>();
+            appended.put("type", "text");
+            appended.put("text", lifted);
+            merged.add(appended);
+            return merged;
+        }
+        if (existingSystem instanceof String existing && !existing.isBlank()) {
+            return existing + "\n\n" + lifted;
+        }
+        return lifted;
     }
 
     /**
