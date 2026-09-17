@@ -556,10 +556,10 @@ public class GenericAnthropicChatService {
      * 刻意不抽公共方法：它依赖三个注入字段，抽出去要传三个参数或再造一个 Bean，
      * 而本身只有二十行。
      *
-     * <p>Anthropic 特有的两点：必须带 {@code anthropic-version} 头；鉴权用
-     * {@code x-api-key} 而非 {@code Authorization: Bearer}，后者会被一并删除 ——
-     * 按出站协议装配鉴权头的规则见
-     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders}。
+     * <p>Anthropic 特有的两点：必须带 {@code anthropic-version} 头；鉴权头由
+     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders} 装配 ——
+     * 当前临时统一为 {@code Authorization: Bearer} 并删掉 {@code x-api-key}，
+     * 恢复按协议分派的理由与做法见那个方法。
      */
     private WebClient buildWebClient(Map<String, String> capturedHeaders,
                                      ProviderRuntimeConfiguration provider,
@@ -577,11 +577,12 @@ public class GenericAnthropicChatService {
                 .clientConnector(new ReactorClientHttpConnector(capturingHttpClient))
                 .baseUrl(normalizedUrl)
                 .defaultHeaders(headers -> {
-                    // 复用共享的请求头装配（下游头透传白名单、hop-by-hop 排除、按出站协议
-                    // 装配鉴权头、供应商头规则含 {apiKey} 占位与删除标记）。
-                    // 出站协议恒为 ANTHROPIC：本服务只打 Anthropic 端点，因此鉴权装配
-                    // 写 x-api-key 并删掉 Authorization —— 后者在这条链路上是噪音，
-                    // 可能来自下游透传，也可能来自 C2M 翻译路线（下游说 OpenAI、上游走这里）。
+                    // 复用共享的请求头装配（下游头透传白名单、hop-by-hop 排除、鉴权头装配、
+                    // 供应商头规则含 {apiKey} 占位与删除标记）。
+                    // 鉴权头当前临时统一写 Authorization: Bearer 并删掉 x-api-key ——
+                    // 后者在这条链路上是噪音，可能来自下游透传，也可能来自 C2M 翻译路线
+                    // （下游说 OpenAI、上游走这里）。要恢复「MESSAGES 发 x-api-key」见
+                    // ProviderRequestHeaderService.applyAuthenticationHeaders。
                     providerRequestHeaderService.applyHeaders(
                             headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream,
                             WireProtocol.MESSAGES);

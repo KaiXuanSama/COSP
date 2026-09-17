@@ -19,12 +19,18 @@ import java.util.Set;
  * 准备数据库供应商的通用出站请求头与 URL。
  *
  * 装配分三层，后者覆盖前者：先完整透传下游的端到端头（只排除
- * {@link #NON_FORWARDABLE_HEADERS} 里那些描述连接本身的头），再按<strong>出站协议</strong>
- * 装配鉴权头，最后由供应商请求头规则覆盖、补充或删除任何头。
+ * {@link #NON_FORWARDABLE_HEADERS} 里那些描述连接本身的头），再装配鉴权头，
+ * 最后由供应商请求头规则覆盖、补充或删除任何头。
  *
  * 三层的职责边界不要混：第一层只做传输层正确性，第二层保证出站鉴权头既是供应商配置的
- * 凭据、又是出站协议认的那一种形态，第三层承载「这个上游需要什么」的全部特例。
+ * 凭据、又是这个上游认的那一种形态，第三层承载「这个上游需要什么」的全部特例。
  * 因此凡是超出传输层正确性的取舍都不应下沉到第一层 —— 规则层拥有最终决定权是有意的设计。
+ *
+ * <h2>第二层正处于临时状态（{@code TODO(临时实现)}）</h2>
+ * 它当前一律发 {@code Authorization: Bearer}。目标形态是<strong>由供应商级配置决定</strong>
+ * 头名（模式 `取下游` / `取设置`，方式 {@code Authorization} / {@code x-api-key}），
+ * 因为「哪种头」不是协议属性 —— 见 {@link #applyAuthenticationHeaders} 的说明。
+ * 行为矩阵、改动范围与落地顺序见仓库根目录《鉴权头再装配实施计划.md》。
  */
 @Service
 public class ProviderRequestHeaderService {
@@ -53,8 +59,8 @@ public class ProviderRequestHeaderService {
      *
      * 鉴权头刻意不在此列。Authorization 与 x-api-key 都是端到端头，描述消息而非连接，
      * 「完全透传下游请求头」是本服务的前提；它们由第二层的
-     * {@link #applyAuthenticationHeaders} 按出站协议处理，而非在这里剥离。
-     * 把鉴权头加进来会把「按协议改写」偷换成「一律剥离」，届时第二层就没有可覆盖的对象了。
+     * {@link #applyAuthenticationHeaders} 统一改写，而非在这里剥离。
+     * 把鉴权头加进来会把「改写成供应商凭据」偷换成「一律剥离」，届时第二层就没有可覆盖的对象了。
      *
      * 同理，Cookie 与 Accept-Encoding 也不在此列 —— 它们透传后可能带来问题
      * （如上游返回 Brotli 压缩的 SSE 流导致解码失败），但那属于「这个上游需要什么」，
@@ -65,7 +71,18 @@ public class ProviderRequestHeaderService {
             "connection", "content-length", "host", "keep-alive", "proxy-authenticate",
             "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade");
 
-    /** Anthropic 协议的鉴权头名。OpenAI 侧对应的是标准 {@code Authorization}。 */
+    /**
+     * Anthropic 官方的鉴权头名。
+     *
+     * <p>当前出站一律用 {@code Authorization: Bearer}，本常量只用于<strong>删除</strong>
+     * 这个头（下游透传或翻译残留），见 {@link #applyAuthenticationHeaders}。
+     *
+     * <p>{@code TODO(临时实现)} 名字里的 Anthropic 只是历史 —— 它曾专属于那条线路。
+     * 鉴权头再装配落地后，它是两种<strong>可任选</strong>的承载方式之一（另一种是
+     * {@code Authorization}），与协议无关，届时这个名字会误导人，应换成
+     * {@code API_KEY_HEADER} 一类的中性名。此刻不改名是为了让本次提交只包含行为变更，
+     * 不混入一次纯重命名。
+     */
     public static final String ANTHROPIC_API_KEY_HEADER = "x-api-key";
 
     private final ObjectMapper objectMapper;
@@ -77,12 +94,13 @@ public class ProviderRequestHeaderService {
     /**
      * 合并默认头、下游请求头和供应商请求头规则。
      *
-     * 优先级从低到高：下游可透传头、按出站协议装配的鉴权与媒体类型、供应商规则。
+     * 优先级从低到高：下游可透传头、装配的鉴权与媒体类型、供应商规则。
      * Host、Content-Length 和 hop-by-hop 头不跨请求透传，由上游 HTTP 客户端重新计算。
      *
-     * @param upstreamProtocol 出站实际使用的线路协议，决定发哪一种鉴权头。
-     *                         注意是<strong>上游</strong>协议而非下游协议 —— 翻译路线上两者不同，
-     *                         而鉴权头必须匹配真正收到这个请求的那一端
+     * @param upstreamProtocol 出站实际使用的线路协议。鉴权头当前一律发
+     *                         {@code Authorization: Bearer}，本参数因此<strong>未被读取</strong>。
+     *                         它将在鉴权头再装配里被供应商级设置取代（或删除），
+     *                         见 {@link #applyAuthenticationHeaders}
      */
     public void applyHeaders(HttpHeaders headers, HttpHeaders downstreamHeaders, String apiKey,
                              String headerRulesJson, boolean stream, WireProtocol upstreamProtocol) {
@@ -117,42 +135,62 @@ public class ProviderRequestHeaderService {
     }
 
     /**
-     * 按出站协议装配鉴权头：写本协议的那一个，删另一个。
+     * 装配出站鉴权头。
      *
-     * 两件事都是必要的，缺一不可：
+     * <p>{@code TODO(临时实现)} <strong>本方法是临时实现，其行为不是最终形态。</strong>
+     * 当前<strong>三种协议一律发 {@code Authorization: Bearer}</strong>，而目标是改为
+     * 由供应商级配置决定头名（模式 `取下游` / `取设置` × 方式 {@code Authorization} /
+     * {@code x-api-key}）。改动范围、行为矩阵与落地顺序见仓库根目录
+     * 《鉴权头再装配实施计划.md》。落地时本方法连同 {@code upstreamProtocol} 参数一并重整。
      *
-     * 「写」用覆盖而非补缺。出站凭据必须是供应商配置的那把 key，不能由下游透传值决定 ——
-     * 否则下游随手带一个 x-api-key 就能让供应商 key 写不进去（Authorization 一侧一直是
-     * 覆盖语义，x-api-key 一侧曾是「缺失才设」，两者不同口径正是那个缺口的来源）。
+     * <h2>为何临时统一到 {@code Authorization}</h2>
+     * 原先按出站协议分派 —— MESSAGES 发 {@code x-api-key} 并删 {@code Authorization}，
+     * CHAT / RESPONSES 反之；依据是「Anthropic 官方用 x-api-key」。实测该依据不成立：
+     * <ul>
+     *   <li>Claude CLI 的头名由<strong>凭据环境变量</strong>决定，与协议无关 ——
+     *       {@code ANTHROPIC_API_KEY} 发 {@code x-api-key}，
+     *       {@code ANTHROPIC_AUTH_TOKEN} 发 {@code Authorization: Bearer}，
+     *       而 cc-switch 默认走后者；</li>
+     *   <li>部分中转站只认 {@code Authorization}，不认 {@code x-api-key}。</li>
+     * </ul>
+     * 根因是「哪种头」本就不是协议属性，而这个选择不该由代码替用户做。
+     * 统一只是解除阻塞，真正的修法是把它还给用户配置。
      *
-     * 「删」是因为另一种协议的鉴权头在这条出站链路上是纯噪音。它既可能来自下游透传
-     * （Claude 系客户端按官方惯例把凭据放 x-api-key），也可能来自翻译路线上下游与上游
-     * 协议不一致。留着它至少有两个坏处：把下游的凭据泄露给上游供应商；以及遇到严格上游时
-     * 因多余认证头被拒，而排查时会看到「该发的头明明是对的」。
+     * <p>下面是<strong>上一版的实现</strong>，留作对照（改动前后各发哪一种头、
+     * 以及「写一个删另一个」的结构）：
+     * <pre>{@code
+     * if (upstreamProtocol == WireProtocol.MESSAGES) {
+     *     headers.set(ANTHROPIC_API_KEY_HEADER, resolvedKey);
+     *     headers.remove(HttpHeaders.AUTHORIZATION);
+     *     return;
+     * }
+     * headers.setBearerAuth(resolvedKey);
+     * headers.remove(ANTHROPIC_API_KEY_HEADER);
+     * }</pre>
      *
-     * 判据是<strong>上游协议</strong>而非下游协议。直连时两者相同，翻译路线上不同 ——
-     * 下游打 OpenAI、上游走 Anthropic 时该发 x-api-key 并删掉 Authorization，
-     * 因为收到这个请求的是 Anthropic 端点。按下游协议判会在翻译路线上把两个头都发错。
+     * <h2>无论哪种形态，「删另一个」都不能省</h2>
+     * 「写」用覆盖而非补缺 —— 出站凭据必须是供应商配置的那把 key，不能由下游透传值决定。
+     * x-api-key 一侧曾经是「缺失才设」，下游带了就补不进去，而 Authorization 看起来是对的，
+     * 是最难排查的那种缺口。
      *
-     * 本方法刻意在请求头规则<strong>之前</strong>执行，规则因此保留最终决定权：
-     * 需要双头并存的中转站可以用规则把另一个加回来，需要非 Bearer 形态的可以用
-     * {@code {apiKey}} 占位改写。这与「规则层承载全部上游特例」的分层一致 ——
-     * 默认给出协议上正确的那一种，特例交给规则。
+     * 「删」是因为另一个鉴权头在这条出站链路上是纯噪音：它可能来自下游透传
+     * （Claude 系客户端按官方惯例把它放在那里），也可能来自翻译路线上下游与上游协议不一致。
+     * 留着它至少有两个坏处：把下游的凭据泄露给上游供应商；以及遇到严格上游时因多余认证头被拒，
+     * 而排查时会看到「该发的头明明是对的」。
      *
-     * <h2>分支写成「只挑出 MESSAGES」而非逐协议列举</h2>
-     * {@link WireProtocol#RESPONSES} 与 {@link WireProtocol#CHAT} 同为 OpenAI 系接口，
-     * 都用 {@code Authorization: Bearer}，因此 Responses 落到 else 分支<strong>恰好正确</strong>。
-     * 保持否定式判断让新加入的 OpenAI 系协议自动落到正确的一侧；改成逐协议 {@code switch} 后
-     * 漏掉某个协议的症状是上游 401，而其余线路一切正常 —— 最难联想到成因的形态。
-     * {@code ProviderRequestHeaderServiceTests} 已显式钉住 Responses 走 Bearer。
+     * <p>本方法刻意在请求头规则<strong>之前</strong>执行，规则因此保留最终决定权：
+     * 需要双头并存的中转站可以用规则把另一个加回来，需要非 Bearer 形态的
+     * 可以用 {@code {apiKey}} 占位改写。这一分层在最终形态里不变。
+     *
+     * <p>顺序依赖：本方法读到的是 {@code applyHeaders} 里
+     * {@code copyForwardableHeaders} 刚拷进来的下游头 —— 最终形态要靠这一点探测
+     * 「下游带了哪一种」，因此两步的先后不能调换。
      */
     private void applyAuthenticationHeaders(HttpHeaders headers, String apiKey, WireProtocol upstreamProtocol) {
+        // TODO(临时实现) 一律发 Bearer，与 upstreamProtocol 无关。待改为按供应商级设置装配
+        // （取下游 / 取设置 × Authorization / x-api-key），届时 upstreamProtocol 参数一并重整。
+        // 见方法 javadoc 与仓库根目录《鉴权头再装配实施计划.md》。
         String resolvedKey = apiKey == null ? "" : apiKey;
-        if (upstreamProtocol == WireProtocol.MESSAGES) {
-            headers.set(ANTHROPIC_API_KEY_HEADER, resolvedKey);
-            headers.remove(HttpHeaders.AUTHORIZATION);
-            return;
-        }
         headers.setBearerAuth(resolvedKey);
         headers.remove(ANTHROPIC_API_KEY_HEADER);
     }
