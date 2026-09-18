@@ -37,6 +37,8 @@ class RepositoryUpsertTests {
                 + "anthropic_base_url TEXT NOT NULL DEFAULT '', "
                 + "responses_base_url TEXT NOT NULL DEFAULT '', "
                 + "use_proxy INTEGER NOT NULL DEFAULT 0 CHECK (use_proxy IN (0, 1)), "
+                + "auth_header TEXT NOT NULL DEFAULT '{\"mode\":\"DOWNSTREAM\",\"header\":\"AUTHORIZATION\"}' "
+                + "CHECK (json_valid(auth_header)), "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         jdbcTemplate.execute("CREATE TABLE provider_model ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, "
