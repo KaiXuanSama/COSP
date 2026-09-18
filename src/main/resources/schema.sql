@@ -37,6 +37,14 @@ CREATE TABLE IF NOT EXISTS provider_config (
     -- 该供应商的出站请求是否经由 HTTP 代理。默认 0（直连）：代理是需要用户显式选择的能力，
     -- 默认开启会让升级后所有出站流量突然改道。代理地址本身存在 app_config，不在这里。
     use_proxy        INTEGER      NOT NULL DEFAULT 0 CHECK (use_proxy IN (0, 1)),
+    -- 出站鉴权头的装配方式（JSON 对象，两个键：mode 与 header）。
+    -- mode=DOWNSTREAM 时，下游恰好带了一种鉴权头就沿用那一种，带 0 或 2 种则回退到本列的 header；
+    -- mode=CONFIGURED 时始终用本列的 header。header 取 AUTHORIZATION 或 X_API_KEY。
+    -- 默认「取下游 + Authorization」：它让存量行为几乎不变（下游带什么就还发什么），
+    -- 只有「下游一个鉴权头都没带」的 Messages 供应商会从 x-api-key 变成 Authorization。
+    -- 值用枚举名而非头名字面量：头名大小写不敏感且存在拼写变体，显示文本由前端决定。
+    auth_header      TEXT         NOT NULL DEFAULT '{"mode":"DOWNSTREAM","header":"AUTHORIZATION"}'
+        CHECK (json_valid(auth_header)),
     updated_at       TEXT         NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
 );
 
