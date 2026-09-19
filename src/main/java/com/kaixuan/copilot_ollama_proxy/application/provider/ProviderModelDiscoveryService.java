@@ -65,10 +65,23 @@ public class ProviderModelDiscoveryService {
                 .subscribeOn(Schedulers.boundedElastic())
             .flatMap(prepared -> prepared.isEmpty()
                         ? Mono.just(badRequest("指定的 API Key 不存在或已被删除，请重新选择。"))
-                : forwardModelsRequest(command.baseUrl(), prepared.get().apiKey(), command.modelPullPath(),
-                    prepared.get().headerRulesJson(), command.protocol()));
+                : forwardModelsRequest(command, prepared.get()));
     }
 
+    /**
+     * 汇总一次拉取需要的持久化状态：凭据明文、请求头规则、出站鉴权头装配方式。
+     *
+     * <h2>三者都取自数据库，与表单里的地址不同源</h2>
+     * 地址和协议由 {@link ModelPullCommand} 从表单带来（用户可能正在改还没保存），
+     * 而这三项一律读库。这个不对称是既有约定，本次沿用而非引入：
+     * 请求头规则从来如此，鉴权头方式跟它同源才不会出现「拉取用旧规则配新鉴权头」。
+     *
+     * <p>对鉴权头来说这还恰好是<strong>严格正确</strong>的：该设置的入口在新增/修改
+     * 供应商弹窗，而拉取按钮在编辑抽屉里 —— 抽屉根本不存在「未保存的鉴权头」这种状态，
+     * 因此读库读到的就是用户看到的。
+     *
+     * @return 准备好的请求材料；指定的 keyUuid 查不到凭据时返回 {@code null}
+     */
     private ModelPullRequest prepareModelPullRequest(String providerKey, String submittedApiKey, String keyUuid) {
         String apiKey = submittedApiKey;
         if (apiKey.isBlank()) {
@@ -80,7 +93,10 @@ public class ProviderModelDiscoveryService {
         ProviderConfigRow provider = providerConfigRepository.findByKey(providerKey);
         ProviderRequestTransformRow transform = provider == null ? null
                 : providerRequestTransformRepository.findByProviderId(provider.id());
-        return new ModelPullRequest(apiKey, transform == null ? "[]" : transform.headerRulesJson());
+        // 供应商查不到时传 null 而不是在这里写默认值：缺省语义只存在于
+        // AuthHeaderSetting.parse 一处，两边各写一份就会在将来改默认值时漏掉一处。
+        return new ModelPullRequest(apiKey, transform == null ? "[]" : transform.headerRulesJson(),
+                provider == null ? null : provider.authHeaderJson());
     }
 
     private String resolveApiKeyByUuid(String providerKey, String keyUuid) {
@@ -96,17 +112,25 @@ public class ProviderModelDiscoveryService {
         return null;
     }
 
-    private Mono<ResponseEntity<Object>> forwardModelsRequest(String rawBaseUrl, String apiKey, String rawModelPullPath,
-                                                               String headerRulesJson, WireProtocol protocol) {
-        String requestUrl = providerRequestHeaderService.buildRequestUrl(rawBaseUrl, normalizeModelPullPath(rawModelPullPath));
+    /**
+     * 把两个 record 整体传进来，而不是摊开成 6 个参数。
+     *
+     * <p>摊开后会是 3 个来自 {@link ModelPullCommand}、3 个来自 {@link ModelPullRequest}
+     * 的裸值，其中 {@code headerRulesJson} 与 {@code authHeaderJson} 都是 {@code String} ——
+     * 调换顺序<strong>能编译</strong>，症状却是「规则集被当鉴权配置解析（静默回默认）、
+     * 鉴权配置被当规则集解析（打条 warn 然后无规则）」。传 record 让类型挡住这种写法。
+     */
+    private Mono<ResponseEntity<Object>> forwardModelsRequest(ModelPullCommand command, ModelPullRequest prepared) {
+        String requestUrl = providerRequestHeaderService.buildRequestUrl(
+                command.baseUrl(), normalizeModelPullPath(command.modelPullPath()));
         return webClientBuilder.clone().defaultHeaders(headers -> {
             headers.setAccept(List.of(MediaType.APPLICATION_JSON));
-            // TODO(待实现) 改为读供应商配置的 auth_header 列。此刻传缺省值，行为与改造前逐字节一致
-            // （无下游 → 两项探测皆假 → 兜底到 Authorization: Bearer），因此拉取路径暂时
-            // 不跟随用户配置。接线需给 ModelPullRequest 加一个字段，见《鉴权头再装配实施计划.md》§5.2。
-            providerRequestHeaderService.applyHeaders(headers, apiKey, headerRulesJson,
-                    AuthHeaderSetting.defaults());
-            applyProtocolHeaders(headers, protocol);
+            // 与聊天链路读同一列：拉取能通而聊天 401（或反之）这类「只能靠对比两处代码才能
+            // 解释」的现象因此不可能发生。无下游请求头意味着两项探测皆为假，于是两种模式
+            // 都落到配置的头名 —— 「取下游」在这条路径上等价于「取设置」，语义正确。
+            providerRequestHeaderService.applyHeaders(headers, prepared.apiKey(), prepared.headerRulesJson(),
+                    AuthHeaderSetting.parse(prepared.authHeaderJson(), objectMapper));
+            applyProtocolHeaders(headers, command.protocol());
         }).build().get().uri(requestUrl).exchangeToMono(response -> response.bodyToMono(String.class).defaultIfEmpty("")
                 .map(responseBody -> {
                     ResponseEntity.BodyBuilder builder = ResponseEntity.status(response.statusCode().value());
@@ -175,11 +199,13 @@ public class ProviderModelDiscoveryService {
      *
      * <h2>判断写成「排除 MESSAGES」而非「列举需要版本头的协议」</h2>
      * {@link WireProtocol#RESPONSES} 与 {@link WireProtocol#CHAT} 同为 OpenAI 系接口：
-     * 同一个 {@code GET /v1/models}、同一个 {@code Authorization} 头、都<strong>不能</strong>
-     * 带 {@code anthropic-version}。现在这个否定式判断让新加入的 OpenAI 系协议自动落到
-     * 正确的一侧，而改成逐协议 {@code switch} 就得记着为每个新协议补一条 ——
-     * 漏掉的症状是给一个 OpenAI 端点发了 Anthropic 的版本头，多数中转站会忽略它，
-     * 于是错误要等到某个严格上游才暴露。
+     * 同一个 {@code GET /v1/models}，且都<strong>不能</strong>带 {@code anthropic-version}。
+     * 现在这个否定式判断让新加入的 OpenAI 系协议自动落到正确的一侧，而改成逐协议
+     * {@code switch} 就得记着为每个新协议补一条 —— 漏掉的症状是给一个 OpenAI 端点发了
+     * Anthropic 的版本头，多数中转站会忽略它，于是错误要等到某个严格上游才暴露。
+     *
+     * <p>这条理由里曾还有一句「同一个 {@code Authorization} 头」，现已删除：
+     * 头名由供应商配置决定，与协议无关，两个 OpenAI 系协议在这一维上不再有共同点。
      */
     private void applyProtocolHeaders(HttpHeaders headers, WireProtocol protocol) {
         if (protocol != WireProtocol.MESSAGES) {
@@ -234,6 +260,14 @@ public class ProviderModelDiscoveryService {
         }
     }
 
-    private record ModelPullRequest(String apiKey, String headerRulesJson) {
+    /**
+     * 一次拉取所需的持久化状态，全部取自数据库（见 {@link #prepareModelPullRequest}）。
+     *
+     * @param apiKey          解密后的凭据明文
+     * @param headerRulesJson 供应商请求头规则原文；无规则时为 {@code "[]"}
+     * @param authHeaderJson  出站鉴权头装配方式原文；供应商查不到时为 {@code null}，
+     *                        由 {@link AuthHeaderSetting#parse} 兜底
+     */
+    private record ModelPullRequest(String apiKey, String headerRulesJson, String authHeaderJson) {
     }
 }
