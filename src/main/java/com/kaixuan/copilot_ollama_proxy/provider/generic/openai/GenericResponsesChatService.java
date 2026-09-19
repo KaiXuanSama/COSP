@@ -38,6 +38,7 @@ import reactor.netty.http.client.HttpClient;
 import reactor.util.retry.Retry;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,13 +54,21 @@ import java.util.concurrent.atomic.AtomicReference;
  * <h2>为何与另两个上游服务平级，而不复用它们</h2>
  * 三条线路的 Reactor 链体<strong>结构不同</strong>：
  * <ul>
- *   <li>{@code AbstractUpstreamChatService}（Chat）流式用一道 gate 做缓存-释放，
- *       在「确认非空」之前扣住帧不下发；</li>
- *   <li>{@code GenericAnthropicChatService} 不能扣帧（客户端是事件状态机，
- *       扣住 {@code message_start} 会让它无法初始化），改为「边下发边记录是否见过载荷」；</li>
- *   <li>本类与 Anthropic 同构 —— Responses 客户端同样是事件状态机，
- *       扣住 {@code response.created} 一样会破坏它。</li>
+ *   <li>{@code AbstractUpstreamChatService}（Chat）的实质载荷判定取值路径是
+ *       {@code choices[].delta}；</li>
+ *   <li>{@code GenericAnthropicChatService} 的事件形态是
+ *       {@code message_start} / {@code content_block_*} / {@code message_delta}；</li>
+ *   <li>本类的事件形态是十余种 {@code type} 加按 {@code output_index} 分项的 item，
+ *       且终态事件有多个、语义不同。</li>
  * </ul>
+ * 三者的空响应取值路径、usage 提取、终态判定全部不同。
+ *
+ * <p><strong>空响应 gate 的语义三条线一致（都扣住）</strong>，见下方
+ * {@code chatCompletionStream} 里的 gate 注释。曾经这里不扣帧、只记「是否见过载荷」，
+ * 理由是「客户端是事件状态机，扣住 {@code response.created} 会让它无法初始化」——
+ * 该理由不成立：扣住是暂时的，开闸时整批按序释放，下游看到的是完整合法前缀。
+ * 而不扣帧会导致重试时下游收到重复的 {@code response.created}、
+ * 以及耗尽时把已流走的事件再放行一遍。
  *
  * <p>那么为何不继承 Anthropic 那份？因为「结构同构」不等于「实现可共享」：
  * 两者的请求体准备、空响应取值路径、usage 提取、终态判定全部不同，
@@ -318,20 +327,24 @@ public class GenericResponsesChatService {
         // Responses 的 usage 只在终态事件里出现一次、一次给全。仍用「最后一份非 null」
         // 而非「第一份」—— 若某个上游在中途也带 usage，终态那份才是结算值。
         AtomicReference<String> usageRaw = new AtomicReference<>(null);
-        // 本轮是否见过实质载荷。整轮为 false 即判空响应。
-        AtomicBoolean sawPayload = new AtomicBoolean(false);
+        // 空响应 gate 的两个状态，每轮往返在起点重置：
+        // gateOpen —— 本轮是否已出现实质载荷（正文/思考链/工具调用）。开闸后当轮不再拦截。
+        // heldFrames —— 开闸前被拦下的事件，开闸时整批按到达顺序放行；轮末仍未开闸则随异常带出。
+        AtomicBoolean gateOpen = new AtomicBoolean(false);
+        List<String> heldFrames = new CopyOnWriteArrayList<>();
         // 空响应耗尽放行标记：该轮已在 doOnError 落过库，收尾处据此跳过，避免重复记录。
         AtomicBoolean emptyResponsePassthrough = new AtomicBoolean(false);
 
         Flux<String> attempt = Flux.defer(() -> {
                     // 每轮往返起点重置：使每条日志只反映该次往返，不跨重试累加。
                     // 状态在 defer 内重置而非声明处初始化 —— retryWhen 会重订阅，
-                    // 若不重置，第二轮会带着第一轮的 sawPayload 与 chunk 记录。
+                    // 若不重置，第二轮会带着第一轮的 gate 状态与事件记录。
                     attemptStart.set(System.currentTimeMillis());
                     logChunks.clear();
                     ttfbMs.set(-1);
                     usageRaw.set(null);
-                    sawPayload.set(false);
+                    gateOpen.set(false);
+                    heldFrames.clear();
                     return buildWebClient(reqHeaders, provider, downstreamHeaders, true)
                             .post().uri(responsesUri()).bodyValue(requestBody)
                             .exchangeToFlux(response -> {
@@ -366,10 +379,6 @@ public class GenericResponsesChatService {
                         ttfbMs.set(System.currentTimeMillis() - attemptStart.get());
                     }
                     log.debug("{} 上游事件: {}", providerKey, data);
-                    // 实质载荷判定：逐事件看，一轮内有一次为真即够。
-                    if (!sawPayload.get() && ResponsesContentDetector.eventHasPayload(objectMapper, data)) {
-                        sawPayload.set(true);
-                    }
                     // usage 只在终态事件出现，但仍无条件尝试提取：某些上游中途也带一份，
                     // 后到的覆盖先到的，终态那份最终胜出。
                     String extracted = ResponsesUsageParser.extractUsageRawJson(objectMapper, data);
@@ -378,16 +387,47 @@ public class GenericResponsesChatService {
                     }
                     logChunks.add(data);
                 })
-                // 轮末综合判定：整轮从未见过实质载荷即为空响应。
+                // ── 空响应 gate ──────────────────────────────────────────────
+                // 挂在 retryWhen <strong>内侧</strong>，因此每轮重订阅各自独立判定。
+                // 开闸前逐事件缓存不下发；一旦出现实质载荷（正文/思考链/工具调用）立即整批释放，
+                // 之后当轮不再拦截。
+                //
+                // 为何必须扣住而不是「边下发边记标记」：扣住才保证「未见载荷」等价于
+                // 「下游什么都没收到」。否则会出两个问题 ——
+                //   1) 重试时下游收到重复的开场事件（第 1 轮的 response.created + 第 2 轮的），
+                //      而 Responses 协议里 response.created 每个响应只有一次，
+                //      客户端是事件状态机，会被搞乱；
+                //   2) 空响应耗尽时会把已经流走的事件再放行一遍。
+                //
+                // 扣住不会破坏客户端状态机：开闸时按到达顺序整批释放，下游看到的是一个
+                // 完整合法的前缀，只是晚了一点。代价是首载荷到达前看不到任何事件，
+                // 那段时间由心跳保活（与 Chat 线路一致）。
+                .concatMap(data -> {
+                    if (gateOpen.get()) {
+                        return Flux.just(data);
+                    }
+                    if (ResponsesContentDetector.eventHasPayload(objectMapper, data)) {
+                        gateOpen.set(true);
+                        // 整批释放：缓存事件按到达顺序在前，当前事件在后，下游看到的顺序与上游一致。
+                        List<String> released = new ArrayList<>(heldFrames);
+                        heldFrames.clear();
+                        released.add(data);
+                        return Flux.fromIterable(released);
+                    }
+                    heldFrames.add(data);
+                    return Flux.empty();
+                })
+                // 轮末综合判定：整轮从未开闸即为空响应。
                 // 放在 concatWith 而非 doFinally —— 只有前者能把错误信号注入流中。
-                // 此处也覆盖「0 事件」的情形：一个事件都没来，sawPayload 自然为假。
+                // 此处也覆盖「0 事件」的情形：一个事件都没来，gate 自然没开。
                 .concatWith(Flux.defer(() -> {
-                    if (sawPayload.get()) {
+                    if (gateOpen.get()) {
                         return Flux.<String>empty();
                     }
                     log.warn("{} 上游空响应（无正文/思考链/工具调用），事件数 {}，将按重试预算重发 [{}] {}",
-                            providerKey, logChunks.size(), model, requestId);
-                    return Flux.error(new EmptyUpstreamResponseException(List.copyOf(logChunks)));
+                            providerKey, heldFrames.size(), model, requestId);
+                    // 带出的是被扣下的事件（从未下发），因此耗尽时放行一次即为正确。
+                    return Flux.error(new EmptyUpstreamResponseException(List.copyOf(heldFrames)));
                 }))
                 // 网络类失败往返：错误响应已在 exchangeToFlux 分支落库，
                 // 此处用 findWebResponseException == null 排除以免重复。

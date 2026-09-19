@@ -548,14 +548,18 @@ class GenericResponsesChatServiceTests {
     }
 
     /**
-     * 事件<strong>按序完整下发</strong>，不扣帧。
+     * 事件<strong>按序完整下发</strong>，但开闸前不下发。
      *
-     * <p>这条线路刻意不设 Chat 侧那种 gate：下游客户端是状态机，扣住
-     * {@code response.created} 会让它无法初始化。代价是空响应那一轮的事件已经流走了，
-     * 但那正是耗尽后本来也要做的事。
+     * <p>与 Chat 侧同一语义：实质载荷出现前逐事件扣住，开闸时整批按到达顺序释放，
+     * 因此下游看到的仍是一个完整合法的前缀 —— 只是晚了一点。
+     *
+     * <p>曾经这条线路不扣帧，理由是「客户端是状态机，扣住 {@code response.created}
+     * 会让它无法初始化」。该理由不成立：扣住是暂时的，开闸时会连同
+     * {@code response.created} 一起释放。而不扣帧会让空响应那一轮的事件提前流走，
+     * 于是重试时下游收到重复的 {@code response.created}、耗尽时再收一遍同样的事件。
      */
     @Test
-    void streamEventsAreForwardedInOrderWithoutGating() {
+    void streamEventsAreReleasedInOrderOncePayloadArrives() {
         DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
         TestService service = stubService(request -> sseResponse(Flux.just(
                 sse(factory, "{\"type\":\"response.created\",\"response\":{\"id\":\"r\"}}"),
@@ -566,9 +570,42 @@ class GenericResponsesChatServiceTests {
         List<String> events = service.exposeResponsesStream(newRequest(), routeTo("http://upstream.invalid"))
                 .collectList().block(Duration.ofSeconds(10));
 
+        // 四个事件一个不少，且顺序与上游一致 —— 扣住没有丢帧也没有乱序。
         assertThat(events).hasSize(4);
         assertThat(events.get(0)).contains("response.created");
+        assertThat(events.get(1)).contains("output_text.delta");
         assertThat(events.get(3)).contains("response.completed");
+    }
+
+    /**
+     * 上一轮被扣住的事件<strong>不会随重试重复下发给下游</strong>。
+     *
+     * <p>这正是扣帧要解决的问题：第 1 轮只有 {@code response.created}（无载荷）被判空，
+     * 那些事件从未下发，因此第 2 轮下游只收到一份 {@code response.created}。
+     *
+     * <p>若不扣帧，下游会看到两个 {@code response.created} —— 而 Responses 协议里
+     * 它每个响应只出现一次，客户端是事件状态机，会被搅乱。
+     */
+    @Test
+    void gatedEventsOfRetriedAttemptAreNotSentTwice() {
+        AtomicInteger calls = new AtomicInteger();
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        TestService service = stubService(request -> {
+            Flux<DataBuffer> body = calls.incrementAndGet() == 1
+                    ? Flux.just(sse(factory, "{\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}"))
+                    : Flux.just(
+                            sse(factory, "{\"type\":\"response.created\",\"response\":{\"id\":\"r2\"}}"),
+                            sse(factory, "{\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}"));
+            return sseResponse(body);
+        });
+
+        List<String> events = service.exposeResponsesStream(newRequest(), routeTo("http://upstream.invalid"))
+                .collectList().block(Duration.ofSeconds(10));
+
+        assertThat(calls.get()).isEqualTo(2);
+        // 只出现一次：第 1 轮那份被扣住了。
+        assertThat(events.stream().filter(e -> e.contains("response.created")).count()).isEqualTo(1);
+        assertThat(events).anyMatch(e -> e.contains("output_text.delta"));
     }
 
     // ==================== usage 落库 ====================
