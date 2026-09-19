@@ -75,6 +75,44 @@ describe('provider proxy state', () => {
     expect(new URLSearchParams(body).has('useProxy')).toBe(false)
   })
 
+  /** 出站鉴权头配置随新增请求一并提交，且原文照发不给前端二次加工。 */
+  it('carries authHeaderJson in the add-provider form', async () => {
+    const store = useProviderStore()
+    vi.mocked(http.post).mockResolvedValue({ data: { providerKey: 'relay' } })
+    vi.mocked(http.get).mockResolvedValue({ data: { providers: [] } })
+
+    const authHeaderJson = '{"mode":"CONFIGURED","header":"X_API_KEY"}'
+    await store.addProvider('Relay', '[]', 'https://relay.example.com/v1', {
+      bodyTemplateKeysJson: '[]',
+      bodyPreviewJson: '{}',
+      bodyRulesJson: '{"version":2,"groups":[]}',
+    }, undefined, undefined, authHeaderJson)
+
+    const body = vi.mocked(http.post).mock.calls[0][1] as string
+    expect(new URLSearchParams(body).get('authHeaderJson')).toBe(authHeaderJson)
+  })
+
+  /**
+   * 不传 authHeaderJson 时该字段完全不出现 —— 后端据此保留原值。
+   *
+   * <p>与 useProxy 不同的是，这里发空串不是「当作未设置」而是直接 400：
+   * 写入侧对空串做 JSON 解析，非法即拒。所以「不管鉴权头」的路径必须真的不发。
+   */
+  it('omits authHeaderJson entirely when the caller does not supply it', async () => {
+    const store = useProviderStore()
+    vi.mocked(http.put).mockResolvedValue({ data: { ok: true } })
+    vi.mocked(http.get).mockResolvedValue({ data: { providers: [] } })
+
+    await store.updateProvider('relay', 'Relay', '[]', 'https://relay.example.com/v1', {
+      bodyTemplateKeysJson: '[]',
+      bodyPreviewJson: '{}',
+      bodyRulesJson: '{"version":2,"groups":[]}',
+    })
+
+    const body = vi.mocked(http.put).mock.calls[0][1] as string
+    expect(new URLSearchParams(body).has('authHeaderJson')).toBe(false)
+  })
+
   /**
    * 单条供应商 Key 的明文揭示：请求路径携带 providerKey 与 keyUuid，
    * 返回值只取 apiKey 字段（明文不随列表常驻，按需拉取一次）。

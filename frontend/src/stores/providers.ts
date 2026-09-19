@@ -47,6 +47,14 @@ export interface Provider {
   anthropicBaseUrl?: string
   /** OpenAI Responses 协议的独立地址；空串表示回退到 {@link baseUrl}。 */
   responsesBaseUrl?: string
+  /**
+   * 出站鉴权头装配方式的 JSON 原文。
+   *
+   * **原文而非解析后的对象**：它与提交形态互为逆运算，与 `headerRulesJson` /
+   * `bodyRulesJson` 同一条口径。解析成对象只在界面层发生 —— 编辑控件需要的是
+   * `AuthHeaderConfig`，由 `parseAuthHeaderConfig` 在读入时转一次。
+   */
+  authHeaderJson?: string
   requestTransform?: ProviderRequestTransform
   apiKeys: ApiKeyEntry[]
   models: ProviderModel[]
@@ -103,6 +111,20 @@ function appendProtocolFields(formData: URLSearchParams, protocols?: ProviderPro
 function appendUseProxyField(formData: URLSearchParams, useProxy?: boolean) {
   if (useProxy === undefined) return
   formData.append('useProxy', String(useProxy))
+}
+
+/**
+ * 把出站鉴权头装配方式写进表单；未传时不发该字段。
+ *
+ * <p>与另两个 `append*` 同一约定：后端把「字段未出现」视为保留原值，
+ * 因此 `undefined` 表示「这条路径不管鉴权头」。
+ *
+ * <p>传空串是**另一回事**：它会被后端当成非法 JSON 而 400（写入侧严格校验）。
+ * 调用方在值为空时应当传默认配置的序列化结果，而不是空串。
+ */
+function appendAuthHeaderField(formData: URLSearchParams, authHeaderJson?: string) {
+  if (authHeaderJson === undefined) return
+  formData.append('authHeaderJson', authHeaderJson)
 }
 
 export interface GatewayAuthStatus {
@@ -250,7 +272,8 @@ export const useProviderStore = defineStore('providers', () => {
 
   async function addProvider(displayName: string, headerRulesJson: string,
                                    baseUrl: string, requestTransform: ProviderRequestTransformInput,
-                                   protocols?: ProviderProtocolInput, useProxy?: boolean) {
+                                   protocols?: ProviderProtocolInput, useProxy?: boolean,
+                                   authHeaderJson?: string) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
     formData.append('headerRulesJson', headerRulesJson)
@@ -260,6 +283,7 @@ export const useProviderStore = defineStore('providers', () => {
     formData.append('bodyRulesJson', requestTransform.bodyRulesJson)
     appendProtocolFields(formData, protocols)
     appendUseProxyField(formData, useProxy)
+    appendAuthHeaderField(formData, authHeaderJson)
     const res = await http.post('/providers', formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
@@ -277,7 +301,8 @@ export const useProviderStore = defineStore('providers', () => {
   async function updateProvider(providerKey: string, displayName: string,
                                       headerRulesJson: string, baseUrl: string,
                                       requestTransform: ProviderRequestTransformInput,
-                                      protocols?: ProviderProtocolInput, useProxy?: boolean) {
+                                      protocols?: ProviderProtocolInput, useProxy?: boolean,
+                                      authHeaderJson?: string) {
     const formData = new URLSearchParams()
     formData.append('displayName', displayName)
     formData.append('headerRulesJson', headerRulesJson)
@@ -287,6 +312,7 @@ export const useProviderStore = defineStore('providers', () => {
     formData.append('bodyRulesJson', requestTransform.bodyRulesJson)
     appendProtocolFields(formData, protocols)
     appendUseProxyField(formData, useProxy)
+    appendAuthHeaderField(formData, authHeaderJson)
     await http.put(`/providers/${providerKey}`, formData.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
