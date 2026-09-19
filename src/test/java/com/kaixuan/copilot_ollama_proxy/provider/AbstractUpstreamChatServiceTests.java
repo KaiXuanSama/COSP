@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.provider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
@@ -318,6 +319,74 @@ class AbstractUpstreamChatServiceTests {
         assertThat(capturedHeaders).containsEntry("X-Provider", "generic");
         assertThat(capturedHeaders).containsEntry("X-Api-Key", "****");
         assertThat(capturedHeaders.values()).doesNotContain("actual-api-key");
+    }
+
+    /**
+     * 出站鉴权头名取自供应商配置，与本管道走 Chat 协议无关。
+     *
+     * <h2>为何配 x-api-key 而不是 Authorization</h2>
+     * 后者与默认值相同，漏接线（给 {@code applyHeaders} 传了
+     * {@code AuthHeaderSetting.defaults()} 而不是 provider 那一列）也照样绿。
+     * 选一个与默认值不同的值，这条用例才真的在验「读到了配置」。
+     *
+     * <p>头名与配置的完整对应关系由 {@code ProviderRequestHeaderServiceTests} 穷举，
+     * 这里只验本服务把那一列接上了 —— 三条线路各有一条同形用例。
+     */
+    @Test
+    void authenticationHeaderFollowsProviderConfigurationInsteadOfProtocol() {
+        TestOpenAiService service = new TestOpenAiService();
+        AtomicReference<Map<String, String>> sentHeaders = new AtomicReference<>();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            Map<String, String> headers = new LinkedHashMap<>();
+            request.headers().forEach((name, values) -> headers.put(name, String.join(", ", values)));
+            sentHeaders.set(headers);
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                    .body("{}").build());
+        }));
+
+        service.exposeBuildWebClient(new LinkedHashMap<>(),
+                        providerWithAuthHeader("{\"mode\":\"CONFIGURED\",\"header\":\"X_API_KEY\"}"))
+                .post().uri("/chat/completions").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(Map.of("model", "model-a")).retrieve().bodyToMono(String.class).block();
+
+        assertThat(sentHeaders.get()).containsEntry("x-api-key", "actual-api-key");
+        assertThat(sentHeaders.get()).doesNotContainKey(HttpHeaders.AUTHORIZATION);
+    }
+
+    /**
+     * 下游送来的凭据值绝不出站，无论装配选了哪个头。
+     *
+     * <p>默认配置是「取下游」，因此下游只带 {@code x-api-key} 时出站也走这个头 ——
+     * 但值必须换成供应商配置的那把 key。这条用例守的是<strong>值</strong>而非头名：
+     * 头名可以随配置与下游变化，「把下游凭据转发给上游供应商」永远是缺陷。
+     *
+     * <p>x-api-key 一侧曾经是「缺失才设」，下游带了就补不进去，请求会带着下游的值
+     * 打到上游 —— 而排查时 Authorization 看起来是对的，属于最难发现的那种缺口。
+     */
+    @Test
+    void downstreamCredentialNeverReachesUpstream() {
+        TestOpenAiService service = new TestOpenAiService();
+        AtomicReference<Map<String, String>> sentHeaders = new AtomicReference<>();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            Map<String, String> headers = new LinkedHashMap<>();
+            request.headers().forEach((name, values) -> headers.put(name, String.join(", ", values)));
+            sentHeaders.set(headers);
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                    .body("{}").build());
+        }));
+
+        HttpHeaders downstream = new HttpHeaders();
+        downstream.set("x-api-key", "downstream-leak");
+
+        service.exposeBuildWebClient(new LinkedHashMap<>(),
+                        providerWithAuthHeader(AuthHeaderSetting.DEFAULT_AUTH_HEADER_JSON), downstream)
+                .post().uri("/chat/completions").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(Map.of("model", "model-a")).retrieve().bodyToMono(String.class).block();
+
+        assertThat(sentHeaders.get()).containsEntry("x-api-key", "actual-api-key");
+        assertThat(sentHeaders.get().values()).doesNotContain("downstream-leak");
     }
 
     /**
@@ -1049,6 +1118,13 @@ class AbstractUpstreamChatServiceTests {
             return buildWebClientWithHeaders(capturedHeaders, provider, HttpHeaders.EMPTY, false);
         }
 
+        /** 带下游请求头的重载，用于验证鉴权头装配的「取下游」探测。 */
+        private WebClient exposeBuildWebClient(Map<String, String> capturedHeaders,
+                                               ProviderRuntimeConfiguration provider,
+                                               HttpHeaders downstreamHeaders) {
+            return buildWebClientWithHeaders(capturedHeaders, provider, downstreamHeaders, false);
+        }
+
         private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
                                                         ProviderRuntimeConfiguration provider) {
             return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, null);
@@ -1357,5 +1433,18 @@ class AbstractUpstreamChatServiceTests {
 
     private ProviderRuntimeConfiguration provider() {
         return new ProviderRuntimeConfiguration("stub", "", "", List.of());
+    }
+
+    /**
+     * 带出站鉴权头装配方式的供应商快照。
+     *
+     * @param authHeaderJson {@code provider_config.auth_header} 列的原文，形如
+     *                       {@code {"mode":"CONFIGURED","header":"X_API_KEY"}}
+     */
+    private static ProviderRuntimeConfiguration providerWithAuthHeader(String authHeaderJson) {
+        return new ProviderRuntimeConfiguration("stub", "https://example.com", "actual-api-key",
+                List.of(), "[]", "{\"version\":2,\"groups\":[]}",
+                ProviderRuntimeConfiguration.DEFAULT_SUPPORTED_PROTOCOLS_JSON, "", "", false,
+                authHeaderJson);
     }
 }

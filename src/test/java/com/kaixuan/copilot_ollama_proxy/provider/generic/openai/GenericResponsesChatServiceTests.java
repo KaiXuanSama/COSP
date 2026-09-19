@@ -161,24 +161,54 @@ class GenericResponsesChatServiceTests {
     // ==================== 请求头 ====================
 
     /**
-     * 只发 OpenAI 系认的那一种鉴权头。
+     * 下游送来的凭据值绝不出站，无论它落在哪个头上。
      *
-     * <p>{@code x-api-key} 在这条链路上是噪音 —— 可能来自下游透传（某些客户端按
-     * Anthropic 惯例发它）。装配规则见
-     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders}，那个判据写成
-     * 否定式（{@code if (upstream == MESSAGES) ... else Bearer}），因此 Responses
-     * 自动落到正确的分支。本用例正是那个「自动」的验证 —— 否则它只是巧合。
+     * <h2>这条用例换过一次判据</h2>
+     * 它原先叫 {@code onlyBearerAuthenticationHeaderIsSent}，断言「发 Authorization、
+     * 不发 x-api-key」——那个判据是<strong>头名</strong>，成立的前提是「出站头名由上游协议
+     * 决定，而 Responses 属 OpenAI 系故恒为 Bearer」。该前提已被移除：头名现在由供应商级
+     * 配置决定，默认「取下游」，因此下游只发 {@code x-api-key} 时出站也是 {@code x-api-key}。
+     *
+     * <p>但这条用例真正要守的东西没变，只是需要换成正确的判据 —— <strong>值</strong>：
+     * {@code downstream-leak} 不能出现在任何一个出站鉴权头里。头名可以随配置变，
+     * 「下游凭据泄露给上游供应商」永远是缺陷。
+     *
+     * <p>头名与配置的对应关系由 {@code ProviderRequestHeaderServiceTests} 穷举，
+     * 这里只验本服务把配置<strong>接上了</strong>（见
+     * {@link #authenticationHeaderFollowsProviderConfiguration}）。
      */
     @Test
-    void onlyBearerAuthenticationHeaderIsSent() {
+    void downstreamCredentialNeverReachesUpstream() {
         HttpHeaders downstream = new HttpHeaders();
         downstream.add("x-api-key", "downstream-leak");
 
         realService().exposeResponses(newRequest(), routeTo(baseUrlWithV1()), downstream)
                 .block(Duration.ofSeconds(10));
 
-        assertThat(capturedHeaders.get()).containsEntry("Authorization", "Bearer test-key");
-        assertThat(capturedHeaders.get()).doesNotContainKey("X-api-key");
+        // 默认「取下游」：下游只带 x-api-key，于是供应商 key 也走这个头。
+        assertThat(capturedHeaders.get()).containsEntry("X-api-key", "test-key");
+        assertThat(capturedHeaders.get()).doesNotContainKey("Authorization");
+        assertThat(capturedHeaders.get().values()).doesNotContain("downstream-leak");
+    }
+
+    /**
+     * 出站头名取自供应商配置，与本服务走哪个协议无关。
+     *
+     * <p>配「取设置 + x-api-key」并<strong>不给下游任何鉴权头</strong>：若本服务漏传配置
+     * （{@code applyHeaders} 那个参数给了 {@code defaults()} 而不是 provider 的值），
+     * 装配会落到默认的 Authorization，本用例即红。
+     *
+     * <p>刻意选 {@code x-api-key} 而非 Authorization 作为配置值 —— 后者与默认值相同，
+     * 漏接线也照样绿。
+     */
+    @Test
+    void authenticationHeaderFollowsProviderConfiguration() {
+        realService().exposeResponses(newRequest(),
+                        routeWithAuthHeader(baseUrlWithV1(), "{\"mode\":\"CONFIGURED\",\"header\":\"X_API_KEY\"}"))
+                .block(Duration.ofSeconds(10));
+
+        assertThat(capturedHeaders.get()).containsEntry("X-api-key", "test-key");
+        assertThat(capturedHeaders.get()).doesNotContainKey("Authorization");
     }
 
     /**
@@ -518,14 +548,18 @@ class GenericResponsesChatServiceTests {
     }
 
     /**
-     * 事件<strong>按序完整下发</strong>，不扣帧。
+     * 事件<strong>按序完整下发</strong>，但开闸前不下发。
      *
-     * <p>这条线路刻意不设 Chat 侧那种 gate：下游客户端是状态机，扣住
-     * {@code response.created} 会让它无法初始化。代价是空响应那一轮的事件已经流走了，
-     * 但那正是耗尽后本来也要做的事。
+     * <p>与 Chat 侧同一语义：实质载荷出现前逐事件扣住，开闸时整批按到达顺序释放，
+     * 因此下游看到的仍是一个完整合法的前缀 —— 只是晚了一点。
+     *
+     * <p>曾经这条线路不扣帧，理由是「客户端是状态机，扣住 {@code response.created}
+     * 会让它无法初始化」。该理由不成立：扣住是暂时的，开闸时会连同
+     * {@code response.created} 一起释放。而不扣帧会让空响应那一轮的事件提前流走，
+     * 于是重试时下游收到重复的 {@code response.created}、耗尽时再收一遍同样的事件。
      */
     @Test
-    void streamEventsAreForwardedInOrderWithoutGating() {
+    void streamEventsAreReleasedInOrderOncePayloadArrives() {
         DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
         TestService service = stubService(request -> sseResponse(Flux.just(
                 sse(factory, "{\"type\":\"response.created\",\"response\":{\"id\":\"r\"}}"),
@@ -536,9 +570,42 @@ class GenericResponsesChatServiceTests {
         List<String> events = service.exposeResponsesStream(newRequest(), routeTo("http://upstream.invalid"))
                 .collectList().block(Duration.ofSeconds(10));
 
+        // 四个事件一个不少，且顺序与上游一致 —— 扣住没有丢帧也没有乱序。
         assertThat(events).hasSize(4);
         assertThat(events.get(0)).contains("response.created");
+        assertThat(events.get(1)).contains("output_text.delta");
         assertThat(events.get(3)).contains("response.completed");
+    }
+
+    /**
+     * 上一轮被扣住的事件<strong>不会随重试重复下发给下游</strong>。
+     *
+     * <p>这正是扣帧要解决的问题：第 1 轮只有 {@code response.created}（无载荷）被判空，
+     * 那些事件从未下发，因此第 2 轮下游只收到一份 {@code response.created}。
+     *
+     * <p>若不扣帧，下游会看到两个 {@code response.created} —— 而 Responses 协议里
+     * 它每个响应只出现一次，客户端是事件状态机，会被搅乱。
+     */
+    @Test
+    void gatedEventsOfRetriedAttemptAreNotSentTwice() {
+        AtomicInteger calls = new AtomicInteger();
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        TestService service = stubService(request -> {
+            Flux<DataBuffer> body = calls.incrementAndGet() == 1
+                    ? Flux.just(sse(factory, "{\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}"))
+                    : Flux.just(
+                            sse(factory, "{\"type\":\"response.created\",\"response\":{\"id\":\"r2\"}}"),
+                            sse(factory, "{\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}"));
+            return sseResponse(body);
+        });
+
+        List<String> events = service.exposeResponsesStream(newRequest(), routeTo("http://upstream.invalid"))
+                .collectList().block(Duration.ofSeconds(10));
+
+        assertThat(calls.get()).isEqualTo(2);
+        // 只出现一次：第 1 轮那份被扣住了。
+        assertThat(events.stream().filter(e -> e.contains("response.created")).count()).isEqualTo(1);
+        assertThat(events).anyMatch(e -> e.contains("output_text.delta"));
     }
 
     // ==================== usage 落库 ====================
@@ -809,6 +876,24 @@ class GenericResponsesChatServiceTests {
         return new ResolvedProviderRoute(
                 new ProviderRuntimeConfiguration("oai", baseUrl, "test-key", List.of(),
                         "[]", bodyRulesJson),
+                "gpt-5", "[oai] gpt-5");
+    }
+
+    /**
+     * 带出站鉴权头装配方式的路由。
+     *
+     * <p>该维度是供应商级的（不是模型级），所以要写满参构造器的第 11 个参数 ——
+     * 前面那些都取与 {@link #routeTo} 一致的默认值。
+     *
+     * @param authHeaderJson 持久化原文，形如
+     *                       {@code {"mode":"CONFIGURED","header":"X_API_KEY"}}
+     */
+    private static ResolvedProviderRoute routeWithAuthHeader(String baseUrl, String authHeaderJson) {
+        return new ResolvedProviderRoute(
+                new ProviderRuntimeConfiguration("oai", baseUrl, "test-key", List.of(),
+                        "[]", "{\"version\":2,\"groups\":[]}",
+                        ProviderRuntimeConfiguration.DEFAULT_SUPPORTED_PROTOCOLS_JSON,
+                        "", "", false, authHeaderJson),
                 "gpt-5", "[oai] gpt-5");
     }
 

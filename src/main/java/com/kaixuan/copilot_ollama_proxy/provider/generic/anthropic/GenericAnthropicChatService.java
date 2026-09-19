@@ -10,6 +10,7 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.AnthropicThinkingSetting;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
@@ -40,10 +41,12 @@ import reactor.netty.http.client.HttpClient;
 import reactor.util.retry.Retry;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -52,10 +55,18 @@ import java.util.concurrent.atomic.AtomicReference;
  * 通用 Anthropic 上游服务 —— 对接 Anthropic Messages API 协议的供应商。
  *
  * <h2>为何与 {@code AbstractUpstreamChatService} 平级而非继承它</h2>
- * 两种协议的 Reactor 链体<strong>结构不同</strong>：OpenAI 流式用一道 gate 做
- * 缓存-释放，Anthropic 需要在一轮内累积「是否见过实质载荷」并维护 block 状态。
+ * 两种协议的 Reactor 链体<strong>结构不同</strong>：Chat 的事件形态是
+ * {@code choices[].delta}，Anthropic 是 {@code message_start} /
+ * {@code content_block_*} / {@code message_delta} 并需维护 block 状态。
  * 若强行抽公共父类，那两个方法会退化成一堆钩子 —— 模板方法反而让子类作者
  * 看不见自己正在依赖什么。
+ *
+ * <p><strong>空响应 gate 的语义两条线一致（都扣住）</strong>：开闸前逐事件缓存不下发，
+ * 出现实质载荷才整批按序释放。曾经这里不扣帧、只记「是否见过实质载荷」，
+ * 理由是「客户端是事件状态机，扣住 {@code message_start} 会让它无法初始化」——
+ * 该理由不成立：扣住是暂时的，开闸时整批释放，下游看到的是完整合法前缀。
+ * 而不扣帧会导致重试时下游收到重复的 {@code message_start}、
+ * 以及耗尽时把已流走的事件再放行一遍。
  *
  * <p>代价是接线顺序在两处各写一遍。这是<strong>有意接受</strong>的：接线顺序
  * 写出来带注释比藏在基类里更可审。其中最贵的一条约束是空响应判定的位置，
@@ -354,21 +365,25 @@ public class GenericAnthropicChatService {
         // （message_delta），理由见 pickRicherUsageRaw —— 有的上游每个事件都带 usage，
         // 且尾事件全零；也不跨事件拼字段，那会造出上游从未发出过的报文。
         AtomicReference<String> archivedUsageRaw = new AtomicReference<>(null);
-        // 本轮是否见过实质载荷。整轮为 false 即判空响应。
-        AtomicBoolean sawPayload = new AtomicBoolean(false);
+        // 空响应 gate 的两个状态，每轮往返在起点重置：
+        // gateOpen —— 本轮是否已出现实质载荷（正文/思考链/工具调用）。开闸后当轮不再拦截。
+        // heldFrames —— 开闸前被拦下的事件，开闸时整批按到达顺序放行；轮末仍未开闸则随异常带出。
+        AtomicBoolean gateOpen = new AtomicBoolean(false);
+        List<String> heldFrames = new CopyOnWriteArrayList<>();
         // 空响应耗尽放行标记：该轮已在 doOnError 落过库，收尾处据此跳过，避免重复记录。
         AtomicBoolean emptyResponsePassthrough = new AtomicBoolean(false);
 
         Flux<String> attempt = Flux.defer(() -> {
                     // 每轮往返起点重置：使每条日志只反映该次往返，不跨重试累加。
                     // 状态在 defer 内重置而非声明处初始化 —— retryWhen 会重订阅，
-                    // 若不重置，第二轮会带着第一轮的 sawPayload 与 chunk 记录。
+                    // 若不重置，第二轮会带着第一轮的 gate 状态与事件记录。
                     attemptStart.set(System.currentTimeMillis());
                     logChunks.clear();
                     ttfbMs.set(-1);
                     usageAccumulator.set(UsageTokens.EMPTY);
                     archivedUsageRaw.set(null);
-                    sawPayload.set(false);
+                    gateOpen.set(false);
+                    heldFrames.clear();
                     return buildWebClient(reqHeaders, provider, downstreamHeaders, true)
                             .post().uri(messagesUri()).bodyValue(requestBody)
                             .exchangeToFlux(response -> {
@@ -403,10 +418,6 @@ public class GenericAnthropicChatService {
                         ttfbMs.set(System.currentTimeMillis() - attemptStart.get());
                     }
                     log.debug("{} 上游事件: {}", providerKey, data);
-                    // 实质载荷判定：逐事件看，一轮内有一次为真即够。
-                    if (!sawPayload.get() && AnthropicContentDetector.eventHasPayload(objectMapper, data)) {
-                        sawPayload.set(true);
-                    }
                     // usage 跨事件合并：message_start 给输入、message_delta 给输出。
                     String rawUsage = AnthropicUsageParser.extractUsageRawJson(objectMapper, data);
                     if (rawUsage != null) {
@@ -417,16 +428,46 @@ public class GenericAnthropicChatService {
                     }
                     logChunks.add(data);
                 })
-                // 轮末综合判定：整轮从未见过实质载荷即为空响应。
+                // ── 空响应 gate ──────────────────────────────────────────────
+                // 挂在 retryWhen <strong>内侧</strong>，因此每轮重订阅各自独立判定。
+                // 开闸前逐事件缓存不下发；一旦出现实质载荷（正文/思考链/工具调用）立即整批释放，
+                // 之后当轮不再拦截。
+                //
+                // 为何必须扣住而不是「边下发边记标记」：扣住才保证「未见载荷」等价于
+                // 「下游什么都没收到」。否则会出两个问题 ——
+                //   1) 重试时下游收到重复的开场事件（第 1 轮的 message_start + 第 2 轮的），
+                //      而 Anthropic 协议里 message_start 每条消息只有一次，客户端状态机会被搅乱；
+                //   2) 空响应耗尽时会把已经流走的事件再放行一遍。
+                //
+                // 扣住不会破坏客户端状态机：开闸时按到达顺序整批释放，下游看到的是一个
+                // 完整合法的前缀，只是晚了一点。代价是首载荷到达前看不到任何事件，
+                // 那段时间由心跳保活（与 Chat 线路一致）。
+                .concatMap(data -> {
+                    if (gateOpen.get()) {
+                        return Flux.just(data);
+                    }
+                    if (AnthropicContentDetector.eventHasPayload(objectMapper, data)) {
+                        gateOpen.set(true);
+                        // 整批释放：缓存事件按到达顺序在前，当前事件在后，下游看到的顺序与上游一致。
+                        List<String> released = new ArrayList<>(heldFrames);
+                        heldFrames.clear();
+                        released.add(data);
+                        return Flux.fromIterable(released);
+                    }
+                    heldFrames.add(data);
+                    return Flux.empty();
+                })
+                // 轮末综合判定：整轮从未开闸即为空响应。
                 // 放在 concatWith 而非 doFinally —— 只有前者能把错误信号注入流中。
-                // 此处也覆盖「0 事件」的情形：一个事件都没来，sawPayload 自然为假。
+                // 此处也覆盖「0 事件」的情形：一个事件都没来，gate 自然没开。
                 .concatWith(Flux.defer(() -> {
-                    if (sawPayload.get()) {
+                    if (gateOpen.get()) {
                         return Flux.<String>empty();
                     }
                     log.warn("{} 上游空响应（无正文/思考链/工具调用），事件数 {}，将按重试预算重发 [{}] {}",
-                            providerKey, logChunks.size(), model, requestId);
-                    return Flux.error(new EmptyUpstreamResponseException(List.copyOf(logChunks)));
+                            providerKey, heldFrames.size(), model, requestId);
+                    // 带出的是被扣下的事件（从未下发），因此耗尽时放行一次即为正确。
+                    return Flux.error(new EmptyUpstreamResponseException(List.copyOf(heldFrames)));
                 }))
                 // 网络类失败往返：错误响应已在 exchangeToFlux 分支落库，
                 // 此处用 findWebResponseException == null 排除以免重复。
@@ -556,10 +597,11 @@ public class GenericAnthropicChatService {
      * 刻意不抽公共方法：它依赖三个注入字段，抽出去要传三个参数或再造一个 Bean，
      * 而本身只有二十行。
      *
-     * <p>Anthropic 特有的两点：必须带 {@code anthropic-version} 头；鉴权用
-     * {@code x-api-key} 而非 {@code Authorization: Bearer}，后者会被一并删除 ——
-     * 按出站协议装配鉴权头的规则见
-     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders}。
+     * <p>Anthropic 唯一特有的是必须带 {@code anthropic-version} 头。鉴权头<strong>不</strong>
+     * 属于这一类：它由 {@link AuthHeaderSetting} 这个供应商级配置决定头名，与本服务走哪个
+     * 协议无关（依据与反面证据见
+     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders}）。
+     * 因此这条线路上出站的可能是 {@code x-api-key}，也可能是 {@code Authorization: Bearer}。
      */
     private WebClient buildWebClient(Map<String, String> capturedHeaders,
                                      ProviderRuntimeConfiguration provider,
@@ -577,14 +619,13 @@ public class GenericAnthropicChatService {
                 .clientConnector(new ReactorClientHttpConnector(capturingHttpClient))
                 .baseUrl(normalizedUrl)
                 .defaultHeaders(headers -> {
-                    // 复用共享的请求头装配（下游头透传白名单、hop-by-hop 排除、按出站协议
-                    // 装配鉴权头、供应商头规则含 {apiKey} 占位与删除标记）。
-                    // 出站协议恒为 ANTHROPIC：本服务只打 Anthropic 端点，因此鉴权装配
-                    // 写 x-api-key 并删掉 Authorization —— 后者在这条链路上是噪音，
-                    // 可能来自下游透传，也可能来自 C2M 翻译路线（下游说 OpenAI、上游走这里）。
+                    // 复用共享的请求头装配（下游头透传白名单、hop-by-hop 排除、鉴权头装配、
+                    // 供应商头规则含 {apiKey} 占位与删除标记）。
+                    // 出站鉴权头由供应商级配置决定，与本服务的协议无关 —— 「走 Anthropic」
+                    // 不代表该发 x-api-key，头名取决于用户配的「取下游 / 取设置」与承载方式。
                     providerRequestHeaderService.applyHeaders(
                             headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream,
-                            WireProtocol.MESSAGES);
+                            AuthHeaderSetting.parse(provider.authHeaderJson(), objectMapper));
                     // Anthropic 必需的版本头。放在 applyHeaders 之后，
                     // 使供应商头规则仍可覆盖它（某些中转站要求特定版本）。
                     if (!headers.containsKey(ANTHROPIC_VERSION_HEADER)) {
@@ -731,34 +772,85 @@ public class GenericAnthropicChatService {
      *
      * <p>若请求已带顶层 {@code system}，则保留它并把 messages 里的追加在后面 ——
      * 下游可能两种形态都用了，丢掉任何一份都会改变语义。
+     *
+     * <h2>顶层 system 是数组时不能降级成字符串</h2>
+     * Anthropic 允许 {@code system} 是块数组，Claude CLI 就是这么发的：
+     * 三个 {@code {type:"text"}} 块，后两块带 {@code cache_control:{type:"ephemeral"}}，
+     * 表示「到此块为止的内容可缓存」。把它压成字符串会<strong>连缓存断点一起丢掉</strong>，
+     * 每条请求都退化成缓存未命中。
+     *
+     * <p>早先这里的保留判据是 {@code instanceof String}，数组形态因此既不进拼接缓冲、
+     * 又会被末尾那句 {@code put} <strong>整体覆盖</strong> —— 发往上游的 {@code system}
+     * 只剩 messages 里抬上来的那一小段，上万字的系统提示词无声消失，而请求仍然 200。
+     * 触发需要「数组形态顶层 system」与「messages 里有 system 消息」同时成立，
+     * 缺任一个都走不到那句 {@code put}，所以它藏了很久：既有的抬升用例全是字符串形态。
+     *
+     * <p>抬升内容一律<strong>追加到末尾</strong>而非插入开头：数组里每个块都可能带缓存标记，
+     * 改动任何已有块的内容都会让它之后的内容全部缓存失效。
      */
     @SuppressWarnings("unchecked")
     private void extractSystemPrompt(Map<String, Object> body) {
         if (!(body.get("messages") instanceof List<?> rawMessages)) {
             return;
         }
-        StringBuilder systemText = new StringBuilder();
-        if (body.get("system") instanceof String existing && !existing.isBlank()) {
-            systemText.append(existing);
-        }
+        // 已有的顶层 system 与抬升内容分开收集：前者要按原形态落地（数组仍是数组），
+        // 后者一律并入它的末尾。合成一个缓冲就会逼两者共用一个输出形态，
+        // 那正是数组被降级成字符串的原因。
+        Object existingSystem = body.get("system");
+        StringBuilder liftedText = new StringBuilder();
         List<Object> kept = new java.util.ArrayList<>();
         for (Object item : rawMessages) {
             if (item instanceof Map<?, ?> raw && "system".equals(raw.get("role"))) {
                 String text = stringifyContent(((Map<String, Object>) raw).get("content"));
                 if (text != null && !text.isBlank()) {
-                    if (!systemText.isEmpty()) {
-                        systemText.append("\n\n");
+                    if (!liftedText.isEmpty()) {
+                        liftedText.append("\n\n");
                     }
-                    systemText.append(text);
+                    liftedText.append(text);
                 }
                 continue;
             }
             kept.add(item);
         }
         body.put("messages", kept);
-        if (!systemText.isEmpty()) {
-            body.put("system", systemText.toString());
+
+        // 没有可抬升的内容时顶层 system 原样不动 —— 包括「本来就没有」和「空块」两种情形，
+        // 后者也无需为无内容的消息凭空造一个字段。
+        if (!liftedText.isEmpty()) {
+            body.put("system", mergeSystem(existingSystem, liftedText.toString()));
         }
+    }
+
+    /**
+     * 把抬升出来的 system 文本并入已有的顶层 {@code system}。
+     *
+     * <p>三种形态，判据与 {@link #stringifyContent} 对 content 的处理同构：
+     * <ul>
+     *   <li><strong>数组</strong> —— 追加一个新的 {@code text} 块，保持数组形态不变。
+     *       不合并进已有块：那会改变已有块的文本，令其缓存标记覆盖的范围失效。</li>
+     *   <li><strong>非空字符串</strong> —— 用空行拼接，这是下游同时提供两种形态时的既有语义。</li>
+     *   <li><strong>缺失、空串或其它类型</strong> —— 以抬升内容为准。
+     *       第三种实际不会出现（Anthropic 只接受字符串与数组），按此处理是为了与
+     *       「抬升前」的行为保持一致，不在这里新增判断分支。</li>
+     * </ul>
+     *
+     * @param existingSystem 顶层原有的 {@code system}，可能为 null
+     * @param lifted          从 messages 抬升上来的文本，保证非空
+     */
+    private static Object mergeSystem(Object existingSystem, String lifted) {
+        if (existingSystem instanceof List<?> blocks) {
+            List<Object> merged = new java.util.ArrayList<>(blocks);
+            // 用可变 Map 而非 Map.of：规则引擎若需改写这个块，不可变集合会直接抛异常。
+            Map<String, Object> appended = new java.util.LinkedHashMap<>();
+            appended.put("type", "text");
+            appended.put("text", lifted);
+            merged.add(appended);
+            return merged;
+        }
+        if (existingSystem instanceof String existing && !existing.isBlank()) {
+            return existing + "\n\n" + lifted;
+        }
+        return lifted;
     }
 
     /**

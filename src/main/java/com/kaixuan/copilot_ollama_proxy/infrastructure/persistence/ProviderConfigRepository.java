@@ -131,6 +131,29 @@ public class ProviderConfigRepository {
     }
 
     /**
+     * 更新供应商的出站鉴权头装配方式（{@code auth_header}）。
+     *
+     * <p>与 {@link #updateProviderProxy} 同构的单列更新，不碰其它字段。
+     *
+     * <p>入参是<strong>已归一化的 JSON 原文</strong>，本层不做校验 —— 与
+     * {@code max_output_tokens} / {@code thinking_mode} 两个 JSON 列的分工一致：
+     * 本层没有 {@code ObjectMapper}，校验与收敛的职责在 {@code ProviderAdminService}
+     * （表单入口）与 {@code AuthHeaderSetting}（读取入口）。列上的 {@code json_valid}
+     * 约束是最后一道防线，写入非法 JSON 会被数据库拒绝而不是静默存下。
+     *
+     * <p>找不到该 {@code providerKey} 时静默不更新（0 行），与其它单列更新一致。
+     *
+     * @param providerKey    供应商标识
+     * @param authHeaderJson 装配方式 JSON，形如 {@code {"mode":"DOWNSTREAM","header":"AUTHORIZATION"}}
+     */
+    public void updateProviderAuthHeader(String providerKey, String authHeaderJson) {
+        jdbcTemplate.update(
+            "UPDATE provider_config SET auth_header = ?, "
+                + "updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE provider_key = ?",
+            authHeaderJson, providerKey);
+    }
+
+    /**
      * 仅更新服务商的 base_url，不修改 enabled 状态，也不涉及 API Key。
      * 如果指定的 providerKey 不存在，则自动插入一条新记录（enabled = 0）。
      * @return 对应的 provider_config.id
@@ -251,7 +274,7 @@ public class ProviderConfigRepository {
     private List<ProviderConfigRow> loadProvidersWithModels(String providerKey, boolean activeOnly, boolean enabledModelsOnly) {
         StringBuilder sql = new StringBuilder("SELECT pc.id, pc.provider_key, pc.display_name, pc.enabled, pc.base_url,")
                 .append(" pc.supported_protocols, pc.anthropic_base_url, pc.responses_base_url,")
-                .append(" pc.use_proxy, pc.updated_at,")
+                .append(" pc.use_proxy, pc.auth_header, pc.updated_at,")
                 .append(" pm.id AS model_id, pm.provider_id AS model_provider_id, pm.model_name, pm.enabled AS model_enabled,")
                 .append(" pm.context_size, pm.max_output_tokens, pm.caps_tools, pm.caps_vision, pm.reasoning_effort,")
                 .append(" pm.thinking_mode, pm.thinking_budget_tokens, pm.sort_order")
@@ -290,6 +313,8 @@ public class ProviderConfigRepository {
                     // 未迁移的库里这一列不存在，取到 null；归一为 false（直连）而非报错 ——
                     // 与 use_proxy 列默认 0 同义，让「V11 之前的库」和「新库默认值」表现一致。
                     row.get("use_proxy") instanceof Number useProxy && useProxy.intValue() == 1,
+                    // 与 use_proxy 同理：未迁移的库里取到 null，原样带出交给消费侧决定缺省值。
+                    (String) row.get("auth_header"),
                     (String) row.get("updated_at")
             ));
 
@@ -338,6 +363,7 @@ public class ProviderConfigRepository {
                     provider.anthropicBaseUrl,
                     provider.responsesBaseUrl,
                     provider.useProxy,
+                    provider.authHeaderJson,
                     provider.updatedAt,
                     provider.models
             ));
@@ -429,12 +455,13 @@ public class ProviderConfigRepository {
         private final String anthropicBaseUrl;
         private final String responsesBaseUrl;
         private final boolean useProxy;
+        private final String authHeaderJson;
         private final String updatedAt;
         private final List<ProviderModelRow> models = new ArrayList<>();
 
         private MutableProviderConfig(int id, String providerKey, String displayName, boolean enabled, String baseUrl,
                                       String supportedProtocolsJson, String anthropicBaseUrl,
-                                      String responsesBaseUrl, boolean useProxy,
+                                      String responsesBaseUrl, boolean useProxy, String authHeaderJson,
                                       String updatedAt) {
             this.id = id;
             this.providerKey = providerKey;
@@ -445,6 +472,7 @@ public class ProviderConfigRepository {
             this.anthropicBaseUrl = anthropicBaseUrl;
             this.responsesBaseUrl = responsesBaseUrl;
             this.useProxy = useProxy;
+            this.authHeaderJson = authHeaderJson;
             this.updatedAt = updatedAt;
         }
     }

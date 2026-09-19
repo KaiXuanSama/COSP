@@ -63,6 +63,17 @@ public class GatewayAuthFilter implements WebFilter {
             "/v1/responses",          // OpenAI Responses
             "/v1/messages");          // Anthropic Messages
 
+    /**
+     * 裸值承载凭据的那个鉴权头名。
+     *
+     * <p>与 {@code ProviderRequestHeaderService.API_KEY_HEADER} 同名但<strong>刻意不复用</strong>：
+     * 那个常量属于<strong>出站</strong>装配（该发哪个头给上游），这里是<strong>入站</strong>
+     * 识别（该认哪个头）。两者恰好是同一个字面量，但改动理由完全不同 —— 出站那侧会随
+     * 供应商适配演化，入站这侧只跟随客户端既有约定。引用过去会造成一条假的耦合：
+     * 下次为某个上游改动那个常量时，会连带改变本服务认哪个头。
+     */
+    private static final String API_KEY_HEADER = "x-api-key";
+
     /** 401 响应体，OpenAI 风格错误结构，便于客户端展示可读信息。 */
     private static final String UNAUTHORIZED_BODY =
             "{\"error\":{\"message\":\"无效或缺失的 API Key\",\"type\":\"invalid_api_key\"}}";
@@ -79,8 +90,10 @@ public class GatewayAuthFilter implements WebFilter {
         if (!isProtected(exchange)) {
             return chain.filter(exchange);
         }
-        String authorization = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
-        return gatewayAuthService.authorize(authorization)
+        HttpHeaders headers = exchange.getRequest().getHeaders();
+        return gatewayAuthService.authorize(
+                        headers.getFirst(HttpHeaders.AUTHORIZATION),
+                        headers.getFirst(API_KEY_HEADER))
                 .flatMap(decision -> decision == AuthDecision.PASS
                         ? chain.filter(exchange)
                         : writeUnauthorized(exchange.getResponse()));

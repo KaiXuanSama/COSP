@@ -185,7 +185,9 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 + "supported_protocols TEXT NOT NULL DEFAULT '[\"CHAT\",\"MESSAGES\"]', "
                 + "anthropic_base_url TEXT NOT NULL DEFAULT '', "
                 + "responses_base_url TEXT NOT NULL DEFAULT '', "
-                + "use_proxy INTEGER NOT NULL DEFAULT 0, updated_at TEXT)");
+                + "use_proxy INTEGER NOT NULL DEFAULT 0, "
+                + "auth_header TEXT NOT NULL DEFAULT '{\"mode\":\"DOWNSTREAM\",\"header\":\"AUTHORIZATION\"}', "
+                + "updated_at TEXT)");
         jdbcTemplate.execute("CREATE TABLE provider_model ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, "
                 + "enabled INTEGER NOT NULL DEFAULT 0, context_size INTEGER NOT NULL DEFAULT 8192, "

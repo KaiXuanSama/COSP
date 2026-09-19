@@ -42,6 +42,15 @@ class GatewayAuthFilterTests {
     private static final String API_KEY_KEY = "gateway_api_key";
     private static final String VALID_KEY = "cosp-test-valid-key-123456";
 
+    /**
+     * 第二种凭据载体的头名。
+     *
+     * <p>与出站侧的 {@code ProviderRequestHeaderService.API_KEY_HEADER} 同名同值，但刻意
+     * <strong>不引用</strong>那个常量：两者是独立的契约（一个管「COSP 认什么」、一个管
+     * 「COSP 发什么」），耦合起来会让将来改动其中一个时误以为另一个也得跟着变。
+     */
+    private static final String API_KEY_HEADER = "x-api-key";
+
     @LocalServerPort
     private int port;
 
@@ -97,6 +106,46 @@ class GatewayAuthFilterTests {
             spec = spec.header(HttpHeaders.AUTHORIZATION, "Bearer " + bearer);
         }
         return spec.bodyValue("{\"model\":\"test-model\",\"messages\":[]}").exchange();
+    }
+
+    /**
+     * 打聊天端点，两个鉴权头各自可选。
+     *
+     * <p>与 {@link #postChat} 并存而不是取代它：那个签名被十余条用例使用，
+     * 且「只带 Bearer」是最常见的形态，多一个 {@code null} 参数会让那些用例变难读。
+     *
+     * @param bearer {@code Authorization: Bearer <值>}；{@code null} 表示不带该头
+     * @param apiKey {@code x-api-key: <值>}（裸值）；{@code null} 表示不带该头
+     */
+    private WebTestClient.ResponseSpec postChatWithBoth(String bearer, String apiKey) {
+        WebTestClient.RequestBodySpec spec = webTestClient.post().uri("/v1/chat/completions")
+                .contentType(MediaType.APPLICATION_JSON);
+        if (bearer != null) {
+            spec = spec.header(HttpHeaders.AUTHORIZATION, "Bearer " + bearer);
+        }
+        if (apiKey != null) {
+            spec = spec.header(API_KEY_HEADER, apiKey);
+        }
+        return spec.bodyValue("{\"model\":\"test-model\",\"messages\":[]}").exchange();
+    }
+
+    /** 只带 {@code x-api-key} 打聊天端点。 */
+    private WebTestClient.ResponseSpec postChatWithApiKey(String apiKey) {
+        return postChatWithBoth(null, apiKey);
+    }
+
+    /** 只带 {@code x-api-key} 打 Anthropic 端点。 */
+    private WebTestClient.ResponseSpec postMessagesWithApiKey(String apiKey) {
+        return webTestClient.post().uri("/v1/messages").contentType(MediaType.APPLICATION_JSON)
+                .header(API_KEY_HEADER, apiKey)
+                .bodyValue("{\"model\":\"test-model\",\"max_tokens\":100,\"messages\":[]}").exchange();
+    }
+
+    /** 只带 {@code x-api-key} 打 Responses 端点。 */
+    private WebTestClient.ResponseSpec postResponsesWithApiKey(String apiKey) {
+        return webTestClient.post().uri("/v1/responses").contentType(MediaType.APPLICATION_JSON)
+                .header(API_KEY_HEADER, apiKey)
+                .bodyValue("{\"model\":\"test-model\",\"input\":\"hi\"}").exchange();
     }
 
     /** 打 Anthropic 端点，与 {@link #postChat} 对称。 */
@@ -158,6 +207,114 @@ class GatewayAuthFilterTests {
         // fake_version 未 stub 时返回 null，控制器回退到 application.yml 默认版本，仍为 200。
         enableWithKey(VALID_KEY);
         webTestClient.get().uri("/api/version").exchange().expectStatus().isOk();
+    }
+
+    // ---------- 两种凭据载体 ----------
+
+    /**
+     * {@code x-api-key} 里的 Key 同样被接受。
+     *
+     * <p>客户端把 Key 放哪个头取决于它用的凭据变量：Claude 系客户端配
+     * {@code ANTHROPIC_API_KEY} 就只发 {@code x-api-key}。只读 {@code Authorization}
+     * 会让那一半客户端无论配得多对都拿 401，而错误消息指向「Key 无效」——
+     * 排查会去查 Key 本身，而 Key 是对的。
+     */
+    @Test
+    void enabledAcceptsKeyFromApiKeyHeader() {
+        enableWithKey(VALID_KEY);
+        postChatWithApiKey(VALID_KEY).expectStatus().isOk();
+    }
+
+    /** {@code x-api-key} 里的值不对照样 401 —— 多认一个头不等于放松校验。 */
+    @Test
+    void wrongKeyInApiKeyHeaderStillReturns401() {
+        enableWithKey(VALID_KEY);
+        postChatWithApiKey("cosp-wrong-key").expectStatus().isUnauthorized();
+    }
+
+    /**
+     * 两个头都带、只有 {@code x-api-key} 是对的 → 放行。
+     *
+     * <p>这条钉住「OR 而非优先级」：实现若写成「先看 Authorization，不匹配就拒」，
+     * 本用例即红。该组合真实可达 —— 同时设了两个环境变量，或请求经过一层网关补了头。
+     *
+     * <p>「向 COSP 证明身份」的本质是证明知道那把 Key，载体是哪个头无关；
+     * 提前返回会把一次合法请求判成 401。
+     */
+    @Test
+    void eitherHeaderCarryingTheKeyIsEnough() {
+        enableWithKey(VALID_KEY);
+        postChatWithBoth("cosp-wrong-key", VALID_KEY).expectStatus().isOk();
+    }
+
+    /** 反方向同样成立：{@code Authorization} 对、{@code x-api-key} 错 → 放行。 */
+    @Test
+    void correctAuthorizationSurvivesAWrongApiKeyHeader() {
+        enableWithKey(VALID_KEY);
+        postChatWithBoth(VALID_KEY, "cosp-wrong-key").expectStatus().isOk();
+    }
+
+    /**
+     * {@code x-api-key} 按<strong>裸值</strong>解析，带 {@code Bearer } 前缀反而不匹配。
+     *
+     * <p>两个头各自只接受自己那一种既有形态。悄悄剥掉前缀会让「哪种写法有效」
+     * 变得无法从代码读出，而混着用的请求本身就说明配置有误。
+     */
+    @Test
+    void bearerPrefixInApiKeyHeaderIsNotStripped() {
+        enableWithKey(VALID_KEY);
+        postChatWithApiKey("Bearer " + VALID_KEY).expectStatus().isUnauthorized();
+    }
+
+    /**
+     * 裸密钥放 {@code Authorization} 不被接受，必须带 {@code Bearer } 前缀。
+     *
+     * <p>刻意不认：那不是任何客户端的既有写法，认它只会扩大接受面 ——
+     * 需要裸值形态的客户端用 {@code x-api-key} 即可。
+     */
+    @Test
+    void bareKeyInAuthorizationHeaderIsRejected() {
+        enableWithKey(VALID_KEY);
+        webTestClient.post().uri("/v1/chat/completions").contentType(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, VALID_KEY)
+                .bodyValue("{\"model\":\"test-model\",\"messages\":[]}").exchange()
+                .expectStatus().isUnauthorized();
+    }
+
+    /**
+     * 空值的 {@code x-api-key} 视为没带，不会被当成一次失败的比对。
+     *
+     * <p>用<strong>空串</strong>而不是几个空格：纯空白的头值在 HTTP 传输层就发不出去 ——
+     * Netty 直接抛 {@code prohibited character 0x20 at index 0}（前导空白在 HTTP 语法里
+     * 属于 obs-fold 折叠行，不是头值的一部分）。因此「值全是空格」这个情形在真实请求中
+     * 根本不可达，写成那样只会得到一个 500 而验不到任何东西。
+     *
+     * <p>服务层仍然用 {@code isBlank()} 而非 {@code isEmpty()}：尾部空白是可达的
+     * （{@code x-api-key: key  }），而 RFC 7230 本就要求接收方忽略 field-value 前后的 OWS。
+     */
+    @Test
+    void emptyApiKeyHeaderIsTreatedAsAbsent() {
+        enableWithKey(VALID_KEY);
+        postChatWithApiKey("").expectStatus().isUnauthorized();
+    }
+
+    /**
+     * Anthropic 端点也认 {@code x-api-key}。
+     *
+     * <p>这条线路的客户端<strong>最可能</strong>用那个头（官方约定如此），
+     * 若三个端点里只有它漏了，症状是「Claude Code 连不上、Copilot 正常」。
+     */
+    @Test
+    void anthropicEndpointAlsoAcceptsApiKeyHeader() {
+        enableWithKey(VALID_KEY);
+        postMessagesWithApiKey(VALID_KEY).expectStatus().isOk();
+    }
+
+    /** Responses 端点同样认，三个端点共用一套判据。 */
+    @Test
+    void responsesEndpointAlsoAcceptsApiKeyHeader() {
+        enableWithKey(VALID_KEY);
+        postResponsesWithApiKey(VALID_KEY).expectStatus().isOk();
     }
 
     // ---------- Anthropic 端点 ----------

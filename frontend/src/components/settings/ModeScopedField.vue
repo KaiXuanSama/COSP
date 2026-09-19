@@ -1,12 +1,11 @@
-<script setup lang="ts">
+<script setup lang="ts" generic="M extends string">
 /**
  * 「注入模式 | 值」双段控件的外壳。
  *
  * <h2>解决的问题</h2>
- * 凡是会进入发往上游请求体的模型参数，都需要回答「下游自己带了这个字段怎么办」，
- * 于是每一个都是 `{值, 模式}` 二元组。模式必须在**折叠状态**可见 —— 它决定旁边那个值
- * 到底会不会发出去，藏进下拉菜单的 header 就看不到了；做成独立控件又要再占一份
- * 横向空间，而这些字段通常只有行宽的三分之一。
+ * 凡是要回答「下游自己带了这个东西怎么办」的设置，都是 `{值, 模式}` 二元组。
+ * 模式必须在**折叠状态**可见 —— 它决定旁边那个值到底会不会发出去，藏进下拉菜单的
+ * header 就看不到了；做成独立控件又要再占一份横向空间，而这些字段通常只有行宽的三分之一。
  *
  * <p>于是有了这个形状：左边模式标签、竖线、右边值。
  *
@@ -17,6 +16,14 @@
  *   ↑模式  ↑值（默认插槽）
  * ```
  *
+ * <h2>为何泛型而非绑死注入模式</h2>
+ * 本控件只做三件事：显示模式标签、按清单轮转模式、按状态决定值区的存在感。
+ * 三件都与「模式集合里有哪些值」无关，因此用 `M extends string` 泛型化 ——
+ * 鉴权头的 `downstream` / `configured` 不是注入模式的子集，却同样需要这个外壳。
+ *
+ * <p>标签与「值是否生效」因此都由调用方给出，而非从模块常量算出：
+ * 它们是模式集合的**领域事实**，各字段不同，控件不该替它们决定。
+ *
  * <h2>为何连边框一起接管</h2>
  * 值编辑器的形态因字段而异（枚举下拉、可手填输入框、带范围校验的输入框），
  * 若各自带框，同一行里就会出现两种边框来源 —— 思考深度自绘、最大输出用 `n-input` 的，
@@ -24,8 +31,8 @@
  * 插进来的 `n-input` 由样式抹掉自己的框。
  *
  * <h2>不负责什么</h2>
- * 不管值的类型、不管值怎么编辑、不管持久化 —— 那些在调用方与
- * `features/provider-config/overwriteMode.ts` 里。这里只有布局与模式轮转。
+ * 不管值的类型、不管值怎么编辑、不管持久化 —— 那些在调用方与各自的领域模块里。
+ * 这里只有布局与模式轮转。
  *
  * <p>也不管数字字体与那 1px 的视觉居中补偿：上下文那一栏是纯数字但没有模式，
  * 补偿因此属于「数值输入框」这个正交维度，留在调用方的 `--numeric` 类里。
@@ -34,12 +41,9 @@ import { computed, ref } from 'vue'
 import { NTooltip } from 'naive-ui'
 
 import {
-  OVERWRITE_MODE_LABELS,
   directionFromWheel,
-  modeUsesConfiguredValue,
   nextOverwriteMode,
   stepInSequence,
-  type OverwriteMode,
   type StepDirection,
 } from '@/features/provider-config'
 
@@ -47,28 +51,48 @@ import SlidingValue from './SlidingValue.vue'
 
 const props = defineProps<{
     /** 该字段支持的模式子集，顺序即点击轮转与滚轮步进的顺序。 */
-    modes: readonly OverwriteMode[]
+    modes: readonly M[]
+    /**
+     * 各模式的显示标签。
+     *
+     * 由调用方给出而非控件内置：标签是模式集合的领域事实，各字段不同
+     * （注入模式是「覆写 / 兜底 / 透传 / 删除」，鉴权头是「取下游 / 取设置」）。
+     */
+    labels: Record<M, string>
     /** 各模式的悬停说明。文案随字段变化（「此处配置的档位 / 上限」），故由调用方给出。 */
-    hints: Record<OverwriteMode, string>    /**
+    hints: Record<M, string>
+    /**
+     * 此处配置的值在当前模式下怎么出站。
+     *
+     * - `used` —— 会出站，值区外观如常
+     * - `fallback` —— 只在异常输入时才作为兜底出站
+     * - `unused` —— 本次不会出站（如注入模式选了「透传」「删除」）
+     *
+     * <p>`fallback` 与 `used` **当前渲染一致**：值区都不灰显。这是刻意的 ——
+     * 灰显在既有控件里表示「这个值不会生效」，而兜底态的值**是会生效的**，
+     * 只是适用场合更窄。把它标成灰会让用户以为配了没用。
+     * 兜底语义由模式段的 {@link hints} 文案承担，见 `authHeader.ts` 的
+     * `AUTH_HEADER_MODE_HINTS`。
+     *
+     * <p>保留三态而非布尔是因为「不生效」与「仅在异常时生效」是两件事，
+     * 混成一个布尔会让调用方无从表达后者 —— 而鉴权头恰好就是后者。
+     */
+    valueState: 'used' | 'fallback' | 'unused'
+    /**
      * 整个字段不可用（含模式段）。
      *
-     * 与 {@code inert} 不同：`inert` 是「本次不会出站但仍可编辑」，
+     * 与 `unused` 不同：`unused` 是「本次不会出站但仍可编辑」，
      * 而这个是「在当前上文里根本无法表达任何意图」—— 模式也不应该能改，
      * 否则用户会在一个不生效的字段上转不同的注入模式。
      */
-    disabled?: boolean}>()
+    disabled?: boolean
+}>()
 
-const mode = defineModel<OverwriteMode>('mode', { required: true })
+const mode = defineModel<M>('mode', { required: true })
 
-/**
- * 标签与「值是否生效」都从模式算出，不作为 props。
- *
- * 传进来只会多两个可能与 `mode` 不一致的入口 —— 标签全局统一、
- * inert 判定是模式的固有属性，两者都没有按字段定制的余地。
- */
-const label = computed(() => OVERWRITE_MODE_LABELS[mode.value])
+const label = computed(() => props.labels[mode.value])
 const hint = computed(() => props.hints[mode.value])
-const inert = computed(() => !modeUsesConfiguredValue(mode.value))
+const inert = computed(() => props.valueState === 'unused')
 
 /**
  * 最近一次模式变化的方向，供滑动动画决定往哪边滑。
@@ -222,14 +246,23 @@ function onWheel(event: WheelEvent) {
     }
 
     /**
-     * 标签宽度固定，滑动时不跟着文案宽度跳。
+     * 标签宽度随内容走。
      *
-     * 四档标签都是两个汉字，`2em` 正好容纳。不写死 px：字号变了宽度自动跟随。
-     * 缺了这个，「覆写」换「透传」时宽度虽相同，但 `inline-grid` 在过渡的两帧里
-     * 会按两份内容的并集算宽，控件整体会抖一下。
+     * <p>不能写死 em 数：覆写四档恰好都是两个汉字（「覆写」「兜底」「透传」「删除」），
+     * 原先按此写死 `2em` 正好够用；鉴权头的两档是三个汉字（「取下游」「取设置」），
+     * 于是被 `SlidingValue` 的 `overflow: hidden` **静默裁成两个字**（「取下」「取设」）——
+     * 裁切不报错，看起来只像是文案怪异。
+     *
+     * <p>`max-content` 在这里不会引起过渡抖动：进出两份内容重叠在同一个 grid 单元格里，
+     * 容器宽度是二者的并集，而同一字段内的标签是等宽的（覆写四档都两个汉字，
+     * 鉴权头两档都三个），并集等于任一份，切换时宽度不变。
+     *
+     * <p>前提是**同一字段内标签等宽**。若将来给某个字段配上长度不一的标签
+     * （如「取下游」配「跟随」），过渡的两帧里宽度会跳一次；届时应改成按该字段
+     * 最长标签固定宽度，而不是退回写死 em。
      */
     :deep(.sliding-value) {
-        width: 2em;
+        width: max-content;
         justify-items: start;
     }
 }

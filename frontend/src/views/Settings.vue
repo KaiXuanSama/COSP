@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import { NCard, NCheckbox, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NSelect, NDropdown, useMessage } from 'naive-ui'
+import { NCard, NCheckbox, NInput, NButton, NSwitch, NTag, NDrawer, NDrawerContent, NModal, NSelect, NDropdown, NPopselect, useMessage } from 'naive-ui'
 import ProviderModelsSection from '@/components/settings/ProviderModelsSection.vue'
+import ModeScopedField from '@/components/settings/ModeScopedField.vue'
 import RequestBodyRuleEditor from '@/components/settings/request-body-rules/RequestBodyRuleEditor.vue'
 import { useProviderStore, type ApiKeyEntry } from '@/stores/providers'
 import type { RequestBodyEditorState } from '@/features/request-body-rules/editorState'
@@ -16,10 +17,17 @@ import {
 } from '@/types/protocol'
 import { copyToClipboard } from '@/utils/clipboard'
 import {
+  AUTH_HEADER_MODES,
+  AUTH_HEADER_MODE_HINTS,
+  AUTH_HEADER_MODE_LABELS,
+  AUTH_HEADER_NAME_LABELS,
+  AUTH_HEADER_NAME_OPTIONS,
+  DEFAULT_AUTH_HEADER_CONFIG,
   DEFAULT_NEW_PROVIDER_PROTOCOLS,
   WIRE_PROTOCOL_ENDPOINT_SUFFIXES,
   aggregatorPresets,
   applyPullDiff,
+  authHeaderValueState,
   buildEditableModel,
   buildPullDiff,
   createProviderDefaultEditorState,
@@ -31,9 +39,11 @@ import {
   mirrorBaseUrl,
   normalizeProtocols,
   orderProtocolRows,
+  parseAuthHeaderConfig,
   protocolsToJson,
   resolveModelPullTarget,
   resolvePrimaryProtocol,
+  serializeAuthHeaderConfig,
   shouldMirrorOnFocus,
   toggleProtocol,
   hasChanges as pullDiffHasChanges,
@@ -54,6 +64,9 @@ import {
   toModelFormParams,
   toPresetFormValues,
   toProviderKey,
+  type AuthHeaderConfig,
+  type AuthHeaderMode,
+  type AuthHeaderName,
   type EditableModel,
   type HeaderEntry,
   type PullDiff,
@@ -522,6 +535,25 @@ const providerAnthropicBaseUrl = ref('')
 const providerResponsesBaseUrl = ref('')
 const providerProtocols = ref<WireProtocol[]>([...DEFAULT_NEW_PROVIDER_PROTOCOLS])
 const providerUseProxy = ref(false)
+
+/**
+ * 出站鉴权头装配方式。
+ *
+ * 界面持有的是**对象**，而读入与提交的都是 JSON 原文 —— 控件没法直接绑一段 JSON 文本，
+ * 因此在两个边界上各转一次（`parseAuthHeaderConfig` / `serializeAuthHeaderConfig`）。
+ */
+const providerAuthHeader = ref<AuthHeaderConfig>({ ...DEFAULT_AUTH_HEADER_CONFIG })
+
+/**
+ * 头名下拉的选项。
+ *
+ * 从共享常量 map 一份可变数组：`n-popselect` 的 `options` 要的是
+ * `SelectMixedOption[]`，而模块常量声明为 `readonly`（防止调用方就地改它）。
+ * 与 `ProviderModelsSection` 里 `effortOptions` 等处的做法一致。
+ */
+const authHeaderNameOptions = AUTH_HEADER_NAME_OPTIONS.map(
+  option => ({ label: option.label, value: option.value }),
+)
 const showPresetModal = ref(false)
 
 /**
@@ -686,6 +718,7 @@ function clearProviderForm() {
   providerResponsesBaseUrl.value = ''
   providerProtocols.value = [...DEFAULT_NEW_PROVIDER_PROTOCOLS]
   providerUseProxy.value = false
+  providerAuthHeader.value = { ...DEFAULT_AUTH_HEADER_CONFIG }
   resetMirroringBaseUrl()
   providerHeaders.value = []
   requestBodyEditorState.value = createProviderDefaultEditorState()
@@ -716,6 +749,7 @@ function resetProviderAdvanced() {
   providerResponsesBaseUrl.value = ''
   providerProtocols.value = [...DEFAULT_NEW_PROVIDER_PROTOCOLS]
   providerUseProxy.value = false
+  providerAuthHeader.value = { ...DEFAULT_AUTH_HEADER_CONFIG }
   resetMirroringBaseUrl()
   editingProviderKey.value = null
 }
@@ -733,6 +767,9 @@ function openEditProviderModal(key: string) {
   providerResponsesBaseUrl.value = provider?.responsesBaseUrl || ''
   providerProtocols.value = normalizeProtocols(provider?.supportedProtocols)
   providerUseProxy.value = provider?.useProxy ?? false
+  // 解析而非直接绑原文：控件要的是对象。字段缺失或认不出时 parseAuthHeaderConfig
+  // 回默认配置，因此旧后端（不回传该字段）也能正常打开编辑。
+  providerAuthHeader.value = parseAuthHeaderConfig(provider?.authHeaderJson)
   resetMirroringBaseUrl()
   if (provider) {
     try {
@@ -816,6 +853,7 @@ async function saveProvider() {
       await providerStore.updateProvider(
         oldKey, name, headerRulesJson, baseUrl, requestTransform, protocolPayload,
         providerUseProxy.value,
+        serializeAuthHeaderConfig(providerAuthHeader.value),
       )
       // 更新前端元数据
       const newKey = toProviderKey(name)
@@ -834,6 +872,7 @@ async function saveProvider() {
       const res = await providerStore.addProvider(
         name, headerRulesJson, baseUrl, requestTransform, protocolPayload,
         providerUseProxy.value,
+        serializeAuthHeaderConfig(providerAuthHeader.value),
       )
       providerMeta.value[res.providerKey] = {
         displayName: name,
@@ -1206,6 +1245,44 @@ function removeModel(index: number) {
               :placeholder="PROTOCOL_ROW_PLACEHOLDERS[protocol]"
               @update:value="(val: string) => onProviderBaseUrlInput(protocol, val)"
               @focus="onProviderBaseUrlFocus(protocol)" />
+          </div>
+        </div>
+
+        <!--
+          出站鉴权头。放在三个地址之后、请求头覆盖之前：它决定「用哪个头承载供应商 key」，
+          与地址同属「怎么连上这个上游」，而请求头覆盖在它下游（规则可以把装配出来的头
+          再删掉或补一个）。三者顺序也与后端装配的三层一一对应。
+        -->
+        <div class="advanced-section">
+          <div class="advanced-section-header">
+            <span class="advanced-section-title"
+              title="供应商 key 用哪个请求头发出。下游带的头由客户端凭据变量决定，未必是这个上游认的那一种。">
+              出站鉴权头
+            </span>
+          </div>
+          <div class="protocol-url-row">
+            <mode-scoped-field
+              :modes="AUTH_HEADER_MODES"
+              :labels="AUTH_HEADER_MODE_LABELS"
+              :hints="AUTH_HEADER_MODE_HINTS"
+              :value-state="authHeaderValueState(providerAuthHeader.mode)"
+              :mode="providerAuthHeader.mode"
+              @update:mode="(value: AuthHeaderMode) => { providerAuthHeader.mode = value }">
+              <n-popselect :options="authHeaderNameOptions" size="small" trigger="click"
+                :value="providerAuthHeader.header"
+                @update:value="(value: AuthHeaderName) => { providerAuthHeader.header = value }">
+                <button type="button" class="auth-header-value">
+                  <span class="auth-header-value__text">
+                    {{ AUTH_HEADER_NAME_LABELS[providerAuthHeader.header] }}
+                  </span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                    aria-hidden="true">
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </button>
+              </n-popselect>
+            </mode-scoped-field>
           </div>
         </div>
 
@@ -2143,6 +2220,47 @@ function removeModel(index: number) {
     flex: 0 0 auto;
     white-space: nowrap;
   }
+}
+
+/**
+ * 鉴权头名的值区按钮。
+ *
+ * 与 `ProviderModelsSection` 的 `.effort-value` 同形 —— 那份是 scoped 的，无法跨文件复用。
+ * 三个特征都是必须的：透明无框（外壳已提供边框与 focus 高亮，值区再带框就成两层）、
+ * 占满剩余宽度并把箭头推到右缘（与其它值区的箭头对齐）、颜色 `inherit`
+ * （外壳的置灰态因此自动生效，无需在此重复判断）。
+ */
+.auth-header-value {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  transition: color 0.15s ease;
+
+  &:hover {
+    color: $accent;
+  }
+
+  svg {
+    flex-shrink: 0;
+  }
+}
+
+/** 头名虽短仍截断，避免把箭头顶出控件。 */
+.auth-header-value__text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .advanced-add-btn {

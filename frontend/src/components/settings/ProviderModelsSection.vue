@@ -4,17 +4,21 @@ import { ref } from 'vue'
 import {
   ANTHROPIC_THINKING_OVERWRITE_MODES,
   ANTHROPIC_THINKING_OVERWRITE_MODE_HINTS,
+  ANTHROPIC_THINKING_OVERWRITE_MODE_LABELS,
   ANTHROPIC_THINKING_TYPE_OPTIONS,
   anthropicThinkingLockedByEffort,
   anthropicThinkingUsesBudget,
   isAnthropicThinkingBudgetInputAllowed,
   MAX_OUTPUT_OVERWRITE_MODES,
   MAX_OUTPUT_OVERWRITE_MODE_HINTS,
+  MAX_OUTPUT_OVERWRITE_MODE_LABELS,
   MAX_OUTPUT_PRESETS,
   REASONING_EFFORT_OPTIONS,
   REASONING_OVERWRITE_MODES,
   REASONING_OVERWRITE_MODE_HINTS,
+  REASONING_OVERWRITE_MODE_LABELS,
   directionFromWheel,
+  modeUsesConfiguredValue,
   parseAnthropicThinkingConfig,
   parseMaxOutputConfig,
   parseReasoningEffortConfig,
@@ -426,7 +430,9 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                                             用的是 n-input。两者的「模式 | 值」外壳是同一个组件。
                                         -->
                                         <mode-scoped-field :modes="REASONING_OVERWRITE_MODES"
+                                            :labels="REASONING_OVERWRITE_MODE_LABELS"
                                             :hints="REASONING_OVERWRITE_MODE_HINTS"
+                                            :value-state="modeUsesConfiguredValue(effortConfigOf(model).mode) ? 'used' : 'unused'"
                                             :mode="effortConfigOf(model).mode"
                                             @update:mode="(value: OverwriteMode) => setEffortMode(model, value)">
                                             <n-tooltip placement="top">
@@ -472,7 +478,9 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                                             界面也得能填进去。预设收在后缀的下拉里。
                                         -->
                                         <mode-scoped-field :modes="MAX_OUTPUT_OVERWRITE_MODES"
+                                            :labels="MAX_OUTPUT_OVERWRITE_MODE_LABELS"
                                             :hints="MAX_OUTPUT_OVERWRITE_MODE_HINTS"
+                                            :value-state="modeUsesConfiguredValue(maxOutputConfigOf(model).mode) ? 'used' : 'unused'"
                                             :mode="maxOutputConfigOf(model).mode"
                                             @update:mode="(value: OverwriteMode) => setMaxOutputMode(model, value)">
                                             <!--
@@ -569,7 +577,9 @@ function setMaxOutputMode(model: EditableModel, mode: OverwriteMode) {
                                         的二元组，只是值从思考深度换成了 thinking.type。
                                     -->
                                     <mode-scoped-field :modes="ANTHROPIC_THINKING_OVERWRITE_MODES"
+                                        :labels="ANTHROPIC_THINKING_OVERWRITE_MODE_LABELS"
                                         :hints="ANTHROPIC_THINKING_OVERWRITE_MODE_HINTS"
+                                        :value-state="modeUsesConfiguredValue(thinkingConfigOf(model).mode) ? 'used' : 'unused'"
                                         :disabled="anthropicThinkingLocked(model)"
                                         :mode="thinkingConfigOf(model).mode"
                                         @update:mode="(value: OverwriteMode) => setAnthropicThinkingMode(model, value)">

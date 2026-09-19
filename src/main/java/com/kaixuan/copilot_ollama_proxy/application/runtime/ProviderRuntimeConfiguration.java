@@ -18,11 +18,16 @@ import java.util.List;
  * 本字段只表达「这个供应商想不想走代理」，真正「走不走」由
  * {@code OutboundProxyDecider} 按目标地址判定，且还取决于 app_config 是否配了代理地址。
  * 快照只负责把开关如实带出来，投影成代理目标集合是 {@code DatabaseRuntimeProviderCatalog} 的事。
+ *
+ * <h2>authHeaderJson 同样只是原文</h2>
+ * 与协议集合同理：本 record 不解析它，解析交给消费侧的 {@link AuthHeaderSetting#parse}。
+ * 不在这里做字面量兜底，是为了让「缺省值」的定义只存在一处（{@code AuthHeaderSetting}）。
  */
 public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey,
                                            List<ProviderRuntimeModel> models, String headerRulesJson,
                                            String bodyRulesJson, String supportedProtocolsJson,
-                                           String anthropicBaseUrl, String responsesBaseUrl, boolean useProxy) {
+                                           String anthropicBaseUrl, String responsesBaseUrl, boolean useProxy,
+                                           String authHeaderJson) {
 
     /** 空规则集（V2）。 */
     private static final String EMPTY_BODY_RULES_JSON = "{\"version\":2,\"groups\":[]}";
@@ -84,6 +89,22 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
                 supportedProtocolsJson, anthropicBaseUrl, "", false);
     }
 
+    /**
+     * 创建不带出站鉴权头装配方式的运行时供应商配置。
+     *
+     * <p>保留这个十参重载是为了让只关心「协议集合 + 两个端点 + 代理开关」的调用方
+     * （测试夹具、以及本字段落库前的生产代码）不必写出这个正交维度。
+     * 它的默认值与落库前的行为一致：取下游 + Authorization。
+     */
+    public ProviderRuntimeConfiguration(String providerKey, String baseUrl, String apiKey,
+                                        List<ProviderRuntimeModel> models, String headerRulesJson,
+                                        String bodyRulesJson, String supportedProtocolsJson,
+                                        String anthropicBaseUrl, String responsesBaseUrl, boolean useProxy) {
+        this(providerKey, baseUrl, apiKey, models, headerRulesJson, bodyRulesJson,
+                supportedProtocolsJson, anthropicBaseUrl, responsesBaseUrl, useProxy,
+                AuthHeaderSetting.DEFAULT_AUTH_HEADER_JSON);
+    }
+
     public ProviderRuntimeConfiguration {
         providerKey = providerKey == null ? "" : providerKey;
         baseUrl = baseUrl == null ? "" : baseUrl;
@@ -96,6 +117,10 @@ public record ProviderRuntimeConfiguration(String providerKey, String baseUrl, S
             ? DEFAULT_SUPPORTED_PROTOCOLS_JSON : supportedProtocolsJson;
         anthropicBaseUrl = anthropicBaseUrl == null ? "" : anthropicBaseUrl;
         responsesBaseUrl = responsesBaseUrl == null ? "" : responsesBaseUrl;
+        // 空值与「读库时这一列为空」同义，归一到与 schema DEFAULT 逐字一致的缺省值，
+        // 而不是留 null 让每个消费者各写一次兜底。
+        authHeaderJson = (authHeaderJson == null || authHeaderJson.isBlank())
+            ? AuthHeaderSetting.DEFAULT_AUTH_HEADER_JSON : authHeaderJson;
     }
 
     /**

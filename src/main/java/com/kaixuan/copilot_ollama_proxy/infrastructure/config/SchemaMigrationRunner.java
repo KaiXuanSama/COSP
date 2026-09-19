@@ -70,7 +70,17 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     private static final double V10_VERSION = 10;
     private static final double V11_VERSION = 11;
     private static final double V12_VERSION = 12;
-    private static final double CURRENT_SCHEMA_VERSION = 13;
+    /**
+     * V13 的版本常量在这里才被冻结，而它落地时用的是 {@code CURRENT_SCHEMA_VERSION}。
+     *
+     * <p>那正是 skill 里记的第一个陷阱：迁移体引用 {@code CURRENT_SCHEMA_VERSION} 时，
+     * 常量一被抬高，这条历史迁移就会把库直接写成<em>最新</em>版本号，于是它自己与之后
+     * 每一个迁移都被判成「已应用」而<strong>全部跳过，且不报任何错</strong>。
+     * 新增 V14 的那一刻就是它的引爆点。
+     */
+    private static final double V13_VERSION = 13;
+    private static final double V14_VERSION = 14;
+    private static final double CURRENT_SCHEMA_VERSION = 14;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -111,6 +121,21 @@ public class SchemaMigrationRunner implements ApplicationRunner {
      * 同理，那里的 {@code OPENAI} / {@code ANTHROPIC} 也是已不存在的名字。
      */
     private static final String V13_RESPONSES_PROTOCOL = "RESPONSES";
+    /**
+     * V14 写入的出站鉴权头装配方式默认值。
+     *
+     * <p><strong>必须与 {@code schema.sql} 里 {@code provider_config.auth_header} 的 DEFAULT
+     * 逐字一致。</strong>分叉的后果不是报错，而是「新库」「升级上来的库」「保存过一次的供应商」
+     * 在直接查库时呈现<em>三种不同形态</em>，而三者都合法 —— 与 {@code supported_protocols}
+     * 当年三处分叉（schema 的 DEFAULT、V8.8 的回填写法、ProviderAdminService 的 TreeSet 落库）
+     * 是同一个坑。
+     *
+     * <p>默认选「取下游 + Authorization」的理由：它让存量行为几乎不变 —— 下游带了什么就还发什么。
+     * 原 Messages 供应商在「下游带 x-api-key」时行为完全一致，只有「下游一个鉴权头都没带」的
+     * 那些会从 x-api-key 变成 Authorization，而那正是本次要修的场景。
+     */
+    private static final String DEFAULT_AUTH_HEADER_JSON =
+            "{\"mode\":\"DOWNSTREAM\",\"header\":\"AUTHORIZATION\"}";
     /** 当前思考深度配置的结构版本，与 {@code reasoning_effort_schema} 列取值一致。 */
     private static final int CURRENT_REASONING_EFFORT_VERSION = 2;
     /**
@@ -326,8 +351,10 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         this::migrateToV11ProviderProxy),
                 new MigrationStep(V12_VERSION, "线路协议按 API 路径全称重命名",
                         this::migrateToV12ProtocolRename),
-                new MigrationStep(CURRENT_SCHEMA_VERSION, "供应商新增 Responses 端点与协议支持",
-                        this::migrateToV13ResponsesProtocol));
+                new MigrationStep(V13_VERSION, "供应商新增 Responses 端点与协议支持",
+                        this::migrateToV13ResponsesProtocol),
+                new MigrationStep(V14_VERSION, "供应商新增出站鉴权头装配方式",
+                        this::migrateToV14AuthHeader));
     }
 
     /**
@@ -1357,7 +1384,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
         jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
                 + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
-                CURRENT_SCHEMA_VERSION, "V13 增量迁移：供应商新增 Responses 端点与协议支持");
+                V13_VERSION, "V13 增量迁移：供应商新增 Responses 端点与协议支持");
     }
 
     /**
@@ -1439,6 +1466,43 @@ public class SchemaMigrationRunner implements ApplicationRunner {
             log.info("[SchemaMigration] V13 已为 {} 个供应商追加 {} 协议支持",
                     updated, V13_RESPONSES_PROTOCOL);
         }
+    }
+
+    /**
+     * V14：供应商新增出站鉴权头的装配方式。
+     *
+     * <p>动机是「哪种鉴权头」本就不该由代码<strong>按协议</strong>替用户决定：Claude CLI 的头名
+     * 由凭据环境变量决定（{@code ANTHROPIC_API_KEY} → {@code x-api-key}、
+     * {@code ANTHROPIC_AUTH_TOKEN} → {@code Authorization}），实测还有中转站只认后者。
+     * 本列把那个选择还给用户配置。取值语义见 {@link #DEFAULT_AUTH_HEADER_JSON}。
+     *
+     * <p>与 V11 同类：纯新增列，没有任何已有列的类型、默认值或 CHECK 发生变化，
+     * {@code ALTER TABLE ADD COLUMN} 足够，因此<strong>不需要重建表</strong>。
+     *
+     * <h2>为何比 V13 少两步</h2>
+     * {@code NOT NULL DEFAULT} 会让 SQLite 用默认值<strong>自动填充所有存量行</strong>，
+     * 因此这里<em>不需要</em>一条回填用的 UPDATE。而没有 UPDATE 就不必摘
+     * {@code provider_config} 的行级校验触发器 —— 那两个触发器只在 INSERT / UPDATE 时校验，
+     * 而 {@code ADD COLUMN} 两者都不是。V13 之所以要摘装一对，是因为它带回填 UPDATE。
+     *
+     * <p>触发器只校验 {@code enabled}，新列无需纳入校验：{@code CHECK (json_valid(...))}
+     * 已经表达在同一行的列定义里。
+     *
+     * <h2>版本常量用 {@link #V14_VERSION} 而非 {@code CURRENT_SCHEMA_VERSION}</h2>
+     * 两者此刻相等，但用前者是<strong>刻意</strong>的：迁移体引用 {@code CURRENT_SCHEMA_VERSION}
+     * 时，下次抬高那个常量会让本迁移把库写成更新的版本号，于是它自己与之后每一个迁移
+     * 全被判成「已应用」而跳过。V13 正是这么写下的（本次已一并冻结），
+     * 在方法体里就把常量钉死，比留待下一个人记得改更可靠。
+     */
+    private void migrateToV14AuthHeader() {
+        if (tableExists("provider_config")) {
+            addColumnIfNotExists("provider_config", "auth_header",
+                    "TEXT NOT NULL DEFAULT '" + DEFAULT_AUTH_HEADER_JSON + "'"
+                            + " CHECK (json_valid(auth_header))");
+        }
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+                V14_VERSION, "V14 增量迁移：供应商新增出站鉴权头装配方式");
     }
 
     /**

@@ -160,3 +160,19 @@ export {
   type PresetFormValues,
   type ProviderPreset,
 } from './presets'
+
+export {
+  AUTH_HEADER_MODES,
+  AUTH_HEADER_MODE_HINTS,
+  AUTH_HEADER_MODE_LABELS,
+  AUTH_HEADER_NAME_LABELS,
+  AUTH_HEADER_NAME_OPTIONS,
+  DEFAULT_AUTH_HEADER_CONFIG,
+  authHeaderValueState,
+  nextAuthHeaderMode,
+  parseAuthHeaderConfig,
+  serializeAuthHeaderConfig,
+  type AuthHeaderConfig,
+  type AuthHeaderMode,
+  type AuthHeaderName,
+} from './authHeader'

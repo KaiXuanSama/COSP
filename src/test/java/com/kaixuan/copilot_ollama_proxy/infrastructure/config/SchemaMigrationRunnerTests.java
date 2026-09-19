@@ -155,9 +155,10 @@ class SchemaMigrationRunnerTests {
         assertThat(indexExists(jdbcTemplate, "idx_api_call_usage_created")).isTrue();
         assertThat(columnNames(jdbcTemplate, "api_call_log")).contains("payload_trimmed");
         assertThat(columnNames(jdbcTemplate, "provider_config"))
-                .contains("supported_protocols", "anthropic_base_url", "responses_base_url", "use_proxy");
+                .contains("supported_protocols", "anthropic_base_url", "responses_base_url", "use_proxy",
+                        "auth_header");
         assertThat(columnNames(jdbcTemplate, "provider_model")).contains("reasoning_effort_schema");
-        // 新库的两个默认 JSON 须与迁移后的规范形态逐字一致，
+        // 新库的三个默认 JSON 须与迁移后的规范形态逐字一致，
         // 否则「全库同形态」只在升级库成立而新库不成立。
         jdbcTemplate.update("INSERT INTO provider_config (provider_key, display_name, enabled, base_url) "
                 + "VALUES ('p', 'P', 1, 'https://p.example/v1')");
@@ -166,6 +167,8 @@ class SchemaMigrationRunnerTests {
                 .isEqualTo("{\"reasoning_effort\":\"medium\",\"overwrite_mode\":\"fallback\"}");
         assertThat(maxOutputOf(jdbcTemplate, "m"))
                 .isEqualTo("{\"max_output_tokens\":64000,\"overwrite_mode\":\"fallback\"}");
+        assertThat(authHeaderOf(jdbcTemplate, "p"))
+                .isEqualTo("{\"mode\":\"DOWNSTREAM\",\"header\":\"AUTHORIZATION\"}");
         // 与升级库同口径：新库建出来的供应商也必须默认直连。
         assertThat(useProxyOf(jdbcTemplate, "p")).isZero();
     }
@@ -627,7 +630,10 @@ class SchemaMigrationRunnerTests {
     @Test
     void v12DatabaseAddsResponsesEndpointAndProtocolDuringV13Migration() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
-        seedDatabaseAtPreviousVersion(jdbcTemplate);
+        // 显式钉住 V12（V13 的前一版）：本用例测的是 V12 → V13 这一步。若用会自动前移的
+        // seedDatabaseAtPreviousVersion，V14 一加入它就指向 V13，追加逻辑便不再执行 ——
+        // 对「需要某个特定版本形态」的用例，版本必须写死（V12 的主用例当年也是这么钉到 11 的）。
+        seedDatabaseAtVersion(jdbcTemplate, 12);
         jdbcTemplate.update("INSERT INTO provider_config "
                 + "(provider_key, display_name, base_url, supported_protocols) "
                 + "VALUES ('relay', '中转站', 'https://relay.example.com/v1', ?)",
@@ -680,7 +686,9 @@ class SchemaMigrationRunnerTests {
     @Test
     void v13LeavesMalformedProtocolConfigurationUntouched() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
-        seedDatabaseAtPreviousVersion(jdbcTemplate);
+        // 钉住 V12：理由见 v12DatabaseAddsResponsesEndpointAndProtocolDuringV13Migration。
+        // 不写死的话 V14 加入后 fixture 前移到 V13，本用例就不再覆盖 V13 的行为。
+        seedDatabaseAtVersion(jdbcTemplate, 12);
         // 合法 JSON 但不是数组：json_valid 为真，唯有 json_type 能把它挡住。
         jdbcTemplate.update("INSERT INTO provider_config "
                 + "(provider_key, display_name, base_url, supported_protocols) "
@@ -706,7 +714,8 @@ class SchemaMigrationRunnerTests {
     @Test
     void v13DoesNotDuplicateProtocolOrOverwriteLaterEdits() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
-        seedDatabaseAtPreviousVersion(jdbcTemplate);
+        // 钉住 V12：理由见 v12DatabaseAddsResponsesEndpointAndProtocolDuringV13Migration。
+        seedDatabaseAtVersion(jdbcTemplate, 12);
         jdbcTemplate.update("INSERT INTO provider_config "
                 + "(provider_key, display_name, base_url, supported_protocols) "
                 + "VALUES ('relay', '中转站', 'https://relay.example.com/v1', ?)",
@@ -736,7 +745,9 @@ class SchemaMigrationRunnerTests {
     @Test
     void v13SurvivesRowLevelValidationTriggerWithLegacyDirtyEnabledValue() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
-        seedDatabaseAtPreviousVersion(jdbcTemplate);
+        // 钉住 V12：理由见 v12DatabaseAddsResponsesEndpointAndProtocolDuringV13Migration。
+        // 这条尤其不能靠自动前移 —— 它断言的正是 V13 的追加结果，前移后会直接报断言失败。
+        seedDatabaseAtVersion(jdbcTemplate, 12);
         jdbcTemplate.update("INSERT INTO provider_config "
                 + "(provider_key, display_name, base_url, supported_protocols) "
                 + "VALUES ('dirty', '脏值', 'https://dirty.example.com', ?)",
@@ -760,9 +771,14 @@ class SchemaMigrationRunnerTests {
                 .isInstanceOf(DataAccessException.class);
     }
 
-    /** 新库的协议默认值与端点列须与升级库逐字一致，否则「全库同形态」只在一侧成立。 */
+    /**
+     * 新库的协议默认值与端点列须与升级库逐字一致，否则「全库同形态」只在一侧成立。
+     *
+     * <p>方法名不写版本号：它比较的是「新库」与「升级库」这两种<strong>形态</strong>，
+     * 每加一版都会继续成立，带版本号的名字只会一次次过时。
+     */
     @Test
-    void freshSchemaDefaultsMatchV13UpgradedShape() {
+    void freshSchemaDefaultsMatchUpgradedShape() {
         JdbcTemplate jdbcTemplate = createJdbcTemplate();
         new ResourceDatabasePopulator(new ClassPathResource("schema.sql"))
                 .execute(jdbcTemplate.getDataSource());
@@ -774,6 +790,89 @@ class SchemaMigrationRunnerTests {
         assertThat(protocolsOf(jdbcTemplate, "fresh")).isEqualTo("[\"CHAT\",\"MESSAGES\",\"RESPONSES\"]");
         // 新库不回填：DDL 默认空串，语义即「回退到 base_url」，与升级库留空的那些行一致。
         assertThat(responsesBaseUrlOf(jdbcTemplate, "fresh")).isEmpty();
+        // 鉴权头方式的默认值同样必须两边逐字相同 —— 这里是 schema.sql 的 DEFAULT
+        // 与 V14 迁移里那个 DEFAULT_AUTH_HEADER_JSON 唯一的对照点。
+        assertThat(authHeaderOf(jdbcTemplate, "fresh"))
+                .isEqualTo("{\"mode\":\"DOWNSTREAM\",\"header\":\"AUTHORIZATION\"}");
+    }
+
+    // ==================== V14：出站鉴权头装配方式 ====================
+
+    /**
+     * V13 库升到 V14：新列到位，且<strong>存量行由 DDL 默认值自动填充</strong>。
+     *
+     * <p>本迁移没有回填 UPDATE —— {@code NOT NULL DEFAULT} 让 SQLite 自己填。这条用例断言的
+     * 正是那个假设：默认值若缺失或写成空串，存量供应商的鉴权头配置会落进一个既非「取下游」
+     * 也非「取设置」的形态，而运行时只能靠兜底猜。
+     *
+     * <p>同时断言重复执行结果不变：值既不该被重跑改写，也不该被追加成两份。
+     */
+    @Test
+    void v13DatabaseAddsAuthHeaderColumnDefaultingToDownstreamAuthorization() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        seedDatabaseAtPreviousVersion(jdbcTemplate);
+
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+        runner.run(null);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT version FROM schema_version WHERE id = 1", Double.class))
+                .isEqualTo(SchemaMigrationRunner.currentSchemaVersion());
+        assertThat(columnNames(jdbcTemplate, "provider_config")).contains("auth_header");
+        // legacy 是 fixture 里迁移之前就存在的行，它被填上默认值即证明 ADD COLUMN 的回填生效。
+        assertThat(authHeaderOf(jdbcTemplate, "legacy"))
+                .isEqualTo("{\"mode\":\"DOWNSTREAM\",\"header\":\"AUTHORIZATION\"}");
+    }
+
+    /**
+     * 用户改过的鉴权头配置在重跑时不被冲掉。
+     *
+     * <p>与 V11 的 {@code use_proxy} 同一条不变量：迁移只在列<strong>不存在</strong>时动手，
+     * 值一旦在了，每次重启都不该再看它一眼。
+     */
+    @Test
+    void v14RerunPreservesUserConfiguredAuthHeader() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        seedDatabaseAtPreviousVersion(jdbcTemplate);
+        SchemaMigrationRunner runner = newMigrationRunner(jdbcTemplate);
+        runner.run(null);
+
+        jdbcTemplate.update("UPDATE provider_config SET auth_header = ? WHERE provider_key = 'legacy'",
+                "{\"mode\":\"CONFIGURED\",\"header\":\"X_API_KEY\"}");
+        runner.run(null);
+
+        assertThat(authHeaderOf(jdbcTemplate, "legacy"))
+                .isEqualTo("{\"mode\":\"CONFIGURED\",\"header\":\"X_API_KEY\"}");
+    }
+
+    /**
+     * 新列的 {@code json_valid} 约束真的生效。
+     *
+     * <p>与 V11 的 {@code use_proxy IN (0, 1)} 同一目的：列加上了不等于约束加上了。
+     * {@code ADD COLUMN} 里把定义写错（比如漏掉 CHECK）不会有任何报错，
+     * 直到某个非法值真的落库。
+     *
+     * <p>探针行用干净的 {@code enabled = 1} 新建，而不是复用 legacy —— 后者可能带着
+     * {@code enabled = 2} 这类历史脏值，那样 UPDATE 会被<strong>行级校验触发器</strong>拦下，
+     * 于是「拒绝」发生了却与 {@code json_valid} 无关，用例通过而什么都没验到。
+     */
+    @Test
+    void v14AuthHeaderColumnRejectsInvalidJson() {
+        JdbcTemplate jdbcTemplate = createJdbcTemplate();
+        seedDatabaseAtPreviousVersion(jdbcTemplate);
+        newMigrationRunner(jdbcTemplate).run(null);
+        jdbcTemplate.update("INSERT INTO provider_config (provider_key, display_name, enabled, base_url) "
+                + "VALUES ('probe', 'Probe', 1, 'https://probe.example.com')");
+
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "UPDATE provider_config SET auth_header = 'not-json' WHERE provider_key = 'probe'"))
+                .isInstanceOf(DataAccessException.class);
+
+        // 合法值放行，证明上面那条拒绝来自 json_valid 而非别的约束。
+        jdbcTemplate.update("UPDATE provider_config SET auth_header = ? WHERE provider_key = 'probe'",
+                "{\"mode\":\"CONFIGURED\",\"header\":\"X_API_KEY\"}");
+        assertThat(authHeaderOf(jdbcTemplate, "probe"))
+                .isEqualTo("{\"mode\":\"CONFIGURED\",\"header\":\"X_API_KEY\"}");
     }
 
     // ==================== V8.7：请求体规则分组 ====================
@@ -2070,6 +2169,19 @@ class SchemaMigrationRunnerTests {
                                 String.class, providerKey);
         }
 
+        /**
+         * 读某个供应商的鉴权头装配方式<strong>原文</strong>。
+         *
+         * <p>与 {@link #protocolsOf} 同一理由返回字符串而不解析：本列要断言的正是它的序列化形态
+         * （键序、大小写），解析成对象会把「新库与升级库写出来的字节是否一致」这件事抹掉，
+         * 而那正是最需要钉住的一点 —— 两处 DEFAULT 分叉时它们语义相同但字面不同。
+         */
+        private String authHeaderOf(JdbcTemplate jdbcTemplate, String providerKey) {
+                return jdbcTemplate.queryForObject(
+                                "SELECT auth_header FROM provider_config WHERE provider_key = ?",
+                                String.class, providerKey);
+        }
+
         /** 插一行带指定最大输出值的模型，模型名即用例里的标签。 */
         private void seedMaxOutput(JdbcTemplate jdbcTemplate, String modelName, int rawMaxOutput) {
                 jdbcTemplate.update("INSERT INTO provider_model (provider_id, model_name, max_output_tokens) "
@@ -2206,6 +2318,12 @@ class SchemaMigrationRunnerTests {
                 if (version >= 11) {
                         // 同为纯新增列，断言列名即可。
                         assertThat(columnNames(jdbcTemplate, "provider_config")).contains("use_proxy");
+                }
+                // V12 的持久不变量是协议字面量重命名（由它自己的用例覆盖，且没有「列存在」可断言）；
+                // V13 的 responses_base_url 暂未在此登记，需要时补。
+                if (version >= 14) {
+                        // 纯新增列，断言列名即可（与 V10、V11 同）。
+                        assertThat(columnNames(jdbcTemplate, "provider_config")).contains("auth_header");
                 }
         }
 }
