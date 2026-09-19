@@ -100,17 +100,36 @@ public class GatewayAuthService {
      * <ul>
      *   <li>功能未开启 → {@link AuthDecision#PASS}（仅一次廉价查询，不解密）；</li>
      *   <li>已开启但未配置 Key → {@code PASS}，并打 warning 日志提示配置不完整；</li>
-     *   <li>已开启且已配置 Key → 用<strong>常量时间</strong>比对请求头中的 Bearer token，
-     *       匹配则 {@code PASS}，否则 {@link AuthDecision#UNAUTHORIZED}。</li>
+     *   <li>已开启且已配置 Key → 用<strong>常量时间</strong>比对两个头里的凭据，
+     *       任一匹配则 {@code PASS}，都不匹配才 {@link AuthDecision#UNAUTHORIZED}。</li>
      * </ul>
+     *
+     * <h2>两个头都认，而且是 OR 而非优先级</h2>
+     * 客户端把 COSP 的 Key 放在哪个头里，取决于它用的凭据变量 ——
+     * Claude 系客户端配 {@code ANTHROPIC_API_KEY} 就发 {@code x-api-key}，
+     * 配 {@code ANTHROPIC_AUTH_TOKEN} 才发 {@code Authorization: Bearer}。
+     * 只读一个头会让另一半客户端无论配得多对都拿 401。
+     *
+     * <p><strong>不能写成「先看 Authorization，不匹配就拒」</strong>：
+     * 下游可能两个头都带（例如同时设了两个环境变量，或经过一层网关补了头），
+     * 此时只要其中一个装着正确的 Key 就应当放行 —— 「向 COSP 证明身份」的本质是
+     * 证明知道那把 Key，载体是哪个头无关。提前返回会把一次合法请求判成 401，
+     * 而排查时会看到「Key 明明是对的」。
+     *
+     * <p>这与<strong>出站</strong>鉴权头的设计刻意不同：那边必须让用户显式选一个
+     * （见 {@code AuthHeaderSetting}），因为「发哪个头」是对上游的协议级陈述、会改变
+     * 报文语义；而「认哪个头」不改变任何出站内容，因此没有歧义、也就不需要用户表态。
      *
      * <p>每次请求实时读库，因此刷新 Key 立即生效，无需缓存失效逻辑；读库为阻塞 JDBC，
      * 调度到 {@code boundedElastic} 执行，不阻塞 event-loop。
      *
-     * @param authorizationHeader 请求头 {@code Authorization} 的原始值（可能为 {@code null}）
+     * @param authorizationHeader 请求头 {@code Authorization} 的原始值（可能为 {@code null}），
+     *                            必须是 {@code Bearer <key>} 形态
+     * @param apiKeyHeader        请求头 {@code x-api-key} 的原始值（可能为 {@code null}），
+     *                            按裸值处理，没有 scheme 前缀
      * @return 鉴权决策
      */
-    public Mono<AuthDecision> authorize(String authorizationHeader) {
+    public Mono<AuthDecision> authorize(String authorizationHeader, String apiKeyHeader) {
         return Mono.fromCallable(() -> {
             boolean enabled = "true".equals(appConfigRepository.findConfigValue(ENABLED_KEY));
             if (!enabled) {
@@ -121,19 +140,30 @@ public class GatewayAuthService {
                 log.warn("下游鉴权已开启但未配置 API Key，本次请求按放行处理。请在管理后台生成 Key 或关闭开关。");
                 return AuthDecision.PASS;
             }
-            String presented = extractBearerToken(authorizationHeader);
-            if (presented == null) {
-                return AuthDecision.UNAUTHORIZED;
-            }
-            boolean match = MessageDigest.isEqual(
-                    expected.getBytes(StandardCharsets.UTF_8),
-                    presented.getBytes(StandardCharsets.UTF_8));
+            boolean match = matches(expected, extractBearerToken(authorizationHeader))
+                    || matches(expected, extractApiKeyValue(apiKeyHeader));
             return match ? AuthDecision.PASS : AuthDecision.UNAUTHORIZED;
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
     /**
+     * 常量时间比对一个候选凭据。
+     *
+     * <p>{@code presented} 为 {@code null}（该头没带或格式不符）时直接不匹配 ——
+     * 不走比对是安全的：那不是「值错了」而是「根本没有值」，没有可泄露的长度信息。
+     */
+    private boolean matches(String expected, String presented) {
+        return presented != null && MessageDigest.isEqual(
+                expected.getBytes(StandardCharsets.UTF_8),
+                presented.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
      * 从 {@code Authorization} 头提取 Bearer token。
+     *
+     * <p>要求 {@code Bearer } 前缀（大小写不敏感）。<strong>刻意不接受裸密钥</strong>：
+     * {@code Authorization: <key>} 不是任何客户端的既有写法，认它只会扩大接受面 ——
+     * 需要裸值形态的客户端用 {@code x-api-key} 即可。
      *
      * @param header 原始头值
      * @return token；缺失或格式不符时为 {@code null}
@@ -149,6 +179,25 @@ public class GatewayAuthService {
         }
         String token = trimmed.substring(BEARER_PREFIX.length()).trim();
         return token.isEmpty() ? null : token;
+    }
+
+    /**
+     * 从 {@code x-api-key} 头取出凭据。
+     *
+     * <p>该头的既有约定是<strong>裸值</strong>（Anthropic 官方如此定义），因此这里只做
+     * 去空白：带了 {@code Bearer } 前缀的值不会被剥掉，它会因为多出前缀而比对失败。
+     * 这是有意的 —— 两个头各自只接受自己那一种形态，混着用的请求本身就说明配置有误，
+     * 悄悄兼容会让「哪种写法有效」变得无法从代码读出。
+     *
+     * @param header 原始头值
+     * @return 凭据；缺失或全为空白时为 {@code null}
+     */
+    private String extractApiKeyValue(String header) {
+        if (header == null) {
+            return null;
+        }
+        String trimmed = header.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
     /**
