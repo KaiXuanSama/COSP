@@ -2,7 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.application.provider;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -22,15 +22,14 @@ import java.util.Set;
  * {@link #NON_FORWARDABLE_HEADERS} 里那些描述连接本身的头），再装配鉴权头，
  * 最后由供应商请求头规则覆盖、补充或删除任何头。
  *
- * 三层的职责边界不要混：第一层只做传输层正确性，第二层保证出站鉴权头既是供应商配置的
- * 凭据、又是这个上游认的那一种形态，第三层承载「这个上游需要什么」的全部特例。
+ * 三层的职责边界不要混：第一层只做传输层正确性，第二层保证出站鉴权头承载的是供应商配置的
+ * 凭据、且用的是用户指定的那一种头名，第三层承载「这个上游需要什么」的全部特例。
  * 因此凡是超出传输层正确性的取舍都不应下沉到第一层 —— 规则层拥有最终决定权是有意的设计。
  *
- * <h2>第二层正处于临时状态（{@code TODO(临时实现)}）</h2>
- * 它当前一律发 {@code Authorization: Bearer}。目标形态是<strong>由供应商级配置决定</strong>
- * 头名（模式 `取下游` / `取设置`，方式 {@code Authorization} / {@code x-api-key}），
- * 因为「哪种头」不是协议属性 —— 见 {@link #applyAuthenticationHeaders} 的说明。
- * 行为矩阵、改动范围与落地顺序见仓库根目录《鉴权头再装配实施计划.md》。
+ * <h2>第二层由供应商级配置驱动，不由协议决定</h2>
+ * 头名取自 {@link AuthHeaderSetting}（取下游 / 取设置 × {@code Authorization} /
+ * {@code x-api-key}）。「哪种头」不是协议属性，依据与反面证据见
+ * {@link #applyAuthenticationHeaders}。
  */
 @Service
 public class ProviderRequestHeaderService {
@@ -98,15 +97,14 @@ public class ProviderRequestHeaderService {
      * 优先级从低到高：下游可透传头、装配的鉴权与媒体类型、供应商规则。
      * Host、Content-Length 和 hop-by-hop 头不跨请求透传，由上游 HTTP 客户端重新计算。
      *
-     * @param upstreamProtocol 出站实际使用的线路协议。鉴权头当前一律发
-     *                         {@code Authorization: Bearer}，本参数因此<strong>未被读取</strong>。
-     *                         它将在鉴权头再装配里被供应商级设置取代（或删除），
-     *                         见 {@link #applyAuthenticationHeaders}
+     * @param downstreamHeaders 下游请求头；既是透传来源，也是鉴权头装配的探测依据
+     * @param authHeader        出站鉴权头的装配方式；{@code null} 按
+     *                          {@link AuthHeaderSetting#defaults()} 处理
      */
     public void applyHeaders(HttpHeaders headers, HttpHeaders downstreamHeaders, String apiKey,
-                             String headerRulesJson, boolean stream, WireProtocol upstreamProtocol) {
+                             String headerRulesJson, boolean stream, AuthHeaderSetting authHeader) {
         copyForwardableHeaders(headers, downstreamHeaders);
-        applyAuthenticationHeaders(headers, apiKey, upstreamProtocol);
+        applyAuthenticationHeaders(headers, downstreamHeaders, apiKey, authHeader);
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setAccept(List.of(stream ? MediaType.TEXT_EVENT_STREAM : MediaType.ALL));
         for (Map<String, String> rule : parseHeaderRules(headerRulesJson)) {
@@ -129,71 +127,100 @@ public class ProviderRequestHeaderService {
 
     /**
      * 无下游上下文的请求头构造入口，供模型拉取与独立单元测试使用。
+     *
+     * <p>没有下游请求就没有「下游选了哪个头」可言：两项探测皆为假，
+     * {@link AuthHeaderSetting#resolveHeader} 因此在<strong>两种模式下都</strong>落到配置值。
+     * 这正是「取下游」模式下配置项仍然有意义的那个场景 —— 它不是用不上，而是兜底。
      */
     public void applyHeaders(HttpHeaders headers, String apiKey, String headerRulesJson,
-                             WireProtocol upstreamProtocol) {
-        applyHeaders(headers, HttpHeaders.EMPTY, apiKey, headerRulesJson, false, upstreamProtocol);
+                             AuthHeaderSetting authHeader) {
+        applyHeaders(headers, HttpHeaders.EMPTY, apiKey, headerRulesJson, false, authHeader);
     }
 
     /**
-     * 装配出站鉴权头。
+     * 按供应商级配置装配出站鉴权头：探测 → 决定头名 → 删两个 → 注一个。
      *
-     * <p>{@code TODO(临时实现)} <strong>本方法是临时实现，其行为不是最终形态。</strong>
-     * 当前<strong>三种协议一律发 {@code Authorization: Bearer}</strong>，而目标是改为
-     * 由供应商级配置决定头名（模式 `取下游` / `取设置` × 方式 {@code Authorization} /
-     * {@code x-api-key}）。改动范围、行为矩阵与落地顺序见仓库根目录
-     * 《鉴权头再装配实施计划.md》。落地时本方法连同 {@code upstreamProtocol} 参数一并重整。
-     *
-     * <h2>为何临时统一到 {@code Authorization}</h2>
-     * 原先按出站协议分派 —— MESSAGES 发 {@code x-api-key} 并删 {@code Authorization}，
+     * <h2>为何头名不由协议决定</h2>
+     * 这里曾经按出站协议分派 —— MESSAGES 发 {@code x-api-key} 并删 {@code Authorization}，
      * CHAT / RESPONSES 反之；依据是「Anthropic 官方用 x-api-key」。实测该依据不成立：
      * <ul>
      *   <li>Claude CLI 的头名由<strong>凭据环境变量</strong>决定，与协议无关 ——
      *       {@code ANTHROPIC_API_KEY} 发 {@code x-api-key}，
      *       {@code ANTHROPIC_AUTH_TOKEN} 发 {@code Authorization: Bearer}，
      *       而 cc-switch 默认走后者；</li>
-     *   <li>部分中转站只认 {@code Authorization}，不认 {@code x-api-key}。</li>
+     *   <li>部分中转站只认 {@code Authorization}，不认 {@code x-api-key}
+     *       （anyrouter 实测：改发 Bearer 后响应从 503 变成 429，即通过了鉴权层）。</li>
      * </ul>
-     * 根因是「哪种头」本就不是协议属性，而这个选择不该由代码替用户做。
-     * 统一只是解除阻塞，真正的修法是把它还给用户配置。
+     * 根因不是「选错了那一档」，而是<strong>这个选择本身不该由代码替用户做</strong>，
+     * 于是它成了供应商级配置。行为矩阵见 {@link AuthHeaderSetting}。
      *
-     * <p>下面是<strong>上一版的实现</strong>，留作对照（改动前后各发哪一种头、
-     * 以及「写一个删另一个」的结构）：
-     * <pre>{@code
-     * if (upstreamProtocol == WireProtocol.MESSAGES) {
-     *     headers.set(API_KEY_HEADER, resolvedKey);
-     *     headers.remove(HttpHeaders.AUTHORIZATION);
-     *     return;
-     * }
-     * headers.setBearerAuth(resolvedKey);
-     * headers.remove(API_KEY_HEADER);
-     * }</pre>
+     * <h2>探测读 {@code downstreamHeaders} 而不是 {@code headers}</h2>
+     * 两者在当前调用形态下等价（两个鉴权头都不在 {@link #NON_FORWARDABLE_HEADERS} 里，
+     * 因此 {@code copyForwardableHeaders} 会把它们覆盖进 target；而所有调用点给的 target
+     * 都是新建的空 {@code HttpHeaders}），但读参数<strong>不依赖那个前提</strong>：
+     * 它不要求拷贝步骤先执行，也不会在将来某个调用点传入预置了鉴权头的 target 时误判成
+     * 「下游带了」。省掉一条顺序依赖比省掉一个参数更值。
      *
-     * <h2>无论哪种形态，「删另一个」都不能省</h2>
+     * <h2>空值不算「带了」</h2>
+     * {@code HttpHeaders.containsHeader} 只判键在不在，{@code Authorization: ""} 也会返回
+     * {@code true}。用它会把一个空头当成「下游做了选择」，把取下游模式顶到「恰好一个」
+     * 的分支上 —— 而那个空头恰恰说明下游什么都没表达。故按值判空。
+     *
+     * <h2>「删两个」不能省</h2>
      * 「写」用覆盖而非补缺 —— 出站凭据必须是供应商配置的那把 key，不能由下游透传值决定。
      * x-api-key 一侧曾经是「缺失才设」，下游带了就补不进去，而 Authorization 看起来是对的，
      * 是最难排查的那种缺口。
      *
-     * 「删」是因为另一个鉴权头在这条出站链路上是纯噪音：它可能来自下游透传
+     * 「删」是因为没被选中的那个鉴权头在这条出站链路上是纯噪音：它可能来自下游透传
      * （Claude 系客户端按官方惯例把它放在那里），也可能来自翻译路线上下游与上游协议不一致。
      * 留着它至少有两个坏处：把下游的凭据泄露给上游供应商；以及遇到严格上游时因多余认证头被拒，
      * 而排查时会看到「该发的头明明是对的」。
      *
+     * <p>因此实现是「<strong>先删两个、再注一个</strong>」而不是「只改选中那个头的值」：
+     * 在「下游恰好带一个」时两者净效果相同，但前者少一条分支，且天然保证了
+     * 没被选中的那一侧一定不带下游的值出站。
+     *
+     * <h2>不做任何自动回退</h2>
+     * 上游若不认这个头名会返回 401/403，本服务<strong>不</strong>换另一个头重试、
+     * 不按错误码回退、不按 base URL 猜测中转站类型。那等于把「哪个头有效」的猜测搬回代码里，
+     * 而且悄悄换过之后用户从界面和日志上都看不出发生了什么 —— 排查会指向凭据而非配置。
+     * 401 配上调用日志里的出站头名是完整可自查的引导，与「不按模型名降级思考档位」
+     * 是同一条原则。
+     *
      * <p>本方法刻意在请求头规则<strong>之前</strong>执行，规则因此保留最终决定权：
      * 需要双头并存的中转站可以用规则把另一个加回来，需要非 Bearer 形态的
-     * 可以用 {@code {apiKey}} 占位改写。这一分层在最终形态里不变。
-     *
-     * <p>顺序依赖：本方法读到的是 {@code applyHeaders} 里
-     * {@code copyForwardableHeaders} 刚拷进来的下游头 —— 最终形态要靠这一点探测
-     * 「下游带了哪一种」，因此两步的先后不能调换。
+     * 可以用 {@code {apiKey}} 占位改写。
      */
-    private void applyAuthenticationHeaders(HttpHeaders headers, String apiKey, WireProtocol upstreamProtocol) {
-        // TODO(临时实现) 一律发 Bearer，与 upstreamProtocol 无关。待改为按供应商级设置装配
-        // （取下游 / 取设置 × Authorization / x-api-key），届时 upstreamProtocol 参数一并重整。
-        // 见方法 javadoc 与仓库根目录《鉴权头再装配实施计划.md》。
-        String resolvedKey = apiKey == null ? "" : apiKey;
-        headers.setBearerAuth(resolvedKey);
+    private void applyAuthenticationHeaders(HttpHeaders headers, HttpHeaders downstreamHeaders,
+                                            String apiKey, AuthHeaderSetting authHeader) {
+        AuthHeaderSetting setting = authHeader == null ? AuthHeaderSetting.defaults() : authHeader;
+        AuthHeaderSetting.Header target = setting.resolveHeader(
+                hasNonBlankHeader(downstreamHeaders, HttpHeaders.AUTHORIZATION),
+                hasNonBlankHeader(downstreamHeaders, API_KEY_HEADER));
+
+        headers.remove(HttpHeaders.AUTHORIZATION);
         headers.remove(API_KEY_HEADER);
+
+        String resolvedKey = apiKey == null ? "" : apiKey;
+        if (target == AuthHeaderSetting.Header.X_API_KEY) {
+            headers.set(API_KEY_HEADER, resolvedKey);
+        } else {
+            headers.setBearerAuth(resolvedKey);
+        }
+    }
+
+    /**
+     * 判断请求头里是否有该头且值非空白。
+     *
+     * <p>不用 {@code containsHeader}：它只判键在不在，详见
+     * {@link #applyAuthenticationHeaders} 的「空值不算带了」。
+     */
+    private boolean hasNonBlankHeader(HttpHeaders headers, String name) {
+        if (headers == null) {
+            return false;
+        }
+        String value = headers.getFirst(name);
+        return value != null && !value.isBlank();
     }
 
     /**

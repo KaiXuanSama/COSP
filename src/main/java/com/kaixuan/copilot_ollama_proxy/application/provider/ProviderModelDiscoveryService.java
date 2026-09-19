@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.application.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRow;
@@ -100,7 +101,11 @@ public class ProviderModelDiscoveryService {
         String requestUrl = providerRequestHeaderService.buildRequestUrl(rawBaseUrl, normalizeModelPullPath(rawModelPullPath));
         return webClientBuilder.clone().defaultHeaders(headers -> {
             headers.setAccept(List.of(MediaType.APPLICATION_JSON));
-            providerRequestHeaderService.applyHeaders(headers, apiKey, headerRulesJson, protocol);
+            // TODO(待实现) 改为读供应商配置的 auth_header 列。此刻传缺省值，行为与改造前逐字节一致
+            // （无下游 → 两项探测皆假 → 兜底到 Authorization: Bearer），因此拉取路径暂时
+            // 不跟随用户配置。接线需给 ModelPullRequest 加一个字段，见《鉴权头再装配实施计划.md》§5.2。
+            providerRequestHeaderService.applyHeaders(headers, apiKey, headerRulesJson,
+                    AuthHeaderSetting.defaults());
             applyProtocolHeaders(headers, protocol);
         }).build().get().uri(requestUrl).exchangeToMono(response -> response.bodyToMono(String.class).defaultIfEmpty("")
                 .map(responseBody -> {
@@ -156,10 +161,14 @@ public class ProviderModelDiscoveryService {
      * 而错误消息会指向「地址不对」—— 地址其实是对的。
      *
      * <h2>鉴权头不在这里</h2>
-     * 它由 {@code ProviderRequestHeaderService} 按出站协议统一装配（写本协议那一个、
-     * 删另一个），本方法只补版本头。这一处曾有一份「双认证头」副本，与聊天链路各写一遍；
-     * 收归一处后，模型拉取与聊天用的是同一套鉴权口径 —— 拉取能通而聊天 401
-     * （或反之）这类只能靠对比两处代码才能解释的现象因此不再可能。
+     * 它由 {@code ProviderRequestHeaderService} 按<strong>供应商级配置</strong>装配
+     * （取下游 / 取设置 × {@code Authorization} / {@code x-api-key}），本方法只补版本头。
+     * 这一处曾有一份「双认证头」副本，与聊天链路各写一遍；收归一处后，模型拉取与聊天用的是
+     * 同一套鉴权口径 —— 拉取能通而聊天 401（或反之）这类只能靠对比两处代码才能解释的现象
+     * 因此不再可能。
+     *
+     * <p>注意<strong>协议仍然决定版本头</strong>，只是不再决定鉴权头。两件事的判据不同：
+     * {@code anthropic-version} 是那条线路的协议要求（缺失即 400），而头名取决于用户配了什么。
      *
      * <p>版本头只在缺失时设置，因此供应商自定义头规则（已在 {@code applyHeaders} 里生效）
      * 仍能覆盖它 —— 某些中转站要求特定版本号。

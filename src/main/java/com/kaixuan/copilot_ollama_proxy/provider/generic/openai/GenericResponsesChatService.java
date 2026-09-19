@@ -8,6 +8,7 @@ import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
@@ -508,10 +509,11 @@ public class GenericResponsesChatService {
      * 刻意不抽公共方法：它依赖三个注入字段，抽出去要传三个参数或再造一个 Bean，
      * 而本身只有二十行。
      *
-     * <p>Responses 与 Chat 同为 OpenAI 系，因此鉴权用 {@code Authorization: Bearer}
-     * 且<strong>不发</strong> {@code anthropic-version} —— 这两点都由
-     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders} 按出站协议自动处理，
-     * 本类不需要额外补任何协议头。这也是本方法比 Anthropic 那份短的唯一原因。
+     * <p>本方法比 Anthropic 那份短，唯一原因是这条线路<strong>不需要</strong>
+     * {@code anthropic-version} 那样的协议必需头。鉴权头不在此列 —— 它的头名由
+     * {@link AuthHeaderSetting} 这个供应商级配置决定，与协议无关，因此这条线路上出站的
+     * 也可能是 {@code x-api-key}（依据见
+     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders}）。
      */
     private WebClient buildWebClient(Map<String, String> capturedHeaders,
                                      ProviderRuntimeConfiguration provider,
@@ -529,14 +531,13 @@ public class GenericResponsesChatService {
                 .clientConnector(new ReactorClientHttpConnector(capturingHttpClient))
                 .baseUrl(normalizedUrl)
                 .defaultHeaders(headers -> {
-                    // 复用共享的请求头装配（下游头透传白名单、hop-by-hop 排除、按出站协议
-                    // 装配鉴权头、供应商头规则含 {apiKey} 占位与删除标记）。
-                    // 出站协议恒为 RESPONSES：本服务只打 Responses 端点，因此鉴权装配
-                    // 写 Authorization: Bearer 并删掉 x-api-key —— 后者在这条链路上是噪音，
-                    // 可能来自下游透传（某些客户端按 Anthropic 惯例发它）。
+                    // 复用共享的请求头装配（下游头透传白名单、hop-by-hop 排除、鉴权头装配、
+                    // 供应商头规则含 {apiKey} 占位与删除标记）。
+                    // 出站鉴权头由供应商级配置决定，与本服务的协议无关 —— 「走 OpenAI 系」
+                    // 不代表该发 Bearer，头名取决于用户配的「取下游 / 取设置」与承载方式。
                     providerRequestHeaderService.applyHeaders(
                             headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream,
-                            WireProtocol.RESPONSES);
+                            AuthHeaderSetting.parse(provider.authHeaderJson(), objectMapper));
                 })
                 .filter((request, next) -> {
                     capturedHeaders.clear();

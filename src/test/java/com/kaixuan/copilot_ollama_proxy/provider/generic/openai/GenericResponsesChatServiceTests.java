@@ -161,24 +161,54 @@ class GenericResponsesChatServiceTests {
     // ==================== 请求头 ====================
 
     /**
-     * 只发 OpenAI 系认的那一种鉴权头。
+     * 下游送来的凭据值绝不出站，无论它落在哪个头上。
      *
-     * <p>{@code x-api-key} 在这条链路上是噪音 —— 可能来自下游透传（某些客户端按
-     * Anthropic 惯例发它）。装配规则见
-     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders}，那个判据写成
-     * 否定式（{@code if (upstream == MESSAGES) ... else Bearer}），因此 Responses
-     * 自动落到正确的分支。本用例正是那个「自动」的验证 —— 否则它只是巧合。
+     * <h2>这条用例换过一次判据</h2>
+     * 它原先叫 {@code onlyBearerAuthenticationHeaderIsSent}，断言「发 Authorization、
+     * 不发 x-api-key」——那个判据是<strong>头名</strong>，成立的前提是「出站头名由上游协议
+     * 决定，而 Responses 属 OpenAI 系故恒为 Bearer」。该前提已被移除：头名现在由供应商级
+     * 配置决定，默认「取下游」，因此下游只发 {@code x-api-key} 时出站也是 {@code x-api-key}。
+     *
+     * <p>但这条用例真正要守的东西没变，只是需要换成正确的判据 —— <strong>值</strong>：
+     * {@code downstream-leak} 不能出现在任何一个出站鉴权头里。头名可以随配置变，
+     * 「下游凭据泄露给上游供应商」永远是缺陷。
+     *
+     * <p>头名与配置的对应关系由 {@code ProviderRequestHeaderServiceTests} 穷举，
+     * 这里只验本服务把配置<strong>接上了</strong>（见
+     * {@link #authenticationHeaderFollowsProviderConfiguration}）。
      */
     @Test
-    void onlyBearerAuthenticationHeaderIsSent() {
+    void downstreamCredentialNeverReachesUpstream() {
         HttpHeaders downstream = new HttpHeaders();
         downstream.add("x-api-key", "downstream-leak");
 
         realService().exposeResponses(newRequest(), routeTo(baseUrlWithV1()), downstream)
                 .block(Duration.ofSeconds(10));
 
-        assertThat(capturedHeaders.get()).containsEntry("Authorization", "Bearer test-key");
-        assertThat(capturedHeaders.get()).doesNotContainKey("X-api-key");
+        // 默认「取下游」：下游只带 x-api-key，于是供应商 key 也走这个头。
+        assertThat(capturedHeaders.get()).containsEntry("X-api-key", "test-key");
+        assertThat(capturedHeaders.get()).doesNotContainKey("Authorization");
+        assertThat(capturedHeaders.get().values()).doesNotContain("downstream-leak");
+    }
+
+    /**
+     * 出站头名取自供应商配置，与本服务走哪个协议无关。
+     *
+     * <p>配「取设置 + x-api-key」并<strong>不给下游任何鉴权头</strong>：若本服务漏传配置
+     * （{@code applyHeaders} 那个参数给了 {@code defaults()} 而不是 provider 的值），
+     * 装配会落到默认的 Authorization，本用例即红。
+     *
+     * <p>刻意选 {@code x-api-key} 而非 Authorization 作为配置值 —— 后者与默认值相同，
+     * 漏接线也照样绿。
+     */
+    @Test
+    void authenticationHeaderFollowsProviderConfiguration() {
+        realService().exposeResponses(newRequest(),
+                        routeWithAuthHeader(baseUrlWithV1(), "{\"mode\":\"CONFIGURED\",\"header\":\"X_API_KEY\"}"))
+                .block(Duration.ofSeconds(10));
+
+        assertThat(capturedHeaders.get()).containsEntry("X-api-key", "test-key");
+        assertThat(capturedHeaders.get()).doesNotContainKey("Authorization");
     }
 
     /**
@@ -809,6 +839,24 @@ class GenericResponsesChatServiceTests {
         return new ResolvedProviderRoute(
                 new ProviderRuntimeConfiguration("oai", baseUrl, "test-key", List.of(),
                         "[]", bodyRulesJson),
+                "gpt-5", "[oai] gpt-5");
+    }
+
+    /**
+     * 带出站鉴权头装配方式的路由。
+     *
+     * <p>该维度是供应商级的（不是模型级），所以要写满参构造器的第 11 个参数 ——
+     * 前面那些都取与 {@link #routeTo} 一致的默认值。
+     *
+     * @param authHeaderJson 持久化原文，形如
+     *                       {@code {"mode":"CONFIGURED","header":"X_API_KEY"}}
+     */
+    private static ResolvedProviderRoute routeWithAuthHeader(String baseUrl, String authHeaderJson) {
+        return new ResolvedProviderRoute(
+                new ProviderRuntimeConfiguration("oai", baseUrl, "test-key", List.of(),
+                        "[]", "{\"version\":2,\"groups\":[]}",
+                        ProviderRuntimeConfiguration.DEFAULT_SUPPORTED_PROTOCOLS_JSON,
+                        "", "", false, authHeaderJson),
                 "gpt-5", "[oai] gpt-5");
     }
 

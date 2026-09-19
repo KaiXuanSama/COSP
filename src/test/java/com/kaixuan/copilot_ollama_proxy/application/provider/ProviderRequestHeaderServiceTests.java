@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.application.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
@@ -26,7 +26,7 @@ class ProviderRequestHeaderServiceTests {
                   {"key":"X-Provider","value":"generic"},
                   {"key":"X-Remove","value":"/del/"}
                 ]
-                """, WireProtocol.CHAT);
+                """, AuthHeaderSetting.defaults());
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Custom actual-api-key");
         assertThat(headers.getFirst("X-Provider")).isEqualTo("generic");
@@ -37,7 +37,7 @@ class ProviderRequestHeaderServiceTests {
     void applyHeadersUsesBearerAuthenticationWhenThereAreNoRules() {
         HttpHeaders headers = new HttpHeaders();
 
-        service.applyHeaders(headers, "actual-api-key", "[]", WireProtocol.CHAT);
+        service.applyHeaders(headers, "actual-api-key", "[]", AuthHeaderSetting.defaults());
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer actual-api-key");
     }
@@ -54,7 +54,7 @@ class ProviderRequestHeaderServiceTests {
     void applyHeadersIgnoresInvalidRulesWithoutRemovingDefaultAuthentication() {
         HttpHeaders headers = new HttpHeaders();
 
-        service.applyHeaders(headers, "actual-api-key", "not-json", WireProtocol.CHAT);
+        service.applyHeaders(headers, "actual-api-key", "not-json", AuthHeaderSetting.defaults());
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer actual-api-key");
     }
@@ -98,7 +98,7 @@ class ProviderRequestHeaderServiceTests {
                   {"key":"Cookie","value":"/del/"},
                   {"key":"X-Trace-Id","value":"provider-trace"}
                 ]
-                """, true, WireProtocol.CHAT);
+                """, true, AuthHeaderSetting.defaults());
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Provider provider-api-key");
         assertThat(headers).doesNotContainKey(HttpHeaders.COOKIE);
@@ -116,124 +116,235 @@ class ProviderRequestHeaderServiceTests {
 
         HttpHeaders headers = new HttpHeaders();
         service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false,
-                WireProtocol.CHAT);
+                AuthHeaderSetting.defaults());
 
         assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
         assertThat(headers.getFirst("X-Trace-Id")).isEqualTo("trace-123");
     }
 
     /**
-     * 鉴权头按出站协议装配：写本协议那一个、删另一个。
+     * 鉴权头按<strong>供应商级配置</strong>装配：决定头名、删两个、注一个。
      *
-     * 判据是上游协议而非下游协议 —— 翻译路线上两者不同，而鉴权头必须匹配真正收到
-     * 这个请求的那一端。这些用例同时钉住「删噪音」：另一种协议的鉴权头无论来自下游透传
-     * 还是翻译残留，都不该出站。
+     * <h2>判据从协议换成了配置</h2>
+     * 这批用例此前叫 {@code AuthenticationHeadersByUpstreamProtocol}，断言全部以
+     * 「上游是哪个协议」为判据。那条映射实测不成立（头名由下游用的凭据变量决定，
+     * 且部分中转站只认 {@code Authorization}），因此整批重排 —— 不是修断言，
+     * 是换判据。
+     *
+     * <h2>每条都要能单独红</h2>
+     * 「取下游」模式下若把配置那一维写成恒 {@code AUTHORIZATION}，兜底类用例就与
+     * 「恒发 Bearer」的实现区分不开。故凡是验兜底的，配置一律给
+     * {@link AuthHeaderSetting.Header#X_API_KEY} —— 那是默认值的反面。
      */
     @Nested
-    class AuthenticationHeadersByUpstreamProtocol {
+    class AuthenticationHeaderAssembly {
 
+        /** 取设置 + Authorization：下游带的 x-api-key 被忽略且不出站。 */
         @Test
-        void openAiUpstreamSendsBearerAndDropsAnthropicKey() {
-            HttpHeaders headers = new HttpHeaders();
+        void configuredModeUsesTheConfiguredAuthorizationHeader() {
+            HttpHeaders downstreamHeaders = new HttpHeaders();
+            downstreamHeaders.set(API_KEY_HEADER, "downstream-chosen-key");
 
-            service.applyHeaders(headers, "provider-api-key", "[]", WireProtocol.CHAT);
+            HttpHeaders headers = new HttpHeaders();
+            service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false,
+                    configured(AuthHeaderSetting.Header.AUTHORIZATION));
 
             assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
             assertThat(headers).doesNotContainKey(API_KEY_HEADER);
         }
 
+        /** 取设置 + x-api-key：下游带的 Authorization 被忽略且不出站。 */
         @Test
-        void anthropicUpstreamSendsApiKeyAndDropsAuthorization() {
-            HttpHeaders headers = new HttpHeaders();
+        void configuredModeUsesTheConfiguredApiKeyHeader() {
+            HttpHeaders downstreamHeaders = new HttpHeaders();
+            downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-chosen-key");
 
-            service.applyHeaders(headers, "provider-api-key", "[]", WireProtocol.MESSAGES);
+            HttpHeaders headers = new HttpHeaders();
+            service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false,
+                    configured(AuthHeaderSetting.Header.X_API_KEY));
 
             assertThat(headers.getFirst(API_KEY_HEADER)).isEqualTo("provider-api-key");
             assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);
         }
 
         /**
-         * Responses 上游走 Bearer，与 Chat 同侧。
+         * 取下游 + 下游只带 Authorization：发 Bearer，<strong>配置的那一维不生效</strong>。
          *
-         * <p>实现是 {@code if (upstream == MESSAGES) 写 x-api-key else 写 Authorization}，
-         * 因此 Responses 落到 else 分支 —— <strong>恰好正确</strong>，因为它是 OpenAI 的接口。
-         * 但这个「恰好」依赖那个 {@code if} 现在的形状：改成按协议逐个 {@code case} 时，
-         * 漏掉 RESPONSES 的症状是上游 401，而 Chat 线路一切正常。故显式钉住。
+         * <p>配置刻意给 x-api-key —— 这一条正是「取下游」的全部意义所在：
+         * 下游已经替用户做了选择，而它比本服务更清楚自己用的是哪个凭据变量。
+         * 若实现忘了读探测结果而直接用配置值，这条会红。
          */
         @Test
-        void responsesUpstreamSendsBearerLikeChatBecauseItIsAnOpenAiEndpoint() {
-            HttpHeaders headers = new HttpHeaders();
-
-            service.applyHeaders(headers, "provider-api-key", "[]", WireProtocol.RESPONSES);
-
-            assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
-            assertThat(headers).doesNotContainKey(API_KEY_HEADER);
-        }
-
-        /** 下游按 Anthropic 惯例带来的 x-api-key 不得泄露给 OpenAI 上游。 */
-        @Test
-        void openAiUpstreamDropsForwardedDownstreamAnthropicKey() {
+        void downstreamModeFollowsTheSingleDownstreamAuthorization() {
             HttpHeaders downstreamHeaders = new HttpHeaders();
-            downstreamHeaders.set(API_KEY_HEADER, "downstream-leaked-key");
-            downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-gateway-key");
+            downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-chosen-key");
 
             HttpHeaders headers = new HttpHeaders();
             service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false,
-                    WireProtocol.CHAT);
+                    downstream(AuthHeaderSetting.Header.X_API_KEY));
 
-            assertThat(headers).doesNotContainKey(API_KEY_HEADER);
             assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
+            assertThat(headers).doesNotContainKey(API_KEY_HEADER);
         }
 
         /**
-         * 下游携带 x-api-key 时，供应商 key 仍必须覆盖它。
+         * 取下游 + 下游只带 x-api-key：发 x-api-key。
          *
-         * 这一条曾经不成立：x-api-key 那一侧是「缺失才设」，下游带了就补不进去，
-         * 请求会带着下游的值打到上游，而排查时 Authorization 看起来是对的。
+         * <p>这是本次改动要修的那个场景（Claude Code 用 {@code ANTHROPIC_API_KEY} 时
+         * 只发 x-api-key），配置给默认的 Authorization 以证明探测结果优先。
          */
         @Test
-        void anthropicUpstreamOverridesForwardedDownstreamApiKey() {
+        void downstreamModeFollowsTheSingleDownstreamApiKey() {
             HttpHeaders downstreamHeaders = new HttpHeaders();
-            downstreamHeaders.set(API_KEY_HEADER, "downstream-leaked-key");
-            downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-gateway-key");
+            downstreamHeaders.set(API_KEY_HEADER, "downstream-chosen-key");
 
             HttpHeaders headers = new HttpHeaders();
             service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false,
-                    WireProtocol.MESSAGES);
+                    downstream(AuthHeaderSetting.Header.AUTHORIZATION));
 
             assertThat(headers.getFirst(API_KEY_HEADER)).isEqualTo("provider-api-key");
             assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);
+        }
+
+        /** 取下游但下游一个都没带：无从跟随，兜底用配置的头。 */
+        @Test
+        void downstreamModeFallsBackWhenDownstreamSentNeither() {
+            HttpHeaders headers = new HttpHeaders();
+            service.applyHeaders(headers, new HttpHeaders(), "provider-api-key", "[]", false,
+                    downstream(AuthHeaderSetting.Header.X_API_KEY));
+
+            assertThat(headers.getFirst(API_KEY_HEADER)).isEqualTo("provider-api-key");
+            assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);
+        }
+
+        /**
+         * 取下游但下游两个都带：同样无从判断意图，兜底。
+         *
+         * <p>「两个都带」是真实存在的 —— 同时设了 {@code ANTHROPIC_API_KEY} 与
+         * {@code ANTHROPIC_AUTH_TOKEN} 的客户端两个头都会发。此时随便取一个等于
+         * 把「哪个头有效」的猜测搬回代码里。
+         */
+        @Test
+        void downstreamModeFallsBackWhenDownstreamSentBoth() {
+            HttpHeaders downstreamHeaders = new HttpHeaders();
+            downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-token");
+            downstreamHeaders.set(API_KEY_HEADER, "downstream-key");
+
+            HttpHeaders headers = new HttpHeaders();
+            service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false,
+                    downstream(AuthHeaderSetting.Header.X_API_KEY));
+
+            assertThat(headers.getFirst(API_KEY_HEADER)).isEqualTo("provider-api-key");
+            assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);
+        }
+
+        /**
+         * 空白值不算「下游做了选择」。
+         *
+         * <p>{@code HttpHeaders.containsHeader} 只判键在不在，用它会把
+         * {@code Authorization: ""} 当成一次表态，于是这里会误判成「两个都带」而走兜底
+         * （配置是 Authorization，断言就会看到 Bearer）。按值判空才会正确地认出
+         * 下游只表达了 x-api-key 这一种。
+         */
+        @Test
+        void blankDownstreamHeaderDoesNotCountAsPresent() {
+            HttpHeaders downstreamHeaders = new HttpHeaders();
+            downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "   ");
+            downstreamHeaders.set(API_KEY_HEADER, "downstream-chosen-key");
+
+            HttpHeaders headers = new HttpHeaders();
+            service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false,
+                    downstream(AuthHeaderSetting.Header.AUTHORIZATION));
+
+            assertThat(headers.getFirst(API_KEY_HEADER)).isEqualTo("provider-api-key");
+            assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);
+        }
+
+        /**
+         * 下游的凭据<strong>值</strong>永不出站，与选了哪个头名正交。
+         *
+         * <p>这是安全性质而非形态约定：跟随下游的是「用哪个头」，绝不是「用哪把 key」。
+         * 实现若把「跟随」误解成「保留下游那个头不动」，头名断言仍会通过，只有这条会红。
+         */
+        @Test
+        void downstreamCredentialValueNeverReachesUpstream() {
+            for (AuthHeaderSetting setting : new AuthHeaderSetting[] {
+                    downstream(AuthHeaderSetting.Header.AUTHORIZATION),
+                    downstream(AuthHeaderSetting.Header.X_API_KEY),
+                    configured(AuthHeaderSetting.Header.AUTHORIZATION),
+                    configured(AuthHeaderSetting.Header.X_API_KEY)}) {
+                HttpHeaders downstreamHeaders = new HttpHeaders();
+                downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-secret");
+                downstreamHeaders.set(API_KEY_HEADER, "downstream-secret");
+
+                HttpHeaders headers = new HttpHeaders();
+                service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false, setting);
+
+                assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION))
+                        .as("配置: %s", setting).isNotEqualTo("Bearer downstream-secret");
+                assertThat(headers.getFirst(API_KEY_HEADER))
+                        .as("配置: %s", setting).isNotEqualTo("downstream-secret");
+            }
+        }
+
+        /**
+         * 无下游上下文的重载（模型拉取走这条）：两种模式都用配置的头。
+         *
+         * <p>没有下游请求就没有可跟随的选择，「取下游」在这里必然落到兜底 ——
+         * 这正是那一档下配置项仍有意义的证明。
+         */
+        @Test
+        void headerlessOverloadAlwaysUsesTheConfiguredHeader() {
+            for (AuthHeaderSetting setting : new AuthHeaderSetting[] {
+                    downstream(AuthHeaderSetting.Header.X_API_KEY),
+                    configured(AuthHeaderSetting.Header.X_API_KEY)}) {
+                HttpHeaders headers = new HttpHeaders();
+
+                service.applyHeaders(headers, "provider-api-key", "[]", setting);
+
+                assertThat(headers.getFirst(API_KEY_HEADER)).as("配置: %s", setting)
+                        .isEqualTo("provider-api-key");
+                assertThat(headers).as("配置: %s", setting).doesNotContainKey(HttpHeaders.AUTHORIZATION);
+            }
         }
 
         /**
          * 规则层保留最终决定权：需要双头并存的中转站可以把被删的那个加回来。
          *
-         * 装配刻意在规则之前执行，正是为了留出这个出口 —— 默认给协议上正确的那一种，
+         * 装配刻意在规则之前执行，正是为了留出这个出口 —— 默认给配置的那一种，
          * 特例交给规则。
          */
         @Test
-        void headerRulesCanRestoreTheDroppedAuthenticationHeader() {
+        void rulesRunAfterAssemblyAndCanRestoreTheDroppedHeader() {
             HttpHeaders headers = new HttpHeaders();
 
             service.applyHeaders(headers, "provider-api-key", """
                     [{"key":"Authorization","value":"Bearer {apiKey}"}]
-                    """, WireProtocol.MESSAGES);
+                    """, configured(AuthHeaderSetting.Header.X_API_KEY));
 
             assertThat(headers.getFirst(API_KEY_HEADER)).isEqualTo("provider-api-key");
             assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
         }
 
-        /** 规则也能反向删掉本协议的鉴权头，用于自带凭据在别处的上游。 */
+        /** 规则也能反向删掉装配出来的鉴权头，用于自带凭据在别处的上游。 */
         @Test
-        void headerRulesCanDeleteTheProtocolAuthenticationHeader() {
+        void rulesCanDeleteTheAssembledAuthenticationHeader() {
             HttpHeaders headers = new HttpHeaders();
 
             service.applyHeaders(headers, "provider-api-key", """
                     [{"key":"x-api-key","value":"/del/"}]
-                    """, WireProtocol.MESSAGES);
+                    """, configured(AuthHeaderSetting.Header.X_API_KEY));
 
             assertThat(headers).doesNotContainKey(API_KEY_HEADER);
             assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);
+        }
+
+        private AuthHeaderSetting downstream(AuthHeaderSetting.Header header) {
+            return new AuthHeaderSetting(AuthHeaderSetting.Mode.DOWNSTREAM, header);
+        }
+
+        private AuthHeaderSetting configured(AuthHeaderSetting.Header header) {
+            return new AuthHeaderSetting(AuthHeaderSetting.Mode.CONFIGURED, header);
         }
     }
 }

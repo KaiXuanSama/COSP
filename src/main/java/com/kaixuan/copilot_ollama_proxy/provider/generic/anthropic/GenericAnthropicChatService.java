@@ -10,6 +10,7 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.AnthropicThinkingSetting;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
@@ -556,10 +557,11 @@ public class GenericAnthropicChatService {
      * 刻意不抽公共方法：它依赖三个注入字段，抽出去要传三个参数或再造一个 Bean，
      * 而本身只有二十行。
      *
-     * <p>Anthropic 特有的两点：必须带 {@code anthropic-version} 头；鉴权头由
-     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders} 装配 ——
-     * 当前临时统一为 {@code Authorization: Bearer} 并删掉 {@code x-api-key}，
-     * 恢复按协议分派的理由与做法见那个方法。
+     * <p>Anthropic 唯一特有的是必须带 {@code anthropic-version} 头。鉴权头<strong>不</strong>
+     * 属于这一类：它由 {@link AuthHeaderSetting} 这个供应商级配置决定头名，与本服务走哪个
+     * 协议无关（依据与反面证据见
+     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders}）。
+     * 因此这条线路上出站的可能是 {@code x-api-key}，也可能是 {@code Authorization: Bearer}。
      */
     private WebClient buildWebClient(Map<String, String> capturedHeaders,
                                      ProviderRuntimeConfiguration provider,
@@ -579,13 +581,11 @@ public class GenericAnthropicChatService {
                 .defaultHeaders(headers -> {
                     // 复用共享的请求头装配（下游头透传白名单、hop-by-hop 排除、鉴权头装配、
                     // 供应商头规则含 {apiKey} 占位与删除标记）。
-                    // 鉴权头当前临时统一写 Authorization: Bearer 并删掉 x-api-key ——
-                    // 后者在这条链路上是噪音，可能来自下游透传，也可能来自 C2M 翻译路线
-                    // （下游说 OpenAI、上游走这里）。要恢复「MESSAGES 发 x-api-key」见
-                    // ProviderRequestHeaderService.applyAuthenticationHeaders。
+                    // 出站鉴权头由供应商级配置决定，与本服务的协议无关 —— 「走 Anthropic」
+                    // 不代表该发 x-api-key，头名取决于用户配的「取下游 / 取设置」与承载方式。
                     providerRequestHeaderService.applyHeaders(
                             headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream,
-                            WireProtocol.MESSAGES);
+                            AuthHeaderSetting.parse(provider.authHeaderJson(), objectMapper));
                     // Anthropic 必需的版本头。放在 applyHeaders 之后，
                     // 使供应商头规则仍可覆盖它（某些中转站要求特定版本）。
                     if (!headers.containsKey(ANTHROPIC_VERSION_HEADER)) {

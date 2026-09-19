@@ -162,21 +162,43 @@ class GenericAnthropicChatServiceTests {
     }
 
     /**
-     * 只发出站协议认的那一种鉴权头。
+     * 出站鉴权头取自<strong>供应商配置</strong>，不由本服务的协议决定。
      *
-     * <p>本服务的出站协议恒为 Anthropic，因此发 {@code x-api-key} 并删掉
-     * {@code Authorization} —— 后者在这条链路上是噪音，可能来自下游透传，
-     * 也可能来自 C2M 翻译路线。装配规则见
-     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders}；
-     * 需要双头并存的中转站可用请求头规则把 {@code Authorization} 加回来，
-     * 那条出口由 {@code ProviderRequestHeaderServiceTests} 覆盖。
+     * <p>这条用例验的是「接线通了」—— 即本服务真的把 {@code provider.authHeaderJson()}
+     * 交给了装配层。完整的行为矩阵（两模式 × 两方式 × 下游三态）在
+     * {@code ProviderRequestHeaderServiceTests} 里穷举，这里不重复。
+     *
+     * <p>与 {@link #defaultConfigurationSendsBearerOnThisAnthropicRoute} 成对存在：
+     * 单独看任何一条都无法区分「读了配置」与「恒发某一个头」，两条合起来才能。
+     * 曾经这里断言的是「Anthropic 线路恒发 x-api-key」，那句话的前提
+     * （头名由出站协议决定）已被实测推翻。
      */
     @Test
-    void onlyAnthropicAuthenticationHeaderIsSent() {
-        realService().exposeMessages(newRequest(), routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
+    void authenticationHeaderFollowsProviderConfiguration() {
+        realService().exposeMessages(newRequest(), routeWithAuthHeader(baseUrlWithV1(),
+                "{\"mode\":\"CONFIGURED\",\"header\":\"X_API_KEY\"}")).block(Duration.ofSeconds(10));
 
         assertThat(capturedHeaders.get()).containsEntry("X-api-key", "test-key");
         assertThat(capturedHeaders.get()).doesNotContainKey("Authorization");
+    }
+
+    /**
+     * 未配置该列时走列缺省值：取下游 + Authorization。
+     *
+     * <p>本用例的下游头是空的（{@code exposeMessages} 传 {@code HttpHeaders.EMPTY}），
+     * 因此「取下游」探测不到任何选择，兜底到配置的 Authorization —— 这正是
+     * 「取下游模式下配置项仍然有意义」的那个场景。
+     *
+     * <p><strong>这是一次行为变更</strong>：在按协议分派的时代，这条路由（Anthropic 线路、
+     * 下游无头）出站的是 {@code x-api-key}。默认值刻意选成让「下游带什么就发什么」，
+     * 而下游什么都没带时用 Authorization —— 理由见 {@code AuthHeaderSetting} 的常量注释。
+     */
+    @Test
+    void defaultConfigurationSendsBearerOnThisAnthropicRoute() {
+        realService().exposeMessages(newRequest(), routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
+
+        assertThat(capturedHeaders.get()).containsEntry("Authorization", "Bearer test-key");
+        assertThat(capturedHeaders.get()).doesNotContainKey("X-api-key");
     }
 
     // ==================== 请求体构造 ====================
@@ -1203,6 +1225,23 @@ class GenericAnthropicChatServiceTests {
         return new ResolvedProviderRoute(
                 new ProviderRuntimeConfiguration("anthro", baseUrl, "test-key", List.of(),
                         "[]", bodyRulesJson),
+                "claude-x", "[anthro] claude-x");
+    }
+
+    /**
+     * 带出站鉴权头装配方式的路由。
+     *
+     * <p>该维度是<strong>供应商级</strong>而非模型级，所以这里不像
+     * {@link #routeWithMaxOutput} 那样需要构造模型 —— 它是满参构造器的第 11 个参数。
+     *
+     * @param authHeaderJson 持久化原文，形如
+     *                       {@code {"mode":"CONFIGURED","header":"X_API_KEY"}}
+     */
+    private static ResolvedProviderRoute routeWithAuthHeader(String baseUrl, String authHeaderJson) {
+        return new ResolvedProviderRoute(
+                new ProviderRuntimeConfiguration("anthro", baseUrl, "test-key", List.of(),
+                        "[]", "{\"version\":2,\"groups\":[]}",
+                        "[\"MESSAGES\"]", "", "", false, authHeaderJson),
                 "claude-x", "[anthro] claude-x");
     }
 
