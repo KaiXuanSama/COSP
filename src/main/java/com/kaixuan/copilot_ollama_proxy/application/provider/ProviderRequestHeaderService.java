@@ -72,18 +72,19 @@ public class ProviderRequestHeaderService {
             "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade");
 
     /**
-     * Anthropic 官方的鉴权头名。
+     * 以裸值承载凭据的那个鉴权头名（{@code x-api-key: <key>}，没有 scheme 前缀）。
      *
-     * <p>当前出站一律用 {@code Authorization: Bearer}，本常量只用于<strong>删除</strong>
-     * 这个头（下游透传或翻译残留），见 {@link #applyAuthenticationHeaders}。
+     * <h2>为何名字里不再有 Anthropic</h2>
+     * 它曾叫 {@code ANTHROPIC_API_KEY_HEADER}，因为那时出站头名<strong>按上游协议</strong>
+     * 决定，这个头专属于 Anthropic 那条线路。该映射实测不成立（头名由下游用的凭据变量决定，
+     * 且部分中转站只认 {@code Authorization}），现在它只是两种<strong>可任选</strong>的
+     * 承载方式之一，与协议无关 —— 留着旧名字会让人以为选它就等于「走 Anthropic」。
      *
-     * <p>{@code TODO(临时实现)} 名字里的 Anthropic 只是历史 —— 它曾专属于那条线路。
-     * 鉴权头再装配落地后，它是两种<strong>可任选</strong>的承载方式之一（另一种是
-     * {@code Authorization}），与协议无关，届时这个名字会误导人，应换成
-     * {@code API_KEY_HEADER} 一类的中性名。此刻不改名是为了让本次提交只包含行为变更，
-     * 不混入一次纯重命名。
+     * <p>与 {@link HttpHeaders#AUTHORIZATION} 的差别只在报文形态：那个要
+     * {@code Bearer} 前缀，这个是裸值。两者都是端到端头，一次出站只发其中一个
+     * （见 {@link #applyAuthenticationHeaders}）。
      */
-    public static final String ANTHROPIC_API_KEY_HEADER = "x-api-key";
+    public static final String API_KEY_HEADER = "x-api-key";
 
     private final ObjectMapper objectMapper;
 
@@ -160,12 +161,12 @@ public class ProviderRequestHeaderService {
      * 以及「写一个删另一个」的结构）：
      * <pre>{@code
      * if (upstreamProtocol == WireProtocol.MESSAGES) {
-     *     headers.set(ANTHROPIC_API_KEY_HEADER, resolvedKey);
+     *     headers.set(API_KEY_HEADER, resolvedKey);
      *     headers.remove(HttpHeaders.AUTHORIZATION);
      *     return;
      * }
      * headers.setBearerAuth(resolvedKey);
-     * headers.remove(ANTHROPIC_API_KEY_HEADER);
+     * headers.remove(API_KEY_HEADER);
      * }</pre>
      *
      * <h2>无论哪种形态，「删另一个」都不能省</h2>
@@ -192,7 +193,7 @@ public class ProviderRequestHeaderService {
         // 见方法 javadoc 与仓库根目录《鉴权头再装配实施计划.md》。
         String resolvedKey = apiKey == null ? "" : apiKey;
         headers.setBearerAuth(resolvedKey);
-        headers.remove(ANTHROPIC_API_KEY_HEADER);
+        headers.remove(API_KEY_HEADER);
     }
 
     /**

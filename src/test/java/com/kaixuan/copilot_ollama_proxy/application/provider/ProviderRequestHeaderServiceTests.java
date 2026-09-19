@@ -11,7 +11,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class ProviderRequestHeaderServiceTests {
 
-    private static final String ANTHROPIC_KEY_HEADER = ProviderRequestHeaderService.ANTHROPIC_API_KEY_HEADER;
+    private static final String API_KEY_HEADER = ProviderRequestHeaderService.API_KEY_HEADER;
 
     private final ProviderRequestHeaderService service = new ProviderRequestHeaderService(new ObjectMapper());
 
@@ -139,7 +139,7 @@ class ProviderRequestHeaderServiceTests {
             service.applyHeaders(headers, "provider-api-key", "[]", WireProtocol.CHAT);
 
             assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
-            assertThat(headers).doesNotContainKey(ANTHROPIC_KEY_HEADER);
+            assertThat(headers).doesNotContainKey(API_KEY_HEADER);
         }
 
         @Test
@@ -148,7 +148,7 @@ class ProviderRequestHeaderServiceTests {
 
             service.applyHeaders(headers, "provider-api-key", "[]", WireProtocol.MESSAGES);
 
-            assertThat(headers.getFirst(ANTHROPIC_KEY_HEADER)).isEqualTo("provider-api-key");
+            assertThat(headers.getFirst(API_KEY_HEADER)).isEqualTo("provider-api-key");
             assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);
         }
 
@@ -167,21 +167,21 @@ class ProviderRequestHeaderServiceTests {
             service.applyHeaders(headers, "provider-api-key", "[]", WireProtocol.RESPONSES);
 
             assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
-            assertThat(headers).doesNotContainKey(ANTHROPIC_KEY_HEADER);
+            assertThat(headers).doesNotContainKey(API_KEY_HEADER);
         }
 
         /** 下游按 Anthropic 惯例带来的 x-api-key 不得泄露给 OpenAI 上游。 */
         @Test
         void openAiUpstreamDropsForwardedDownstreamAnthropicKey() {
             HttpHeaders downstreamHeaders = new HttpHeaders();
-            downstreamHeaders.set(ANTHROPIC_KEY_HEADER, "downstream-leaked-key");
+            downstreamHeaders.set(API_KEY_HEADER, "downstream-leaked-key");
             downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-gateway-key");
 
             HttpHeaders headers = new HttpHeaders();
             service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false,
                     WireProtocol.CHAT);
 
-            assertThat(headers).doesNotContainKey(ANTHROPIC_KEY_HEADER);
+            assertThat(headers).doesNotContainKey(API_KEY_HEADER);
             assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
         }
 
@@ -194,14 +194,14 @@ class ProviderRequestHeaderServiceTests {
         @Test
         void anthropicUpstreamOverridesForwardedDownstreamApiKey() {
             HttpHeaders downstreamHeaders = new HttpHeaders();
-            downstreamHeaders.set(ANTHROPIC_KEY_HEADER, "downstream-leaked-key");
+            downstreamHeaders.set(API_KEY_HEADER, "downstream-leaked-key");
             downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-gateway-key");
 
             HttpHeaders headers = new HttpHeaders();
             service.applyHeaders(headers, downstreamHeaders, "provider-api-key", "[]", false,
                     WireProtocol.MESSAGES);
 
-            assertThat(headers.getFirst(ANTHROPIC_KEY_HEADER)).isEqualTo("provider-api-key");
+            assertThat(headers.getFirst(API_KEY_HEADER)).isEqualTo("provider-api-key");
             assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);
         }
 
@@ -219,7 +219,7 @@ class ProviderRequestHeaderServiceTests {
                     [{"key":"Authorization","value":"Bearer {apiKey}"}]
                     """, WireProtocol.MESSAGES);
 
-            assertThat(headers.getFirst(ANTHROPIC_KEY_HEADER)).isEqualTo("provider-api-key");
+            assertThat(headers.getFirst(API_KEY_HEADER)).isEqualTo("provider-api-key");
             assertThat(headers.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer provider-api-key");
         }
 
@@ -232,7 +232,7 @@ class ProviderRequestHeaderServiceTests {
                     [{"key":"x-api-key","value":"/del/"}]
                     """, WireProtocol.MESSAGES);
 
-            assertThat(headers).doesNotContainKey(ANTHROPIC_KEY_HEADER);
+            assertThat(headers).doesNotContainKey(API_KEY_HEADER);
             assertThat(headers).doesNotContainKey(HttpHeaders.AUTHORIZATION);
         }
     }
