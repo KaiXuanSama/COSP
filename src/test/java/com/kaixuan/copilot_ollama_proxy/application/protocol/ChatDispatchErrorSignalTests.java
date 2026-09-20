@@ -9,6 +9,7 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ChatToMes
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericResponsesChatService;
@@ -31,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 /**
  * 两条聊天线路的<strong>组装期</strong>不得抛异常。
@@ -248,6 +250,92 @@ class ChatDispatchErrorSignalTests {
             assertErrorSignal(() -> chatCompletionService.chatCompletionStream(
                             BAD_ROLE_REQUEST, "m", HttpHeaders.EMPTY, "req-8"),
                     RequestTranslationException.class, "messages[0].role");
+        }
+    }
+
+    /**
+     * 模型名没解析到唯一供应商。
+     *
+     * <h2>为何必须是一个具名类型</h2>
+     * 它此前是裸 {@code RuntimeException("没有可用的上游服务来处理模型: …")}，
+     * 控制器认不出，只能落进 502 兜底被译成「无法连接到上游服务」。
+     * 而这条路径上<strong>上游一次都没被连接过</strong> —— 路由在本地供应商目录里就返回了 null。
+     * 换上具名类型后控制器才能回 400 并保留原消息。
+     *
+     * <p>三种成因（模型名空白 / 前缀不存在或未声明该模型 / 无前缀但命中多个）
+     * 都归到这一组：它们对下游的可操作性相同（改模型名），只是改法不同。
+     */
+    @Nested
+    @DisplayName("模型名未解析到唯一供应商")
+    class UnresolvedRoute {
+
+        @BeforeEach
+        void noRoute() {
+            given(routeResolver.resolve(any())).willReturn(null);
+        }
+
+        @Test
+        @DisplayName("非流式 OpenAI 以 onError 抵达并保留模型名")
+        void openAiNonStream() {
+            assertErrorSignal(() -> chatCompletionService.chatCompletion(
+                            Map.of("model", "ghost-model"), "ghost-model", HttpHeaders.EMPTY, "req-r1"),
+                    UnresolvedModelRouteException.class, "ghost-model");
+        }
+
+        @Test
+        @DisplayName("流式 OpenAI 以 onError 抵达")
+        void openAiStream() {
+            assertErrorSignal(() -> chatCompletionService.chatCompletionStream(
+                            Map.of("model", "ghost-model"), "ghost-model", HttpHeaders.EMPTY, "req-r2"),
+                    UnresolvedModelRouteException.class, "ghost-model");
+        }
+
+        @Test
+        @DisplayName("非流式 Anthropic 以 onError 抵达")
+        void anthropicNonStream() {
+            assertErrorSignal(() -> messagesService.messages(
+                            Map.of("model", "ghost-model"), "ghost-model", HttpHeaders.EMPTY, "req-r3"),
+                    UnresolvedModelRouteException.class, "ghost-model");
+        }
+
+        @Test
+        @DisplayName("流式 Anthropic 以 onError 抵达")
+        void anthropicStream() {
+            assertErrorSignal(() -> messagesService.messagesStream(
+                            Map.of("model", "ghost-model"), "ghost-model", HttpHeaders.EMPTY, "req-r4"),
+                    UnresolvedModelRouteException.class, "ghost-model");
+        }
+
+        @Test
+        @DisplayName("非流式 Responses 以 onError 抵达")
+        void responsesNonStream() {
+            assertErrorSignal(() -> responsesService.responses(
+                            Map.of("model", "ghost-model"), "ghost-model", HttpHeaders.EMPTY, "req-r5"),
+                    UnresolvedModelRouteException.class, "ghost-model");
+        }
+
+        @Test
+        @DisplayName("流式 Responses 以 onError 抵达")
+        void responsesStream() {
+            assertErrorSignal(() -> responsesService.responsesStream(
+                            Map.of("model", "ghost-model"), "ghost-model", HttpHeaders.EMPTY, "req-r6"),
+                    UnresolvedModelRouteException.class, "ghost-model");
+        }
+
+        /**
+         * 上游一次都不该被调用。
+         *
+         * <p>少了这条，把路由失败改成「随便透传到上游」也能让上面六条全绿 ——
+         * 而那正是本异常要防的误导：明明没连过上游，却报成上游连接失败。
+         */
+        @Test
+        @DisplayName("任一上游执行器都不得被调用")
+        void upstreamIsNeverTouched() {
+            assertErrorSignal(() -> chatCompletionService.chatCompletion(
+                            Map.of("model", "ghost-model"), "ghost-model", HttpHeaders.EMPTY, "req-r7"),
+                    UnresolvedModelRouteException.class, "ghost-model");
+
+            verifyNoInteractions(openAiChatService, anthropicChatService, responsesChatService);
         }
     }
 

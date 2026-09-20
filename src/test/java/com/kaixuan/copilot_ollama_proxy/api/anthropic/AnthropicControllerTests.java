@@ -6,6 +6,7 @@ import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService
 import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -271,6 +272,30 @@ class AnthropicControllerTests {
                         org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接"))));
     }
 
+    /**
+     * 模型名没解析到供应商时给 400，而不是伪装成上游连接失败。
+     *
+     * <p>与上面两条同一族的第三个成员。这条路径上<strong>上游一次都没被连接过</strong> ——
+     * 路由失败发生在本地供应商目录里，「无法连接到上游服务」会把排查方向指向网络。
+     */
+    @Test
+    void unresolvedModelRouteReturnsBadRequestInsteadOfGatewayError() {
+        given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                .willReturn(Mono.error(new UnresolvedModelRouteException("ghost-model")));
+
+        webTestClient.post().uri("/v1/messages")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"model\":\"ghost-model\",\"max_tokens\":100,\"messages\":[]}")
+                .exchange()
+                .expectStatus().isEqualTo(400)
+                .expectBody()
+                // 外层 type=error 是 Anthropic 的错误帧标识。
+                .jsonPath("$.type").isEqualTo("error")
+                .jsonPath("$.error.message").value(org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("ghost-model"),
+                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接"))));
+    }
+
     // ==================== 流式 ====================
 
     /**
@@ -330,6 +355,37 @@ class AnthropicControllerTests {
                 .take(1).collectList().block(Duration.ofSeconds(10));
 
         verify(messagesService).messagesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString());
+    }
+
+    /**
+     * 流式下模型名没解析到供应商：发 {@code error} 事件，而不是报成上游连接失败。
+     *
+     * <p>与非流式那条配对存在 —— 「非流式有分类、流式没有」正是本轮缺陷的形态，
+     * 两条路径必须各自有用例守着。流式响应码在第一帧就提交，
+     * 分类结果只能体现在事件体上。
+     */
+    @Test
+    void unresolvedModelRouteIsSentAsErrorEvent() {
+        given(messagesService.messagesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                .willReturn(Flux.error(new UnresolvedModelRouteException("ghost-model")));
+
+        FluxExchangeResult<ServerSentEvent<String>> result = webTestClient.post().uri("/v1/messages")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"model\":\"ghost-model\",\"max_tokens\":100,\"stream\":true,\"messages\":[]}")
+                .exchange()
+                .expectStatus().isOk()
+                .returnResult(new ParameterizedTypeReference<ServerSentEvent<String>>() {
+                });
+
+        // 心跳是注释帧（data 为 null），不属于协议事件，过滤掉。
+        List<ServerSentEvent<String>> events = result.getResponseBody()
+                .filter(event -> event.data() != null)
+                .collectList().block(Duration.ofSeconds(10));
+
+        assertThat(events).isNotNull().hasSize(1);
+        assertThat(events.get(0).event()).isEqualTo("error");
+        assertThat(events.get(0).data()).contains("ghost-model");
+        assertThat(events.get(0).data()).doesNotContain("无法连接");
     }
 
     /** 缺省 {@code stream} 视为非流式，与 OpenAI 侧同一约定。 */

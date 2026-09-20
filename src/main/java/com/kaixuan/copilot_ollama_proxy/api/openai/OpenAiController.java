@@ -7,6 +7,7 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocol
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.RequestTranslationException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ResponseTranslationException;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
@@ -223,6 +224,14 @@ public class OpenAiController {
                         return Mono.just(ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
                                 .body(openAiErrorBody(requestTranslation.getMessage(), "invalid_request_error")));
                     }
+                    // 模型名没解析出唯一供应商（未知 / 前缀不存在 / 无前缀却命中多个）：
+                    // 上游根本没被连接，不能译成「无法连接到上游」。
+                    UnresolvedModelRouteException unresolvedRoute = findUnresolvedRouteException(ex);
+                    if (unresolvedRoute != null) {
+                        log.warn("模型未解析到供应商 [{}]: {}", model, unresolvedRoute.getMessage());
+                        return Mono.just(ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
+                                .body(openAiErrorBody(unresolvedRoute.getMessage(), "invalid_request_error")));
+                    }
                     // 透传上游错误响应（重试耗尽时 WebClientResponseException 被包装在 RetryExhaustedException 中，需要解包）
                     WebClientResponseException responseException = findWebResponseException(ex);
                     if (responseException != null) {
@@ -353,6 +362,14 @@ public class OpenAiController {
                         log.warn("请求翻译失败 [{}]: {}", model, requestTranslation.getMessage());
                         return Flux.just(ServerSentEvent.<String>builder(
                                 openAiErrorBody(requestTranslation.getMessage(), "invalid_request_error"))
+                                .event("error").build());
+                    }
+                    // 模型名没解析出唯一供应商：同非流式，上游没被连接过。
+                    UnresolvedModelRouteException unresolvedRoute = findUnresolvedRouteException(error);
+                    if (unresolvedRoute != null) {
+                        log.warn("模型未解析到供应商 [{}]: {}", model, unresolvedRoute.getMessage());
+                        return Flux.just(ServerSentEvent.<String>builder(
+                                openAiErrorBody(unresolvedRoute.getMessage(), "invalid_request_error"))
                                 .event("error").build());
                     }
                     // 透传上游错误响应（解包重试耗尽包装）
@@ -720,6 +737,31 @@ public class OpenAiController {
         while (current != null) {
             if (current instanceof RequestTranslationException translationException) {
                 return translationException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    /**
+     * 从异常链里找出「模型名没解析到唯一供应商」异常。
+     *
+     * <p>形态与其它 {@code findXxx} 一致地解包异常链。但本异常实际上不会经过重试 ——
+     * 它在最前端的路由解析处就抛了，仍在链上找是因为「解包」在这里已是统一写法。
+     *
+     * <p>必须单独判定：它不是 {@code WebClientResponseException}，不判就会落进
+     * 502 兜底分支被译成「无法连接到上游服务」。而这条路径上<strong>上游一次都没被连接过</strong> ——
+     * 路由失败发生在本地供应商目录里。把排查方向指向网络是这个错误最容易造成的误导。
+     *
+     * <p>回 400 而非 502：三种成因（模型名空白 / 带前缀但供应商不存在或没声明该模型 /
+     * 无前缀却命中多个供应商）都是下游请求的问题，改请求即可解决，
+     * 而 5xx 会诱导客户端重试 —— 重试同一个名字结果不会变。
+     */
+    private UnresolvedModelRouteException findUnresolvedRouteException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof UnresolvedModelRouteException unresolvedRoute) {
+                return unresolvedRoute;
             }
             current = current.getCause();
         }

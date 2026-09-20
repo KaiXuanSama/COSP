@@ -12,6 +12,7 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.MessagesT
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ChatToMessagesRequestTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.provider.DownstreamLogView;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
@@ -138,7 +139,9 @@ public class ChatCompletionService {
     private Mono<String> dispatchChatCompletion(Map<String, Object> openAiRequest, String model,
                                                 HttpHeaders downstreamHeaders, String requestId) {        ResolvedProviderRoute route = providerRouteResolver.resolve(model);
         if (route == null) {
-            return Mono.error(new RuntimeException("没有可用的上游服务来处理模型: " + model));
+            // 类型化异常而非裸 RuntimeException：路由在本地目录就没解析出来，
+            // 上游从未被连接，控制器据此回 400 而不是「无法连接到上游服务」502。
+            return Mono.error(new UnresolvedModelRouteException(model));
         }
         ProtocolDispatchDecision decision =
                 protocolDispatchManager.dispatch(DOWNSTREAM_PROTOCOL, route.provider());
@@ -206,7 +209,7 @@ public class ChatCompletionService {
                                                       HttpHeaders downstreamHeaders, String requestId) {
         ResolvedProviderRoute route = providerRouteResolver.resolve(model);
         if (route == null) {
-            return Flux.error(new RuntimeException("没有可用的上游服务来处理模型: " + model));
+            return Flux.error(new UnresolvedModelRouteException(model));
         }
         ProtocolDispatchDecision decision =
                 protocolDispatchManager.dispatch(DOWNSTREAM_PROTOCOL, route.provider());

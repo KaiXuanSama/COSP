@@ -6,6 +6,7 @@ import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
@@ -401,6 +402,46 @@ class ResponsesControllerTests {
 
             assertThat(response).isNotNull();
             assertThat(response.getStatusCode().value()).isEqualTo(400);
+        }
+
+        /**
+         * 模型名没解析到供应商时给 400，而不是伪装成上游连接失败。
+         *
+         * <p>与上面两条同一族的第三个成员。这条路径上<strong>上游一次都没被连接过</strong> ——
+         * 路由失败发生在本地供应商目录里，「无法连接到上游服务」会把排查方向指向网络。
+         * 非流式用嵌套骨架（与 Chat 同形），故断言 {@code error.message}。
+         */
+        @Test
+        void unresolvedModelRouteBecomes400() {
+            given(responsesService.responses(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                    .willReturn(Mono.error(new UnresolvedModelRouteException("ghost-model")));
+
+            ResponseEntity<?> response = newController()
+                    .responses(nonStreamRequest(), HttpHeaders.EMPTY).block(Duration.ofSeconds(5));
+
+            assertThat(response).isNotNull();
+            assertThat(response.getStatusCode().value()).isEqualTo(400);
+            assertThat(errorMessageOf(response)).contains("ghost-model");
+            assertThat(errorMessageOf(response)).doesNotContain("无法连接");
+        }
+
+        /**
+         * 流式同样要能识别，且用 Responses 的<strong>扁平</strong> error 事件骨架。
+         *
+         * <p>不能复用非流式那个嵌套体：Responses 客户端是事件状态机，靠 JSON 顶层的
+         * {@code type} 分派，嵌套体没有那个字段 → 流挂住而非报错。
+         */
+        @Test
+        void streamUnresolvedModelRouteBecomesErrorEvent() {
+            given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                    .willReturn(Flux.error(new UnresolvedModelRouteException("ghost-model")));
+
+            List<ServerSentEvent<String>> events = streamEvents(streamRequest());
+
+            assertThat(events).hasSize(1);
+            assertThat(events.get(0).event()).isEqualTo("error");
+            assertThat(events.get(0).data()).contains("ghost-model");
+            assertThat(events.get(0).data()).doesNotContain("无法连接");
         }
 
         /** 上游状态码与错误体原样透传，不包一层自己的解释。 */

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
@@ -394,6 +395,13 @@ public class ResponsesController {
             return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
                     .body(errorBody(noProtocol.getMessage()));
         }
+        // 模型名没解析出唯一供应商：路由在本地目录就没过，上游从未被连接。
+        UnresolvedModelRouteException unresolvedRoute = findUnresolvedRouteException(ex);
+        if (unresolvedRoute != null) {
+            log.warn("模型未解析到供应商 [{}]: {}", model, unresolvedRoute.getMessage());
+            return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
+                    .body(errorBody(unresolvedRoute.getMessage()));
+        }
         WebClientResponseException responseException = findWebResponseException(ex);
         if (responseException != null) {
             log.warn("上游 API 返回错误 [{}] {}: {}", model,
@@ -435,6 +443,12 @@ public class ResponsesController {
         if (noProtocol != null) {
             log.warn("供应商未配置任何协议 [{}]: {}", model, noProtocol.getMessage());
             return streamErrorBody(noProtocol.getMessage());
+        }
+        // 模型名没解析出唯一供应商：同非流式，上游没被连接过。
+        UnresolvedModelRouteException unresolvedRoute = findUnresolvedRouteException(error);
+        if (unresolvedRoute != null) {
+            log.warn("模型未解析到供应商 [{}]: {}", model, unresolvedRoute.getMessage());
+            return streamErrorBody(unresolvedRoute.getMessage());
         }
         WebClientResponseException responseException = findWebResponseException(error);
         if (responseException != null) {
@@ -620,6 +634,24 @@ public class ResponsesController {
         while (current != null) {
             if (current instanceof NoSupportedProtocolException noProtocol) {
                 return noProtocol;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    /**
+     * 递归解包「模型名没解析到唯一供应商」异常。
+     *
+     * <p>与其它 {@code findXxx} 同一处境：它不是 {@code WebClientResponseException}，
+     * 不单独判定就会落进 502 兜底、被译成「无法连接到上游服务」——
+     * 而路由失败发生在本地供应商目录里，上游一次都没被连接过。
+     */
+    private UnresolvedModelRouteException findUnresolvedRouteException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof UnresolvedModelRouteException unresolvedRoute) {
+                return unresolvedRoute;
             }
             current = current.getCause();
         }
