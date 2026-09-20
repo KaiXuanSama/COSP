@@ -55,7 +55,7 @@ import java.util.Set;
  *      协议翻译契约</a>
  */
 @Component
-public class OpenAiToAnthropicRequestTranslator implements ProtocolTranslator {
+public class ChatToMessagesRequestTranslator implements ProtocolTranslator {
 
     /**
      * 直接搬运的顶层标量字段。
@@ -86,7 +86,7 @@ public class OpenAiToAnthropicRequestTranslator implements ProtocolTranslator {
     private final ToolTranslator toolTranslator;
     private final ToolPairingNormalizer toolPairingNormalizer;
 
-    public OpenAiToAnthropicRequestTranslator(ObjectMapper objectMapper) {
+    public ChatToMessagesRequestTranslator(ObjectMapper objectMapper) {
         ContentBlockTranslator contentBlockTranslator = new ContentBlockTranslator();
         this.messageTranslator = new MessageTranslator(objectMapper, contentBlockTranslator);
         this.toolTranslator = new ToolTranslator();
@@ -95,12 +95,12 @@ public class OpenAiToAnthropicRequestTranslator implements ProtocolTranslator {
 
     @Override
     public WireProtocol downstreamProtocol() {
-        return WireProtocol.OPENAI;
+        return WireProtocol.CHAT;
     }
 
     @Override
     public WireProtocol upstreamProtocol() {
-        return WireProtocol.ANTHROPIC;
+        return WireProtocol.MESSAGES;
     }
 
     /**

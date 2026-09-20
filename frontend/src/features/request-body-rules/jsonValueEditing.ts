@@ -18,14 +18,24 @@
  * 换来的只是一份可以从值本身算出来的冗余信息，而冗余信息会有和值不一致的可能。
  */
 
-/** 可选的值类型。 */
+/**
+ * 可选的值类型。
+ *
+ * `list` 这个内部名沿用至今，但它的语义是「**JSON 结构体**」—— 数组与对象都归它。
+ * 两者用同一档而不拆开，是因为区分它们对用户没有价值：判据只有首字符是 `[` 还是 `{`，
+ * 而这一点从他输入的内容里一眼可见，让他先在下拉里声明一次纯属重复劳动。
+ * 界面标签因此叫「对象/列表」。
+ *
+ * 不改成 `structure` 之类的新名：那要动 5 个文件的类型引用与全部测试，
+ * 而这个字符串从不出现在界面上，也不落库（类型是从值反推的，见 `inferJsonValueType`）。
+ */
 export type JsonValueType = 'string' | 'number' | 'list' | 'boolean' | 'null'
 
 /** 下拉选项。 */
 export const JSON_VALUE_TYPE_OPTIONS: Array<{ label: string; value: JsonValueType }> = [
   { label: '字符串', value: 'string' },
   { label: '数值', value: 'number' },
-  { label: '列表', value: 'list' },
+  { label: '对象/列表', value: 'list' },
   { label: '布尔', value: 'boolean' },
   { label: 'null', value: 'null' },
 ]
@@ -39,8 +49,10 @@ export const BOOLEAN_VALUE_OPTIONS = [
 /**
  * 从已保存的 JSON 值反推类型。
  *
- * <p>对象值没有对应的类型档位 —— 界面上「调整对象内容」是另一个操作。
- * 真遇到对象（手写 JSON 规则时可能出现）按列表处理，用户至少能看到并编辑原文。
+ * <p>数组与对象都归 `list` 档 —— 该档承载的是「JSON 结构体」而非仅数组，见
+ * {@link JsonValueType} 的说明。整体替换一个对象（如把 `text.format` 换成
+ * `{"type":"json_object"}`）是真实需求，而「调整对象内容」那个操作只能改字段、
+ * 无法一次性替换整个对象并顺带丢掉多余字段。
  */
 export function inferJsonValueType(value: unknown): JsonValueType {
   if (value === null) return 'null'
@@ -54,7 +66,7 @@ export function inferJsonValueType(value: unknown): JsonValueType {
  * 把已保存的值渲染成输入框文本。
  *
  * <p>字符串类型直接返回原文而不加引号：用户在「字符串」档位下看到的应当就是他输入的内容。
- * 其余类型走 JSON 序列化，于是列表能看到完整字面量、数字与布尔看到裸值。
+ * 其余类型走 JSON 序列化，于是对象与列表能看到完整字面量、数字与布尔看到裸值。
  */
 export function formatJsonValueText(value: unknown, type: JsonValueType): string {
   if (type === 'null') return 'null'
@@ -64,7 +76,12 @@ export function formatJsonValueText(value: unknown, type: JsonValueType): string
   return value === undefined ? '[]' : JSON.stringify(value)
 }
 
-/** 切换类型时的默认文本。 */
+/**
+ * 切换类型时的默认文本。
+ *
+ * <p>「对象/列表」档给 `[]` 而非 `{}`：两者都得由用户改，给谁都一样要动手，
+ * 而 `[]` 是这一档沿用已久的初值 —— 换成 `{}` 只会让老用户的肌肉记忆失效。
+ */
 export function defaultJsonValueText(type: JsonValueType): string {
   switch (type) {
     case 'list':
@@ -112,7 +129,8 @@ export interface JsonValueParseResult {
  *       输入 {@code "null"}（含引号）得到 {@code "\"null\""}。尊重输入内容。</li>
  *   <li><strong>数值</strong>：空文本视为未填而非 0 —— 0 是一个有意义的值，
  *       不该由「还没输入」变出来。</li>
- *   <li><strong>列表</strong>：必须是合法 JSON 数组，中括号由用户输入。</li>
+ *   <li><strong>对象/列表</strong>：必须是合法 JSON 对象或数组，括号由用户输入。
+ *       标量在这一档里会被拒绝 —— 它们各有专属档位，出现在这里只可能是选错了。</li>
  *   <li><strong>布尔</strong>：只有 {@code true} / {@code false}。</li>
  *   <li><strong>null</strong>：恒为 null，忽略文本。</li>
  * </ul>
@@ -136,15 +154,19 @@ export function parseJsonValue(text: string, type: JsonValueType): JsonValuePars
     }
     case 'list': {
       const trimmed = text.trim()
-      if (!trimmed) return { value: null, error: '请输入列表，如 [1, "a", true]' }
+      if (!trimmed) return { value: null, error: '请输入对象或列表，如 {"type":"text"} 或 [1, "a"]' }
       let parsed: unknown
       try {
         parsed = JSON.parse(trimmed)
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : '未知语法错误'
-        return { value: null, error: `列表 JSON 语法错误：${message}` }
+        return { value: null, error: `JSON 语法错误：${message}` }
       }
-      if (!Array.isArray(parsed)) return { value: null, error: '必须是 JSON 数组，以 [ 开头、] 结尾' }
+      // 数组与对象都接受；标量（数字 / 字符串 / 布尔 / null）各有自己的档位，
+      // 在这一档里出现只可能是选错了档位，明确说清而不是含糊地放行。
+      if (parsed === null || typeof parsed !== 'object') {
+        return { value: null, error: '必须是对象或列表，以 { 或 [ 开头' }
+      }
       return { value: parsed, error: '' }
     }
   }

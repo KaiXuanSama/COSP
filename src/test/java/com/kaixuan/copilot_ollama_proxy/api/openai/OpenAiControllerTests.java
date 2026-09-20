@@ -108,7 +108,7 @@ class OpenAiControllerTests {
     given(chatCompletionService.chatCompletion(anyMap(), anyString(),
         org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString()))
         .willReturn(Mono.error(new ProtocolTranslationNotSupportedException(
-            "relay-x", WireProtocol.OPENAI, WireProtocol.ANTHROPIC)));
+            "relay-x", WireProtocol.CHAT, WireProtocol.MESSAGES)));
 
     webTestClient.post().uri("/v1/chat/completions").contentType(MediaType.APPLICATION_JSON)
         .accept(MediaType.APPLICATION_JSON)
@@ -117,7 +117,7 @@ class OpenAiControllerTests {
         .jsonPath("$.error.type").isEqualTo("invalid_request_error")
         .jsonPath("$.error.message").value(org.hamcrest.Matchers.allOf(
             org.hamcrest.Matchers.containsString("relay-x"),
-            org.hamcrest.Matchers.containsString("OPENAI"),
+            org.hamcrest.Matchers.containsString("CHAT"),
             org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接"))));
   }
 
@@ -182,14 +182,14 @@ class OpenAiControllerTests {
     List<ProviderConfigRow> activeProviders = new ArrayList<>();
 
     activeProviders.add(new ProviderConfigRow(
-          1, "mimo", "MiMo", true, "", "[\"OPENAI\",\"ANTHROPIC\"]", "", false, null,
+          1, "mimo", "MiMo", true, "", "[\"CHAT\",\"MESSAGES\"]", "", "", false, null,
             List.of(new ProviderModelRow(1, 1, "mimo-v2.5-pro", true, 0,
                     "{\"max_output_tokens\":128000,\"overwrite_mode\":\"fallback\"}",
                     false, false, "Medium",
                     "{\"thinking_type\":\"adaptive\",\"overwrite_mode\":\"fallback\"}", -1, 0))
     ));
     activeProviders.add(new ProviderConfigRow(
-          2, "deepseek", "DeepSeek", true, "", "[\"OPENAI\",\"ANTHROPIC\"]", "", false, null,
+          2, "deepseek", "DeepSeek", true, "", "[\"CHAT\",\"MESSAGES\"]", "", "", false, null,
             List.of(new ProviderModelRow(2, 2, "deepseek-v4-flash", true, 0,
                     "{\"max_output_tokens\":128000,\"overwrite_mode\":\"fallback\"}",
                     false, false, "Medium",

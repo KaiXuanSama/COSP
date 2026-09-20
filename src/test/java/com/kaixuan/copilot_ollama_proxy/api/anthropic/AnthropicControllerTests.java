@@ -226,7 +226,7 @@ class AnthropicControllerTests {
     void unsupportedProtocolReturnsBadRequestNamingTheRealCause() {
         given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
                 .willReturn(Mono.error(new ProtocolTranslationNotSupportedException(
-                        "relay-x", WireProtocol.ANTHROPIC, WireProtocol.OPENAI)));
+                        "relay-x", WireProtocol.MESSAGES, WireProtocol.CHAT)));
 
         webTestClient.post().uri("/v1/messages")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -238,7 +238,7 @@ class AnthropicControllerTests {
                 // 消息里要能看到供应商标识与协议名，否则用户不知道该去改哪个配置。
                 .jsonPath("$.error.message").value(org.hamcrest.Matchers.allOf(
                         org.hamcrest.Matchers.containsString("relay-x"),
-                        org.hamcrest.Matchers.containsString("ANTHROPIC")))
+                        org.hamcrest.Matchers.containsString("MESSAGES")))
                 .jsonPath("$.error.message").value(
                         org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接")));
     }

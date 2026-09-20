@@ -26,8 +26,15 @@ class OutboundProxyTargetProjectorTests {
     }
 
     private static ProviderConfigRow provider(String key, String baseUrl, String anthropicBaseUrl, boolean useProxy) {
+        return provider(key, baseUrl, anthropicBaseUrl, "", useProxy);
+    }
+
+    /** 三个端点齐全的重载，供「Responses 端点也要投影」那批用例使用。 */
+    private static ProviderConfigRow provider(String key, String baseUrl, String anthropicBaseUrl,
+                                              String responsesBaseUrl, boolean useProxy) {
         return new ProviderConfigRow(1, key, key, true, baseUrl,
-                "[\"OPENAI\",\"ANTHROPIC\"]", anthropicBaseUrl, useProxy, "2026-09-09T00:00:00", List.of());
+                "[\"CHAT\",\"MESSAGES\",\"RESPONSES\"]", anthropicBaseUrl, responsesBaseUrl,
+                useProxy, "2026-09-09T00:00:00", List.of());
     }
 
     private OutboundProxyDecider project(List<ProviderConfigRow> providers) {

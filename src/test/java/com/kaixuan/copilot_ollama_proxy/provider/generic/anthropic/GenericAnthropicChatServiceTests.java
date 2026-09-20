@@ -129,7 +129,7 @@ class GenericAnthropicChatServiceTests {
         ResolvedProviderRoute route = new ResolvedProviderRoute(
                 new ProviderRuntimeConfiguration("anthro", "https://openai.invalid/v1", "test-key",
                         List.of(), "[]", "{\"version\":2,\"groups\":[]}",
-                        "[\"OPENAI\",\"ANTHROPIC\"]", baseUrlWithV1()),
+                        "[\"CHAT\",\"MESSAGES\"]", baseUrlWithV1()),
                 "claude-x", "[anthro] claude-x");
 
         realService().exposeMessages(newRequest(), route).block(Duration.ofSeconds(10));
@@ -143,7 +143,7 @@ class GenericAnthropicChatServiceTests {
         ResolvedProviderRoute route = new ResolvedProviderRoute(
                 new ProviderRuntimeConfiguration("anthro", baseUrlWithV1(), "test-key",
                         List.of(), "[]", "{\"version\":2,\"groups\":[]}",
-                        "[\"OPENAI\",\"ANTHROPIC\"]", baseUrlRoot()),
+                        "[\"CHAT\",\"MESSAGES\"]", baseUrlRoot()),
                 "claude-x", "[anthro] claude-x");
 
         realService().exposeMessages(newRequest(), route).block(Duration.ofSeconds(10));
@@ -162,21 +162,43 @@ class GenericAnthropicChatServiceTests {
     }
 
     /**
-     * 只发出站协议认的那一种鉴权头。
+     * 出站鉴权头取自<strong>供应商配置</strong>，不由本服务的协议决定。
      *
-     * <p>本服务的出站协议恒为 Anthropic，因此发 {@code x-api-key} 并删掉
-     * {@code Authorization} —— 后者在这条链路上是噪音，可能来自下游透传，
-     * 也可能来自 O2A 翻译路线。装配规则见
-     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders}；
-     * 需要双头并存的中转站可用请求头规则把 {@code Authorization} 加回来，
-     * 那条出口由 {@code ProviderRequestHeaderServiceTests} 覆盖。
+     * <p>这条用例验的是「接线通了」—— 即本服务真的把 {@code provider.authHeaderJson()}
+     * 交给了装配层。完整的行为矩阵（两模式 × 两方式 × 下游三态）在
+     * {@code ProviderRequestHeaderServiceTests} 里穷举，这里不重复。
+     *
+     * <p>与 {@link #defaultConfigurationSendsBearerOnThisAnthropicRoute} 成对存在：
+     * 单独看任何一条都无法区分「读了配置」与「恒发某一个头」，两条合起来才能。
+     * 曾经这里断言的是「Anthropic 线路恒发 x-api-key」，那句话的前提
+     * （头名由出站协议决定）已被实测推翻。
      */
     @Test
-    void onlyAnthropicAuthenticationHeaderIsSent() {
-        realService().exposeMessages(newRequest(), routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
+    void authenticationHeaderFollowsProviderConfiguration() {
+        realService().exposeMessages(newRequest(), routeWithAuthHeader(baseUrlWithV1(),
+                "{\"mode\":\"CONFIGURED\",\"header\":\"X_API_KEY\"}")).block(Duration.ofSeconds(10));
 
         assertThat(capturedHeaders.get()).containsEntry("X-api-key", "test-key");
         assertThat(capturedHeaders.get()).doesNotContainKey("Authorization");
+    }
+
+    /**
+     * 未配置该列时走列缺省值：取下游 + Authorization。
+     *
+     * <p>本用例的下游头是空的（{@code exposeMessages} 传 {@code HttpHeaders.EMPTY}），
+     * 因此「取下游」探测不到任何选择，兜底到配置的 Authorization —— 这正是
+     * 「取下游模式下配置项仍然有意义」的那个场景。
+     *
+     * <p><strong>这是一次行为变更</strong>：在按协议分派的时代，这条路由（Anthropic 线路、
+     * 下游无头）出站的是 {@code x-api-key}。默认值刻意选成让「下游带什么就发什么」，
+     * 而下游什么都没带时用 Authorization —— 理由见 {@code AuthHeaderSetting} 的常量注释。
+     */
+    @Test
+    void defaultConfigurationSendsBearerOnThisAnthropicRoute() {
+        realService().exposeMessages(newRequest(), routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
+
+        assertThat(capturedHeaders.get()).containsEntry("Authorization", "Bearer test-key");
+        assertThat(capturedHeaders.get()).doesNotContainKey("X-api-key");
     }
 
     // ==================== 请求体构造 ====================
@@ -243,6 +265,112 @@ class GenericAnthropicChatServiceTests {
 
         assertThat(objectMapper.readTree(capturedBody.get()).path("system").asText())
                 .isEqualTo("原有指令\n\n追加指令");
+    }
+
+    /**
+     * 顶层 {@code system} 是<strong>数组</strong>时（Claude CLI 的真实形态），
+     * 不能被 messages 里的 system 消息顶掉。
+     *
+     * <h2>真实报文</h2>
+     * Claude CLI 2.1.263 的 {@code system} 是三个块，后两块带
+     * {@code cache_control:{type:"ephemeral"}} 用于提示词缓存：
+     * <pre>
+     * "system": [
+     *   {"type":"text","text":"x-anthropic-billing-header: ..."},
+     *   {"type":"text","text":"You are Claude Code...","cache_control":{"type":"ephemeral"}},
+     *   {"type":"text","text":"&lt;11000 字的系统提示词&gt;","cache_control":{"type":"ephemeral"}}
+     * ]
+     * </pre>
+     * 同一请求的 {@code messages} 末尾还有一条 {@code role:"system"} 的消息
+     * （{@code mid-conversation-system-2026-04-07} beta，内容是延迟工具的告知）。
+     *
+     * <h2>这个组合曾经丢光整个系统提示词</h2>
+     * 抬升逻辑先判断「顶层已有 system 就保留」，但那个判断只认 {@code instanceof String}。
+     * 数组形态因而既不进 {@code systemText}，又会被随后的
+     * {@code body.put("system", systemText.toString())} <strong>整体覆盖</strong> ——
+     * 结果是发往上游的 {@code system} 只剩那条延迟工具告知，11000 字的系统提示词与
+     * {@code cache_control} 一起消失，而请求本身仍然 200，不会报任何错。
+     *
+     * <p>触发需要两个条件同时成立：数组形态的顶层 system、messages 里有 system 消息。
+     * 缺任一个都不会走到那行 {@code put}，这也正是它长期没被发现的原因 ——
+     * 已有的抬升用例全是字符串形态。
+     */
+    @Test
+    void arrayFormTopLevelSystemSurvivesLiftedSystemMessage() throws Exception {
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("system", List.of(
+                Map.of("type", "text", "text", "billing-header"),
+                Map.of("type", "text", "text", "You are Claude Code",
+                        "cache_control", Map.of("type", "ephemeral")),
+                Map.of("type", "text", "text", "完整系统提示词",
+                        "cache_control", Map.of("type", "ephemeral"))));
+        request.put("messages", List.of(
+                Map.of("role", "user", "content", "hi"),
+                Map.of("role", "system", "content", "延迟工具告知")));
+
+        realService().exposeMessages(request, routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
+
+        JsonNode system = objectMapper.readTree(capturedBody.get()).path("system");
+        assertThat(system.isArray())
+                .as("顶层 system 是数组时不能被降级成字符串，否则 cache_control 一并丢失")
+                .isTrue();
+
+        List<String> texts = new java.util.ArrayList<>();
+        system.forEach((node) -> texts.add(node.path("text").asText()));
+        assertThat(texts)
+                .as("原有的系统提示词块必须全部保留")
+                .contains("billing-header", "You are Claude Code", "完整系统提示词");
+        assertThat(String.join("\n", texts))
+                .as("messages 里抬上来的 system 消息要追加，而不是取代")
+                .contains("延迟工具告知");
+        assertThat(system.get(2).path("cache_control").path("type").asText())
+                .as("提示词缓存的 cache_control 必须原样跟着走")
+                .isEqualTo("ephemeral");
+    }
+
+    /**
+     * 数组形态下，多条 system 消息合并成<strong>一个</strong>追加块。
+     *
+     * <p>逐条追加会造出 N 个模块，而它们表达的是同一件事 —— 空行拼接成一个块既与
+     * 字符串形态的拼接语义一致，也不给上游平白多加缓存断点的候选位置。
+     */
+    @Test
+    void arrayFormSystemCombinesLiftedMessagesIntoOneBlock() throws Exception {
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("system", List.of(Map.of("type", "text", "text", "已有块")));
+        request.put("messages", List.of(
+                Map.of("role", "system", "content", "第一条"),
+                Map.of("role", "user", "content", "hi"),
+                Map.of("role", "system", "content", "第二条")));
+
+        realService().exposeMessages(request, routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
+
+        JsonNode system = objectMapper.readTree(capturedBody.get()).path("system");
+        assertThat(system).hasSize(2);
+        assertThat(system.get(1).path("text").asText()).isEqualTo("第一条\n\n第二条");
+    }
+
+    /**
+     * 没有可抬升的 system 消息时，数组形态的顶层 {@code system} <strong>一个字节都不动</strong>。
+     *
+     * <p>这条路径在缺陷期间是正常的，因此它防的不是那个具体缺陷，而是「修完就顺手
+     * 统一成某一种输出形态」这类后续回归 —— 数组与字符串的差异对上游是有意义的。
+     */
+    @Test
+    void arrayFormSystemIsUntouchedWhenNoSystemMessageExists() throws Exception {
+        List<Map<String, Object>> original = List.of(
+                Map.of("type", "text", "text", "块一"),
+                Map.of("type", "text", "text", "块二",
+                        "cache_control", Map.of("type", "ephemeral")));
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("system", original);
+        request.put("messages", List.of(Map.of("role", "user", "content", "hi")));
+
+        realService().exposeMessages(request, routeTo(baseUrlWithV1())).block(Duration.ofSeconds(10));
+
+        JsonNode system = objectMapper.readTree(capturedBody.get()).path("system");
+        assertThat(system).hasSize(2);
+        assertThat(system.get(1).path("cache_control").path("type").asText()).isEqualTo("ephemeral");
     }
 
     /**
@@ -405,7 +533,7 @@ class GenericAnthropicChatServiceTests {
      * 下游把 OpenAI 的字段发给了 Anthropic 端点，本属畸形请求。兜底档仍把它认作
      * 「下游已表态」而不注入自己的档位，随后那个字段被剥离 —— 净效果是这次不发深度。
      * 这比把它改写成 {@code output_config.effort}（替下游猜意图）或忽略表态直接覆写
-     * （兜底静默退化成覆写）都更保守。翻译线路不受影响：O2A 翻译器已经把档位
+     * （兜底静默退化成覆写）都更保守。翻译线路不受影响：C2M 翻译器已经把档位
      * 写进 {@code output_config.effort}，这一份只是供判定的兼容副本。
      *
      * <h2>思考方式不受这个字段影响</h2>
@@ -644,7 +772,7 @@ class GenericAnthropicChatServiceTests {
         String rules = """
                 {"version":2,"groups":[
                   {"id":"ant","name":"Anthropic","order":0,"enabled":true,
-                   "protocols":["ANTHROPIC"],"templateKeys":["custom"],"previewBody":{},
+                   "protocols":["MESSAGES"],"templateKeys":["custom"],"previewBody":{},
                    "rules":[{"id":"r1","order":0,"field":"system","array":false,"conditional":false,
                     "conditionMode":"all","conditions":[],
                     "operations":[{"type":"set_value","value":"被规则改写"}]}]}
@@ -664,7 +792,7 @@ class GenericAnthropicChatServiceTests {
         String rules = """
                 {"version":2,"groups":[
                   {"id":"oai","name":"OpenAI","order":0,"enabled":true,
-                   "protocols":["OPENAI"],"templateKeys":["custom"],"previewBody":{},
+                   "protocols":["CHAT"],"templateKeys":["custom"],"previewBody":{},
                    "rules":[{"id":"r1","order":0,"field":"model","array":false,"conditional":false,
                     "conditionMode":"all","conditions":[],
                     "operations":[{"type":"set_value","value":"should-not-apply"}]}]}
@@ -691,7 +819,7 @@ class GenericAnthropicChatServiceTests {
         String rules = """
                 {"version":2,"groups":[
                   {"id":"ant","name":"Anthropic","order":0,"enabled":true,
-                   "protocols":["ANTHROPIC"],"templateKeys":["custom"],"previewBody":{},
+                   "protocols":["MESSAGES"],"templateKeys":["custom"],"previewBody":{},
                    "rules":[{"id":"r1","order":0,"field":"temperature","array":false,"conditional":false,
                     "conditionMode":"all","conditions":[],
                     "operations":[{"type":"set_value"}]}]}
@@ -1097,6 +1225,23 @@ class GenericAnthropicChatServiceTests {
         return new ResolvedProviderRoute(
                 new ProviderRuntimeConfiguration("anthro", baseUrl, "test-key", List.of(),
                         "[]", bodyRulesJson),
+                "claude-x", "[anthro] claude-x");
+    }
+
+    /**
+     * 带出站鉴权头装配方式的路由。
+     *
+     * <p>该维度是<strong>供应商级</strong>而非模型级，所以这里不像
+     * {@link #routeWithMaxOutput} 那样需要构造模型 —— 它是满参构造器的第 11 个参数。
+     *
+     * @param authHeaderJson 持久化原文，形如
+     *                       {@code {"mode":"CONFIGURED","header":"X_API_KEY"}}
+     */
+    private static ResolvedProviderRoute routeWithAuthHeader(String baseUrl, String authHeaderJson) {
+        return new ResolvedProviderRoute(
+                new ProviderRuntimeConfiguration("anthro", baseUrl, "test-key", List.of(),
+                        "[]", "{\"version\":2,\"groups\":[]}",
+                        "[\"MESSAGES\"]", "", "", false, authHeaderJson),
                 "claude-x", "[anthro] claude-x");
     }
 

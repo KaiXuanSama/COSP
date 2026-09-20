@@ -19,10 +19,10 @@ import java.util.function.Function;
  * 也不必为「有没有翻译」写分支。
  *
  * <h2>usage 不在本类的职责内</h2>
- * 本类曾有第三个成员 {@code usageRewriter}，用于把 A2O 的 usage 换算成下游口径。
+ * 本类曾有第三个成员 {@code usageRewriter}，用于把 M2C 的 usage 换算成下游口径。
  * 它已被删除：那个换算（把 {@code cache_read} 加回输入）<strong>只依赖上游协议</strong>，
  * 与下游是谁无关，因此已上提到 {@code AnthropicUsageParser.toTokens} ——
- * Anthropic 直连与 A2O 现在拿到的是同一个口径。
+ * Anthropic 直连与 M2C 现在拿到的是同一个口径。
  *
  * <p>放在本类的旧做法只修了翻译路线，直连路线继续落不含缓存的值，
  * 于是 {@code api_call_usage.prompt_tokens} 一列承载两种定义，而汇总查询

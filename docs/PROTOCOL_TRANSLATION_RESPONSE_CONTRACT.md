@@ -1,7 +1,7 @@
 # 协议翻译契约（响应侧）
 
-> **A2O 响应翻译已落地并经实流量验证**（流式与非流式、多轮工具调用、参数分片）。
-> 实现与验证状态见第 15 节；O2A 响应翻译尚未开始。
+> **M2C 响应翻译已落地并经实流量验证**（流式与非流式、多轮工具调用、参数分片）。
+> 实现与验证状态见第 15 节；C2M 响应翻译尚未开始。
 >
 > 本文档既是设计契约也是实现说明：正文的「必须 / 不要」是约束，
 > 标注了实测日期的段落是已验证的事实。
@@ -10,19 +10,19 @@
 > 相关：[AGENTS.md](../AGENTS.md)、[思考链回放调查](COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)、
 > [mock-anthropic](../tools/mock-anthropic/README.md)（参数分片等只能用 mock 触发的场景）
 
-A2O = Anthropic Messages 响应 → OpenAI Chat Completions 响应。
+M2C = Anthropic Messages 响应 → OpenAI Chat Completions 响应。
 本文档覆盖**非流式 JSON** 与**流式 SSE** 两侧。
 
 ---
 
-## 0. 为何先做 A2O 响应而非 A2O 请求
+## 0. 为何先做 M2C 响应而非 M2C 请求
 
-四个功能的原定顺序是 O2A 请求 → A2O 请求 → A2O 响应 → O2A 响应，但**实际执行顺序调整为
-O2A 请求 → A2O 响应**。
+四个功能的原定顺序是 C2M 请求 → M2C 请求 → M2C 响应 → C2M 响应，但**实际执行顺序调整为
+C2M 请求 → M2C 响应**。
 
-理由：O2A 请求已落地并实测通过（下游打 `/v1/chat/completions`、上游 DeepSeek Anthropic
+理由：C2M 请求已落地并实测通过（下游打 `/v1/chat/completions`、上游 DeepSeek Anthropic
 端点返回完整事件序列），但下游收到的是 Anthropic 原生帧，Copilot 解析不了。
-补上 A2O 响应才让这条链**端到端可用**；而 A2O 请求服务的是另一条链（下游打 `/v1/messages`、
+补上 M2C 响应才让这条链**端到端可用**；而 M2C 请求服务的是另一条链（下游打 `/v1/messages`、
 上游只有 OpenAI），那条链在此之前一直是不可用状态，不因本次工作而改变。
 
 即：按「让已有的一半变成可用的整体」排序，而不是按功能编号排序。
@@ -31,7 +31,7 @@ O2A 请求 → A2O 响应**。
 
 ## 1. 实测的上游事件序列
 
-以下是 O2A 落地后对 DeepSeek Anthropic 端点的真实抓包（`deepseek-v4-flash`，
+以下是 C2M 落地后对 DeepSeek Anthropic 端点的真实抓包（`deepseek-v4-flash`，
 兜底注入 `thinking: {"type":"adaptive"}`），按到达顺序：
 
 ```text
@@ -107,7 +107,7 @@ message_stop
 
 ## 4. tool index 是两个独立索引域（必须做对）
 
-三个项目一致确认，且是 A2O 唯一真正需要跨帧状态的原因。
+三个项目一致确认，且是 M2C 唯一真正需要跨帧状态的原因。
 
 - **Anthropic `index`**：覆盖**所有**块类型。实测序列里 thinking 占 0、text 占 1
 - **OpenAI `tool_calls[].index`**：必须是**从 0 起的稠密序列**
@@ -326,8 +326,8 @@ COSP 有 `[provider-key] model` 前缀路由。如果把上游返回的裸 `deep
 只表现为「工具齐全却没被调用」。
 
 流式与非流式都遵守，决策各自收敛在一个方法里
-（`AnthropicToOpenAiStreamTranslator.resolveFinishReason` /
-`AnthropicToOpenAiNonStreamTranslator.resolveFinishReason`）。
+（`MessagesToChatStreamTranslator.resolveFinishReason` /
+`MessagesToChatNonStreamTranslator.resolveFinishReason`）。
 
 两个不显然的点：
 
@@ -368,7 +368,7 @@ prompt_tokens_details.cached_tokens = cache_read_input_tokens
 
 ### 9.2 reasoning_tokens 拿不到
 
-Anthropic 不单独上报思考 token，所以 A2O 产出的响应**永远没有**
+Anthropic 不单独上报思考 token，所以 M2C 产出的响应**永远没有**
 `completion_tokens_details.reasoning_tokens`。不要凭空估算。
 
 ### 9.3 usage 尾帧依赖 include_usage
@@ -433,7 +433,7 @@ AnthropicUsageParser.toTokens:
 ```
 
 **放在解析层是因为这个换算只依赖上游协议**，与下游是谁无关 —— 无论该请求是
-Anthropic 直连还是 A2O 翻译，上游都是 Anthropic、都差那两份缓存。
+Anthropic 直连还是 M2C 翻译，上游都是 Anthropic、都差那两份缓存。
 
 四条线路因此不需要任何按线路的接线：
 
@@ -441,8 +441,8 @@ Anthropic 直连还是 A2O 翻译，上游都是 Anthropic、都差那两份缓�
 |---|---|---|
 | OpenAI 直连 | O → O | 无需，`OpenAiUsageParser` 本就产出归一口径 |
 | Anthropic 直连 | A → A | `AnthropicUsageParser` 加回 read + creation |
-| A2O | A → O | 同上，同一份代码 |
-| O2A（未实现） | O → A | 无需，上游是 OpenAI |
+| M2C | A → O | 同上，同一份代码 |
+| C2M（未实现） | O → A | 无需，上游是 OpenAI |
 
 #### 与 new-api 同口径
 
@@ -452,7 +452,7 @@ Anthropic 直连还是 A2O 翻译，上游都是 Anthropic、都差那两份缓�
 totalInputTokens := usage.PromptTokens + usage.PromptTokensDetails.CachedTokens + cacheCreationTokens
 ```
 
-意义在于：很多中转站本身就是 new-api，因此经本服务 A2O 落库的数字，
+意义在于：很多中转站本身就是 new-api，因此经本服务 M2C 落库的数字，
 与直接打同一中转站 OpenAI 兼容端点拿到的数字**同源** —— 换个端点打进来，
 落库口径不会变。new-api 额外单独暴露写入量（`prompt_tokens_details.cached_creation_tokens`
 与 `cache_write_tokens` 两个字段），本服务当前不转发那两个，因为 `UsageTokens`
@@ -460,8 +460,8 @@ totalInputTokens := usage.PromptTokens + usage.PromptTokensDetails.CachedTokens 
 
 #### 曾经的做法及其失败原因
 
-早期换算挂在 `DownstreamLogView.usageRewriter` 上，只在 A2O 路线注入
-（`AnthropicToOpenAiResponseTranslator.translateUsageForLog`），前提是「Anthropic
+早期换算挂在 `DownstreamLogView.usageRewriter` 上，只在 M2C 路线注入
+（`MessagesToChatResponseTranslator.translateUsageForLog`），前提是「Anthropic
 直连的下游要的就是不含缓存的 `input_tokens`」。
 
 那个前提被推翻了。一列承载两种定义意味着每个消费方都得先知道该行的协议，
@@ -560,7 +560,7 @@ TTL 细分（`cache_creation.ephemeral_5m_input_tokens` /
 
 ## 11. 跨帧状态
 
-A2O 需要的状态（已剔除 sub2api 因走 Responses IR 而引入的账本字段）：
+M2C 需要的状态（已剔除 sub2api 因走 Responses IR 而引入的账本字段）：
 
 | 字段 | 用途 |
 |---|---|
@@ -599,7 +599,7 @@ A2O 需要的状态（已剔除 sub2api 因走 Responses IR 而引入的账本�
 ### 12.1 落库：两份 chunk 加逐事件产帧数
 
 翻译在服务外侧、落库在服务内部，默认会记出两个错误的事实：协议列写成
-`ANTHROPIC → ANTHROPIC`，chunk 记的是 Anthropic 事件而下游收到的是 OpenAI chunk。
+`MESSAGES → MESSAGES`，chunk 记的是 Anthropic 事件而下游收到的是 OpenAI chunk。
 `DownstreamLogView` 把「下游协议 + chunk 改写器」作为一个整体注入，上游服务不必知道
 翻译存在。
 
@@ -629,7 +629,7 @@ A2O 需要的状态（已剔除 sub2api 因走 Responses IR 而引入的账本�
 
 ## 13. 落地顺序
 
-1. **非流式 A2O**——形态简单、无状态机，先把字段映射与 usage 换算钉死
+1. **非流式 M2C**——形态简单、无状态机，先把字段映射与 usage 换算钉死
 2. **流式状态机骨架**——`message_start` / `text_delta` / `message_delta` / `[DONE]`，
    跑通纯文本响应
 3. **thinking 流**——`thinking_delta` → `reasoning_content`，`signature_delta` 吸收
@@ -639,7 +639,7 @@ A2O 需要的状态（已剔除 sub2api 因走 Responses IR 而引入的账本�
 
 ### 13.1 测试必须覆盖参考项目没覆盖的场景
 
-**new-api 的 A2O 流式只有一份 golden 快照，输入是 6 个事件的纯 text 序列——
+**new-api 的 M2C 流式只有一份 golden 快照，输入是 6 个事件的纯 text 序列——
 不含 thinking、不含 tool_use、不含多块。** 也就是说 tool index 重映射与 signature 处理
 这两条最容易出错的路径，在 new-api 里**没有测试覆盖**。
 
@@ -675,7 +675,7 @@ COSP 必须自己补齐：
 
 调研于 2026-09-04。
 
-| 项目 | A2O 响应实现 | 位置 |
+| 项目 | M2C 响应实现 | 位置 |
 |---|---|---|
 | **new-api** | **有，单段 Anthropic → Chat** | 转换器 `relaykit/relayconvert/internal/claude_messages/to_oai_chat_resp.go`；编排/收尾 `relay/channel/claude/relay-claude.go` |
 | sub2api | 有，但经 Responses IR 两段串联 | `apicompat/anthropic_to_responses_response.go` + `apicompat/responses_to_chatcompletions.go` |
@@ -683,13 +683,13 @@ COSP 必须自己补齐：
 
 三点需要记录的事实修正：
 
-- **new-api 的 `convmeta.ClaudeConvertInfo` 不是 A2O 的状态**，它的注释明写
-  "state for OpenAI chat → Claude Messages"。A2O 用的是
+- **new-api 的 `convmeta.ClaudeConvertInfo` 不是 M2C 的状态**，它的注释明写
+  "state for OpenAI chat → Claude Messages"。M2C 用的是
   `ClaudeToChatStreamState`（协议翻译）+ `ClaudeResponseInfo`（计费）两个结构
-- **sub2api 的 `chatcompletions_anthropic_bridge.go` 方向与 A2O 相反**，
+- **sub2api 的 `chatcompletions_anthropic_bridge.go` 方向与 M2C 相反**，
   它的响应方向是 CC → Anthropic（下游说 Anthropic、上游只会 CC）。
-  A2O 只有两段串联那一条路
-- **cc-switch 完全没有 A2O**，原因是结构性的：它的下游只有 Claude Code（说 Anthropic）
+  M2C 只有两段串联那一条路
+- **cc-switch 完全没有 M2C**，原因是结构性的：它的下游只有 Claude Code（说 Anthropic）
   与 Codex（说 Responses），不存在说 Chat Completions 的下游
 
 ### 14.1 值得借鉴（已纳入本契约）
@@ -718,7 +718,7 @@ COSP 必须自己补齐：
 - **sub2api 的 `error` 事件静默吞掉**（第 6.1 节）
 - **sub2api 忽略 `content_block_delta.index`**，靠「顺序发块」侥幸成立（第 4 节）
 - **new-api / sub2api 的 `redacted_thinking` 无显式处理**（第 5.2 节）
-- **Responses 中间层**：COSP 没有 Responses 出口，A2O 方向那一跳纯粹转发
+- **Responses 中间层**：COSP 没有 Responses 出口，M2C 方向那一跳纯粹转发
 - **cc-switch 的 `ccswitch-anthropic-thinking-v1:` base64 私有信封**：
   它依赖「下游是 Codex 且会原样回传该字段」这个封闭前提，Copilot 不认识
 - **new-api 空响应不视为错误**：COSP 的 `EmptyUpstreamResponseException` + 重试预算
@@ -751,8 +751,8 @@ Copilot BYOK 会回传上一轮思考内容，因此翻译路线上开启 extend
 
 | 项 | 位置 |
 |---|---|
-| 非流式 A2O | `AnthropicToOpenAiNonStreamTranslator` |
-| 流式状态机 | `AnthropicToOpenAiStreamTranslator` + `A2OStreamState` |
+| 非流式 M2C | `MessagesToChatNonStreamTranslator` |
+| 流式状态机 | `MessagesToChatStreamTranslator` + `M2CStreamState` |
 | usage 换算（出站） | `AnthropicUsageAccumulator` |
 | usage 口径归一（落库） | `AnthropicUsageParser.toTokens`（第 9.4 节） |
 | finish_reason 映射 | `StopReasonMapper` |
@@ -771,9 +771,9 @@ Copilot BYOK 会回传上一轮思考内容，因此翻译路线上开启 extend
 
 ### 15.3 未验证 / 待决
 
-- **O2A 响应翻译**（phase 4）尚未实现。usage 不需要额外接线 —— 那条线路上游是
+- **C2M 响应翻译**（phase 4）尚未实现。usage 不需要额外接线 —— 那条线路上游是
   OpenAI，`OpenAiUsageParser` 本就产出归一口径（第 9.4 节）。
-- **A2O 请求翻译**（phase 3，下游 `/v1/messages` + 上游 OpenAI）尚未实现。
+- **M2C 请求翻译**（phase 3，下游 `/v1/messages` + 上游 OpenAI）尚未实现。
 - **存量行口径不一致**：口径统一之前落的 Anthropic 行分两批 —— 早期完全不含缓存，
   中期只含 `cache_read`（缺 `cache_creation`）。`api_usage_daily` 的累加值同样。
   已决定**不修**，只保证新数据正确（第 9.4 节）。

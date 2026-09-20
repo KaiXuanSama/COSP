@@ -4,7 +4,6 @@ import {
   buildAlignedRows,
   hasComparisonView,
   parseChunkViews,
-  upstreamProtocolOf,
   type ChunkViews,
 } from './chunkViews'
 
@@ -100,12 +99,9 @@ describe('parseChunkViews', () => {
   })
 })
 
-describe('upstreamProtocolOf', () => {
-  it('derives the opposite protocol', () => {
-    expect(upstreamProtocolOf('OPENAI')).toBe('ANTHROPIC')
-    expect(upstreamProtocolOf('ANTHROPIC')).toBe('OPENAI')
-  })
-})
+// 原本这里有一组 `upstreamProtocolOf` 用例（断言 CHAT↔MESSAGES 互推）。
+// 那个函数已删：取反推断在第三种协议接入后会把直连误判成跨协议翻译。
+// 上游协议现在由调用方从落库记录传入，不再有可单测的推断逻辑。
 
 describe('buildAlignedRows', () => {
   function viewsOf(partial: Partial<ChunkViews>): ChunkViews {

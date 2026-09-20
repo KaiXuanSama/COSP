@@ -125,7 +125,7 @@ class ProviderAdminServiceProviderKeyTests {
         void rejectsRenameToNameWithoutAsciiAlphanumeric() {
             when(providerConfigRepository.findByKey("mimo"))
                     .thenReturn(new ProviderConfigRow(1, "mimo", "MiMo", true, "",
-                            "[\"OPENAI\",\"ANTHROPIC\"]", "", false, "", List.of()));
+                            "[\"CHAT\",\"MESSAGES\"]", "", "", false, "", List.of()));
 
             ProviderAdminService.Outcome outcome = service.updateProvider("mimo", form("深度求索")).block();
 
@@ -140,7 +140,7 @@ class ProviderAdminServiceProviderKeyTests {
         void allowsRenameKeepingAsciiPart() {
             when(providerConfigRepository.findByKey("mimo"))
                     .thenReturn(new ProviderConfigRow(1, "mimo", "MiMo", true, "",
-                            "[\"OPENAI\",\"ANTHROPIC\"]", "", false, "", List.of()));
+                            "[\"CHAT\",\"MESSAGES\"]", "", "", false, "", List.of()));
             when(providerConfigRepository.findByKey("xiaomi-mimo")).thenReturn(null);
 
             ProviderAdminService.Outcome outcome = service.updateProvider("mimo", form("Xiaomi MiMo")).block();

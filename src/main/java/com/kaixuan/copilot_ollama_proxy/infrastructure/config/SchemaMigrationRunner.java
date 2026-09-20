@@ -12,6 +12,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -20,14 +22,34 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * 数据库 Schema 版本迁移器。
  *
  * 每个迁移在独立事务中执行，成功后写入 schema_version。新数据库由 schema.sql
  * 直接创建最终结构，旧数据库则通过这里补齐列、转换数据并增加约束与索引。
+ *
+ * <h2>必须是第一个跑的 ApplicationRunner</h2>
+ * {@code @Order(HIGHEST_PRECEDENCE)} 不是可选的美化，而是<strong>正确性要求</strong>：
+ * 其它 Runner（{@code ProxyConfigBootstrap} 等）会在启动期读表，而它们要读的列可能正是
+ * 本次迁移才补上的。迁移没跑完就查询 = {@code no such column} 启动失败。
+ *
+ * <p>曾经这里<strong>没有</strong> {@code @Order}，靠的是「默认顺序在前」这个错误假设。
+ * Spring 对 {@code ApplicationRunner} 按 {@code @Order} <strong>升序</strong>执行，
+ * 而无注解的 Bean 取 {@link Ordered#LOWEST_PRECEDENCE}（{@code Integer.MAX_VALUE}）——
+ * 是最<em>大</em>值，因此本迁移器排在所有带 {@code @Order} 的 Runner <strong>之后</strong>。
+ *
+ * <p>这个缺陷潜伏了两个版本：V11 加 {@code use_proxy} 时没暴露，因为先在另一台机器上
+ * 迁移过、库里已有那列；直到 V13 加 {@code responses_base_url} 遇到一个真正停留在旧版本的库，
+ * 才在 {@code ProxyConfigBootstrap} 的查询上炸出 {@code no such column}。
+ * <strong>症状是「换个分支就启动失败」，而不是「迁移报错」</strong> —— 迁移压根还没开始。
+ *
+ * <p>因此新增启动期 Runner 时不必再算「我该排在迁移之后吗」：迁移恒定第一，
+ * 其余 Runner 无论有无 {@code @Order} 都在它之后。
  */
 @Component
+@Order(Ordered.HIGHEST_PRECEDENCE)
 public class SchemaMigrationRunner implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(SchemaMigrationRunner.class);
@@ -46,7 +68,19 @@ public class SchemaMigrationRunner implements ApplicationRunner {
     /** V9 起版本号为整数；{@code a.b} 作为 double 会让 V8.10 碎成 V8.1。 */
     private static final double V9_VERSION = 9;
     private static final double V10_VERSION = 10;
-    private static final double CURRENT_SCHEMA_VERSION = 11;
+    private static final double V11_VERSION = 11;
+    private static final double V12_VERSION = 12;
+    /**
+     * V13 的版本常量在这里才被冻结，而它落地时用的是 {@code CURRENT_SCHEMA_VERSION}。
+     *
+     * <p>那正是 skill 里记的第一个陷阱：迁移体引用 {@code CURRENT_SCHEMA_VERSION} 时，
+     * 常量一被抬高，这条历史迁移就会把库直接写成<em>最新</em>版本号，于是它自己与之后
+     * 每一个迁移都被判成「已应用」而<strong>全部跳过，且不报任何错</strong>。
+     * 新增 V14 的那一刻就是它的引爆点。
+     */
+    private static final double V13_VERSION = 13;
+    private static final double V14_VERSION = 14;
+    private static final double CURRENT_SCHEMA_VERSION = 14;
     private static final TypeReference<List<Map<String, String>>> API_KEY_LIST_TYPE = new TypeReference<>() {};
     private static final String DEFAULT_BODY_TEMPLATE_KEYS_JSON = "[\"base\"]";
     private static final String DEFAULT_BODY_PREVIEW_JSON = "{"
@@ -78,6 +112,30 @@ public class SchemaMigrationRunner implements ApplicationRunner {
      * 收窄是用户的决定，不是迁移的决定 —— 前端新建表单可以只默认勾 OpenAI。
      */
     private static final String DEFAULT_SUPPORTED_PROTOCOLS_JSON = "[\"OPENAI\",\"ANTHROPIC\"]";
+    /**
+     * V13 为存量供应商追加的协议名。
+     *
+     * <p>刻意用字面量而不引用 {@code WireProtocol.RESPONSES.name()}：本迁移落地时那个枚举值
+     * <strong>还不存在</strong>（枚举加值是下一步），而历史迁移本就该固化它那个年代的字面量 ——
+     * 将来枚举被重命名时，已执行过的迁移不该跟着变。V12 的 {@code V12_PROTOCOL_RENAME}
+     * 同理，那里的 {@code OPENAI} / {@code ANTHROPIC} 也是已不存在的名字。
+     */
+    private static final String V13_RESPONSES_PROTOCOL = "RESPONSES";
+    /**
+     * V14 写入的出站鉴权头装配方式默认值。
+     *
+     * <p><strong>必须与 {@code schema.sql} 里 {@code provider_config.auth_header} 的 DEFAULT
+     * 逐字一致。</strong>分叉的后果不是报错，而是「新库」「升级上来的库」「保存过一次的供应商」
+     * 在直接查库时呈现<em>三种不同形态</em>，而三者都合法 —— 与 {@code supported_protocols}
+     * 当年三处分叉（schema 的 DEFAULT、V8.8 的回填写法、ProviderAdminService 的 TreeSet 落库）
+     * 是同一个坑。
+     *
+     * <p>默认选「取下游 + Authorization」的理由：它让存量行为几乎不变 —— 下游带了什么就还发什么。
+     * 原 Messages 供应商在「下游带 x-api-key」时行为完全一致，只有「下游一个鉴权头都没带」的
+     * 那些会从 x-api-key 变成 Authorization，而那正是本次要修的场景。
+     */
+    private static final String DEFAULT_AUTH_HEADER_JSON =
+            "{\"mode\":\"DOWNSTREAM\",\"header\":\"AUTHORIZATION\"}";
     /** 当前思考深度配置的结构版本，与 {@code reasoning_effort_schema} 列取值一致。 */
     private static final int CURRENT_REASONING_EFFORT_VERSION = 2;
     /**
@@ -118,6 +176,47 @@ public class SchemaMigrationRunner implements ApplicationRunner {
             128_000, 4_000,
             256_000, 128_000,
             512_000, 128_000);
+    /**
+     * V12 重建 {@code api_call_log} 后该表的完整 DDL，与 {@code schema.sql} 逐字对应。
+     *
+     * <p><strong>必须重建而非 {@code ALTER}</strong>：两个协议列要同时改 CHECK 白名单与
+     * DEFAULT，SQLite 的 {@code ALTER TABLE} 一个都改不了。
+     *
+     * <p>白名单<strong>一次写三个值</strong>（含尚未使用的 {@code RESPONSES}）：多一个暂时
+     * 用不到的合法取值零成本，而为了它再重建一次同一张表要重新承担一遍风险。这不是超前
+     * 设计 —— 取值集合本就是这张表的对外契约，而 Responses 接入已是既定计划。
+     */
+    private static final String API_CALL_LOG_DDL_V12 = "CREATE TABLE api_call_log ("
+            + "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            + "provider_key VARCHAR(30), "
+            + "model_name VARCHAR(100), "
+            + "is_stream INTEGER NOT NULL DEFAULT 0 CHECK (is_stream IN (0, 1)), "
+            + "downstream_protocol TEXT NOT NULL DEFAULT 'CHAT' "
+            + "CHECK (downstream_protocol IN ('CHAT', 'RESPONSES', 'MESSAGES')), "
+            + "upstream_protocol TEXT NOT NULL DEFAULT 'CHAT' "
+            + "CHECK (upstream_protocol IN ('CHAT', 'RESPONSES', 'MESSAGES')), "
+            + "status_code INTEGER, "
+            + "request_headers TEXT, "
+            + "request_body TEXT, "
+            + "response_headers TEXT, "
+            + "response_body TEXT, "
+            + "chunks TEXT, "
+            + "duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0), "
+            + "payload_trimmed INTEGER NOT NULL DEFAULT 0 CHECK (payload_trimmed IN (0, 1)), "
+            + "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime')))";
+    /**
+     * V12 的协议字面量重映射：旧名 → 新名。
+     *
+     * <p>{@code OPENAI} 同时承载「OpenAI 这家公司」与「Chat Completions 这个接口」两种含义，
+     * 加入同属 OpenAI 的 Responses API 后必然歧义。新名一律取自各自的 API 路径全称。
+     *
+     * <p>两个映射的源与靶<strong>互不重叠</strong>，因此顺序执行也不会像 V9 的档位重映射
+     * 那样出现「一路滑到底」。但仍在一条 SQL 里用 {@code CASE} 同时完成 —— 新表的 CHECK
+     * 已不接受旧值，分两步搬迁的第一步就会失败。
+     */
+    private static final Map<String, String> V12_PROTOCOL_RENAME = Map.of(
+            "OPENAI", "CHAT",
+            "ANTHROPIC", "MESSAGES");
     /**
      * 版本比较的容差。
      *
@@ -248,8 +347,14 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                         this::migrateToV9MaxOutputModes),
                 new MigrationStep(V10_VERSION, "新增 Anthropic 思考方式与思考预算",
                         this::migrateToV10ThinkingMode),
-                new MigrationStep(CURRENT_SCHEMA_VERSION, "供应商新增出站代理开关",
-                        this::migrateToV11ProviderProxy));
+                new MigrationStep(V11_VERSION, "供应商新增出站代理开关",
+                        this::migrateToV11ProviderProxy),
+                new MigrationStep(V12_VERSION, "线路协议按 API 路径全称重命名",
+                        this::migrateToV12ProtocolRename),
+                new MigrationStep(V13_VERSION, "供应商新增 Responses 端点与协议支持",
+                        this::migrateToV13ResponsesProtocol),
+                new MigrationStep(V14_VERSION, "供应商新增出站鉴权头装配方式",
+                        this::migrateToV14AuthHeader));
     }
 
     /**
@@ -313,7 +418,7 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                     CURRENT_SCHEMA_VERSION,
                     formatVersion(CURRENT_SCHEMA_VERSION)
                             + " 架构基线：统一供应商实现、token 用量表、日志载荷瘦身与线路协议、"
-                            + "请求体规则分组、供应商协议支持与 Anthropic 端点、"
+                            + "请求体规则分组、供应商协议支持与 Anthropic / Responses 端点、"
                             + "思考深度与最大输出注入模式、Anthropic 思考方式与预算"));
         log.info("[SchemaMigration] 已建立 {} 架构基线", formatVersion(CURRENT_SCHEMA_VERSION));
     }
@@ -1012,7 +1117,392 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
         jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
                 + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
-                CURRENT_SCHEMA_VERSION, "V11 增量迁移：供应商新增出站代理开关");
+                V11_VERSION, "V11 增量迁移：供应商新增出站代理开关");
+    }
+
+    /**
+     * V12：线路协议按 API 路径全称重命名（{@code OPENAI → CHAT}、{@code ANTHROPIC → MESSAGES}）。
+     *
+     * <p>动机是为 <b>OpenAI Responses API</b> 让出命名空间：{@code OPENAI} 同时指代
+     * 「OpenAI 这家公司」与「Chat Completions 这个接口」，而 Responses 同样属于 OpenAI，
+     * 不改名就会自相矛盾。新名一律取自各自的 API 路径，属同一维度。
+     *
+     * <p>协议字面量存在<strong>三处</strong>，必须在同一个版本内全部改完 —— 代码侧与库侧
+     * 的协议名不能错开，中间态下任何一次落库都会撞上 CHECK 约束：
+     * <ol>
+     *   <li>{@code api_call_log} 的两个协议列（需重建，见 {@link #API_CALL_LOG_DDL_V12}）；</li>
+     *   <li>{@code provider_config.supported_protocols} 的 JSON 数组元素；</li>
+     *   <li>{@code provider_request_transform.body_rules_json} 里每个规则组的
+     *       {@code protocols} 数组 —— 这一处最容易漏，它藏在 JSON 里而不是独立列。</li>
+     * </ol>
+     *
+     * <p>第 2、3 处不需要重建：那两列的 CHECK 只验 {@code json_valid}、不验元素取值。
+     * 但<strong>必须迁移</strong>，不能依赖「读不懂就回退全集」：{@code ProviderProtocolSupport}
+     * 对未知协议名是忽略而非报错，于是存量 {@code ["OPENAI","ANTHROPIC"]} 会被逐个忽略、
+     * 落到「没有可识别协议 → 回退全集」。功能表面正常，但用户配置已经失去意义，
+     * 且每次调用都刷 warn —— 这种「侥幸不坏」的状态比直接报错更难发现。
+     */
+    private void migrateToV12ProtocolRename() {
+        if (tableExists("api_call_log")) {
+            rebuildApiCallLogForV12();
+        }
+        renameProtocolsInSupportedProtocols();
+        renameProtocolsInBodyRules();
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+                V12_VERSION, "V12 增量迁移：线路协议按 API 路径全称重命名");
+    }
+
+    /**
+     * 重建 {@code api_call_log}，扩展协议列的 CHECK 白名单并重映射存量字面量。
+     *
+     * <p>沿用 SQLite 官方推荐流程（建新表 → 搬数据 → 删旧表 → 改名 → 重建索引），
+     * 与 V9 重建 {@code provider_model} 的差别有两处：
+     * <ul>
+     *   <li><strong>本表没有触发器</strong>，因此不会踩 V9 那个「{@code DROP TABLE} 静默
+     *       删除触发器」的坑。但两个索引照样会被带走，必须显式重建。</li>
+     *   <li><strong>重映射在 {@code INSERT ... SELECT} 内用 {@code CASE} 完成</strong>，
+     *       不能先搬后 UPDATE —— 新表 CHECK 已不接受旧值，搬进去那一刻就会失败。</li>
+     * </ul>
+     *
+     * <p>幂等性由调用前的版本判定保证；此处再加一道结构检查，让重复执行不做无用的整表搬迁。
+     *
+     * <p><strong>搬迁列清单按源表实际存在的列取交集，不能硬编码</strong>。本迁移可能作用在
+     * 一个尚未走完早期迁移的库上：{@code status_code} 与 {@code response_headers} 是 V1
+     * 的 {@code migrateLegacyColumns} 补的，而某些历史库把 {@code schema_version} 预先标记为
+     * 「V1 已应用」，于是那两列压根不存在。硬编码全列会让 {@code INSERT ... SELECT} 报
+     * {@code no such column} 并阻断整条升级链 —— 而这跟协议重命名毫无关系。
+     * 缺失的列由新表 DDL 的 DEFAULT 兜住（{@code status_code} 本就可空）。
+     *
+     * <p>仍然<strong>逐列显式列出</strong>而非 {@code SELECT *}：这张表历经多次
+     * {@code ADD COLUMN}，物理列顺序不可假定，而错位的数据往往仍满足每一条约束
+     * （都是 TEXT / INTEGER），不会报错。
+     *
+     * <p>未列举的脏值（若某行的协议列既不是 {@code OPENAI} 也不是 {@code ANTHROPIC}）
+     * 会撞上新表 CHECK 并让整个 V12 回滚。这是<strong>刻意的</strong>：旧表的 CHECK 只允许
+     * 那两个值，出现第三种说明库被手工改过，此时中止升级比静默改写更安全。
+     */
+    private void rebuildApiCallLogForV12() {
+        if (protocolCheckAcceptsNewNames()) {
+            log.info("[SchemaMigration] api_call_log 已是 V12 结构，跳过重建");
+            return;
+        }
+        jdbcTemplate.execute("DROP TABLE IF EXISTS api_call_log_v12_new");
+        jdbcTemplate.execute(API_CALL_LOG_DDL_V12.replace(
+                "CREATE TABLE api_call_log", "CREATE TABLE api_call_log_v12_new"));
+        jdbcTemplate.execute(buildApiCallLogCopySqlForV12());
+        jdbcTemplate.execute("DROP TABLE api_call_log");
+        jdbcTemplate.execute("ALTER TABLE api_call_log_v12_new RENAME TO api_call_log");
+        jdbcTemplate.execute("CREATE INDEX IF NOT EXISTS idx_api_call_log_created_id "
+                + "ON api_call_log(created_at DESC, id DESC)");
+        jdbcTemplate.execute("CREATE INDEX IF NOT EXISTS idx_api_call_log_provider_created_id "
+                + "ON api_call_log(provider_key, created_at DESC, id DESC)");
+        log.info("[SchemaMigration] V12 已重建 api_call_log 并重映射协议字面量");
+    }
+
+    /**
+     * 构造 V12 重建的搬迁语句，列清单取「新表需要」与「旧表实际拥有」的交集。
+     *
+     * <h2>为何列清单必须动态取交集</h2>
+     * 不能照抄 {@code schema.sql} 的完整列清单：{@code api_call_log} 的列是历次迁移逐步
+     * 加上去的（{@code status_code} 与 {@code response_headers} 来自 V1、
+     * {@code payload_trimmed} 来自 V8.5、两个协议列来自 V8.6）。某些升级路径上这些列
+     * 尚不存在 —— 比如库里已把早期版本标记为已应用、而对应的 {@code ADD COLUMN} 因此被
+     * 跳过。硬写列名会让 V12 报 {@code no such column} 并中止一次本可完成的升级。
+     * 缺失的列交给新表的 DEFAULT，语义与那些迁移当初的回填一致。
+     *
+     * <h2>为何要 coerce 三个受约束列</h2>
+     * 新表比旧表严格 —— 这是迁移 Skill 明确记录过的坑：{@code is_stream}、
+     * {@code payload_trimmed}、{@code duration_ms} 在新表上都带 CHECK，而最早期的
+     * {@code api_call_log} 一条约束都没有。约束是 V3 补的，若某个库把 V3 标记为已应用
+     * 却没真正跑过它的数据清洗，库里就留着 {@code is_stream = 2}、
+     * {@code duration_ms = -10} 这类越界值。不 coerce 的后果是<strong>一行与协议重命名
+     * 毫不相干的脏数据让整个 V12 回滚</strong>，而用户完全无从判断该修什么。
+     *
+     * <p>就地兜成合法值而非中止升级：这三列的脏值本来也读不出有意义的信息
+     * （{@code is_stream = 2} 既不是流式也不是非流式），归一到 DEFAULT 与「按 NULL 处理」
+     * 不损失任何可用语义。这与协议列的处置<strong>刻意相反</strong> —— 那两列的脏值
+     * 会被新表 CHECK 拦下并中止迁移，因为旧表的 CHECK 本就只允许两个取值，出现第三种
+     * 说明库被手工改过，此时静默改写协议归属比中止更危险。
+     *
+     * <p>两个协议列单独处理：它们在 {@code SELECT} 侧要套 {@code CASE} 做重映射，
+     * 而在 {@code INSERT} 侧仍是原列名。
+     */
+    private String buildApiCallLogCopySqlForV12() {
+        List<String> desired = List.of("id", "provider_key", "model_name", "is_stream",
+                "downstream_protocol", "upstream_protocol", "status_code", "request_headers",
+                "request_body", "response_headers", "response_body", "chunks", "duration_ms",
+                "payload_trimmed", "created_at");
+        List<String> present = desired.stream()
+                .filter(column -> columnExists("api_call_log", column))
+                .toList();
+        String targetColumns = String.join(", ", present);
+        String sourceExpressions = present.stream()
+                .map(this::apiCallLogSourceExpressionForV12)
+                .collect(Collectors.joining(", "));
+        return "INSERT INTO api_call_log_v12_new (" + targetColumns + ") "
+                + "SELECT " + sourceExpressions + " FROM api_call_log";
+    }
+
+    /**
+     * 单列的搬迁表达式：协议列做重命名，受 CHECK 约束的列做兜底，其余原样。
+     *
+     * <p>理由见 {@link #buildApiCallLogCopySqlForV12()} 的两节说明。
+     */
+    private String apiCallLogSourceExpressionForV12(String column) {
+        return switch (column) {
+            case "downstream_protocol", "upstream_protocol" -> protocolRenameCaseSql(column);
+            // NOT NULL DEFAULT 0 CHECK (... IN (0, 1))：NULL 与越界值一并归 0。
+            // NULL IN (0, 1) 求值为 NULL 而非 true，因此走 ELSE 分支，无需额外判空。
+            case "is_stream", "payload_trimmed" ->
+                    "CASE WHEN " + column + " IN (0, 1) THEN " + column + " ELSE 0 END";
+            // CHECK (... IS NULL OR ... >= 0)：负值归 NULL，即「耗时未知」。
+            case "duration_ms" ->
+                    "CASE WHEN duration_ms IS NULL OR duration_ms >= 0 THEN duration_ms ELSE NULL END";
+            default -> column;
+        };
+    }
+
+    /**
+     * 判断 {@code api_call_log} 的协议列约束是否已接受新协议名。
+     *
+     * <p>读 {@code sqlite_master} 的建表语句而非试插一行：本方法在迁移事务内调用，
+     * 试插失败会污染事务状态，而 DDL 文本是这张表约束的唯一权威来源。
+     */
+    private boolean protocolCheckAcceptsNewNames() {
+        String ddl = jdbcTemplate.query(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'api_call_log'",
+                rs -> rs.next() ? rs.getString("sql") : null);
+        return ddl != null && ddl.contains("'CHAT'");
+    }
+
+    /** 构造一列的重映射 {@code CASE} 表达式，未列举的值原样保留（随后由新表 CHECK 拦下）。 */
+    private String protocolRenameCaseSql(String column) {
+        StringBuilder sql = new StringBuilder("CASE ").append(column);
+        V12_PROTOCOL_RENAME.forEach((oldName, newName) ->
+                sql.append(" WHEN '").append(oldName).append("' THEN '").append(newName).append("'"));
+        return sql.append(" ELSE ").append(column).append(" END").toString();
+    }
+
+    /**
+     * 重映射 {@code provider_config.supported_protocols} 里的协议名。
+     *
+     * <p>用 {@code replace()} 而非整值替换：该列是 JSON 数组，元素个数与顺序都由用户配置
+     * 决定（可能只勾了一种），把它当固定字面量匹配会漏掉大部分行。协议名是全大写且不是
+     * 其它取值的子串，因此文本替换在这里是安全的。
+     */
+    private void renameProtocolsInSupportedProtocols() {
+        if (!columnExists("provider_config", "supported_protocols")) {
+            return;
+        }
+        // 校验触发器是行级的：它校验 NEW 整行，而不只是被 SET 的列。库里若留着
+        // enabled = 2 这类 V3 之前的脏值（某些升级路径上 V3 的数据清洗被跳过），
+        // 本次只改协议名的 UPDATE 也会被它 ABORT。V7.1 与 V9 都用同一手法绕开 ——
+        // 先摘掉触发器、改完再装回去，而不是顺手把 enabled 也一起「修正」：
+        // 那超出了本次迁移的职责，且会静默改变某个供应商的启用状态。
+        dropTrigger("trg_provider_config_validate_update");
+        int updated = 0;
+        for (var entry : V12_PROTOCOL_RENAME.entrySet()) {
+            updated += jdbcTemplate.update(
+                    "UPDATE provider_config SET supported_protocols = replace(supported_protocols, ?, ?) "
+                            + "WHERE supported_protocols LIKE ?",
+                    quoted(entry.getKey()), quoted(entry.getValue()), "%" + quoted(entry.getKey()) + "%");
+        }
+        createProviderConfigValidationTriggers();
+        if (updated > 0) {
+            log.info("[SchemaMigration] V12 已重映射 {} 处供应商协议支持配置", updated);
+        }
+    }
+
+    /**
+     * 重映射 {@code provider_request_transform.body_rules_json} 里每个规则组的 {@code protocols}。
+     *
+     * <p>这一处最容易漏：规则组的适用协议存在 JSON 里，不是独立列，因此不会因为改了
+     * 别处而顺带更新。漏掉的后果是所有存量规则组都变成「协议读不懂」，
+     * 而 {@code RequestBodyRuleEngine} 对认不出的协议是跳过该组 —— 用户配的请求体改写
+     * 会静默失效，而这比报错更难排查。
+     */
+    private void renameProtocolsInBodyRules() {
+        if (!columnExists("provider_request_transform", "body_rules_json")) {
+            return;
+        }
+        int updated = 0;
+        for (var entry : V12_PROTOCOL_RENAME.entrySet()) {
+            updated += jdbcTemplate.update(
+                    "UPDATE provider_request_transform SET body_rules_json = replace(body_rules_json, ?, ?) "
+                            + "WHERE body_rules_json LIKE ?",
+                    quoted(entry.getKey()), quoted(entry.getValue()), "%" + quoted(entry.getKey()) + "%");
+        }
+        if (updated > 0) {
+            log.info("[SchemaMigration] V12 已重映射 {} 处请求体规则组的适用协议", updated);
+        }
+    }
+
+    /**
+     * 把协议名包成 JSON 字符串字面量（带双引号）。
+     *
+     * <p>带引号匹配是必要的：裸 {@code OPENAI} 会命中恰好含这个词的其它内容
+     * （比如某个规则的字段值或供应商名），而 {@code "OPENAI"} 只可能是协议数组的元素。
+     */
+    private static String quoted(String value) {
+        return "\"" + value + "\"";
+    }
+
+    /**
+     * V13：供应商新增 Responses 端点列，并为存量供应商追加 {@code RESPONSES} 协议支持。
+     *
+     * <p>本迁移是「为 COSP 增加 OpenAI Responses API 直连」三步中的第一步，落地后
+     * <strong>没有任何代码读取新列</strong>，两条现有线路行为不变 —— 枚举值与端点接线在后续步骤。
+     *
+     * <h2>为何不需要重建表</h2>
+     * 与 V11 同类：纯新增列，没有任何已有列的类型、默认值或 CHECK 发生变化，
+     * {@code ALTER TABLE ADD COLUMN} 足够。也因此不碰 {@code provider_config} 的校验触发器
+     * —— 那两个触发器只在 INSERT / UPDATE 时校验行，而 {@code ADD COLUMN} 两者都不是。
+     * 但 {@link #appendResponsesProtocolForV13()} 里的 UPDATE 会碰上它们，见那个方法。
+     *
+     * <h2>{@code api_call_log} 不在本迁移的范围内</h2>
+     * V12 重建那张表时已把 {@code RESPONSES} 写进两个协议列的 CHECK 白名单
+     * （见 {@link #API_CALL_LOG_DDL_V12}），当时的判断正是「多一个暂时用不到的合法取值零成本，
+     * 而为了它再重建一次同一张表要重新承担一遍风险」。这笔预留在此处到账。
+     *
+     * <h2>本迁移落地后会刷 warn，这是已知中间态</h2>
+     * {@code ProviderProtocolSupport.parse} 对未知协议名是「忽略并 warn」而非报错，
+     * 因此在枚举值加入之前，本迁移写进库的 {@code RESPONSES} 每次读取都会刷一条 warn。
+     * 集合里还有 CHAT 与 MESSAGES，所以<strong>不会</strong>落到「没有可识别协议 → 回退全集」
+     * 那条路，两条现有线路的行为不受影响。
+     *
+     * <p>顺序不能倒过来（先加枚举值再迁移）：那样中间态下前端能勾选一个数据库
+     * 尚未接受的协议名。
+     */
+    private void migrateToV13ResponsesProtocol() {
+        if (tableExists("provider_config")) {
+            addColumnIfNotExists("provider_config", "responses_base_url", "TEXT NOT NULL DEFAULT ''");
+            dropTrigger("trg_provider_config_validate_update");
+            backfillResponsesBaseUrlForV13();
+            appendResponsesProtocolForV13();
+            createProviderConfigValidationTriggers();
+        }
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+                V13_VERSION, "V13 增量迁移：供应商新增 Responses 端点与协议支持");
+    }
+
+    /**
+     * 为存量供应商回填 {@code responses_base_url = base_url}。
+     *
+     * <h2>回填理由与 V8.8 只有一半相同</h2>
+     * V8.8 回填 {@code anthropic_base_url} 有两条理由，其中<strong>第一条在这里不成立</strong>：
+     * 那条是「升级前的行为正是用 base_url 拼 /messages，照抄原值才能让该行为在新的读取路径下
+     * 保持不变」。而 Responses 线路在本迁移之前<strong>根本不存在</strong>，没有需要保持的行为。
+     *
+     * <p>成立的是第二条：显式写入让用户在界面上直接看到当前生效的地址，而不是一个空输入框
+     * 加一句「留空则复用」—— 后者要理解回退规则才能读懂。这一条足以支撑回填。
+     *
+     * <p>把 V8.8 那段「保持存量行为」的说辞抄过来会是个假理由，因此单独成方法并写清差异。
+     *
+     * <p>只回填 NULL 与空串：{@code ADD COLUMN} 已把已有行填成空串默认值，
+     * 而重跑迁移时不该覆盖用户此后改过的配置。
+     *
+     * <p><strong>调用方已摘掉行级校验触发器</strong>，理由见
+     * {@link #migrateToV13ResponsesProtocol()}。本方法不自己摘 —— 两处各摘一次会让摘装配对
+     * 变成两组，而它们本来就是同一个事实的两个受害者。
+     */
+    private void backfillResponsesBaseUrlForV13() {
+        if (!columnExists("provider_config", "base_url")) {
+            return;
+        }
+        jdbcTemplate.update("UPDATE provider_config SET responses_base_url = base_url "
+                + "WHERE (responses_base_url IS NULL OR trim(responses_base_url) = '') "
+                + "AND base_url IS NOT NULL AND trim(base_url) <> ''");
+    }
+
+    /**
+     * 为存量供应商的协议集合追加 {@code RESPONSES}。
+     *
+     * <h2>为何默认全勾，而不是让用户自己去勾</h2>
+     * 与前端 {@code DEFAULT_NEW_PROVIDER_PROTOCOLS} 同一条既有原则：勾上后不通至多是上游报错，
+     * 用户能<strong>感知</strong>到并取消勾选；默认不勾则让「支持却调不通」变成需要用户自己
+     * 想到去勾的隐藏状态，那是更差的失败模式。可感知的失败优于沉默的不可用。
+     *
+     * <p>追加不影响两条现有线路，这是接受该方案的关键支撑。调度规则 1 是「同名协议优先直连」：
+     * 下游打 {@code /v1/chat/completions} 命中 CHAT、打 {@code /v1/messages} 命中 MESSAGES，
+     * 都不受集合里多出来的第三个元素影响。只有下游真的去打 {@code /v1/responses} 时才会
+     * 直连到一个可能不存在的端点并拿到 404 —— 那正是预期的、可感知的失败。
+     *
+     * <h2>显式空数组不动</h2>
+     * {@code []} 是用户主动声明的「哪条线路都不要」，其全部价值在于<strong>可被发现</strong>
+     * （调度器会明确报错而非静默回退）。往里塞一个 RESPONSES 会把一个被用户禁用的供应商
+     * 变成部分可用，而用户不会知道自己的配置被改了 —— 迁移不得改变用户意图。
+     *
+     * <p>脏数据（非 JSON、非数组）同样不动：运行时本就回退全集（届时已含 RESPONSES），
+     * 迁移不必也不该猜一个读不懂的配置想表达什么。
+     *
+     * <h2>为何用 SQL 而非逐行读改</h2>
+     * 与 V8.9 相反：那次的转换逻辑（按四种历史形态分别解析档位）SQL 无法表达，
+     * 而这里只是「数组末尾追加一个元素」，SQLite 的 JSON1 函数完整覆盖，
+     * 且能在同一条语句里表达上面三类值的区分。
+     *
+     * <p>{@code NOT EXISTS} 子句保证幂等：重跑迁移不会追加第二个 RESPONSES。
+     *
+     * <p><strong>追加到末尾恰好保持字母序是巧合</strong>，因为 {@code RESPONSES} 的首字母 R
+     * 排在 CHAT 与 MESSAGES 之后。之所以在意字母序：{@code ProviderAdminService} 用
+     * {@code TreeSet} 落库，两处顺序一致才能让「新建的」与「保存过的」供应商在直接查库时
+     * 看起来相同。加入第四个协议时不能想当然地继续用追加。
+     */
+    private void appendResponsesProtocolForV13() {
+        if (!columnExists("provider_config", "supported_protocols")) {
+            return;
+        }
+        // 调用方已摘掉行级校验触发器，理由见 migrateToV13ResponsesProtocol()。
+        int updated = jdbcTemplate.update(
+                "UPDATE provider_config "
+                        + "SET supported_protocols = json_insert(supported_protocols, '$[#]', ?) "
+                        + "WHERE json_valid(supported_protocols) "
+                        + "AND json_type(supported_protocols) = 'array' "
+                        + "AND json_array_length(supported_protocols) > 0 "
+                        + "AND NOT EXISTS (SELECT 1 FROM json_each(supported_protocols) WHERE value = ?)",
+                V13_RESPONSES_PROTOCOL, V13_RESPONSES_PROTOCOL);
+        if (updated > 0) {
+            log.info("[SchemaMigration] V13 已为 {} 个供应商追加 {} 协议支持",
+                    updated, V13_RESPONSES_PROTOCOL);
+        }
+    }
+
+    /**
+     * V14：供应商新增出站鉴权头的装配方式。
+     *
+     * <p>动机是「哪种鉴权头」本就不该由代码<strong>按协议</strong>替用户决定：Claude CLI 的头名
+     * 由凭据环境变量决定（{@code ANTHROPIC_API_KEY} → {@code x-api-key}、
+     * {@code ANTHROPIC_AUTH_TOKEN} → {@code Authorization}），实测还有中转站只认后者。
+     * 本列把那个选择还给用户配置。取值语义见 {@link #DEFAULT_AUTH_HEADER_JSON}。
+     *
+     * <p>与 V11 同类：纯新增列，没有任何已有列的类型、默认值或 CHECK 发生变化，
+     * {@code ALTER TABLE ADD COLUMN} 足够，因此<strong>不需要重建表</strong>。
+     *
+     * <h2>为何比 V13 少两步</h2>
+     * {@code NOT NULL DEFAULT} 会让 SQLite 用默认值<strong>自动填充所有存量行</strong>，
+     * 因此这里<em>不需要</em>一条回填用的 UPDATE。而没有 UPDATE 就不必摘
+     * {@code provider_config} 的行级校验触发器 —— 那两个触发器只在 INSERT / UPDATE 时校验，
+     * 而 {@code ADD COLUMN} 两者都不是。V13 之所以要摘装一对，是因为它带回填 UPDATE。
+     *
+     * <p>触发器只校验 {@code enabled}，新列无需纳入校验：{@code CHECK (json_valid(...))}
+     * 已经表达在同一行的列定义里。
+     *
+     * <h2>版本常量用 {@link #V14_VERSION} 而非 {@code CURRENT_SCHEMA_VERSION}</h2>
+     * 两者此刻相等，但用前者是<strong>刻意</strong>的：迁移体引用 {@code CURRENT_SCHEMA_VERSION}
+     * 时，下次抬高那个常量会让本迁移把库写成更新的版本号，于是它自己与之后每一个迁移
+     * 全被判成「已应用」而跳过。V13 正是这么写下的（本次已一并冻结），
+     * 在方法体里就把常量钉死，比留待下一个人记得改更可靠。
+     */
+    private void migrateToV14AuthHeader() {
+        if (tableExists("provider_config")) {
+            addColumnIfNotExists("provider_config", "auth_header",
+                    "TEXT NOT NULL DEFAULT '" + DEFAULT_AUTH_HEADER_JSON + "'"
+                            + " CHECK (json_valid(auth_header))");
+        }
+        jdbcTemplate.update("UPDATE schema_version SET version = ?, description = ?, "
+                + "applied_at = strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime') WHERE id = 1",
+                V14_VERSION, "V14 增量迁移：供应商新增出站鉴权头装配方式");
     }
 
     /**
@@ -1202,6 +1692,12 @@ public class SchemaMigrationRunner implements ApplicationRunner {
      *
      * <p>组 ID 用固定字面量而非随机值：迁移必须可重放且结果可预期，随机 ID 会让
      * 「同一份输入升两次得到不同结果」，也让测试只能做模糊断言。
+     *
+     * <h2>协议名保持 V8.7 当时的 {@code "OPENAI"}，不随重命名更新</h2>
+     * 历史迁移不可回写：这里写的是 V8.7 那一刻的产物形态，而库里存量数据正是这个形态。
+     * 改成 {@code "CHAT"} 会让「V8.7 产出什么」与「V12 期望输入什么」错位 —— V12 的
+     * 重映射专门负责把这些历史字面量升成新名，两者是流水线上的前后两道，不是同一道。
+     * 组 ID 与组名里的 {@code openai} 同理（它们本就是历史标识，不参与协议判断）。
      */
     private Map<String, Object> buildLegacyRuleGroupSet(JsonNode rules, String templateKeysJson,
                                                         String previewJson) throws Exception {

@@ -19,6 +19,7 @@ import { parseChunkViews } from './chunkViews'
 import { formatCacheHitRate } from '@/features/call-log/cacheHitRate'
 import { ttfbSeverity } from '@/features/call-log/ttfbSeverity'
 import type { DetailItem, UsageDetail } from '@/types/calllog'
+import { formatCallTypeLabel, formatCallTypeTitle } from '@/types/protocol'
 
 const props = withDefaults(
   defineProps<{
@@ -45,7 +46,15 @@ const chunksModal = ref({
   /** 逐事件产帧数，两栗对齐的唯一依据。 */
   frameCounts: null as number[] | null,
   // 解析规则跟**下游**协议：落库的 chunk 是下游实际收到的形态。
-  downstreamProtocol: 'OPENAI' as DetailItem['downstream_protocol'],
+  downstreamProtocol: 'CHAT' as DetailItem['downstream_protocol'],
+  /**
+   * 上游协议，供对照栅解析上游那一侧。
+   *
+   * 必须从落库记录取，不能由下游协议推断 —— 取反推断在三种协议下
+   * 会把直连误判成跨协议翻译。初值与下游相同（即「按直连处理」），
+   * 弹窗打开前不会被读到。
+   */
+  upstreamProtocol: 'CHAT' as DetailItem['upstream_protocol'],
 })
 
 // ── 格式化 ──────────────────────────────────────────────
@@ -136,13 +145,15 @@ function ttfbClass(usage: UsageDetail | null): string {
   return severity === 'normal' ? '' : `detail-ttfb--${severity}`
 }
 
+/** 调用类型标记。箭头是响应翻译方向（上游 → 下游），方向语义见 `formatCallTypeLabel`。 */
 function formatCallType(detail: DetailItem): string {
-  const upstream = detail.upstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
-  const downstream = detail.downstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
-  const protocol = upstream === downstream
-    ? (upstream === 'A' ? 'Anthropic' : 'OpenAI')
-    : `${upstream}→${downstream}`
-  return `${detail.is_stream ? '流式' : '非流'}: ${protocol}`
+  return formatCallTypeLabel(
+    detail.upstream_protocol, detail.downstream_protocol, detail.is_stream)
+}
+
+/** 标记的悬停说明，写明「响应翻译」与两侧全名，消除箭头方向的歧义。 */
+function callTypeTitle(detail: DetailItem): string {
+  return formatCallTypeTitle(detail.upstream_protocol, detail.downstream_protocol)
 }
 
 /**
@@ -289,6 +300,7 @@ function openChunksModal(rawChunks: string | null) {
     upstreamChunks: views.upstream,
     frameCounts: views.frameCounts,
     downstreamProtocol: props.detail.downstream_protocol,
+    upstreamProtocol: props.detail.upstream_protocol,
   }
 }
 
@@ -313,7 +325,7 @@ onUnmounted(() => {
           <span
             class="detail-call-tag"
             :class="{ 'detail-call-tag--stream': props.detail.is_stream }"
-            :title="`上游 ${props.detail.upstream_protocol} → 下游 ${props.detail.downstream_protocol}`"
+            :title="callTypeTitle(props.detail)"
           >
             {{ formatCallType(props.detail) }}
           </span>
@@ -460,6 +472,7 @@ onUnmounted(() => {
       v-model:show="chunksModal.show"
       :chunks="chunksModal.chunks"
       :downstream-protocol="chunksModal.downstreamProtocol"
+      :upstream-protocol="chunksModal.upstreamProtocol"
       :upstream-chunks="chunksModal.upstreamChunks"
       :frame-counts="chunksModal.frameCounts"
     />

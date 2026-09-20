@@ -9,6 +9,11 @@ import { computed } from 'vue'
 import { NSelect, NSwitch, NButton, NIcon } from 'naive-ui'
 import type { FieldRule, RuleCondition, ConditionOperator } from '@/features/request-body-rules/types'
 import { createEmptyRule, createEmptyCondition } from '@/features/request-body-rules/types'
+import {
+  generatePathOptions,
+  resolveConditionScope,
+  type PathOption,
+} from '@/features/request-body-rules/pathOptions'
 import JsonValueInput from './JsonValueInput.vue'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
 
@@ -52,11 +57,19 @@ const fieldOptions = computed<FieldOption[]>(() => {
 
 // ==================== 操作类型选项 ====================
 
-const operationTypeOptions = [
+/**
+ * 操作选项。
+ *
+ * 「删除」的文案随作用域变化：字段值为数组时它删的是**匹配到的元素**，
+ * 否则删的是字段本身。同一个操作类型在两种作用域下作用对象不同，
+ * 文案不区分会让人以为数组模式下删的是元素内部的字段 ——
+ * 那件事要用 `edit_object` 的嵌套规则表达。
+ */
+const operationTypeOptions = computed(() => [
   { label: '调整对象内容', value: 'edit_object' },
   { label: '设置字段值', value: 'set_value' },
-  { label: '删除字段', value: 'delete' },
-]
+  { label: props.rule.array ? '删除数组元素' : '删除字段', value: 'delete' },
+])
 
 const conditionOperatorOptions = [
   { label: '存在', value: 'exists' },
@@ -112,24 +125,17 @@ const nestedRules = computed(() => {
   return op.rules || []
 })
 
+/**
+ * 嵌套规则的字段来源对象。
+ *
+ * <p>数组模式下取第一个对象元素作为字段来源；这与
+ * {@link resolveConditionScope} 用的是同一个取值口径（都委托给
+ * `firstObjectElement`），因此「字段下拉」与「条件路径下拉」看到的作用域一致 ——
+ * 早先两处各写一份，数组模式下两个下拉给出的路径作用域不同。
+ */
 const nestedScopeObject = computed<Record<string, unknown> | null>(() => {
   if (!props.scopeObject || !props.rule.field) return null
-  const val = props.scopeObject[props.rule.field]
-  if (props.rule.array) {
-    // 数组模式：取第一个对象元素作为字段来源
-    if (Array.isArray(val)) {
-      for (const item of val) {
-        if (item && typeof item === 'object' && !Array.isArray(item)) {
-          return item as Record<string, unknown>
-        }
-      }
-    }
-    return null
-  }
-  if (val && typeof val === 'object' && !Array.isArray(val)) {
-    return val as Record<string, unknown>
-  }
-  return null
+  return resolveConditionScope(props.scopeObject, props.rule)
 })
 
 function updateNestedRules(rules: FieldRule[]) {
@@ -164,55 +170,28 @@ function removeCondition(index: number) {
   })
 }
 
-/** 条件路径下拉选项：从当前作用域生成 */
-const conditionPathOptions = computed<FieldOption[]>(() => {
-  if (!props.scopeObject) return []
-  return generatePathOptions(props.scopeObject, '', 0)
+/**
+ * 条件路径下拉选项：从**条件求值所在的**作用域生成。
+ *
+ * <p>不是从 `scopeObject` 直接生成 —— 数组模式下条件相对数组元素求值，
+ * 而 `scopeObject` 是它的父对象。用错作用域会生成 `./tools[*]/type`，
+ * 那个路径引擎解析不了且**零告警**（「配了规则但没生效」）。
+ * 作用域规则的完整推导见 `pathOptions.ts` 的 `resolveConditionScope`。
+ */
+const conditionPathOptions = computed<PathOption[]>(() => {
+  const scope = conditionScope.value
+  return scope ? generatePathOptions(scope) : []
 })
 
-function generatePathOptions(
-  obj: Record<string, unknown>,
-  prefix: string,
-  depth: number,
-  seenPaths = new Set<string>(),
-): FieldOption[] {
-  if (depth > 2) return [] // 限制路径深度
-  const options: FieldOption[] = []
-  const addOption = (path: string) => {
-    if (seenPaths.has(path)) return
-    seenPaths.add(path)
-    options.push({ label: path, value: path })
-  }
-  for (const [key, val] of Object.entries(obj)) {
-    const path = prefix ? `${prefix}/${key}` : `./${key}`
-    if (Array.isArray(val)) {
-      const arrayPath = `${path}[*]`
-      addOption(arrayPath)
-      // 继续展开数组元素的子字段
-      for (const item of val) {
-        if (item && typeof item === 'object' && !Array.isArray(item)) {
-          options.push(...generatePathOptions(
-            item as Record<string, unknown>,
-            arrayPath,
-            depth + 1,
-            seenPaths,
-          ))
-        }
-      }
-    } else if (val && typeof val === 'object') {
-      addOption(path)
-      options.push(...generatePathOptions(
-        val as Record<string, unknown>,
-        path,
-        depth + 1,
-        seenPaths,
-      ))
-    } else {
-      addOption(path)
-    }
-  }
-  return options
-}
+/** 条件求值所在的作用域；null 表示无法从预览样本推断。 */
+const conditionScope = computed(() =>
+  resolveConditionScope(props.scopeObject, props.rule),
+)
+
+/** 目标字段在样本里存在、但形状无法用来生成路径选项。 */
+const conditionScopeUnavailable = computed(() =>
+  !conditionScope.value && !!(props.scopeObject && props.rule.field),
+)
 
 /**
  * 写回条件比较值。
@@ -370,6 +349,17 @@ function updateField(val: string) {
       </div>
       <div v-if="rule.conditions.length === 0" class="rule-conditions-empty">
         未添加条件（将始终执行）
+      </div>
+      <!--
+        作用域无法推断时的提示。
+
+        此时路径下拉是空的，但输入框可以手填（`tag` 选项允许输入未列出的值），
+        所以这不是阻断性错误 —— 但要说明为什么没有候选：用户看到空下拉会以为是缺陷。
+      -->
+      <div v-if="rule.conditions.length > 0 && conditionScopeUnavailable" class="rule-conditions-hint">
+        {{ rule.array
+          ? '预览样本中该字段不是数组、或元素不是对象，无法推断条件路径 —— 请手动填写（条件的作用域是数组元素，如 ./type）'
+          : '预览样本中该字段不是对象，无法推断条件路径 —— 请手动填写' }}
       </div>
     </div>
 
@@ -544,7 +534,7 @@ function updateField(val: string) {
 .cond-path {
   flex: 1 1 auto;
   width: auto;
-  min-width: 200px;
+  min-width: 180px;
 }
 
 .cond-op {
@@ -555,18 +545,26 @@ function updateField(val: string) {
 /**
  * 比较值区。
  *
- * 比原先的单输入框宽（内含类型档位 + 取值控件），故让它与路径下拉争抢剩余空间；
- * 路径的 min-width 相应从 240 降到 200，两者在窄容器下都还能读。
+ * 比原先的单输入框宽（内含类型档位 + 取值控件），故让它与路径下拉争抢剩余空间。
+ * 档位下拉加宽后基准从 260 提到 290，路径的 min-width 相应从 200 降到 180 ——
+ * 路径是可搜索下拉且内容通常较长，它损失的可读性由 `title` 悬浮提示兜住，
+ * 而档位被截断则完全无从辨认（截断处正好落在「对象/列」）。
  */
 .cond-value {
-  flex: 1 1 260px;
-  min-width: 200px;
-  max-width: 340px;
+  flex: 1 1 290px;
+  min-width: 220px;
+  max-width: 360px;
 }
 
-/** 档位下拉在条件行里收窄：这一行控件比「设置字段值」那行多一个。 */
+/**
+ * 条件行的档位下拉。
+ *
+ * 比「设置字段值」那行窄 8px：这一行多一个操作符下拉，横向更紧。
+ * 116px 仍够放满「对象/列表」——`n-select` 的 38px 内边距加箭头区之外还剩 78px，
+ * 而 5 个 14px 汉字约需 70px。低于 108px 就会重新开始截断。
+ */
 .cond-value :deep(.cond-value-type) {
-  width: 84px;
+  width: 116px;
 }
 
 .cond-value-placeholder {
@@ -583,6 +581,19 @@ function updateField(val: string) {
   font-size: 11px;
   color: $text-muted;
   font-style: italic;
+}
+
+/**
+ * 作用域无法推断的提示。
+ *
+ * 不用 `.rule-conditions-empty` 那套斜体灰字：那条是「你没加条件」的中性说明，
+ * 而这条要让用户去改配置，混用同一套样式会让真正需要动作的提示看起来像装饰。
+ */
+.rule-conditions-hint {
+  font-size: 11px;
+  color: $warning;
+  line-height: 1.5;
+  margin-top: 2px;
 }
 
 .rule-nested {

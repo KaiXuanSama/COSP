@@ -75,8 +75,14 @@ export function modeUsesConfiguredValue(mode: OverwriteMode): boolean {
  * 取轮转顺序里的下一档，到末尾回到开头。
  *
  * 认不出的值从头开始而非原地不动 —— 后者会让按钮看起来是坏的。
+ *
+ * <p>约束是 {@code M extends string} 而非 {@code OverwriteMode}：函数体只做下标轮转，
+ * 与具体模式集合无关。鉴权头的 `downstream` / `configured` 不是 {@code OverwriteMode}
+ * 的子集，却同样需要一个「点击换下一档」的循环 —— 它们复用本函数。
+ * 名字里的 OverwriteMode 是历史遗留（{@link stepInSequence} 的非循环对照版），
+ * 与 {@code wheelStep.ts} 里那族函数配对更好：那里叫 {@code stepInSequence}。
  */
-export function nextOverwriteMode<M extends OverwriteMode>(
+export function nextOverwriteMode<M extends string>(
   current: M,
   modes: readonly M[],
 ): M {

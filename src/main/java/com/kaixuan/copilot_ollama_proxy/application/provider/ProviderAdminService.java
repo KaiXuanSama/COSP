@@ -2,7 +2,9 @@ package com.kaixuan.copilot_ollama_proxy.application.provider;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.AnthropicThinkingSetting;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRepository;
@@ -17,6 +19,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -46,7 +49,7 @@ public class ProviderAdminService {
      * <strong>外部输入的字符串</strong>，用 {@code WireProtocol.valueOf} 会把非法值变成异常控制流，
      * 而这里要的是「集合包含判断 + 统一错误消息」。
      */
-    private static final Set<String> SUPPORTED_PROTOCOLS = Set.of("OPENAI", "ANTHROPIC");
+    private static final Set<String> SUPPORTED_PROTOCOLS = Set.of("CHAT", "MESSAGES", "RESPONSES");
 
     private final ProviderConfigRepository providerConfigRepository;
     private final ProviderApiKeyRepository providerApiKeyRepository;
@@ -112,6 +115,7 @@ public class ProviderAdminService {
                     parseModels(form));
             try {
                 saveProtocolsFromForm(providerKey, form);
+                saveAuthHeaderFromForm(providerKey, form);
             } catch (IllegalArgumentException exception) {
                 return Outcome.badRequest(exception.getMessage());
             }
@@ -177,13 +181,19 @@ public class ProviderAdminService {
      * <p>三条保存路径（新建弹窗、改名弹窗、编辑抽屉）共用这一份，因为「未提供即保留」
      * 这个语义在任何一条路径上被写错，后果都是同一个：一次无关的保存把协议支持抹平。
      *
+     * <p>两个端点字段的 {@code null}（未提供）与空串（清空、回退 base_url）语义不同，
+     * 所以 trim 只在字段确实存在时做 —— 对 {@code null} 调 trim 会 NPE，
+     * 而把 {@code null} 归一成空串则等于替用户清空了配置。
+     *
      * @throws IllegalArgumentException 协议集合不是合法的协议名数组
      */
     private void saveProtocolsFromForm(String providerKey, MultiValueMap<String, String> form) {
         String rawAnthropicBaseUrl = form.getFirst("anthropicBaseUrl");
+        String rawResponsesBaseUrl = form.getFirst("responsesBaseUrl");
         providerConfigRepository.updateProviderProtocols(providerKey,
                 parseSupportedProtocols(form.getFirst("supportedProtocolsJson")),
-                rawAnthropicBaseUrl == null ? null : rawAnthropicBaseUrl.trim());
+                rawAnthropicBaseUrl == null ? null : rawAnthropicBaseUrl.trim(),
+                rawResponsesBaseUrl == null ? null : rawResponsesBaseUrl.trim());
     }
 
     /**
@@ -226,6 +236,73 @@ public class ProviderAdminService {
         }
     }
 
+    /**
+     * 从表单写入出站鉴权头装配方式；字段未出现时保持原值。
+     *
+     * <p>与 {@link #saveProtocolsFromForm} 同一约定，也并入同一组保存路径。
+     * 「未提供即保留」在这里同样关键：编辑抽屉等旧调用方不会提交这个字段，
+     * 若把缺失当成「回默认值」，一次只改模型的保存就会把用户配好的方式抹平 ——
+     * 而鉴权头发错头名的症状是上游 401/403，排查起来会指向凭据而不是配置。
+     *
+     * @return true 表示确实写入了
+     * @throws IllegalArgumentException 值不是合法 JSON，或模式名 / 头名认不出
+     */
+    private boolean saveAuthHeaderFromForm(String providerKey, MultiValueMap<String, String> form) {
+        String normalized = parseAuthHeaderJson(form.getFirst("authHeaderJson"));
+        if (normalized == null) {
+            return false;
+        }
+        providerConfigRepository.updateProviderAuthHeader(providerKey, normalized);
+        return true;
+    }
+
+    /**
+     * 校验并规范化出站鉴权头装配方式的表单值。
+     *
+     * <p>返回 {@code null} 表示<strong>表单没带这个字段</strong>，交由仓储保留原值；
+     * 空串与空白同样视为「未提供」（表单里未填的隐藏域发出来就是空串）。
+     *
+     * <p>与读取路径（{@code AuthHeaderSetting.parse}）的分工是<strong>写入严格、读取宽容</strong>：
+     * 认不出的值一律报错而<strong>不静默兜底写默认值</strong> —— 那会把用户的配置悄悄改掉，
+     * 而且是在一次看起来成功的保存之后。脏值只可能来自历史数据或直接改库，读取侧自会兜底。
+     *
+     * <p>回写的是规范化后的 JSON（枚举名大写、只留两个键），与协议集合那列一样：
+     * 既挡住大小写与拼写变体，也防止未知键在反复保存里越积越多。
+     *
+     * @throws IllegalArgumentException 不是合法 JSON 对象，或含未知的模式名 / 头名
+     */
+    private String parseAuthHeaderJson(String rawJson) {
+        if (rawJson == null || rawJson.isBlank()) {
+            return null;
+        }
+        JsonNode parsed;
+        try {
+            parsed = objectMapper.readTree(rawJson);
+        } catch (Exception exception) {
+            throw new IllegalArgumentException("出站鉴权头配置不是合法 JSON");
+        }
+        if (!parsed.isObject()) {
+            throw new IllegalArgumentException("出站鉴权头配置必须是对象");
+        }
+        AuthHeaderSetting.Mode mode = parseAuthHeaderEnum(AuthHeaderSetting.Mode.class,
+                parsed.path(AuthHeaderSetting.MODE_KEY).asText(null), "出站鉴权头模式");
+        AuthHeaderSetting.Header header = parseAuthHeaderEnum(AuthHeaderSetting.Header.class,
+                parsed.path(AuthHeaderSetting.HEADER_KEY).asText(null), "出站鉴权头方式");
+        return new AuthHeaderSetting(mode, header).serialize();
+    }
+
+    /** 大小写不敏感地查枚举名；查不到就报错并带上原始值，便于定位是哪个字段写错了。 */
+    private static <E extends Enum<E>> E parseAuthHeaderEnum(Class<E> type, String raw, String label) {
+        if (raw != null && !raw.isBlank()) {
+            for (E candidate : type.getEnumConstants()) {
+                if (candidate.name().equalsIgnoreCase(raw.trim())) {
+                    return candidate;
+                }
+            }
+        }
+        throw new IllegalArgumentException(label + "无法识别: " + raw);
+    }
+
     public Mono<Outcome> addProvider(MultiValueMap<String, String> form) {
         return Mono.fromCallable(() -> {
             String name = value(form, "displayName", "").trim();
@@ -242,6 +319,7 @@ public class ProviderAdminService {
                 saveProtocolsFromForm(providerKey, form);
                 // 代理开关与供应商本体同一次写入，不再由前端保存后补一次专项请求。
                 saveProxyFromForm(providerKey, form);
+                saveAuthHeaderFromForm(providerKey, form);
                 // 新建默认 use_proxy=0，但表单可能已经带了 true；无论哪种都重投影一次
                 // 保持集合与全表一致（投影读的是当前全表，幂等）。
                 proxyTargetProjector.reprojectProxiedTargets();
@@ -284,6 +362,7 @@ public class ProviderAdminService {
                 // 同样用改名后的 key：旧 key 已不存在，UPDATE 会匹配 0 行且不报错，
                 // 表现为代理开关静默丢失。
                 saveProxyFromForm(newProviderKey, form);
+                saveAuthHeaderFromForm(newProviderKey, form);
                 // 改名会换掉 provider_key、base_url 可能也变，两者都影响代理目标归属，重投影。
                 proxyTargetProjector.reprojectProxiedTargets();
                 return Outcome.ok(Map.of("ok", true, "providerKey", newProviderKey, "displayName", name));
@@ -306,6 +385,13 @@ public class ProviderAdminService {
         // 在前端也以字符串形式回传，而协议集合没有这个对称需求。
         view.put("supportedProtocols", parseProtocolsForView(provider.supportedProtocolsJson()));
         view.put("anthropicBaseUrl", provider.anthropicBaseUrl() == null ? "" : provider.anthropicBaseUrl());
+        view.put("responsesBaseUrl", provider.responsesBaseUrl() == null ? "" : provider.responsesBaseUrl());
+        // 回传 JSON 原文而非解析后的对象：前端提交的也是同一串 JSON（表单字段），
+        // 两侧互为逆运算；而回对象就得约定一套大小写（枚举名大写 vs 前端小写联合类型），
+        // 平白多出一个需要同步的映射层。规则集那几个字段同样是原文。
+        // 空值（未迁移的库、旧夹具）兜到列缺省值，不让前端面对一个 null。
+        view.put("authHeaderJson", provider.authHeaderJson() == null || provider.authHeaderJson().isBlank()
+                ? AuthHeaderSetting.DEFAULT_AUTH_HEADER_JSON : provider.authHeaderJson());
         view.put("updatedAt", provider.updatedAt());
         view.put("models", provider.models());
         view.put("apiKeys", buildMaskedApiKeys(provider.id()));
@@ -323,12 +409,19 @@ public class ProviderAdminService {
     /**
      * 把协议集合 JSON 解成供前端直接使用的列表。
      *
-     * <p>解不开时回退到两种协议都有，与
-     * {@code ProviderProtocolSupport} 的宽容口径保持一致 —— 否则会出现「界面上看不到勾选，
-     * 实际却两条线路都能跑」这种说不通的状态。显式的空数组仍如实返回空列表。
+     * <p>解不开时回退到<strong>全部协议</strong>，与 {@code ProviderProtocolSupport} 的宽容口径
+     * 保持一致 —— 否则会出现「界面上看不到勾选，实际却那条线路能跑」这种说不通的状态。
+     * 显式的空数组仍如实返回空列表。
+     *
+     * <p>回退值取自 {@link WireProtocol#values()} 而非硬编码：这个列表必须与
+     * {@code ProviderProtocolSupport.OPTIMISTIC_ALL} 是同一个集合，硬编码会在加协议时分叉，
+     * 而分叉的症状正是上面那句「界面与实际不一致」。
+     *
+     * <p>顺序取<strong>枚举声明序</strong>（语义序，两个 OpenAI 接口相邻）而非落库的字母序：
+     * 这个列表是给界面用的，展示顺序与落库顺序本就是两件事。
      */
     private List<String> parseProtocolsForView(String supportedProtocolsJson) {
-        List<String> fallback = List.of("OPENAI", "ANTHROPIC");
+        List<String> fallback = Arrays.stream(WireProtocol.values()).map(Enum::name).toList();
         if (supportedProtocolsJson == null || supportedProtocolsJson.isBlank()) {
             return fallback;
         }

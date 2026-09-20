@@ -24,7 +24,7 @@ class DatabaseRuntimeProviderCatalogTests {
         ProviderRequestTransformRepository requestTransformRepository = mock(ProviderRequestTransformRepository.class);
         ProviderConfigRow provider = new ProviderConfigRow(
                 42, "mimo-user", "Mimo User", true, "https://api.example/v1",
-                "[\"OPENAI\",\"ANTHROPIC\"]", "", false,
+                "[\"CHAT\",\"MESSAGES\"]", "", "", false,
                 "2026-07-18T00:00:00", List.of(new ProviderModelRow(
                         1, 42, "mimo-v2.5-pro", true, 32768,
                         "{\"max_output_tokens\":8192,\"overwrite_mode\":\"fallback\"}",
@@ -44,6 +44,34 @@ class DatabaseRuntimeProviderCatalogTests {
         ProviderRuntimeConfiguration configuration = catalog.getActiveProvider("mimo-user");
         assertThat(configuration.headerRulesJson()).isEqualTo("[{\"key\":\"X-New\",\"value\":\"new\"}]");
         assertThat(configuration.bodyRulesJson()).isEqualTo("{\"version\":2,\"groups\":[{\"id\":\"g1\"}]}");
+        // 便捷构造器不传该字段 → 空串 → 归一到列缺省值，而不是 null。
+        assertThat(configuration.authHeaderJson()).isEqualTo(AuthHeaderSetting.DEFAULT_AUTH_HEADER_JSON);
+    }
+
+    /**
+     * 出站鉴权头装配方式原文搬进运行时快照。
+     *
+     * <p>与 {@code maxOutputTokens} 同理：这一层不解析、不归一，否则快照就得跟着持久化形态的
+     * 每次演进改签名；解析由消费侧的 {@code AuthHeaderSetting.parse} 负责。
+     */
+    @Test
+    void authHeaderRawValueReachesRuntimeSnapshot() {
+        ProviderConfigRepository providerConfigRepository = mock(ProviderConfigRepository.class);
+        ProviderApiKeyRepository providerApiKeyRepository = mock(ProviderApiKeyRepository.class);
+        ProviderRequestTransformRepository requestTransformRepository = mock(ProviderRequestTransformRepository.class);
+        String authHeaderJson = "{\"mode\":\"CONFIGURED\",\"header\":\"X_API_KEY\"}";
+        ProviderConfigRow provider = new ProviderConfigRow(
+                42, "mimo-user", "Mimo User", true, "https://api.example/v1",
+                "[\"MESSAGES\"]", "", "", false, authHeaderJson,
+                "2026-07-18T00:00:00", List.of());
+        when(providerConfigRepository.findAllActiveProvidersWithEnabledModels()).thenReturn(List.of(provider));
+        when(providerApiKeyRepository.resolveActiveApiKey(42)).thenReturn("test-key");
+        when(requestTransformRepository.findByProviderIds(List.of(42))).thenReturn(Map.of());
+
+        DatabaseRuntimeProviderCatalog catalog = new DatabaseRuntimeProviderCatalog(
+                providerConfigRepository, providerApiKeyRepository, requestTransformRepository);
+
+        assertThat(catalog.getActiveProvider("mimo-user").authHeaderJson()).isEqualTo(authHeaderJson);
     }
 
     /**
@@ -61,7 +89,7 @@ class DatabaseRuntimeProviderCatalogTests {
         String maxOutputJson = "{\"max_output_tokens\":8192,\"overwrite_mode\":\"override\"}";
         ProviderConfigRow provider = new ProviderConfigRow(
                 42, "mimo-user", "Mimo User", true, "https://api.example/v1",
-                "[\"ANTHROPIC\"]", "", false,
+                "[\"MESSAGES\"]", "", "", false,
                 "2026-07-18T00:00:00", List.of(new ProviderModelRow(
                         1, 42, "mimo-v2.5-pro", true, 32768,
                         maxOutputJson, true, false, "Medium",
@@ -92,7 +120,7 @@ class DatabaseRuntimeProviderCatalogTests {
         ProviderRequestTransformRepository requestTransformRepository = mock(ProviderRequestTransformRepository.class);
         ProviderConfigRow provider = new ProviderConfigRow(
                 42, "mimo-user", "Mimo User", true, "https://api.example/v1",
-                "[\"ANTHROPIC\"]", "", false,
+                "[\"MESSAGES\"]", "", "", false,
                 "2026-07-18T00:00:00", List.of(new ProviderModelRow(
                         1, 42, "mimo-v2.5-pro", true, 32768,
                         null, true, false, "Medium", null, -1, 0)));
@@ -116,7 +144,7 @@ class DatabaseRuntimeProviderCatalogTests {
         ProviderRequestTransformRepository requestTransformRepository = mock(ProviderRequestTransformRepository.class);
         ProviderConfigRow provider = new ProviderConfigRow(
                 42, "mimo-user", "Mimo User", true, "https://api.example/v1",
-                "[\"OPENAI\",\"ANTHROPIC\"]", "", false,
+                "[\"CHAT\",\"MESSAGES\"]", "", "", false,
                 "2026-07-18T00:00:00", List.of());
         when(providerConfigRepository.findAllActiveProvidersWithEnabledModels()).thenReturn(List.of(provider));
         when(providerApiKeyRepository.resolveActiveApiKey(42)).thenReturn("test-key");

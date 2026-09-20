@@ -18,7 +18,7 @@ import { marked } from 'marked'
 import JsonNode from './JsonNode.vue'
 import { copyToClipboard } from '@/utils/clipboard'
 import { aggregateChunks, type ChunkSegment, type WireProtocol } from './chunkAggregation'
-import { buildAlignedRows, upstreamProtocolOf, type ChunkViews } from './chunkViews'
+import { buildAlignedRows, type ChunkViews } from './chunkViews'
 
 const props = defineProps<{
   show: boolean
@@ -30,6 +30,14 @@ const props = defineProps<{
    * 跨协议翻译时它已被译成下游协议的形状（见 `aggregateChunks` 的注释）。
    */
   downstreamProtocol: WireProtocol
+  /**
+   * 上游那一侧的解析协议，由调用方从落库记录传入。
+   *
+   * **不要**改回「由下游协议取反推断」：那样做在两种协议时侥幸成立，
+   * `RESPONSES` 接入后会把直连判成跨协议翻译并弹出假的「语义不一致」警报。
+   * 缺失时退回下游协议 —— 相当于按直连处理，不会凭空造出一层翻译。
+   */
+  upstreamProtocol?: WireProtocol | null
   /**
    * 上游原始事件；仅跨协议翻译时存在。
    *
@@ -56,7 +64,7 @@ const hasComparison = computed(() =>
 )
 
 /** 上游那一侧的解析协议，用于规整视图的一致性校验。 */
-const upstreamProtocol = computed(() => upstreamProtocolOf(props.downstreamProtocol))
+const upstreamProtocol = computed(() => props.upstreamProtocol ?? props.downstreamProtocol)
 
 /**
  * 是否抿得到逐事件对齐信息。

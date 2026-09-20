@@ -29,7 +29,7 @@ class ProviderAdminServiceProxyViewTests {
         ProviderApiKeyRepository apiKeyRepository = mock(ProviderApiKeyRepository.class);
         ProviderRequestTransformRepository transformRepository = mock(ProviderRequestTransformRepository.class);
         ProviderConfigRow provider = new ProviderConfigRow(1, "relay", "Relay", true,
-                "https://relay.example.com/v1", "[\"OPENAI\"]", "", true, "", List.of());
+                "https://relay.example.com/v1", "[\"CHAT\"]", "", "", true, "", List.of());
         when(providerConfigRepository.findAllWithModels()).thenReturn(List.of(provider));
         when(transformRepository.findByProviderIds(List.of(1))).thenReturn(Map.of());
         when(apiKeyRepository.findByProviderId(1)).thenReturn(List.of());
@@ -103,7 +103,7 @@ class ProviderAdminServiceProxyViewTests {
 
         private Fixture() {
             ProviderConfigRow existing = new ProviderConfigRow(1, "relay", "Relay", true,
-                    "https://relay.example.com/v1", "[\"OPENAI\"]", "", false, "", List.of());
+                    "https://relay.example.com/v1", "[\"CHAT\"]", "", "", false, "", List.of());
             when(providerConfigRepository.findByKey("relay")).thenReturn(existing);
             service = new ProviderAdminService(providerConfigRepository,
                     mock(ProviderApiKeyRepository.class), mock(ProviderRequestTransformRepository.class),

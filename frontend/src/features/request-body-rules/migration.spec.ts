@@ -2,15 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { MIMO_EXAMPLE_RULESET } from './defaultRequestBody'
 import { LEGACY_GROUP_NAME, migrateRuleSet } from './migration'
 import { createEmptyRule } from './types'
+import { RULE_ENGINE_WIRE_PROTOCOLS } from '@/types/protocol'
 
 describe('规则集 V1 → V2 迁移', () => {
-  it('把 V1 的扁平规则装进单个仅适用 OpenAI 的规则组', () => {
+  it('把 V1 的扁平规则装进单个仅适用 Chat 的规则组', () => {
     const result = migrateRuleSet(MIMO_EXAMPLE_RULESET)
 
     expect(result.version).toBe(2)
     expect(result.groups).toHaveLength(1)
     expect(result.groups[0]!.name).toBe(LEGACY_GROUP_NAME)
-    expect(result.groups[0]!.protocols).toEqual(['OPENAI'])
+    expect(result.groups[0]!.protocols).toEqual(['CHAT'])
     expect(result.groups[0]!.rules).toEqual(MIMO_EXAMPLE_RULESET.rules)
   })
 
@@ -38,13 +39,19 @@ describe('规则集 V1 → V2 迁移', () => {
     expect(twice).toEqual(once)
   })
 
+  /**
+   * 缺失 `protocols` 铺的是**规则引擎支持的全部协议**，而非「系统认识的全部协议」。
+   *
+   * 断言比对 `RULE_ENGINE_WIRE_PROTOCOLS` 而非写死字面量：那个集合受后端白名单约束、
+   * 会随功能推进变化，而这里的语义始终是「它的全部」。
+   */
   it('V2 组缺少 protocols 时视为全协议适用', () => {
     const result = migrateRuleSet({
       version: 2,
       groups: [{ id: 'g1', name: '组', order: 0, enabled: true, rules: [] }],
     })
 
-    expect(result.groups[0]!.protocols).toEqual(['OPENAI', 'ANTHROPIC'])
+    expect(result.groups[0]!.protocols).toEqual([...RULE_ENGINE_WIRE_PROTOCOLS])
   })
 
   it('丢弃 protocols 里无法识别的值', () => {
@@ -55,12 +62,12 @@ describe('规则集 V1 → V2 迁移', () => {
         name: '组',
         order: 0,
         enabled: true,
-        protocols: ['OPENAI', 'GEMINI', 'OPENAI'],
+        protocols: ['CHAT', 'GEMINI', 'CHAT'],
         rules: [],
       }],
     })
 
-    expect(result.groups[0]!.protocols).toEqual(['OPENAI'])
+    expect(result.groups[0]!.protocols).toEqual(['CHAT'])
   })
 
   it('V2 组缺少 id 时补一个稳定 ID', () => {

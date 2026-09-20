@@ -22,14 +22,29 @@ CREATE TABLE IF NOT EXISTS provider_config (
     base_url         TEXT         NOT NULL DEFAULT '', -- OpenAI 协议的 API 基础 URL
     -- 该供应商支持的线路协议集合（JSON 字符串数组，元素取值同 WireProtocol 枚举名）。
     -- 空数组表示「一种都不支持」，是显式的非法配置：调度器会明确报错而非静默回退。
-    supported_protocols TEXT      NOT NULL DEFAULT '["OPENAI","ANTHROPIC"]' CHECK (json_valid(supported_protocols)),
+    -- 默认三条全勾：勾上后不通至多是上游报错，用户能感知并取消勾选；默认不勾则让
+    -- 「支持却调不通」变成需要用户自己想到去勾的隐藏状态。元素顺序取字母序，与
+    -- ProviderAdminService 的 TreeSet 落库口径一致 —— 否则新建的与保存过的供应商查库时形态不同。
+    supported_protocols TEXT      NOT NULL DEFAULT '["CHAT","MESSAGES","RESPONSES"]' CHECK (json_valid(supported_protocols)),
     -- Anthropic 协议的独立 API 基础 URL；为空时回退到 base_url。
     -- 独立成列而非从 base_url 推导：中转站的 Anthropic 端点位置不可预测（有的在 /v1/messages，
     -- 有的在根路径），继续猜只会让「配了却调不通」这类问题无从排查。
     anthropic_base_url  TEXT      NOT NULL DEFAULT '',
+    -- OpenAI Responses 协议的独立 API 基础 URL；为空时回退到 base_url。
+    -- 独立成列的理由同 anthropic_base_url，但有一处不同：多数中转站根本没有 Responses 端点，
+    -- 因此「留空回退 base_url」在这条线路上是常态而非例外。
+    responses_base_url  TEXT      NOT NULL DEFAULT '',
     -- 该供应商的出站请求是否经由 HTTP 代理。默认 0（直连）：代理是需要用户显式选择的能力，
     -- 默认开启会让升级后所有出站流量突然改道。代理地址本身存在 app_config，不在这里。
     use_proxy        INTEGER      NOT NULL DEFAULT 0 CHECK (use_proxy IN (0, 1)),
+    -- 出站鉴权头的装配方式（JSON 对象，两个键：mode 与 header）。
+    -- mode=DOWNSTREAM 时，下游恰好带了一种鉴权头就沿用那一种，带 0 或 2 种则回退到本列的 header；
+    -- mode=CONFIGURED 时始终用本列的 header。header 取 AUTHORIZATION 或 X_API_KEY。
+    -- 默认「取下游 + Authorization」：它让存量行为几乎不变（下游带什么就还发什么），
+    -- 只有「下游一个鉴权头都没带」的 Messages 供应商会从 x-api-key 变成 Authorization。
+    -- 值用枚举名而非头名字面量：头名大小写不敏感且存在拼写变体，显示文本由前端决定。
+    auth_header      TEXT         NOT NULL DEFAULT '{"mode":"DOWNSTREAM","header":"AUTHORIZATION"}'
+        CHECK (json_valid(auth_header)),
     updated_at       TEXT         NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
 );
 
@@ -155,8 +170,10 @@ CREATE TABLE IF NOT EXISTS api_call_log (
     provider_key    VARCHAR(30),                   -- 服务商标识，如 deepseek / mimo
     model_name      VARCHAR(100),                  -- 模型名称
     is_stream       INTEGER      NOT NULL DEFAULT 0 CHECK (is_stream IN (0, 1)), -- 是否流式（0=否，1=是）
-    downstream_protocol TEXT     NOT NULL DEFAULT 'OPENAI' CHECK (downstream_protocol IN ('OPENAI', 'ANTHROPIC')), -- 下游请求线路协议
-    upstream_protocol   TEXT     NOT NULL DEFAULT 'OPENAI' CHECK (upstream_protocol IN ('OPENAI', 'ANTHROPIC')), -- 实际上游线路协议
+    -- 上下游线路协议，取值同 WireProtocol 枚举名（按各自的 API 路径全称命名）。
+    -- 白名单含尚未实现的 RESPONSES：多一个合法值零成本，而重建这张日志表两次有实际风险。
+    downstream_protocol TEXT     NOT NULL DEFAULT 'CHAT' CHECK (downstream_protocol IN ('CHAT', 'RESPONSES', 'MESSAGES')), -- 下游请求线路协议
+    upstream_protocol   TEXT     NOT NULL DEFAULT 'CHAT' CHECK (upstream_protocol IN ('CHAT', 'RESPONSES', 'MESSAGES')), -- 实际上游线路协议
     status_code     INTEGER,                        -- HTTP 响应状态码
     request_headers TEXT,                           -- JSON 格式的请求头
     request_body    TEXT,                           -- JSON 格式的请求体

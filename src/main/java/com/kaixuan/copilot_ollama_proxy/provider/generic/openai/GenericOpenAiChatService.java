@@ -45,13 +45,13 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
     /**
      * 根据 body_rules_json 对请求体进行动态转换。
      *
-     * 只执行声明适用于 {@link WireProtocol#OPENAI} 的规则组；协议筛选由引擎完成。
+     * 只执行声明适用于 {@link WireProtocol#CHAT} 的规则组；协议筛选由引擎完成。
      */
     @Override
     protected void customizeRequestBody(Map<String, Object> body, String resolvedModel,
                                         ProviderRuntimeConfiguration provider) {
         RequestBodyRuleEngine.TransformResult result = requestBodyRuleEngine.transform(
-                body, provider.bodyRulesJson(), WireProtocol.OPENAI);
+                body, provider.bodyRulesJson(), WireProtocol.CHAT);
         body.clear();
         body.putAll(result.output());
         for (RequestBodyRuleEngine.TransformWarning warning : result.warnings()) {

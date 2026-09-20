@@ -4,7 +4,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * A2O 流式翻译的跨帧状态。
+ * M2C 流式翻译的跨帧状态。
  *
  * <h2>为何需要状态</h2>
  * 只有一个原因是<strong>本质性</strong>的：Anthropic 的 content block index 与
@@ -20,12 +20,12 @@ import java.util.Map;
  * <h2>刻意不持有的字段</h2>
  * 参考实现 sub2api 的状态里有 {@code sequenceNumber}、{@code outputs}、
  * {@code currentContent}、{@code textAccum}、{@code contentIndex}、{@code currentItemId}，
- * 那些全是它走 OpenAI Responses 中间层时的账本。A2O 直连一个都不需要——
+ * 那些全是它走 OpenAI Responses 中间层时的账本。M2C 直连一个都不需要——
  * Chat Completions 是扁平的增量流，没有块生命周期概念。
  *
  * <p>契约第 11 节。
  */
-final class A2OStreamState {
+final class M2CStreamState {
 
     /** 每帧都要回显的身份三元组。 */
     private String id;
@@ -78,7 +78,7 @@ final class A2OStreamState {
      * @param fallbackModel 上游给出模型名之前的占位值（取上游真实模型名，
      *                      不含供应商前缀）
      */
-    A2OStreamState(String fallbackId, String fallbackModel, boolean includeUsage) {
+    M2CStreamState(String fallbackId, String fallbackModel, boolean includeUsage) {
         this.id = fallbackId;
         this.model = fallbackModel;
         this.includeUsage = includeUsage;

@@ -14,7 +14,7 @@ import type { FieldRule, RuleGroup, RuleSetV2 } from './types'
 import { generateRuleGroupId } from './types'
 import type { RequestBodyTemplateKey } from './requestBodyTemplates'
 import { composeRequestBodyTemplate, DEFAULT_TEMPLATE_KEYS } from './requestBodyTemplates'
-import { ALL_WIRE_PROTOCOLS, isWireProtocol, type WireProtocol } from '@/types/protocol'
+import { RULE_ENGINE_WIRE_PROTOCOLS, isWireProtocol, type WireProtocol } from '@/types/protocol'
 
 /** 由 V1 迁移而来的规则组名称。 */
 export const LEGACY_GROUP_NAME = 'OpenAI 规则组'
@@ -60,11 +60,12 @@ export function migrateRuleSet(raw: unknown, legacy: LegacyEditorFields = {}): R
 }
 
 /**
- * 把 V1 的扁平规则列表包成单个「OpenAI 规则组」。
+ * 把 V1 的扁平规则列表包成单个「Chat 规则组」。
  *
- * 协议**只给 OPENAI** 而非两者全选：这些规则的字段路径是照 OpenAI 请求体写的
- * （`messages` 里含 system 条目、无 `max_tokens`），作用在 Anthropic 请求体上
- * 多数匹配不到 —— 静默失效比不执行更难排查。
+ * 协议**只给 `CHAT`** 而非全选：这些规则的字段路径是照 Chat 请求体写的
+ * （`messages` 里含 system 条目、无 `max_tokens`），作用在 Anthropic 或 Responses
+ * 请求体上多数匹配不到（后者连 `messages` 都没有，用的是 `input`）
+ * —— 静默失效比不执行更难排查。
  */
 function legacyGroup(rules: FieldRule[], legacy: LegacyEditorFields): RuleGroup {
   return {
@@ -72,7 +73,7 @@ function legacyGroup(rules: FieldRule[], legacy: LegacyEditorFields): RuleGroup 
     name: LEGACY_GROUP_NAME,
     order: 0,
     enabled: true,
-    protocols: ['OPENAI'],
+    protocols: ['CHAT'],
     templateKeys: normalizeTemplateKeys(legacy.templateKeys),
     previewBody: isRecord(legacy.previewBody)
       ? (legacy.previewBody as Record<string, unknown>)
@@ -110,15 +111,21 @@ function emptyGroup(index: number): RuleGroup {
     name: `规则组 ${index + 1}`,
     order: index,
     enabled: true,
-    protocols: [...ALL_WIRE_PROTOCOLS],
+    protocols: [...RULE_ENGINE_WIRE_PROTOCOLS],
     templateKeys: [...DEFAULT_TEMPLATE_KEYS],
     previewBody: composeRequestBodyTemplate(DEFAULT_TEMPLATE_KEYS),
     rules: [],
   }
 }
 
+/**
+ * 规范化规则组的适用协议。
+ *
+ * <p>字段缺失时铺 {@link RULE_ENGINE_WIRE_PROTOCOLS}：那是后端规则引擎接受的取值集合，
+ * 与「系统认识哪些协议」是两个约束。用错会让一次无关的保存 400。
+ */
 function normalizeProtocols(raw: unknown): WireProtocol[] {
-  if (!Array.isArray(raw)) return [...ALL_WIRE_PROTOCOLS]
+  if (!Array.isArray(raw)) return [...RULE_ENGINE_WIRE_PROTOCOLS]
   const seen = new Set<WireProtocol>()
   for (const item of raw) {
     if (isWireProtocol(item)) seen.add(item)

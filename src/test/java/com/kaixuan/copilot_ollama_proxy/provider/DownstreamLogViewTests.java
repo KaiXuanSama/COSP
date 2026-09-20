@@ -31,9 +31,9 @@ class DownstreamLogViewTests {
         /** 直连：两侧同一个协议，chunk 不改写。 */
         @Test
         void directViewUsesOneProtocolForBothSides() {
-            DownstreamLogView view = DownstreamLogView.direct("ANTHROPIC");
+            DownstreamLogView view = DownstreamLogView.direct("MESSAGES");
 
-            assertThat(view.downstreamProtocol()).isEqualTo("ANTHROPIC");
+            assertThat(view.downstreamProtocol()).isEqualTo("MESSAGES");
             assertThat(view.chunkRewriter()).isNull();
         }
 
@@ -46,9 +46,9 @@ class DownstreamLogViewTests {
          */
         @Test
         void protocolOnlyViewLabelsDownstreamButLeavesChunksRaw() {
-            DownstreamLogView view = DownstreamLogView.protocolOnly("OPENAI");
+            DownstreamLogView view = DownstreamLogView.protocolOnly("CHAT");
 
-            assertThat(view.downstreamProtocol()).isEqualTo("OPENAI");
+            assertThat(view.downstreamProtocol()).isEqualTo("CHAT");
             assertThat(view.viewChunks(List.of("{\"type\":\"ping\"}")).hasUpstreamView()).isFalse();
         }
     }
@@ -61,7 +61,7 @@ class DownstreamLogViewTests {
         @Test
         void streamViewKeepsBothUpstreamAndTranslatedChunks() {
             DownstreamLogView view = new DownstreamLogView(
-                    "OPENAI",
+                    "CHAT",
                     chunks -> ChunkLogPayload.translated(
                             List.of("{\"object\":\"chat.completion.chunk\"}"), chunks, List.of(1)));
 
@@ -72,7 +72,7 @@ class DownstreamLogViewTests {
         @Test
         void rewriterFailureKeepsUpstreamChunks() {
             List<String> upstream = List.of("{\"type\":\"message_start\"}", "{\"type\":\"ping\"}");
-            DownstreamLogView view = new DownstreamLogView("OPENAI", chunks -> {
+            DownstreamLogView view = new DownstreamLogView("CHAT", chunks -> {
                 throw new IllegalStateException("翻译失败");
             });
 
@@ -87,14 +87,14 @@ class DownstreamLogViewTests {
         @Test
         void rewriterReturningNullKeepsUpstreamChunks() {
             List<String> upstream = List.of("{\"type\":\"message_start\"}");
-            DownstreamLogView view = new DownstreamLogView("OPENAI", chunks -> null);
+            DownstreamLogView view = new DownstreamLogView("CHAT", chunks -> null);
 
             assertThat(view.viewChunks(upstream).translated()).isEqualTo(upstream);
         }
 
         @Test
         void nullChunksAreHandledWithoutInvokingRewriter() {
-            DownstreamLogView view = new DownstreamLogView("OPENAI", chunks -> {
+            DownstreamLogView view = new DownstreamLogView("CHAT", chunks -> {
                 throw new AssertionError("不应被调用");
             });
 

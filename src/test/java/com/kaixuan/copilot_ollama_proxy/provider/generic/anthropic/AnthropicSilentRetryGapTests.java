@@ -15,13 +15,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <h2>修复的问题</h2>
  * 曾经 {@link CallRetryRegistry} + {@code takeUntilOther} 只接在
- * {@link AbstractUpstreamChatService} 的 OpenAI 流式管道上。O2A 路线（下游 OpenAI、
+ * {@link AbstractUpstreamChatService} 的 OpenAI 流式管道上。C2M 路线（下游 OpenAI、
  * 上游 Anthropic）的上游请求由 {@link GenericAnthropicChatService} 发出，它不注册重试信号，
  * 于是 {@code retry(requestId)} 找不到 sink 返回 false，控制器把它包成
  * {@code 200 + {"retried": false}}，前端没有对应分支 —— 表现为「点了没反应、无任何报错」。
  *
  * <p>前端菜单项的条件是 {@code v-if="menuTarget.stream"}，<strong>只看是否流式，
- * 看不到上游协议</strong>，因此 O2A 的菜单项照常显示却点不动。修法是给 Anthropic 管道
+ * 看不到上游协议</strong>，因此 C2M 的菜单项照常显示却点不动。修法是给 Anthropic 管道
  * 补齐机制，而非让前端多一个判据 —— 后者只是把功能缺失包装成「不提供」。
  */
 class AnthropicSilentRetryGapTests {
@@ -57,7 +57,7 @@ class AnthropicSilentRetryGapTests {
                 .isTrue();
 
         assertThat(hasRetryRegistrySetter(GenericAnthropicChatService.class))
-                .as("Anthropic 管道应当接入静默重试；缺了它 O2A 路线点击重试会静默无反应")
+                .as("Anthropic 管道应当接入静默重试；缺了它 C2M 路线点击重试会静默无反应")
                 .isTrue();
     }
 

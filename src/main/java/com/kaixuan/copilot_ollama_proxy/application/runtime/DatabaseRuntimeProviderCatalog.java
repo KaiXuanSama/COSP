@@ -49,7 +49,10 @@ public class DatabaseRuntimeProviderCatalog implements RuntimeProviderCatalog {
                         : ProviderRequestTransformService.EMPTY_BODY_RULES_JSON,
                 source.supportedProtocolsJson(),
                 source.anthropicBaseUrl() != null ? source.anthropicBaseUrl() : "",
-                source.useProxy()
+                source.responsesBaseUrl() != null ? source.responsesBaseUrl() : "",
+                source.useProxy(),
+                // 原文搬运，「空」的含义由消费侧的 AuthHeaderSetting.parse 决定（落到默认值）。
+                source.authHeaderJson()
         );
     }
 

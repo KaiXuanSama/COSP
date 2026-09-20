@@ -25,8 +25,9 @@ import java.util.Set;
  * 来自客户端（如 VS Code Copilot 的 Ollama 供应商、Claude Desktop）的聊天请求
  * 必须携带正确的网关 API Key（{@code Authorization: Bearer <key>}）才会被放行。
  *
- * <p><strong>拦截范围严格限定</strong>为真正消耗上游额度的两个聊天端点
- * （{@code POST /v1/chat/completions} 与 {@code POST /v1/messages}）：
+ * <p><strong>拦截范围严格限定</strong>为真正消耗上游额度的三个聊天端点
+ * （{@code POST /v1/chat/completions}、{@code POST /v1/responses} 与
+ * {@code POST /v1/messages}）：
  * <ul>
  *   <li>Ollama 模型发现接口（{@code /api/version}、{@code /api/tags}、{@code /api/show}）
  *       本身不携带 Authorization 头，若一并拦截会导致 Copilot 连模型都发现不了，故放行；</li>
@@ -34,7 +35,7 @@ import java.util.Set;
  *   <li>管理后台接口在独立的 Security JWT 链下，与本过滤器互不干扰。</li>
  * </ul>
  *
- * <p>两个聊天端点<strong>共用同一把网关 Key</strong>：它保护的是「谁能用这个代理」，
+ * <p>三个聊天端点<strong>共用同一把网关 Key</strong>：它保护的是「谁能用这个代理」，
  * 与下游说哪种协议无关。按协议分设不同 Key 只会增加管理成本而不增加安全性。
  *
  * <p>本过滤器只读取请求头、不消费请求体，天然避开 WebFlux 请求体重放的坑。
@@ -48,14 +49,30 @@ import java.util.Set;
 public class GatewayAuthFilter implements WebFilter {
 
     /**
-     * 受保护的目标路径集合 —— 两个协议的聊天端点。
+     * 受保护的目标路径集合 —— 三个协议的聊天端点。
      *
-     * <p>用 {@code Set} 而非单值：两条端点的鉴权语义完全相同（同一把网关 Key、
-     * 同一个 401 响应），差别只在路径。将来若再有新的聊天端点，加一行即可。
+     * <p>用 {@code Set} 而非单值：各条端点的鉴权语义完全相同（同一把网关 Key、
+     * 同一个 401 响应），差别只在路径。
+     *
+     * <p><strong>新增聊天端点时必须同步加到这里。</strong>漏加的后果是开了一个
+     * 绕过下游鉴权的入口 —— 而它在未开启鉴权时<strong>完全无症状</strong>，
+     * 只有用户开启后才暂露，而那时他会以为自己已经保护住了全部入口。
      */
     private static final Set<String> PROTECTED_PATHS = Set.of(
             "/v1/chat/completions",   // OpenAI Chat Completions
+            "/v1/responses",          // OpenAI Responses
             "/v1/messages");          // Anthropic Messages
+
+    /**
+     * 裸值承载凭据的那个鉴权头名。
+     *
+     * <p>与 {@code ProviderRequestHeaderService.API_KEY_HEADER} 同名但<strong>刻意不复用</strong>：
+     * 那个常量属于<strong>出站</strong>装配（该发哪个头给上游），这里是<strong>入站</strong>
+     * 识别（该认哪个头）。两者恰好是同一个字面量，但改动理由完全不同 —— 出站那侧会随
+     * 供应商适配演化，入站这侧只跟随客户端既有约定。引用过去会造成一条假的耦合：
+     * 下次为某个上游改动那个常量时，会连带改变本服务认哪个头。
+     */
+    private static final String API_KEY_HEADER = "x-api-key";
 
     /** 401 响应体，OpenAI 风格错误结构，便于客户端展示可读信息。 */
     private static final String UNAUTHORIZED_BODY =
@@ -69,12 +86,14 @@ public class GatewayAuthFilter implements WebFilter {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
-        // 仅拦截两个聊天端点的 POST，其它路径/方法一律直接放行。
+        // 仅拦截受保护路径的 POST，其它路径/方法一律直接放行。
         if (!isProtected(exchange)) {
             return chain.filter(exchange);
         }
-        String authorization = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
-        return gatewayAuthService.authorize(authorization)
+        HttpHeaders headers = exchange.getRequest().getHeaders();
+        return gatewayAuthService.authorize(
+                        headers.getFirst(HttpHeaders.AUTHORIZATION),
+                        headers.getFirst(API_KEY_HEADER))
                 .flatMap(decision -> decision == AuthDecision.PASS
                         ? chain.filter(exchange)
                         : writeUnauthorized(exchange.getResponse()));

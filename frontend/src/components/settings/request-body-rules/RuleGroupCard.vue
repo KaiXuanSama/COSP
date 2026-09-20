@@ -27,7 +27,11 @@ import {
 } from '@/features/request-body-rules/requestBodyTemplates'
 import type { RequestBodyTemplateKey } from '@/features/request-body-rules/requestBodyTemplates'
 import { buildDiffTree } from '@/features/request-body-rules/diff'
-import { ALL_WIRE_PROTOCOLS, WIRE_PROTOCOL_LABELS, type WireProtocol } from '@/types/protocol'
+import {
+  RULE_ENGINE_WIRE_PROTOCOLS,
+  WIRE_PROTOCOL_LABELS,
+  type WireProtocol,
+} from '@/types/protocol'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
 import DiffJsonNode from './DiffJsonNode.vue'
 
@@ -47,7 +51,19 @@ const emit = defineEmits<{
 
 const message = useMessage()
 
-const PROTOCOL_OPTIONS = ALL_WIRE_PROTOCOLS.map((protocol) => ({
+/**
+ * 「适用协议」的可选项。
+ *
+ * <p>取 `RULE_ENGINE_WIRE_PROTOCOLS` 而非 `ALL_WIRE_PROTOCOLS`：这个下拉的取值必须与
+ * **后端白名单**一致，而那是一个独立于「系统认识哪些协议」的约束。两者当前数值相同，
+ * 但曾短暂分叉（Responses 加入系统后、后端放开白名单之前），那段时间里用错常量会让
+ * 界面主动提供一个保存时被拒的选择。
+ *
+ * <p>三条协议的规则组现在都会被真正执行 —— `POST /v1/responses` 已接入直连。
+ * 放开白名单时它还没接入，那段「选项可选但规则不会执行」是有意的先行：请求体改写
+ * 是接一个新中转站时最先需要配置的能力，等端点落地才放开会让用户在上线当天才能开始配。
+ */
+const PROTOCOL_OPTIONS = RULE_ENGINE_WIRE_PROTOCOLS.map((protocol) => ({
   label: WIRE_PROTOCOL_LABELS[protocol],
   value: protocol,
 }))

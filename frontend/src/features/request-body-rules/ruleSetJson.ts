@@ -5,7 +5,7 @@ import type {
   RuleCondition,
   RuleSetV2,
 } from './types'
-import { ALL_WIRE_PROTOCOLS, isWireProtocol } from '@/types/protocol'
+import { RULE_ENGINE_WIRE_PROTOCOLS, isWireProtocol } from '@/types/protocol'
 
 /** 规则集 JSON 解析结果。 */
 export type RuleSetJsonParseResult =
@@ -39,7 +39,7 @@ export function formatRuleListAsRuleSetJson(rules: FieldRule[]): string {
       name: '示例规则组',
       order: 0,
       enabled: true,
-      protocols: [...ALL_WIRE_PROTOCOLS],
+      protocols: [...RULE_ENGINE_WIRE_PROTOCOLS],
       templateKeys: ['custom'],
       previewBody: {},
       rules,
@@ -98,7 +98,7 @@ function validateRuleGroup(value: unknown, path: string, ids: Set<string>): stri
   if (!Array.isArray(value.protocols)) return `${path}.protocols 必须是数组`
   for (let index = 0; index < value.protocols.length; index += 1) {
     if (!isWireProtocol(value.protocols[index])) {
-      return `${path}.protocols[${index}] 必须为 "OPENAI" 或 "ANTHROPIC"`
+      return `${path}.protocols[${index}] 必须为 "CHAT" 或 "MESSAGES"`
     }
   }
   if (!Array.isArray(value.templateKeys)) return `${path}.templateKeys 必须是数组`

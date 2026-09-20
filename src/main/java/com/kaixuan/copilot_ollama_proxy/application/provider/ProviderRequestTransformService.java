@@ -42,8 +42,20 @@ public class ProviderRequestTransformService {
      * 的枚举常量名一致；此处刻意不直接引用枚举 —— 该白名单校验的是**外部输入的字符串**，
      * 用 {@code valueOf} 会把非法值变成异常控制流，而这里要的是与其他三个白名单一致的
      * 「集合包含判断 + 统一错误消息」。
+     *
+     * <h2>含 {@code RESPONSES} 是在端点之前先行的</h2>
+     * {@code POST /v1/responses} 尚未接入，因此声明了该协议的规则组当前<strong>不会被执行</strong>
+     * —— {@link RequestBodyRuleEngine#transform} 是按上游协议筛组的，没有那条线路就没有调用。
+     *
+     * <p>先放开校验而非等端点一起做，是因为规则引擎本身<strong>协议无关</strong>：
+     * {@code groupAppliesTo} 按协议名做字符串匹配，加一个取值不需要引擎改动。
+     * 而反过来，若等端点落地时再放开，那段时间里用户在界面上看不到这个选项，
+     * 端点上线当天才能开始配规则 —— 而请求体改写恰恰是接一个新中转站时最先需要的能力。
+     *
+     * <p>前端 {@code RULE_ENGINE_WIRE_PROTOCOLS} 必须与本集合同步，两处是同一个事实的
+     * 两个表达：只改前端会让保存报「不支持的线路协议」，只改后端则界面上勾不到。
      */
-    private static final Set<String> PROTOCOLS = Set.of("OPENAI", "ANTHROPIC");
+    private static final Set<String> PROTOCOLS = Set.of("CHAT", "MESSAGES", "RESPONSES");
 
     private final ProviderConfigRepository providerConfigRepository;
     private final ProviderRequestTransformRepository requestTransformRepository;

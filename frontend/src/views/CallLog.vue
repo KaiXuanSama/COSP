@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { NCard, NEmpty, NSpin } from 'naive-ui'
 import { fetchLogs, fetchLogDetail } from '@/api'
@@ -7,7 +7,7 @@ import { CallLogDetail } from '@/components/calllog'
 import { prependWithCursorShift } from '@/features/call-log/pagination'
 import { createCoalescingSync } from '@/features/call-log/sync'
 import type { DetailItem } from '@/types/calllog'
-import type { WireProtocol } from '@/types/protocol'
+import { formatCallTypeLabel, formatCallTypeTitle, type WireProtocol } from '@/types/protocol'
 
 interface LogItem {
   id: number
@@ -129,13 +129,14 @@ function getStatusClass(code: number): string {
   return 'default'
 }
 
+/** 调用类型标记。箭头是响应翻译方向（上游 → 下游），方向语义见 `formatCallTypeLabel`。 */
 function formatCallType(log: LogItem): string {
-  const upstream = log.upstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
-  const downstream = log.downstream_protocol === 'ANTHROPIC' ? 'A' : 'O'
-  const protocol = upstream === downstream
-    ? (upstream === 'A' ? 'Anthropic' : 'OpenAI')
-    : `${upstream}→${downstream}`
-  return `${log.is_stream ? '流式' : '非流'}: ${protocol}`
+  return formatCallTypeLabel(log.upstream_protocol, log.downstream_protocol, !!log.is_stream)
+}
+
+/** 标记的悬停说明，写明「响应翻译」与两侧全名，消除箭头方向的歧义。 */
+function callTypeTitle(log: LogItem): string {
+  return formatCallTypeTitle(log.upstream_protocol, log.downstream_protocol)
 }
 
 /**
@@ -304,7 +305,7 @@ onUnmounted(() => {
             <div class="log-item-content">
               <div class="log-item-header">
                 <span class="log-provider">{{ log.provider_key }}</span>
-                <span class="log-call-type" :title="`上游 ${log.upstream_protocol} → 下游 ${log.downstream_protocol}`">
+                <span class="log-call-type" :title="callTypeTitle(log)">
                   {{ formatCallType(log) }}
                 </span>
                 <span class="log-status">{{ log.status_code }}</span>

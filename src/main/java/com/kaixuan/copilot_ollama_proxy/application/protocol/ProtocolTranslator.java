@@ -15,10 +15,10 @@ package com.kaixuan.copilot_ollama_proxy.application.protocol;
  *   <li>非流式响应侧是 {@code Mono<String> -> Mono<String>}。</li>
  *   <li>流式响应侧<strong>不是一帧进一帧出</strong>：{@code content_block_start} 产 0 帧、
  *       {@code message_start} 产 1 帧、流结束收尾产多帧，因此必须按 {@code List} 建模，
- *       且需要一个跨事件的状态机（{@code A2OStreamState}）。</li>
+ *       且需要一个跨事件的状态机（{@code M2CStreamState}）。</li>
  * </ul>
- * 而且一条链的去程与回程分属两个类（{@code OpenAiToAnthropicRequestTranslator} 与
- * {@code AnthropicToOpenAiResponseTranslator}），「一个翻译器 = 三个方法」这个假设
+ * 而且一条链的去程与回程分属两个类（{@code ChatToMessagesRequestTranslator} 与
+ * {@code MessagesToChatResponseTranslator}），「一个翻译器 = 三个方法」这个假设
  * 本身就不成立。
  *
  * <h2>那本接口还剩什么用</h2>
@@ -30,13 +30,13 @@ package com.kaixuan.copilot_ollama_proxy.application.protocol;
  *
  * <h2>实现现状</h2>
  * <ul>
- *   <li>O2A 请求（下游 OpenAI → 上游 Anthropic）：{@code OpenAiToAnthropicRequestTranslator}，
+ *   <li>C2M 请求（下游 Chat Completions → 上游 Anthropic）：{@code ChatToMessagesRequestTranslator}，
  *       已实测。</li>
- *   <li>A2O 响应（上游 Anthropic → 下游 OpenAI）：{@code AnthropicToOpenAiResponseTranslator}，
+ *   <li>M2C 响应（上游 Anthropic → 下游 Chat Completions）：{@code MessagesToChatResponseTranslator}，
  *       已实测（流式 + 非流式 + 多轮工具链）。</li>
- *   <li>A2O 请求（下游 Anthropic → 上游 OpenAI）：未实现，
+ *   <li>M2C 请求（下游 Anthropic → 上游 OpenAI）：未实现，
  *       {@code MessagesService} 抛 {@link ProtocolTranslationNotSupportedException}。</li>
- *   <li>O2A 响应（上游 OpenAI → 下游 Anthropic）：未实现，同上。</li>
+ *   <li>C2M 响应（上游 OpenAI → 下游 Anthropic）：未实现，同上。</li>
  * </ul>
  *
  * <h2>两侧翻译都必须在重试边界之外</h2>
@@ -52,8 +52,8 @@ package com.kaixuan.copilot_ollama_proxy.application.protocol;
  */
 public interface ProtocolTranslator {
 
-    // TODO(待实现) 剩余两个方向：A2O 请求（下游 Anthropic → 上游 OpenAI）
-    //  与 O2A 响应（上游 OpenAI → 下游 Anthropic）。
+    // TODO(待实现) 剩余两个方向：M2C 请求（下游 Anthropic → 上游 OpenAI）
+    //  与 C2M 响应（上游 OpenAI → 下游 Anthropic）。
     //  两者是同一条链的两半，缺一半那条路就不可用，因此不拆开计划 ——
     //  参照已落地那条链的排序原则「让已有的一半变成可用的整体」
     //  （响应侧契约第 0 节）。

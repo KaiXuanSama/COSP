@@ -64,6 +64,8 @@ Naive UI 组件的内联 CSS 变量优先级高于 scoped class 里的同名变�
 
 `features/request-body-rules/` 与后端 `application/provider/RequestBodyRuleEngine`、`ProviderRequestTransformService` 是一套契约：操作类型只有 `edit_object` / `set_value` / `delete`，条件只有 `exists` / `equals`，模板键有 7 个白名单值。扩展任一侧都要同步另一侧，并补 `*.spec.ts`。
 
+`delete` 的文案与作用层级随 `rule.array` 变化：字段是数组时它移除匹配到的元素（文案见 `RequestBodyRuleItem.vue` 的 `operationTypeOptions`），否则删掉整个字段。
+
 规则集是 V2（`{version:2, groups:[...]}`）：每个规则组自带 `protocols`、`templateKeys`、`previewBody`。读旧数据一律过 `migration.ts` 的 `migrateRuleSet`，**不要直接 `JSON.parse` 后当 V2 用**；`ruleSetJson.ts` 只校验 V2，遇到 V1 会报错而不是默默升级。
 
 编辑器分两层：`RequestBodyRuleEditor.vue` 是**规则组列表容器**（新增/排序/删除组、双视图切换、整体应用），`RuleGroupCard.vue` 是单组卡片（组元信息 + 该组专属双栏预览 + 该组规则列表）。卡片是受控组件，不持有组数据，改动一律 `emit('update:group')` 回写。组数组的增删改序在 `features/request-body-rules/groupOperations.ts`，其中 `order` 必须与数组下标同步 —— 运行时按 `order` 排序执行，只换位置不改 `order` 会让界面顺序与执行顺序分叉，该约束有单测钉住。

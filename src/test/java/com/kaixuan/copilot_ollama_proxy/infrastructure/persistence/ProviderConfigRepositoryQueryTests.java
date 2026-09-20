@@ -32,10 +32,13 @@ class ProviderConfigRepositoryQueryTests {
         jdbcTemplate.execute("CREATE TABLE provider_config ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0, "
                 + "base_url TEXT NOT NULL DEFAULT '', "
-                + "supported_protocols TEXT NOT NULL DEFAULT '[\"OPENAI\",\"ANTHROPIC\"]' "
+                + "supported_protocols TEXT NOT NULL DEFAULT '[\"CHAT\",\"MESSAGES\"]' "
                 + "CHECK (json_valid(supported_protocols)), "
                 + "anthropic_base_url TEXT NOT NULL DEFAULT '', "
+                + "responses_base_url TEXT NOT NULL DEFAULT '', "
                 + "use_proxy INTEGER NOT NULL DEFAULT 0 CHECK (use_proxy IN (0, 1)), "
+                + "auth_header TEXT NOT NULL DEFAULT '{\"mode\":\"DOWNSTREAM\",\"header\":\"AUTHORIZATION\"}' "
+                + "CHECK (json_valid(auth_header)), "
                 + "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))) ");
         jdbcTemplate.execute("CREATE TABLE provider_model ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, model_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, "
@@ -73,6 +76,28 @@ class ProviderConfigRepositoryQueryTests {
         assertThat(jdbcTemplate.getQueryCount()).isEqualTo(1);
         assertThat(providers.get(0).models()).hasSize(1);
         assertThat(providers.get(1).models()).hasSize(1);
+    }
+
+    /**
+     * 出站鉴权头装配方式原样读回。
+     *
+     * <p>这里连的是手写 DDL 的临时库，不是 {@code schema.sql} —— 所以这列必须同时加在
+     * 上面的 {@code CREATE TABLE} 里，否则 SELECT 会以「no such column」失败。
+     * 也是本项目里「手写 DDL 的夹具会随每次加列而漏」这个已知代价的具体一处。
+     */
+    @Test
+    void findAllWithModelsReadsAuthHeaderVerbatim() {
+        repository.updateProviderAuthHeader("deepseek", "{\"mode\":\"CONFIGURED\",\"header\":\"X_API_KEY\"}");
+
+        List<ProviderConfigRow> providers = repository.findAllWithModels();
+
+        assertThat(providers).extracting(ProviderConfigRow::providerKey)
+                .containsExactly("deepseek", "mimo");
+        assertThat(providers.get(0).authHeaderJson())
+                .isEqualTo("{\"mode\":\"CONFIGURED\",\"header\":\"X_API_KEY\"}");
+        // 未写过的行拿到列缺省值，而不是 null。
+        assertThat(providers.get(1).authHeaderJson())
+                .isEqualTo("{\"mode\":\"DOWNSTREAM\",\"header\":\"AUTHORIZATION\"}");
     }
 
     private static class CountingJdbcTemplate extends JdbcTemplate {

@@ -21,7 +21,7 @@
  * （三项相加）—— 那个换算只依赖**上游**协议，因此属于解析层而非展示层。
  *
  * <h2>为何这里曾经按协议分两支</h2>
- * 早期后端只在 A2O 路线上换算口径（`DownstreamLogView.usageRewriter`），
+ * 早期后端只在 M2C 路线上换算口径（`DownstreamLogView.usageRewriter`），
  * Anthropic 直连仍落不含缓存的 `input_tokens`。一列承载两种定义，前端只能靠
  * `downstream_protocol` 判断该行属于哪一种，于是有了两支分母。
  *

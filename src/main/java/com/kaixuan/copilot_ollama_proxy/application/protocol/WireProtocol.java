@@ -5,16 +5,39 @@ package com.kaixuan.copilot_ollama_proxy.application.protocol;
  *
  * <p>标识一次调用在某一侧使用的报文格式，而非某个具体供应商或端点路径：
  * <ul>
- *   <li>{@link #OPENAI} —— OpenAI Chat Completions 格式（{@code /v1/chat/completions}），
+ *   <li>{@link #CHAT} —— Chat Completions API（{@code /v1/chat/completions}），
  *       请求体 {@code messages} 含 system 条目，响应为单一 chunk 序列 + {@code [DONE]}；</li>
- *   <li>{@link #ANTHROPIC} —— Anthropic Messages 格式（{@code /v1/messages}），
+ *   <li>{@link #RESPONSES} —— OpenAI Responses API（{@code /v1/responses}），
+ *       请求体用 {@code input} 而非 {@code messages}、system 可提升为顶层 {@code instructions}，
+ *       响应为带 {@code event:} 类型的多事件流（{@code response.*}）；</li>
+ *   <li>{@link #MESSAGES} —— Anthropic API（{@code /v1/messages}），
  *       {@code system} 为顶层字段、{@code max_tokens} 必填，响应为带 {@code event:} 类型的事件流。</li>
  * </ul>
  *
+ * <p>{@link #CHAT} 与 {@link #RESPONSES} 都属于 OpenAI，但<strong>是两个不同的接口</strong>，
+ * 报文形态与事件模型都不通用。这正是 V12 把 {@code OPENAI} 改名为 {@code CHAT} 的原因。
+ *
+ * <h2>常量名取自 API 路径全称，不含厂商名</h2>
+ * 曾经叫 {@code OPENAI} / {@code ANTHROPIC}，V12 改成现在的名字。旧名有个会随功能增长
+ * 而暴露的缺陷：{@code OPENAI} 同时承载「OpenAI 这家公司」与「Chat Completions 这个接口」
+ * 两种含义。两个协议时无害（OpenAI 名下只有一个接口在用），但 OpenAI 的 <b>Responses
+ * API</b> 同样属于 OpenAI —— 一旦要接它，{@code OPENAI} 指代 Chat 就自相矛盾了。
+ *
+ * <p>故三个名字统一取自各自的 API 路径全称，都指「接口」这一个维度。展示名仍用官方叫法
+ * （{@code MESSAGES} 显示为「Anthropic API」），那是给人看的，与常量名的职责不同。
+ *
  * <h2>为何是「两侧各有一个」而不是全局一个</h2>
  * 下游用哪种协议由它打的端点决定，上游用哪种由供应商配置决定，两者相互独立。
- * 四种组合中同名两种可直连，跨协议两种需要翻译 —— 这个判断由
- * {@link ProtocolDispatchManager} 完成，本枚举只负责把「哪一侧说哪种话」表达出来。
+ * 同名可直连，跨协议需要翻译 —— 这个判断由 {@link ProtocolDispatchManager} 完成，
+ * 本枚举只负责把「哪一侧说哪种话」表达出来。
+ *
+ * <p><strong>声明顺序不承载语义。</strong>曾经 {@code ProtocolDispatchManager} 遍历
+ * {@code values()} 挑翻译目标，两个协议下结果唯一（除下游协议外只剩一个候选）——
+ * 但那是巧合，而本枚举的注释当时就预警了。第三种协议加入时该处已改用
+ * {@code ProtocolDispatchManager.TRANSLATION_FALLBACK_ORDER}，一个独立声明的回退序常量。
+ *
+ * <p>因此这里的顺序<strong>只为可读性</strong>取语义序（两个 OpenAI 接口相邻），
+ * 不要因为它恰好与某处的顺序相同就去依赖它。四个不同的顺序及其各自的依据见那个常量的注释。
  *
  * <p>刻意不叫 {@code ApiFormat}：历史上 {@code provider_config.api_format} 列在 V8.1 被删除，
  * 那个字段承载的是「供应商属于哪一家」的语义（已由 {@code provider_key} 取代），
@@ -22,9 +45,12 @@ package com.kaixuan.copilot_ollama_proxy.application.protocol;
  */
 public enum WireProtocol {
 
-    /** OpenAI Chat Completions 格式。 */
-    OPENAI,
+    /** Chat Completions API 格式（{@code /v1/chat/completions}）。 */
+    CHAT,
 
-    /** Anthropic Messages 格式。 */
-    ANTHROPIC
+    /** OpenAI Responses API 格式（{@code /v1/responses}）。 */
+    RESPONSES,
+
+    /** Anthropic API 格式（{@code /v1/messages}）。 */
+    MESSAGES
 }

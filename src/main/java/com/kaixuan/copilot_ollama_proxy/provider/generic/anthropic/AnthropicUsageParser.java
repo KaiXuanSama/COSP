@@ -33,17 +33,17 @@ import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
  *
  * <h2>为何换算在解析层而不在落库层</h2>
  * 这个换算<strong>只依赖上游协议</strong>，与下游是谁无关：无论这条请求是
- * Anthropic 直连还是 A2O 翻译，上游都是 Anthropic、都差那一份缓存。既然如此，
+ * Anthropic 直连还是 M2C 翻译，上游都是 Anthropic、都差那一份缓存。既然如此，
  * 它就属于「如实解析 Anthropic 报文」这个职责的一部分。
  *
- * <p>早期的做法是只在 A2O 路线上换算（{@code DownstreamLogView.usageRewriter} +
- * {@code AnthropicToOpenAiResponseTranslator.translateUsageForLog}），前提是「Anthropic
+ * <p>早期的做法是只在 M2C 路线上换算（{@code DownstreamLogView.usageRewriter} +
+ * {@code MessagesToChatResponseTranslator.translateUsageForLog}），前提是「Anthropic
  * 直连要的就是不含缓存的 {@code input_tokens}」。那个前提已被推翻：一列承载两种
  * 口径让每个消费方都得先知道该行的协议，而汇总查询根本做不到这一点
  * （SQL 里一 {@code SUM} 就把两种定义混在一起了）。
  *
  * <p>换算上提后两个副作用：那条落库侧的换算管道整体删除（留着只会诱人
- * 再加一遍缓存）；O2A 也不再需要任何 usage 接线 —— 那条线路上游是 OpenAI，
+ * 再加一遍缓存）；C2M 也不再需要任何 usage 接线 —— 那条线路上游是 OpenAI，
  * 本来就产出归一口径。
  *
  * <h2>分子与分母刻意不对称：{@code cachedTokens} 只取 cache_read</h2>
@@ -63,7 +63,7 @@ import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
  * 为 Anthropic 的私有拆分加成员会把协议细节漏给 OpenAI 侧与 Ollama 侧（那两边永远是 null）。
  *
  * <p>这个口径与 new-api 的 {@code buildOpenAIStyleUsageFromClaudeUsage} 一致
- * （{@code input + read + creation}），因此经本服务 A2O 翻译落库的数字，与直接打上游
+ * （{@code input + read + creation}），因此经本服务 M2C 翻译落库的数字，与直接打上游
  * OpenAI 兼容端点拿到的数字同源。出站报文侧（{@code AnthropicUsageAccumulator}）
  * 从一开始就是三项相加，两侧现已同口径。详见
  * {@code docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md} 第 9.4 节。

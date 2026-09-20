@@ -32,14 +32,14 @@ import java.util.UUID;
  *      响应侧协议翻译契约</a>
  */
 @Component
-public class AnthropicToOpenAiResponseTranslator implements ProtocolTranslator {
+public class MessagesToChatResponseTranslator implements ProtocolTranslator {
 
-    private final AnthropicToOpenAiNonStreamTranslator nonStreamTranslator;
-    private final AnthropicToOpenAiStreamTranslator streamTranslator;
+    private final MessagesToChatNonStreamTranslator nonStreamTranslator;
+    private final MessagesToChatStreamTranslator streamTranslator;
 
-    public AnthropicToOpenAiResponseTranslator(ObjectMapper objectMapper) {
-        this.nonStreamTranslator = new AnthropicToOpenAiNonStreamTranslator(objectMapper);
-        this.streamTranslator = new AnthropicToOpenAiStreamTranslator(objectMapper);
+    public MessagesToChatResponseTranslator(ObjectMapper objectMapper) {
+        this.nonStreamTranslator = new MessagesToChatNonStreamTranslator(objectMapper);
+        this.streamTranslator = new MessagesToChatStreamTranslator(objectMapper);
     }
 
     /**
@@ -50,12 +50,12 @@ public class AnthropicToOpenAiResponseTranslator implements ProtocolTranslator {
      */
     @Override
     public WireProtocol downstreamProtocol() {
-        return WireProtocol.OPENAI;
+        return WireProtocol.CHAT;
     }
 
     @Override
     public WireProtocol upstreamProtocol() {
-        return WireProtocol.ANTHROPIC;
+        return WireProtocol.MESSAGES;
     }
 
     /**
@@ -90,7 +90,7 @@ public class AnthropicToOpenAiResponseTranslator implements ProtocolTranslator {
     public Flux<String> translateStream(Flux<String> upstreamEvents, String upstreamModel,
                                         TranslationContext context) {
         return Flux.defer(() -> {
-            A2OStreamState state = new A2OStreamState(
+            M2CStreamState state = new M2CStreamState(
                     placeholderId(), upstreamModel, context.includeUsage());
             return upstreamEvents
                     .concatMapIterable(event -> streamTranslator.translateEvent(event, state))
@@ -106,7 +106,7 @@ public class AnthropicToOpenAiResponseTranslator implements ProtocolTranslator {
      *
      * <p>用 {@code chatcmpl-} 前缀而非裸 UUID：万一上游始终不给 id，
      * 下游至少收到一个形态合法的 OpenAI 风格标识。
-     * 上游给了就会被 {@link A2OStreamState#adoptUpstreamId} 替换成真实的 {@code msg_xxx}。
+     * 上游给了就会被 {@link M2CStreamState#adoptUpstreamId} 替换成真实的 {@code msg_xxx}。
      */
     private static String placeholderId() {
         return "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
@@ -133,7 +133,7 @@ public class AnthropicToOpenAiResponseTranslator implements ProtocolTranslator {
      */
     public TranslatedChunkLog translateChunksForLog(List<String> upstreamEvents, String upstreamModel,
                                                     boolean includeUsage) {
-        A2OStreamState state = new A2OStreamState(placeholderId(), upstreamModel, includeUsage);
+        M2CStreamState state = new M2CStreamState(placeholderId(), upstreamModel, includeUsage);
         List<String> translated = new ArrayList<>();
         List<Integer> frameCounts = new ArrayList<>(upstreamEvents.size());
         for (String event : upstreamEvents) {
@@ -150,9 +150,9 @@ public class AnthropicToOpenAiResponseTranslator implements ProtocolTranslator {
 
     /*
      * 这里曾有一个 translateUsageForLog(UsageTokens)，把 cache_read 加回 promptTokens
-     * 供 A2O 落库使用。它已被删除，因为那个换算被上提到了 AnthropicUsageParser.toTokens。
+     * 供 M2C 落库使用。它已被删除，因为那个换算被上提到了 AnthropicUsageParser.toTokens。
      *
-     * 上提的理由：换算只依赖上游协议，与下游是谁无关 —— Anthropic 直连与 A2O 的上游
+     * 上提的理由：换算只依赖上游协议，与下游是谁无关 —— Anthropic 直连与 M2C 的上游
      * 都是 Anthropic、都差那一份缓存。放在这里意味着只有翻译路线被修正，直连路线继续
      * 落不含缓存的值，于是 api_call_usage.prompt_tokens 一列承载两种定义，
      * 而汇总查询无法按行区分协议（SQL 里一 SUM 就混在一起了）。

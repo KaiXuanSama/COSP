@@ -44,7 +44,7 @@ class ProviderAdminServiceRevealTests {
 
     private static ProviderConfigRow provider(int id, String providerKey) {
         return new ProviderConfigRow(id, providerKey, providerKey, true, "https://api.example.com/v1",
-                "[\"OPENAI\"]", "", false, "2026-09-10T10:00:00", List.of());
+                "[\"CHAT\"]", "", "", false, "2026-09-10T10:00:00", List.of());
     }
 
     private static ProviderApiKeyRow keyRow(String keyUuid, String keyName) {

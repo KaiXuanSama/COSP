@@ -7,7 +7,7 @@
 import type { RuleGroup, RuleSetV2 } from './types'
 import { createEmptyRuleSetV2, generateRuleGroupId } from './types'
 import { composeRequestBodyTemplate, DEFAULT_TEMPLATE_KEYS } from './requestBodyTemplates'
-import { ALL_WIRE_PROTOCOLS } from '@/types/protocol'
+import { RULE_ENGINE_WIRE_PROTOCOLS } from '@/types/protocol'
 
 /** 请求体规则编辑器需要原子保存的完整状态。 */
 export interface RequestBodyEditorState {
@@ -24,14 +24,20 @@ export function createDefaultRequestBodyEditorState(): RequestBodyEditorState {
   return { rules: createEmptyRuleSetV2() }
 }
 
-/** 创建一个新规则组，默认适用于全部线路协议。 */
+/**
+ * 创建一个新规则组，默认适用于规则引擎支持的全部线路协议。
+ *
+ * <p>用 {@link RULE_ENGINE_WIRE_PROTOCOLS} 而非 `ALL_WIRE_PROTOCOLS`：默认值必须落在
+ * **后端白名单**内，而那是一个独立的约束。两者当前数值相同，但曾经分叉（
+ * Responses 加入系统后、后端放开白名单之前），那时铺全集会让新建规则组直接 400。
+ */
 export function createRuleGroup(order: number): RuleGroup {
   return {
     id: generateRuleGroupId(),
     name: `规则组 ${order + 1}`,
     order,
     enabled: true,
-    protocols: [...ALL_WIRE_PROTOCOLS],
+    protocols: [...RULE_ENGINE_WIRE_PROTOCOLS],
     templateKeys: [...DEFAULT_TEMPLATE_KEYS],
     previewBody: composeRequestBodyTemplate(DEFAULT_TEMPLATE_KEYS),
     rules: [],
