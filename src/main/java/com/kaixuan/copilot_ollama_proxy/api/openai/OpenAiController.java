@@ -2,12 +2,8 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.RequestTranslationException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ResponseTranslationException;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
@@ -196,61 +192,14 @@ public class OpenAiController {
                         log.info("调用被主动取消 [{}] {}", model, requestId);
                         return Mono.empty();
                     }
-                    if (isClientDisconnect(ex)) {
+                    if (UpstreamFailureClassifier.isClientDisconnect(ex)) {
                         // CANCELED：客户端主动断连，发出终态让 Toast 收尾淡出，避免僵尸 Toast。
                         callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, stream));
                         return Mono.empty();
                     }
                     // FAILED：上游错误或连接失败（客户端主动断连已在上面 return，不计入）。
                     callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.FAILED, model, stream));
-                    // 协议不可用：请求根本没发出去，不能译成「无法连接到上游」（见 findProtocolException）。
-                    ProtocolTranslationNotSupportedException protocolException = findProtocolException(ex);
-                    if (protocolException != null) {
-                        log.warn("协议不可用 [{}]: {}", model, protocolException.getMessage());
-                        return Mono.just(ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
-                                .body(openAiErrorBody(protocolException.getMessage(), "invalid_request_error")));
-                    }
-                    // 协议一个都没勾：同样是本地配置问题，重试无益。
-                    NoSupportedProtocolException noProtocol = findNoSupportedProtocolException(ex);
-                    if (noProtocol != null) {
-                        log.warn("供应商未配置任何协议 [{}]: {}", model, noProtocol.getMessage());
-                        return Mono.just(ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
-                                .body(openAiErrorBody(noProtocol.getMessage(), "invalid_request_error")));
-                    }
-                    // 请求翻译失败：下游请求本身无法表达成上游协议，消息里已带字段路径。
-                    RequestTranslationException requestTranslation = findRequestTranslationException(ex);
-                    if (requestTranslation != null) {
-                        log.warn("请求翻译失败 [{}]: {}", model, requestTranslation.getMessage());
-                        return Mono.just(ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
-                                .body(openAiErrorBody(requestTranslation.getMessage(), "invalid_request_error")));
-                    }
-                    // 模型名没解析出唯一供应商（未知 / 前缀不存在 / 无前缀却命中多个）：
-                    // 上游根本没被连接，不能译成「无法连接到上游」。
-                    UnresolvedModelRouteException unresolvedRoute = findUnresolvedRouteException(ex);
-                    if (unresolvedRoute != null) {
-                        log.warn("模型未解析到供应商 [{}]: {}", model, unresolvedRoute.getMessage());
-                        return Mono.just(ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
-                                .body(openAiErrorBody(unresolvedRoute.getMessage(), "invalid_request_error")));
-                    }
-                    // 透传上游错误响应（重试耗尽时 WebClientResponseException 被包装在 RetryExhaustedException 中，需要解包）
-                    WebClientResponseException responseException = findWebResponseException(ex);
-                    if (responseException != null) {
-                        log.warn("上游 API 返回错误 [{}] {}: {}", model, responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
-                        return Mono.just(ResponseEntity.status(responseException.getStatusCode().value())
-                                .contentType(MediaType.APPLICATION_JSON)
-                                .body(responseException.getResponseBodyAsString()));
-                    }
-                    // 响应翻译失败：请求发出去了、上游也给了 2xx，但报文解析不了。
-                    // 不能译成「无法连接到上游」—— 那会把排查方向引到网络上。
-                    ResponseTranslationException translationException = findResponseTranslationException(ex);
-                    if (translationException != null) {
-                        log.warn("响应翻译失败 [{}]: {}", model, translationException.getMessage());
-                        return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                                .body(openAiErrorBody(translationException.getMessage(), "upstream_error")));
-                    }
-                    log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(ex), extractRequestUrl(ex));
-                    return Mono.just(ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                            .body(openAiErrorBody("无法连接到上游服务", "upstream_error")));
+                    return Mono.just(openAiErrorResponse(ex, model));
                 })
                 // CANCELED：下游（Copilot）主动断连是 Reactor 的 cancel 信号，onErrorResume 捕获不到，
                 // 必须用 doOnCancel 感知，否则不发终态事件 → inFlight 记录永久留存 → 僵尸 toast。
@@ -332,55 +281,14 @@ public class OpenAiController {
                             streamInputTokens, streamOutputTokens);
                 })
                 .onErrorResume(error -> {
-                    if (isClientDisconnect(error)) {
+                    if (UpstreamFailureClassifier.isClientDisconnect(error)) {
                         // CANCELED：客户端主动断连，发出终态让 Toast 收尾淡出，避免僵尸 Toast。
                         callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, true, chunkCount.get()));
                         return Flux.empty();
                     }
                     // FAILED：上游错误或连接失败（客户端主动断连已在上面 return，不计入）。
                     callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.FAILED, model, true));
-                    // 协议不可用：同非流式，不能被当成上游连接失败。
-                    ProtocolTranslationNotSupportedException protocolException = findProtocolException(error);
-                    if (protocolException != null) {
-                        log.warn("协议不可用 [{}]: {}", model, protocolException.getMessage());
-                        return Flux.just(ServerSentEvent.<String>builder(
-                                openAiErrorBody(protocolException.getMessage(), "invalid_request_error"))
-                                .event("error").build());
-                    }
-                    // 协议一个都没勾：同非流式。
-                    NoSupportedProtocolException noProtocol = findNoSupportedProtocolException(error);
-                    if (noProtocol != null) {
-                        log.warn("供应商未配置任何协议 [{}]: {}", model, noProtocol.getMessage());
-                        return Flux.just(ServerSentEvent.<String>builder(
-                                openAiErrorBody(noProtocol.getMessage(), "invalid_request_error"))
-                                .event("error").build());
-                    }
-                    // 请求翻译失败：同非流式。注意这里能走到是因为服务层的 Flux.defer
-                    // 把组装期异常转成了 onError 信号；否则它会逃出控制器变成 500 JSON。
-                    RequestTranslationException requestTranslation = findRequestTranslationException(error);
-                    if (requestTranslation != null) {
-                        log.warn("请求翻译失败 [{}]: {}", model, requestTranslation.getMessage());
-                        return Flux.just(ServerSentEvent.<String>builder(
-                                openAiErrorBody(requestTranslation.getMessage(), "invalid_request_error"))
-                                .event("error").build());
-                    }
-                    // 模型名没解析出唯一供应商：同非流式，上游没被连接过。
-                    UnresolvedModelRouteException unresolvedRoute = findUnresolvedRouteException(error);
-                    if (unresolvedRoute != null) {
-                        log.warn("模型未解析到供应商 [{}]: {}", model, unresolvedRoute.getMessage());
-                        return Flux.just(ServerSentEvent.<String>builder(
-                                openAiErrorBody(unresolvedRoute.getMessage(), "invalid_request_error"))
-                                .event("error").build());
-                    }
-                    // 透传上游错误响应（解包重试耗尽包装）
-                    WebClientResponseException responseException = findWebResponseException(error);
-                    if (responseException != null) {
-                        log.warn("上游 API 返回错误 [{}] {}: {}", model, responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
-                        return Flux.just(ServerSentEvent.<String>builder(responseException.getResponseBodyAsString()).event("error").build());
-                    }
-                    log.warn("上游 API 调用失败 [{}]: {} ({})", model, extractRootCause(error), extractRequestUrl(error));
-                    return Flux.just(ServerSentEvent.<String>builder(
-                            openAiErrorBody("无法连接到上游服务", "upstream_error")).event("error").build());
+                    return Flux.just(openAiErrorFrame(error, model));
                 })
                 // CANCELED：下游（Copilot）主动断连是 Reactor 的 cancel 信号，onErrorResume 捕获不到，
                 // 必须用 doOnCancel 感知。管理员取消走 takeUntilOther→concatWith 正常 complete（不触发此处），
@@ -637,135 +545,123 @@ public class OpenAiController {
     }
 
     /**
-     * 判断异常是否由客户端断开连接引起，常见的异常类型包括 AsyncRequestNotUsableException、ClientAbortException、EOFException 等。
-     * @param throwable 异常对象
-     * @return 如果异常或其原因链中包含客户端断开连接的异常类型，则返回 true；否则返回 false
+     * 把调用失败渲染成<strong>非流式</strong>响应。
+     *
+     * <h2>分类与渲染的分工</h2>
+     * 「这是什么失败」交给 {@link UpstreamFailureClassifier}（三条线路共用一份判定，
+     * 避免同一个上游故障在 Chat 上报 400、在 Responses 上报 502）；
+     * 「长什么样」留在本类 —— 错误 JSON 骨架是<strong>出口</strong>，由下游协议决定。
+     *
+     * <h2>两种状态码的分界：上游到底有没有被连上</h2>
+     * <ul>
+     *   <li><strong>400</strong>（四个类别）—— 请求根本没发出去。
+     *       与 502 的区别在于「改什么才能解决」：改配置、改请求、改模型名，都与上游可用性无关。
+     *       用 5xx 会诱导客户端重试，而重试同一份输入结果不会变。</li>
+     *   <li><strong>502</strong>（响应翻译失败）—— 请求发出去了、上游也回了 2xx，
+     *       但我们解析不了。下游没做错任何事，不该报 400。</li>
+     * </ul>
+     *
+     * <p>上游 HTTP 错误<strong>原样透传状态码与错误体</strong>，不包一层自己的解释：
+     * 上游那句话（余额不足、模型不存在、限流）往往比我们能编的任何文案都准确。
+     *
+     * @return 已具备状态码与错误体的响应
      */
-    private boolean isClientDisconnect(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            String simpleName = current.getClass().getSimpleName();
-            // AbortedException：Reactor Netty 客户端断开；其余为通用断连异常名
-            if ("AbortedException".equals(simpleName) || "ClientAbortException".equals(simpleName)
-                    || "EOFException".equals(simpleName) || "AsyncRequestNotUsableException".equals(simpleName)) {
-                return true;
+    private ResponseEntity<?> openAiErrorResponse(Throwable ex, String model) {
+        UpstreamFailureClassifier.Failure failure = UpstreamFailureClassifier.classify(ex);
+        switch (failure.kind()) {
+            case PROTOCOL_UNSUPPORTED -> {
+                log.warn("协议不可用 [{}]: {}", model, failure.message());
+                return badRequest(failure.message());
             }
-            current = current.getCause();
+            case NO_SUPPORTED_PROTOCOL -> {
+                log.warn("供应商未配置任何协议 [{}]: {}", model, failure.message());
+                return badRequest(failure.message());
+            }
+            case REQUEST_TRANSLATION -> {
+                log.warn("请求翻译失败 [{}]: {}", model, failure.message());
+                return badRequest(failure.message());
+            }
+            case UNRESOLVED_MODEL_ROUTE -> {
+                log.warn("模型未解析到供应商 [{}]: {}", model, failure.message());
+                return badRequest(failure.message());
+            }
+            case UPSTREAM_HTTP -> {
+                WebClientResponseException upstream = failure.asHttpFailure();
+                log.warn("上游 API 返回错误 [{}] {}: {}", model,
+                        upstream.getStatusCode().value(), upstream.getResponseBodyAsString());
+                return ResponseEntity.status(upstream.getStatusCode().value())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(upstream.getResponseBodyAsString());
+            }
+            case RESPONSE_TRANSLATION -> {
+                log.warn("响应翻译失败 [{}]: {}", model, failure.message());
+                return ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
+                        .body(openAiErrorBody(failure.message(), "upstream_error"));
+            }
+            default -> {
+                log.warn("上游 API 调用失败 [{}]: {} ({})", model,
+                        extractRootCause(ex), extractRequestUrl(ex));
+                return ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
+                        .body(openAiErrorBody("无法连接到上游服务", "upstream_error"));
+            }
         }
-        return false;
+    }
+
+    /** 400 + {@code invalid_request_error}。四个「上游没被连上」类别共用这一形。 */
+    private ResponseEntity<?> badRequest(String message) {
+        return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
+                .body(openAiErrorBody(message, "invalid_request_error"));
     }
 
     /**
-     * 从异常链中查找 WebClientResponseException。
-     * 重试耗尽时，原始异常被包装在 RetryExhaustedException 中，需要递归解包。
+     * 把调用失败渲染成<strong>流式</strong> error 帧。
+     *
+     * <p>与非流式<strong>不能共用</strong> {@link #openAiErrorResponse}：流式的状态码在第一帧
+     * 就提交了，之后改它没有意义 —— 客户端只能靠 SSE 的 {@code event: error} 识别失败。
+     * 两者的<strong>类别判定完全相同</strong>（那是分类器的职责），
+     * 只有「怎么送出去」不同，这正是本方法存在的理由。
+     *
+     * <p>上游 HTTP 错误在流式下也<strong>原样透传错误体</strong>（不带状态码，那已无处可放），
+     * 与非流式同一取向：上游那句话最准确。
      */
-    private org.springframework.web.reactive.function.client.WebClientResponseException findWebResponseException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof org.springframework.web.reactive.function.client.WebClientResponseException responseException) {
-                return responseException;
+    private ServerSentEvent<String> openAiErrorFrame(Throwable error, String model) {
+        UpstreamFailureClassifier.Failure failure = UpstreamFailureClassifier.classify(error);
+        String body = switch (failure.kind()) {
+            case PROTOCOL_UNSUPPORTED -> {
+                log.warn("协议不可用 [{}]: {}", model, failure.message());
+                yield openAiErrorBody(failure.message(), "invalid_request_error");
             }
-            current = current.getCause();
-        }
-        return null;
-    }
-
-    /**
-     * 从异常链里找出响应翻译异常。
-     *
-     * <p>与 {@link #findProtocolException} 同一个理由需要解包：
-     * 重试耗尽时真正的异常会被包在 {@code RetryExhaustedException} 里。
-     */
-    private ResponseTranslationException findResponseTranslationException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof ResponseTranslationException translationException) {
-                return translationException;
+            case NO_SUPPORTED_PROTOCOL -> {
+                log.warn("供应商未配置任何协议 [{}]: {}", model, failure.message());
+                yield openAiErrorBody(failure.message(), "invalid_request_error");
             }
-            current = current.getCause();
-        }
-        return null;
-    }
-
-    /**
-     * 从异常链中查找协议不可用异常。
-     *
-     * <p>必须在解包 {@code WebClientResponseException} <strong>之前</strong>判定：本异常代表
-     * 「请求根本没发出去」，若落入兜底分支会被译成「无法连接到上游服务」，而上游并未被尝试连接 ——
-     * 这会把排查方向指向网络与上游可用性，而真正要改的是供应商的协议勾选。
-     *
-     * <p>用 400 而非 502：失败源于本地配置与请求的组合，不是网关上游故障，
-     * 且重试多少次结果都一样 —— 5xx 会诱导客户端重试。
-     */
-    private ProtocolTranslationNotSupportedException findProtocolException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof ProtocolTranslationNotSupportedException protocolException) {
-                return protocolException;
+            case REQUEST_TRANSLATION -> {
+                // 能走到这里是因为服务层的 Flux.defer 把组装期异常转成了 onError 信号；
+                // 否则它会逃出控制器变成 500 JSON。
+                log.warn("请求翻译失败 [{}]: {}", model, failure.message());
+                yield openAiErrorBody(failure.message(), "invalid_request_error");
             }
-            current = current.getCause();
-        }
-        return null;
-    }
-
-    /**
-     * 从异常链里找出「供应商一个协议都没勾」异常。
-     *
-     * <p>不直接 catch {@code IllegalStateException}：那会把 Reactor / Jackson 或任何库抛的
-     * 同类异常一并译成「协议没配」，那种误导比笼统的 500 更难排查。
-     */
-    private NoSupportedProtocolException findNoSupportedProtocolException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof NoSupportedProtocolException noProtocol) {
-                return noProtocol;
+            case UNRESOLVED_MODEL_ROUTE -> {
+                log.warn("模型未解析到供应商 [{}]: {}", model, failure.message());
+                yield openAiErrorBody(failure.message(), "invalid_request_error");
             }
-            current = current.getCause();
-        }
-        return null;
-    }
-
-    /**
-     * 从异常链里找出请求翻译异常。
-     *
-     * <p>它与 {@link #findProtocolException} 都回 400，但排查方向相反：那个要改<strong>配置</strong>，
-     * 这个要改<strong>请求</strong>。异常消息里已带 {@code messages[2].role} 这样的字段路径，
-     * 直接透传即可 —— 只说「翻译失败」等于让调用方去猜。
-     */
-    private RequestTranslationException findRequestTranslationException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof RequestTranslationException translationException) {
-                return translationException;
+            case UPSTREAM_HTTP -> {
+                WebClientResponseException upstream = failure.asHttpFailure();
+                log.warn("上游 API 返回错误 [{}] {}: {}", model,
+                        upstream.getStatusCode().value(), upstream.getResponseBodyAsString());
+                yield upstream.getResponseBodyAsString();
             }
-            current = current.getCause();
-        }
-        return null;
-    }
-
-    /**
-     * 从异常链里找出「模型名没解析到唯一供应商」异常。
-     *
-     * <p>形态与其它 {@code findXxx} 一致地解包异常链。但本异常实际上不会经过重试 ——
-     * 它在最前端的路由解析处就抛了，仍在链上找是因为「解包」在这里已是统一写法。
-     *
-     * <p>必须单独判定：它不是 {@code WebClientResponseException}，不判就会落进
-     * 502 兜底分支被译成「无法连接到上游服务」。而这条路径上<strong>上游一次都没被连接过</strong> ——
-     * 路由失败发生在本地供应商目录里。把排查方向指向网络是这个错误最容易造成的误导。
-     *
-     * <p>回 400 而非 502：三种成因（模型名空白 / 带前缀但供应商不存在或没声明该模型 /
-     * 无前缀却命中多个供应商）都是下游请求的问题，改请求即可解决，
-     * 而 5xx 会诱导客户端重试 —— 重试同一个名字结果不会变。
-     */
-    private UnresolvedModelRouteException findUnresolvedRouteException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof UnresolvedModelRouteException unresolvedRoute) {
-                return unresolvedRoute;
+            case RESPONSE_TRANSLATION -> {
+                log.warn("响应翻译失败 [{}]: {}", model, failure.message());
+                yield openAiErrorBody(failure.message(), "upstream_error");
             }
-            current = current.getCause();
-        }
-        return null;
+            default -> {
+                log.warn("上游 API 调用失败 [{}]: {} ({})", model,
+                        extractRootCause(error), extractRequestUrl(error));
+                yield openAiErrorBody("无法连接到上游服务", "upstream_error");
+            }
+        };
+        return ServerSentEvent.<String>builder(body).event("error").build();
     }
 
     /**

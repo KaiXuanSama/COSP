@@ -2,10 +2,8 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
@@ -149,7 +147,7 @@ public class ResponsesController {
                         log.info("调用被主动取消 [{}] {}", model, requestId);
                         return Mono.empty();
                     }
-                    if (isClientDisconnect(ex)) {
+                    if (UpstreamFailureClassifier.isClientDisconnect(ex)) {
                         callLifecyclePublisher.publish(
                                 CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, stream));
                         return Mono.empty();
@@ -232,7 +230,7 @@ public class ResponsesController {
                             ResponsesStreamEvents.Outcome.SUCCESS);
                 })
                 .onErrorResume(error -> {
-                    if (isClientDisconnect(error)) {
+                    if (UpstreamFailureClassifier.isClientDisconnect(error)) {
                         callLifecyclePublisher.publish(CallLifecycleEvent.of(
                                 requestId, CallPhase.CANCELED, model, true, eventCount.get()));
                         return Flux.empty();
@@ -298,7 +296,7 @@ public class ResponsesController {
      *
      * <p>取消映射到 {@link CallPhase#ABORTED} 而非 {@link CallPhase#CANCELED}：
      * 后者的语义是「下游 Copilot 主动断连」（本控制器在 {@code doOnCancel} /
-     * {@code isClientDisconnect} 分支用它），而这里是<strong>上游侧</strong>取消了响应。
+     * {@link UpstreamFailureClassifier#isClientDisconnect} 分支用它），而这里是<strong>上游侧</strong>取消了响应。
      * 两者都不是错误，但成因相反 —— 混用会让「谁取消的」这个信息在 Toast 上消失。
      *
      * <p>{@code ABORTED} 原本描述的是「管理员在后台主动取消」，同属「非下游发起的中止」，
@@ -380,39 +378,51 @@ public class ResponsesController {
         }
     }
 
-    /** 构造非流式错误响应，透传上游状态码与错误体。 */
+    /**
+     * 把调用失败渲染成<strong>非流式</strong>响应。
+     *
+     * <p>分类交给 {@link UpstreamFailureClassifier}（三条线路共用一份判定）；
+     * 错误 JSON 骨架留在本类 —— 那是<strong>出口</strong>，且 Responses 流式与非流式
+     * 的骨架刻意不同（见 {@link #errorEventBody}）。
+     *
+     * <p>状态码分两层：三个「上游没被连上」的类别回 400，其余回 502。
+     * 上游 HTTP 错误原样透传状态码与错误体。
+     */
     private ResponseEntity<?> errorResponse(Throwable ex, String model) {
-        ProtocolTranslationNotSupportedException protocolException = findProtocolException(ex);
-        if (protocolException != null) {
-            log.warn("协议不可用 [{}]: {}", model, protocolException.getMessage());
-            return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
-                    .body(errorBody(protocolException.getMessage()));
+        UpstreamFailureClassifier.Failure failure = UpstreamFailureClassifier.classify(ex);
+        switch (failure.kind()) {
+            case PROTOCOL_UNSUPPORTED -> {
+                log.warn("协议不可用 [{}]: {}", model, failure.message());
+                return badRequest(failure.message());
+            }
+            case NO_SUPPORTED_PROTOCOL -> {
+                log.warn("供应商未配置任何协议 [{}]: {}", model, failure.message());
+                return badRequest(failure.message());
+            }
+            case UNRESOLVED_MODEL_ROUTE -> {
+                log.warn("模型未解析到供应商 [{}]: {}", model, failure.message());
+                return badRequest(failure.message());
+            }
+            case UPSTREAM_HTTP -> {
+                WebClientResponseException upstream = failure.asHttpFailure();
+                log.warn("上游 API 返回错误 [{}] {}: {}", model,
+                        upstream.getStatusCode().value(), upstream.getResponseBodyAsString());
+                return ResponseEntity.status(upstream.getStatusCode().value())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(upstream.getResponseBodyAsString());
+            }
+            default -> {
+                log.warn("上游 API 调用失败 [{}]: {}", model, ex.getMessage());
+                return ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
+                        .body(errorBody("无法连接到上游服务"));
+            }
         }
-        // 协议一个都没勾：同样是本地配置问题，不能落进 502 兜底。
-        NoSupportedProtocolException noProtocol = findNoSupportedProtocolException(ex);
-        if (noProtocol != null) {
-            log.warn("供应商未配置任何协议 [{}]: {}", model, noProtocol.getMessage());
-            return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
-                    .body(errorBody(noProtocol.getMessage()));
-        }
-        // 模型名没解析出唯一供应商：路由在本地目录就没过，上游从未被连接。
-        UnresolvedModelRouteException unresolvedRoute = findUnresolvedRouteException(ex);
-        if (unresolvedRoute != null) {
-            log.warn("模型未解析到供应商 [{}]: {}", model, unresolvedRoute.getMessage());
-            return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
-                    .body(errorBody(unresolvedRoute.getMessage()));
-        }
-        WebClientResponseException responseException = findWebResponseException(ex);
-        if (responseException != null) {
-            log.warn("上游 API 返回错误 [{}] {}: {}", model,
-                    responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
-            return ResponseEntity.status(responseException.getStatusCode().value())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(responseException.getResponseBodyAsString());
-        }
-        log.warn("上游 API 调用失败 [{}]: {}", model, ex.getMessage());
-        return ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                .body(errorBody("无法连接到上游服务"));
+    }
+
+    /** 400 + 非流式错误体（{@code {"error":{...}}}，与 Chat 同形）。 */
+    private ResponseEntity<?> badRequest(String message) {
+        return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
+                .body(errorBody(message));
     }
 
     /**
@@ -434,37 +444,41 @@ public class ResponsesController {
      * @see #streamErrorBody(String) 官方 {@code ResponseErrorEvent} 的形态
      */
     private String errorEventBody(Throwable error, String model) {
-        ProtocolTranslationNotSupportedException protocolException = findProtocolException(error);
-        if (protocolException != null) {
-            log.warn("协议不可用 [{}]: {}", model, protocolException.getMessage());
-            return streamErrorBody(protocolException.getMessage());
-        }
-        NoSupportedProtocolException noProtocol = findNoSupportedProtocolException(error);
-        if (noProtocol != null) {
-            log.warn("供应商未配置任何协议 [{}]: {}", model, noProtocol.getMessage());
-            return streamErrorBody(noProtocol.getMessage());
-        }
-        // 模型名没解析出唯一供应商：同非流式，上游没被连接过。
-        UnresolvedModelRouteException unresolvedRoute = findUnresolvedRouteException(error);
-        if (unresolvedRoute != null) {
-            log.warn("模型未解析到供应商 [{}]: {}", model, unresolvedRoute.getMessage());
-            return streamErrorBody(unresolvedRoute.getMessage());
-        }
-        WebClientResponseException responseException = findWebResponseException(error);
-        if (responseException != null) {
-            String upstreamBody = responseException.getResponseBodyAsString();
+        UpstreamFailureClassifier.Failure failure = UpstreamFailureClassifier.classify(error);
+        String upstreamBody = failure.kind() == UpstreamFailureClassifier.FailureKind.UPSTREAM_HTTP
+                ? failure.asHttpFailure().getResponseBodyAsString()
+                : null;
+        // UPSTREAM_HTTP 单拎出来：上游原文的处理是本类独有的（要判它能不能被状态机分派），
+        // 不适合塞进 switch 的表达式位置。
+        if (upstreamBody != null) {
             log.warn("上游 API 返回错误 [{}] {}: {}", model,
-                    responseException.getStatusCode().value(), upstreamBody);
+                    failure.asHttpFailure().getStatusCode().value(), upstreamBody);
             // 上游原文优先，但必须能被状态机分派 —— 直连 Responses 上游的 4xx 通常是
             // REST 错误体（Chat 形态、顶层无 type），原样下发等于制造一帧脏数据。
             // 已是合法 error 事件的（少数上游把 SSE 错误帧当响应体返回）则原样透传，
             // 那才是最准确的信息。
             return isResponsesErrorEvent(upstreamBody)
                     ? upstreamBody
-                    : streamErrorBody(upstreamMessageOf(upstreamBody, responseException));
+                    : streamErrorBody(upstreamMessageOf(upstreamBody, failure.asHttpFailure()));
         }
-        log.warn("上游 API 调用失败 [{}]: {}", model, error.getMessage());
-        return streamErrorBody("无法连接到上游服务");
+        return switch (failure.kind()) {
+            case PROTOCOL_UNSUPPORTED -> {
+                log.warn("协议不可用 [{}]: {}", model, failure.message());
+                yield streamErrorBody(failure.message());
+            }
+            case NO_SUPPORTED_PROTOCOL -> {
+                log.warn("供应商未配置任何协议 [{}]: {}", model, failure.message());
+                yield streamErrorBody(failure.message());
+            }
+            case UNRESOLVED_MODEL_ROUTE -> {
+                log.warn("模型未解析到供应商 [{}]: {}", model, failure.message());
+                yield streamErrorBody(failure.message());
+            }
+            default -> {
+                log.warn("上游 API 调用失败 [{}]: {}", model, error.getMessage());
+                yield streamErrorBody("无法连接到上游服务");
+            }
+        };
     }
 
     /**
@@ -573,88 +587,5 @@ public class ResponsesController {
         } catch (Exception exception) {
             return "{\"error\":{\"message\":\"上游调用失败\",\"type\":\"api_error\"}}";
         }
-    }
-
-    /** 判断异常是否由客户端断连引起。 */
-    private boolean isClientDisconnect(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            String simpleName = current.getClass().getSimpleName();
-            if ("AbortedException".equals(simpleName) || "ClientAbortException".equals(simpleName)
-                    || "EOFException".equals(simpleName) || "AsyncRequestNotUsableException".equals(simpleName)) {
-                return true;
-            }
-            current = current.getCause();
-        }
-        return false;
-    }
-
-    /** 递归解包 WebClientResponseException（重试耗尽时被包进 RetryExhaustedException）。 */
-    private WebClientResponseException findWebResponseException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof WebClientResponseException responseException) {
-                return responseException;
-            }
-            current = current.getCause();
-        }
-        return null;
-    }
-
-    /**
-     * 递归解包协议不可用异常。
-     *
-     * <p>必须在解包 {@link WebClientResponseException} <strong>之前</strong>判定：
-     * 本异常代表「请求根本没发出去」，若落入兜底分支会被译成「无法连接到上游服务」，
-     * 而上游并未被尝试连接 —— 这会把排查方向指往网络与上游可用性，
-     * 而真正要改的是供应商的协议勾选。
-     *
-     * <p>用 400 而非 502：失败源于本地配置与请求的组合，不是网关上游故障，
-     * 且重试多少次结果都一样 —— 5xx 会诱导客户端重试。
-     */
-    private ProtocolTranslationNotSupportedException findProtocolException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof ProtocolTranslationNotSupportedException protocolException) {
-                return protocolException;
-            }
-            current = current.getCause();
-        }
-        return null;
-    }
-
-    /**
-     * 递归解包「供应商未声明任何协议」异常。
-     *
-     * <p>与协议不可用同一处境：本地配置问题、重试无用、必须与上游故障区分开。
-     * 单独一个类型是为了给出不同的可操作消息（那条指向「去勾选协议」）。
-     */
-    private NoSupportedProtocolException findNoSupportedProtocolException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof NoSupportedProtocolException noProtocol) {
-                return noProtocol;
-            }
-            current = current.getCause();
-        }
-        return null;
-    }
-
-    /**
-     * 递归解包「模型名没解析到唯一供应商」异常。
-     *
-     * <p>与其它 {@code findXxx} 同一处境：它不是 {@code WebClientResponseException}，
-     * 不单独判定就会落进 502 兜底、被译成「无法连接到上游服务」——
-     * 而路由失败发生在本地供应商目录里，上游一次都没被连接过。
-     */
-    private UnresolvedModelRouteException findUnresolvedRouteException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof UnresolvedModelRouteException unresolvedRoute) {
-                return unresolvedRoute;
-            }
-            current = current.getCause();
-        }
-        return null;
     }
 }
