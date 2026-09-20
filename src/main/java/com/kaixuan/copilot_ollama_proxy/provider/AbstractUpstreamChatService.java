@@ -8,6 +8,7 @@ import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineExecution;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
@@ -197,8 +198,28 @@ public abstract class AbstractUpstreamChatService {
     protected Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
                                           ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                           String requestId) {
+        return chatCompletion(openAiRequest, model, provider, downstreamHeaders, requestId,
+                PipelineExecution.empty());
+    }
+
+    /**
+     * 带管道执行登记的{@link #chatCompletion}重载。
+     *
+     * <p>登记决定空响应拦截是否介入 —— 判据与理由见
+     * {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
+     * 不带登记的旧重载等价于「直连」：照常拦截。
+     *
+     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     */
+    protected Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
+                                          ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                          String requestId, PipelineExecution execution) {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, false, model, provider);
         log.info("{} OpenAI 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
+
+        // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
+        // 见 PipelineExecution 的「生命周期」一节：写进 defer 里会让半实现态在第二轮又走回判空重试。
+        boolean gateActive = execution.shouldApplyEmptyResponseGate();
 
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
@@ -247,6 +268,13 @@ public abstract class AbstractUpstreamChatService {
                 // UpstreamRetryPolicy.isRetryableFailure 已认 EmptyUpstreamResponseException，无需第二套重试实现。
                 .flatMap(entity -> {
                     String body = entity.getBody();
+                    if (!gateActive) {
+                        // 半轮实现态：响应是上游协议的形态，本端点的判据对它没有意义 ——
+                        // 跳过拦截，原样放行。开发者要的正是这批帧本身。
+                        log.debug("{} 空响应拦截已跳过（回程翻译未实现），原样放行上游响应 [{}] {}",
+                                provider.providerKey(), model, requestId);
+                        return Mono.just(entity);
+                    }
                     if (OpenAiContentDetector.hasMeaningfulNonStreamPayload(objectMapper, body)) {
                         return Mono.just(entity);
                     }
@@ -369,8 +397,28 @@ public abstract class AbstractUpstreamChatService {
     protected Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model,
                                                  ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                  String requestId) {
+        return chatCompletionStream(openAiRequest, model, provider, downstreamHeaders, requestId,
+                PipelineExecution.empty());
+    }
+
+    /**
+     * 带管道执行登记的{@link #chatCompletionStream}重载。
+     *
+     * <p>登记决定空响应拦截是否介入 —— 判据与理由见
+     * {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
+     * 不带登记的旧重载等价于「直连」：照常拦截。
+     *
+     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     */
+    protected Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model,
+                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                                 String requestId, PipelineExecution execution) {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model, provider);
         log.info("{} OpenAI 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
+
+        // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
+        // 见 PipelineExecution 的「生命周期」一节：写进 defer 里会让半实现态在第二轮又走回判空重试。
+        boolean gateActive = execution.shouldApplyEmptyResponseGate();
 
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
@@ -394,9 +442,16 @@ public abstract class AbstractUpstreamChatService {
         // 静默重试标志：上游尝试被重试信号中断时置位，收尾处据此重新发起一轮。
         AtomicBoolean silentRetryRequested = new AtomicBoolean(false);
         // 空响应兜底 gate 的两个状态，每轮往返在起点重置：
-        // gateOpen —— 本轮是否已出现实质载荷（正文/思考链/工具调用）。开闸后当轮不再拦截。
+        // gateOpen —— 闸门是否<strong>已开</strong>（开了就逐帧直接放行，不再扣住）。
         // heldFrames —— 开闸前被拦下的原始帧，开闸时整批放行；到轮末仍未开闸则随异常带出。
-        AtomicBoolean gateOpen = new AtomicBoolean(false);
+        //
+        // ⚠️ 初始值取 {@code !gateActive} 而不是 {@code gateActive} —— 两者是<strong>相反</strong>的概念：
+        //   gateActive：拦截机制<em>要不要生效</em>（生效时就是要扣住帧）
+        //   gateOpen  ：闸门<em>当前是不是开的</em>（开着就不再扣）
+        // 拦截被跳过时（半轮实现态，见 PipelineExecution.shouldApplyEmptyResponseGate）
+        // 闸门直接置为常开：每帧原路放行、轮末也不会抛空响应异常。
+        // 这样「跳过」不需要在算子链里插分支，也不必让 retryWhen 知道这件事。
+        AtomicBoolean gateOpen = new AtomicBoolean(!gateActive);
         List<ServerSentEvent<String>> heldFrames = new java.util.concurrent.CopyOnWriteArrayList<>();
         // 空响应重试耗尽后的放行标记：该轮已在 doOnError 落过库，收尾处据此跳过，避免同一轮记两条。
         AtomicBoolean emptyResponsePassthrough = new AtomicBoolean(false);
@@ -409,7 +464,10 @@ public abstract class AbstractUpstreamChatService {
                     logChunks.clear();
                     ttfbMs.set(-1);
                     usageRaw.set(null);
-                    gateOpen.set(false);
+                    // 重置为「本轮拦截是否生效」而不是硬编码 false ——
+                    // 拦截被跳过时（半轮实现态）每轮闸门都必须常开，否则第二轮又会走回判空重试。
+                    // 注意取反：gateActive 是「拦截要生效」，而闸门开着意味着「不再扣帧」。
+                    gateOpen.set(!gateActive);
                     heldFrames.clear();
                     return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, true)
                             .post().uri(chatCompletionsUri()).bodyValue(requestBody)

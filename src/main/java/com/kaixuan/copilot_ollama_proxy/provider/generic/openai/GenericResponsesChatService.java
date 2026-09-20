@@ -5,6 +5,7 @@ import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineExecution;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
@@ -185,13 +186,39 @@ public class GenericResponsesChatService {
     /** 非流式，接受应用层已解析的路由。 */
     public Mono<String> responses(Map<String, Object> request, ResolvedProviderRoute route,
                                   HttpHeaders downstreamHeaders, String requestId) {
-        return responses(request, route.model(), route.provider(), downstreamHeaders, requestId);
+        return responses(request, route, downstreamHeaders, requestId, PipelineExecution.empty());
+    }
+
+    /**
+     * 非流式，带<strong>管道执行登记</strong>。
+     *
+     * <p>登记决定空响应拦截是否介入 —— C2R / R2C 翻译落地时会用到：
+     * 只接了去程而没接回程的方向，应当整轮放行而不判空重试。
+     * 判据与理由见 {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
+     *
+     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     */
+    public Mono<String> responses(Map<String, Object> request, ResolvedProviderRoute route,
+                                  HttpHeaders downstreamHeaders, String requestId,
+                                  PipelineExecution execution) {
+        return responses(request, route.model(), route.provider(), downstreamHeaders, requestId, execution);
     }
 
     /** 流式，接受应用层已解析的路由。 */
     public Flux<String> responsesStream(Map<String, Object> request, ResolvedProviderRoute route,
                                         HttpHeaders downstreamHeaders, String requestId) {
-        return responsesStream(request, route.model(), route.provider(), downstreamHeaders, requestId);
+        return responsesStream(request, route, downstreamHeaders, requestId, PipelineExecution.empty());
+    }
+
+    /**
+     * 流式，带<strong>管道执行登记</strong>。理由同非流式的那个重载。
+     *
+     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     */
+    public Flux<String> responsesStream(Map<String, Object> request, ResolvedProviderRoute route,
+                                        HttpHeaders downstreamHeaders, String requestId,
+                                        PipelineExecution execution) {
+        return responsesStream(request, route.model(), route.provider(), downstreamHeaders, requestId, execution);
     }
 
     // ==================== 非流式 ====================
@@ -215,8 +242,26 @@ public class GenericResponsesChatService {
     protected Mono<String> responses(Map<String, Object> request, String model,
                                      ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                      String requestId) {
+        return responses(request, model, provider, downstreamHeaders, requestId, PipelineExecution.empty());
+    }
+
+    /**
+     * 带管道执行登记的{@link #responses}重载。
+     *
+     * <p>登记决定空响应拦截是否介入 —— 判据与理由见
+     * {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
+     * 不带登记的旧重载等价于「直连」：照常拦截。
+     *
+     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     */
+    protected Mono<String> responses(Map<String, Object> request, String model,
+                                     ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                     String requestId, PipelineExecution execution) {
         Map<String, Object> requestBody = prepareRequestBody(request, false, model, provider);
         log.info("{} Responses 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
+
+        // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
+        boolean gateActive = execution.shouldApplyEmptyResponseGate();
 
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
@@ -263,6 +308,13 @@ public class GenericResponsesChatService {
                 // 空响应兜底：转成异常以复用下方同一条 retryWhen 的预算。
                 .flatMap(entity -> {
                     String body = entity.getBody();
+                    if (!gateActive) {
+                        // 半轮实现态：响应是上游协议的形态，本端点的判据对它没有意义 ——
+                        // 跳过拦截，原样放行。开发者要的正是这批帧本身。
+                        log.debug("{} 空响应拦截已跳过（回程翻译未实现），原样放行上游响应 [{}] {}",
+                                providerKey, model, requestId);
+                        return Mono.just(entity);
+                    }
                     if (ResponsesContentDetector.hasMeaningfulPayload(objectMapper, body)) {
                         return Mono.just(entity);
                     }
@@ -312,8 +364,27 @@ public class GenericResponsesChatService {
     protected Flux<String> responsesStream(Map<String, Object> request, String model,
                                             ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                             String requestId) {
+        return responsesStream(request, model, provider, downstreamHeaders, requestId,
+                PipelineExecution.empty());
+    }
+
+    /**
+     * 带管道执行登记的{@link #responsesStream}重载。
+     *
+     * <p>登记决定空响应拦截是否介入 —— 判据与理由见
+     * {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
+     * 不带登记的旧重载等价于「直连」：照常拦截。
+     *
+     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     */
+    protected Flux<String> responsesStream(Map<String, Object> request, String model,
+                                            ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                            String requestId, PipelineExecution execution) {
         Map<String, Object> requestBody = prepareRequestBody(request, true, model, provider);
         log.info("{} Responses 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
+
+        // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
+        boolean gateActive = execution.shouldApplyEmptyResponseGate();
 
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
@@ -328,9 +399,15 @@ public class GenericResponsesChatService {
         // 而非「第一份」—— 若某个上游在中途也带 usage，终态那份才是结算值。
         AtomicReference<String> usageRaw = new AtomicReference<>(null);
         // 空响应 gate 的两个状态，每轮往返在起点重置：
-        // gateOpen —— 本轮是否已出现实质载荷（正文/思考链/工具调用）。开闸后当轮不再拦截。
+        // gateOpen —— 闸门是否<strong>已开</strong>（开了就逐事件直接放行，不再扣住）。
         // heldFrames —— 开闸前被拦下的事件，开闸时整批按到达顺序放行；轮末仍未开闸则随异常带出。
-        AtomicBoolean gateOpen = new AtomicBoolean(false);
+        //
+        // ⚠️ 初始值取 {@code !gateActive} 而不是 {@code gateActive} —— 两者是<strong>相反</strong>的概念：
+        //   gateActive：拦截机制<em>要不要生效</em>（生效时就是要扣住事件）
+        //   gateOpen  ：闸门<em>当前是不是开的</em>（开着就不再扣）
+        // 拦截被跳过时（半轮实现态，见 PipelineExecution.shouldApplyEmptyResponseGate）
+        // 闸门直接置为常开：每事件原路放行、轮末也不会抛空响应异常。
+        AtomicBoolean gateOpen = new AtomicBoolean(!gateActive);
         List<String> heldFrames = new CopyOnWriteArrayList<>();
         // 空响应耗尽放行标记：该轮已在 doOnError 落过库，收尾处据此跳过，避免重复记录。
         AtomicBoolean emptyResponsePassthrough = new AtomicBoolean(false);
@@ -343,7 +420,10 @@ public class GenericResponsesChatService {
                     logChunks.clear();
                     ttfbMs.set(-1);
                     usageRaw.set(null);
-                    gateOpen.set(false);
+                    // 重置为「本轮拦截是否生效」而不是硬编码 false ——
+                    // 拦截被跳过时（半轮实现态）每轮闸门都必须常开，否则第二轮又会走回判空重试。
+                    // 注意取反：gateActive 是「拦截要生效」，而闸门开着意味着「不再扣帧」。
+                    gateOpen.set(!gateActive);
                     heldFrames.clear();
                     return buildWebClient(reqHeaders, provider, downstreamHeaders, true)
                             .post().uri(responsesUri()).bodyValue(requestBody)

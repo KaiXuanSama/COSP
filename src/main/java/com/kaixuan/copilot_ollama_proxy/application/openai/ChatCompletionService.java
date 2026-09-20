@@ -1,6 +1,8 @@
 package com.kaixuan.copilot_ollama_proxy.application.openai;
 
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineExecution;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineStep;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchDecision;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
@@ -153,6 +155,12 @@ public class ChatCompletionService {
         // 模型名传下游原始的 model（含 [provider-key] 前缀）而非上游返回的裸名：
         // 本服务按前缀路由，把裸名透给下游会让它下一轮路由失败（第 7 节）。
         if (decision.upstreamProtocol() == WireProtocol.MESSAGES) {
+            // 登记「去程与回程都已执行」—— 空响应拦截据此照常生效。
+            // 漏登记会让这条线路静默失去空响应兜底（拦截被当成半轮实现态而跳过）。
+            PipelineExecution execution = PipelineExecution
+                    .of(DOWNSTREAM_PROTOCOL, decision.upstreamProtocol())
+                    .withCompleted(PipelineStep.REQUEST_TRANSLATION)
+                    .withCompleted(PipelineStep.RESPONSE_TRANSLATION);
             TranslatedRequest translated = c2mTranslator.translateRequest(openAiRequest);
             // 非流式不改写 chunk：响应体是单一字符串，日志里记上游原文
             // 比记翻译后的更有用 —— 后者可以由前者推导，反之不行。
@@ -162,7 +170,7 @@ public class ChatCompletionService {
             // 已由 AnthropicUsageParser 完成，直连与翻译两条线路拿到同一口径。
             Mono<String> upstream = genericAnthropicChatService.messages(
                     translated.body(), route, downstreamHeaders, requestId,
-                    DownstreamLogView.protocolOnly(DOWNSTREAM_PROTOCOL.name()));
+                    DownstreamLogView.protocolOnly(DOWNSTREAM_PROTOCOL.name()), execution);
             return m2cTranslator.translateResponse(upstream);
         }
         
@@ -217,6 +225,11 @@ public class ChatCompletionService {
         // content_block_start/stop 与 signature_delta 产 0 帧，
         // 而 [DONE] 由流结束触发而非 message_stop。
         if (decision.upstreamProtocol() == WireProtocol.MESSAGES) {
+            // 登记同非流式：去程 + 回程都已执行，空响应拦截照常生效。
+            PipelineExecution execution = PipelineExecution
+                    .of(DOWNSTREAM_PROTOCOL, decision.upstreamProtocol())
+                    .withCompleted(PipelineStep.REQUEST_TRANSLATION)
+                    .withCompleted(PipelineStep.RESPONSE_TRANSLATION);
             TranslatedRequest translated = c2mTranslator.translateRequest(openAiRequest);
             // 落库视图：下游协议记 CHAT，且 chunk 记翻译后的形态。
             // 流式必须重译而不能只记上游事件：帧数不对等（零帧/一帧/多帧），
@@ -231,7 +244,7 @@ public class ChatCompletionService {
                         return ChunkLogPayload.translated(log.translated(), chunks, log.frameCounts());
                     });
             Flux<String> upstream = genericAnthropicChatService.messagesStream(
-                    translated.body(), route, downstreamHeaders, requestId, logView);
+                    translated.body(), route, downstreamHeaders, requestId, logView, execution);
             return m2cTranslator.translateStream(upstream, route.model(), translated.context());
         }
         

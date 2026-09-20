@@ -3,6 +3,9 @@ package com.kaixuan.copilot_ollama_proxy.provider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineExecution;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineStep;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
@@ -735,8 +738,7 @@ class AbstractUpstreamChatServiceTests {
 
     /** 200 但 0 帧（空 body）同样判空并重试 —— gate 一帧都没见到，自然没开闸。 */
     @Test
-    void emptyBodyWithZeroFramesTriggersRetry() {
-        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+    void emptyBodyWithZeroFramesTriggersRetry() {        AtomicInteger upstreamCallCount = new AtomicInteger(0);
         TestOpenAiService service = new TestOpenAiService();
 
         DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
@@ -1050,6 +1052,209 @@ class AbstractUpstreamChatServiceTests {
         assertThat(service.exposeRetryMaxBackoff()).isEqualTo(Duration.ofSeconds(30));
     }
 
+    // ── 半轮实现态：空响应拦截被跳过 ────────────────────────────────────────
+    //
+    // 「半轮实现」指开发者接了去程翻译但没接回程（开发新协议翻译时的中间态）。
+    // 此时下游拿到的是上游协议的帧，而拦截的判据属于本服务所服务的协议 ——
+    // 判定结果不承载任何信息，只会把过程拖成「扣住 → 判否 → 重试 → 白等 62 秒」。
+    //
+    // 三条线路的行为必须一致：整轮放行、零重试。因此每侧各钉一组。
+
+    /**
+     * 流式：半轮实现态下空响应拦截被跳过。
+     *
+     * <p>上游返回的全是「本协议判据认不出内容」的帧，正常情况下会被判成空响应并重试；
+     * 登记为半轮实现态之后必须<strong>整轮原样放行、上游只被调一次</strong>。
+     *
+     * <p>断言两件事缺一不可：
+     * <ol>
+     *   <li>上游调用次数为 1 —— 证明没有走重试（这是本步要消除的 62 秒白等）；</li>
+     *   <li>下游收到了那批帧 —— 证明是「放行」而不是「吞掉」，
+     *       开发者要的正是这批帧本身。</li>
+     * </ol>
+     */
+    @Test
+    void halfImplementedTranslationPassesStreamThroughWithoutRetry() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            upstreamCallCount.incrementAndGet();
+            // 三个帧都不带 content / reasoning / tool_calls —— 本协议判据一律认不出。
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(Flux.concat(
+                            Mono.just(sseData(factory, "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}")),
+                            Mono.just(sseData(factory, "{\"type\":\"content_block_delta\",\"index\":0,"
+                                    + "\"delta\":{\"type\":\"text_delta\",\"text\":\"\"}}")),
+                            Mono.just(sseData(factory, "{\"type\":\"message_stop\"}"))))
+                    .build());
+        }));
+
+        PipelineExecution halfImplemented = PipelineExecution
+                .of(WireProtocol.CHAT, WireProtocol.MESSAGES)
+                .withCompleted(PipelineStep.REQUEST_TRANSLATION);
+
+        List<String> received = service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-half-stream", halfImplemented)
+                .collectList().block(Duration.ofSeconds(20));
+
+        assertThat(upstreamCallCount.get())
+                .as("半轮实现态不该触发重试")
+                .isEqualTo(1);
+        assertThat(received)
+                .as("上游帧必须原样放行，开发者要的正是它们")
+                .hasSize(3);
+        assertThat(received).anyMatch(chunk -> chunk.contains("message_start"));
+        assertThat(received).anyMatch(chunk -> chunk.contains("message_stop"));
+    }
+
+    /**
+     * 流式：<strong>已实现回程</strong>时拦截照常生效。
+     *
+     * <p>与上一条配对，防止「跳过」被写成无条件放行 ——
+     * 那会让 C2M 这条已全实现的线路静默失去空响应兜底，
+     * 中转站抽风返回的空回复将原样透给下游。
+     *
+     * <p>同样一批帧、同样的上游协议，只差一个回程登记：结论必须相反。
+     */
+    @Test
+    void implementedResponseTranslationStillGatesTheStream() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            int attempt = upstreamCallCount.incrementAndGet();
+            // 两轮都是「本协议判据认不出内容」的帧，因此会一直判空直到预算耗尽。
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(Flux.just(sseData(factory, "{\"type\":\"message_stop\",\"attempt\":" + attempt + "}")))
+                    .build());
+        }));
+
+        PipelineExecution fullyImplemented = PipelineExecution
+                .of(WireProtocol.CHAT, WireProtocol.MESSAGES)
+                .withCompleted(PipelineStep.REQUEST_TRANSLATION)
+                .withCompleted(PipelineStep.RESPONSE_TRANSLATION);
+
+        List<String> received = service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-full-stream", fullyImplemented)
+                .collectList().block(Duration.ofSeconds(20));
+
+        assertThat(upstreamCallCount.get())
+                .as("回程已实现时判空重试必须照常，否则空响应兜底在这条线路上失效")
+                .isGreaterThan(1);
+        // 耗尽后放行最后一轮 —— 与既有的耗尽语义一致。
+        assertThat(received).isNotEmpty();
+    }
+
+    /**
+     * 非流式：半轮实现态下拦截被跳过，整轮原样返回且不重试。
+     */
+    @Test
+    void halfImplementedTranslationPassesNonStreamBodyThroughWithoutRetry() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            upstreamCallCount.incrementAndGet();
+            // 上游协议的形态：没有 choices，本协议判据会判空。
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                    .body("{\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}")
+                    .build());
+        }));
+
+        PipelineExecution halfImplemented = PipelineExecution
+                .of(WireProtocol.CHAT, WireProtocol.MESSAGES)
+                .withCompleted(PipelineStep.REQUEST_TRANSLATION);
+
+        String received = service
+                .exposeChatCompletion(newRequest(), "model-a", provider(), "req-half-nonstream", halfImplemented)
+                .block(Duration.ofSeconds(20));
+
+        assertThat(upstreamCallCount.get())
+                .as("半轮实现态不该触发重试")
+                .isEqualTo(1);
+        assertThat(received)
+                .as("上游原生 body 必须原样返回")
+                .contains("content")
+                .contains("hi");
+    }
+
+    /**
+     * 非流式：已实现回程时拦截照常，空 body 走完整轮重试。
+     *
+     * <p>与上一条配对 —— 同一批帧，只差一个回程登记。
+     */
+    @Test
+    void implementedResponseTranslationStillGatesNonStream() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+        service.setRetryPolicyService(fixedRetryPolicy(1));
+
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            upstreamCallCount.incrementAndGet();
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                    .body("{\"type\":\"message\"}")
+                    .build());
+        }));
+
+        PipelineExecution fullyImplemented = PipelineExecution
+                .of(WireProtocol.CHAT, WireProtocol.MESSAGES)
+                .withCompleted(PipelineStep.REQUEST_TRANSLATION)
+                .withCompleted(PipelineStep.RESPONSE_TRANSLATION);
+
+        String received = service
+                .exposeChatCompletion(newRequest(), "model-a", provider(), "req-full-nonstream", fullyImplemented)
+                .block(Duration.ofSeconds(20));
+
+        assertThat(upstreamCallCount.get())
+                .as("回程已实现时判空重试必须照常")
+                .isEqualTo(2);
+        assertThat(received).isNotNull();
+    }
+
+    /**
+     * 直连路线不受登记机制影响 —— 这是最常见也最不能出错的路径。
+     *
+     * <p>空流照常判空重试，与重构前行为逐字一致。
+     */
+    @Test
+    void directConnectionKeepsGatingUntouched() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            int attempt = upstreamCallCount.incrementAndGet();
+            Flux<DataBuffer> body = attempt == 1
+                    ? Flux.just(sseData(factory, "{\"id\":\"e-1\",\"object\":\"chat.completion.chunk\","
+                            + "\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}"))
+                    : Flux.concat(
+                            Mono.just(sseData(factory, "{\"id\":\"ok\",\"object\":\"chat.completion.chunk\","
+                                    + "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"recovered\"},\"finish_reason\":null}]}")),
+                            Mono.just(sseData(factory, "[DONE]")));
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        PipelineExecution direct = PipelineExecution.of(WireProtocol.CHAT, WireProtocol.CHAT);
+
+        List<String> received = service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-direct-gate", direct)
+                .collectList().block(Duration.ofSeconds(20));
+
+        assertThat(upstreamCallCount.get())
+                .as("直连路线的空响应兜底必须照常")
+                .isEqualTo(2);
+        assertThat(received).anyMatch(chunk -> chunk.contains("recovered"));
+    }
+
     /**
      * 不覆盖退避时长的测试子类 —— 仅用于读取生产默认值。
      *
@@ -1138,6 +1343,20 @@ class AbstractUpstreamChatServiceTests {
         private Mono<String> exposeChatCompletion(Map<String, Object> request, String model,
                                                   ProviderRuntimeConfiguration provider, String requestId) {
             return chatCompletion(request, model, provider, HttpHeaders.EMPTY, requestId);
+        }
+
+        /** 带管道执行登记的流式重载，用于验证「半轮实现态跳过拦截」。 */
+        private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
+                                                        ProviderRuntimeConfiguration provider, String requestId,
+                                                        PipelineExecution execution) {
+            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, requestId, execution);
+        }
+
+        /** 带管道执行登记的非流式重载。 */
+        private Mono<String> exposeChatCompletion(Map<String, Object> request, String model,
+                                                  ProviderRuntimeConfiguration provider, String requestId,
+                                                  PipelineExecution execution) {
+            return chatCompletion(request, model, provider, HttpHeaders.EMPTY, requestId, execution);
         }
 
         /**
