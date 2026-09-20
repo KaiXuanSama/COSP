@@ -765,40 +765,6 @@ public abstract class AbstractUpstreamChatService {
     }
 
     /**
-     * 宣告「本次调用的记录已全部落库」，唤醒管理后台的日志 SSE 流。
-     *
-     * <h2>为何发布点在此层而非仓储的 INSERT 内部</h2>
-     * 一次调用要写两张表：api_call_log 必写，api_call_usage 视上游是否返回 usage 而定，
-     * 且日志先写。信号是<strong>同步投递</strong>的（{@code Sinks.directBestEffort} 在调用
-     * 线程上直接推给订阅者），故若在日志 INSERT 后立即发信号，消费者视角收到通知去查时
-     * 用量行可能尚未写入 —— 那一行的 token 会短暂显示为空，直到下次刷新。
-     * 实践中该窗口只有微秒级、远窄于一次 SSE 投递加 HTTP 回拉的往返，几乎不可观测，
-     * 但它依赖的是「网络比本地慢」这一隐含前提，不是设计保证。把发布点上移到编排层，
-     * 「这次调用的记录整体就绪」才成为显式的时序契约。
-     *
-     * <h2>为何是 finally 语义而非「两张表都写了」</h2>
-     * 失败调用与上游未返回 usage 的调用本就不写用量行。若按 {@code &&} 判定，
-     * 这些记录永远不会实时出现在前端 —— 而错误行恰恰最需要立刻看到。
-     * 因此判据是「落库流程走完」：走到用量环节并结束（无论是否真的写入），即可宣告就绪。
-     *
-     * <h2>一次调用发几次</h2>
-     * 每个<strong>落库分支</strong>各发一次，不是每次调用固定一次 ——
-     * 一次逻辑调用若经历重试，每轮往返都会各自落一条日志，因此也各自发一次信号。
-     * 这与重构前的行为一致（原先每次 INSERT 发一次），前端的回拉是幂等的，
-     * 多余的信号只会多一次「查到相同数据」的请求，不会造成状态错误。
-     *
-     * 只 warn 不抛：与 save* 的容错策略一致，推送失败不得影响主调用链。
-     */
-    private void publishCallRecorded() {
-        if (apiCallLog == null) return;
-        try {
-            apiCallLog.publishCallRecorded();
-        } catch (Exception e) {
-            log.warn("发布调用记录变更信号失败: {}", e.getMessage());
-        }
-    }
-
-    /**
      * 从异常链中查找 WebClientResponseException。
      * 重试耗尽时原始异常被包装在 RetryExhaustedException 中，需要递归解包。
      */
@@ -973,18 +939,26 @@ public abstract class AbstractUpstreamChatService {
     }
 
     /**
-     * best-effort 发出一个生命周期事件；notifier 未注入（如单元测试）或发布异常时静默跳过，
-     * 绝不影响正在进行的聊天数据流。
+     * best-effort 发出一个生命周期事件。
+     *
+     * <p>实现已抽到 {@link UpstreamCallReporter#publishLifecycle}（与另两个执行器共用）。
+     * 本方法保留为<strong>适配器</strong>：把本类的可选注入字段与本类的 logger 绑给它。
+     * 保留的理由是那 28 个调用点读起来不该变 —— 而适配器不符签名会编译失败，
+     * 属于「安全的重复」，与被抽走的「会静默分叉的逻辑」不是一回事。
      */
     private void publishLifecycle(CallLifecycleEvent event) {
-        if (lifecycleNotifier == null) {
-            return;
-        }
-        try {
-            lifecycleNotifier.publish(event);
-        } catch (Exception e) {
-            log.debug("生命周期事件发布失败（已忽略）: {}", e.getMessage());
-        }
+        UpstreamCallReporter.publishLifecycle(log, lifecycleNotifier, event);
+    }
+
+    /**
+     * 发布「调用记录已就绪」信号。
+     *
+     * <p>实现已抽到 {@link UpstreamCallReporter#publishCallRecorded}，
+     * 时序契约的完整理由（为何在编排层而非 INSERT 内部、为何是 finally 语义、
+     * 一次调用可能发多次）已随之搬到那个方法上。方法保留为适配器。
+     */
+    private void publishCallRecorded() {
+        UpstreamCallReporter.publishCallRecorded(log, apiCallLog);
     }
 
     /**

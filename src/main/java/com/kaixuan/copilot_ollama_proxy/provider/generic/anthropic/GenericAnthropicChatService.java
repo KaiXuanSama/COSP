@@ -22,6 +22,7 @@ import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.provider.DownstreamLogView;
 import com.kaixuan.copilot_ollama_proxy.provider.EmptyUpstreamResponseException;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamCallReporter;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamRetryPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -1233,23 +1234,19 @@ public class GenericAnthropicChatService {
         }
     }
 
+    /**
+     * 发布调用记录变更信号 —— 实现见 {@link UpstreamCallReporter#publishCallRecorded}。
+     * 本方法只留作适配器（绑定本类的可选字段与 logger）。
+     */
     private void publishCallRecorded() {
-        if (apiCallLog == null) return;
-        try {
-            apiCallLog.publishCallRecorded();
-        } catch (Exception e) {
-            log.warn("发布调用记录变更信号失败: {}", e.getMessage());
-        }
+        UpstreamCallReporter.publishCallRecorded(log, apiCallLog);
     }
 
+    /**
+     * best-effort 发出一个生命周期事件 —— 实现见 {@link UpstreamCallReporter#publishLifecycle}。
+     * 本方法只留作适配器。
+     */
     private void publishLifecycle(CallLifecycleEvent event) {
-        if (lifecycleNotifier == null) {
-            return;
-        }
-        try {
-            lifecycleNotifier.publish(event);
-        } catch (Exception e) {
-            log.debug("生命周期事件发布失败（已忽略）: {}", e.getMessage());
-        }
+        UpstreamCallReporter.publishLifecycle(log, lifecycleNotifier, event);
     }
 }
