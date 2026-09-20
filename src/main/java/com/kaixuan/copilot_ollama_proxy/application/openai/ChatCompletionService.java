@@ -13,6 +13,7 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ChatToMes
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
+import com.kaixuan.copilot_ollama_proxy.application.shared.ProtocolNotifier;
 import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.provider.DownstreamLogView;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
@@ -101,25 +102,14 @@ public class ChatCompletionService {
     /**
      * 把调度结论补进生命周期事件，供前端 Toast 渲染路径标记（如「O→A」）。
      *
-     * <p>调用时机必须在 {@code dispatch} 之后、真正的上游调用之前：过了这一步才知道
-     * 上游协议，而再往后就是网络等待，晚补会让前端先看到没有标记的 Toast。
-     *
-     * <p>失败不中断调用 —— 事件推送是 best-effort 的观测链路，任何异常都不能影响聊天数据流。
-     * 但<strong>要留痕迹</strong>：完全吞掉时，补写持续失败（比如 requestId 口径不一致）
-     * 的唯一症状是「路径标记不显示」，无从查证 —— 观测链路自身不可观测是个反模式。
-     * 用 debug 而非 warn：它不影响功能，平时不必占日志，排查时开 debug 即可看到。
+     * <p>实现已收归 {@link ProtocolNotifier}（与另两个 Service 共用）——
+     * 本方法只负责把本类持有的下游协议常量与 logger 绑给它。
+     * 完整理由（为何必须在 dispatch 之后且早于网络等待、为何失败只记 debug
+     * 从不中断调用）见那个类的注释。
      */
     private void notifyProtocols(String requestId, ProtocolDispatchDecision decision) {
-        if (lifecycleNotifier == null || requestId == null) {
-            return;
-        }
-        try {
-            lifecycleNotifier.recordProtocols(requestId, DOWNSTREAM_PROTOCOL.name(),
-                    decision.upstreamProtocol().name());
-        } catch (Exception exception) {
-            log.debug("生命周期协议信息补写失败，不影响调用本身 [{}]: {}",
-                    requestId, exception.toString());
-        }
+        ProtocolNotifier.notifyProtocols(log, lifecycleNotifier, requestId,
+                DOWNSTREAM_PROTOCOL, decision);
     }
 
     /**

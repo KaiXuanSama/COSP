@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
@@ -33,6 +34,7 @@ import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -47,20 +49,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class OpenAiController {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiController.class);
-
-    /**
-     * chat completions SSE 的心跳周期。
-     *
-     * <p>下游断连的检测靠两条路径：{@code channelInactive}（Reactor Netty 主动终止）
-     * 与写失败（尝试写时发现 socket 已关）。前者在「从未写过数据的空闲连接」上不可靠 ——
-     * 上游等待首字或重试退避期间服务端一个字节都不写，此时下游断开可能要等到
-     * 上游产生响应、服务端尝试写时才发现，白白浪费一次上游调用。
-     *
-     * <p>管理后台的各条 SSE 流都有心跳注释帧，唯独 chat completions 缺失。
-     * 这里补上，使空闲连接也有周期写操作：断连后最迟一个心跳周期内被写失败路径兜底。
-     * 注释帧（{@code : keep-alive}）对 SSE 客户端无副作用，被规范要求忽略。
-     */
-    private static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(5);
 
     private final ChatCompletionService chatCompletionService;
     private final ObjectMapper objectMapper;
@@ -217,8 +205,13 @@ public class OpenAiController {
      * 处理流式响应，将上游服务的 SSE 片段映射为 ServerSentEvent 逐个下发给客户端，
      * 并在完成时记录累计的 token 使用量。
      *
-     * 相比旧的 SseEmitter 手动订阅模型，这里直接返回 Flux，由 WebFlux 框架托管
+     * <p>相比旧的 SseEmitter 手动订阅模型，这里直接返回 Flux，由 WebFlux 框架托管
      * 背压、取消和超时，无需手动管理 Disposable 与回调。
+     *
+     * <h2>职责分界</h2>
+     * 本方法只负责<strong>把上游 chunk 映射成 SSE 帧</strong>（#1 记载荷与计数、#2 包装）。
+     * 其后的收尾协议（取消 / 终止 / 心跳）在 {@link StreamLifecycle#attach} 里 ——
+     * 三条端点逐字相同，差异只有两个回调。
      *
      * @param requestBody 请求体内容，已转换为 Map 格式
      * @param model 模型名称
@@ -231,9 +224,9 @@ public class OpenAiController {
         // chunkCount 记录累计 chunk 数，每个 chunk 到达即推一次 CHUNK 事件，让 Toast 计数逐个跟手更新。
         AtomicInteger chunkCount = new AtomicInteger(0);
         // canceled 标志：外部主动取消时置位，用于在流结束后区分 ABORTED 与正常 COMPLETED。
-        java.util.concurrent.atomic.AtomicBoolean canceled = new java.util.concurrent.atomic.AtomicBoolean(false);
+        AtomicBoolean canceled = new AtomicBoolean(false);
         // completed 标志：Layer 1（[DONE] 语义信号）与 Layer 2（doOnComplete TCP 关闭）去重，谁先到谁发 COMPLETED。
-        java.util.concurrent.atomic.AtomicBoolean completed = new java.util.concurrent.atomic.AtomicBoolean(false);
+        AtomicBoolean completed = new AtomicBoolean(false);
 
         // 注册取消信号：外部点击取消时 cancelSignal 正常 complete，takeUntilOther 会中止上游流。
         // 取消行为对下游一律静默断连（不注入错误帧），下游 Copilot 自行处理断连。
@@ -244,7 +237,7 @@ public class OpenAiController {
         // 心跳据此停止 —— 否则 Flux.interval 永不完成，merge 永不完成，doOnComplete 兜底失效。
         Sinks.Empty<Void> streamEnd = Sinks.empty();
 
-        Flux<ServerSentEvent<String>> streamBody =
+        Flux<ServerSentEvent<String>> mappedBody =
                 chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders, requestId)
                 .doOnNext(chunk -> {
                     accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens);
@@ -260,62 +253,17 @@ public class OpenAiController {
                     callLifecyclePublisher.publish(
                             CallLifecycleEvent.of(requestId, CallPhase.CHUNK, model, true, chunkCount.incrementAndGet()));
                 })
-                .map(chunk -> ServerSentEvent.builder(chunk).build())
-                .takeUntilOther(cancelSignal)
-                // 取消时静默断连：只发 ABORTED 终态事件，不向下游注入任何错误帧，下游自行处理断连。
-                .concatWith(Flux.defer(() -> {
-                    if (canceled.get()) {
-                        callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.ABORTED, model, true, chunkCount.get()));
-                        log.info("流式调用被主动取消，静默断连 [{}] {}", model, requestId);
-                    }
-                    return Flux.<ServerSentEvent<String>>empty();
-                }))
-                .doOnComplete(() -> {
-                    // 取消时不发 COMPLETED（已由 concatWith 发 ABORTED）。
-                    if (canceled.get()) {
-                        return;
-                    }
-                    // Layer 2（TCP/SSE 连接关闭兜底）：上游未发 [DONE] 就直接关连接时，靠这里 finalize。
-                    // 若 Layer 1 已在收到 [DONE] 时 finalize，completed 标志会让这里成为 no-op（去重）。
-                    finalizeStreamCompletion(requestId, model, chunkCount.get(), completed,
-                            streamInputTokens, streamOutputTokens);
-                })
-                .onErrorResume(error -> {
-                    if (UpstreamFailureClassifier.isClientDisconnect(error)) {
-                        // CANCELED：客户端主动断连，发出终态让 Toast 收尾淡出，避免僵尸 Toast。
-                        callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, true, chunkCount.get()));
-                        return Flux.empty();
-                    }
-                    // FAILED：上游错误或连接失败（客户端主动断连已在上面 return，不计入）。
-                    callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.FAILED, model, true));
-                    return Flux.just(openAiErrorFrame(error, model));
-                })
-                // CANCELED：下游（Copilot）主动断连是 Reactor 的 cancel 信号，onErrorResume 捕获不到，
-                // 必须用 doOnCancel 感知。管理员取消走 takeUntilOther→concatWith 正常 complete（不触发此处），
-                // 正常/失败结束也走 complete/error，故此处只会在「下游真断连」时命中。
-                // 用 canceled/completed 守卫兜底：若终态已发出则不重复发，避免多条终态事件。
-                .doOnCancel(() -> {
-                    if (canceled.get() || completed.get()) {
-                        return;
-                    }
-                    callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, true, chunkCount.get()));
-                    log.info("下游主动断连，静默收尾 [{}] {}", model, requestId);
-                })
-                // 无论正常结束、失败还是取消，都清理注册表，避免内存泄漏；
-                // 同时 emit streamEnd 让心跳停止（与 doOnComplete 里的 emit 幂等，谁先到都行）。
-                .doFinally(signal -> {
-                    callCancellationRegistry.remove(requestId);
-                    streamEnd.tryEmitEmpty();
-                });
+                // Chat 不回填 SSE 的 event 名：OpenAI 客户端只认 data，这是本端点与另两条的差异之一。
+                .map(chunk -> ServerSentEvent.builder(chunk).build());
 
-        // 心跳：空闲期周期性写注释帧。客户端断开后，下一次写即失败，走写失败路径
-        // 触发取消 / 错误，从而立即终止上游调用，而不是干等到上游产生响应。
-        // 数据流结束（streamEnd emit）时心跳随之停止，保证 merge 能正常完成。
-        Flux<ServerSentEvent<String>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
-                .map(tick -> ServerSentEvent.<String>builder().comment("keep-alive").build())
-                .takeUntilOther(streamEnd.asMono());
-
-        return Flux.merge(streamBody, heartbeat);
+        return StreamLifecycle.attach(mappedBody, cancelSignal, streamEnd,
+                new StreamLifecycle.CallContext(requestId, model, chunkCount, canceled, completed,
+                        callLifecyclePublisher, callCancellationRegistry, log),
+                // Layer 2：上游未发 [DONE] 就直接关连接时靠这里兜底。
+                // 若 Layer 1 已在收到 [DONE] 时 finalize，completed 标志会让这里成为 no-op。
+                () -> finalizeStreamCompletion(requestId, model, chunkCount.get(), completed,
+                        streamInputTokens, streamOutputTokens),
+                error -> openAiErrorFrame(error, model));
     }
 
     /**
@@ -334,7 +282,7 @@ public class OpenAiController {
      * @param outputTokens 累计输出 token
      */
     private void finalizeStreamCompletion(String requestId, String model, int finalChunks,
-                                          java.util.concurrent.atomic.AtomicBoolean completed,
+                                          AtomicBoolean completed,
                                           AtomicInteger inputTokens, AtomicInteger outputTokens) {
         // CAS 去重：只有第一个到达的层能 finalize，另一层直接返回。
         if (!completed.compareAndSet(false, true)) {

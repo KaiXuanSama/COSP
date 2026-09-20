@@ -8,6 +8,7 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
+import com.kaixuan.copilot_ollama_proxy.application.shared.ProtocolNotifier;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -88,22 +89,11 @@ public class MessagesService {
     /**
      * 把调度结论补进生命周期事件，供前端 Toast 渲染路径标记（如「A→O」）。
      *
-     * <p>失败不中断调用 —— 事件推送是 best-effort 的观测链路，任何异常都不能影响聊天数据流。
-     * 但<strong>要留痕迹</strong>：完全吞掉时，补写持续失败（比如 requestId 口径不一致）
-     * 的唯一症状是「路径标记不显示」，无从查证 —— 观测链路自身不可观测是个反模式。
-     * 用 debug 而非 warn：它不影响功能，平时不必占日志，排查时开 debug 即可看到。
+     * <p>实现已收归 {@link ProtocolNotifier}，本方法只做绑定；完整理由见那个类。
      */
     private void notifyProtocols(String requestId, ProtocolDispatchDecision decision) {
-        if (lifecycleNotifier == null || requestId == null) {
-            return;
-        }
-        try {
-            lifecycleNotifier.recordProtocols(requestId, DOWNSTREAM_PROTOCOL.name(),
-                    decision.upstreamProtocol().name());
-        } catch (Exception exception) {
-            log.debug("生命周期协议信息补写失败，不影响调用本身 [{}]: {}",
-                    requestId, exception.toString());
-        }
+        ProtocolNotifier.notifyProtocols(log, lifecycleNotifier, requestId,
+                DOWNSTREAM_PROTOCOL, decision);
     }
 
     /**

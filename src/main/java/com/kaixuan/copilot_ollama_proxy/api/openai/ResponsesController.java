@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
@@ -74,15 +75,6 @@ import java.util.concurrent.atomic.AtomicReference;
 public class ResponsesController {
 
     private static final Logger log = LoggerFactory.getLogger(ResponsesController.class);
-
-    /**
-     * SSE 心跳周期，与另两个端点同值。
-     *
-     * <p>理由相同：空闲连接上 {@code channelInactive} 检测不可靠，上游等待首字或退避期间
-     * 服务端一个字节都不写，下游断开可能要等到上游产生响应才被发现。周期写注释帧使
-     * 写失败路径能及时兜底。
-     */
-    private static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(5);
 
     private final ResponsesService responsesService;
     private final ObjectMapper objectMapper;
@@ -172,6 +164,19 @@ public class ResponsesController {
      * Layer 1 收到终态事件即 finalize（不必等 TCP 关闭），
      * Layer 2 上游关闭连接时兜底，用 CAS 去重保证只 finalize 一次。
      */
+    /**
+     * 处理流式响应，把上游事件流映射为带 {@code event:} 类型的 SSE 帧下发。
+     *
+     * <p>完成判定沿用另两个端点的两层结构：
+     * Layer 1 收到终态事件即 finalize（不必等 TCP 关闭），
+     * Layer 2 上游关闭连接时兜底，用 CAS 去重保证只 finalize 一次。
+     *
+     * <h2>职责分界</h2>
+     * 本方法只负责<strong>把上游事件映射成带 event 名的 SSE 帧</strong>。
+     * 其后的收尾协议在 {@link StreamLifecycle#attach} 里；
+     * 本端点提供两个回调，且两者都比另两条多一层信息：
+     * Layer 2 要传 {@code SUCCESS} 结局，error 帧用 Responses 的<strong>扁平</strong>事件体。
+     */
     private Flux<ServerSentEvent<String>> streamResponse(Map<String, Object> requestBody, String model,
                                                           HttpHeaders requestHeaders, String requestId) {
         AtomicInteger eventCount = new AtomicInteger(0);
@@ -187,7 +192,7 @@ public class ResponsesController {
         // 数据流终止信号，心跳据此停止 —— 否则 interval 永不完成，merge 永不完成。
         Sinks.Empty<Void> streamEnd = Sinks.empty();
 
-        Flux<ServerSentEvent<String>> streamBody =
+        Flux<ServerSentEvent<String>> mappedBody =
                 responsesService.responsesStream(requestBody, model, requestHeaders, requestId)
                 .doOnNext(event -> {
                     recordStreamUsage(event, usage);
@@ -209,56 +214,19 @@ public class ResponsesController {
                         builder.event(type);
                     }
                     return builder.build();
-                })
-                .takeUntilOther(cancelSignal)
-                .concatWith(Flux.defer(() -> {
-                    if (canceled.get()) {
-                        callLifecyclePublisher.publish(CallLifecycleEvent.of(
-                                requestId, CallPhase.ABORTED, model, true, eventCount.get()));
-                        log.info("流式调用被主动取消，静默断连 [{}] {}", model, requestId);
-                    }
-                    return Flux.<ServerSentEvent<String>>empty();
-                }))
-                .doOnComplete(() -> {
-                    if (canceled.get()) {
-                        return;
-                    }
-                    // Layer 2：上游未发任何终态事件就关连接时靠这里兜底。
-                    // 拿不到事件类型，只能按成功处理 —— 连接正常关闭且已有内容，
-                    // 没有任何证据表明它失败了（与 Chat / Anthropic 的兜底层同口径）。
-                    finalizeStream(requestId, model, eventCount.get(), completed, usage,
-                            ResponsesStreamEvents.Outcome.SUCCESS);
-                })
-                .onErrorResume(error -> {
-                    if (UpstreamFailureClassifier.isClientDisconnect(error)) {
-                        callLifecyclePublisher.publish(CallLifecycleEvent.of(
-                                requestId, CallPhase.CANCELED, model, true, eventCount.get()));
-                        return Flux.empty();
-                    }
-                    callLifecyclePublisher.publish(
-                            CallLifecycleEvent.of(requestId, CallPhase.FAILED, model, true));
-                    // 错误以 Responses 的 error 事件形态下发，客户端才能识别。
-                    return Flux.just(ServerSentEvent.<String>builder(errorEventBody(error, model))
-                            .event("error").build());
-                })
-                .doOnCancel(() -> {
-                    if (canceled.get() || completed.get()) {
-                        return;
-                    }
-                    callLifecyclePublisher.publish(CallLifecycleEvent.of(
-                            requestId, CallPhase.CANCELED, model, true, eventCount.get()));
-                    log.info("下游主动断连，静默收尾 [{}] {}", model, requestId);
-                })
-                .doFinally(signal -> {
-                    callCancellationRegistry.remove(requestId);
-                    streamEnd.tryEmitEmpty();
                 });
 
-        Flux<ServerSentEvent<String>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
-                .map(tick -> ServerSentEvent.<String>builder().comment("keep-alive").build())
-                .takeUntilOther(streamEnd.asMono());
-
-        return Flux.merge(streamBody, heartbeat);
+        return StreamLifecycle.attach(mappedBody, cancelSignal, streamEnd,
+                new StreamLifecycle.CallContext(requestId, model, eventCount, canceled, completed,
+                        callLifecyclePublisher, callCancellationRegistry, log),
+                // Layer 2：上游未发任何终态事件就关连接时靠这里兜底。
+                // 拿不到事件类型，只能按成功处理 —— 连接正常关闭且已有内容，
+                // 没有任何证据表明它失败了（与 Chat / Anthropic 的兜底层同口径）。
+                () -> finalizeStream(requestId, model, eventCount.get(), completed, usage,
+                        ResponsesStreamEvents.Outcome.SUCCESS),
+                // 错误以 Responses 的 error 事件形态下发，客户端才能识别。
+                error -> ServerSentEvent.<String>builder(errorEventBody(error, model))
+                        .event("error").build());
     }
 
     /**

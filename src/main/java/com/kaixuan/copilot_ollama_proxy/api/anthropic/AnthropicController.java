@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.api.anthropic;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
 import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
@@ -60,15 +61,6 @@ import java.util.concurrent.atomic.AtomicReference;
 public class AnthropicController {
 
     private static final Logger log = LoggerFactory.getLogger(AnthropicController.class);
-
-    /**
-     * SSE 心跳周期，与 OpenAI 端点同值。
-     *
-     * <p>理由相同：空闲连接上 {@code channelInactive} 检测不可靠，上游等待首字或退避期间
-     * 服务端一个字节都不写，下游断开可能要等到上游产生响应才被发现。周期写注释帧使
-     * 写失败路径能及时兜底。
-     */
-    private static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(5);
 
     /** Anthropic 流的结束事件类型。等价于 OpenAI 的 {@code [DONE]}。 */
     private static final String EVENT_MESSAGE_STOP = "message_stop";
@@ -160,6 +152,11 @@ public class AnthropicController {
      * <p>完成判定沿用 OpenAI 端点的两层结构：
      * Layer 1 收到 {@code message_stop} 即 finalize（不必等 TCP 关闭），
      * Layer 2 上游关闭连接时兜底，用 CAS 去重保证只 finalize 一次。
+     *
+     * <h2>职责分界</h2>
+     * 本方法只负责<strong>把上游事件映射成带 event 名的 SSE 帧</strong>。
+     * 其后的收尾协议在 {@link StreamLifecycle#attach} 里；
+     * 本端点提供两个回调：Layer 2 的 finalize，以及 Anthropic 形态的 error 帧。
      */
     private Flux<ServerSentEvent<String>> streamResponse(Map<String, Object> requestBody, String model,
                                                           HttpHeaders requestHeaders, String requestId) {
@@ -175,7 +172,7 @@ public class AnthropicController {
         // 数据流终止信号，心跳据此停止 —— 否则 interval 永不完成，merge 永不完成。
         Sinks.Empty<Void> streamEnd = Sinks.empty();
 
-        Flux<ServerSentEvent<String>> streamBody =
+        Flux<ServerSentEvent<String>> mappedBody =
                 messagesService.messagesStream(requestBody, model, requestHeaders, requestId)
                 .doOnNext(event -> {
                     accumulateUsage(event, usage);
@@ -195,53 +192,16 @@ public class AnthropicController {
                         builder.event(type);
                     }
                     return builder.build();
-                })
-                .takeUntilOther(cancelSignal)
-                .concatWith(Flux.defer(() -> {
-                    if (canceled.get()) {
-                        callLifecyclePublisher.publish(CallLifecycleEvent.of(
-                                requestId, CallPhase.ABORTED, model, true, eventCount.get()));
-                        log.info("流式调用被主动取消，静默断连 [{}] {}", model, requestId);
-                    }
-                    return Flux.<ServerSentEvent<String>>empty();
-                }))
-                .doOnComplete(() -> {
-                    if (canceled.get()) {
-                        return;
-                    }
-                    // Layer 2：上游未发 message_stop 就关连接时靠这里兜底。
-                    finalizeCompletion(requestId, model, eventCount.get(), completed, usage);
-                })
-                .onErrorResume(error -> {
-                    if (UpstreamFailureClassifier.isClientDisconnect(error)) {
-                        callLifecyclePublisher.publish(CallLifecycleEvent.of(
-                                requestId, CallPhase.CANCELED, model, true, eventCount.get()));
-                        return Flux.empty();
-                    }
-                    callLifecyclePublisher.publish(
-                            CallLifecycleEvent.of(requestId, CallPhase.FAILED, model, true));
-                    // 错误以 Anthropic 的 error 事件形态下发，客户端才能识别。
-                    return Flux.just(ServerSentEvent.<String>builder(errorEventBody(error, model))
-                            .event("error").build());
-                })
-                .doOnCancel(() -> {
-                    if (canceled.get() || completed.get()) {
-                        return;
-                    }
-                    callLifecyclePublisher.publish(CallLifecycleEvent.of(
-                            requestId, CallPhase.CANCELED, model, true, eventCount.get()));
-                    log.info("下游主动断连，静默收尾 [{}] {}", model, requestId);
-                })
-                .doFinally(signal -> {
-                    callCancellationRegistry.remove(requestId);
-                    streamEnd.tryEmitEmpty();
                 });
 
-        Flux<ServerSentEvent<String>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
-                .map(tick -> ServerSentEvent.<String>builder().comment("keep-alive").build())
-                .takeUntilOther(streamEnd.asMono());
-
-        return Flux.merge(streamBody, heartbeat);
+        return StreamLifecycle.attach(mappedBody, cancelSignal, streamEnd,
+                new StreamLifecycle.CallContext(requestId, model, eventCount, canceled, completed,
+                        callLifecyclePublisher, callCancellationRegistry, log),
+                // Layer 2：上游未发 message_stop 就关连接时靠这里兜底。
+                () -> finalizeCompletion(requestId, model, eventCount.get(), completed, usage),
+                // 错误以 Anthropic 的 error 事件形态下发，客户端才能识别。
+                error -> ServerSentEvent.<String>builder(errorEventBody(error, model))
+                        .event("error").build());
     }
 
     /**
