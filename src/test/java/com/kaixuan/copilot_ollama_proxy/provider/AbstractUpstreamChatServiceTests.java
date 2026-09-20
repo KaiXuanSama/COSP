@@ -12,8 +12,7 @@ import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.UpstreamChunkNormalizer;
-import org.junit.jupiter.api.Test;
-import org.springframework.http.HttpHeaders;
+import org.junit.jupiter.api.Test;import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.web.reactive.function.client.ClientResponse;
@@ -1330,33 +1329,47 @@ class AbstractUpstreamChatServiceTests {
             return buildWebClientWithHeaders(capturedHeaders, provider, downstreamHeaders, false);
         }
 
+        /**
+         * 流式入口的测试适配：收口为字符串。
+         *
+         * <p>上游执行器现在伸出统一形态（{@code Flux<UpstreamEvent>}），
+         * 而本类的断言全部针对报文内容。在辅助方法里取 {@code data()}，
+         * 使既有断言<strong>一行未改</strong> —— 它们才是「形态统一未改行为」的证据。
+         */
         private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
                                                         ProviderRuntimeConfiguration provider) {
-            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, null);
+            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, null)
+                    .map(UpstreamEvent::data);
         }
 
         private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
                                                         ProviderRuntimeConfiguration provider, String requestId) {
-            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, requestId);
+            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, requestId)
+                    .map(UpstreamEvent::data);
         }
 
         private Mono<String> exposeChatCompletion(Map<String, Object> request, String model,
                                                   ProviderRuntimeConfiguration provider, String requestId) {
-            return chatCompletion(request, model, provider, HttpHeaders.EMPTY, requestId);
+            // 上游执行器现在伸统一形态；测试关心的是报文内容，故在此收口为字符串，
+            // 使既有断言（对 String 的 contains / isEmpty）一行未改。
+            return chatCompletion(request, model, provider, HttpHeaders.EMPTY, requestId)
+                    .map(UpstreamEvent::data);
         }
 
         /** 带管道执行登记的流式重载，用于验证「半轮实现态跳过拦截」。 */
         private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
                                                         ProviderRuntimeConfiguration provider, String requestId,
                                                         PipelineExecution execution) {
-            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, requestId, execution);
+            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, requestId, execution)
+                    .map(UpstreamEvent::data);
         }
 
         /** 带管道执行登记的非流式重载。 */
         private Mono<String> exposeChatCompletion(Map<String, Object> request, String model,
                                                   ProviderRuntimeConfiguration provider, String requestId,
                                                   PipelineExecution execution) {
-            return chatCompletion(request, model, provider, HttpHeaders.EMPTY, requestId, execution);
+            return chatCompletion(request, model, provider, HttpHeaders.EMPTY, requestId, execution)
+                    .map(UpstreamEvent::data);
         }
 
         /**

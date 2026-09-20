@@ -365,14 +365,16 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
             super(new ObjectMapper(), "default-model", new ProviderRequestHeaderService(new ObjectMapper()));
         }
 
-        private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
-                                                        ProviderRuntimeConfiguration provider) {
+        private Flux<UpstreamEvent> exposeChatCompletionStream(Map<String, Object> request, String model,
+                                                              ProviderRuntimeConfiguration provider) {
             return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, null);
         }
 
         private Mono<String> exposeChatCompletion(Map<String, Object> request, String model,
                                                   ProviderRuntimeConfiguration provider) {
-            return chatCompletion(request, model, provider, HttpHeaders.EMPTY, null);
+            // 同流式那个辅助方法：在此收口为字符串，让既有断言一行未改。
+            return chatCompletion(request, model, provider, HttpHeaders.EMPTY, null)
+                    .map(UpstreamEvent::data);
         }
 
         @Override

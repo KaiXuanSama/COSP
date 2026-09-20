@@ -23,6 +23,7 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
+import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -47,11 +48,11 @@ class OpenAiControllerStreamingTests {
   @Test
   void forwardsTheFirstStreamingChunkBeforeTheUpstreamStreamFinishes() {
     given(chatCompletionService.chatCompletionStream(anyMap(), anyString(), org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString())).willReturn(Flux.concat(
-        Mono.just(
+        Mono.just(UpstreamStreams.body(
             """
                 {"id":"chatcmpl-msg_123","object":"chat.completion.chunk","created":1735689600,"model":"mimo-v2.5-pro","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
-                """),
-        Mono.delay(Duration.ofMillis(350)).thenReturn("[DONE]")));
+                """)),
+        Mono.delay(Duration.ofMillis(350)).thenReturn(UpstreamStreams.terminal("[DONE]"))));
 
     FluxExchangeResult<ServerSentEvent<String>> result = webTestClient.post().uri("/v1/chat/completions")
         .contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM).bodyValue("""

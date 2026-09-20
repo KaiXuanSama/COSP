@@ -8,6 +8,7 @@ import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngi
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.provider.AbstractUpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -67,10 +68,10 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
      * @param openAiRequest 原始 OpenAI 请求体
      * @param route 应用层解析出的供应商模型路由
      * @param requestId 本次调用唯一标识，用于透传生命周期事件
-     * @return 上游返回的 OpenAI 响应
+     * @return 统一形态的上游响应（单个 {@link UpstreamEvent.Body}）
      */
-    public Mono<String> chatCompletion(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
-                                       HttpHeaders downstreamHeaders, String requestId) {
+    public Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
+                                              HttpHeaders downstreamHeaders, String requestId) {
         return super.chatCompletion(openAiRequest, route.model(), route.provider(), downstreamHeaders, requestId);
     }
 
@@ -83,9 +84,9 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
      *
      * @param execution 本次请求的管道执行登记，由编排层在组装期填好
      */
-    public Mono<String> chatCompletion(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
-                                       HttpHeaders downstreamHeaders, String requestId,
-                                       PipelineExecution execution) {
+    public Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
+                                              HttpHeaders downstreamHeaders, String requestId,
+                                              PipelineExecution execution) {
         return super.chatCompletion(openAiRequest, route.model(), route.provider(), downstreamHeaders, requestId,
                 execution);
     }
@@ -94,7 +95,7 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
      * 执行不含下游请求头上下文的非流式聊天补全。
      * 仅供直接调用的兼容路径使用。
      */
-    public Mono<String> chatCompletion(Map<String, Object> openAiRequest, ResolvedProviderRoute route) {
+    public Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, ResolvedProviderRoute route) {
         return chatCompletion(openAiRequest, route, HttpHeaders.EMPTY, null);
     }
 
@@ -106,8 +107,8 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
      * @param requestId 本次调用唯一标识，用于透传生命周期事件
      * @return 上游 SSE 数据块
      */
-    public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
-                                              HttpHeaders downstreamHeaders, String requestId) {
+    public Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
+                                                     HttpHeaders downstreamHeaders, String requestId) {
         return super.chatCompletionStream(openAiRequest, route.model(), route.provider(), downstreamHeaders, requestId);
     }
 
@@ -116,9 +117,9 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
      *
      * @param execution 本次请求的管道执行登记，由编排层在组装期填好
      */
-    public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
-                                              HttpHeaders downstreamHeaders, String requestId,
-                                              PipelineExecution execution) {
+    public Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
+                                                     HttpHeaders downstreamHeaders, String requestId,
+                                                     PipelineExecution execution) {
         return super.chatCompletionStream(openAiRequest, route.model(), route.provider(), downstreamHeaders,
                 requestId, execution);
     }
@@ -127,7 +128,7 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
      * 执行不含下游请求头上下文的流式聊天补全。
      * 仅供直接调用的兼容路径使用。
      */
-    public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, ResolvedProviderRoute route) {
+    public Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, ResolvedProviderRoute route) {
         return chatCompletionStream(openAiRequest, route, HttpHeaders.EMPTY, null);
     }
 }

@@ -15,6 +15,8 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRoute
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericResponsesChatService;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -22,7 +24,6 @@ import org.junit.jupiter.api.Test;
 import org.reactivestreams.Publisher;
 import org.springframework.http.HttpHeaders;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 import java.util.List;
 import java.util.Map;
@@ -386,7 +387,7 @@ class ChatDispatchErrorSignalTests {
             given(anthropicChatService.messages(any(), any(), any(), any(), any(), any()))
                     .willAnswer(invocation -> {
                         capturedExecution.set(invocation.getArgument(5));
-                        return Mono.just("{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}");
+                        return UpstreamStreams.single("{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}");
                     });
         }
 
@@ -395,7 +396,7 @@ class ChatDispatchErrorSignalTests {
             given(anthropicChatService.messagesStream(any(), any(), any(), any(), any(), any()))
                     .willAnswer(invocation -> {
                         capturedExecution.set(invocation.getArgument(5));
-                        return Flux.just("{\"type\":\"message_stop\"}");
+                        return UpstreamStreams.messages("{\"type\":\"message_stop\"}");
                     });
         }
 
@@ -452,10 +453,11 @@ class ChatDispatchErrorSignalTests {
         void directUsesOverloadWithoutExecutionRegistration() {
             givenRoute("[\"CHAT\"]");
             given(openAiChatService.chatCompletion(any(), any(), any(), any()))
-                    .willReturn(Mono.just("{\"ok\":true}"));
+                    .willReturn(UpstreamStreams.single("{\"ok\":true}"));
 
             assertThat(chatCompletionService.chatCompletion(
-                    CHAT_REQUEST, "m", HttpHeaders.EMPTY, "req-p3").block())
+                    CHAT_REQUEST, "m", HttpHeaders.EMPTY, "req-p3")
+                    .map(UpstreamEvent::data).block())
                     .isEqualTo("{\"ok\":true}");
             // 未构造任何登记：捕获 Set 为空即直连没走 C2M 的登记分支。
             assertThat(capturedExecution.get()).isNull();
@@ -476,10 +478,11 @@ class ChatDispatchErrorSignalTests {
         void openAiNonStreamStillDelegatesToUpstream() {
             givenRoute("[\"CHAT\"]");
             given(openAiChatService.chatCompletion(any(), any(), any(), any()))
-                    .willReturn(Mono.just("{\"ok\":true}"));
+                    .willReturn(UpstreamStreams.single("{\"ok\":true}"));
 
             assertThat(chatCompletionService.chatCompletion(
-                    Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-9").block())
+                    Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-9")
+                    .map(UpstreamEvent::data).block())
                     .isEqualTo("{\"ok\":true}");
         }
 
@@ -487,10 +490,11 @@ class ChatDispatchErrorSignalTests {
         void anthropicStreamStillDelegatesToUpstream() {
             givenRoute("[\"MESSAGES\"]");
             given(anthropicChatService.messagesStream(any(), any(), any(), any()))
-                    .willReturn(Flux.just("event-1"));
+                    .willReturn(UpstreamStreams.messages("event-1"));
 
             assertThat(messagesService.messagesStream(
                     Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-10")
+                    .map(UpstreamEvent::data)
                     .collectList().block())
                     .containsExactly("event-1");
         }
@@ -499,10 +503,11 @@ class ChatDispatchErrorSignalTests {
         void responsesNonStreamStillDelegatesToUpstream() {
             givenRoute("[\"RESPONSES\"]");
             given(responsesChatService.responses(any(), any(), any(), any()))
-                    .willReturn(Mono.just("{\"ok\":true}"));
+                    .willReturn(UpstreamStreams.single("{\"ok\":true}"));
 
             assertThat(responsesService.responses(
-                    Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-11").block())
+                    Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-11")
+                    .map(UpstreamEvent::data).block())
                     .isEqualTo("{\"ok\":true}");
         }
 
@@ -510,10 +515,11 @@ class ChatDispatchErrorSignalTests {
         void responsesStreamStillDelegatesToUpstream() {
             givenRoute("[\"RESPONSES\"]");
             given(responsesChatService.responsesStream(any(), any(), any(), any()))
-                    .willReturn(Flux.just("event-1"));
+                    .willReturn(UpstreamStreams.responses("event-1"));
 
             assertThat(responsesService.responsesStream(
                     Map.of("model", "m"), "m", HttpHeaders.EMPTY, "req-12")
+                    .map(UpstreamEvent::data)
                     .collectList().block())
                     .containsExactly("event-1");
         }
@@ -526,9 +532,13 @@ class ChatDispatchErrorSignalTests {
      * 两个泛型重载在 lambda 实参位置上无法消除歧义，而 {@code Flux.from} 对
      * {@code Mono} 是零成本适配。
      *
+     * <p>元素类型故意<strong>不限定</strong>为 {@code String}：流式入口现在返回
+     * {@code UpstreamEvent}，而非流式仍是 {@code String}。本方法只关心终止信号，
+     * 与元素类型无关。
+     *
      * @return 捕获到的异常，供调用方追加断言
      */
-    private Throwable assertErrorSignal(Supplier<? extends Publisher<String>> call,
+    private Throwable assertErrorSignal(Supplier<? extends Publisher<?>> call,
                                         Class<? extends Throwable> expected, String messagePart) {
         assertThatCode(call::get)
                 .as("组装期不得抛异常，否则控制器的 onErrorResume 不在链上")

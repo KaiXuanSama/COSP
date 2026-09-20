@@ -20,6 +20,7 @@ import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.provider.DownstreamLogView;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -121,15 +122,15 @@ public class ChatCompletionService {
      * @param model 模型名称
      * @return 上游原始 OpenAI 响应
      */
-    public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
-                                       HttpHeaders downstreamHeaders, String requestId) {        // defer 把路由 / 调度 / 翻译的同步异常转成 onError 信号，控制器才能分类处置。
+    public Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, String model,
+                                              HttpHeaders downstreamHeaders, String requestId) {        // defer 把路由 / 调度 / 翻译的同步异常转成 onError 信号，控制器才能分类处置。
         // 理由见类注释。
         return Mono.defer(() ->
                 dispatchChatCompletion(openAiRequest, model, downstreamHeaders, requestId));
     }
 
-    private Mono<String> dispatchChatCompletion(Map<String, Object> openAiRequest, String model,
-                                                HttpHeaders downstreamHeaders, String requestId) {        ResolvedProviderRoute route = providerRouteResolver.resolve(model);
+    private Mono<UpstreamEvent> dispatchChatCompletion(Map<String, Object> openAiRequest, String model,
+                                                       HttpHeaders downstreamHeaders, String requestId) {        ResolvedProviderRoute route = providerRouteResolver.resolve(model);
         if (route == null) {
             // 类型化异常而非裸 RuntimeException：路由在本地目录就没解析出来，
             // 上游从未被连接，控制器据此回 400 而不是「无法连接到上游服务」502。
@@ -168,7 +169,7 @@ public class ChatCompletionService {
             //
             // usage 不需要在这里接线：把 cache_read 加回输入只依赖上游协议，
             // 已由 AnthropicUsageParser 完成，直连与翻译两条线路拿到同一口径。
-            Mono<String> upstream = genericAnthropicChatService.messages(
+            Mono<UpstreamEvent> upstream = genericAnthropicChatService.messages(
                     translated.body(), route, downstreamHeaders, requestId,
                     DownstreamLogView.protocolOnly(DOWNSTREAM_PROTOCOL.name()), execution);
             return m2cTranslator.translateResponse(upstream);
@@ -184,27 +185,31 @@ public class ChatCompletionService {
      * 执行不含下游请求头上下文的非流式聊天补全。
      * 仅供内部兼容调用与单元测试使用；HTTP API 必须调用带 downstreamHeaders 的重载。
      */
-    public Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model) {
+    public Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, String model) {
         return chatCompletion(openAiRequest, model, HttpHeaders.EMPTY, null);
     }
 
     /**
      * 执行流式聊天补全。
      *
+     * <p>返回<strong>统一形态</strong>的上游事件流：每条元素已经分好「载荷」与
+     * 「终止标记」两态。控制器据此触发收尾，不必再按字符串匹配认魔数 ——
+     * 那个判断在翻译路线下会拿下游协议去比对上游报文。
+     *
      * @param openAiRequest OpenAI 格式请求体
      * @param model 模型名称
-     * @return 上游 SSE 数据块
+     * @return 统一形态的上游事件流
      */
-    public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model,
-                                              HttpHeaders downstreamHeaders, String requestId) {
+    public Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, String model,
+                                                     HttpHeaders downstreamHeaders, String requestId) {
         // 同非流式：defer 让组装期异常成为 onError 信号，控制器才能发出 SSE error 帧
         // 而不是让 WebFlux 兜底成 500 JSON。
         return Flux.defer(() ->
                 dispatchChatCompletionStream(openAiRequest, model, downstreamHeaders, requestId));
     }
 
-    private Flux<String> dispatchChatCompletionStream(Map<String, Object> openAiRequest, String model,
-                                                      HttpHeaders downstreamHeaders, String requestId) {
+    private Flux<UpstreamEvent> dispatchChatCompletionStream(Map<String, Object> openAiRequest, String model,
+                                                             HttpHeaders downstreamHeaders, String requestId) {
         ResolvedProviderRoute route = providerRouteResolver.resolve(model);
         if (route == null) {
             return Flux.error(new UnresolvedModelRouteException(model));
@@ -243,8 +248,9 @@ public class ChatCompletionService {
                                 chunks, route.model(), translated.context().includeUsage());
                         return ChunkLogPayload.translated(log.translated(), chunks, log.frameCounts());
                     });
-            Flux<String> upstream = genericAnthropicChatService.messagesStream(
+            Flux<UpstreamEvent> upstream = genericAnthropicChatService.messagesStream(
                     translated.body(), route, downstreamHeaders, requestId, logView, execution);
+            // 翻译器自己按输出协议分类，故直接用它伸出的流（与上游执行器同一原理）。
             return m2cTranslator.translateStream(upstream, route.model(), translated.context());
         }
         
@@ -256,7 +262,7 @@ public class ChatCompletionService {
      * 执行不含下游请求头上下文的流式聊天补全。
      * 仅供内部兼容调用与单元测试使用；HTTP API 必须调用带 downstreamHeaders 的重载。
      */
-    public Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
+    public Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, String model) {
         return chatCompletionStream(openAiRequest, model, HttpHeaders.EMPTY, null);
     }
 }

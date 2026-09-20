@@ -8,6 +8,8 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslation
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import org.junit.jupiter.api.BeforeEach;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -70,7 +72,7 @@ class AnthropicControllerTests {
     @Test
     void nonStreamReturnsJsonBody() {
         given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                .willReturn(Mono.just("""
+                .willReturn(UpstreamStreams.single("""
                         {"id":"msg_1","type":"message","role":"assistant",\
                         "content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn",\
                         "usage":{"input_tokens":10,"output_tokens":2}}"""));
@@ -100,7 +102,7 @@ class AnthropicControllerTests {
     @Test
     void unmodeledFieldsArePassedThrough() {
         given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                .willReturn(Mono.just("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
+                .willReturn(UpstreamStreams.single("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
 
         webTestClient.post().uri("/v1/messages")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -127,7 +129,7 @@ class AnthropicControllerTests {
     @Test
     void topLevelSystemStringIsPassedThrough() {
         given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                .willReturn(Mono.just("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
+                .willReturn(UpstreamStreams.single("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
 
         webTestClient.post().uri("/v1/messages")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -153,7 +155,7 @@ class AnthropicControllerTests {
     @Test
     void topLevelSystemArrayDoesNotFailDeserialization() {
         given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                .willReturn(Mono.just("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
+                .willReturn(UpstreamStreams.single("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
 
         webTestClient.post().uri("/v1/messages")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -169,7 +171,7 @@ class AnthropicControllerTests {
     @Test
     void missingMaxTokensIsNotRejectedByProxy() {
         given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                .willReturn(Mono.just("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
+                .willReturn(UpstreamStreams.single("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
 
         webTestClient.post().uri("/v1/messages")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -308,10 +310,11 @@ class AnthropicControllerTests {
     void streamReturnsSseWithEventTypes() {
         given(messagesService.messagesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
                 .willReturn(Flux.just(
-                        "{\"type\":\"message_start\",\"message\":{\"id\":\"m1\"}}",
-                        "{\"type\":\"content_block_delta\",\"index\":0,"
-                                + "\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}",
-                        "{\"type\":\"message_stop\"}"));
+                        UpstreamEvent.body("{\"type\":\"message_start\",\"message\":{\"id\":\"m1\"}}"),
+                        UpstreamEvent.body("{\"type\":\"content_block_delta\",\"index\":0,"
+                                + "\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}"),
+                        // 终止标记必须是 Terminal 态：控制器靠它触发 Layer 1 收尾。
+                        UpstreamEvent.terminal("{\"type\":\"message_stop\"}")));
 
         FluxExchangeResult<ServerSentEvent<String>> result = webTestClient.post().uri("/v1/messages")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -341,7 +344,7 @@ class AnthropicControllerTests {
     @Test
     void streamRequestUsesStreamingEntryPoint() {
         given(messagesService.messagesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                .willReturn(Flux.just("{\"type\":\"message_stop\"}"));
+                .willReturn(Flux.just(UpstreamEvent.terminal("{\"type\":\"message_stop\"}")));
 
         webTestClient.post().uri("/v1/messages")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -392,7 +395,7 @@ class AnthropicControllerTests {
     @Test
     void missingStreamFlagIsTreatedAsNonStream() {
         given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                .willReturn(Mono.just("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
+                .willReturn(UpstreamStreams.single("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
 
         webTestClient.post().uri("/v1/messages")
                 .contentType(MediaType.APPLICATION_JSON)

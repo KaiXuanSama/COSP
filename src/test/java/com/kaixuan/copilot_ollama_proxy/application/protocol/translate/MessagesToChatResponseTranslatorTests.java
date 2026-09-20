@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ResponseTranslationException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslationContext;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -837,11 +839,12 @@ class MessagesToChatResponseTranslatorTests {
          */
         @Test
         void eachSubscriptionGetsFreshState() {
-            Flux<String> upstream = Flux.just("""
+            Flux<UpstreamEvent> upstream = UpstreamStreams.messages("""
                     {"type":"message_start","message":{"id":"msg_1","model":"claude-x"}}
                     """);
             Flux<String> translated = translator.translateStream(
-                    upstream, UPSTREAM_MODEL, new TranslationContext(true, false));
+                            upstream, UPSTREAM_MODEL, new TranslationContext(true, false))
+                    .map(UpstreamEvent::data);
 
             List<String> first = translated.collectList().block(Duration.ofSeconds(5));
             List<String> second = translated.collectList().block(Duration.ofSeconds(5));
@@ -1036,14 +1039,21 @@ class MessagesToChatResponseTranslatorTests {
     }
 
     private String translateNonStreamRaw(String upstreamBody) {
-        return translator.translateResponse(Mono.just(upstreamBody))
+        // 入参包成统一形态、出参拆回字符串：本类断言的是翻译后的报文本体，
+        // 不是它被归为载荷还是终止标记（那是控制器的关注点）。
+        return translator.translateResponse(Mono.just(UpstreamStreams.body(upstreamBody)))
+                .map(UpstreamEvent::data)
                 .block(Duration.ofSeconds(5));
     }
 
     private List<String> collectStream(List<String> events, boolean includeUsage) {
+        // 输入用 messages 协议构造（翻译器吃的是上游 Anthropic 事件），
+        // 输出 map 回 data 做断言 —— 调用方关心的是翻译后的报文本体，
+        // 而不是它被归为载荷还是终止标记（那是控制器的关注点）。
         List<String> collected = translator.translateStream(
-                        Flux.fromIterable(events), UPSTREAM_MODEL,
+                        UpstreamStreams.messages(events.toArray(new String[0])), UPSTREAM_MODEL,
                         new TranslationContext(true, includeUsage))
+                .map(UpstreamEvent::data)
                 .collectList()
                 .block(Duration.ofSeconds(5));
         assertThat(collected).isNotNull();

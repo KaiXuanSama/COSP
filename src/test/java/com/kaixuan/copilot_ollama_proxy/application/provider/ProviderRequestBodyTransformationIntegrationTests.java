@@ -10,6 +10,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolve
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderRequestTransformRepository;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -147,7 +148,9 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 "model", "[alpha] model-a",
                 "messages", List.of(Map.of("role", "user", "content", "hello")),
                 "temperature", 0.8,
-                "reasoning_effort", "high"), "[alpha] model-a", downstreamHeaders, null).block(Duration.ofSeconds(3));
+                "reasoning_effort", "high"), "[alpha] model-a", downstreamHeaders, null)
+                .map(UpstreamEvent::data)
+                .block(Duration.ofSeconds(3));
 
         assertThat(response).contains("chatcmpl-test");
         JsonNode upstreamBody = objectMapper.readTree(capturedRequest.get());

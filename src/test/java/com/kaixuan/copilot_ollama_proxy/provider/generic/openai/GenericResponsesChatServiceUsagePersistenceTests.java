@@ -389,11 +389,15 @@ class GenericResponsesChatServiceUsagePersistenceTests {
         }
 
         private Mono<String> exposeResponses(Map<String, Object> request, ResolvedProviderRoute route) {
-            return responses(request, route, HttpHeaders.EMPTY, "req-persist");
+            // 同流式那个辅助方法：在此收口为字符串，让既有断言一行未改。
+            return responses(request, route, HttpHeaders.EMPTY, "req-persist")
+                    .map(com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent::data);
         }
 
         private Flux<String> exposeResponsesStream(Map<String, Object> request, ResolvedProviderRoute route) {
-            return responsesStream(request, route, HttpHeaders.EMPTY, "req-persist");
+            // 收口为字符串：本类断言的是落库内容，与分类无关。
+            return responsesStream(request, route, HttpHeaders.EMPTY, "req-persist")
+                    .map(com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent::data);
         }
 
         @Override

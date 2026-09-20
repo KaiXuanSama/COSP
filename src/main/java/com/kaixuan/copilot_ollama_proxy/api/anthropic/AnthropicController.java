@@ -10,6 +10,8 @@ import com.kaixuan.copilot_ollama_proxy.protocol.anthropic.AnthropicMessagesRequ
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.provider.CallCanceledException;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEventClassifier;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.AnthropicUsageParser;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
@@ -28,7 +30,6 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 
-import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -61,9 +62,6 @@ import java.util.concurrent.atomic.AtomicReference;
 public class AnthropicController {
 
     private static final Logger log = LoggerFactory.getLogger(AnthropicController.class);
-
-    /** Anthropic 流的结束事件类型。等价于 OpenAI 的 {@code [DONE]}。 */
-    private static final String EVENT_MESSAGE_STOP = "message_stop";
 
     private final MessagesService messagesService;
     private final ObjectMapper objectMapper;
@@ -113,7 +111,9 @@ public class AnthropicController {
         Mono<String> cancelSignal = callCancellationRegistry.register(requestId)
                 .then(Mono.error(new CallCanceledException()));
         return Mono.firstWithSignal(
-                        messagesService.messages(requestBody, model, requestHeaders, requestId),
+                        // 出口处拆包：主干是统一形态（UpstreamEvent），本端点下游要的是裸 JSON。
+                        messagesService.messages(requestBody, model, requestHeaders, requestId)
+                                .map(UpstreamEvent::data),
                         cancelSignal)
                 .doOnNext(this::recordUsage)
                 // COMPLETED：非流式无事件计数，最终计数为 0（前端已按 stream 分支处理文案）。
@@ -174,10 +174,12 @@ public class AnthropicController {
 
         Flux<ServerSentEvent<String>> mappedBody =
                 messagesService.messagesStream(requestBody, model, requestHeaders, requestId)
-                .doOnNext(event -> {
+                // 分类已由上游执行器完成：本层只读 isTerminal()。
+                .doOnNext(upstreamEvent -> {
+                    String event = upstreamEvent.data();
                     accumulateUsage(event, usage);
                     // Layer 1：message_stop 是协议终止标记，不计入事件数。
-                    if (isMessageStop(event)) {
+                    if (upstreamEvent.isTerminal()) {
                         finalizeCompletion(requestId, model, eventCount.get(), completed, usage);
                         return;
                     }
@@ -185,7 +187,8 @@ public class AnthropicController {
                             requestId, CallPhase.CHUNK, model, true, eventCount.incrementAndGet()));
                 })
                 // event 类型必须回填：Anthropic 客户端靠它驱动状态机，只发 data 无法解析。
-                .map(event -> {
+                .map(upstreamEvent -> {
+                    String event = upstreamEvent.data();
                     String type = extractEventType(event);
                     ServerSentEvent.Builder<String> builder = ServerSentEvent.builder(event);
                     if (type != null) {
@@ -248,20 +251,23 @@ public class AnthropicController {
         return body;
     }
 
-    /** 从事件 JSON 取出 {@code type} 作为 SSE 的 event 名。 */
+    /**
+     * 从事件 JSON 取出 {@code type} 作为 SSE 的 event 名。
+     *
+     * <p>这里曾有一个 {@code isMessageStop}，用于判「是不是终止事件」。
+     * 它已删除：那个判断上移到了上游执行器的 {@code UpstreamEvent} 分类
+     * —— 在那里按<strong>上游协议</strong>判，翻译路线下才判得对。
+     * 而本方法只服务「把 event 名回填给客户端」，与协议判定无关，故保留。
+     *
+     * <p>实现委托给 {@link UpstreamEventClassifier#extractEventType}：
+     * 它曾与 ResponsesController 的同名方法逐字相同（第三份在分类器里）。
+     * 三份同样的解析逻辑属于「会静默分叉」的东西 ——
+     * 某一处改了边界条件（如改成也认数字型 type）而另外两处没改，
+     * 症状是「一个端点的 event 名回填正常、另一个不正常」，极难归因。
+     * 本方法因此退化为适配器：把本类的 objectMapper 绑给它。
+     */
     private String extractEventType(String event) {
-        try {
-            var node = objectMapper.readTree(event);
-            var type = node.get("type");
-            return type != null && type.isTextual() ? type.asText() : null;
-        } catch (Exception exception) {
-            return null;
-        }
-    }
-
-    /** 是否流结束事件。 */
-    private boolean isMessageStop(String event) {
-        return EVENT_MESSAGE_STOP.equals(extractEventType(event));
+        return UpstreamEventClassifier.extractEventType(objectMapper, event);
     }
 
     /** 从流式事件累积 usage（跨事件合并，见 {@link AnthropicUsageParser#merge}）。 */

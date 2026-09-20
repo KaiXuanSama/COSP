@@ -27,6 +27,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRoute
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderModelRow;
+import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 
 import reactor.core.publisher.Mono;
 
@@ -52,7 +53,7 @@ class OpenAiControllerTests {
 
   @Test
   void returnsNonStreamingOpenAiChatCompletionsWithoutBlockingTheControllerPath() {
-    given(chatCompletionService.chatCompletion(anyMap(), anyString(), org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString())).willReturn(Mono.just("""
+    given(chatCompletionService.chatCompletion(anyMap(), anyString(), org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString())).willReturn(UpstreamStreams.single("""
         {
           "id": "chatcmpl-msg_123",
           "object": "chat.completion",

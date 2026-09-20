@@ -13,6 +13,7 @@ import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
 import com.kaixuan.copilot_ollama_proxy.provider.CallCanceledException;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiChatRequest;
@@ -32,7 +33,6 @@ import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
 
-import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -166,7 +166,11 @@ public class OpenAiController {
         Mono<String> cancelSignal = callCancellationRegistry.register(requestId)
                 .then(Mono.error(new CallCanceledException()));
         return Mono.firstWithSignal(
-                        chatCompletionService.chatCompletion(requestBody, model, requestHeaders, requestId),
+                        // 出口处拆包：主干是统一形态（UpstreamEvent），本端点下游要的是裸 JSON ——
+                        // 形态在这里变回 String。流式侧读 isTerminal()、非流式侧取 data()，
+                        // 两者都是「出口按下游需要适配」，主干本身不感知。
+                        chatCompletionService.chatCompletion(requestBody, model, requestHeaders, requestId)
+                                .map(UpstreamEvent::data),
                         cancelSignal)
                 .doOnNext(this::recordUsage)
                 // COMPLETED：非流式无 chunk 计数，最终计数为 0。
@@ -239,12 +243,16 @@ public class OpenAiController {
 
         Flux<ServerSentEvent<String>> mappedBody =
                 chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders, requestId)
-                .doOnNext(chunk -> {
+                // 分类已由上游执行器完成：本层只读 isTerminal()，不再按字符串认魔数。
+                // 那个判断在翻译路线下会拿下游协议去比对上游报文，而分类跟着
+                // 「帧是哪个协议」走 —— 只有生产它的那一层知道答案。
+                .doOnNext(event -> {
+                    String chunk = event.data();
                     accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens);
-                    // Layer 1（语义信号优先）：收到 [DONE] 即认定上游内容已发完，立即 finalize，
+                    // Layer 1（语义信号优先）：收到终止标记即认定上游内容已发完，立即 finalize，
                     // 不必等上游关闭 TCP 连接。修复「上游发完 [DONE] 却不断连，Toast 永远悬挂在 CHUNK」的偶发 bug。
-                    // [DONE] 是协议终止标记，不计入 chunk 数。
-                    if ("[DONE]".equals(chunk)) {
+                    // 终止标记不计入 chunk 数。
+                    if (event.isTerminal()) {
                         finalizeStreamCompletion(requestId, model, chunkCount.get(), completed,
                                 streamInputTokens, streamOutputTokens);
                         return;
@@ -254,7 +262,7 @@ public class OpenAiController {
                             CallLifecycleEvent.of(requestId, CallPhase.CHUNK, model, true, chunkCount.incrementAndGet()));
                 })
                 // Chat 不回填 SSE 的 event 名：OpenAI 客户端只认 data，这是本端点与另两条的差异之一。
-                .map(chunk -> ServerSentEvent.builder(chunk).build());
+                .map(event -> ServerSentEvent.builder(event.data()).build());
 
         return StreamLifecycle.attach(mappedBody, cancelSignal, streamEnd,
                 new StreamLifecycle.CallContext(requestId, model, chunkCount, canceled, completed,

@@ -21,8 +21,7 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
-
-import reactor.core.publisher.Mono;
+import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 
 @ExtendWith(OutputCaptureExtension.class) @SpringBootTest(classes = CopilotOllamaProxyApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
     "logging.level.com.kaixuan.copilot_ollama_proxy.infrastructure.web.logging=DEBUG" })
@@ -44,7 +43,7 @@ class ResponseLoggingFilterTests {
 
   @Test
   void logsTheResponseBodyForAsyncJsonEndpoints(CapturedOutput output) {
-    given(chatCompletionService.chatCompletion(anyMap(), anyString(), org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString())).willReturn(Mono.just("""
+    given(chatCompletionService.chatCompletion(anyMap(), anyString(), org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString())).willReturn(UpstreamStreams.single("""
         {
           "id": "chatcmpl-msg_123",
           "object": "chat.completion",

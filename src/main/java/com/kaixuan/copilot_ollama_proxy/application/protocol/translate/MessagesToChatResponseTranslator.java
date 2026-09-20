@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslationContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEventClassifier;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -34,10 +36,12 @@ import java.util.UUID;
 @Component
 public class MessagesToChatResponseTranslator implements ProtocolTranslator {
 
+    private final ObjectMapper objectMapper;
     private final MessagesToChatNonStreamTranslator nonStreamTranslator;
     private final MessagesToChatStreamTranslator streamTranslator;
 
     public MessagesToChatResponseTranslator(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
         this.nonStreamTranslator = new MessagesToChatNonStreamTranslator(objectMapper);
         this.streamTranslator = new MessagesToChatStreamTranslator(objectMapper);
     }
@@ -64,10 +68,22 @@ public class MessagesToChatResponseTranslator implements ProtocolTranslator {
      * <p>模型名从上游响应里取，不需要调用方传入 ——
      * 与 OpenAI 直连路径一致（那条路径也不改写响应里的 model）。
      *
-     * @param upstreamBody 上游原始响应体
+     * <h2>入出都是统一形态</h2>
+     * 与 {@link #translateStream} 对称：入参收 {@link UpstreamEvent}，
+     * 出参也包成同一形态。非流式在本形态下就是「恰有一个元素的流」，
+     * 因此主干只需面对一种输入 —— 不必为「单事件」与「多事件」各写一套阶段。
+     *
+     * <p>出参直接用 {@code body} 而不走分类器：非流式的响应体里不存在
+     * 协议级终止标记（Chat 的 {@code [DONE]} 只在流式出现），
+     * 这是已确定的事实，不必运行时再判一次。
+     *
+     * @param upstreamBody 上游原始响应体（统一形态）
      */
-    public Mono<String> translateResponse(Mono<String> upstreamBody) {
-        return upstreamBody.map(nonStreamTranslator::translate);
+    public Mono<UpstreamEvent> translateResponse(Mono<UpstreamEvent> upstreamBody) {
+        return upstreamBody
+                .map(UpstreamEvent::data)
+                .map(nonStreamTranslator::translate)
+                .map(UpstreamEvent::body);
     }
 
     /**
@@ -82,22 +98,33 @@ public class MessagesToChatResponseTranslator implements ProtocolTranslator {
      * {@code retryWhen} 会重订阅，若状态跨轮复用，第二轮的 role 帧会缺失、
      * tool index 会从非零开始。
      *
-     * @param upstreamEvents 上游 SSE data 流
+     * <h2>入出都是统一形态</h2>
+     * 入参收 {@link UpstreamEvent} 是「主干只有一种输入」的要求 —— 上游执行器
+     * 已经分好类，本类取 {@code data()} 重现原先的逐事件翻译逻辑。
+     *
+     * <p>出参也分好类：本类知道自己吐的是哪种协议（{@link #downstreamProtocol()}），
+     * 它就↔确认了「这批帧现在是什么协议」这个事实。
+     * 这与上游执行器同一原理 —— <strong>谁生产帧，谁分类</strong>。
+     *
+     * @param upstreamEvents 上游事件流（统一形态）
      * @param upstreamModel  上游真实模型名（不含供应商前缀），作为 {@code message_start}
      *                       到达前的占位值
      * @param context        请求期上下文，提供 {@code include_usage}
      */
-    public Flux<String> translateStream(Flux<String> upstreamEvents, String upstreamModel,
-                                        TranslationContext context) {
+    public Flux<UpstreamEvent> translateStream(Flux<UpstreamEvent> upstreamEvents, String upstreamModel,
+                                               TranslationContext context) {
         return Flux.defer(() -> {
             M2CStreamState state = new M2CStreamState(
                     placeholderId(), upstreamModel, context.includeUsage());
+            WireProtocol outputProtocol = downstreamProtocol();
             return upstreamEvents
+                    .map(UpstreamEvent::data)
                     .concatMapIterable(event -> streamTranslator.translateEvent(event, state))
                     // 收尾必须在流正常结束后追加，而不是放在 doFinally ——
                     // 后者无法把新元素注入流中。
                     .concatWith(Flux.defer(() -> Flux.fromIterable(
-                            streamTranslator.finalizeStream(state))));
+                            streamTranslator.finalizeStream(state))))
+                    .map(frame -> UpstreamEventClassifier.classify(objectMapper, outputProtocol, frame));
         });
     }
 

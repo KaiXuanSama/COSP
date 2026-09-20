@@ -20,6 +20,8 @@ import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.provider.DownstreamLogView;
 import com.kaixuan.copilot_ollama_proxy.provider.EmptyUpstreamResponseException;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEventClassifier;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamCallReporter;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamRetryPolicy;
 import org.slf4j.Logger;
@@ -184,8 +186,8 @@ public class GenericResponsesChatService {
             DownstreamLogView.direct(WireProtocol.RESPONSES.name());
 
     /** 非流式，接受应用层已解析的路由。 */
-    public Mono<String> responses(Map<String, Object> request, ResolvedProviderRoute route,
-                                  HttpHeaders downstreamHeaders, String requestId) {
+    public Mono<UpstreamEvent> responses(Map<String, Object> request, ResolvedProviderRoute route,
+                                         HttpHeaders downstreamHeaders, String requestId) {
         return responses(request, route, downstreamHeaders, requestId, PipelineExecution.empty());
     }
 
@@ -198,15 +200,15 @@ public class GenericResponsesChatService {
      *
      * @param execution 本次请求的管道执行登记，由编排层在组装期填好
      */
-    public Mono<String> responses(Map<String, Object> request, ResolvedProviderRoute route,
-                                  HttpHeaders downstreamHeaders, String requestId,
-                                  PipelineExecution execution) {
+    public Mono<UpstreamEvent> responses(Map<String, Object> request, ResolvedProviderRoute route,
+                                         HttpHeaders downstreamHeaders, String requestId,
+                                         PipelineExecution execution) {
         return responses(request, route.model(), route.provider(), downstreamHeaders, requestId, execution);
     }
 
     /** 流式，接受应用层已解析的路由。 */
-    public Flux<String> responsesStream(Map<String, Object> request, ResolvedProviderRoute route,
-                                        HttpHeaders downstreamHeaders, String requestId) {
+    public Flux<UpstreamEvent> responsesStream(Map<String, Object> request, ResolvedProviderRoute route,
+                                               HttpHeaders downstreamHeaders, String requestId) {
         return responsesStream(request, route, downstreamHeaders, requestId, PipelineExecution.empty());
     }
 
@@ -215,9 +217,9 @@ public class GenericResponsesChatService {
      *
      * @param execution 本次请求的管道执行登记，由编排层在组装期填好
      */
-    public Flux<String> responsesStream(Map<String, Object> request, ResolvedProviderRoute route,
-                                        HttpHeaders downstreamHeaders, String requestId,
-                                        PipelineExecution execution) {
+    public Flux<UpstreamEvent> responsesStream(Map<String, Object> request, ResolvedProviderRoute route,
+                                               HttpHeaders downstreamHeaders, String requestId,
+                                               PipelineExecution execution) {
         return responsesStream(request, route.model(), route.provider(), downstreamHeaders, requestId, execution);
     }
 
@@ -239,9 +241,9 @@ public class GenericResponsesChatService {
      * </ul>
      * 这条约束是 Chat 侧用一个真实缺陷换来的，此处必须同样成立。
      */
-    protected Mono<String> responses(Map<String, Object> request, String model,
-                                     ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                     String requestId) {
+    protected Mono<UpstreamEvent> responses(Map<String, Object> request, String model,
+                                            ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                            String requestId) {
         return responses(request, model, provider, downstreamHeaders, requestId, PipelineExecution.empty());
     }
 
@@ -254,9 +256,9 @@ public class GenericResponsesChatService {
      *
      * @param execution 本次请求的管道执行登记，由编排层在组装期填好
      */
-    protected Mono<String> responses(Map<String, Object> request, String model,
-                                     ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                     String requestId, PipelineExecution execution) {
+    protected Mono<UpstreamEvent> responses(Map<String, Object> request, String model,
+                                            ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                            String requestId, PipelineExecution execution) {
         Map<String, Object> requestBody = prepareRequestBody(request, false, model, provider);
         log.info("{} Responses 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
 
@@ -336,7 +338,11 @@ public class GenericResponsesChatService {
                     log.warn("{} 上游空响应重试耗尽，放行最后一轮的响应体给下游 [{}] {}",
                             providerKey, model, requestId);
                     return Mono.just(frames.isEmpty() ? "" : frames.get(0));
-                });
+                })
+                // 包装成统一形态：非流式在本形态下就是「恰有一个元素的流」。
+                // 直接用 body 而不走分类器：非流式的响应体里不存在协议级终止标记，
+                // 「说完了」由流的 onComplete 表达 —— 这是已确定的事实，不必运行时再判一次。
+                .map(UpstreamEvent::body);
     }
 
     // ==================== 流式 ====================
@@ -361,9 +367,9 @@ public class GenericResponsesChatService {
      * 前端菜单项的条件只看是否流式、看不到上游协议，不接会让它表现为
      * 「点了没反应、无任何报错」—— 那比理论风险更明确地有害。
      */
-    protected Flux<String> responsesStream(Map<String, Object> request, String model,
-                                            ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                            String requestId) {
+    protected Flux<UpstreamEvent> responsesStream(Map<String, Object> request, String model,
+                                                   ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                                   String requestId) {
         return responsesStream(request, model, provider, downstreamHeaders, requestId,
                 PipelineExecution.empty());
     }
@@ -377,9 +383,9 @@ public class GenericResponsesChatService {
      *
      * @param execution 本次请求的管道执行登记，由编排层在组装期填好
      */
-    protected Flux<String> responsesStream(Map<String, Object> request, String model,
-                                            ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                            String requestId, PipelineExecution execution) {
+    protected Flux<UpstreamEvent> responsesStream(Map<String, Object> request, String model,
+                                                   ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                                   String requestId, PipelineExecution execution) {
         Map<String, Object> requestBody = prepareRequestBody(request, true, model, provider);
         log.info("{} Responses 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
 
@@ -549,20 +555,25 @@ public class GenericResponsesChatService {
         // 不消耗 retryWhen 的预算：那条预算属于「COSP 自己判定的失败」，
         // 而这里是管理员的显式意图，两者不该互相挤占。
         AtomicBoolean silentRetryRequested = new AtomicBoolean(false);
-        AtomicReference<Flux<String>> attemptLoopRef = new AtomicReference<>();
-        Flux<String> attemptLoop = Flux.defer(() -> {
+        AtomicReference<Flux<UpstreamEvent>> attemptLoopRef = new AtomicReference<>();
+        Flux<UpstreamEvent> attemptLoop = Flux.defer(() -> {
                     Mono<Void> silentRetrySignal = callRetryRegistry == null || requestId == null
                             ? Mono.never()
                             : callRetryRegistry.register(requestId)
                                     .doOnSuccess(v -> silentRetryRequested.set(true));
-                    return attempt.takeUntilOther(silentRetrySignal);
+                    return attempt.takeUntilOther(silentRetrySignal)
+                            // 形态归一：把清洗后的事件分成「载荷」与「终止标记」两态。
+                            // 按<strong>上游协议</strong>分类 —— 本类发的就是 Responses 的事件。
+                            // 放在此处而非更外层：静默重发的那一轮也要经过分类。
+                            .map(data -> UpstreamEventClassifier.classify(
+                                    objectMapper, WireProtocol.RESPONSES, data));
                 })
                 .concatWith(Flux.defer(() -> {
                     if (silentRetryRequested.compareAndSet(true, false)) {
                         log.info("静默重试：重新发起 Responses 上游请求 [{}] {}", model, requestId);
                         return attemptLoopRef.get();
                     }
-                    return Flux.<String>empty();
+                    return Flux.<UpstreamEvent>empty();
                 }));
         attemptLoopRef.set(attemptLoop);
 

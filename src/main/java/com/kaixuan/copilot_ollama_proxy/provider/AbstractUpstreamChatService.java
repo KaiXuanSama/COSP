@@ -9,6 +9,7 @@ import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotif
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineExecution;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
@@ -193,11 +194,11 @@ public abstract class AbstractUpstreamChatService {
      *
      * @param openAiRequest 原始 OpenAI 格式请求体
      * @param model 请求中指定的模型名称
-     * @return 上游返回的 OpenAI JSON 响应字符串（已统一 reasoning 字段名并做过 fallback）
+     * @return 统一形态的上游响应（单个 {@link UpstreamEvent.Body}）
      */
-    protected Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
-                                          ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                          String requestId) {
+    protected Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, String model,
+                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                                 String requestId) {
         return chatCompletion(openAiRequest, model, provider, downstreamHeaders, requestId,
                 PipelineExecution.empty());
     }
@@ -211,9 +212,9 @@ public abstract class AbstractUpstreamChatService {
      *
      * @param execution 本次请求的管道执行登记，由编排层在组装期填好
      */
-    protected Mono<String> chatCompletion(Map<String, Object> openAiRequest, String model,
-                                          ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                          String requestId, PipelineExecution execution) {
+    protected Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, String model,
+                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                                 String requestId, PipelineExecution execution) {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, false, model, provider);
         log.info("{} OpenAI 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
 
@@ -227,6 +228,7 @@ public abstract class AbstractUpstreamChatService {
         // 每次上游往返（含重试）各自计时并落库：往返开始时刷新起点，使每条日志的 duration 反映该次往返本身。
         AtomicLong attemptStart = new AtomicLong(System.currentTimeMillis());
 
+        // 非流式在本形态下就是「恰有一个元素的流」——统一后主干只需面对一种输入。
         return Mono.defer(() -> {
                     attemptStart.set(System.currentTimeMillis());
                     return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, false)
@@ -307,10 +309,18 @@ public abstract class AbstractUpstreamChatService {
                     return Mono.just(frames.isEmpty() ? "" : frames.get(0));
                 })
                 // reasoning 清洗与 fallback：与流式对齐，统一 5 个兼容字段名到 reasoning_content，
-                // 并在「只有思考链没有正文」时把思考内容转为正文。
+                // 并在「只有思考链没正文」时把思考内容转为正文。
                 // 放在兜底之后：判定看的是上游原始形态（与流式 gate 判原始帧同理），
                 // 清洗只影响交给下游的内容。
-                .map(body -> normalizeNonStreamResponse(body, model));
+                //
+                // 归一化排在耗尽放行<strong>之后</strong>（与重构前一致）：那条路径放的也是上游 body，
+                // 同样要过一遍清洗。若把它挪到前面，耗尽后透传的内容会绕开清洗。
+                //
+                // 末尾包装成统一形态：非流式在本形态下就是「恰有一个元素的流」。
+                // 直接用 {@code body} 而不走 {@code UpstreamEventClassifier.classify}：
+                // 非流式的响应体里不存在协议级终止标记（三个协议都是），
+                // 「说完了」由流的 onComplete 表达 —— 这是已确定的事实，不必运行时再判一次。
+                .map(body -> UpstreamEvent.body(normalizeNonStreamResponse(body, model)));
     }
 
     /**
@@ -394,13 +404,12 @@ public abstract class AbstractUpstreamChatService {
      * @param model 请求中指定的模型名称
      * @return 按顺序发出的 chunk JSON 字符串，最后一个元素为 "[DONE]"
      */
-    protected Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model,
-                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                                 String requestId) {
+    protected Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, String model,
+                                                       ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                                       String requestId) {
         return chatCompletionStream(openAiRequest, model, provider, downstreamHeaders, requestId,
                 PipelineExecution.empty());
     }
-
     /**
      * 带管道执行登记的{@link #chatCompletionStream}重载。
      *
@@ -410,9 +419,9 @@ public abstract class AbstractUpstreamChatService {
      *
      * @param execution 本次请求的管道执行登记，由编排层在组装期填好
      */
-    protected Flux<String> chatCompletionStream(Map<String, Object> openAiRequest, String model,
-                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                                 String requestId, PipelineExecution execution) {
+    protected Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, String model,
+                                                       ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                                       String requestId, PipelineExecution execution) {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model, provider);
         log.info("{} OpenAI 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
 
@@ -627,6 +636,10 @@ public abstract class AbstractUpstreamChatService {
                     log.debug("{} 上游清洗: {}", provider.providerKey(), chunk);
                     logChunks.add(chunk);
                 })
+                // 形态归一：把清洗后的字符串分成「载荷」与「终止标记」两态。
+                // 放在清洗<strong>之后</strong>：清洗会改写 chunk（含它内部的 [DONE] 直通分支），
+                // 分类必须看最终要下发的那份内容。
+                .map(chunk -> UpstreamEventClassifier.classify(objectMapper, WireProtocol.CHAT, chunk))
                 // 成功往返收尾：仅在非错误终结（complete / cancel）时落一条成功记录。
                 // 失败往返（错误响应 / 网络失败）已在 retry 上游即时落库，此处 ON_ERROR 不重复。
                 .doFinally(signal -> {

@@ -13,6 +13,8 @@ import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.ResponsesRequest;
 import com.kaixuan.copilot_ollama_proxy.provider.CallCanceledException;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEventClassifier;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.ResponsesStreamEvents;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.ResponsesUsageParser;
 import org.slf4j.Logger;
@@ -30,7 +32,6 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 
-import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -124,7 +125,9 @@ public class ResponsesController {
         Mono<String> cancelSignal = callCancellationRegistry.register(requestId)
                 .then(Mono.error(new CallCanceledException()));
         return Mono.firstWithSignal(
-                        responsesService.responses(requestBody, model, requestHeaders, requestId),
+                        // 出口处拆包：主干是统一形态（UpstreamEvent），本端点下游要的是裸 JSON。
+                        responsesService.responses(requestBody, model, requestHeaders, requestId)
+                                .map(UpstreamEvent::data),
                         cancelSignal)
                 .doOnNext(this::recordUsage)
                 // COMPLETED：非流式无事件计数，最终计数为 0（前端已按 stream 分支处理文案）。
@@ -194,10 +197,12 @@ public class ResponsesController {
 
         Flux<ServerSentEvent<String>> mappedBody =
                 responsesService.responsesStream(requestBody, model, requestHeaders, requestId)
-                .doOnNext(event -> {
+                // 分类已由上游执行器完成：本层只读 isTerminal()。
+                .doOnNext(upstreamEvent -> {
+                    String event = upstreamEvent.data();
                     recordStreamUsage(event, usage);
                     // Layer 1：终态事件是协议终止标记，不计入事件数。
-                    if (isTerminalEvent(event)) {
+                    if (upstreamEvent.isTerminal()) {
                         // 结局取自事件名 —— response.failed 不能显示成「完成」。
                         finalizeStream(requestId, model, eventCount.get(), completed, usage,
                                 ResponsesStreamEvents.outcomeOf(extractEventType(event)));
@@ -207,7 +212,8 @@ public class ResponsesController {
                             requestId, CallPhase.CHUNK, model, true, eventCount.incrementAndGet()));
                 })
                 // event 类型必须回填：Responses 客户端靠它驱动状态机，只发 data 无法解析。
-                .map(event -> {
+                .map(upstreamEvent -> {
+                    String event = upstreamEvent.data();
                     String type = extractEventType(event);
                     ServerSentEvent.Builder<String> builder = ServerSentEvent.builder(event);
                     if (type != null) {
@@ -300,20 +306,19 @@ public class ResponsesController {
         return body;
     }
 
-    /** 从事件 JSON 取出 {@code type} 作为 SSE 的 event 名。 */
+    /**
+     * 从事件 JSON 取出 {@code type} 作为 SSE 的 event 名。
+     *
+     * <p>这里曾有一个 {@code isTerminalEvent}，用于判「是不是终态事件」。
+     * 它已删除：那个判断上移到了上游执行器的 {@code UpstreamEvent} 分类
+     * （清单仍与判定器共用 {@link ResponsesStreamEvents#isTerminal}）。
+     * 而本方法只服务「把 event 名回填给客户端」，与协议判定无关，故保留。
+     *
+     * <p>实现委托给 {@link UpstreamEventClassifier#extractEventType}，
+     * 理由见 AnthropicController 的同名方法：三份逐字相同的解析逻辑会静默分叉。
+     */
     private String extractEventType(String event) {
-        try {
-            var node = objectMapper.readTree(event);
-            var type = node.get("type");
-            return type != null && type.isTextual() ? type.asText() : null;
-        } catch (Exception exception) {
-            return null;
-        }
-    }
-
-    /** 是否流的终态事件。清单与空响应判定共用 {@link ResponsesStreamEvents}。 */
-    private boolean isTerminalEvent(String event) {
-        return ResponsesStreamEvents.isTerminal(extractEventType(event));
+        return UpstreamEventClassifier.extractEventType(objectMapper, event);
     }
 
     /**

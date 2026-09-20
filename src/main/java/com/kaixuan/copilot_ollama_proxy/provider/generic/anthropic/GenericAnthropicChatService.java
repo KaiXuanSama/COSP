@@ -23,6 +23,8 @@ import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.provider.DownstreamLogView;
 import com.kaixuan.copilot_ollama_proxy.provider.EmptyUpstreamResponseException;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEventClassifier;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamCallReporter;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamRetryPolicy;
 import org.slf4j.Logger;
@@ -185,17 +187,17 @@ public class GenericAnthropicChatService {
             DownstreamLogView.direct(WireProtocol.MESSAGES.name());
 
     /** 非流式，接受应用层已解析的路由。直连路线。 */
-    public Mono<String> messages(Map<String, Object> request, ResolvedProviderRoute route,
-                                 HttpHeaders downstreamHeaders, String requestId) {
+    public Mono<UpstreamEvent> messages(Map<String, Object> request, ResolvedProviderRoute route,
+                                        HttpHeaders downstreamHeaders, String requestId) {
         return messages(request, route, downstreamHeaders, requestId, DIRECT_VIEW);
     }
 
     /**
      * 非流式，带落库视图。翻译路线用这个重载告知「下游其实是另一个协议」。
      */
-    public Mono<String> messages(Map<String, Object> request, ResolvedProviderRoute route,
-                                 HttpHeaders downstreamHeaders, String requestId,
-                                 DownstreamLogView logView) {
+    public Mono<UpstreamEvent> messages(Map<String, Object> request, ResolvedProviderRoute route,
+                                        HttpHeaders downstreamHeaders, String requestId,
+                                        DownstreamLogView logView) {
         return messages(request, route, downstreamHeaders, requestId, logView, PipelineExecution.empty());
     }
 
@@ -207,28 +209,27 @@ public class GenericAnthropicChatService {
      *
      * @param execution 本次请求的管道执行登记，由编排层在组装期填好
      */
-    public Mono<String> messages(Map<String, Object> request, ResolvedProviderRoute route,
-                                 HttpHeaders downstreamHeaders, String requestId,
-                                 DownstreamLogView logView, PipelineExecution execution) {
+    public Mono<UpstreamEvent> messages(Map<String, Object> request, ResolvedProviderRoute route,
+                                        HttpHeaders downstreamHeaders, String requestId,
+                                        DownstreamLogView logView, PipelineExecution execution) {
         return messages(request, route.model(), route.provider(), downstreamHeaders, requestId,
                 logView, execution);
     }
 
     /** 流式，接受应用层已解析的路由。直连路线。 */
-    public Flux<String> messagesStream(Map<String, Object> request, ResolvedProviderRoute route,
-                                       HttpHeaders downstreamHeaders, String requestId) {
+    public Flux<UpstreamEvent> messagesStream(Map<String, Object> request, ResolvedProviderRoute route,
+                                              HttpHeaders downstreamHeaders, String requestId) {
         return messagesStream(request, route, downstreamHeaders, requestId, DIRECT_VIEW);
     }
 
     /** 流式，带落库视图。 */
-    public Flux<String> messagesStream(Map<String, Object> request, ResolvedProviderRoute route,
-                                       HttpHeaders downstreamHeaders, String requestId,
-                                       DownstreamLogView logView) {
+    public Flux<UpstreamEvent> messagesStream(Map<String, Object> request, ResolvedProviderRoute route,
+                                              HttpHeaders downstreamHeaders, String requestId,
+                                              DownstreamLogView logView) {
         return messagesStream(request, route, downstreamHeaders, requestId, logView, PipelineExecution.empty());
     }
 
-    /**
-     * 流式，带落库视图与<strong>管道执行登记</strong>。
+    /** 流式，带落库视图与<strong>管道执行登记</strong>。
      *
      * <p>登记决定空响应拦截是否介入 —— 跨协议但回程翻译未实现时（开发新协议翻译的
      * 半轮实现态）整轮放行，不判空、不重试。判据与理由见
@@ -236,9 +237,9 @@ public class GenericAnthropicChatService {
      *
      * @param execution 本次请求的管道执行登记，由编排层在组装期填好
      */
-    public Flux<String> messagesStream(Map<String, Object> request, ResolvedProviderRoute route,
-                                       HttpHeaders downstreamHeaders, String requestId,
-                                       DownstreamLogView logView, PipelineExecution execution) {
+    public Flux<UpstreamEvent> messagesStream(Map<String, Object> request, ResolvedProviderRoute route,
+                                              HttpHeaders downstreamHeaders, String requestId,
+                                              DownstreamLogView logView, PipelineExecution execution) {
         return messagesStream(request, route.model(), route.provider(), downstreamHeaders, requestId,
                 logView, execution);
     }
@@ -261,15 +262,15 @@ public class GenericAnthropicChatService {
      * </ul>
      * 这条约束是 OpenAI 侧用一个真实缺陷换来的，此处必须同样成立。
      */
-    protected Mono<String> messages(Map<String, Object> request, String model,
-                                    ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                    String requestId) {
+    protected Mono<UpstreamEvent> messages(Map<String, Object> request, String model,
+                                           ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                           String requestId) {
         return messages(request, model, provider, downstreamHeaders, requestId, DIRECT_VIEW);
     }
 
-    protected Mono<String> messages(Map<String, Object> request, String model,
-                                    ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                    String requestId, DownstreamLogView logView) {
+    protected Mono<UpstreamEvent> messages(Map<String, Object> request, String model,
+                                           ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                           String requestId, DownstreamLogView logView) {
         return messages(request, model, provider, downstreamHeaders, requestId, logView,
                 PipelineExecution.empty());
     }
@@ -283,10 +284,10 @@ public class GenericAnthropicChatService {
      *
      * @param execution 本次请求的管道执行登记，由编排层在组装期填好
      */
-    protected Mono<String> messages(Map<String, Object> request, String model,
-                                    ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                    String requestId, DownstreamLogView logView,
-                                    PipelineExecution execution) {
+    protected Mono<UpstreamEvent> messages(Map<String, Object> request, String model,
+                                           ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                           String requestId, DownstreamLogView logView,
+                                           PipelineExecution execution) {
         Map<String, Object> requestBody = prepareRequestBody(request, false, model, provider);
         log.info("{} Anthropic 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
 
@@ -366,7 +367,11 @@ public class GenericAnthropicChatService {
                     log.warn("{} 上游空响应重试耗尽，放行最后一轮的响应体给下游 [{}] {}",
                             providerKey, model, requestId);
                     return Mono.just(frames.isEmpty() ? "" : frames.get(0));
-                });
+                })
+                // 包装成统一形态：非流式在本形态下就是「恰有一个元素的流」。
+                // 直接用 body 而不走分类器：非流式的响应体里不存在协议级终止标记，
+                // 「说完了」由流的 onComplete 表达 —— 这是已确定的事实，不必运行时再判一次。
+                .map(UpstreamEvent::body);
     }
 
     // ==================== 流式 ====================
@@ -397,15 +402,15 @@ public class GenericAnthropicChatService {
      * （条件只看是否流式，看不到上游协议）表现为「点了没反应、无任何报错」，
      * 那比直连场景下的理论风险更明确地有害。
      */
-    protected Flux<String> messagesStream(Map<String, Object> request, String model,
-                                          ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                          String requestId) {
+    protected Flux<UpstreamEvent> messagesStream(Map<String, Object> request, String model,
+                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                                 String requestId) {
         return messagesStream(request, model, provider, downstreamHeaders, requestId, DIRECT_VIEW);
     }
 
-    protected Flux<String> messagesStream(Map<String, Object> request, String model,
-                                          ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                          String requestId, DownstreamLogView logView) {
+    protected Flux<UpstreamEvent> messagesStream(Map<String, Object> request, String model,
+                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                                 String requestId, DownstreamLogView logView) {
         return messagesStream(request, model, provider, downstreamHeaders, requestId, logView,
                 PipelineExecution.empty());
     }
@@ -419,10 +424,10 @@ public class GenericAnthropicChatService {
      *
      * @param execution 本次请求的管道执行登记，由编排层在组装期填好
      */
-    protected Flux<String> messagesStream(Map<String, Object> request, String model,
-                                          ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                          String requestId, DownstreamLogView logView,
-                                          PipelineExecution execution) {
+    protected Flux<UpstreamEvent> messagesStream(Map<String, Object> request, String model,
+                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
+                                                 String requestId, DownstreamLogView logView,
+                                                 PipelineExecution execution) {
         Map<String, Object> requestBody = prepareRequestBody(request, true, model, provider);
         log.info("{} Anthropic 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
 
@@ -598,20 +603,25 @@ public class GenericAnthropicChatService {
         // 不消耗 retryWhen 的预算：那条预算属于「COSP 自己判定的失败」，
         // 而这里是管理员的显式意图，两者不该互相挤占。
         AtomicBoolean silentRetryRequested = new AtomicBoolean(false);
-        AtomicReference<Flux<String>> attemptLoopRef = new AtomicReference<>();
-        Flux<String> attemptLoop = Flux.defer(() -> {
+        AtomicReference<Flux<UpstreamEvent>> attemptLoopRef = new AtomicReference<>();
+        Flux<UpstreamEvent> attemptLoop = Flux.defer(() -> {
                     Mono<Void> silentRetrySignal = callRetryRegistry == null || requestId == null
                             ? Mono.never()
                             : callRetryRegistry.register(requestId)
                                     .doOnSuccess(v -> silentRetryRequested.set(true));
-                    return attempt.takeUntilOther(silentRetrySignal);
+                    return attempt.takeUntilOther(silentRetrySignal)
+                            // 形态归一：把清洗后的事件分成「载荷」与「终止标记」两态。
+                            // 按<strong>上游协议</strong>分类 —— 本类发的就是 Anthropic 的事件。
+                            // 放在此处而非更外层：静默重发的那一轮也要经过分类。
+                            .map(data -> UpstreamEventClassifier.classify(
+                                    objectMapper, WireProtocol.MESSAGES, data));
                 })
                 .concatWith(Flux.defer(() -> {
                     if (silentRetryRequested.compareAndSet(true, false)) {
                         log.info("静默重试：重新发起 Anthropic 上游请求 [{}] {}", model, requestId);
                         return attemptLoopRef.get();
                     }
-                    return Flux.<String>empty();
+                    return Flux.<UpstreamEvent>empty();
                 }));
         attemptLoopRef.set(attemptLoop);
 

@@ -24,8 +24,7 @@ import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService.EncryptedValue;
-
-import reactor.core.publisher.Mono;
+import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 
 /**
  * 下游鉴权过滤器集成测试。
@@ -82,13 +81,13 @@ class GatewayAuthFilterTests {
         // 默认：聊天服务返回一个简单响应，便于验证「放行」时确实打到了控制器。
         given(chatCompletionService.chatCompletion(anyMap(), anyString(),
                 any(HttpHeaders.class), anyString()))
-                .willReturn(Mono.just("{\"id\":\"chatcmpl-test\",\"object\":\"chat.completion\"}"));
+                .willReturn(UpstreamStreams.single("{\"id\":\"chatcmpl-test\",\"object\":\"chat.completion\"}"));
         given(messagesService.messages(anyMap(), anyString(),
                 any(HttpHeaders.class), anyString()))
-                .willReturn(Mono.just("{\"id\":\"msg_test\",\"type\":\"message\"}"));
+                .willReturn(UpstreamStreams.single("{\"id\":\"msg_test\",\"type\":\"message\"}"));
         given(responsesService.responses(anyMap(), anyString(),
                 any(HttpHeaders.class), anyString()))
-                .willReturn(Mono.just("{\"id\":\"resp_test\",\"object\":\"response\"}"));
+                .willReturn(UpstreamStreams.single("{\"id\":\"resp_test\",\"object\":\"response\"}"));
     }
 
     /** 在 mock 仓库中写入「已开启 + 指定明文 Key」的配置。 */

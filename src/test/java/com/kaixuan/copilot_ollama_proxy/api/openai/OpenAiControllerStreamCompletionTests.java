@@ -9,6 +9,8 @@ import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublishe
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiChatRequest;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
@@ -66,12 +68,13 @@ class OpenAiControllerStreamCompletionTests {
     @Test
     void streamEmitsCompletedOnDoneMarkerWithoutWaitingForConnectionClose() throws Exception {
         // 上游发 2 个内容 chunk + [DONE]，随后 Flux.never() 模拟 keep-alive 不关闭连接。
-        Flux<String> upstream = Flux.concat(
-                Flux.just(
-                        "{\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}",
-                        "{\"id\":\"c2\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}",
-                        "[DONE]"),
-                Flux.never());
+        // 用 UpstreamStreams.chat 而非手写 Flux.just(...)：终止帧由生产代码的同一份
+        // 分类器判定，桩不可能标错（标错的症状是「流结束了但 Toast 不消失」）。
+        Flux<UpstreamEvent> upstream = UpstreamStreams.chat(
+                        "{\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]",
+                        "{\"id\":\"c2\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]",
+                        "[DONE]")
+                .concatWith(Flux.never());
         given(chatCompletionService.chatCompletionStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
                 .willReturn(upstream);
 

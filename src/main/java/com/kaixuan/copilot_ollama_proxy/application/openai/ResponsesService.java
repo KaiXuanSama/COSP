@@ -9,6 +9,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolve
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import com.kaixuan.copilot_ollama_proxy.application.shared.ProtocolNotifier;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericResponsesChatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -107,14 +108,14 @@ public class ResponsesService {
      * @param model 模型名（可能带供应商前缀）
      * @return 上游原始响应 JSON
      */
-    public Mono<String> responses(Map<String, Object> request, String model,
-                                  HttpHeaders downstreamHeaders, String requestId) {
+    public Mono<UpstreamEvent> responses(Map<String, Object> request, String model,
+                                         HttpHeaders downstreamHeaders, String requestId) {
         // defer 把路由 / 调度的同步异常转成 onError 信号，理由见类注释。
         return Mono.defer(() -> dispatchResponses(request, model, downstreamHeaders, requestId));
     }
 
-    private Mono<String> dispatchResponses(Map<String, Object> request, String model,
-                                           HttpHeaders downstreamHeaders, String requestId) {
+    private Mono<UpstreamEvent> dispatchResponses(Map<String, Object> request, String model,
+                                                  HttpHeaders downstreamHeaders, String requestId) {
         ResolvedProviderRoute route = providerRouteResolver.resolve(model);
         if (route == null) {
             // 类型化异常：路由在本地目录就没解析出来，上游从未被连接。
@@ -146,14 +147,14 @@ public class ResponsesService {
      *
      * @return 上游 SSE 事件流的 data 内容（未做协议改写）
      */
-    public Flux<String> responsesStream(Map<String, Object> request, String model,
-                                        HttpHeaders downstreamHeaders, String requestId) {
+    public Flux<UpstreamEvent> responsesStream(Map<String, Object> request, String model,
+                                               HttpHeaders downstreamHeaders, String requestId) {
         // 同非流式：defer 让组装期异常成为 onError 信号，控制器才能发 SSE error 事件。
         return Flux.defer(() -> dispatchResponsesStream(request, model, downstreamHeaders, requestId));
     }
 
-    private Flux<String> dispatchResponsesStream(Map<String, Object> request, String model,
-                                                 HttpHeaders downstreamHeaders, String requestId) {
+    private Flux<UpstreamEvent> dispatchResponsesStream(Map<String, Object> request, String model,
+                                                        HttpHeaders downstreamHeaders, String requestId) {
         ResolvedProviderRoute route = providerRouteResolver.resolve(model);
         if (route == null) {
             return Flux.error(new UnresolvedModelRouteException(model));

@@ -14,6 +14,7 @@ import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.ResponsesRequest;
 import org.junit.jupiter.api.Nested;
+import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
@@ -86,7 +87,7 @@ class ResponsesControllerTests {
                      "tools":[{"type":"web_search"}],"include":["reasoning.encrypted_content"],
                      "truncation":"auto"}""", ResponsesRequest.class);
             given(responsesService.responses(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Mono.just("{\"id\":\"resp_1\"}"));
+                    .willReturn(UpstreamStreams.single("{\"id\":\"resp_1\"}"));
 
             newController().responses(request, HttpHeaders.EMPTY).block(Duration.ofSeconds(5));
 
@@ -105,7 +106,7 @@ class ResponsesControllerTests {
         @Test
         void inputAcceptsBothStringAndArrayForms() throws Exception {
             given(responsesService.responses(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Mono.just("{\"id\":\"resp_1\"}"));
+                    .willReturn(UpstreamStreams.single("{\"id\":\"resp_1\"}"));
 
             ResponsesRequest stringForm = objectMapper.readValue(
                     "{\"model\":\"gpt-5\",\"input\":\"hi\"}", ResponsesRequest.class);
@@ -130,7 +131,7 @@ class ResponsesControllerTests {
             ResponsesRequest request = objectMapper.readValue(
                     "{\"model\":\"gpt-5\",\"input\":\"hi\",\"stream\":false}", ResponsesRequest.class);
             given(responsesService.responses(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Mono.just("{\"id\":\"resp_1\"}"));
+                    .willReturn(UpstreamStreams.single("{\"id\":\"resp_1\"}"));
 
             newController().responses(request, HttpHeaders.EMPTY).block(Duration.ofSeconds(5));
 
@@ -170,7 +171,7 @@ class ResponsesControllerTests {
         @Test
         void eventNameIsBackfilledFromTypeField() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(
+                    .willReturn(UpstreamStreams.responses(
                             "{\"type\":\"response.created\",\"response\":{\"id\":\"r\"}}",
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}",
                             "{\"type\":\"response.completed\",\"response\":{\"id\":\"r\"}}"));
@@ -187,7 +188,7 @@ class ResponsesControllerTests {
         void eventDataIsForwardedVerbatim() {
             String raw = "{\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}";
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(raw));
+                    .willReturn(UpstreamStreams.responses(raw));
 
             assertThat(streamEvents(streamRequest()).get(0).data()).isEqualTo(raw);
         }
@@ -196,7 +197,7 @@ class ResponsesControllerTests {
         @Test
         void nonJsonEventIsStillForwardedWithoutEventName() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just("not-json"));
+                    .willReturn(UpstreamStreams.responses("not-json"));
 
             List<ServerSentEvent<String>> events = streamEvents(streamRequest());
 
@@ -214,7 +215,7 @@ class ResponsesControllerTests {
         @Test
         void terminalEventIsNotCountedAsChunk() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(
+                    .willReturn(UpstreamStreams.responses(
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"b\"}",
                             "{\"type\":\"response.completed\",\"response\":{\"id\":\"r\"}}"));
@@ -236,7 +237,7 @@ class ResponsesControllerTests {
         @Test
         void completionFallsBackToStreamCloseWhenTerminalEventMissing() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just("{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}"));
+                    .willReturn(UpstreamStreams.responses("{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}"));
 
             List<CallLifecycleEvent> lifecycle = collectLifecycle(() -> streamEvents(streamRequest()));
 
@@ -247,7 +248,7 @@ class ResponsesControllerTests {
         @Test
         void completedIsEmittedOnceEvenWhenBothLayersWouldFire() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(
+                    .willReturn(UpstreamStreams.responses(
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
                             "{\"type\":\"response.completed\",\"response\":{\"id\":\"r\"}}"));
 
@@ -271,7 +272,7 @@ class ResponsesControllerTests {
         @Test
         void failedEventFinalizesAsFailed() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(
+                    .willReturn(UpstreamStreams.responses(
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
                             "{\"type\":\"response.failed\",\"response\":{\"id\":\"r\"}}"));
 
@@ -288,7 +289,7 @@ class ResponsesControllerTests {
         @Test
         void bareErrorEventFinalizesAsFailed() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(
+                    .willReturn(UpstreamStreams.responses(
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
                             "{\"type\":\"error\",\"message\":\"upstream blew up\"}"));
 
@@ -307,7 +308,7 @@ class ResponsesControllerTests {
         @Test
         void cancelledEventFinalizesAsAborted() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(
+                    .willReturn(UpstreamStreams.responses(
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
                             "{\"type\":\"response.cancelled\",\"response\":{\"id\":\"r\"}}"));
 
@@ -326,7 +327,7 @@ class ResponsesControllerTests {
         @Test
         void alternateCanceledSpellingFinalizesAsAborted() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just("{\"type\":\"response.canceled\",\"response\":{\"id\":\"r\"}}"));
+                    .willReturn(UpstreamStreams.responses("{\"type\":\"response.canceled\",\"response\":{\"id\":\"r\"}}"));
 
             List<CallLifecycleEvent> lifecycle = collectLifecycle(() -> streamEvents(streamRequest()));
 
@@ -343,7 +344,7 @@ class ResponsesControllerTests {
         @Test
         void incompleteEventFinalizesAsCompleted() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(
+                    .willReturn(UpstreamStreams.responses(
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
                             "{\"type\":\"response.incomplete\",\"response\":{\"id\":\"r\"}}"));
 
@@ -363,7 +364,7 @@ class ResponsesControllerTests {
         @Test
         void streamWithoutTerminalEventFallsBackToCompleted() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just("{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}"));
+                    .willReturn(UpstreamStreams.responses("{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}"));
 
             List<CallLifecycleEvent> lifecycle = collectLifecycle(() -> streamEvents(streamRequest()));
 
