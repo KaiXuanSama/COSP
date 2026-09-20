@@ -683,7 +683,7 @@ class GenericResponsesChatServiceTests {
      * 逗号后有空格、`z_` 开头的键排在最前。任何一处「解析后重新序列化」都会让
      * 这条断言失败 —— 那正是本组用例要防的。
      *
-     * <p>对照物是 Chat 侧：{@code AbstractUpstreamChatService.normalizeUpstreamChunk}
+     * <p>对照物是 Chat 侧：{@code UpstreamChunkNormalizer.normalize}
      * 会把 chunk 读成 Map、改字段名、剪枝，再 {@code writeValueAsString} 写回。
      * Responses 侧<strong>没有</strong>这一步，因此上游异常的键顺序不会被"修正"。
      */

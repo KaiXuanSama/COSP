@@ -16,6 +16,8 @@ import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.OpenAiContentDetector;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.OpenAiUsageParser;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.ReasoningFallback;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.UpstreamChunkNormalizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,14 +49,14 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * 本类负责上游响应清洗、请求转换、重试和调用日志。
  *
- * 上游清洗（{@link #normalizeUpstreamChunk}）：
+ * 上游清洗（{@link UpstreamChunkNormalizer}）：
  *   将各上游供应商返回的格式不一致的 SSE chunk 统一为内部标准 OpenAI 格式。
  *   包括：统一 reasoning 字段名（5 种 → reasoning_content）、清理空值/空 tool_calls、
  *   统一 finish_reason 等。
  *
  * 中枢处理（在 {@link #chatCompletionStream} 的 Reactor 管道中完成）：
  *   基于清洗后的统一格式进行：reasoning fallback
- *   （无正文时回退用思考内容作为回复）、API 调用日志记录。
+ *   （无正文时回退用思考内容作为回复，见 {@link ReasoningFallback}）、API 调用日志记录。
  *
  * 运行时配置（API Key、Base URL、模型列表）由调用方显式传入。
  *
@@ -286,9 +288,17 @@ public abstract class AbstractUpstreamChatService {
     /**
      * 清洗非流式响应：统一 reasoning 字段名，并在只有思考链时回退为正文。
      *
-     * <p>与流式的 {@code normalizeUpstreamChunk} 对齐，但简单得多 —— 流式要跨帧累积
-     * {@code contentEmitted} / {@code reasoningBuffer} 才能在流末判断是否需要 fallback，
-     * 非流式一次就拿到完整 {@code message}，判断是当场完成的。
+     * <p>与流式的 {@link UpstreamChunkNormalizer#normalize} 对齐，但简单得多 ——
+     * 流式要跨帧累积 {@code contentEmitted} / {@code reasoningBuffer} 才能在流末判断
+     * 是否需要 fallback，非流式一次就拿到完整 {@code message}，判断是当场完成的。
+     *
+     * <p><strong>为何本方法留在本类而不随清洗一起搬走</strong>：
+     * 它遍历<strong>所有</strong> {@code choices}（流式只看第一个），
+     * 且 fallback 是把思考内容填进已有的 {@code message.content}（流式是补一对伪 chunk）。
+     * 两者形状不同，共用不了 {@code UpstreamChunkNormalizer} 的入口；
+     * 能共用的只有「别名字段统一」这一小段，已改为调它的
+     * {@link UpstreamChunkNormalizer#extractReasoning} 与
+     * {@link UpstreamChunkNormalizer#hasReasoningAliasKey}。
      *
      * <p>解析失败原样返回：与判定器「结构未知保守放行」同一取向 —— 透传对上游格式差异
      * 免疫是非流式当前的优势，不该因为清洗而引入结构约束。
@@ -320,9 +330,9 @@ public abstract class AbstractUpstreamChatService {
                 Map<String, Object> message = (Map<String, Object>) messageRaw;
                 // 先记下是否带别名字段：extractReasoning 会顺手移除它们（含值为空的），
                 // 那本身就是一次改动，漏记会让清洗结果不被写回。
-                boolean hadAliasKey = hasReasoningAliasKey(message);
+                boolean hadAliasKey = UpstreamChunkNormalizer.hasReasoningAliasKey(message);
                 // 统一 reasoning 字段名到 reasoning_content（上游各家命名不统一）。
-                String reasoning = extractReasoning(message);
+                String reasoning = UpstreamChunkNormalizer.extractReasoning(message);
                 if (reasoning != null && !reasoning.isBlank()) {
                     message.put("reasoning_content", reasoning);
                     changed = true;
@@ -343,21 +353,6 @@ public abstract class AbstractUpstreamChatService {
             // 结构未知：原样透传，不因清洗失败影响正常响应。
             return body;
         }
-    }
-
-    /**
-     * message 是否带 reasoning_content 之外的思考链别名字段（无论其值是否为空）。
-     *
-     * <p>只用于判断「{@link #extractReasoning} 是否会产生改动」：它会移除所有别名字段，
-     * 包括值为空的那些，这类纯删除也需要把清洗结果写回。
-     */
-    private boolean hasReasoningAliasKey(Map<String, Object> message) {
-        for (String key : OpenAiContentDetector.REASONING_KEYS) {
-            if (!"reasoning_content".equals(key) && message.containsKey(key)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -559,15 +554,15 @@ public abstract class AbstractUpstreamChatService {
                         usageRaw.set(rawUsage);
                     }
                 }).concatMap(chunk -> {
-                    String normalizedChunk = normalizeUpstreamChunk(chunk, contentEmitted, reasoningBuffer, chunkId);
-                    if (isTerminalChunk(normalizedChunk)) {
-                        // 仅当 contentEmitted=false 且 reasoningBuffer 非空时触发 reasoning fallback
-                        if (isStopFinishReason(normalizedChunk) && !contentEmitted.get() && !reasoningBuffer.isEmpty()) {
-                            log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
-                            String fallbackContent = buildFallbackContentChunk(chunkId.get(), model, reasoningBuffer.toString());
-                            String fallbackFinish = buildFallbackFinishChunk(chunkId.get(), model);
-                            return Flux.just(fallbackContent, fallbackFinish);
-                        }
+                    // 上游形态归一：统一 reasoning 字段名 / finish_reason / 剪空，见 UpstreamChunkNormalizer。
+                    String normalizedChunk = UpstreamChunkNormalizer.normalize(
+                            objectMapper, chunk, contentEmitted, reasoningBuffer, chunkId);
+                    // reasoning fallback：只有思考链没有正文时，用思考内容补一对伪 chunk。
+                    // 触发判定（含「纯工具调用不触发」）见 ReasoningFallback.shouldFallback。
+                    if (ReasoningFallback.shouldFallback(objectMapper, normalizedChunk, contentEmitted, reasoningBuffer)) {
+                        log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
+                        return Flux.fromIterable(ReasoningFallback.buildFallbackFrames(
+                                objectMapper, chunkId.get(), model, reasoningBuffer.toString()));
                     }
                     return Flux.just(normalizedChunk);
                 }).doOnNext(chunk -> {
@@ -974,300 +969,5 @@ public abstract class AbstractUpstreamChatService {
      * @return 端点 URI，如 "/v1/chat/completions"
      */
     protected abstract String chatCompletionsUri();
-
-    /**
-     * 上游清洗 —— 对上游返回的原始 SSE chunk 做统一标准化。
-     *
-     * 本方法属于三阶段管道的第一阶段（上游清洗），目的是将各上游供应商返回的
-     * 格式不一致的 chunk 统一为本服务内部约定的 OpenAI 标准格式，以便后续阶段
-     * （中枢处理：reasoning 累积/缓存/fallback/日志）能基于统一格式工作。
-     *
-     * 清洗内容：
-     * 1. 统一 reasoning 字段名：thinking / reasoning / reasoning_text / cot_summary → reasoning_content
-     * 2. 统一 finish_reason：空字符串 → null
-     * 3. 清理空 tool_calls（[] / null → 删除）
-     * 4. 递归剪枝空值（null / "" / [] / 空 Map）
-     *
-     * 注意：此方法不做"下游格式化"，清洗后的 chunk 仍然是 OpenAI 格式。
-     * 下游序列化（OpenAI passthrough 或 Ollama 结构转换）由 Controller 层负责。
-     *
-     * @param chunkJson 原始 SSE data 的 JSON 字符串
-     * @param contentEmitted 是否已经输出过正文 content
-     * @param reasoningBuffer 累积 reasoning_content 的缓冲区
-     * @param chunkId 当前流的 chunk ID 引用
-     * @return 清洗后的 chunk JSON 字符串
-     */
-    @SuppressWarnings("unchecked")
-    private String normalizeUpstreamChunk(String chunkJson, AtomicBoolean contentEmitted, StringBuilder reasoningBuffer, AtomicReference<String> chunkId) {
-        try {
-            if ("[DONE]".equals(chunkJson)) {
-                return chunkJson;
-            }
-            Map<String, Object> chunk = objectMapper.readValue(chunkJson, Map.class);
-
-            // 记录 chunk ID，供 reasoning fallback 构建伪 chunk 时保持一致性。
-            Object id = chunk.get("id");
-            if (id instanceof String idStr && !idStr.isEmpty()) {
-                chunkId.set(idStr);
-            }
-
-            List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
-            if (choices == null || choices.isEmpty()) {
-                return chunkJson;
-            }
-
-            Map<String, Object> choice = choices.get(0);
-            Map<String, Object> delta = (Map<String, Object>) choice.get("delta");
-            boolean preserveEmptyDelta = delta != null;
-            boolean preserveNullFinishReason = false;
-
-            // 统一 finish_reason：空字符串 → null
-            Object finishReasonObj = choice.get("finish_reason");
-            if (finishReasonObj instanceof String finishReason && finishReason.isBlank()) {
-                choice.put("finish_reason", null);
-                preserveNullFinishReason = true;
-            } else if (choice.containsKey("finish_reason") && finishReasonObj == null) {
-                preserveNullFinishReason = true;
-            }
-
-            if (delta != null) {
-                normalizeDelta(delta, reasoningBuffer);
-
-                // 标记是否已经输出过正文 content，用于判断是否需要 reasoning fallback。
-                Object contentObj = delta.get("content");
-                if (contentObj instanceof String content && !content.isEmpty()) {
-                    contentEmitted.set(true);
-                }
-
-                // 如果 delta 规范化后为空，后续 prune 后再恢复为空对象，作为标准结束 chunk 形式
-            }
-
-            pruneEmptyValues(chunk);
-
-            // 保留结构性字段：中间 chunk 的 finish_reason:null 不应被删除
-            if (preserveNullFinishReason && !choice.containsKey("finish_reason")) {
-                choice.put("finish_reason", null);
-            }
-            // 保留结构性字段：结束 chunk / 空 delta chunk 应保留 delta:{}
-            if (preserveEmptyDelta && !choice.containsKey("delta")) {
-                choice.put("delta", new LinkedHashMap<String, Object>());
-            }
-
-            return objectMapper.writeValueAsString(chunk);
-        } catch (Exception exception) {
-            return chunkJson;
-        }
-    }
-
-    /**
-     * 统一规范化 delta 字段。
-     */
-    private void normalizeDelta(Map<String, Object> delta, StringBuilder reasoningBuffer) {
-        // 统一 reasoning 字段名到 reasoning_content
-        String reasoning = extractReasoning(delta);
-        if (reasoning != null && !reasoning.isBlank()) {
-            reasoningBuffer.append(reasoning);
-            delta.put("reasoning_content", reasoning);
-        }
-
-        // 没有真实工具调用时，绝不保留 tool_calls（尤其不能保留 []）
-        Object toolCallsObj = delta.get("tool_calls");
-        if (!(toolCallsObj instanceof List<?> toolCalls) || !isMeaningfulToolCalls(toolCalls)) {
-            delta.remove("tool_calls");
-        }
-
-        // 删除空字段（null / "" / []）
-        pruneEmptyValues(delta);
-    }
-
-    /**
-     * 从多个兼容字段中提取思考内容，并统一成 reasoning_content。
-     */
-    private String extractReasoning(Map<String, Object> delta) {
-        // 与空响应 gate 的判定共用同一份清单：gate 工作在清洗之前，必须逐个检查兼容字段。
-        // 新增兼容字段时改 OpenAiContentDetector.REASONING_KEYS 一处即可，两侧同步生效。
-        String[] keys = OpenAiContentDetector.REASONING_KEYS;
-        for (String key : keys) {
-            Object value = delta.get(key);
-            if (value instanceof String str && !str.isBlank()) {
-                // 清理旧字段，只保留 reasoning_content
-                for (String k : keys) {
-                    if (!"reasoning_content".equals(k)) {
-                        delta.remove(k);
-                    }
-                }
-                return str;
-            }
-        }
-        // 如果都为空，也要清理旧字段名，避免带着空串出去
-        for (String k : keys) {
-            if (!"reasoning_content".equals(k)) {
-                delta.remove(k);
-            }
-        }
-        return null;
-    }
-
-    /**
-     * 判断 tool_calls 是否真的有意义（至少有一个非空元素）。
-     */
-    private boolean isMeaningfulToolCalls(List<?> toolCalls) {
-        if (toolCalls.isEmpty()) {
-            return false;
-        }
-        for (Object item : toolCalls) {
-            if (item instanceof Map<?, ?> map && !map.isEmpty()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * 递归删除 Map/List 中的空值：null、空字符串（""）、空列表、空 Map。
-     *
-     * 注意：只删除真正的空字符串（isEmpty），不删除仅包含空白字符的字符串（isBlank），
-     * 因为空格（" "）、换行（"\n"）、制表符（"\t"）等在 content 中是有意义的内容，
-     * 对 Markdown 格式（列表缩进、段落分隔、代码块）至关重要。
-     */
-    @SuppressWarnings("unchecked")
-    private void pruneEmptyValues(Object node) {
-        if (node instanceof Map<?, ?> rawMap) {
-            Map<String, Object> map = (Map<String, Object>) rawMap;
-            List<String> keysToRemove = new ArrayList<>();
-            for (Map.Entry<String, Object> entry : map.entrySet()) {
-                Object value = entry.getValue();
-                pruneEmptyValues(value);
-                if (value == null
-                        || (value instanceof String str && str.isEmpty())
-                        || (value instanceof List<?> list && list.isEmpty())
-                        || (value instanceof Map<?, ?> childMap && childMap.isEmpty())) {
-                    keysToRemove.add(entry.getKey());
-                }
-            }
-            for (String key : keysToRemove) {
-                map.remove(key);
-            }
-        } else if (node instanceof List<?> rawList) {
-            List<Object> list = (List<Object>) rawList;
-            list.removeIf(item -> {
-                pruneEmptyValues(item);
-                return item == null
-                        || (item instanceof String str && str.isEmpty())
-                        || (item instanceof List<?> childList && childList.isEmpty())
-                        || (item instanceof Map<?, ?> childMap && childMap.isEmpty());
-            });
-        }
-    }
-
-    /**
-     * 判断是否为需要触发收尾逻辑的终止 chunk。
-     */
-    @SuppressWarnings("unchecked")
-    private boolean isTerminalChunk(String chunkJson) {
-        if ("[DONE]".equals(chunkJson)) {
-            return false;
-        }
-        try {
-            Map<String, Object> chunk = objectMapper.readValue(chunkJson, Map.class);
-            List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
-            if (choices == null || choices.isEmpty()) {
-                return false;
-            }
-            Object finishReason = choices.get(0).get("finish_reason");
-            return "stop".equals(finishReason) || "tool_calls".equals(finishReason);
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private boolean isStopFinishReason(String chunkJson) {
-        return hasFinishReason(chunkJson, "stop");
-    }
-
-    private boolean hasFinishReason(String chunkJson, String expected) {
-        try {
-            if ("[DONE]".equals(chunkJson)) {
-                return false;
-            }
-            @SuppressWarnings("unchecked")
-            Map<String, Object> chunk = objectMapper.readValue(chunkJson, Map.class);
-            @SuppressWarnings("unchecked")
-            List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
-            if (choices == null || choices.isEmpty()) {
-                return false;
-            }
-            Object finishReason = choices.get(0).get("finish_reason");
-            return expected.equals(finishReason);
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    /**
-     * 构建 reasoning fallback 的正文 chunk。
-     *
-     * 当模型只输出了思考内容而没有正文时，用思考内容构造一个伪 content delta，
-     * 使客户端看到的回复内容就是模型的思考过程。
-     *
-     * @param id 当前流的 chunk ID
-     * @param model 模型名称
-     * @param reasoningContent 累积的思考内容
-     * @return OpenAI chunk JSON 字符串
-     */
-    private String buildFallbackContentChunk(String id, String model, String reasoningContent) {
-        try {
-            Map<String, Object> chunk = new LinkedHashMap<>();
-            chunk.put("id", id);
-            chunk.put("object", "chat.completion.chunk");
-            chunk.put("created", System.currentTimeMillis() / 1000);
-            chunk.put("model", model);
-
-            Map<String, Object> delta = new LinkedHashMap<>();
-            delta.put("role", "assistant");
-            delta.put("content", reasoningContent);
-
-            Map<String, Object> choice = new LinkedHashMap<>();
-            choice.put("index", 0);
-            choice.put("delta", delta);
-            choice.put("finish_reason", null);
-
-            chunk.put("choices", List.of(choice));
-            return objectMapper.writeValueAsString(chunk);
-        } catch (Exception exception) {
-            return "{}";
-        }
-    }
-
-    /**
-     * 构建 reasoning fallback 的 finish chunk。
-     *
-     * 紧跟在 {@link #buildFallbackContentChunk} 之后发出，标记流的结束。
-     *
-     * @param id 当前流的 chunk ID
-     * @param model 模型名称
-     * @return OpenAI chunk JSON 字符串，finish_reason 为 "stop"
-     */
-    private String buildFallbackFinishChunk(String id, String model) {
-        try {
-            Map<String, Object> chunk = new LinkedHashMap<>();
-            chunk.put("id", id);
-            chunk.put("object", "chat.completion.chunk");
-            chunk.put("created", System.currentTimeMillis() / 1000);
-            chunk.put("model", model);
-
-            Map<String, Object> delta = new LinkedHashMap<>();
-
-            Map<String, Object> choice = new LinkedHashMap<>();
-            choice.put("index", 0);
-            choice.put("delta", delta);
-            choice.put("finish_reason", "stop");
-
-            chunk.put("choices", List.of(choice));
-            return objectMapper.writeValueAsString(chunk);
-        } catch (Exception exception) {
-            return "{}";
-        }
-    }
 
 }

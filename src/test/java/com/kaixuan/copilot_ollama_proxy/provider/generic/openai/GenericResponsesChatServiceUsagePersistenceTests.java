@@ -259,7 +259,7 @@ class GenericResponsesChatServiceUsagePersistenceTests {
      * </ol>
      *
      * <p>载荷刻意打乱键顺序并加上多余空格：若日志走的是「解析后重新序列化」，
-     * 这条会失败。Chat 侧确实是那样做的（{@code normalizeUpstreamChunk}），
+     * 这条会失败。Chat 侧确实是那样做的（{@code UpstreamChunkNormalizer.normalize}），
      * 因此本用例也是「Responses 没有继承那个行为」的证据。
      */
     @Test

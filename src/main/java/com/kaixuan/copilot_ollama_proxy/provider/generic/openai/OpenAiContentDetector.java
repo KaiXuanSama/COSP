@@ -23,7 +23,7 @@ import java.util.Map;
  *
  * <h2>为何判原始帧而非清洗后的帧</h2>
  * 判定必须发生在 {@code retryWhen} <strong>内侧</strong>才能触发重试，而清洗链
- * （{@code normalizeUpstreamChunk}）挂在 {@code retryWhen} 外侧 —— 它依赖
+ * （{@code UpstreamChunkNormalizer#normalize}）挂在 {@code retryWhen} 外侧 —— 它依赖
  * {@code contentEmitted}、{@code reasoningBuffer} 这些<strong>跨往返累积</strong>的状态，
  * 移进重订阅范围内会引入一批新的状态重置问题。因此这里看到的是未清洗的原始帧，
  * 思考链的 5 个兼容字段都要判，不能只看 {@code reasoning_content}。
@@ -50,7 +50,7 @@ import java.util.Map;
 public final class OpenAiContentDetector {
 
     /**
-     * 思考链的兼容字段名，与清洗链 {@code extractReasoning} 共用同一份清单。
+     * 思考链的兼容字段名，与清洗链 {@code UpstreamChunkNormalizer#extractReasoning} 共用同一份清单。
      *
      * <p>上游各家命名不统一，清洗阶段会把这 5 种统一改写为 {@code reasoning_content}；
      * 但本判定器工作在清洗之前，因此必须逐个检查。
@@ -157,7 +157,7 @@ public final class OpenAiContentDetector {
             return false;
         }
         // 正文：空串不算（上游常用空 content 占位）；仅含空白的串算有内容 ——
-        // 与清洗链 pruneEmptyValues 的口径一致，空格/换行对 Markdown 是有意义的。
+        // 与清洗链 UpstreamChunkNormalizer#pruneEmptyValues 的口径一致，空格/换行对 Markdown 是有意义的。
         if (delta.get("content") instanceof String content && !content.isEmpty()) {
             return true;
         }

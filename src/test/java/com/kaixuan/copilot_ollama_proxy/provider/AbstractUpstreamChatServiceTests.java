@@ -8,6 +8,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfi
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.UpstreamChunkNormalizer;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -18,7 +19,6 @@ import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 
-import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.LinkedHashMap;
@@ -1140,11 +1140,21 @@ class AbstractUpstreamChatServiceTests {
             return chatCompletion(request, model, provider, HttpHeaders.EMPTY, requestId);
         }
 
-        private String exposeTranslateChunk(String chunk) throws Exception {
-            Method method = AbstractUpstreamChatService.class.getDeclaredMethod(
-                    "normalizeUpstreamChunk", String.class, AtomicBoolean.class, StringBuilder.class, AtomicReference.class);
-            method.setAccessible(true);
-            return (String) method.invoke(this, chunk, new AtomicBoolean(false), new StringBuilder(), new AtomicReference<String>("chatcmpl-unknown"));
+        /**
+         * 直接调清洗类，不再走反射。
+         *
+         * <p>清洗与 fallback 已搬到 {@code provider.stage.UpstreamChunkNormalizer}
+         * （Stage 1.4 纯搬运）。此前本方法是反射调 {@code AbstractUpstreamChatService}
+         * 的私有 {@code normalizeUpstreamChunk}，搬走后那个方法名不复存在 ——
+         * 反射的失败形态是运行时 {@code NoSuchMethodException}，不是编译错误，
+         * 因此这里改为直接调用，让「方法不存在」重新变成编译期能发现的问题。
+         *
+         * <p>参数顺序与语义保持不变（contentEmitted / reasoningBuffer / chunkId），
+         * 使那些用例的断言无需改动 —— 它们验证的是清洗结果，不是调用方式。
+         */
+        private String exposeTranslateChunk(String chunk) {
+            return UpstreamChunkNormalizer.normalize(new ObjectMapper(), chunk,
+                    new AtomicBoolean(false), new StringBuilder(), new AtomicReference<String>("chatcmpl-unknown"));
         }
 
         @Override
