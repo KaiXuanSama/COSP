@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -25,7 +26,28 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * {@code SchemaMigrationRunner} 的完整迁移链验证。
+ *
+ * <h2>为何整个类带 {@code @Tag("schema-migration")}</h2>
+ * 全量测试默认排除这个 Tag —— 本类 56 条用例约占全量的 <strong>58%</strong> 耗时
+ * （实测 129 秒 / 全量 222 秒）。
+ *
+ * <p>慢的原因不是浪费：每条用例都要在真实 SQLite 文件上从某个旧版本跑到当前版本，
+ * 而迁移的每一步各自提交事务，每次提交都要 fsync（实测本机约 159ms/次，一条用例
+ * 约 20~40 次提交，合计约 3.4 秒）。这部分开销随迁移版本数线性增长。
+ *
+ * <p><strong>但不要因为「慢」就删掉它们</strong>：本类覆盖的正是那些只有跑完整链才能
+ * 发现的问题 —— V13 曾经用 {@code CURRENT_SCHEMA_VERSION} 而非固定常量，导致抬高版本号
+ * 后 V13 把自己写成新版本、自己和 V14 一起被跳过。单步断言发现不了这种「链断了」，
+ * 因为它每一步单独看都是对的。
+ *
+ * <p>因此本类的定位是「动迁移时必跑」而非「日常全量」。跑法：
+ * <pre>{@code .\mvnw.cmd surefire:test -Dsurefire.excludedGroups=none}</pre>
+ * 或只跑本类：{@code -Dtest=SchemaMigrationRunnerTests}（-Dtest 优先于 Tag 排除）。
+ */
 @ExtendWith(OutputCaptureExtension.class)
+@Tag("schema-migration")
 class SchemaMigrationRunnerTests {
 
     @TempDir

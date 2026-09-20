@@ -33,6 +33,18 @@
 	</scm>
 	<properties>
 		<java.version>21</java.version>
+		<!--
+			默认排除的 JUnit Tag。见 maven-surefire-plugin 的 excludedGroups。
+
+			schema-migration 只覆盖 SchemaMigrationRunnerTests（56 条 / 129 秒 / 占全量 58%）。
+			慢的原因不是浪费：每条用例都要在真实 SQLite 文件上从旧版本跑到当前版本，而每次事务
+			提交要 fsync（实测本机约 159ms/次，一条用例约 20~40 次提交）。因此它属于「只在动
+			迁移时才需要跑」的一类，日常全量测试跳过。
+
+			要跑它们时用 -Dsurefire.excludedGroups=none：它排除一个不存在的 Tag，
+			等价于不排除任何东西。不要传空值（见下方插件注释）。
+		-->
+		<surefire.excludedGroups>schema-migration</surefire.excludedGroups>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -91,6 +103,15 @@
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
+			</plugin>
+
+			<!-- 按 Tag 排除测试类。默认排除 schema-migration，理由见 properties 里的说明。 -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<excludedGroups>${surefire.excludedGroups}</excludedGroups>
+				</configuration>
 			</plugin>
 
 			<!-- 前端构建集成：在 compile 阶段自动构建 Vue 3 项目 -->

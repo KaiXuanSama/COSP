@@ -33,6 +33,33 @@ Surefire 的其它默认命名模式，也不要新增 `*IT` 而不显式接入�
 ./mvnw test                    # 全量，含前端构建
 ```
 
+## Tag 分层：迁移测试默认不跑
+
+`SchemaMigrationRunnerTests` 整个类带 `@Tag("schema-migration")`，`pom.xml` 的
+`surefire.excludedGroups` 默认排除它。**若要让新测试类也默认不跑，给它同一个 Tag 即可，
+不必改 pom。**
+
+| 场景 | 命令 |
+|---|---|
+| 日常全量 | `./mvnw surefire:test`（迁移类被排除） |
+| **动了迁移 / schema.sql / 版本常量** | `./mvnw surefire:test -Dsurefire.excludedGroups=none` |
+| 只跑迁移 | `./mvnw surefire:test -Dtest=SchemaMigrationRunnerTests` |
+
+覆盖时用 `-Dsurefire.excludedGroups=none`。两个实测过的细节：
+
+- **属性名必须带 `surefire.` 前缀**：`-DexcludedGroups=none` 不生效（静默继续用默认值）。
+- 空值 `-Dsurefire.excludedGroups=` 实测**也能工作**（跑满 1080 条、BUILD SUCCESS），
+  等价于 `none`。但仍推荐写 `none`：空值靠「Maven 展开为空、插件自行处理」这个细节成立，
+  读命令的人看不出意图，而 `none` 是「排除一个不存在的 Tag」，语义自明。
+
+**为何单列这一类而不是按「慢」划分**：它占全量 58%（112~129 秒 / 222 秒），而慢的原因是
+每条用例都要在真实 SQLite 文件上从旧版本跑到当前版本，每次事务提交都要 fsync
+（实测约 159ms/次）。
+
+**但这类用例不可删减**：它覆盖的正是「链断了」这类只有跑完整链才能发现的问题 ——
+V13 曾用 `CURRENT_SCHEMA_VERSION` 而非固定常量，抬高版本号后 V13 把自己写成新版本、
+V13 与 V14 一起被跳过。**每一步单独看都是对的，所以单步断言发现不了它。**
+
 Windows PowerShell 使用 `mvnw.cmd` 的等价命令（当前目录执行时加 `./` 或 `.` + 路径分隔符）；多测试类的
 `-Dtest=...` 参数整体加引号，避免
 PowerShell 把逗号表达式拆成参数。需要跳过前端时沿用 `pom.xml` 已支持的 Maven 属性，不自行删插件执行。
