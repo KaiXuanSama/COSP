@@ -22,17 +22,16 @@ import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.provider.DownstreamLogView;
 import com.kaixuan.copilot_ollama_proxy.provider.EmptyUpstreamResponseException;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamRetryPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatusCode;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClientRequestException;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -299,7 +298,7 @@ public class GenericAnthropicChatService {
                 .map(entity -> entity.getBody())
                 // 空响应重试耗尽：放行最后一轮的原始 body，保持「透传上游真实返回」语义。
                 .onErrorResume(error -> {
-                    EmptyUpstreamResponseException emptyResponse = findEmptyUpstreamException(error);
+                    EmptyUpstreamResponseException emptyResponse = UpstreamRetryPolicy.findEmptyUpstreamException(error);
                     if (emptyResponse == null) {
                         return Mono.error(error);
                     }
@@ -472,7 +471,7 @@ public class GenericAnthropicChatService {
                 // 网络类失败往返：错误响应已在 exchangeToFlux 分支落库，
                 // 此处用 findWebResponseException == null 排除以免重复。
                 .doOnError(e -> {
-                    EmptyUpstreamResponseException emptyResponse = findEmptyUpstreamException(e);
+                    EmptyUpstreamResponseException emptyResponse = UpstreamRetryPolicy.findEmptyUpstreamException(e);
                     if (emptyResponse != null) {
                         saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
                                 capturedRespHeaders.get(), capturedStatusCode.get(),
@@ -491,7 +490,7 @@ public class GenericAnthropicChatService {
                 .retryWhen(buildRetrySpec("messagesStream", provider, requestId, model, true))
                 // 空响应耗尽：放行最后一轮的事件，与其他失败「耗尽后透传最后一次响应」一致。
                 .onErrorResume(error -> {
-                    EmptyUpstreamResponseException emptyResponse = findEmptyUpstreamException(error);
+                    EmptyUpstreamResponseException emptyResponse = UpstreamRetryPolicy.findEmptyUpstreamException(error);
                     if (emptyResponse == null) {
                         return Flux.error(error);
                     }
@@ -1015,7 +1014,7 @@ public class GenericAnthropicChatService {
         long maxAttempts = RetryPolicyService.toReactorMaxAttempts(configured);
         boolean unlimited = configured == RetryPolicyService.UNLIMITED_MAX_ATTEMPTS;
         return Retry.backoff(maxAttempts, retryFirstBackoff()).maxBackoff(retryMaxBackoff())
-                .filter(GenericAnthropicChatService::isRetryableFailure)
+                .filter(UpstreamRetryPolicy::isRetryableFailure)
                 .doBeforeRetry(signal -> {
                     int attempt = (int) (signal.totalRetries() + 1);
                     publishLifecycle(CallLifecycleEvent.retrying(requestId, model, stream, attempt));
@@ -1034,76 +1033,12 @@ public class GenericAnthropicChatService {
         return Duration.ofSeconds(30);
     }
 
-    /**
-     * 可重试判定 —— 与 OpenAI 侧同一口径（四类可恢复失败）。
-     *
-     * <p>这段逻辑纯粹基于异常类型与 HTTP 状态码，本身与协议无关，与
-     * {@code AbstractUpstreamChatService} 里那份目前逐字节相同。刷意不抽公共工具：
-     * 抽取要改动已验证的 OpenAI 链路，而两份相同的代价只是重复。
-     * <strong>抽取的触发信号是两侧出现口径差异</strong>（那才说明有一侧被遗忘了），
-     * 而不是「现在两份一样所以应该合并」。
-     */
-    private static boolean isRetryableFailure(Throwable failure) {
-        if (failure instanceof WebClientRequestException) {
-            return true;
-        }
-        if (hasSslHandshakeFailure(failure)) {
-            return true;
-        }
-        if (failure instanceof WebClientResponseException responseException) {
-            return isRetryableStatus(responseException.getStatusCode())
-                    || hasNetworkCause(responseException);
-        }
-        // 空响应：复用同一份预算，使重试次数只有一个来源。
-        return failure instanceof EmptyUpstreamResponseException;
-    }
-
-    /** 429 限速、5xx 服务端错误、400（容忍上游临时抽风）视为可重试。 */
-    private static boolean isRetryableStatus(HttpStatusCode status) {
-        int code = status.value();
-        return code == 429 || status.is5xxServerError() || code == 400;
-    }
-
-    private static boolean hasNetworkCause(Throwable throwable) {
-        Throwable cause = throwable.getCause();
-        while (cause != null) {
-            if (cause instanceof java.io.IOException) {
-                return true;
-            }
-            cause = cause.getCause();
-        }
-        return false;
-    }
-
-    private static boolean hasSslHandshakeFailure(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof javax.net.ssl.SSLException) {
-                return true;
-            }
-            current = current.getCause();
-        }
-        return false;
-    }
-
     /** 递归解包 WebClientResponseException（retryWhen 耗尽时被包进 RetryExhaustedException）。 */
     private static WebClientResponseException findWebResponseException(Throwable throwable) {
         Throwable current = throwable;
         while (current != null) {
             if (current instanceof WebClientResponseException responseException) {
                 return responseException;
-            }
-            current = current.getCause();
-        }
-        return null;
-    }
-
-    /** 递归解包空响应异常，理由同上。 */
-    private static EmptyUpstreamResponseException findEmptyUpstreamException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof EmptyUpstreamResponseException emptyResponse) {
-                return emptyResponse;
             }
             current = current.getCause();
         }

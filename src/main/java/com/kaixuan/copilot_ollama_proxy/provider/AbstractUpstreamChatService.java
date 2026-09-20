@@ -21,7 +21,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatusCode;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -243,7 +242,7 @@ public abstract class AbstractUpstreamChatService {
                 // 挂在 retryWhen 内侧、doOnNext 落库之后：落库先行保证「上游到底返回了什么」
                 // 在日志里可查，判定随后才有资格触发重发。
                 // 转成异常而非直接返回，是为了复用下方 retryWhen 的同一份预算 ——
-                // isRetryableFailure 已认 EmptyUpstreamResponseException，无需第二套重试实现。
+                // UpstreamRetryPolicy.isRetryableFailure 已认 EmptyUpstreamResponseException，无需第二套重试实现。
                 .flatMap(entity -> {
                     String body = entity.getBody();
                     if (OpenAiContentDetector.hasMeaningfulNonStreamPayload(objectMapper, body)) {
@@ -263,11 +262,11 @@ public abstract class AbstractUpstreamChatService {
                 .map(entity -> entity.getBody())
                 // 空响应重试耗尽：把最后一轮的原始 body 原样放行给下游，与其他失败
                 // 「耗尽后透传最后一次响应」一致 —— 至少让下游看到上游真实返回了什么。
-                // 用 findEmptyUpstreamException 解包而非按类型匹配：retryWhen 耗尽时
-                // 原异常被包进 RetryExhaustedException，onErrorResume(Class) 匹配不到。
+                // 用 UpstreamRetryPolicy.findEmptyUpstreamException 解包而非按类型匹配：
+                // retryWhen 耗尽时原异常被包进 RetryExhaustedException，onErrorResume(Class) 匹配不到。
                 // 该轮已在上面的 doOnNext 落过库，此处不重复落库。
                 .onErrorResume(error -> {
-                    EmptyUpstreamResponseException emptyResponse = findEmptyUpstreamException(error);
+                    EmptyUpstreamResponseException emptyResponse = UpstreamRetryPolicy.findEmptyUpstreamException(error);
                     if (emptyResponse == null) {
                         return Mono.error(error);
                     }
@@ -487,7 +486,7 @@ public abstract class AbstractUpstreamChatService {
                 // 网络类失败往返（无上游错误响应，如连接失败 / HTTP 200 后流中途断开）：即时落一条记录。
                 // 错误响应（4xx/5xx）已在 exchangeToFlux 分支落库，此处用 findWebResponseException==null 排除以免重复。
                 .doOnError(e -> {
-                    EmptyUpstreamResponseException emptyResponse = findEmptyUpstreamException(e);
+                    EmptyUpstreamResponseException emptyResponse = UpstreamRetryPolicy.findEmptyUpstreamException(e);
                     if (emptyResponse != null) {
                         // 空响应往返：帧被 gate 拦在上游，logChunks 是空的 —— 必须改用异常携带的缓存帧落库，
                         // 否则日志只剩「200 且零 chunk」，恰恰在最该看清上游吐了什么的场景下什么都看不到。
@@ -506,16 +505,17 @@ public abstract class AbstractUpstreamChatService {
                     }
                 })
                 // 异常重试：空响应与 429 / 5xx / 网络中断共用这一条预算 —— 空响应被包成
-                // EmptyUpstreamResponseException 抛出，isRetryableFailure 认它，因此无需第二套重试实现。
+                // EmptyUpstreamResponseException 抛出，UpstreamRetryPolicy.isRetryableFailure 认它，
+                // 因此无需第二套重试实现。
                 // 与之相对，手动静默重试走 takeUntilOther 的正常完成，不经过 retryWhen，故不消耗预算。
                 .retryWhen(buildRetrySpec("chatCompletionStream", provider, requestId, model, true))
                 // 空响应重试耗尽：把最后一轮被拦下的帧原样放给下游，与其他失败「耗尽后透传最后一次响应」
                 // 保持一致 —— 至少让下游看到上游真实返回了什么，而不是收到一个 500。
                 // 该轮已在上面的 doOnError 落库，故放行后由 emptyResponsePassthrough 让收尾跳过重复落库。
-                // 注意用 findEmptyUpstreamException 解包而非按类型匹配：retryWhen 耗尽时原异常被
-                // 包进 RetryExhaustedException，onErrorResume(Class) 匹配不到。
+                // 注意用 UpstreamRetryPolicy.findEmptyUpstreamException 解包而非按类型匹配：
+                // retryWhen 耗尽时原异常被包进 RetryExhaustedException，onErrorResume(Class) 匹配不到。
                 .onErrorResume(error -> {
-                    EmptyUpstreamResponseException emptyResponse = findEmptyUpstreamException(error);
+                    EmptyUpstreamResponseException emptyResponse = UpstreamRetryPolicy.findEmptyUpstreamException(error);
                     if (emptyResponse == null) {
                         return Flux.error(error);
                     }
@@ -868,7 +868,7 @@ public abstract class AbstractUpstreamChatService {
      * 构建 OpenAI 上游的统一重试策略。
      *
      * <p>重试次数固定为 5（首次请求外再试 5 次），指数退避 2 秒起、上限 30 秒。
-     * 是否重试由 {@link #isRetryableFailure} 裁决，覆盖四类可恢复场景：
+     * 是否重试由 {@link UpstreamRetryPolicy#isRetryableFailure} 裁决，覆盖四类可恢复场景：
      * <ol>
      *   <li>429 上游限速（指数退避避免加重上游压力）；</li>
      *   <li>5xx 服务端错误；</li>
@@ -906,7 +906,7 @@ public abstract class AbstractUpstreamChatService {
         long maxAttempts = RetryPolicyService.toReactorMaxAttempts(configured);
         boolean unlimited = configured == RetryPolicyService.UNLIMITED_MAX_ATTEMPTS;
         return Retry.backoff(maxAttempts, retryFirstBackoff()).maxBackoff(retryMaxBackoff())
-                .filter(AbstractUpstreamChatService::isRetryableFailure)
+                .filter(UpstreamRetryPolicy::isRetryableFailure)
                 .doBeforeRetry(signal -> {
                     int attempt = (int) (signal.totalRetries() + 1);
                     // RETRYING：让前端 Toast 从“已连接/等待中”切换到“上游异常，正在重试（第N次）”，
@@ -944,80 +944,6 @@ public abstract class AbstractUpstreamChatService {
      */
     protected Duration retryMaxBackoff() {
         return Duration.ofSeconds(30);
-    }
-
-    /**
-     * 判定某次上游失败是否值得重试。
-     *
-     * <p>按异常类型分四类裁决，各自的语义是：
-     * <ul>
-     *   <li><strong>连接建立失败</strong>（{@link WebClientRequestException}）——
-     *       上游不可达或未响应，多半是瞬时网络问题，值得重试；</li>
-     *   <li><strong>TLS 握手失败</strong>（cause chain 含 {@code SSLException}）——
-     *       与上同理，属瞬时环境问题；</li>
-     *   <li><strong>HTTP 错误响应</strong>（{@link WebClientResponseException}）——
-     *       状态码本身可重试（429 / 5xx / 400），或 cause chain 含
-     *       {@code IOException}（HTTP 200 后 SSE 流中途断开，实为网络层失败）。</li>
-     *   <li><strong>空响应</strong>（{@link EmptyUpstreamResponseException}）——
-     *       HTTP 层成功但一轮下来无正文、无思考链、无工具调用。做成异常正是为了
-     *       复用这份预算，避免出现第二套独立的重试次数配置。</li>
-     * </ul>
-     * 其余错误一律不重试：请求内容未变，确定性错误重试结果必然相同。
-     *
-     * @param failure 上游抛出的异常
-     * @return 是否值得重试
-     */
-    private static boolean isRetryableFailure(Throwable failure) {
-        if (failure instanceof WebClientRequestException) {
-            // 连接建立失败：上游不可达 / 未响应
-            return true;
-        }
-        if (hasSslHandshakeFailure(failure)) {
-            // TLS 握手失败：瞬时网络环境问题
-            return true;
-        }
-        if (failure instanceof WebClientResponseException responseException) {
-            // HTTP 错误响应：状态码可重试，或实际为网络层中断
-            return isRetryableStatus(responseException.getStatusCode())
-                    || hasNetworkCause(responseException);
-        }
-        if (failure instanceof EmptyUpstreamResponseException) {
-            // 空响应：HTTP 层通常是 200，但内容为空 —— 复用同一份重试预算，
-            // 使「重试次数」只有 buildRetrySpec 一个来源，未来做可配置时不必改两处。
-            return true;
-        }
-        return false;
-    }
-
-    /**
-     * 从异常链中解包出 {@link EmptyUpstreamResponseException}。
-     *
-     * <p>与 {@link #findWebResponseException} 同理：{@code retryWhen} 耗尽时原异常被包进
-     * {@code RetryExhaustedException}，必须递归解包才能拿到，按类型直接匹配会漏掉。
-     *
-     * @param throwable 待解包异常
-     * @return 链上第一个空响应异常；没有则返回 null
-     */
-    private static EmptyUpstreamResponseException findEmptyUpstreamException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof EmptyUpstreamResponseException emptyResponse) {
-                return emptyResponse;
-            }
-            current = current.getCause();
-        }
-        return null;
-    }
-
-    /**
-     * 判定 HTTP 状态码是否可重试。
-     *
-     * @param status 上游返回的状态码
-     * @return 429（限速）、5xx（服务端错误）、400（容忍上游临时抽风）为可重试
-     */
-    private static boolean isRetryableStatus(HttpStatusCode status) {
-        int code = status.value();
-        return code == 429 || status.is5xxServerError() || code == 400;
     }
 
     /**
@@ -1059,40 +985,6 @@ public abstract class AbstractUpstreamChatService {
         } catch (Exception e) {
             log.debug("生命周期事件发布失败（已忽略）: {}", e.getMessage());
         }
-    }
-
-    /**
-     * 判断异常的 cause chain 中是否包含网络层异常（IOException 及其子类，如 SocketException）。
-     *
-     * 这类异常通常表现为 HTTP 200 但 SSE 流中途断开，需要重试。
-     */
-    private static boolean hasNetworkCause(Throwable throwable) {
-        Throwable cause = throwable.getCause();
-        while (cause != null) {
-            if (cause instanceof java.io.IOException) {
-                return true;
-            }
-            cause = cause.getCause();
-        }
-        return false;
-    }
-
-    /**
-     * 判断异常的 cause chain 中是否包含 SSL/TLS 握手失败。
-     *
-     * SSL 握手异常通常由 Netty 的 DecoderException 包裹 SSLHandshakeException，
-     * 不属于 WebClientRequestException 也不属于 WebClientResponseException，
-     * 需要单独判断以支持重试。
-     */
-    private static boolean hasSslHandshakeFailure(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof javax.net.ssl.SSLException) {
-                return true;
-            }
-            current = current.getCause();
-        }
-        return false;
     }
 
     /**
