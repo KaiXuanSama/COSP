@@ -674,17 +674,59 @@ public class GenericResponsesChatService {
      */
     private Map<String, Object> prepareRequestBody(Map<String, Object> request, boolean stream,
                                                    String model, ProviderRuntimeConfiguration provider) {
-        Map<String, Object> body = new LinkedHashMap<>(request);
+        // 阶段序列 —— 比另两条线路短，因为直连不需要形态转换：
+        //   1. 复制           copyRequestBody     主干会逐阶段改写 body
+        //   2. 解析模型名     resolveModel        后续阶段都要用它查配置
+        //   3. 写协议字段     writeProtocolFields 主干自己决定的 model 与 stream
+        //   4. 思考深度       applyReasoningEffort 写 reasoning.effort（Responses 的形态）
+        //   5. 请求体规则     applyBodyRules      协议筛选由引擎完成
+        //   6. 清 null        removeNullFields    必须是最后一步
+        Map<String, Object> body = copyRequestBody(request);
         String resolvedModel = resolveModel(body.get("model"), model);
+        writeProtocolFields(body, resolvedModel, stream);
+        applyReasoningEffort(body, resolvedModel, provider);
+        applyBodyRules(body, provider);
+        removeNullFields(body);
+        return body;
+    }
+
+    /**
+     * 阶段 1：复制请求体 —— 理由同另两条线路。
+     */
+    private static Map<String, Object> copyRequestBody(Map<String, Object> source) {
+        return new LinkedHashMap<>(source);
+    }
+
+    /**
+     * 阶段 3：写入主干自己决定的协议字段 —— 理由同另两条线路。
+     */
+    private static void writeProtocolFields(Map<String, Object> body, String resolvedModel, boolean stream) {
         body.put("model", resolvedModel);
         body.put("stream", stream);
+    }
 
+    /**
+     * 阶段 4：思考深度。
+     *
+     * <p>本线路写的是 Responses 的 {@code reasoning.effort}（形态与另两条线路都不同），
+     * 由 {@link ReasoningEffortSetting#applyToResponses} 负责。
+     *
+     * <p>这里<strong>不需要</strong> Anthropic 那套「深度先、方式后、off 档跳过方式」的
+     * 顺序约束：本线路上不存在第二个思考维度需要协调，理由见本方法原先的 javadoc
+     * （「两个刻意不做的注入」已在 {@code prepareRequestBody} 的序列说明中保留）。
+     */
+    private void applyReasoningEffort(Map<String, Object> body, String resolvedModel,
+                                      ProviderRuntimeConfiguration provider) {
         resolveReasoningEffort(resolvedModel, provider).applyToResponses(body);
+    }
 
-        applyBodyRules(body, provider);
-
+    /**
+     * 阶段 6：清掉所有值为 {@code null} 的字段 —— <strong>必须是链条的最后一步</strong>。
+     *
+     * <p>理由同另两条线路：规则可能把字段显式设为 null 表达「删掉它」。
+     */
+    private static void removeNullFields(Map<String, Object> body) {
         body.values().removeIf(Objects::isNull);
-        return body;
     }
 
     /**

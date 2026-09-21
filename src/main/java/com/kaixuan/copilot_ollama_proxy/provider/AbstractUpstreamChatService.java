@@ -736,7 +736,20 @@ public abstract class AbstractUpstreamChatService {
     }
 
     /**
-    * 准备请求体，解析模型名称，设置流式标志，并应用当前供应商的请求体规则。
+    * 准备请求体 —— <strong>一条显式阶段序列</strong>。
+     *
+     * <h2>阶段序列（顺序有语义）</h2>
+     * <pre>
+     * 1. 复制           copyRequestBody        主干会逐阶段改写 body
+     * 2. 解析模型名     resolveModel           后续阶段都要用它查配置
+     * 3. 写协议字段     writeProtocolFields    主干自己决定的 model 与 stream
+     * 4. 思考深度       applyReasoningEffort   覆写 / 兜底 / 透传 / 删除四档
+     * 5. 协议特定步骤   customizeRequestBody   子类钩子（本线路是请求体规则）
+     * 6. 清 null        removeNullFields       <b>必须是最后一步</b>
+     * </pre>
+     * 三条线路共用阶段 1/2/3/6（形状相同），差异在中间：本线路（Chat）只有思考深度与规则；
+     * {@code GenericAnthropicChatService} 多一步协议归一化（system 提取 + max_tokens 补齐）
+     * 与思考的第二维；{@code GenericResponsesChatService} 与本节一致。
      *
      * <h2>为何 null 清洗必须在规则之后</h2>
      * 两件事都依赖这个顺序：
@@ -759,15 +772,65 @@ public abstract class AbstractUpstreamChatService {
      */
     protected Map<String, Object> prepareRequestBody(Map<String, Object> openAiRequest, boolean stream, String model,
                                                       ProviderRuntimeConfiguration provider) {
-        Map<String, Object> body = new LinkedHashMap<>(openAiRequest);
+        // 阶段序列 —— 顺序有语义，逐步理由见各阶段方法自己的注释：
+        //   1. 复制           copyRequestBody       主干会逐阶段改写 body
+        //   2. 解析模型名     resolveModel          后续阶段都要用它查配置
+        //   3. 写协议字段     writeProtocolFields   主干自己决定的 model 与 stream
+        //   4. 思考深度       applyReasoningEffort  覆写 / 兜底 / 透传 / 删除四档
+        //   5. 协议特定步骤   customizeRequestBody  子类钩子，本线路是请求体规则
+        //   6. 清 null        removeNullFields      必须是最后一步
+        Map<String, Object> body = copyRequestBody(openAiRequest);
         String resolvedModel = resolveModel(body.get("model"), model);
+        writeProtocolFields(body, resolvedModel, stream);
+        applyReasoningEffort(body, resolvedModel, provider);
+        customizeRequestBody(body, resolvedModel, provider);
+        removeNullFields(body);
+        return body;
+    }
+
+    /**
+     * 阶段 1：复制请求体。
+     *
+     * <p>主干会逐阶段改写它（写模型名、设 stream、注入思考、执行规则），
+     * 因此不能把调用方持有的那个 Map 直接交出去 —— 那会让一次请求的准备过程
+     * 污染调用方的数据。
+     */
+    private static Map<String, Object> copyRequestBody(Map<String, Object> source) {
+        return new LinkedHashMap<>(source);
+    }
+
+    /**
+     * 阶段 3：写入主干自己决定的协议字段。
+     *
+     * <p>两者都是「主干对上游的陈述」而非「下游说了什么」：模型名已剥前缀
+     * （{@link #resolveModel} 的结果），stream 由入口方法按调用的是流式还是非流式给出。
+     */
+    private static void writeProtocolFields(Map<String, Object> body, String resolvedModel, boolean stream) {
         body.put("model", resolvedModel);
         body.put("stream", stream);
-        // 思考深度按模型配置的注入模式处理：覆写 / 透传 / 删除。
+    }
+
+    /**
+     * 阶段 4：思考深度。
+     *
+     * <p>按模型配置的注入模式处理：覆写 / 兜底 / 透传 / 删除四档。
+     * 本线路写的是 OpenAI 的 {@code reasoning_effort} 与 {@code thinking}
+     * （{@code off} 档写 {@code thinking:{"type":"disabled"}}）——
+     * 两者成对操作的理由见 {@link ReasoningEffortSetting#applyTo}。
+     */
+    private void applyReasoningEffort(Map<String, Object> body, String resolvedModel,
+                                      ProviderRuntimeConfiguration provider) {
         resolveReasoningEffort(resolvedModel, provider).applyTo(body);
-        customizeRequestBody(body, resolvedModel, provider);
+    }
+
+    /**
+     * 阶段 6：清掉所有值为 {@code null} 的字段 —— <strong>必须是链条的最后一步</strong>。
+     *
+     * <p>它的位置由两件事共同决定，两步理由见 {@link #prepareRequestBody} 的 javadoc：
+     * 规则产生的 {@code null} 不能出站，且规则看到的输入要与编辑器预览逐字节一致。
+     */
+    private static void removeNullFields(Map<String, Object> body) {
         body.values().removeIf(Objects::isNull);
-        return body;
     }
 
     /**

@@ -683,9 +683,22 @@ public class GenericAnthropicChatService {
     }
 
     /**
-     * 准备 Anthropic 请求体。
+     * 准备 Anthropic 请求体 —— <strong>一条显式阶段序列</strong>。
      *
-     * <h2>三处与 OpenAI 的硬差异</h2>
+     * <h2>阶段序列（顺序有语义）</h2>
+     * <pre>
+     * 1. 复制           copyRequestBody          主干会逐阶段改写 body
+     * 2. 解析模型名     resolveModel             后续阶段都要用它查配置
+     * 3. 写协议字段     writeProtocolFields      主干自己决定的 model 与 stream
+     * 4. 协议归一化     normalizeRequest         system 提取 + max_tokens 补齐
+     * 5. 思考两维       applyThinkingDimensions  <b>深度先、方式后</b>，off 档跳过方式
+     * 6. 剥兼容副本     dropReasoningEffortAlias 必须在阶段 5 <b>之后</b>
+     * 7. 请求体规则     applyBodyRules           协议筛选由引擎完成
+     * 8. 清 null        removeNullFields         <b>必须是最后一步</b>
+     * </pre>
+     * 本线路的阶段最多：阶段 4 与阶段 5/6 都是「下游说 Chat、上游说 Anthropic」留下的债。
+     *
+     * <h2>三处与 OpenAI 的硬差异（阶段 4/5 的内容）</h2>
      * <ol>
      *   <li><strong>{@code system} 是顶层字段</strong> —— OpenAI 把它作为
      *       {@code messages} 里 {@code role: system} 的一条，Anthropic 不接受那种形态，
@@ -703,7 +716,7 @@ public class GenericAnthropicChatService {
      *       {@link ReasoningEffortSetting#applyToAnthropic}。</li>
      * </ol>
      *
-     * <h2>两个思考维度的施加顺序不可交换</h2>
+     * <h2>两个思考维度的施加顺序不可交换（阶段 5）</h2>
      * <strong>深度先、方式后</strong>，且深度写了
      * {@code thinking:{"type":"disabled"}} 时跳过方式。两者都会写 {@code thinking}，
      * 而它们对那个字段的权限不对等：深度只在 {@code off} 档动它（五档里没有
@@ -715,7 +728,7 @@ public class GenericAnthropicChatService {
      * {@code adaptive}，用户配的「关闭思考」被静默丢弃。前端的
      * {@code anthropicThinkingLockedByEffort} 置灰就是同一条规则的界面表达。
      *
-     * <h2>请求体转换规则的执行位置</h2>
+     * <h2>请求体转换规则的执行位置（阶段 7）</h2>
      * 规则在协议归一化<strong>之后</strong>执行（{@code system} 已提到顶层、
      * {@code max_tokens} 已补齐），因为规则的字段路径是照最终发往上游的形态写的 ——
      * 若在归一化前执行，用户看到的预览与实际请求体结构不一致。
@@ -728,31 +741,94 @@ public class GenericAnthropicChatService {
      */
     private Map<String, Object> prepareRequestBody(Map<String, Object> request, boolean stream,
                                                    String model, ProviderRuntimeConfiguration provider) {
-        Map<String, Object> body = new LinkedHashMap<>(request);
+        // 阶段序列 —— 顺序有语义，逐步理由见各阶段方法自己的注释：
+        //   1. 复制                 copyRequestBody         主干会逐阶段改写 body
+        //   2. 解析模型名           resolveModel            后续阶段都要用它查配置
+        //   3. 写协议字段           writeProtocolFields     主干自己决定的 model 与 stream
+        //   4. 协议归一化           normalizeRequest        下游说 Chat / 上游说 Anthropic 的形态债
+        //   5. 思考两维             applyThinkingDimensions 深度先、方式后，且 off 档跳过方式
+        //   6. 剥兼容副本           dropReasoningEffortAlias C2M 留下的 reasoning_effort 副本
+        //   7. 请求体规则           applyBodyRules          协议筛选由引擎完成
+        //   8. 清 null              removeNullFields        必须是最后一步
+        Map<String, Object> body = copyRequestBody(request);
         String resolvedModel = resolveModel(body.get("model"), model);
+        writeProtocolFields(body, resolvedModel, stream);
+        normalizeRequest(body, resolvedModel, provider);
+        applyThinkingDimensions(body, resolvedModel, provider);
+        dropReasoningEffortAlias(body);
+        applyBodyRules(body, provider);
+        removeNullFields(body);
+        return body;
+    }
+
+    /**
+     * 阶段 1：复制请求体 —— 理由同 OpenAI 侧。
+     */
+    private static Map<String, Object> copyRequestBody(Map<String, Object> source) {
+        return new LinkedHashMap<>(source);
+    }
+
+    /**
+     * 阶段 3：写入主干自己决定的协议字段 —— 理由同 OpenAI 侧。
+     */
+    private static void writeProtocolFields(Map<String, Object> body, String resolvedModel, boolean stream) {
         body.put("model", resolvedModel);
         body.put("stream", stream);
+    }
 
+    /**
+     * 阶段 4：协议归一化 —— 把下游的 OpenAI 形态改写成 Anthropic 能理解的形态。
+     *
+     * <p>本线路的下游固定说 Chat 而上游说 Anthropic（C2M 是唯一已实现的跨协议方向，
+     * 见 {@code ChatCompletionService}），因此这两步是那条翻译链在请求体上的落点。
+     * 直连 {@code /v1/messages} 时它们通常是空操作（请求本来就是 Anthropic 形态）。
+     */
+    private void normalizeRequest(Map<String, Object> body, String resolvedModel,
+                                  ProviderRuntimeConfiguration provider) {
+        // system 是顶层字段：OpenAI 把它作为 messages 里 role:system 的一条，
+        // Anthropic 不接受那种形态，必须提取出来（数组形态的坑见 extractSystemPrompt 的注释）。
         extractSystemPrompt(body);
+        // max_tokens 必填：缺失时上游返回 400，故按模型配置注入（覆写 / 兜底两档）。
         ensureMaxTokens(body, resolvedModel, provider);
+    }
 
-        // 思考两维：深度先、方式后，且 off 档写了 disabled 时跳过方式。
-        // 顺序与跳过的理由见本方法的 javadoc。
+    /**
+     * 阶段 5：思考的<strong>两个维度</strong>—— 深度与方式。
+     *
+     * <p><strong>施加顺序不可交换</strong>，且深度写了 {@code thinking:{"type":"disabled"}}
+     * 时跳过方式。两者都会写 {@code thinking} 但权限不对等：深度只在 {@code off} 档动它
+     * （五档里没有「不思考」，只能借这个字段表达），方式把它当主场。
+     * 完整推理（先方式后深度会怎样、不跳过方式会怎样）见本方法原先的 javadoc，
+     * 已随序列显形迁至 {@link #prepareRequestBody} 的说明。
+     */
+    private void applyThinkingDimensions(Map<String, Object> body, String resolvedModel,
+                                         ProviderRuntimeConfiguration provider) {
         boolean thinkingDisabled = resolveReasoningEffort(resolvedModel, provider).applyToAnthropic(body);
         if (!thinkingDisabled) {
             resolveThinking(resolvedModel, provider).applyTo(body);
         }
+    }
 
-        // reasoning_effort 是 OpenAI 的字段名；C2M 翻译器把它映射到 output_config.effort
-        // 后刻意保留了一份兼容副本，供上面两个设置层判定「下游已表态」。
-        // 因此这一行必须在设置层之后：提前剥会让兜底档把一个已表态的请求当成未表态，
-        // 静默退化成覆写档。
+    /**
+     * 阶段 6：剥掉 {@code reasoning_effort} 兼容副本。
+     *
+     * <p>它是 OpenAI 的字段名；C2M 翻译器把它映射到 {@code output_config.effort} 后
+     * 刻意保留了一份兼容副本，供阶段 5 的两个设置层判定「下游已表态」。
+     * 因此这一行<strong>必须在阶段 5 之后</strong>：提前剥会让兜底档把一个
+     * 已表态的请求当成未表态，静默退化成覆写档。
+     */
+    private static void dropReasoningEffortAlias(Map<String, Object> body) {
         body.remove("reasoning_effort");
+    }
 
-        applyBodyRules(body, provider);
-
+    /**
+     * 阶段 8：清掉所有值为 {@code null} 的字段 —— <strong>必须是链条的最后一步</strong>。
+     *
+     * <p>理由与 OpenAI 侧相同：规则可能把字段显式设为 null，而 Anthropic
+     * 对多余的 null 字段并不宽容。
+     */
+    private static void removeNullFields(Map<String, Object> body) {
         body.values().removeIf(Objects::isNull);
-        return body;
     }
 
     /**
