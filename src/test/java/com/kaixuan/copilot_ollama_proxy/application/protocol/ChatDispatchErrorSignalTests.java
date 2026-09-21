@@ -442,29 +442,37 @@ class ChatDispatchErrorSignalTests {
         }
 
         /**
-         * 直连路径<strong>不传</strong>登记，走的是无登记的旧重载。
+         * 直连路径也<strong>携带上下文</strong>，且那个上下文是「直连形态」。
          *
-         * <p>这不是遗漏而是刻意的：直连没有需要跳过的步骤，
-         * {@code RequestPipelineContext} 的语义就是「照常执行一切」，
-         * 而「不传」与「传一个空登记」在行为上完全等价 —— 因此不额外构造，
-         * 少一处需要维护的接线。
+         * <p>3.3b-2 退役了不带 ctx 的旧重载，因此直连不再有「少传一个参数」的形态 ——
+         * 它与其他路线一样在组装期建上下文，只是两侧协议相同。
          *
-         * <p>本用例钉住这个等价性：直连走的仍是那一组不带登记的重载。
-         * 若将来有人给直连也加上登记，这条会失败，提醒他确认那是否必要。
+         * <p>本用例钉住两件事：直连的上下文**不带任何步骤登记**（不需要翻译），
+         * 且它的拦截判据为 true（直连是帧形状与下游期待一致的常见路径，
+         * 空响应兜底必须照常生效）。后者设错会让绝大多数线上流量静默失去兜底。
          */
         @Test
-        @DisplayName("直连路径走不带登记的重载")
-        void directUsesOverloadWithoutExecutionRegistration() {
+        @DisplayName("直连路径携带直连形态的上下文")
+        void directPathCarriesADirectContext() {
             givenRoute("[\"CHAT\"]");
-            given(openAiChatService.chatCompletion(any(), any(), any(), any()))
-                    .willReturn(UpstreamStreams.single("{\"ok\":true}"));
+            given(openAiChatService.chatCompletion(any(), any(), any(), any(), any()))
+                    .willAnswer(invocation -> {
+                        capturedExecution.set(invocation.getArgument(4));
+                        return UpstreamStreams.single("{\"ok\":true}");
+                    });
 
             assertThat(chatCompletionService.chatCompletion(
                     CHAT_REQUEST, "m", HttpHeaders.EMPTY, "req-p3")
                     .map(UpstreamEvent::data).block())
                     .isEqualTo("{\"ok\":true}");
-            // 未构造任何登记：捕获 Set 为空即直连没走 C2M 的登记分支。
-            assertThat(capturedExecution.get()).isNull();
+
+            RequestPipelineContext ctx = capturedExecution.get();
+            assertThat(ctx).as("直连也必须把上下文传给上游执行器").isNotNull();
+            assertThat(ctx.completedSteps()).as("直连没有任何翻译步骤").isEmpty();
+            assertThat(ctx.translationNeeded()).as("两侧同协议").isFalse();
+            assertThat(ctx.shouldApplyEmptyResponseGate())
+                    .as("直连的空响应兜底必须照常生效")
+                    .isTrue();
         }
     }
 
@@ -481,7 +489,7 @@ class ChatDispatchErrorSignalTests {
         @Test
         void openAiNonStreamStillDelegatesToUpstream() {
             givenRoute("[\"CHAT\"]");
-            given(openAiChatService.chatCompletion(any(), any(), any(), any()))
+            given(openAiChatService.chatCompletion(any(), any(), any(), any(), any()))
                     .willReturn(UpstreamStreams.single("{\"ok\":true}"));
 
             assertThat(chatCompletionService.chatCompletion(
@@ -493,7 +501,7 @@ class ChatDispatchErrorSignalTests {
         @Test
         void anthropicStreamStillDelegatesToUpstream() {
             givenRoute("[\"MESSAGES\"]");
-            given(anthropicChatService.messagesStream(any(), any(), any(), any()))
+            given(anthropicChatService.messagesStream(any(), any(), any(), any(), any(), any()))
                     .willReturn(UpstreamStreams.messages("event-1"));
 
             assertThat(messagesService.messagesStream(
@@ -506,7 +514,7 @@ class ChatDispatchErrorSignalTests {
         @Test
         void responsesNonStreamStillDelegatesToUpstream() {
             givenRoute("[\"RESPONSES\"]");
-            given(responsesChatService.responses(any(), any(), any(), any()))
+            given(responsesChatService.responses(any(), any(), any(), any(), any()))
                     .willReturn(UpstreamStreams.single("{\"ok\":true}"));
 
             assertThat(responsesService.responses(
@@ -518,7 +526,7 @@ class ChatDispatchErrorSignalTests {
         @Test
         void responsesStreamStillDelegatesToUpstream() {
             givenRoute("[\"RESPONSES\"]");
-            given(responsesChatService.responsesStream(any(), any(), any(), any()))
+            given(responsesChatService.responsesStream(any(), any(), any(), any(), any()))
                     .willReturn(UpstreamStreams.responses("event-1"));
 
             assertThat(responsesService.responsesStream(

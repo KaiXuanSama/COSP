@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.application.anthropic;
 
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchDecision;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
@@ -132,7 +133,12 @@ public class MessagesService {
             return Mono.error(new ProtocolTranslationNotSupportedException(
                     route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
         }
-        return anthropicChatService.messages(request, route, downstreamHeaders, requestId);
+        // 直连：两侧同协议。上下文与落库视图都在此处显式给出 —— 视图不靠重载默认值，
+        // 因为那个默认值对翻译路线会静默记错（见 GenericAnthropicChatService#directLogView）。
+        RequestPipelineContext ctx = RequestPipelineContext.direct(request, DOWNSTREAM_PROTOCOL,
+                route.provider(), downstreamHeaders, requestId, null);
+        return anthropicChatService.messages(request, route, downstreamHeaders, requestId,
+                GenericAnthropicChatService.directLogView(), ctx);
     }
 
     /**
@@ -162,6 +168,10 @@ public class MessagesService {
             return Flux.error(new ProtocolTranslationNotSupportedException(
                     route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
         }
-        return anthropicChatService.messagesStream(request, route, downstreamHeaders, requestId);
+        // 同非流式：上下文与落库视图都在此处显式给出。
+        RequestPipelineContext ctx = RequestPipelineContext.direct(request, DOWNSTREAM_PROTOCOL,
+                route.provider(), downstreamHeaders, requestId, null);
+        return anthropicChatService.messagesStream(request, route, downstreamHeaders, requestId,
+                GenericAnthropicChatService.directLogView(), ctx);
     }
 }

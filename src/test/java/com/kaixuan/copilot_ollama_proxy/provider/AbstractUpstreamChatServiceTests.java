@@ -1332,13 +1332,15 @@ class AbstractUpstreamChatServiceTests {
          */
         private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
                                                         ProviderRuntimeConfiguration provider) {
-            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, null)
+            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, null,
+                    PipelineContexts.direct(request, provider, WireProtocol.CHAT))
                     .map(UpstreamEvent::data);
         }
 
         private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
                                                         ProviderRuntimeConfiguration provider, String requestId) {
-            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, requestId)
+            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, requestId,
+                    PipelineContexts.direct(request, provider, WireProtocol.CHAT))
                     .map(UpstreamEvent::data);
         }
 
@@ -1346,7 +1348,8 @@ class AbstractUpstreamChatServiceTests {
                                                   ProviderRuntimeConfiguration provider, String requestId) {
             // 上游执行器现在伸统一形态；测试关心的是报文内容，故在此收口为字符串，
             // 使既有断言（对 String 的 contains / isEmpty）一行未改。
-            return chatCompletion(request, model, provider, HttpHeaders.EMPTY, requestId)
+            return chatCompletion(request, model, provider, HttpHeaders.EMPTY, requestId,
+                    PipelineContexts.direct(request, provider, WireProtocol.CHAT))
                     .map(UpstreamEvent::data);
         }
 

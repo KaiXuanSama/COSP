@@ -178,37 +178,25 @@ public class GenericAnthropicChatService {
     /**
      * 本次调用的落库视图。
      *
-     * <h2>为何用 ThreadLocal 而不是方法参数
-     * —— 并不是，看下面</h2>
-     * 并非 ThreadLocal。视图通过重载方法传入，默认值为直连视图，
-     * 因此现有调用方（包括测试）无需改动。
+     * <h2>为何是必需参数而非可省</h2>
+     * 它曾有一组「可省的重载」，省则默认取 {@link #DIRECT_VIEW}。
+     * 那个默认值对<strong>直连正确、对翻译路线静默记错</strong>：
+     * 协议列与 chunk 都会记成上游形态，而日志里看不出这是一次跳协议调用
+     * （下游实际收到的 chunk 与上游原生事件并不是一回事）。
+     * 3.3b-2 退役旧重载时因此把它提为必需 —— 漏传会编译失败，而不是悄悄记错。
+     *
+     * <p>它与 {@code ctx.downstreamProtocol()} 当前是<strong>同一份事实</strong>，
+     * 收编给 {@code RequestPipelineContext} 是 Step 3.3d 的事（理由与两个待决问题见
+     * {@code docs/KNOWN_DEBT.md} 第十二条）。
      */
     private static final DownstreamLogView DIRECT_VIEW =
             DownstreamLogView.direct(WireProtocol.MESSAGES.name());
 
-    /** 非流式，接受应用层已解析的路由。直连路线。 */
-    public Mono<UpstreamEvent> messages(Map<String, Object> request, ResolvedProviderRoute route,
-                                        HttpHeaders downstreamHeaders, String requestId) {
-        return messages(request, route, downstreamHeaders, requestId, DIRECT_VIEW);
-    }
-
     /**
-     * 非流式，带落库视图。翻译路线用这个重载告知「下游其实是另一个协议」。
-     */
-    public Mono<UpstreamEvent> messages(Map<String, Object> request, ResolvedProviderRoute route,
-                                        HttpHeaders downstreamHeaders, String requestId,
-                                        DownstreamLogView logView) {
-        return messages(request, route, downstreamHeaders, requestId, logView,
-                directContext(request, route.provider(), downstreamHeaders, requestId));
-    }
-
-    /**
-     * 非流式，带落库视图与<strong>管道上下文</strong>。
+     * 非流式，接受应用层已解析的路由与管道上下文。
      *
-     * <p>上下文决定空响应拦截是否介入 —— 判据与理由见
-     * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
-     *
-     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
+     * @param logView 本次调用的落库视图；直连传 {@link #DIRECT_VIEW}
+     * @param ctx     本次请求的管道上下文，由编排层在组装期填好
      */
     public Mono<UpstreamEvent> messages(Map<String, Object> request, ResolvedProviderRoute route,
                                         HttpHeaders downstreamHeaders, String requestId,
@@ -217,28 +205,15 @@ public class GenericAnthropicChatService {
                 logView, ctx);
     }
 
-    /** 流式，接受应用层已解析的路由。直连路线。 */
-    public Flux<UpstreamEvent> messagesStream(Map<String, Object> request, ResolvedProviderRoute route,
-                                              HttpHeaders downstreamHeaders, String requestId) {
-        return messagesStream(request, route, downstreamHeaders, requestId, DIRECT_VIEW);
-    }
-
-    /** 流式，带落库视图。 */
-    public Flux<UpstreamEvent> messagesStream(Map<String, Object> request, ResolvedProviderRoute route,
-                                              HttpHeaders downstreamHeaders, String requestId,
-                                              DownstreamLogView logView) {
-        return messagesStream(request, route, downstreamHeaders, requestId, logView,
-                directContext(request, route.provider(), downstreamHeaders, requestId));
-    }
-
     /**
-     * 流式，带落库视图与<strong>管道上下文</strong>。
+     * 流式，接受应用层已解析的路由与管道上下文。
      *
      * <p>上下文决定空响应拦截是否介入 —— 跨协议但回程翻译未实现时（开发新协议翻译的
      * 半轮实现态）整轮放行，不判空、不重试。判据与理由见
      * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
      *
-     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
+     * @param logView 本次调用的落库视图；直连传 {@link #DIRECT_VIEW}
+     * @param ctx     本次请求的管道上下文，由编排层在组装期填好
      */
     public Flux<UpstreamEvent> messagesStream(Map<String, Object> request, ResolvedProviderRoute route,
                                               HttpHeaders downstreamHeaders, String requestId,
@@ -248,16 +223,13 @@ public class GenericAnthropicChatService {
     }
 
     /**
-     * 为不带上下文的旧重载拼一个最小上下文（直连：两侧同协议）。
+     * 直连路线使用的默认落库视图 —— 两侧同协议、chunk 不改写。
      *
-     * <p>这些调用方不涉及翻译，因此与原 {@code PipelineExecution.empty()} 在判据上
-     * 完全等价。**这是 3.3b-1 的过渡便利**，旧重载的去留是 3.3b-2 的决定。
+     * <p>调用方显式传它而不是靠重载默认值：写出来才看得见「这里是直连」，
+     * 也就不会在翻译路线下漏掉真正的视图。
      */
-    private RequestPipelineContext directContext(Map<String, Object> request,
-                                                 ProviderRuntimeConfiguration provider,
-                                                 HttpHeaders downstreamHeaders, String requestId) {
-        return RequestPipelineContext.of(request, WireProtocol.MESSAGES, WireProtocol.MESSAGES,
-                provider, downstreamHeaders, requestId, null);
+    public static DownstreamLogView directLogView() {
+        return DIRECT_VIEW;
     }
 
     // ==================== 非流式 ====================
@@ -277,28 +249,6 @@ public class GenericAnthropicChatService {
      *       报出「无法连接到上游服务」这种与事实相反的错误。</li>
      * </ul>
      * 这条约束是 OpenAI 侧用一个真实缺陷换来的，此处必须同样成立。
-     */
-    protected Mono<UpstreamEvent> messages(Map<String, Object> request, String model,
-                                           ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                           String requestId) {
-        return messages(request, model, provider, downstreamHeaders, requestId, DIRECT_VIEW);
-    }
-
-    protected Mono<UpstreamEvent> messages(Map<String, Object> request, String model,
-                                           ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                           String requestId, DownstreamLogView logView) {
-        return messages(request, model, provider, downstreamHeaders, requestId, logView,
-                directContext(request, provider, downstreamHeaders, requestId));
-    }
-
-    /**
-     * 带管道上下文的{@link #messages}重载。
-     *
-     * <p>上下文决定空响应拦截是否介入 —— 判据与理由见
-     * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
-     * 不带上下文的旧重载等价于「直连」：照常拦截。
-     *
-     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     protected Mono<UpstreamEvent> messages(Map<String, Object> request, String model,
                                            ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
@@ -417,28 +367,6 @@ public class GenericAnthropicChatService {
      * <p>现按功能完整性优先，两条路线一并接入：不接的那一侧会让前端菜单项
      * （条件只看是否流式，看不到上游协议）表现为「点了没反应、无任何报错」，
      * 那比直连场景下的理论风险更明确地有害。
-     */
-    protected Flux<UpstreamEvent> messagesStream(Map<String, Object> request, String model,
-                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                                 String requestId) {
-        return messagesStream(request, model, provider, downstreamHeaders, requestId, DIRECT_VIEW);
-    }
-
-    protected Flux<UpstreamEvent> messagesStream(Map<String, Object> request, String model,
-                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                                 String requestId, DownstreamLogView logView) {
-        return messagesStream(request, model, provider, downstreamHeaders, requestId, logView,
-                directContext(request, provider, downstreamHeaders, requestId));
-    }
-
-    /**
-     * 带管道上下文的{@link #messagesStream}重载。
-     *
-     * <p>上下文决定空响应拦截是否介入 —— 判据与理由见
-     * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
-     * 不带上下文的旧重载等价于「直连」：照常拦截。
-     *
-     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     protected Flux<UpstreamEvent> messagesStream(Map<String, Object> request, String model,
                                                  ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,

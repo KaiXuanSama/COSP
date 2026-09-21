@@ -6,10 +6,12 @@ import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -944,13 +946,15 @@ class GenericResponsesChatServiceTests {
         private Mono<String> exposeResponses(Map<String, Object> request, ResolvedProviderRoute route,
                                              HttpHeaders downstreamHeaders) {
             // 同流式那个辅助方法：统一形态在此收口为字符串，使既有断言一行未改。
-            return responses(request, route, downstreamHeaders, "req-test")
+            return responses(request, route, downstreamHeaders, "req-test",
+                    PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES))
                     .map(com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent::data);
         }
 
         private Flux<String> exposeResponsesStream(Map<String, Object> request, ResolvedProviderRoute route) {
             // 收口为字符串：本类断言的是报文内容与顺序，与分类无关。
-            return responsesStream(request, route, HttpHeaders.EMPTY, "req-test")
+            return responsesStream(request, route, HttpHeaders.EMPTY, "req-test",
+                    PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES))
                     .map(com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent::data);
         }
 

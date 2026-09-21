@@ -3,8 +3,10 @@ package com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
+import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -218,7 +220,9 @@ class AnthropicSilentRetryBehaviorTests {
 
         private Flux<String> exposeMessagesStream(Map<String, Object> request, ResolvedProviderRoute route) {
             // 收口为字符串：本类断言的是「重试了几次、收到什么事件」，与分类无关。
-            return messagesStream(request, route, HttpHeaders.EMPTY, "req-test")
+            return messagesStream(request, route, HttpHeaders.EMPTY, "req-test",
+                    GenericAnthropicChatService.directLogView(),
+                    PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES))
                     .map(com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent::data);
         }
 

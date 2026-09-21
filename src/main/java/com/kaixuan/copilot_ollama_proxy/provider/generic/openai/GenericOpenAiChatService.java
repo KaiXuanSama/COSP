@@ -68,21 +68,8 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
      * @param openAiRequest 原始 OpenAI 请求体
      * @param route 应用层解析出的供应商模型路由
      * @param requestId 本次调用唯一标识，用于透传生命周期事件
-     * @return 统一形态的上游响应（单个 {@link UpstreamEvent.Body}）
-     */
-    public Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
-                                              HttpHeaders downstreamHeaders, String requestId) {
-        return super.chatCompletion(openAiRequest, route.model(), route.provider(), downstreamHeaders, requestId);
-    }
-
-    /**
-     * 带<strong>管道上下文</strong>的非流式补全。
-     *
-     * <p>上下文决定空响应拦截是否介入 —— C2M 的调用方用它声明「去程与回程都已执行」，
-     * 从而保留空响应兜底；若某天只接了去程，不登记回程即可跳过拦截。
-     * 判据与理由见 {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
-     *
      * @param ctx 本次请求的管道上下文，由编排层在组装期填好
+     * @return 统一形态的上游响应（单个 {@link UpstreamEvent.Body}）
      */
     public Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
                                               HttpHeaders downstreamHeaders, String requestId,
@@ -92,43 +79,18 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
     }
 
     /**
-     * 执行不含下游请求头上下文的非流式聊天补全。
-     * 仅供直接调用的兼容路径使用。
-     */
-    public Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, ResolvedProviderRoute route) {
-        return chatCompletion(openAiRequest, route, HttpHeaders.EMPTY, null);
-    }
-
-    /**
      * 执行一次流式聊天补全。
      *
      * @param openAiRequest 原始 OpenAI 请求体
      * @param route 应用层解析出的供应商模型路由
      * @param requestId 本次调用唯一标识，用于透传生命周期事件
-     * @return 上游 SSE 数据块
-     */
-    public Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
-                                                     HttpHeaders downstreamHeaders, String requestId) {
-        return super.chatCompletionStream(openAiRequest, route.model(), route.provider(), downstreamHeaders, requestId);
-    }
-
-    /**
-     * 带<strong>管道上下文</strong>的流式补全。理由同非流式的那个重载。
-     *
      * @param ctx 本次请求的管道上下文，由编排层在组装期填好
+     * @return 统一形态的上游事件流
      */
     public Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
                                                      HttpHeaders downstreamHeaders, String requestId,
                                                      RequestPipelineContext ctx) {
         return super.chatCompletionStream(openAiRequest, route.model(), route.provider(), downstreamHeaders,
                 requestId, ctx);
-    }
-
-    /**
-     * 执行不含下游请求头上下文的流式聊天补全。
-     * 仅供直接调用的兼容路径使用。
-     */
-    public Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, ResolvedProviderRoute route) {
-        return chatCompletionStream(openAiRequest, route, HttpHeaders.EMPTY, null);
     }
 }

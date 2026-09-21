@@ -6,12 +6,14 @@ import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.AnthropicThinkingSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -1430,14 +1432,18 @@ class GenericAnthropicChatServiceTests {
 
         private Mono<String> exposeMessages(Map<String, Object> request, ResolvedProviderRoute route) {
             // 同流式那个辅助方法：统一形态在此收口为字符串，使既有断言一行未改。
-            return messages(request, route, HttpHeaders.EMPTY, "req-test")
+            return messages(request, route, HttpHeaders.EMPTY, "req-test",
+                    GenericAnthropicChatService.directLogView(),
+                    PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES))
                     .map(UpstreamEvent::data);
         }
 
         private Flux<String> exposeMessagesStream(Map<String, Object> request, ResolvedProviderRoute route) {
             // 上游执行器现在伸统一形态；测试关心的是报文内容，故在此收口为字符串。
             // 这样既有断言（对 List<String> 的 contains / hasSize）一行未改。
-            return messagesStream(request, route, HttpHeaders.EMPTY, "req-test")
+            return messagesStream(request, route, HttpHeaders.EMPTY, "req-test",
+                    GenericAnthropicChatService.directLogView(),
+                    PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES))
                     .map(com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent::data);
         }
 

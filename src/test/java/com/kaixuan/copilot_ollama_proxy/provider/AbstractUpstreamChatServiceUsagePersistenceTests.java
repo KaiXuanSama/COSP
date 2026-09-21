@@ -4,8 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
@@ -366,14 +368,16 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
         }
 
         private Flux<UpstreamEvent> exposeChatCompletionStream(Map<String, Object> request, String model,
-                                                              ProviderRuntimeConfiguration provider) {
-            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, null);
+                                                               ProviderRuntimeConfiguration provider) {
+            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, null,
+                    PipelineContexts.direct(request, provider, WireProtocol.CHAT));
         }
 
         private Mono<String> exposeChatCompletion(Map<String, Object> request, String model,
                                                   ProviderRuntimeConfiguration provider) {
             // 同流式那个辅助方法：在此收口为字符串，让既有断言一行未改。
-            return chatCompletion(request, model, provider, HttpHeaders.EMPTY, null)
+            return chatCompletion(request, model, provider, HttpHeaders.EMPTY, null,
+                    PipelineContexts.direct(request, provider, WireProtocol.CHAT))
                     .map(UpstreamEvent::data);
         }
 

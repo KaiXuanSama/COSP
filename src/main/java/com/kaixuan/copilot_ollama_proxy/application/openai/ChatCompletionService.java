@@ -140,7 +140,11 @@ public class ChatCompletionService {
         
         // 同协议直连，原请求体不变。
         if (!decision.translationNeeded()) {
-            return genericOpenAiChatService.chatCompletion(openAiRequest, route, downstreamHeaders, requestId);
+            // 直连：两侧同协议。上下文在此处显式构建 —— 与翻译路线同一形状，
+            // 因为执行器只有一个入口（3.3b-2 已退役不带 ctx 的旧重载）。
+            RequestPipelineContext ctx = RequestPipelineContext.direct(openAiRequest, DOWNSTREAM_PROTOCOL,
+                    route.provider(), downstreamHeaders, requestId, null);
+            return genericOpenAiChatService.chatCompletion(openAiRequest, route, downstreamHeaders, requestId, ctx);
         }
         
         // 跨协议翻译：去程与回程各自查表，两半独立缺省（方向文档 §2.3.2）。
@@ -258,7 +262,10 @@ public class ChatCompletionService {
         
         // 同协议直连，原请求体不变。
         if (!decision.translationNeeded()) {
-            return genericOpenAiChatService.chatCompletionStream(openAiRequest, route, downstreamHeaders, requestId);
+            // 同非流式：直连也要在组装期建上下文。
+            RequestPipelineContext ctx = RequestPipelineContext.direct(openAiRequest, DOWNSTREAM_PROTOCOL,
+                    route.provider(), downstreamHeaders, requestId, null);
+            return genericOpenAiChatService.chatCompletionStream(openAiRequest, route, downstreamHeaders, requestId, ctx);
         }
         
         // 跨协议翻译：去程与回程各自查表，两半独立缺省（方向文档 §2.3.2）。

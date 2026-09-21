@@ -233,25 +233,13 @@ public abstract class AbstractUpstreamChatService {
      * 落库也比流式省事 —— 流式的帧被 gate 拦在上游、{@code logChunks} 是空的，
      * 必须靠异常携带缓存帧才能落库；非流式的 {@code saveNonStreamLog} 已经把完整 body 写进去了。
      *
-     * @param openAiRequest 原始 OpenAI 格式请求体
-     * @param model 请求中指定的模型名称
-     * @return 统一形态的上游响应（单个 {@link UpstreamEvent.Body}）
-     */
-    protected Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, String model,
-                                                 ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                                 String requestId) {
-        return chatCompletion(openAiRequest, model, provider, downstreamHeaders, requestId,
-                legacyContext(openAiRequest, provider, downstreamHeaders, requestId));
-    }
-
-    /**
-     * 带管道上下文的{@link #chatCompletion}重载。
-     *
      * <p>上下文决定空响应拦截是否介入 —— 判据与理由见
      * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
-     * 不带上下文的旧重载等价于「直连」：照常拦截。
      *
+     * @param openAiRequest 原始 OpenAI 格式请求体
+     * @param model 请求中指定的模型名称
      * @param ctx 本次请求的管道上下文，由编排层在组装期填好
+     * @return 统一形态的上游响应（单个 {@link UpstreamEvent.Body}）
      */
     protected Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, String model,
                                                  ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
@@ -441,25 +429,13 @@ public abstract class AbstractUpstreamChatService {
      * 并在流式过程中处理 reasoning_content 的提取与回退：
      * 如果模型只输出了思考内容而没有正文，则在流末尾自动把思考内容作为回复输出。
      *
-     * @param openAiRequest 原始 OpenAI 格式请求体
-     * @param model 请求中指定的模型名称
-     * @return 按顺序发出的 chunk JSON 字符串，最后一个元素为 "[DONE]"
-     */
-    protected Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, String model,
-                                                       ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                                       String requestId) {
-        return chatCompletionStream(openAiRequest, model, provider, downstreamHeaders, requestId,
-                legacyContext(openAiRequest, provider, downstreamHeaders, requestId));
-    }
-
-    /**
-     * 带管道上下文的{@link #chatCompletionStream}重载。
-     *
      * <p>上下文决定空响应拦截是否介入 —— 判据与理由见
      * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
-     * 不带上下文的旧重载等价于「直连」：照常拦截。
      *
+     * @param openAiRequest 原始 OpenAI 格式请求体
+     * @param model 请求中指定的模型名称
      * @param ctx 本次请求的管道上下文，由编排层在组装期填好
+     * @return 按顺序发出的 chunk JSON 字符串，最后一个元素为 "[DONE]"
      */
     protected Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, String model,
                                                        ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
@@ -792,24 +768,6 @@ public abstract class AbstractUpstreamChatService {
         customizeRequestBody(body, resolvedModel, provider);
         body.values().removeIf(Objects::isNull);
         return body;
-    }
-
-    /**
-     * 为不带上下文的旧重载拼一个最小上下文。
-     *
-     * <p>这些调用方（单元测试、内部兼容重载）不涉及翻译，因此两侧协议相同 ——
-     * 于是 {@code shouldApplyEmptyResponseGate()} 判为「照常拦截」，
-     * 与原先的 {@code PipelineExecution.empty()} 完全一致。
-     *
-     * <p>这是 <strong>3.3b-1 的过渡便利</strong>：本步只把执行器的第 6 个参数类型
-     * 从 {@code PipelineExecution} 换成 {@code RequestPipelineContext}，
-     * 其余一概不动。旧重载的去留是 <strong>3.3b-2 要问用户的</strong>决定。
-     */
-    private RequestPipelineContext legacyContext(Map<String, Object> body,
-                                                 ProviderRuntimeConfiguration provider,
-                                                 HttpHeaders downstreamHeaders, String requestId) {
-        return RequestPipelineContext.of(body, WireProtocol.CHAT, WireProtocol.CHAT,
-                provider, downstreamHeaders, requestId, null);
     }
 
     /**

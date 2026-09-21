@@ -145,6 +145,31 @@ public final class RequestPipelineContext {
                 downstreamHeaders, requestId, translationContext);
     }
 
+    /**
+     * 组装期创建一个<strong>直连</strong>上下文：两侧同协议、无翻译、无登记步骤。
+     *
+     * <p>直连是最常见的路径（三条线路各有一个直连分支），因此给它一个具名工厂，
+     * 让「这不是翻译路线」在调用点就看得见 —— 而不是写成
+     * {@code of(body, p, p, …)} 那样靠两个参数恰好相同来表达。
+     *
+     * <p>它与 3.3b-1 那个过渡辅助（已随旧重载一起退役）在判据上完全等价：
+     * {@code translationNeeded()} 为 false → 空响应拦截照常介入。
+     * 但两者性质不同 —— 那个是「没有 ctx 时凑一个」，本方法供**组装层显式调用**。
+     *
+     * @param body             原始请求体
+     * @param protocol         两侧共用的协议
+     * @param translationContext 直连没有去程翻译，通常传 null
+     */
+    public static RequestPipelineContext direct(Map<String, Object> body,
+                                                WireProtocol protocol,
+                                                ProviderRuntimeConfiguration provider,
+                                                HttpHeaders downstreamHeaders,
+                                                String requestId,
+                                                TranslationContext translationContext) {
+        return new RequestPipelineContext(body, protocol, protocol, provider,
+                downstreamHeaders, requestId, translationContext);
+    }
+
     /** 当前请求体。 */
     public Map<String, Object> body() {
         return body;

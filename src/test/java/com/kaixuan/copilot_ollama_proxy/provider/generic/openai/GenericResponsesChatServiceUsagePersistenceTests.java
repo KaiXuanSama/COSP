@@ -6,10 +6,12 @@ import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
+import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -390,13 +392,15 @@ class GenericResponsesChatServiceUsagePersistenceTests {
 
         private Mono<String> exposeResponses(Map<String, Object> request, ResolvedProviderRoute route) {
             // 同流式那个辅助方法：在此收口为字符串，让既有断言一行未改。
-            return responses(request, route, HttpHeaders.EMPTY, "req-persist")
+            return responses(request, route, HttpHeaders.EMPTY, "req-persist",
+                    PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES))
                     .map(com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent::data);
         }
 
         private Flux<String> exposeResponsesStream(Map<String, Object> request, ResolvedProviderRoute route) {
             // 收口为字符串：本类断言的是落库内容，与分类无关。
-            return responsesStream(request, route, HttpHeaders.EMPTY, "req-persist")
+            return responsesStream(request, route, HttpHeaders.EMPTY, "req-persist",
+                    PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES))
                     .map(com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent::data);
         }
 

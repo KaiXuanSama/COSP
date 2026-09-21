@@ -185,15 +185,8 @@ public class GenericResponsesChatService {
     private static final DownstreamLogView DIRECT_VIEW =
             DownstreamLogView.direct(WireProtocol.RESPONSES.name());
 
-    /** 非流式，接受应用层已解析的路由。 */
-    public Mono<UpstreamEvent> responses(Map<String, Object> request, ResolvedProviderRoute route,
-                                         HttpHeaders downstreamHeaders, String requestId) {
-        return responses(request, route, downstreamHeaders, requestId,
-                directContext(request, route.provider(), downstreamHeaders, requestId));
-    }
-
     /**
-     * 非流式，带<strong>管道上下文</strong>。
+     * 非流式，接受应用层已解析的路由与<strong>管道上下文</strong>。
      *
      * <p>上下文决定空响应拦截是否介入 —— C2R / R2C 翻译落地时会用到：
      * 只接了去程而没接回程的方向，应当整轮放行而不判空重试。
@@ -207,15 +200,8 @@ public class GenericResponsesChatService {
         return responses(request, route.model(), route.provider(), downstreamHeaders, requestId, ctx);
     }
 
-    /** 流式，接受应用层已解析的路由。 */
-    public Flux<UpstreamEvent> responsesStream(Map<String, Object> request, ResolvedProviderRoute route,
-                                               HttpHeaders downstreamHeaders, String requestId) {
-        return responsesStream(request, route, downstreamHeaders, requestId,
-                directContext(request, route.provider(), downstreamHeaders, requestId));
-    }
-
     /**
-     * 流式，带<strong>管道上下文</strong>。理由同非流式的那个重载。
+     * 流式，接受应用层已解析的路由与<strong>管道上下文</strong>。理由同非流式的那个重载。
      *
      * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
@@ -223,19 +209,6 @@ public class GenericResponsesChatService {
                                                HttpHeaders downstreamHeaders, String requestId,
                                                RequestPipelineContext ctx) {
         return responsesStream(request, route.model(), route.provider(), downstreamHeaders, requestId, ctx);
-    }
-
-    /**
-     * 为不带上下文的旧重载拼一个最小上下文（直连：两侧同协议）。
-     *
-     * <p>这些调用方不涉及翻译，因此与原 {@code PipelineExecution.empty()} 在判据上
-     * 完全等价。<strong>这是 3.3b-1 的过渡便利</strong>，旧重载的去留是 3.3b-2 的决定。
-     */
-    private RequestPipelineContext directContext(Map<String, Object> request,
-                                                 ProviderRuntimeConfiguration provider,
-                                                 HttpHeaders downstreamHeaders, String requestId) {
-        return RequestPipelineContext.of(request, WireProtocol.RESPONSES, WireProtocol.RESPONSES,
-                provider, downstreamHeaders, requestId, null);
     }
 
     // ==================== 非流式 ====================
@@ -255,22 +228,6 @@ public class GenericResponsesChatService {
      *       报出「无法连接到上游服务」这种与事实相反的错误。</li>
      * </ul>
      * 这条约束是 Chat 侧用一个真实缺陷换来的，此处必须同样成立。
-     */
-    protected Mono<UpstreamEvent> responses(Map<String, Object> request, String model,
-                                            ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                            String requestId) {
-        return responses(request, model, provider, downstreamHeaders, requestId,
-                directContext(request, provider, downstreamHeaders, requestId));
-    }
-
-    /**
-     * 带管道上下文的{@link #responses}重载。
-     *
-     * <p>上下文决定空响应拦截是否介入 —— 判据与理由见
-     * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
-     * 不带上下文的旧重载等价于「直连」：照常拦截。
-     *
-     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     protected Mono<UpstreamEvent> responses(Map<String, Object> request, String model,
                                             ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
@@ -382,22 +339,6 @@ public class GenericResponsesChatService {
      * 是否合法尚未验证」而暂缓接入，后来按功能完整性优先补上了。此处直接接入：
      * 前端菜单项的条件只看是否流式、看不到上游协议，不接会让它表现为
      * 「点了没反应、无任何报错」—— 那比理论风险更明确地有害。
-     */
-    protected Flux<UpstreamEvent> responsesStream(Map<String, Object> request, String model,
-                                                   ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                                   String requestId) {
-        return responsesStream(request, model, provider, downstreamHeaders, requestId,
-                directContext(request, provider, downstreamHeaders, requestId));
-    }
-
-    /**
-     * 带管道上下文的{@link #responsesStream}重载。
-     *
-     * <p>上下文决定空响应拦截是否介入 —— 判据与理由见
-     * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
-     * 不带上下文的旧重载等价于「直连」：照常拦截。
-     *
-     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     protected Flux<UpstreamEvent> responsesStream(Map<String, Object> request, String model,
                                                    ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,

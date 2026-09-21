@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.application.openai;
 
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchDecision;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
@@ -139,7 +140,10 @@ public class ResponsesService {
             return Mono.error(new ProtocolTranslationNotSupportedException(
                     route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
         }
-        return responsesChatService.responses(request, route, downstreamHeaders, requestId);
+        // 直连：两侧同协议。上下文在此处显式构建，与另两条线路同形。
+        RequestPipelineContext ctx = RequestPipelineContext.direct(request, DOWNSTREAM_PROTOCOL,
+                route.provider(), downstreamHeaders, requestId, null);
+        return responsesChatService.responses(request, route, downstreamHeaders, requestId, ctx);
     }
 
     /**
@@ -169,6 +173,9 @@ public class ResponsesService {
             return Flux.error(new ProtocolTranslationNotSupportedException(
                     route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
         }
-        return responsesChatService.responsesStream(request, route, downstreamHeaders, requestId);
+        // 同非流式：上下文在此处显式构建。
+        RequestPipelineContext ctx = RequestPipelineContext.direct(request, DOWNSTREAM_PROTOCOL,
+                route.provider(), downstreamHeaders, requestId, null);
+        return responsesChatService.responsesStream(request, route, downstreamHeaders, requestId, ctx);
     }
 }
