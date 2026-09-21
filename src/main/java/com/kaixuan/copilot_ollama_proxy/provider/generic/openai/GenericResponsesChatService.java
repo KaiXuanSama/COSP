@@ -771,16 +771,27 @@ public class GenericResponsesChatService {
      *
      * <p>优先用请求体里的 {@code model}，缺失时回退到路由解析出的那个；两者都空则返回空串
      * —— 不返回 null，那会让 {@code body.put("model", ...)} 塞进一个 null 并在
-     * 末尾清洗时被移除，上游收到一个没有 model 字段的请求体，报错指向别处。
+    /**
+     * 解析出真实的上游模型名（剥除供应商前缀）。与另两条线路同一语义。
+     *
+     * <p>两个来源不是「回退关系」，是同一个值的两条路：{@code requestModel} 来自请求体、
+     * {@code routedModel} 来自路由解析，生产路径上二者同值，测试常只给其中一个。
+     * 从前的第三层（可枚举的默认模型名）已在 3.3a 剔除 —— 理由见
+     * {@code AbstractUpstreamChatService.resolveModel} 的注释。
+     *
+     * @param requestModel 请求体里的模型名，可能为 null
+     * @param routedModel  路由解析出的模型名，可能为 null
+     * @return 剥除供应商前缀后的真实模型名
      */
-    private String resolveModel(Object requestModel, String fallbackModel) {
+    private String resolveModel(Object requestModel, String routedModel) {
         String model;
         if (requestModel instanceof String value && !value.isBlank()) {
             model = value;
-        } else if (fallbackModel != null && !fallbackModel.isBlank()) {
-            model = fallbackModel;
+        } else if (routedModel != null && !routedModel.isBlank()) {
+            model = routedModel;
         } else {
-            return "";
+            // 不可达：路由层已拦。保留显式抛错而非凭空返回，理由同 Chat 侧。
+            throw new IllegalArgumentException("请求缺少 model：路由层应已拒绝，不应到达此处");
         }
         return ModelNameUtil.parse(model).modelName();
     }

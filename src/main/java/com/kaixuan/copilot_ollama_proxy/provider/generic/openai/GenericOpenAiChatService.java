@@ -30,7 +30,7 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
     public GenericOpenAiChatService(ObjectMapper objectMapper,
                                     ProviderRequestHeaderService providerRequestHeaderService,
                                     RequestBodyRuleEngine requestBodyRuleEngine) {
-        super(objectMapper, "", providerRequestHeaderService);
+        super(objectMapper, providerRequestHeaderService);
         this.requestBodyRuleEngine = requestBodyRuleEngine;
     }
 

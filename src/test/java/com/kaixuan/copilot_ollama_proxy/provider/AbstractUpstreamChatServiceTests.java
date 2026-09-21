@@ -1262,7 +1262,7 @@ class AbstractUpstreamChatServiceTests {
     private static final class ProductionBackoffService extends AbstractUpstreamChatService {
 
         private ProductionBackoffService() {
-            super(new ObjectMapper(), "default-model", new ProviderRequestHeaderService(new ObjectMapper()));
+            super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()));
         }
 
         private Duration exposeRetryFirstBackoff() {
@@ -1309,7 +1309,7 @@ class AbstractUpstreamChatServiceTests {
     private static final class TestOpenAiService extends AbstractUpstreamChatService {
 
         private TestOpenAiService() {
-            super(new ObjectMapper(), "default-model", new ProviderRequestHeaderService(new ObjectMapper()));
+            super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()));
         }
 
         private Map<String, Object> exposePrepareRequestBody(Map<String, Object> request, boolean stream,
@@ -1443,7 +1443,7 @@ class AbstractUpstreamChatServiceTests {
     private static final class NullAssigningService extends AbstractUpstreamChatService {
 
         private NullAssigningService() {
-            super(new ObjectMapper(), "default-model", new ProviderRequestHeaderService(new ObjectMapper()));
+            super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()));
         }
 
         private Map<String, Object> exposePrepareRequestBody(Map<String, Object> request, boolean stream,

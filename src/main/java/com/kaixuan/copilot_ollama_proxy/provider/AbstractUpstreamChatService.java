@@ -97,8 +97,6 @@ public abstract class AbstractUpstreamChatService {
     /** Jackson 对象映射器，用于 SSE chunk 的 JSON 解析与序列化。 */
     protected final ObjectMapper objectMapper;
 
-    /** 当请求中未指定模型时回退使用的默认模型名称。 */
-    private final String fallbackDefaultModel;
     private final ProviderRequestHeaderService providerRequestHeaderService;
 
     /** API 调用日志写入服务，由子类 Spring Bean 通过 setter 注入。 */
@@ -210,12 +208,11 @@ public abstract class AbstractUpstreamChatService {
 
     /**
      * @param objectMapper Jackson 对象映射器
-     * @param fallbackDefaultModel 当请求中未指定模型时使用的默认模型名称
+     * @param providerRequestHeaderService 出站请求头装配服务
      */
-    protected AbstractUpstreamChatService(ObjectMapper objectMapper, String fallbackDefaultModel,
+    protected AbstractUpstreamChatService(ObjectMapper objectMapper,
                                           ProviderRequestHeaderService providerRequestHeaderService) {
         this.objectMapper = objectMapper;
-        this.fallbackDefaultModel = fallbackDefaultModel;
         this.providerRequestHeaderService = providerRequestHeaderService;
     }
 
@@ -929,23 +926,45 @@ public abstract class AbstractUpstreamChatService {
     /**
      * 解析请求中的模型名称，如果请求中没有指定模型或指定的模型名称无效，则使用提供的 fallbackModel 进行回退，如果 fallbackModel 也无效则使用全局默认模型。
      * <p>
-     * 如果模型名称包含供应商前缀（如 {@code [DeepSeek]deepseek-v4-flash}），会自动去除前缀后再返回。
-     * @param requestModel 请求中指定的模型名称，可能为 null 或空字符串
-     * @param fallbackModel 提供的回退模型名称，可能为 null 或空字符串
-     * @return 最终解析出的模型名称，保证不为 null 或空字符串，且不含供应商前缀
+    /**
+     * 解析出真实的上游模型名（剥除供应商前缀）。
+     *
+     * <h2>两个来源不是「回退关系」，是同一个值的两条路</h2>
+     * <ul>
+     *   <li>{@code requestModel} —— 请求体里的 {@code model}。控制器会写进去，
+     *       所以生产路径上它必定存在；</li>
+     *   <li>{@code routedModel} —— 路由（{@code ProviderRouteResolver}）解析出的模型名。
+     *       生产路径上它与 {@code requestModel} 同值（控制器写的就是下游传来的那个模型名）。</li>
+     * </ul>
+     * 之所以两个都留：测试常直接调 {@code prepareRequestBody} 并只给其中一个 ——
+     * 例如 {@code GenericAnthropicChatServiceTests} 构造的请求体只有 {@code messages}，
+     * 模型名完全来自路由参数。两个来源互补，不是先后关系。
+     *
+     * <h2>已剔除的是第三层：可枚举的默认模型名（3.3a）</h2>
+     * 从前两个来源都为空时还会回退到一个 {@code fallbackDefaultModel} 字段。
+     * 那是「特定供应商」时代的产物 —— 当年有可枚举的回退模型名；现在是范式供应商，
+     * 那些名字一个都不存在了，字段的值退化成空串却留在代码里。
+     *
+     * <p>现在两者都为空时<strong>显式抛错</strong>：「下游必须携带 model」由路由层保证并报 400，
+     * 这是众多多供应商代理的常规实现。若将来路由改成宽容模式，这里会立刻响，
+     * 而不是把一个空模型名发给上游（那会让上游报一个指向别处的错）。
+     *
+     * @param requestModel 请求体里的模型名，可能为 null
+     * @param routedModel  路由解析出的模型名，可能为 null
+     * @return 剥除供应商前缀后的真实模型名
      */
-    protected String resolveModel(Object requestModel, String fallbackModel) {
+    protected String resolveModel(Object requestModel, String routedModel) {
         String model;
         if (requestModel instanceof String value && !value.isBlank()) {
             model = value;
-        } else if (fallbackModel != null && !fallbackModel.isBlank()) {
-            model = fallbackModel;
+        } else if (routedModel != null && !routedModel.isBlank()) {
+            model = routedModel;
         } else {
-            return fallbackDefaultModel;
+            // 不可达：路由层已在更早的一步拒绝（它先按「模型名可解析」筛过）。
+            throw new IllegalArgumentException("请求缺少 model：路由层应已拒绝，不应到达此处");
         }
         // 去除供应商前缀（如 [DeepSeek]deepseek-v4-flash → deepseek-v4-flash）
-        var parsed = ModelNameUtil.parse(model);
-        return parsed.modelName();
+        return ModelNameUtil.parse(model).modelName();
     }
 
     /**

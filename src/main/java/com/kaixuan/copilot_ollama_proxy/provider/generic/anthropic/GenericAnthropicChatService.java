@@ -1083,15 +1083,33 @@ public class GenericAnthropicChatService {
      * 而不是在翻译过程里静默改写用户的请求。
      */
 
-    /** 剥离供应商前缀，取真实上游模型名。与 OpenAI 侧同一工具。 */
-    private String resolveModel(Object requestModel, String fallbackModel) {
+    /**
+     * 解析出真实的上游模型名（剥除供应商前缀）。与另两条线路同一语义。
+     *
+     * <h2>两个来源不是「回退关系」，是同一个值的两条路</h2>
+     * {@code requestModel} 来自请求体（控制器会写进去），{@code routedModel} 来自路由解析。
+     * 生产路径上二者同值；测试常只给其中一个（本类的测试构造的请求体只有 {@code messages}，
+     * 模型名完全来自路由参数），故两个都要接受。
+     *
+     * <h2>剔除了的是第三层：可枚举的默认模型名（3.3a）</h2>
+     * 从前这里还接受一个 {@code fallbackModel}，并在两者都为空时返回空串。
+     * 那是「特定供应商」时代的产物（当年有可枚举的回退模型名），现在是范式供应商，
+     * 那些名字一个都不存在了。现在两者都为空时<strong>显式抛错</strong>：
+     * 「下游必须携带 model」由路由层保证并报 400。
+     *
+     * @param requestModel 请求体里的模型名，可能为 null
+     * @param routedModel  路由解析出的模型名，可能为 null
+     * @return 剥除供应商前缀后的真实模型名
+     */
+    private String resolveModel(Object requestModel, String routedModel) {
         String model;
         if (requestModel instanceof String value && !value.isBlank()) {
             model = value;
-        } else if (fallbackModel != null && !fallbackModel.isBlank()) {
-            model = fallbackModel;
+        } else if (routedModel != null && !routedModel.isBlank()) {
+            model = routedModel;
         } else {
-            return "";
+            // 不可达：路由层已拦。保留显式抛错而非凭空返回，理由同 Chat 侧。
+            throw new IllegalArgumentException("请求缺少 model：路由层应已拒绝，不应到达此处");
         }
         return ModelNameUtil.parse(model).modelName();
     }
