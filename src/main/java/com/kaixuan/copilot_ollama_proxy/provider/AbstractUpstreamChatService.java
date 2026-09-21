@@ -18,7 +18,9 @@ import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.OpenAiContentDetector;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.OpenAiUsageParser;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.ChunkNormalizeStage;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.ReasoningFallback;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.ReasoningFallbackStage;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.UpstreamChunkNormalizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -118,6 +120,26 @@ public abstract class AbstractUpstreamChatService {
     private RetryPolicyService retryPolicyService;
 
     /**
+     * chunk 归一支线的 Chat 实现，由 Spring 从集合注入里筛出（见 {@link #setChunkNormalizeStages}）。
+     *
+     * <h2>为何是「可选 + 回退静态工具」的过渡形态</h2>
+     * Stage 3.1 只做「先成形」：让归一具备被查表的接口形状，但<strong>调用点仍固定用 Chat 实现</strong>，
+     * 不按 {@code bodyProtocol} 运行时查表（那要 3.3 抽出主干才有键）。
+     * <ul>
+     *   <li><strong>生产</strong>：Spring 注入 {@code List<ChunkNormalizeStage>}，本类筛出
+     *       {@link WireProtocol#CHAT} 那个存于此字段，调用它；</li>
+     *   <li><strong>单测</strong>：7 个测试子类直接 {@code new}、不走 Spring，此字段为 null，
+     *       调用点回退到静态工具 {@link UpstreamChunkNormalizer}。两条路逻辑完全相同
+     *       （Chat 实现本就只转调那个静态工具），故零行为变更、既有单测一行未改。</li>
+     * </ul>
+     * 用 {@code List} 筛而非直接注入单个：防「将来多一个协议实现时，基类按单类型注入报多候选」。
+     */
+    private ChunkNormalizeStage chunkNormalizeStage;
+
+    /** reasoning fallback 支线的 Chat 实现，注入与回退方式同 {@link #chunkNormalizeStage}。 */
+    private ReasoningFallbackStage reasoningFallbackStage;
+
+    /**
      * 全局 WebClient.Builder，由 Spring 通过 setter 注入。
      * 该 Builder 在 WebClientConfig 中配置了 JDK 系统 DNS 解析器，
      * 避免 Netty 默认异步解析器在 Windows 上的间歇性 DNS 解析失败。
@@ -143,6 +165,28 @@ public abstract class AbstractUpstreamChatService {
     @Autowired(required = false)
     public void setCallRetryRegistry(CallRetryRegistry callRetryRegistry) {
         this.callRetryRegistry = callRetryRegistry;
+    }
+
+    /**
+     * 从集合注入里筛出 Chat 的 chunk 归一支线。
+     *
+     * <p>收 {@code List} 而非单个：归一支线未来可能不止一个协议实现，按单类型注入会在
+     * 那时报「多候选」。当前只有 Chat 一个实现，筛出它即可；筛不到（无实现）则保持 null，
+     * 调用点回退静态工具。查表接线（按 {@code bodyProtocol} 运行时选）留待 3.3。
+     */
+    @Autowired(required = false)
+    public void setChunkNormalizeStages(java.util.List<ChunkNormalizeStage> stages) {
+        this.chunkNormalizeStage = stages == null ? null : stages.stream()
+                .filter(stage -> stage.protocol() == WireProtocol.CHAT)
+                .findFirst().orElse(null);
+    }
+
+    /** 从集合注入里筛出 Chat 的 reasoning fallback 支线，理由同 {@link #setChunkNormalizeStages}。 */
+    @Autowired(required = false)
+    public void setReasoningFallbackStages(java.util.List<ReasoningFallbackStage> stages) {
+        this.reasoningFallbackStage = stages == null ? null : stages.stream()
+                .filter(stage -> stage.protocol() == WireProtocol.CHAT)
+                .findFirst().orElse(null);
     }
 
     @Autowired(required = false)
@@ -621,15 +665,23 @@ public abstract class AbstractUpstreamChatService {
                         usageRaw.set(rawUsage);
                     }
                 }).concatMap(chunk -> {
-                    // 上游形态归一：统一 reasoning 字段名 / finish_reason / 剪空，见 UpstreamChunkNormalizer。
-                    String normalizedChunk = UpstreamChunkNormalizer.normalize(
-                            objectMapper, chunk, contentEmitted, reasoningBuffer, chunkId);
+                    // 上游形态归一：统一 reasoning 字段名 / finish_reason / 剪空。
+                    // Stage 3.1：优先走注入的 Chat 支线（生产），未注入（单测直接 new）回退静态工具 ——
+                    // 两条路逻辑相同（Chat 支线只转调那个静态工具），故零行为变更。
+                    String normalizedChunk = chunkNormalizeStage != null
+                            ? chunkNormalizeStage.normalize(chunk, contentEmitted, reasoningBuffer, chunkId)
+                            : UpstreamChunkNormalizer.normalize(objectMapper, chunk, contentEmitted, reasoningBuffer, chunkId);
                     // reasoning fallback：只有思考链没有正文时，用思考内容补一对伪 chunk。
-                    // 触发判定（含「纯工具调用不触发」）见 ReasoningFallback.shouldFallback。
-                    if (ReasoningFallback.shouldFallback(objectMapper, normalizedChunk, contentEmitted, reasoningBuffer)) {
+                    // 触发判定（含「纯工具调用不触发」）见 ReasoningFallbackStage / ReasoningFallback。
+                    boolean fallback = reasoningFallbackStage != null
+                            ? reasoningFallbackStage.shouldFallback(normalizedChunk, contentEmitted, reasoningBuffer)
+                            : ReasoningFallback.shouldFallback(objectMapper, normalizedChunk, contentEmitted, reasoningBuffer);
+                    if (fallback) {
                         log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {})", reasoningBuffer.length());
-                        return Flux.fromIterable(ReasoningFallback.buildFallbackFrames(
-                                objectMapper, chunkId.get(), model, reasoningBuffer.toString()));
+                        List<String> frames = reasoningFallbackStage != null
+                                ? reasoningFallbackStage.buildFallbackFrames(chunkId.get(), model, reasoningBuffer.toString())
+                                : ReasoningFallback.buildFallbackFrames(objectMapper, chunkId.get(), model, reasoningBuffer.toString());
+                        return Flux.fromIterable(frames);
                     }
                     return Flux.just(normalizedChunk);
                 }).doOnNext(chunk -> {
