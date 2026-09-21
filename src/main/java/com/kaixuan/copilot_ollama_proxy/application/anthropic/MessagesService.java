@@ -133,12 +133,10 @@ public class MessagesService {
             return Mono.error(new ProtocolTranslationNotSupportedException(
                     route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
         }
-        // 直连：两侧同协议。上下文与落库视图都在此处显式给出 —— 视图不靠重载默认值，
-        // 因为那个默认值对翻译路线会静默记错（见 GenericAnthropicChatService#directLogView）。
+        // 直连：两侧同协议、chunk 不需要改写（传 null）。上下文在此处显式构建。
         RequestPipelineContext ctx = RequestPipelineContext.direct(request, DOWNSTREAM_PROTOCOL,
                 route.provider(), downstreamHeaders, requestId, null);
-        return anthropicChatService.messages(request, route, downstreamHeaders, requestId,
-                GenericAnthropicChatService.directLogView(), ctx);
+        return anthropicChatService.messages(request, route, downstreamHeaders, requestId, null, ctx);
     }
 
     /**
@@ -168,10 +166,9 @@ public class MessagesService {
             return Flux.error(new ProtocolTranslationNotSupportedException(
                     route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
         }
-        // 同非流式：上下文与落库视图都在此处显式给出。
+        // 同非流式：上下文在此处显式构建，chunk 不改写。
         RequestPipelineContext ctx = RequestPipelineContext.direct(request, DOWNSTREAM_PROTOCOL,
                 route.provider(), downstreamHeaders, requestId, null);
-        return anthropicChatService.messagesStream(request, route, downstreamHeaders, requestId,
-                GenericAnthropicChatService.directLogView(), ctx);
+        return anthropicChatService.messagesStream(request, route, downstreamHeaders, requestId, null, ctx);
     }
 }

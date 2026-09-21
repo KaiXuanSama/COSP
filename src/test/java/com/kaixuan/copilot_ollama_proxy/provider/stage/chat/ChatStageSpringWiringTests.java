@@ -1,10 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.provider.stage.chat;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
-import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
-import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.ChunkNormalizeStage;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.ChunkStageRegistry;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.ReasoningFallbackStage;
@@ -54,16 +51,6 @@ class ChatStageSpringWiringTests {
 
     @Autowired
     private GenericOpenAiChatService genericOpenAiChatService;
-
-    /** 构造新服务实例用的依赖（见 {@code StageSelection.freshService()}）。 */
-    @Autowired
-    private ObjectMapper objectMapper;
-
-    @Autowired
-    private ProviderRequestHeaderService providerRequestHeaderService;
-
-    @Autowired
-    private RequestBodyRuleEngine requestBodyRuleEngine;
 
     @Test
     @DisplayName("集合注入能收集到两个 Chat 支线，且各只有 CHAT 一个实现")

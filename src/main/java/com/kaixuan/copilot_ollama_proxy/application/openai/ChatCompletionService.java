@@ -18,7 +18,6 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRout
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import com.kaixuan.copilot_ollama_proxy.application.shared.ProtocolNotifier;
 import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
-import com.kaixuan.copilot_ollama_proxy.provider.DownstreamLogView;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
@@ -30,7 +29,9 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 /**
  * 聊天补全应用服务 —— 服务下游的 OpenAI 协议端点。
@@ -191,8 +192,7 @@ public class ChatCompletionService {
             // usage 不需要在这里接线：把 cache_read 加回输入只依赖上游协议，
             // 已由 AnthropicUsageParser 完成，直连与翻译两条线路拿到同一口径。
             Mono<UpstreamEvent> upstream = genericAnthropicChatService.messages(
-                    translated.body(), route, downstreamHeaders, requestId,
-                    DownstreamLogView.protocolOnly(DOWNSTREAM_PROTOCOL.name()), ctx);
+                    translated.body(), route, downstreamHeaders, requestId, null, ctx);
             if (responseTranslator == null) {
                 // 半轮实现态：回程未接，原样透传上游响应 —— 但不静默（§2.3.2）。
                 warnResponseTranslationMissing(requestId, upstreamProtocol);
@@ -295,25 +295,26 @@ public class ChatCompletionService {
         }
 
         if (upstreamProtocol == WireProtocol.MESSAGES) {
-            // 落库视图：下游协议记 CHAT，且 chunk 记翻译后的形态。
+            // 落库用的 chunk 改写器：下游协议记 CHAT，且 chunk 记翻译后的形态。
             // 流式必须重译而不能只记上游事件：帧数不对等（零帧/一帧/多帧），
             // 从上游事件反推不出下游到底收到了几帧、长什么样。
             // frameCounts 让日志页能把两栏按事件对齐 —— 零帧事件右侧留占位。
             // usage 同非流式分支：不在这里换算，解析层已给出归一口径。
             //
-            // 回程未命中时落库退回「只记协议」：没有回程就没有翻译后的 chunk 可记，
-            // 记上游原生事件即可（半轮态下开发者要看的正是上游原文）。
-            DownstreamLogView logView = responseTranslator == null
-                    ? DownstreamLogView.protocolOnly(DOWNSTREAM_PROTOCOL.name())
-                    : new DownstreamLogView(
-                            DOWNSTREAM_PROTOCOL.name(),
-                            chunks -> {
-                                var log = responseTranslator.translateChunksForLog(
-                                        chunks, route.model(), translated.context().includeUsage());
-                                return ChunkLogPayload.translated(log.translated(), chunks, log.frameCounts());
-                            });
+            // 回程未命中时传 null：没有回程就没有翻译后的 chunk 可记，
+            // 落库退回上游原生事件（半轮态下开发者要看的正是上游原文）。
+            //
+            // 它由本层构造而非执行器自己派生 —— 后者需要执行器认识 TranslatorRegistry，
+            // 会形成包级环并拆掉依赖倒置（3.3d-3 的 E 方案，见 plan_）。
+            Function<List<String>, ChunkLogPayload> logChunkRewriter = responseTranslator == null
+                    ? null
+                    : chunks -> {
+                        var log = responseTranslator.translateChunksForLog(
+                                chunks, route.model(), translated.context().includeUsage());
+                        return ChunkLogPayload.translated(log.translated(), chunks, log.frameCounts());
+                    };
             Flux<UpstreamEvent> upstream = genericAnthropicChatService.messagesStream(
-                    translated.body(), route, downstreamHeaders, requestId, logView, ctx);
+                    translated.body(), route, downstreamHeaders, requestId, logChunkRewriter, ctx);
             if (responseTranslator == null) {
                 // 半轮实现态：回程未接，原样透传上游事件流 —— 但不静默（§2.3.2）。
                 warnResponseTranslationMissing(requestId, upstreamProtocol);

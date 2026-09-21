@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.provider;
 
 import java.util.List;
+import java.util.function.Function;
 
 /**
  * 落库到 {@code api_call_log.chunks} 的载荷形态。
@@ -53,6 +54,44 @@ public record ChunkLogPayload(List<String> translated, List<String> upstream,
     public static ChunkLogPayload translated(List<String> translated, List<String> upstream,
                                              List<Integer> frameCounts) {
         return new ChunkLogPayload(translated, upstream, frameCounts);
+    }
+
+    /**
+     * 用改写器把上游 chunk 列表变成落库载荷，<strong>改写失败时退回上游原文</strong>。
+     *
+     * <h2>为何这个「安全套用」住在本类</h2>
+     * 它决定的是<strong>退回哪一种形状</strong> —— 而那正是本类唯一负责的事
+     * （一列两形）。放在别处会让「出了意外该落成什么」与「两种形状是什么」分居两处。
+     *
+     * <h2>三条退回路径，理由同一条</h2>
+     * <ul>
+     *   <li>改写器为 {@code null} —— 直连路线与跟协议非流式，本就不该改写；</li>
+     *   <li>改写器抛异常 —— 翻译实现有 bug；</li>
+     *   <li>改写器返回 {@code null} —— 同上，只是失败方式不同。</li>
+     * </ul>
+     * 三者的处理都是<strong>落上游原文（裸数组形态）</strong>。理由：
+     * <strong>日志是观测手段，不该因为改写失败而丢掉「上游到底返回了什么」
+     * 这个更基础的事实</strong> —— 而「翻译坏了」恰恰是最需要日志的时刻。
+     *
+     * <p>上游 chunk 本身为 {@code null} 时也走同一路径，且<strong>不调用改写器</strong>：
+     * 没有输入就没有可改写的对象。
+     *
+     * @param chunkRewriter  把上游 chunk 列表改写成下游形态的改写器；
+     *                       {@code null} 表示不改写（直连 / 跟协议非流式）
+     * @param upstreamChunks 该轮完整的上游 chunk 列表，可能为 null
+     * @return 可直接落库的载荷
+     */
+    public static ChunkLogPayload from(Function<List<String>, ChunkLogPayload> chunkRewriter,
+                                       List<String> upstreamChunks) {
+        if (chunkRewriter == null || upstreamChunks == null) {
+            return direct(upstreamChunks);
+        }
+        try {
+            ChunkLogPayload rewritten = chunkRewriter.apply(upstreamChunks);
+            return rewritten == null ? direct(upstreamChunks) : rewritten;
+        } catch (Exception exception) {
+            return direct(upstreamChunks);
+        }
     }
 
     /** 是否需要落成对象形态。 */

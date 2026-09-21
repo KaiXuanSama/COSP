@@ -18,7 +18,7 @@ import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
-import com.kaixuan.copilot_ollama_proxy.provider.DownstreamLogView;
+import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.provider.EmptyUpstreamResponseException;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEventClassifier;
@@ -176,16 +176,6 @@ public class GenericResponsesChatService {
     // ==================== 对外入口 ====================
 
     /**
-     * 直连落库视图：上下游协议相同、chunk 不改写。
-     *
-     * <p>当前<strong>只有</strong>这一个视图。C2R / R2C 翻译尚未实现，因此没有任何调用方
-     * 需要声明「下游其实是另一个协议」。翻译落地时按 Anthropic 侧的形状加带视图的重载 ——
-     * 那边的四个重载正是为此存在。
-     */
-    private static final DownstreamLogView DIRECT_VIEW =
-            DownstreamLogView.direct(WireProtocol.RESPONSES.name());
-
-    /**
      * 非流式，接受应用层已解析的路由与<strong>管道上下文</strong>。
      *
      * <p>上下文决定空响应拦截是否介入 —— C2R / R2C 翻译落地时会用到：
@@ -257,7 +247,7 @@ public class GenericResponsesChatService {
                     Map<String, String> respHeaders = new LinkedHashMap<>();
                     entity.getHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
                     Long logId = saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, respHeaders,
-                            entity.getStatusCode().value(), entity.getBody(), attemptStart.get());
+                            entity.getStatusCode().value(), entity.getBody(), attemptStart.get(), ctx);
                     // ttfb 传 null：非流式没有首字概念，与另两侧一致。
                     saveUsage(logId, providerKey, modelName, false,
                             ResponsesUsageParser.extractUsageRawJson(objectMapper, entity.getBody()),
@@ -271,12 +261,12 @@ public class GenericResponsesChatService {
                         responseException.getHeaders().forEach((k, v) -> errHeaders.put(k, String.join(", ", v)));
                         saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, errHeaders,
                                 responseException.getStatusCode().value(),
-                                responseException.getResponseBodyAsString(), attemptStart.get());
+                                responseException.getResponseBodyAsString(), attemptStart.get(), ctx);
                         publishCallRecorded();
                     } else {
                         // 状态码 -1：非 HTTP 异常的占位值，与另两侧同一约定。
                         saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, Map.of(), -1, null,
-                                attemptStart.get());
+                                attemptStart.get(), ctx);
                         publishCallRecorded();
                     }
                 })
@@ -403,7 +393,7 @@ public class GenericResponsesChatService {
                                         saveStreamLogWithError(providerKey, modelName, reqHeaders, requestBody,
                                                 respHeaders, response.statusCode().value(), List.of(),
                                                 respHeaders, response.statusCode().value(), errorBody,
-                                                attemptStart.get());
+                                                attemptStart.get(), ctx);
                                         publishCallRecorded();
                                         return Flux.error(new WebClientResponseException(
                                                 response.statusCode().value(), "上游错误响应", null,
@@ -479,7 +469,7 @@ public class GenericResponsesChatService {
                     if (emptyResponse != null) {
                         saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
                                 capturedRespHeaders.get(), capturedStatusCode.get(),
-                                emptyResponse.bufferedFrames(), attemptStart.get());
+                                emptyResponse.bufferedFrames(), attemptStart.get(), ctx);
                         publishCallRecorded();
                         return;
                     }
@@ -487,7 +477,7 @@ public class GenericResponsesChatService {
                         int statusCode = capturedStatusCode.get() == 0 ? -1 : capturedStatusCode.get();
                         saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
                                 capturedRespHeaders.get(), statusCode, List.copyOf(logChunks),
-                                attemptStart.get());
+                                attemptStart.get(), ctx);
                         publishCallRecorded();
                     }
                 })
@@ -549,7 +539,7 @@ public class GenericResponsesChatService {
                             statusCode = -1;
                         }
                         Long logId = saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
-                                capturedRespHeaders.get(), statusCode, logChunks, attemptStart.get());
+                                capturedRespHeaders.get(), statusCode, logChunks, attemptStart.get(), ctx);
                         long ttfb = ttfbMs.get();
                         saveUsage(logId, providerKey, modelName, true, usageRaw.get(),
                                 ttfb < 0 ? null : (int) ttfb);
@@ -849,43 +839,55 @@ public class GenericResponsesChatService {
     /**
      * 非流式落库。
      *
-     * <p>上下游协议都写 {@code RESPONSES}：当前只有直连一条路，没有翻译路线需要区分。
-     * C2R / R2C 落地时按 Anthropic 侧的形状引入 {@link DownstreamLogView} 参数 ——
-     * 那时下游协议由视图给出，而上游协议仍恒为 {@code RESPONSES}。
+     * <h2>下游协议从 ctx 取，不再是硬编码常量</h2>
+     * 它曾读一个写死 {@code RESPONSES} 的常量 —— 那对直连正确，但
+     * <strong>C2R / R2C 落地后会静默记错</strong>：协议列仍写 RESPONSES，
+     * 而日志里看不出这是一次跳协议调用。两列分居两处（常量与实际路由）时，
+     * 不一致不会报错，只会让查询「按协议筛」时少掉那些行。
+     *
+     * <p>改为从 ctx 取后，它<strong>自动正确</strong> —— 无论直连还是将来的翻译路线。
+     * 上游协议仍恒为 {@code RESPONSES}（本执行器只打那个端点）。
+     *
+     * <p>本方法不收 chunk 改写器参数：Responses 目前只有直连一条路、
+     * 没有需要改写的帧。跨协议落地时按 Anthropic 侧的形状补
+     * （{@code docs/RESPONSES_PROTOCOL_PLAN.md} §14.7 记的正是这个取舍）。
      */
     private Long saveNonStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders,
                                   Map<String, Object> requestBody, Map<String, String> respHeaders,
-                                  int statusCode, String responseBody, long startTime) {
+                                  int statusCode, String responseBody, long startTime,
+                                  RequestPipelineContext ctx) {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
         return apiCallLog.saveNonStream(providerKey, modelName,
-                DIRECT_VIEW.downstreamProtocol(), WireProtocol.RESPONSES.name(),
+                ctx.downstreamProtocol().name(), WireProtocol.RESPONSES.name(),
                 reqHeaders, requestBody, respHeaders,
                 statusCode, responseBody, duration);
     }
 
-    /** 流式落库。chunk 原样记录 —— 直连路线下游收到的就是这些事件。 */
+    /** 流式落库。chunk 原样记录 —— 直连路线下游收到的就是这些事件。协议从 ctx 取。 */
     private Long saveStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders,
                                Map<String, Object> requestBody, Map<String, String> respHeaders,
-                               int statusCode, List<String> chunks, long startTime) {
+                               int statusCode, List<String> chunks, long startTime,
+                               RequestPipelineContext ctx) {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
         return apiCallLog.saveStream(providerKey, modelName,
-                DIRECT_VIEW.downstreamProtocol(), WireProtocol.RESPONSES.name(),
+                ctx.downstreamProtocol().name(), WireProtocol.RESPONSES.name(),
                 reqHeaders, requestBody, respHeaders,
-                statusCode, DIRECT_VIEW.viewChunks(chunks), duration);
+                statusCode, ChunkLogPayload.direct(chunks), duration);
     }
 
     private Long saveStreamLogWithError(String providerKey, String modelName, Map<String, String> reqHeaders,
                                         Map<String, Object> requestBody, Map<String, String> respHeaders,
                                         int statusCode, List<String> chunks, Map<String, String> errorHeaders,
-                                        int errorCode, String errorBody, long startTime) {
+                                        int errorCode, String errorBody, long startTime,
+                                        RequestPipelineContext ctx) {
         if (apiCallLog == null) return null;
         long duration = System.currentTimeMillis() - startTime;
         return apiCallLog.saveStreamWithError(providerKey, modelName,
-                DIRECT_VIEW.downstreamProtocol(), WireProtocol.RESPONSES.name(),
+                ctx.downstreamProtocol().name(), WireProtocol.RESPONSES.name(),
                 reqHeaders, requestBody, respHeaders, statusCode,
-                DIRECT_VIEW.viewChunks(chunks), errorHeaders,
+                ChunkLogPayload.direct(chunks), errorHeaders,
                 errorCode, errorBody, duration);
     }
 

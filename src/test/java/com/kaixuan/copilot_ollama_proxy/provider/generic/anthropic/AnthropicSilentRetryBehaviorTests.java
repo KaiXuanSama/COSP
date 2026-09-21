@@ -222,7 +222,7 @@ class AnthropicSilentRetryBehaviorTests {
         private Flux<String> exposeMessagesStream(Map<String, Object> request, ResolvedProviderRoute route) {
             // 收口为字符串：本类断言的是「重试了几次、收到什么事件」，与分类无关。
             return messagesStream(request, route, HttpHeaders.EMPTY, "req-test",
-                    GenericAnthropicChatService.directLogView(),
+                    null,
                     PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES))
                     .map(com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent::data);
         }
