@@ -27,6 +27,9 @@ import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEventClassifier;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamCallReporter;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamRetryPolicy;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.AnthropicThinkingNormalizer;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.MaxTokensNormalizer;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.SystemPromptNormalizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -746,16 +749,24 @@ public class GenericAnthropicChatService {
         //   2. 解析模型名           resolveModel            后续阶段都要用它查配置
         //   3. 写协议字段           writeProtocolFields     主干自己决定的 model 与 stream
         //   4. 协议归一化           normalizeRequest        下游说 Chat / 上游说 Anthropic 的形态债
-        //   5. 思考两维             applyThinkingDimensions 深度先、方式后，且 off 档跳过方式
-        //   6. 剥兼容副本           dropReasoningEffortAlias C2M 留下的 reasoning_effort 副本
-        //   7. 请求体规则           applyBodyRules          协议筛选由引擎完成
-        //   8. 清 null              removeNullFields        必须是最后一步
+        //   5. 思考注入             applyThinkingDimensions 深度先、方式后、off 档跳过方式，
+        //                                                   末尾剥 reasoning_effort 兼容副本
+        //   6. 请求体规则           applyBodyRules          协议筛选由引擎完成
+        //   7. 清 null              removeNullFields        必须是最后一步
+        //
+        // 阶段 5 早先拆成「思考两维」与「剥兼容副本」两步，现已合并：那个副本的生命周期
+        // **完全由思考注入支配**（供其判定「下游已表态」），是它的内部临时产物。
+        // 独立成阶段反而让「谁该删它」变成跨阶段的隐式契约。
+        //
+        // 三个协议特定步骤（阶段 4 的两半 + 阶段 5）当前**转调 provider.stage 下的静态工具**：
+        // 那些工具同时被对应的支线实现（{@code Messages*Stage}）调用，
+        // 因此逻辑只有一份 —— 若各留一份，改一处忘另一处就是静默分叉。
+        // 支线接线后（3.3d-2）本方法里的这三行会被换成按 bodyProtocol 查表。
         Map<String, Object> body = copyRequestBody(request);
         String resolvedModel = resolveModel(body.get("model"), model);
         writeProtocolFields(body, resolvedModel, stream);
         normalizeRequest(body, resolvedModel, provider);
         applyThinkingDimensions(body, resolvedModel, provider);
-        dropReasoningEffortAlias(body);
         applyBodyRules(body, provider);
         removeNullFields(body);
         return body;
@@ -782,47 +793,33 @@ public class GenericAnthropicChatService {
      * <p>本线路的下游固定说 Chat 而上游说 Anthropic（C2M 是唯一已实现的跨协议方向，
      * 见 {@code ChatCompletionService}），因此这两步是那条翻译链在请求体上的落点。
      * 直连 {@code /v1/messages} 时它们通常是空操作（请求本来就是 Anthropic 形态）。
+     *
+     * <p>两半各自是一个独立的协议特定步骤，因此转调各自的工具 ——
+     * 接线后（3.3d-2）它们会变成两个独立的查表。
      */
     private void normalizeRequest(Map<String, Object> body, String resolvedModel,
                                   ProviderRuntimeConfiguration provider) {
         // system 是顶层字段：OpenAI 把它作为 messages 里 role:system 的一条，
-        // Anthropic 不接受那种形态，必须提取出来（数组形态的坑见 extractSystemPrompt 的注释）。
-        extractSystemPrompt(body);
+        // Anthropic 不接受那种形态，必须提取出来。
+        SystemPromptNormalizer.extractSystemPrompt(body);
         // max_tokens 必填：缺失时上游返回 400，故按模型配置注入（覆写 / 兜底两档）。
-        ensureMaxTokens(body, resolvedModel, provider);
+        MaxTokensNormalizer.ensureMaxTokens(body, resolvedModel, provider, objectMapper);
     }
 
     /**
-     * 阶段 5：思考的<strong>两个维度</strong>—— 深度与方式。
+     * 阶段 5：思考注入（含剥 {@code reasoning_effort} 兼容副本）。
      *
-     * <p><strong>施加顺序不可交换</strong>，且深度写了 {@code thinking:{"type":"disabled"}}
-     * 时跳过方式。两者都会写 {@code thinking} 但权限不对等：深度只在 {@code off} 档动它
-     * （五档里没有「不思考」，只能借这个字段表达），方式把它当主场。
-     * 完整推理（先方式后深度会怎样、不跳过方式会怎样）见本方法原先的 javadoc，
-     * 已随序列显形迁至 {@link #prepareRequestBody} 的说明。
+     * <p>两个维度的顺序约束（深度先、方式后、off 档跳过方式）与剥副本的理由
+     * 都在 {@link AnthropicThinkingNormalizer} 的类注释里 —— 那份推理随逻辑一起搬到了工具类，
+     * 因为那里才是它唯一的家。
      */
     private void applyThinkingDimensions(Map<String, Object> body, String resolvedModel,
                                          ProviderRuntimeConfiguration provider) {
-        boolean thinkingDisabled = resolveReasoningEffort(resolvedModel, provider).applyToAnthropic(body);
-        if (!thinkingDisabled) {
-            resolveThinking(resolvedModel, provider).applyTo(body);
-        }
+        AnthropicThinkingNormalizer.applyThinkingDimensions(body, resolvedModel, provider, objectMapper);
     }
 
     /**
-     * 阶段 6：剥掉 {@code reasoning_effort} 兼容副本。
-     *
-     * <p>它是 OpenAI 的字段名；C2M 翻译器把它映射到 {@code output_config.effort} 后
-     * 刻意保留了一份兼容副本，供阶段 5 的两个设置层判定「下游已表态」。
-     * 因此这一行<strong>必须在阶段 5 之后</strong>：提前剥会让兜底档把一个
-     * 已表态的请求当成未表态，静默退化成覆写档。
-     */
-    private static void dropReasoningEffortAlias(Map<String, Object> body) {
-        body.remove("reasoning_effort");
-    }
-
-    /**
-     * 阶段 8：清掉所有值为 {@code null} 的字段 —— <strong>必须是链条的最后一步</strong>。
+     * 阶段 7：清掉所有值为 {@code null} 的字段 —— <strong>必须是链条的最后一步</strong>。
      *
      * <p>理由与 OpenAI 侧相同：规则可能把字段显式设为 null，而 Anthropic
      * 对多余的 null 字段并不宽容。
@@ -832,48 +829,13 @@ public class GenericAnthropicChatService {
     }
 
     /**
-     * 从运行时模型配置中读取思考方式设置。
-     *
-     * <p>找不到匹配的模型时返回 {@link AnthropicThinkingSetting#defaults()}
-     * （adaptive + 兜底 + 未设置预算），与 {@link #resolveMaxOutputTokens} 同一形状。
-     * 这个默认值<strong>就是</strong> V10 之前那段硬编码的行为，因此升级前后的
-     * 出站请求体完全一致。
-     */
-    private AnthropicThinkingSetting resolveThinking(String resolvedModel,
-                                                    ProviderRuntimeConfiguration provider) {
-        for (var model : provider.models()) {
-            if (resolvedModel.equals(model.modelName())) {
-                return AnthropicThinkingSetting.parse(
-                        model.thinkingMode(), model.thinkingBudgetTokens(), objectMapper);
-            }
-        }
-        return AnthropicThinkingSetting.defaults();
-    }
-
-    /**
-     * 从运行时模型配置中读取思考深度设置。
-     *
-     * <p>与 OpenAI 侧读的是<strong>同一列</strong>（{@code provider_model.reasoning_effort}）、
-     * 同一份解析与同一套四档语义，只有出站的字段名与形态不同。因此此处不引入
-     * 第二份配置 —— 用户在界面上看到的就是一个模型一个档位，无论它走哪条线路。
-     *
-     * <p>模型名查不到时用 {@link ReasoningEffortSetting#defaults()}（medium + 兜底），
-     * 与 OpenAI 侧 {@code resolveReasoningEffort} 同一形状。
-     */
-    private ReasoningEffortSetting resolveReasoningEffort(String resolvedModel,
-                                                        ProviderRuntimeConfiguration provider) {
-        for (var model : provider.models()) {
-            if (resolvedModel.equals(model.modelName())) {
-                return ReasoningEffortSetting.parse(model.reasoningEffort(), objectMapper);
-            }
-        }
-        return ReasoningEffortSetting.defaults();
-    }
-
-    /**
      * 执行适用于 Anthropic 线路的请求体规则组。
      *
      * <p>引擎返回新 Map 而非原地修改，这里原地替换内容以保留调用方持有的引用。
+     *
+     * <p><strong>本步骤是主干而非支线</strong>：协议差异在**规则数据**里
+     * （{@code groups[].protocols}），引擎只是照着筛 —— 加一个协议不需要改代码，
+     * 只需写一条新规则。按方向文档 §2.1 的判据（差异是数据 → 主干）它属主干。
      */
     private void applyBodyRules(Map<String, Object> body, ProviderRuntimeConfiguration provider) {
         RequestBodyRuleEngine.TransformResult result = requestBodyRuleEngine.transform(
@@ -884,182 +846,6 @@ public class GenericAnthropicChatService {
             log.warn("[Anthropic] 请求体规则已跳过: ruleId={}, path={}, message={}",
                     warning.ruleId(), warning.fieldPath(), warning.message());
         }
-    }
-
-    /**
-     * 把 {@code messages} 里的 system 消息提取到顶层 {@code system} 字段。
-     *
-     * <p>若请求已带顶层 {@code system}，则保留它并把 messages 里的追加在后面 ——
-     * 下游可能两种形态都用了，丢掉任何一份都会改变语义。
-     *
-     * <h2>顶层 system 是数组时不能降级成字符串</h2>
-     * Anthropic 允许 {@code system} 是块数组，Claude CLI 就是这么发的：
-     * 三个 {@code {type:"text"}} 块，后两块带 {@code cache_control:{type:"ephemeral"}}，
-     * 表示「到此块为止的内容可缓存」。把它压成字符串会<strong>连缓存断点一起丢掉</strong>，
-     * 每条请求都退化成缓存未命中。
-     *
-     * <p>早先这里的保留判据是 {@code instanceof String}，数组形态因此既不进拼接缓冲、
-     * 又会被末尾那句 {@code put} <strong>整体覆盖</strong> —— 发往上游的 {@code system}
-     * 只剩 messages 里抬上来的那一小段，上万字的系统提示词无声消失，而请求仍然 200。
-     * 触发需要「数组形态顶层 system」与「messages 里有 system 消息」同时成立，
-     * 缺任一个都走不到那句 {@code put}，所以它藏了很久：既有的抬升用例全是字符串形态。
-     *
-     * <p>抬升内容一律<strong>追加到末尾</strong>而非插入开头：数组里每个块都可能带缓存标记，
-     * 改动任何已有块的内容都会让它之后的内容全部缓存失效。
-     */
-    @SuppressWarnings("unchecked")
-    private void extractSystemPrompt(Map<String, Object> body) {
-        if (!(body.get("messages") instanceof List<?> rawMessages)) {
-            return;
-        }
-        // 已有的顶层 system 与抬升内容分开收集：前者要按原形态落地（数组仍是数组），
-        // 后者一律并入它的末尾。合成一个缓冲就会逼两者共用一个输出形态，
-        // 那正是数组被降级成字符串的原因。
-        Object existingSystem = body.get("system");
-        StringBuilder liftedText = new StringBuilder();
-        List<Object> kept = new java.util.ArrayList<>();
-        for (Object item : rawMessages) {
-            if (item instanceof Map<?, ?> raw && "system".equals(raw.get("role"))) {
-                String text = stringifyContent(((Map<String, Object>) raw).get("content"));
-                if (text != null && !text.isBlank()) {
-                    if (!liftedText.isEmpty()) {
-                        liftedText.append("\n\n");
-                    }
-                    liftedText.append(text);
-                }
-                continue;
-            }
-            kept.add(item);
-        }
-        body.put("messages", kept);
-
-        // 没有可抬升的内容时顶层 system 原样不动 —— 包括「本来就没有」和「空块」两种情形，
-        // 后者也无需为无内容的消息凭空造一个字段。
-        if (!liftedText.isEmpty()) {
-            body.put("system", mergeSystem(existingSystem, liftedText.toString()));
-        }
-    }
-
-    /**
-     * 把抬升出来的 system 文本并入已有的顶层 {@code system}。
-     *
-     * <p>三种形态，判据与 {@link #stringifyContent} 对 content 的处理同构：
-     * <ul>
-     *   <li><strong>数组</strong> —— 追加一个新的 {@code text} 块，保持数组形态不变。
-     *       不合并进已有块：那会改变已有块的文本，令其缓存标记覆盖的范围失效。</li>
-     *   <li><strong>非空字符串</strong> —— 用空行拼接，这是下游同时提供两种形态时的既有语义。</li>
-     *   <li><strong>缺失、空串或其它类型</strong> —— 以抬升内容为准。
-     *       第三种实际不会出现（Anthropic 只接受字符串与数组），按此处理是为了与
-     *       「抬升前」的行为保持一致，不在这里新增判断分支。</li>
-     * </ul>
-     *
-     * @param existingSystem 顶层原有的 {@code system}，可能为 null
-     * @param lifted          从 messages 抬升上来的文本，保证非空
-     */
-    private static Object mergeSystem(Object existingSystem, String lifted) {
-        if (existingSystem instanceof List<?> blocks) {
-            List<Object> merged = new java.util.ArrayList<>(blocks);
-            // 用可变 Map 而非 Map.of：规则引擎若需改写这个块，不可变集合会直接抛异常。
-            Map<String, Object> appended = new java.util.LinkedHashMap<>();
-            appended.put("type", "text");
-            appended.put("text", lifted);
-            merged.add(appended);
-            return merged;
-        }
-        if (existingSystem instanceof String existing && !existing.isBlank()) {
-            return existing + "\n\n" + lifted;
-        }
-        return lifted;
-    }
-
-    /**
-     * 把 message 的 content 转成纯文本。
-     *
-     * <p>content 可能是字符串，也可能是 OpenAI 多模态那种
-     * {@code [{"type":"text","text":"..."}]} 数组 —— 后者取出所有 text 片段拼接。
-     * 非文本片段（图片等）在 system 提示词里没有意义，忽略。
-     */
-    private String stringifyContent(Object content) {
-        if (content instanceof String text) {
-            return text;
-        }
-        if (content instanceof List<?> parts) {
-            StringBuilder builder = new StringBuilder();
-            for (Object part : parts) {
-                if (part instanceof Map<?, ?> map && "text".equals(map.get("type"))
-                        && map.get("text") instanceof String text) {
-                    if (!builder.isEmpty()) {
-                        builder.append('\n');
-                    }
-                    builder.append(text);
-                }
-            }
-            return builder.toString();
-        }
-        return null;
-    }
-
-    /**
-     * 按模型配置的注入模式落定 {@code max_tokens}。
-     *
-     * <h2>为何这一步不能省</h2>
-     * Anthropic 把 {@code max_tokens} 列为<strong>必填</strong>，缺失时上游直接 400。
-     * 而 OpenAI 侧它是可选的，Copilot 之类的下游通常不带 —— 于是必须在这里补齐。
-     *
-     * <h2>三个步骤的顺序有讲究</h2>
-     * <ol>
-     *   <li><strong>别名归一化</strong>：下游可能用 OpenAI 的 {@code max_completion_tokens}。
-     *       必须在注入之前搬到正名上，否则 {@code OVERRIDE} 模式写好 {@code max_tokens} 后，
-     *       那个别名字段仍会留在请求体里一起发给上游。</li>
-     *   <li><strong>清掉非法值</strong>：{@code 0}、负数、非数字都视为「没带」。
-     *       {@link MaxOutputTokensSetting#applyTo} 的兜底档只看 {@code containsKey}，
-     *       留着一个 {@code "max_tokens": 0} 会让它认为下游表达过意见而放行 —— 然后上游 400。</li>
-     *   <li><strong>按模式注入</strong>：交给 {@code applyTo}，覆写档无条件写、兜底档只补缺。</li>
-     * </ol>
-     *
-     * <h2>兜底档在这条线路上的实际作用</h2>
-     * Anthropic 客户端直连时几乎总会自带 {@code max_tokens}（协议必填），因此兜底档很少触发；
-     * 真正有用的是<strong>覆写档</strong> —— 它能把下游请求的上限统一压到这里配置的值。
-     * 但兜底档仍不能省：跨协议来的请求（OpenAI 形态的下游打到 Anthropic 供应商）就是靠它补齐的。
-     */
-    private void ensureMaxTokens(Map<String, Object> body, String resolvedModel,
-                                 ProviderRuntimeConfiguration provider) {
-        normalizeMaxTokensAlias(body);
-        resolveMaxOutputTokens(resolvedModel, provider).applyTo(body);
-    }
-
-    /**
-     * 把 OpenAI 的 {@code max_completion_tokens} 搬到 Anthropic 的正名上，并清掉非法值。
-     *
-     * <p>别名无论合法与否都会被移除：它不是 Anthropic 协议的字段，留着只会让上游困惑。
-     */
-    private void normalizeMaxTokensAlias(Map<String, Object> body) {
-        Object alias = body.remove("max_completion_tokens");
-        if (!(body.get("max_tokens") instanceof Number existing) || existing.intValue() <= 0) {
-            body.remove("max_tokens");
-            if (alias instanceof Number aliasValue && aliasValue.intValue() > 0) {
-                body.put("max_tokens", aliasValue.intValue());
-            }
-        }
-    }
-
-    /**
-     * 从运行时模型配置中读取最大输出设置。
-     *
-     * <p>找不到匹配的模型时返回 {@link MaxOutputTokensSetting#defaults()}（4K + 兜底），
-     * 与 OpenAI 侧 {@code resolveReasoningEffort} 同一形状。这里的兜底比思考深度那个安全得多 ——
-     * 给一个未配置的模型注入 {@code max_tokens} 不会改变语义，而缺了它这条线路根本发不出去。
-     *
-     * <p>线性查找而非建 Map：模型数量是个位到几十的量级，且这个方法每轮请求只调一次。
-     */
-    private MaxOutputTokensSetting resolveMaxOutputTokens(String resolvedModel,
-                                                         ProviderRuntimeConfiguration provider) {
-        for (var model : provider.models()) {
-            if (resolvedModel.equals(model.modelName())) {
-                return MaxOutputTokensSetting.parse(model.maxOutputTokens(), objectMapper);
-            }
-        }
-        return MaxOutputTokensSetting.defaults();
     }
 
     /*
