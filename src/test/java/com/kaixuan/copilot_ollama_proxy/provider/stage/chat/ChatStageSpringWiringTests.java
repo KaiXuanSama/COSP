@@ -6,6 +6,7 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.ChunkNormalizeStage;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.ChunkStageRegistry;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.ReasoningFallbackStage;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
 import org.junit.jupiter.api.DisplayName;
@@ -79,18 +80,17 @@ class ChatStageSpringWiringTests {
     }
 
     /**
-     * Chat 执行器确实拿到了注入的支线 —— 不是回退到了静态工具。
+     * Chat 执行器确实拿到了查表入口 —— 不是绕开查表直接调静态工具。
      *
-     * <p>这条是本类存在的理由：装配失败时行为不变，只有这个断言会红。
+     * <p>这条是本类存在的理由（3.3d-2 后改写）：装配失败或接线被改回直调时行为不变，
+     * 只有这个断言会红。
      */
     @Test
-    @DisplayName("Chat 执行器已注入两个支线（而非回退静态工具）")
-    void chatExecutorReceivedInjectedStages() {
-        assertThat(ReflectionTestUtils.getField(genericOpenAiChatService, "chunkNormalizeStage"))
-                .as("未注入会静默回退静态工具，功能正常但 3.1 的成果归零")
-                .isInstanceOf(ChatChunkNormalizeStage.class);
-        assertThat(ReflectionTestUtils.getField(genericOpenAiChatService, "reasoningFallbackStage"))
-                .isInstanceOf(ChatReasoningFallbackStage.class);
+    @DisplayName("Chat 执行器已拿到查表入口（而非绕开查表直接调静态工具）")
+    void chatExecutorHoldsTheRegistry() {
+        assertThat(ReflectionTestUtils.getField(genericOpenAiChatService, "chunkStageRegistry"))
+                .as("为 null 会让归一与 fallback 静默全跳过，而功能看起来仍然正常")
+                .isNotNull();
     }
 
     /**
@@ -100,12 +100,12 @@ class ChatStageSpringWiringTests {
      * （喂一帧、看它没抛且产出了字符串），逐字等价性由 {@code ChatStageImplementationTests} 覆盖。
      */
     @Test
-    @DisplayName("注入的支线可直接调用")
+    @DisplayName("查到的支线可直接调用")
     void injectedStagesAreUsable() {
-        ChunkNormalizeStage normalize = (ChunkNormalizeStage) ReflectionTestUtils
-                .getField(genericOpenAiChatService, "chunkNormalizeStage");
-        ReasoningFallbackStage fallback = (ReasoningFallbackStage) ReflectionTestUtils
-                .getField(genericOpenAiChatService, "reasoningFallbackStage");
+        ChunkStageRegistry registry = (ChunkStageRegistry) ReflectionTestUtils
+                .getField(genericOpenAiChatService, "chunkStageRegistry");
+        ChunkNormalizeStage normalize = registry.findNormalizer(WireProtocol.CHAT).orElseThrow();
+        ReasoningFallbackStage fallback = registry.findFallback(WireProtocol.CHAT).orElseThrow();
 
         assertThat(normalize).isNotNull();
         assertThat(fallback).isNotNull();
@@ -121,23 +121,25 @@ class ChatStageSpringWiringTests {
     }
 
     /**
-     * 集合筛选的契约：只认 {@link WireProtocol#CHAT}，其余协议一律不选。
+     * 查表的契约：只认 {@link WireProtocol#CHAT}，其余协议一律查不到。
      *
      * <h2>为何现在就测（当前只有一个实现）</h2>
-     * 现在生产中筛不筛都一样（只有 CHAT 一个实现），所以它测的是<strong>未来</strong>的契约：
-     * 一旦 MESSAGES / RESPONSES 也补上实现，筛选若被删掉或写错，基类会挑中一个
+     * 现在生产上查不查都一样（只有 CHAT 一个实现），所以它测的是<strong>未来的契约</strong>：
+     * 一旦 MESSAGES / RESPONSES 也补上实现，键若写错，主干会挑中一个
      * 「读写 OpenAI 形态」的实现在别的协议上跑 —— 那正是支线机制要防的事。
-     * 用测试里的 {@code MESSAGES} 替身提前把契约钉住，比等第二个实现出现时再补便宜得多。
+     * 用测试里的 {@code MESSAGES} 替身 + 空注册表提前把契约钉住，
+     * 比等第二个实现出现时再补便宜得多。
      *
-     * <h2>为何新建实例而不复用上下文里的那个</h2>
-     * 直接改共享 Bean 的私有状态会污染 Spring 缓存上下文，影响同 JVM 里的其它测试类。
-     * 构造器所需的两个依赖 Bean 从容器取，其余无关依赖（日志、用量、WebClient）
-     * 本类不碰，故新建实例足够。
+     * <h2>本组与 3.1 时期的差别</h2>
+     * 3.1 时这里测的是「`setChunkNormalizeStages` 的硬编码 {@code filter(CHAT)} 是否写错」——
+     * 那时筛在**注入时**做、键写死在基类里。3.3d-2 收掉了那个 setter 与硬编码筛选，
+     * 改由 {@link ChunkStageRegistry} 按<strong>运行时键</strong>查表，
+     * 于是这组用例改为直接验注册表本身。
      */
     @Nested
     class StageSelection {
 
-        /** 声明 MESSAGES 的替身 —— 只为验证「不会被选中」。 */
+        /** 声明 MESSAGES 的替身 —— 只为验证「查不到」。 */
         private final class MessagesStub implements ChunkNormalizeStage {
             @Override
             public WireProtocol protocol() {
@@ -149,10 +151,6 @@ class ChatStageSpringWiringTests {
                                     StringBuilder reasoningBuffer, AtomicReference<String> chunkId) {
                 return "SHOULD_NOT_BE_USED";
             }
-        }
-
-        private GenericOpenAiChatService freshService() {
-            return new GenericOpenAiChatService(objectMapper, providerRequestHeaderService, requestBodyRuleEngine);
         }
 
         /**
@@ -171,39 +169,61 @@ class ChatStageSpringWiringTests {
         }
 
         @Test
-        @DisplayName("混合列表下选中 CHAT 实现，而非先到的 MESSAGES")
-        void picksChatFromMixedList() {
-            GenericOpenAiChatService service = freshService();
+        @DisplayName("按 CHAT 键查到 CHAT 实现，按 MESSAGES 键查到 MESSAGES 实现")
+        void looksUpByProtocolKey() {
             ChunkNormalizeStage chatStage = chatStageFromContext();
+            ChunkNormalizeStage messagesStub = new MessagesStub();
+            // MESSAGES 替身排在前面：若按「列表第一个」实现，查 CHAT 会拿到它。
+            ChunkStageRegistry registry = new ChunkStageRegistry(
+                    List.of(messagesStub, chatStage), List.of());
 
-            // MESSAGES 替身排在前面：若筛选被删掉，findFirst 会拿到它。
-            service.setChunkNormalizeStages(List.of(new MessagesStub(), chatStage));
-
-            assertThat(ReflectionTestUtils.getField(service, "chunkNormalizeStage"))
-                    .as("必须按协议筛选，不能取列表第一个")
-                    .isSameAs(chatStage);
+            assertThat(registry.findNormalizer(WireProtocol.CHAT))
+                    .as("必须按协议键查，不能取列表第一个")
+                    .containsSame(chatStage);
+            assertThat(registry.findNormalizer(WireProtocol.MESSAGES))
+                    .as("两个键各自命中自己的实现 —— 这是「按键查」而非「按位置取」的证据")
+                    .containsSame(messagesStub);
         }
 
         @Test
-        @DisplayName("没有 CHAT 实现时保持 null —— 调用点回退静态工具")
-        void leavesNullWhenNoChatImplementation() {
-            GenericOpenAiChatService service = freshService();
+        @DisplayName("空注册表：任何协议都查不到 —— 调用点据此跳过本步骤")
+        void emptyRegistryFindsNothing() {
+            ChunkStageRegistry empty = new ChunkStageRegistry(List.of(), List.of());
 
-            service.setChunkNormalizeStages(List.of(new MessagesStub()));
-
-            assertThat(ReflectionTestUtils.getField(service, "chunkNormalizeStage"))
-                    .as("筛不到即 null，调用点据此回退静态工具（另两条协议的预期行为）")
-                    .isNull();
+            assertThat(empty.findNormalizer(WireProtocol.CHAT))
+                    .as("跳过而非报错：这表达「该协议没有这一步」，是合法语义")
+                    .isEmpty();
+            assertThat(empty.findFallback(WireProtocol.CHAT)).isEmpty();
         }
 
+        /**
+         * 同一协议两个实现 → 建表时抛，而不是静默选一个。
+         *
+         * <p>与 {@code TranslatorRegistry} 同一取向：「哪个实现配哪个协议」是声明式事实，
+         * 冲突意味着声明矛盾。若这条不成立，两个实现中「谁生效」会依赖
+         * Spring 的收集顺序 —— 那是不可预测的。
+         */
         @Test
-        @DisplayName("传入 null 列表不抛，同样保持 null")
-        void toleratesNullList() {
-            GenericOpenAiChatService service = freshService();
+        @DisplayName("同一协议两个实现抛 IllegalStateException")
+        void duplicateProtocolThrows() {
+            ChunkNormalizeStage duplicate = new ChunkNormalizeStage() {
+                @Override
+                public WireProtocol protocol() {
+                    return WireProtocol.CHAT;
+                }
 
-            service.setChunkNormalizeStages(null);
+                @Override
+                public String normalize(String chunkJson, AtomicBoolean contentEmitted,
+                                        StringBuilder reasoningBuffer, AtomicReference<String> chunkId) {
+                    return chunkJson;
+                }
+            };
 
-            assertThat(ReflectionTestUtils.getField(service, "chunkNormalizeStage")).isNull();
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> new ChunkStageRegistry(
+                    List.of(chatStageFromContext(), duplicate), List.of()))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("CHAT")
+                    .hasMessageContaining("两个实现");
         }
     }
 }

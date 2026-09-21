@@ -13,6 +13,7 @@ import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfi
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderRequestTransformRepository;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
+import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -116,7 +117,8 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 providerConfigRepository, apiKeyRepository, transformRepository);
         GenericOpenAiChatService genericChatService = new GenericOpenAiChatService(
                 objectMapper, new ProviderRequestHeaderService(objectMapper),
-                new RequestBodyRuleEngine(objectMapper));
+                new RequestBodyRuleEngine(objectMapper),
+                PipelineContexts.registryWithChatChunkStages(objectMapper));
         genericChatService.setWebClientBuilder(WebClient.builder());
         AtomicReference<Map<String, String>> loggedRequestHeaders = new AtomicReference<>();
         ApiCallLogService callLogService = mock(ApiCallLogService.class);

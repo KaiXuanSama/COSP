@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
+import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
@@ -76,7 +77,8 @@ class GenericOpenAiChatServiceRequestBodyRulesTests {
 
         private TestGenericOpenAiChatService(ProviderRuntimeConfiguration configuration) {
             super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
-                    new RequestBodyRuleEngine(new ObjectMapper()));
+                    new RequestBodyRuleEngine(new ObjectMapper()),
+                    PipelineContexts.registryWithChatChunkStages(new ObjectMapper()));
             this.configuration = configuration;
         }
 

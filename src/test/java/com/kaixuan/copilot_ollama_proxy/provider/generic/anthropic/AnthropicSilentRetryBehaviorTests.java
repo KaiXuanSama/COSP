@@ -215,7 +215,8 @@ class AnthropicSilentRetryBehaviorTests {
 
         private TestService() {
             super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
-                    new RequestBodyRuleEngine(new ObjectMapper()));
+                    new RequestBodyRuleEngine(new ObjectMapper()),
+                    PipelineContexts.registryWithMessagesStages(new ObjectMapper()));
         }
 
         private Flux<String> exposeMessagesStream(Map<String, Object> request, ResolvedProviderRoute route) {

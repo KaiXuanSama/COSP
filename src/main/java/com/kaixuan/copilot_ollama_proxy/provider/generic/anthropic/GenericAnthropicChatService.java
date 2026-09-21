@@ -27,9 +27,7 @@ import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEventClassifier;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamCallReporter;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamRetryPolicy;
-import com.kaixuan.copilot_ollama_proxy.provider.stage.AnthropicThinkingNormalizer;
-import com.kaixuan.copilot_ollama_proxy.provider.stage.MaxTokensNormalizer;
-import com.kaixuan.copilot_ollama_proxy.provider.stage.SystemPromptNormalizer;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.RequestBodyStageRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -120,6 +118,21 @@ public class GenericAnthropicChatService {
     private final ProviderRequestHeaderService providerRequestHeaderService;
     private final RequestBodyRuleEngine requestBodyRuleEngine;
 
+    /**
+     * 请求体支线的查表 —— 三个协议特定步骤按 {@code ctx.bodyProtocol()} 查实现。
+     *
+     * <h2>为何是构造器参数而不是可选 setter</h2>
+     * 项目里其它可选依赖（日志、用量、WebClient）用 {@code @Autowired(required = false)}，
+     * 因为「未注入」是合法状态（测试直接 new 时不需要它们）。
+     * <strong>本字段不同</strong>：它是主干上的查表入口，缺失意味着三个协议特定步骤
+     * 全部静默跳过 —— 而「未命中即跳过」在查表语义下是<strong>正常结果</strong>，
+     * 于是「装配漏了」与「该协议没这个步骤」在行为上无从区分。
+     *
+     * <p>因此把它放进构造器：漏传会<strong>编译失败</strong>，而不是悄悄少做三步。
+     * 这也符合「不做安全跳过」的取舍 —— 安全跳过会产出永远为真的测试。
+     */
+    private final RequestBodyStageRegistry requestBodyStageRegistry;
+
     private ApiCallLogService apiCallLog;
     private ApiCallUsageService apiCallUsage;
     private CallLifecycleNotifier lifecycleNotifier;
@@ -131,10 +144,12 @@ public class GenericAnthropicChatService {
 
     public GenericAnthropicChatService(ObjectMapper objectMapper,
                                        ProviderRequestHeaderService providerRequestHeaderService,
-                                       RequestBodyRuleEngine requestBodyRuleEngine) {
+                                       RequestBodyRuleEngine requestBodyRuleEngine,
+                                       RequestBodyStageRegistry requestBodyStageRegistry) {
         this.objectMapper = objectMapper;
         this.providerRequestHeaderService = providerRequestHeaderService;
         this.requestBodyRuleEngine = requestBodyRuleEngine;
+        this.requestBodyStageRegistry = requestBodyStageRegistry;
     }
 
     @Autowired(required = false)
@@ -257,7 +272,7 @@ public class GenericAnthropicChatService {
                                            ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                            String requestId, DownstreamLogView logView,
                                            RequestPipelineContext ctx) {
-        Map<String, Object> requestBody = prepareRequestBody(request, false, model, provider);
+        Map<String, Object> requestBody = prepareRequestBody(request, false, model, provider, ctx);
         log.info("{} Anthropic 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
@@ -375,7 +390,7 @@ public class GenericAnthropicChatService {
                                                  ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                  String requestId, DownstreamLogView logView,
                                                  RequestPipelineContext ctx) {
-        Map<String, Object> requestBody = prepareRequestBody(request, true, model, provider);
+        Map<String, Object> requestBody = prepareRequestBody(request, true, model, provider, ctx);
         log.info("{} Anthropic 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
@@ -743,30 +758,39 @@ public class GenericAnthropicChatService {
      * 库里那些照 OpenAI 结构写的旧规则被归一为「仅 OPENAI」，因此不会在此静默匹配失败。
      */
     private Map<String, Object> prepareRequestBody(Map<String, Object> request, boolean stream,
-                                                   String model, ProviderRuntimeConfiguration provider) {
+                                                   String model, ProviderRuntimeConfiguration provider,
+                                                   RequestPipelineContext ctx) {
         // 阶段序列 —— 顺序有语义，逐步理由见各阶段方法自己的注释：
         //   1. 复制                 copyRequestBody         主干会逐阶段改写 body
         //   2. 解析模型名           resolveModel            后续阶段都要用它查配置
         //   3. 写协议字段           writeProtocolFields     主干自己决定的 model 与 stream
-        //   4. 协议归一化           normalizeRequest        下游说 Chat / 上游说 Anthropic 的形态债
-        //   5. 思考注入             applyThinkingDimensions 深度先、方式后、off 档跳过方式，
-        //                                                   末尾剥 reasoning_effort 兼容副本
-        //   6. 请求体规则           applyBodyRules          协议筛选由引擎完成
-        //   7. 清 null              removeNullFields        必须是最后一步
+        //   4. system 抬升          【支线】按 bodyProtocol 查表，未命中即跳过
+        //   5. max_tokens 补齐      【支线】同上
+        //   6. 思考注入             【支线】同上（含剥 reasoning_effort 兼容副本）
+        //   7. 请求体规则           applyBodyRules          主干（协议差异在规则数据里）
+        //   8. 清 null              removeNullFields        必须是最后一步
         //
-        // 阶段 5 早先拆成「思考两维」与「剥兼容副本」两步，现已合并：那个副本的生命周期
+        // 阶段 6 早先拆成「思考两维」与「剥兼容副本」两步，现已合并：那个副本的生命周期
         // **完全由思考注入支配**（供其判定「下游已表态」），是它的内部临时产物。
-        // 独立成阶段反而让「谁该删它」变成跨阶段的隐式契约。
         //
-        // 三个协议特定步骤（阶段 4 的两半 + 阶段 5）当前**转调 provider.stage 下的静态工具**：
-        // 那些工具同时被对应的支线实现（{@code Messages*Stage}）调用，
-        // 因此逻辑只有一份 —— 若各留一份，改一处忘另一处就是静默分叉。
-        // 支线接线后（3.3d-2）本方法里的这三行会被换成按 bodyProtocol 查表。
+        // 查表键用 **bodyProtocol** 而非 upstreamProtocol：它描述的是「手里这份 body 长什么样」，
+        // 而三个支线读写的正是 body 的字段形态。当前两者恒等（翻译发生在应用服务层，
+        // 执行器拿到的已是上游形态），但语义上前者才正确 —— 等 3.4 把 translate 移进主干后
+        // 二者会分道扬镳，届时本处无需改动。
         Map<String, Object> body = copyRequestBody(request);
         String resolvedModel = resolveModel(body.get("model"), model);
         writeProtocolFields(body, resolvedModel, stream);
-        normalizeRequest(body, resolvedModel, provider);
-        applyThinkingDimensions(body, resolvedModel, provider);
+
+        WireProtocol bodyProtocol = ctx.bodyProtocol();
+        // 未命中即跳过：这表达「这种协议没有这个步骤」（如 Chat 不需要抬升 system），
+        // 是合法结果而非错误。装配漏了则由 RequestBodyStageSpringWiringTests 的结构断言兜住。
+        requestBodyStageRegistry.findSystemPromptStage(bodyProtocol)
+                .ifPresent(stage -> stage.apply(body));
+        requestBodyStageRegistry.findMaxTokensStage(bodyProtocol)
+                .ifPresent(stage -> stage.apply(body, resolvedModel, provider));
+        requestBodyStageRegistry.findThinkingStage(bodyProtocol)
+                .ifPresent(stage -> stage.apply(body, resolvedModel, provider));
+
         applyBodyRules(body, provider);
         removeNullFields(body);
         return body;
@@ -785,37 +809,6 @@ public class GenericAnthropicChatService {
     private static void writeProtocolFields(Map<String, Object> body, String resolvedModel, boolean stream) {
         body.put("model", resolvedModel);
         body.put("stream", stream);
-    }
-
-    /**
-     * 阶段 4：协议归一化 —— 把下游的 OpenAI 形态改写成 Anthropic 能理解的形态。
-     *
-     * <p>本线路的下游固定说 Chat 而上游说 Anthropic（C2M 是唯一已实现的跨协议方向，
-     * 见 {@code ChatCompletionService}），因此这两步是那条翻译链在请求体上的落点。
-     * 直连 {@code /v1/messages} 时它们通常是空操作（请求本来就是 Anthropic 形态）。
-     *
-     * <p>两半各自是一个独立的协议特定步骤，因此转调各自的工具 ——
-     * 接线后（3.3d-2）它们会变成两个独立的查表。
-     */
-    private void normalizeRequest(Map<String, Object> body, String resolvedModel,
-                                  ProviderRuntimeConfiguration provider) {
-        // system 是顶层字段：OpenAI 把它作为 messages 里 role:system 的一条，
-        // Anthropic 不接受那种形态，必须提取出来。
-        SystemPromptNormalizer.extractSystemPrompt(body);
-        // max_tokens 必填：缺失时上游返回 400，故按模型配置注入（覆写 / 兜底两档）。
-        MaxTokensNormalizer.ensureMaxTokens(body, resolvedModel, provider, objectMapper);
-    }
-
-    /**
-     * 阶段 5：思考注入（含剥 {@code reasoning_effort} 兼容副本）。
-     *
-     * <p>两个维度的顺序约束（深度先、方式后、off 档跳过方式）与剥副本的理由
-     * 都在 {@link AnthropicThinkingNormalizer} 的类注释里 —— 那份推理随逻辑一起搬到了工具类，
-     * 因为那里才是它唯一的家。
-     */
-    private void applyThinkingDimensions(Map<String, Object> body, String resolvedModel,
-                                         ProviderRuntimeConfiguration provider) {
-        AnthropicThinkingNormalizer.applyThinkingDimensions(body, resolvedModel, provider, objectMapper);
     }
 
     /**

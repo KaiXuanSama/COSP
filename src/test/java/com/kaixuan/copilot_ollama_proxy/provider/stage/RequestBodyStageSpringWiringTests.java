@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.provider.stage;
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.messages.MessagesMaxTokensStage;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.messages.MessagesSystemPromptStage;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.messages.MessagesThinkingStage;
@@ -11,6 +12,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -43,6 +45,9 @@ class RequestBodyStageSpringWiringTests {
 
     @Autowired
     private RequestBodyStageRegistry registry;
+
+    @Autowired
+    private GenericAnthropicChatService anthropicChatService;
 
     @Autowired
     private List<SystemPromptNormalizeStage> systemPromptStages;
@@ -188,5 +193,26 @@ class RequestBodyStageSpringWiringTests {
         assertThat(body)
                 .as("模型名查不到时按默认值（64K + 兜底）补齐 —— 缺了它这条线路根本发不出去")
                 .containsEntry("max_tokens", 64000);
+    }
+
+    /**
+     * <strong>执行器确实拿到了查表入口</strong> —— 不是绕开查表直接调静态工具。
+     *
+     * <h2>为何这条必须存在</h2>
+     * 接入点接线后，两条路仍然**逐字等价**（查到的支线只转调同一个静态工具），
+     * 因此「走了查表」与「还在直接调工具」<strong>从行为上完全无法区分</strong>。
+     * 若构造器参数被换成一个空注册表、或将来有人为了「省事」改回直接调工具，
+     * 行为一切正常，而 3.3d 的成果（协议特定步骤可查表扩展）<strong>静默归零</strong>。
+     *
+     * <p>因此这里读字段断言它非空 —— 与 {@code ChatStageSpringWiringTests} 同一处境：
+     * <em>两条路等价时，只有结构断言能验出接线断了</em>。
+     * 代价是绑定了字段名，改名即红，那正是应有的提醒。
+     */
+    @Test
+    @DisplayName("Anthropic 执行器已拿到查表入口（而非绕开查表）")
+    void anthropicExecutorHoldsTheRegistry() {
+        assertThat(ReflectionTestUtils.getField(anthropicChatService, "requestBodyStageRegistry"))
+                .as("为 null 会让三个协议特定步骤静默全跳过，而功能看起来仍然正常")
+                .isNotNull();
     }
 }

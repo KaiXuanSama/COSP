@@ -364,7 +364,8 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
     private static final class TestOpenAiService extends AbstractUpstreamChatService {
 
         private TestOpenAiService() {
-            super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()));
+            super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
+                    PipelineContexts.registryWithChatChunkStages(new ObjectMapper()));
         }
 
         private Flux<UpstreamEvent> exposeChatCompletionStream(Map<String, Object> request, String model,

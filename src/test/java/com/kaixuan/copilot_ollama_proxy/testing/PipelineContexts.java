@@ -1,12 +1,21 @@
 package com.kaixuan.copilot_ollama_proxy.testing;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineStep;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.ChunkStageRegistry;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.RequestBodyStageRegistry;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.chat.ChatChunkNormalizeStage;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.chat.ChatReasoningFallbackStage;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.messages.MessagesMaxTokensStage;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.messages.MessagesSystemPromptStage;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.messages.MessagesThinkingStage;
 import org.springframework.http.HttpHeaders;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -72,5 +81,44 @@ public final class PipelineContexts {
      */
     private static Map<String, Object> copyOf(Map<String, Object> body) {
         return new LinkedHashMap<>(body);
+    }
+
+    /**
+     * 拼一个只含 MESSAGES 请求体支线的注册表 —— 供直接 {@code new} 执行器的测试使用。
+     *
+     * <h2>为何测试要自己拼，而不是从容器取</h2>
+     * 7 个测试子类直接 {@code new} 执行器、不走 Spring（这样能把退避压到毫秒级、
+     * 并能用 {@code ExchangeFunction} 打桩上游）。因此它们拿不到集合注入建的注册表。
+     *
+     * <p><strong>刻意不提供「无注入时安全跳过」的路径</strong>：那会让「装配漏了」
+     * 与「该协议没这个步骤」在行为上无从区分 —— 于是漏接线时测试照样全绿，
+     * 而生产上少了三步。这里让测试**显式拼出**它需要的那些支线，
+     * 于是「用到了哪些支线」在测试里是看得见的。
+     *
+     * <p>拼的是<strong>真实实现</strong>（{@code Messages*Stage}）而非替身：
+     * 替身会让这些测试验的东西与生产不同，而它们本就想验生产行为。
+     *
+     * @param objectMapper 传给需要它的支线实现
+     */
+    public static RequestBodyStageRegistry registryWithMessagesStages(ObjectMapper objectMapper) {
+        return new RequestBodyStageRegistry(
+                List.of(new MessagesSystemPromptStage()),
+                List.of(new MessagesMaxTokensStage(objectMapper)),
+                List.of(new MessagesThinkingStage(objectMapper)));
+    }
+
+    /**
+     * 拼一个只含 CHAT 流式 chunk 支线的注册表 —— 供直接 {@code new} 执行器的测试使用。
+     *
+     * <p>理由同 {@link #registryWithMessagesStages}：不走 Spring 的测试拿不到集合注入，
+     * 因此显式拼出它需要的支线。拼的是<strong>真实实现</strong>而非替身 ——
+     * 替身会让测试验的东西与生产不同。
+     *
+     * @param objectMapper 传给需要它的支线实现
+     */
+    public static ChunkStageRegistry registryWithChatChunkStages(ObjectMapper objectMapper) {
+        return new ChunkStageRegistry(
+                List.of(new ChatChunkNormalizeStage(objectMapper)),
+                List.of(new ChatReasoningFallbackStage(objectMapper)));
     }
 }

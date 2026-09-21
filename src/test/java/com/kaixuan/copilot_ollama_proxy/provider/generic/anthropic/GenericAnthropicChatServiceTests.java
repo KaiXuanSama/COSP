@@ -1427,7 +1427,8 @@ class GenericAnthropicChatServiceTests {
 
         private TestService() {
             super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
-                    new RequestBodyRuleEngine(new ObjectMapper()));
+                    new RequestBodyRuleEngine(new ObjectMapper()),
+                    PipelineContexts.registryWithMessagesStages(new ObjectMapper()));
         }
 
         private Mono<String> exposeMessages(Map<String, Object> request, ResolvedProviderRoute route) {

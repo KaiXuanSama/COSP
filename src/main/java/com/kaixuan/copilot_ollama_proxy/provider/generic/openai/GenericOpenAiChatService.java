@@ -9,6 +9,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRout
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.provider.AbstractUpstreamChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.ChunkStageRegistry;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -29,8 +30,9 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
 
     public GenericOpenAiChatService(ObjectMapper objectMapper,
                                     ProviderRequestHeaderService providerRequestHeaderService,
-                                    RequestBodyRuleEngine requestBodyRuleEngine) {
-        super(objectMapper, providerRequestHeaderService);
+                                    RequestBodyRuleEngine requestBodyRuleEngine,
+                                    ChunkStageRegistry chunkStageRegistry) {
+        super(objectMapper, providerRequestHeaderService, chunkStageRegistry);
         this.requestBodyRuleEngine = requestBodyRuleEngine;
     }
 
