@@ -8,7 +8,7 @@ import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineExecution;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
@@ -241,27 +241,27 @@ public abstract class AbstractUpstreamChatService {
                                                  ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                  String requestId) {
         return chatCompletion(openAiRequest, model, provider, downstreamHeaders, requestId,
-                PipelineExecution.empty());
+                legacyContext(openAiRequest, provider, downstreamHeaders, requestId));
     }
 
     /**
-     * 带管道执行登记的{@link #chatCompletion}重载。
+     * 带管道上下文的{@link #chatCompletion}重载。
      *
-     * <p>登记决定空响应拦截是否介入 —— 判据与理由见
-     * {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
-     * 不带登记的旧重载等价于「直连」：照常拦截。
+     * <p>上下文决定空响应拦截是否介入 —— 判据与理由见
+     * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
+     * 不带上下文的旧重载等价于「直连」：照常拦截。
      *
-     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     protected Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, String model,
                                                  ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                                 String requestId, PipelineExecution execution) {
+                                                 String requestId, RequestPipelineContext ctx) {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, false, model, provider);
         log.info("{} OpenAI 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
-        // 见 PipelineExecution 的「生命周期」一节：写进 defer 里会让半实现态在第二轮又走回判空重试。
-        boolean gateActive = execution.shouldApplyEmptyResponseGate();
+        // 见 RequestPipelineContext 的「生命周期」注释：写进 defer 里会让半实现态在第二轮又走回判空重试。
+        boolean gateActive = ctx.shouldApplyEmptyResponseGate();
 
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
@@ -449,26 +449,27 @@ public abstract class AbstractUpstreamChatService {
                                                        ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                        String requestId) {
         return chatCompletionStream(openAiRequest, model, provider, downstreamHeaders, requestId,
-                PipelineExecution.empty());
+                legacyContext(openAiRequest, provider, downstreamHeaders, requestId));
     }
+
     /**
-     * 带管道执行登记的{@link #chatCompletionStream}重载。
+     * 带管道上下文的{@link #chatCompletionStream}重载。
      *
-     * <p>登记决定空响应拦截是否介入 —— 判据与理由见
-     * {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
-     * 不带登记的旧重载等价于「直连」：照常拦截。
+     * <p>上下文决定空响应拦截是否介入 —— 判据与理由见
+     * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
+     * 不带上下文的旧重载等价于「直连」：照常拦截。
      *
-     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     protected Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, String model,
                                                        ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                                       String requestId, PipelineExecution execution) {
+                                                       String requestId, RequestPipelineContext ctx) {
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model, provider);
         log.info("{} OpenAI 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
-        // 见 PipelineExecution 的「生命周期」一节：写进 defer 里会让半实现态在第二轮又走回判空重试。
-        boolean gateActive = execution.shouldApplyEmptyResponseGate();
+        // 见 RequestPipelineContext 的「生命周期」注释：写进 defer 里会让半实现态在第二轮又走回判空重试。
+        boolean gateActive = ctx.shouldApplyEmptyResponseGate();
 
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
@@ -498,7 +499,7 @@ public abstract class AbstractUpstreamChatService {
         // ⚠️ 初始值取 {@code !gateActive} 而不是 {@code gateActive} —— 两者是<strong>相反</strong>的概念：
         //   gateActive：拦截机制<em>要不要生效</em>（生效时就是要扣住帧）
         //   gateOpen  ：闸门<em>当前是不是开的</em>（开着就不再扣）
-        // 拦截被跳过时（半轮实现态，见 PipelineExecution.shouldApplyEmptyResponseGate）
+        // 拦截被跳过时（半轮实现态，见 RequestPipelineContext.shouldApplyEmptyResponseGate）
         // 闸门直接置为常开：每帧原路放行、轮末也不会抛空响应异常。
         // 这样「跳过」不需要在算子链里插分支，也不必让 retryWhen 知道这件事。
         AtomicBoolean gateOpen = new AtomicBoolean(!gateActive);
@@ -791,6 +792,24 @@ public abstract class AbstractUpstreamChatService {
         customizeRequestBody(body, resolvedModel, provider);
         body.values().removeIf(Objects::isNull);
         return body;
+    }
+
+    /**
+     * 为不带上下文的旧重载拼一个最小上下文。
+     *
+     * <p>这些调用方（单元测试、内部兼容重载）不涉及翻译，因此两侧协议相同 ——
+     * 于是 {@code shouldApplyEmptyResponseGate()} 判为「照常拦截」，
+     * 与原先的 {@code PipelineExecution.empty()} 完全一致。
+     *
+     * <p>这是 <strong>3.3b-1 的过渡便利</strong>：本步只把执行器的第 6 个参数类型
+     * 从 {@code PipelineExecution} 换成 {@code RequestPipelineContext}，
+     * 其余一概不动。旧重载的去留是 <strong>3.3b-2 要问用户的</strong>决定。
+     */
+    private RequestPipelineContext legacyContext(Map<String, Object> body,
+                                                 ProviderRuntimeConfiguration provider,
+                                                 HttpHeaders downstreamHeaders, String requestId) {
+        return RequestPipelineContext.of(body, WireProtocol.CHAT, WireProtocol.CHAT,
+                provider, downstreamHeaders, requestId, null);
     }
 
     /**

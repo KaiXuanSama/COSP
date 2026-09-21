@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.provider.generic.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineExecution;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
@@ -76,19 +76,19 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
     }
 
     /**
-     * 带<strong>管道执行登记</strong>的非流式补全。
+     * 带<strong>管道上下文</strong>的非流式补全。
      *
-     * <p>登记决定空响应拦截是否介入 —— C2M 的调用方用它声明「去程与回程都已执行」，
+     * <p>上下文决定空响应拦截是否介入 —— C2M 的调用方用它声明「去程与回程都已执行」，
      * 从而保留空响应兜底；若某天只接了去程，不登记回程即可跳过拦截。
-     * 判据与理由见 {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
+     * 判据与理由见 {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
      *
-     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     public Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
                                               HttpHeaders downstreamHeaders, String requestId,
-                                              PipelineExecution execution) {
+                                              RequestPipelineContext ctx) {
         return super.chatCompletion(openAiRequest, route.model(), route.provider(), downstreamHeaders, requestId,
-                execution);
+                ctx);
     }
 
     /**
@@ -113,15 +113,15 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
     }
 
     /**
-     * 带<strong>管道执行登记</strong>的流式补全。理由同非流式的那个重载。
+     * 带<strong>管道上下文</strong>的流式补全。理由同非流式的那个重载。
      *
-     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     public Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
                                                      HttpHeaders downstreamHeaders, String requestId,
-                                                     PipelineExecution execution) {
+                                                     RequestPipelineContext ctx) {
         return super.chatCompletionStream(openAiRequest, route.model(), route.provider(), downstreamHeaders,
-                requestId, execution);
+                requestId, ctx);
     }
 
     /**

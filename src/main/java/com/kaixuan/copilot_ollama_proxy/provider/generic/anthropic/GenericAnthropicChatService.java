@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineExecution;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
@@ -198,22 +198,23 @@ public class GenericAnthropicChatService {
     public Mono<UpstreamEvent> messages(Map<String, Object> request, ResolvedProviderRoute route,
                                         HttpHeaders downstreamHeaders, String requestId,
                                         DownstreamLogView logView) {
-        return messages(request, route, downstreamHeaders, requestId, logView, PipelineExecution.empty());
+        return messages(request, route, downstreamHeaders, requestId, logView,
+                directContext(request, route.provider(), downstreamHeaders, requestId));
     }
 
     /**
-     * 非流式，带落库视图与<strong>管道执行登记</strong>。
+     * 非流式，带落库视图与<strong>管道上下文</strong>。
      *
-     * <p>登记决定空响应拦截是否介入 —— 判据与理由见
-     * {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
+     * <p>上下文决定空响应拦截是否介入 —— 判据与理由见
+     * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
      *
-     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     public Mono<UpstreamEvent> messages(Map<String, Object> request, ResolvedProviderRoute route,
                                         HttpHeaders downstreamHeaders, String requestId,
-                                        DownstreamLogView logView, PipelineExecution execution) {
+                                        DownstreamLogView logView, RequestPipelineContext ctx) {
         return messages(request, route.model(), route.provider(), downstreamHeaders, requestId,
-                logView, execution);
+                logView, ctx);
     }
 
     /** 流式，接受应用层已解析的路由。直连路线。 */
@@ -226,22 +227,37 @@ public class GenericAnthropicChatService {
     public Flux<UpstreamEvent> messagesStream(Map<String, Object> request, ResolvedProviderRoute route,
                                               HttpHeaders downstreamHeaders, String requestId,
                                               DownstreamLogView logView) {
-        return messagesStream(request, route, downstreamHeaders, requestId, logView, PipelineExecution.empty());
+        return messagesStream(request, route, downstreamHeaders, requestId, logView,
+                directContext(request, route.provider(), downstreamHeaders, requestId));
     }
 
-    /** 流式，带落库视图与<strong>管道执行登记</strong>。
+    /**
+     * 流式，带落库视图与<strong>管道上下文</strong>。
      *
-     * <p>登记决定空响应拦截是否介入 —— 跨协议但回程翻译未实现时（开发新协议翻译的
+     * <p>上下文决定空响应拦截是否介入 —— 跨协议但回程翻译未实现时（开发新协议翻译的
      * 半轮实现态）整轮放行，不判空、不重试。判据与理由见
-     * {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
+     * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
      *
-     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     public Flux<UpstreamEvent> messagesStream(Map<String, Object> request, ResolvedProviderRoute route,
                                               HttpHeaders downstreamHeaders, String requestId,
-                                              DownstreamLogView logView, PipelineExecution execution) {
+                                              DownstreamLogView logView, RequestPipelineContext ctx) {
         return messagesStream(request, route.model(), route.provider(), downstreamHeaders, requestId,
-                logView, execution);
+                logView, ctx);
+    }
+
+    /**
+     * 为不带上下文的旧重载拼一个最小上下文（直连：两侧同协议）。
+     *
+     * <p>这些调用方不涉及翻译，因此与原 {@code PipelineExecution.empty()} 在判据上
+     * 完全等价。**这是 3.3b-1 的过渡便利**，旧重载的去留是 3.3b-2 的决定。
+     */
+    private RequestPipelineContext directContext(Map<String, Object> request,
+                                                 ProviderRuntimeConfiguration provider,
+                                                 HttpHeaders downstreamHeaders, String requestId) {
+        return RequestPipelineContext.of(request, WireProtocol.MESSAGES, WireProtocol.MESSAGES,
+                provider, downstreamHeaders, requestId, null);
     }
 
     // ==================== 非流式 ====================
@@ -272,27 +288,27 @@ public class GenericAnthropicChatService {
                                            ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                            String requestId, DownstreamLogView logView) {
         return messages(request, model, provider, downstreamHeaders, requestId, logView,
-                PipelineExecution.empty());
+                directContext(request, provider, downstreamHeaders, requestId));
     }
 
     /**
-     * 带管道执行登记的{@link #messages}重载。
+     * 带管道上下文的{@link #messages}重载。
      *
-     * <p>登记决定空响应拦截是否介入 —— 判据与理由见
-     * {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
-     * 不带登记的旧重载等价于「直连」：照常拦截。
+     * <p>上下文决定空响应拦截是否介入 —— 判据与理由见
+     * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
+     * 不带上下文的旧重载等价于「直连」：照常拦截。
      *
-     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     protected Mono<UpstreamEvent> messages(Map<String, Object> request, String model,
                                            ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                            String requestId, DownstreamLogView logView,
-                                           PipelineExecution execution) {
+                                           RequestPipelineContext ctx) {
         Map<String, Object> requestBody = prepareRequestBody(request, false, model, provider);
         log.info("{} Anthropic 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
-        boolean gateActive = execution.shouldApplyEmptyResponseGate();
+        boolean gateActive = ctx.shouldApplyEmptyResponseGate();
 
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
@@ -412,28 +428,28 @@ public class GenericAnthropicChatService {
                                                  ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                  String requestId, DownstreamLogView logView) {
         return messagesStream(request, model, provider, downstreamHeaders, requestId, logView,
-                PipelineExecution.empty());
+                directContext(request, provider, downstreamHeaders, requestId));
     }
 
     /**
-     * 带管道执行登记的{@link #messagesStream}重载。
+     * 带管道上下文的{@link #messagesStream}重载。
      *
-     * <p>登记决定空响应拦截是否介入 —— 判据与理由见
-     * {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
-     * 不带登记的旧重载等价于「直连」：照常拦截。
+     * <p>上下文决定空响应拦截是否介入 —— 判据与理由见
+     * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
+     * 不带上下文的旧重载等价于「直连」：照常拦截。
      *
-     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     protected Flux<UpstreamEvent> messagesStream(Map<String, Object> request, String model,
                                                  ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                  String requestId, DownstreamLogView logView,
-                                                 PipelineExecution execution) {
+                                                 RequestPipelineContext ctx) {
         Map<String, Object> requestBody = prepareRequestBody(request, true, model, provider);
         log.info("{} Anthropic 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
-        // 见 PipelineExecution 的「生命周期」一节：写进 defer 里会让半实现态在第二轮又走回判空重试。
-        boolean gateActive = execution.shouldApplyEmptyResponseGate();
+        // 见 RequestPipelineContext 的「生命周期」注释：写进 defer 里会让半实现态在第二轮又走回判空重试。
+        boolean gateActive = ctx.shouldApplyEmptyResponseGate();
 
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
@@ -457,7 +473,7 @@ public class GenericAnthropicChatService {
         // ⚠️ 初始值取 {@code !gateActive} 而不是 {@code gateActive} —— 两者是<strong>相反</strong>的概念：
         //   gateActive：拦截机制<em>要不要生效</em>（生效时就是要扣住事件）
         //   gateOpen  ：闸门<em>当前是不是开的</em>（开着就不再扣）
-        // 拦截被跳过时（半轮实现态，见 PipelineExecution.shouldApplyEmptyResponseGate）
+        // 拦截被跳过时（半轮实现态，见 RequestPipelineContext.shouldApplyEmptyResponseGate）
         // 闸门直接置为常开：每事件原路放行、轮末也不会抛空响应异常。
         AtomicBoolean gateOpen = new AtomicBoolean(!gateActive);
         List<String> heldFrames = new CopyOnWriteArrayList<>();

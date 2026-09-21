@@ -5,8 +5,8 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineExecution;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineStep;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ChatToMessagesRequestTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.MessagesToChatResponseTranslator;
@@ -43,9 +43,9 @@ import static org.mockito.Mockito.mock;
  * <strong>拿未命中怎么办</strong>：
  * <ul>
  *   <li><strong>透传</strong>：回程未命中时把上游原生响应原样交给下游，不翻译；</li>
- *   <li><strong>登记只有去程</strong>：{@code PipelineExecution} 只记 {@code REQUEST_TRANSLATION}，
+ *   <li><strong>登记只有去程</strong>：{@code RequestPipelineContext} 只记 {@code REQUEST_TRANSLATION}，
  *       于是空响应拦截跳过 —— 上游原生帧属于另一个协议，判空没有意义
- *       （判据见 {@link PipelineExecution#shouldApplyEmptyResponseGate()}）；</li>
+ *       （判据见 {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}）；</li>
  *   <li><strong>留痕</strong>：透传前打一条 {@code WARN}。透传本身可接受，静默不可接受 ——
  *       同一个坑（流挂住、界面转圈而无报错）已踩过一次。</li>
  * </ul>
@@ -93,7 +93,7 @@ class ChatCompletionHalfRoundTranslationTests {
     private ChatCompletionService halfRoundService;
 
     /** 捕获传给上游执行器的登记，验「只登记了去程」。 */
-    private final AtomicReference<PipelineExecution> capturedExecution = new AtomicReference<>();
+    private final AtomicReference<RequestPipelineContext> capturedExecution = new AtomicReference<>();
 
     private Logger serviceLogger;
     private ListAppender<ILoggingEvent> logAppender;
@@ -145,7 +145,7 @@ class ChatCompletionHalfRoundTranslationTests {
                 .as("回程未接：下游拿到的是上游原生 Anthropic 响应，未经 M2C 翻译")
                 .isEqualTo(RAW_ANTHROPIC_BODY);
 
-        PipelineExecution execution = capturedExecution.get();
+        RequestPipelineContext execution = capturedExecution.get();
         assertThat(execution).as("去程仍要把登记传给上游执行器").isNotNull();
         assertThat(execution.hasCompleted(PipelineStep.REQUEST_TRANSLATION))
                 .as("去程已执行")
@@ -176,7 +176,7 @@ class ChatCompletionHalfRoundTranslationTests {
                 .as("回程未接：原样透传上游事件，不产生 OpenAI chunk 或 [DONE]")
                 .containsExactly(RAW_ANTHROPIC_EVENT, RAW_ANTHROPIC_STOP);
 
-        PipelineExecution execution = capturedExecution.get();
+        RequestPipelineContext execution = capturedExecution.get();
         assertThat(execution.hasCompleted(PipelineStep.RESPONSE_TRANSLATION))
                 .as("流式同非流式：回程未接不登记")
                 .isFalse();
@@ -243,7 +243,7 @@ class ChatCompletionHalfRoundTranslationTests {
                 .contains("choices")
                 .isNotEqualTo(TRANSLATABLE_ANTHROPIC_BODY);
 
-        PipelineExecution execution = capturedExecution.get();
+        RequestPipelineContext execution = capturedExecution.get();
         assertThat(execution.hasCompleted(PipelineStep.RESPONSE_TRANSLATION))
                 .as("全实现：回程也登记，空响应拦截照常生效")
                 .isTrue();

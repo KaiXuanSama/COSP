@@ -5,7 +5,7 @@ import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineExecution;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
@@ -188,39 +188,54 @@ public class GenericResponsesChatService {
     /** 非流式，接受应用层已解析的路由。 */
     public Mono<UpstreamEvent> responses(Map<String, Object> request, ResolvedProviderRoute route,
                                          HttpHeaders downstreamHeaders, String requestId) {
-        return responses(request, route, downstreamHeaders, requestId, PipelineExecution.empty());
+        return responses(request, route, downstreamHeaders, requestId,
+                directContext(request, route.provider(), downstreamHeaders, requestId));
     }
 
     /**
-     * 非流式，带<strong>管道执行登记</strong>。
+     * 非流式，带<strong>管道上下文</strong>。
      *
-     * <p>登记决定空响应拦截是否介入 —— C2R / R2C 翻译落地时会用到：
+     * <p>上下文决定空响应拦截是否介入 —— C2R / R2C 翻译落地时会用到：
      * 只接了去程而没接回程的方向，应当整轮放行而不判空重试。
-     * 判据与理由见 {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
+     * 判据与理由见 {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
      *
-     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     public Mono<UpstreamEvent> responses(Map<String, Object> request, ResolvedProviderRoute route,
                                          HttpHeaders downstreamHeaders, String requestId,
-                                         PipelineExecution execution) {
-        return responses(request, route.model(), route.provider(), downstreamHeaders, requestId, execution);
+                                         RequestPipelineContext ctx) {
+        return responses(request, route.model(), route.provider(), downstreamHeaders, requestId, ctx);
     }
 
     /** 流式，接受应用层已解析的路由。 */
     public Flux<UpstreamEvent> responsesStream(Map<String, Object> request, ResolvedProviderRoute route,
                                                HttpHeaders downstreamHeaders, String requestId) {
-        return responsesStream(request, route, downstreamHeaders, requestId, PipelineExecution.empty());
+        return responsesStream(request, route, downstreamHeaders, requestId,
+                directContext(request, route.provider(), downstreamHeaders, requestId));
     }
 
     /**
-     * 流式，带<strong>管道执行登记</strong>。理由同非流式的那个重载。
+     * 流式，带<strong>管道上下文</strong>。理由同非流式的那个重载。
      *
-     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     public Flux<UpstreamEvent> responsesStream(Map<String, Object> request, ResolvedProviderRoute route,
                                                HttpHeaders downstreamHeaders, String requestId,
-                                               PipelineExecution execution) {
-        return responsesStream(request, route.model(), route.provider(), downstreamHeaders, requestId, execution);
+                                               RequestPipelineContext ctx) {
+        return responsesStream(request, route.model(), route.provider(), downstreamHeaders, requestId, ctx);
+    }
+
+    /**
+     * 为不带上下文的旧重载拼一个最小上下文（直连：两侧同协议）。
+     *
+     * <p>这些调用方不涉及翻译，因此与原 {@code PipelineExecution.empty()} 在判据上
+     * 完全等价。<strong>这是 3.3b-1 的过渡便利</strong>，旧重载的去留是 3.3b-2 的决定。
+     */
+    private RequestPipelineContext directContext(Map<String, Object> request,
+                                                 ProviderRuntimeConfiguration provider,
+                                                 HttpHeaders downstreamHeaders, String requestId) {
+        return RequestPipelineContext.of(request, WireProtocol.RESPONSES, WireProtocol.RESPONSES,
+                provider, downstreamHeaders, requestId, null);
     }
 
     // ==================== 非流式 ====================
@@ -244,26 +259,27 @@ public class GenericResponsesChatService {
     protected Mono<UpstreamEvent> responses(Map<String, Object> request, String model,
                                             ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                             String requestId) {
-        return responses(request, model, provider, downstreamHeaders, requestId, PipelineExecution.empty());
+        return responses(request, model, provider, downstreamHeaders, requestId,
+                directContext(request, provider, downstreamHeaders, requestId));
     }
 
     /**
-     * 带管道执行登记的{@link #responses}重载。
+     * 带管道上下文的{@link #responses}重载。
      *
-     * <p>登记决定空响应拦截是否介入 —— 判据与理由见
-     * {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
-     * 不带登记的旧重载等价于「直连」：照常拦截。
+     * <p>上下文决定空响应拦截是否介入 —— 判据与理由见
+     * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
+     * 不带上下文的旧重载等价于「直连」：照常拦截。
      *
-     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     protected Mono<UpstreamEvent> responses(Map<String, Object> request, String model,
                                             ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                            String requestId, PipelineExecution execution) {
+                                            String requestId, RequestPipelineContext ctx) {
         Map<String, Object> requestBody = prepareRequestBody(request, false, model, provider);
         log.info("{} Responses 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
-        boolean gateActive = execution.shouldApplyEmptyResponseGate();
+        boolean gateActive = ctx.shouldApplyEmptyResponseGate();
 
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
@@ -371,26 +387,26 @@ public class GenericResponsesChatService {
                                                    ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                    String requestId) {
         return responsesStream(request, model, provider, downstreamHeaders, requestId,
-                PipelineExecution.empty());
+                directContext(request, provider, downstreamHeaders, requestId));
     }
 
     /**
-     * 带管道执行登记的{@link #responsesStream}重载。
+     * 带管道上下文的{@link #responsesStream}重载。
      *
-     * <p>登记决定空响应拦截是否介入 —— 判据与理由见
-     * {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
-     * 不带登记的旧重载等价于「直连」：照常拦截。
+     * <p>上下文决定空响应拦截是否介入 —— 判据与理由见
+     * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
+     * 不带上下文的旧重载等价于「直连」：照常拦截。
      *
-     * @param execution 本次请求的管道执行登记，由编排层在组装期填好
+     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
      */
     protected Flux<UpstreamEvent> responsesStream(Map<String, Object> request, String model,
                                                    ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                                   String requestId, PipelineExecution execution) {
+                                                   String requestId, RequestPipelineContext ctx) {
         Map<String, Object> requestBody = prepareRequestBody(request, true, model, provider);
         log.info("{} Responses 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
-        boolean gateActive = execution.shouldApplyEmptyResponseGate();
+        boolean gateActive = ctx.shouldApplyEmptyResponseGate();
 
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
@@ -411,7 +427,7 @@ public class GenericResponsesChatService {
         // ⚠️ 初始值取 {@code !gateActive} 而不是 {@code gateActive} —— 两者是<strong>相反</strong>的概念：
         //   gateActive：拦截机制<em>要不要生效</em>（生效时就是要扣住事件）
         //   gateOpen  ：闸门<em>当前是不是开的</em>（开着就不再扣）
-        // 拦截被跳过时（半轮实现态，见 PipelineExecution.shouldApplyEmptyResponseGate）
+        // 拦截被跳过时（半轮实现态，见 RequestPipelineContext.shouldApplyEmptyResponseGate）
         // 闸门直接置为常开：每事件原路放行、轮末也不会抛空响应异常。
         AtomicBoolean gateOpen = new AtomicBoolean(!gateActive);
         List<String> heldFrames = new CopyOnWriteArrayList<>();

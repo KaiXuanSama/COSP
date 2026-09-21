@@ -1,8 +1,8 @@
 package com.kaixuan.copilot_ollama_proxy.application.openai;
 
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineExecution;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineStep;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchDecision;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
@@ -167,14 +167,15 @@ public class ChatCompletionService {
         ResponseProtocolTranslator responseTranslator = translatorRegistry
                 .findResponseTranslator(DOWNSTREAM_PROTOCOL, upstreamProtocol).orElse(null);
 
+        // 组装期建上下文：此刻路由与调度结论都已得出，正是本类所需的全部事实。
         // 登记：去程恒已执行；回程仅在命中时登记。空响应拦截据此决定介入还是跳过 ——
         // 回程未命中（半轮实现态）时跳过，下游拿到的是上游原生帧，不该被重试压住。
         // 漏登记回程会让全实现的线路静默失去空响应兜底（拦截被误当成半轮态而跳过）。
-        PipelineExecution execution = PipelineExecution
-                .of(DOWNSTREAM_PROTOCOL, upstreamProtocol)
-                .withCompleted(PipelineStep.REQUEST_TRANSLATION);
+        RequestPipelineContext ctx = translatedContext(translated, upstreamProtocol, route,
+                downstreamHeaders, requestId);
+        ctx.markCompleted(PipelineStep.REQUEST_TRANSLATION);
         if (responseTranslator != null) {
-            execution = execution.withCompleted(PipelineStep.RESPONSE_TRANSLATION);
+            ctx.markCompleted(PipelineStep.RESPONSE_TRANSLATION);
         }
 
         // 上游服务仍按协议选：服务合一是 Step 3.4 的事，本步只把翻译器改成查表。
@@ -187,7 +188,7 @@ public class ChatCompletionService {
             // 已由 AnthropicUsageParser 完成，直连与翻译两条线路拿到同一口径。
             Mono<UpstreamEvent> upstream = genericAnthropicChatService.messages(
                     translated.body(), route, downstreamHeaders, requestId,
-                    DownstreamLogView.protocolOnly(DOWNSTREAM_PROTOCOL.name()), execution);
+                    DownstreamLogView.protocolOnly(DOWNSTREAM_PROTOCOL.name()), ctx);
             if (responseTranslator == null) {
                 // 半轮实现态：回程未接，原样透传上游响应 —— 但不静默（§2.3.2）。
                 warnResponseTranslationMissing(requestId, upstreamProtocol);
@@ -200,6 +201,21 @@ public class ChatCompletionService {
         // 留个明确分支，将来加第三种上游协议时不会静默走错路。
         return Mono.error(new ProtocolTranslationNotSupportedException(
                 route.provider().providerKey(), decision.downstreamProtocol(), upstreamProtocol));
+    }
+
+    /**
+     * 为<strong>翻译路线</strong>组装一个上下文。
+     *
+     * <p>与直连唯一的差别：两侧协议不同（下游 {@code CHAT}、上游 MESSAGES），
+     * 且带着 {@code translationContext}（响应侧要靠它决定怎么翻回来）。
+     * 步骤登记由调用方按「回程是否命中」补 —— 那正是半轮实现态的判据。
+     */
+    private RequestPipelineContext translatedContext(TranslatedRequest translated,
+                                                     WireProtocol upstreamProtocol,
+                                                     ResolvedProviderRoute route,
+                                                     HttpHeaders downstreamHeaders, String requestId) {
+        return RequestPipelineContext.of(translated.body(), DOWNSTREAM_PROTOCOL, upstreamProtocol,
+                route.provider(), downstreamHeaders, requestId, translated.context());
     }
 
     /**
@@ -263,12 +279,12 @@ public class ChatCompletionService {
         ResponseProtocolTranslator responseTranslator = translatorRegistry
                 .findResponseTranslator(DOWNSTREAM_PROTOCOL, upstreamProtocol).orElse(null);
 
-        // 登记：去程恒已执行；回程仅在命中时登记（同非流式，判据见 PipelineExecution）。
-        PipelineExecution execution = PipelineExecution
-                .of(DOWNSTREAM_PROTOCOL, upstreamProtocol)
-                .withCompleted(PipelineStep.REQUEST_TRANSLATION);
+        // 登记：去程恒已执行；回程仅在命中时登记（同非流式，判据见 RequestPipelineContext）。
+        RequestPipelineContext ctx = translatedContext(translated, upstreamProtocol, route,
+                downstreamHeaders, requestId);
+        ctx.markCompleted(PipelineStep.REQUEST_TRANSLATION);
         if (responseTranslator != null) {
-            execution = execution.withCompleted(PipelineStep.RESPONSE_TRANSLATION);
+            ctx.markCompleted(PipelineStep.RESPONSE_TRANSLATION);
         }
 
         if (upstreamProtocol == WireProtocol.MESSAGES) {
@@ -290,7 +306,7 @@ public class ChatCompletionService {
                                 return ChunkLogPayload.translated(log.translated(), chunks, log.frameCounts());
                             });
             Flux<UpstreamEvent> upstream = genericAnthropicChatService.messagesStream(
-                    translated.body(), route, downstreamHeaders, requestId, logView, execution);
+                    translated.body(), route, downstreamHeaders, requestId, logView, ctx);
             if (responseTranslator == null) {
                 // 半轮实现态：回程未接，原样透传上游事件流 —— 但不静默（§2.3.2）。
                 warnResponseTranslationMissing(requestId, upstreamProtocol);

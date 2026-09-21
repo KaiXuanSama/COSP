@@ -5,7 +5,10 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import org.springframework.http.HttpHeaders;
 
+import java.util.Collections;
+import java.util.EnumSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 一次请求在主干上的<strong>上下文</strong> —— 随步骤顺序传递的那个对象。
@@ -25,27 +28,22 @@ import java.util.Map;
  *       各注入步骤往里补字段）。做成不可变只会得到「外表不可变、内里可变」的假象 ——
  *       {@code body} 是 {@code Map}，原地改它本来就是主干的正常动作。</li>
  *   <li><strong>允许冗余</strong>：可以携带<em>当前无人读取</em>的字段。
- *       冗余字段是给后续步骤与后续功能预留的座位 —— 见下面两个已知的例子。
+ *       冗余字段是给后续步骤与后续功能预留的座位 —— 见 {@link #translationContext}。
  *       读取方出现时不必再改本类的形状（也就不必再动所有传递点）。</li>
  * </ul>
  *
- * <h2>两个「现在还没人读」的字段（刻意保留）</h2>
+ * <h2>{@code bodyProtocol} 与两侧协议的分界</h2>
  * <ul>
- *   <li>{@link #translationContext} —— 由去程翻译产出、供<strong>响应侧</strong>使用。
- *       当前只在翻译路线下非空，且主干上无人读它（响应侧还没接进来）。</li>
- *   <li>{@link #execution} —— 目前只有空响应拦截读它
- *       （判断半轮实现态是否要跳过拦截）。</li>
+ *   <li>{@link #downstreamProtocol} / {@link #upstreamProtocol} —— <strong>路由事实</strong>：
+ *       「跟谁说话」；</li>
+ *   <li>{@link #bodyProtocol} —— <strong>形态事实</strong>：{@code body} 长什么样，
+ *       且是<strong>阶段查表的键</strong>。翻译是让两者分道扬镳的唯一动作。</li>
  * </ul>
- * 留它们的价值是形状稳定：读的人出现时不必再动传递链。
  *
- * <h2>{@code bodyProtocol} 当前恒等于 {@code upstreamProtocol}</h2>
- * 它记的是「<strong>当前 {@link #body} 是哪种协议的形态</strong>」，并且是阶段查表的键。
- *
- * <p><strong>它现在恒等于 {@link #upstreamProtocol}，因为翻译发生在应用服务层</strong>
- * （编排器早已把 body 换成上游形态，再交给执行器与主干）。
+ * <p><strong>当前 {@code bodyProtocol} 恒等于 {@code upstreamProtocol}</strong>，
+ * 因为翻译发生在应用服务层（编排器早已把 body 换成上游形态，再交给执行器与主干）。
  * 等 3.4 把 translate 移进主干之后，它才会变成「初值 = downstream、被 translate 改写」。
- *
- * <p>这不是设计选择而是<strong>当前事实</strong>，且写错会很安静：
+ * 这不是设计选择而是<strong>当前事实</strong>，且写错会很安静：
  * 查表用错的键，症状是「某个阶段没执行」而没有任何报错。
  *
  * <h2>与流级状态的分界（不要混）</h2>
@@ -53,6 +51,16 @@ import java.util.Map;
  * 而 {@code contentEmitted} / {@code reasoningBuffer} / {@code chunkId} 是<strong>流级</strong>
  * 累积量（重试一次就得重置），它们<strong>不属于本类</strong>，由流算子的闭包持有、
  * 以方法参数穿线传递（见方向文档 §2.4「两级状态要分清」）。
+ *
+ * <h2>它并入了原本的 {@code PipelineExecution}（3.3b-1）</h2>
+ * 本类引入时，那个类已经存在（2.1a 引入，用于承载「哪些步骤执行了」）。
+ * 那次合并要解决的是<strong>同一份事实有两个家</strong>：两个类<strong>都持有两侧协议</strong>，
+ * 而 {@link #translationNeeded()} 与 {@link #shouldApplyEmptyResponseGate()}
+ * 都是<strong>从协议派生</strong>的判据 —— 它们挂在前者身上只是因为当时还没有本类。
+ *
+ * <p>协议是请求事实，归属本类；脚手架因此拆除。
+ * <strong>{@link PipelineStep} 保持独立</strong>：它是步骤的词汇表（enum），
+ * 与本类零字段重复，且被十多个文件引用 —— 并入的收益与代价不成比例。
  */
 public final class RequestPipelineContext {
 
@@ -86,27 +94,33 @@ public final class RequestPipelineContext {
     /**
      * 响应侧需要知道的请求侧事实。直连时为 null（没有去程翻译就没有它）。
      *
-     * @see RequestPipelineContext 类注释「两个『现在还没人读』的字段」
+     * <p><strong>当前主干上无人读它</strong>（它属响应侧，还没接进主干）。
+     * 按「允许冗余」照样携带，读取方出现时不必再动传递链。
      */
     private final TranslationContext translationContext;
 
-    /** 管道执行登记：哪些步骤真的执行了。 */
-    private PipelineExecution execution;
+    /**
+     * 已执行的步骤。可变：步骤随推进逐个登记自己。
+     *
+     * <p>被跳过的步骤<strong>没有机会登记自己</strong>（它压根没执行），
+     * 因此登记只能由编排层代劳 —— 这也说明它天然是请求级事实。
+     */
+    private final Set<PipelineStep> completedSteps = EnumSet.noneOf(PipelineStep.class);
 
-    private RequestPipelineContext(Map<String, Object> body, WireProtocol bodyProtocol,
-                                   WireProtocol downstreamProtocol, WireProtocol upstreamProtocol,
-                                   ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                   String requestId, TranslationContext translationContext,
-                                   PipelineExecution execution) {
+    private RequestPipelineContext(Map<String, Object> body, WireProtocol downstreamProtocol,
+                                   WireProtocol upstreamProtocol, ProviderRuntimeConfiguration provider,
+                                   HttpHeaders downstreamHeaders, String requestId,
+                                   TranslationContext translationContext) {
         this.body = body;
-        this.bodyProtocol = bodyProtocol;
         this.downstreamProtocol = downstreamProtocol;
         this.upstreamProtocol = upstreamProtocol;
         this.provider = provider;
         this.downstreamHeaders = downstreamHeaders;
         this.requestId = requestId;
         this.translationContext = translationContext;
-        this.execution = execution;
+        // bodyProtocol 初值取 upstreamProtocol：执行器拿到的 body 已经是上游形态
+        // （翻译在编排层完成）。理由与写错的代价见类注释。
+        this.bodyProtocol = upstreamProtocol;
     }
 
     /**
@@ -127,16 +141,8 @@ public final class RequestPipelineContext {
                                             HttpHeaders downstreamHeaders,
                                             String requestId,
                                             TranslationContext translationContext) {
-        // bodyProtocol 初值取 upstreamProtocol：执行器拿到的 body 已经是上游形态
-        // （翻译在编排层完成）。理由与写错的代价见类注释。
-        //
-        // 执行登记一开始就把两侧协议登记进去：那是本类已经知道的事实，
-        // 而 PipelineExecution 的空登记**不携带协议**，会让它的
-        // shouldApplyEmptyResponseGate() 把一次跨协议调用误判成直连
-        // （跨协议 + 回程未登记的半轮态本该跳过拦截，却被当成直连而照常拦截）。
-        PipelineExecution execution = PipelineExecution.of(downstreamProtocol, upstreamProtocol);
-        return new RequestPipelineContext(body, upstreamProtocol, downstreamProtocol, upstreamProtocol,
-                provider, downstreamHeaders, requestId, translationContext, execution);
+        return new RequestPipelineContext(body, downstreamProtocol, upstreamProtocol, provider,
+                downstreamHeaders, requestId, translationContext);
     }
 
     /** 当前请求体。 */
@@ -189,18 +195,83 @@ public final class RequestPipelineContext {
         return requestId;
     }
 
-    /** 响应侧需要知道的请求侧事实；直连时为 null。 */
+    /** 响应侧需要知道的请求侧事实；直连时为 null，且当前主干上无人读它。 */
     public TranslationContext translationContext() {
         return translationContext;
     }
 
-    /** 管道执行登记。 */
-    public PipelineExecution execution() {
-        return execution;
+    // ==================== 步骤登记（可变） ====================
+
+    /**
+     * 登记一个<strong>已执行</strong>的步骤。
+     *
+     * <p>这是 3.3b-1 从 {@code PipelineExecution} 搬来的入口 ——
+     * 那个类原本用不可变的 {@code withCompleted()} 返回新实例，
+     * 但它的持有者（本类）已经是可变的，再套一层不可变只是多一次拷贝。
+     */
+    public void markCompleted(PipelineStep step) {
+        completedSteps.add(step);
     }
 
-    /** 替换执行登记（步骤声明自己执行完时使用）。 */
-    public void updateExecution(PipelineExecution execution) {
-        this.execution = execution;
+    /** 该步骤是否登记为已执行。 */
+    public boolean hasCompleted(PipelineStep step) {
+        return completedSteps.contains(step);
+    }
+
+    /** 已执行的步骤集合（只读）。 */
+    public Set<PipelineStep> completedSteps() {
+        return Collections.unmodifiableSet(completedSteps);
+    }
+
+    // ==================== 派生判据 ====================
+
+    /**
+     * 两侧协议是否不同，即本次调用是否需要翻译组件介入。
+     *
+     * <p>协议在本类里必定非空（创建时就要给出），因此这里不处理「未知」态 ——
+     * 那个态随 {@code PipelineExecution.empty()} 的退役一起消失了。
+     */
+    public boolean translationNeeded() {
+        return downstreamProtocol != upstreamProtocol;
+    }
+
+    /**
+     * 空响应拦截是否应当介入。
+     *
+     * <h2>判据：回程翻译未执行 → 跳过</h2>
+     * 「需要翻译，但回程没接」这个组合就是<strong>开发者的半轮实现态</strong>：
+     * 去程已接（请求发得出去、上游能理解），回程还没接。
+     *
+     * <p>此时交给下游的帧是<strong>上游协议的形态</strong>。拦截要判「这一轮有没有内容」，
+     * 而它的判据属于本服务所服务的那个协议 —— 对着另一个协议的帧，
+     * 判定结果不承载任何信息，只会把过程拖成「扣住 → 判否 → 重试 →
+     * 白等完整轮预算（生产值约 62 秒、6 次上游调用）→ 才原样放行」。
+     *
+     * <p>开发者要的恰恰是那批帧本身：他正在对齐新写的去程翻译，
+     * 需要看上游到底发了什么。帧本来就在手里，不该被重试机制压住一分钟。
+     *
+     * <h2>为何是「回程未执行」而非「两侧协议不同」</h2>
+     * 两侧协议不同但<strong>回程已接</strong>时（C2M 现状），拦截照常生效是正确的 ——
+     * 一条真正空的跨协议响应同样应该被识别并重试。
+     * 判据因此落在「这个步骤有没有实现」，而不是「协议同不同」。
+     *
+     * <h2>三种情形各行其道</h2>
+     * <table>
+     *   <caption>拦截是否介入</caption>
+     *   <tr><th>情形</th><th>登记</th><th>拦截</th></tr>
+     *   <tr><td>直连</td><td>两侧同协议</td><td>介入（与重构前一致）</td></tr>
+     *   <tr><td>C2M（全实现）</td><td>去程 + 回程均已登记</td><td>介入</td></tr>
+     *   <tr><td>半轮实现</td><td>仅去程已登记</td><td><strong>跳过</strong>：整轮放行，不判空、不重试</td></tr>
+     * </table>
+     *
+     * @return true 表示照常拦截；false 表示跳过本步骤
+     */
+    public boolean shouldApplyEmptyResponseGate() {
+        // 直连：帧的形状与下游期待一致，拦截照常。
+        if (!translationNeeded()) {
+            return true;
+        }
+        // 跨协议：只有回程已接，拦截才判得有意义。
+        return hasCompleted(PipelineStep.RESPONSE_TRANSLATION);
     }
 }

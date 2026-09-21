@@ -3,14 +3,14 @@ package com.kaixuan.copilot_ollama_proxy.provider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineExecution;
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineStep;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
+import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.UpstreamChunkNormalizer;
 import org.junit.jupiter.api.Test;import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -1091,9 +1091,8 @@ class AbstractUpstreamChatServiceTests {
                     .build());
         }));
 
-        PipelineExecution halfImplemented = PipelineExecution
-                .of(WireProtocol.CHAT, WireProtocol.MESSAGES)
-                .withCompleted(PipelineStep.REQUEST_TRANSLATION);
+        RequestPipelineContext halfImplemented = PipelineContexts.halfRound(newRequest(), provider(),
+                WireProtocol.CHAT, WireProtocol.MESSAGES);
 
         List<String> received = service
                 .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-half-stream", halfImplemented)
@@ -1133,10 +1132,8 @@ class AbstractUpstreamChatServiceTests {
                     .build());
         }));
 
-        PipelineExecution fullyImplemented = PipelineExecution
-                .of(WireProtocol.CHAT, WireProtocol.MESSAGES)
-                .withCompleted(PipelineStep.REQUEST_TRANSLATION)
-                .withCompleted(PipelineStep.RESPONSE_TRANSLATION);
+        RequestPipelineContext fullyImplemented = PipelineContexts.fullyTranslated(newRequest(), provider(),
+                WireProtocol.CHAT, WireProtocol.MESSAGES);
 
         List<String> received = service
                 .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-full-stream", fullyImplemented)
@@ -1166,9 +1163,8 @@ class AbstractUpstreamChatServiceTests {
                     .build());
         }));
 
-        PipelineExecution halfImplemented = PipelineExecution
-                .of(WireProtocol.CHAT, WireProtocol.MESSAGES)
-                .withCompleted(PipelineStep.REQUEST_TRANSLATION);
+        RequestPipelineContext halfImplemented = PipelineContexts.halfRound(newRequest(), provider(),
+                WireProtocol.CHAT, WireProtocol.MESSAGES);
 
         String received = service
                 .exposeChatCompletion(newRequest(), "model-a", provider(), "req-half-nonstream", halfImplemented)
@@ -1202,10 +1198,8 @@ class AbstractUpstreamChatServiceTests {
                     .build());
         }));
 
-        PipelineExecution fullyImplemented = PipelineExecution
-                .of(WireProtocol.CHAT, WireProtocol.MESSAGES)
-                .withCompleted(PipelineStep.REQUEST_TRANSLATION)
-                .withCompleted(PipelineStep.RESPONSE_TRANSLATION);
+        RequestPipelineContext fullyImplemented = PipelineContexts.fullyTranslated(newRequest(), provider(),
+                WireProtocol.CHAT, WireProtocol.MESSAGES);
 
         String received = service
                 .exposeChatCompletion(newRequest(), "model-a", provider(), "req-full-nonstream", fullyImplemented)
@@ -1242,7 +1236,7 @@ class AbstractUpstreamChatServiceTests {
                     .body(body).build());
         }));
 
-        PipelineExecution direct = PipelineExecution.of(WireProtocol.CHAT, WireProtocol.CHAT);
+        RequestPipelineContext direct = PipelineContexts.direct(newRequest(), provider(), WireProtocol.CHAT);
 
         List<String> received = service
                 .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-direct-gate", direct)
@@ -1356,19 +1350,19 @@ class AbstractUpstreamChatServiceTests {
                     .map(UpstreamEvent::data);
         }
 
-        /** 带管道执行登记的流式重载，用于验证「半轮实现态跳过拦截」。 */
+        /** 带管道上下文的流式重载，用于验证「半轮实现态跳过拦截」。 */
         private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
                                                         ProviderRuntimeConfiguration provider, String requestId,
-                                                        PipelineExecution execution) {
-            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, requestId, execution)
+                                                        RequestPipelineContext ctx) {
+            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, requestId, ctx)
                     .map(UpstreamEvent::data);
         }
 
-        /** 带管道执行登记的非流式重载。 */
+        /** 带管道上下文的非流式重载。 */
         private Mono<String> exposeChatCompletion(Map<String, Object> request, String model,
                                                   ProviderRuntimeConfiguration provider, String requestId,
-                                                  PipelineExecution execution) {
-            return chatCompletion(request, model, provider, HttpHeaders.EMPTY, requestId, execution)
+                                                  RequestPipelineContext ctx) {
+            return chatCompletion(request, model, provider, HttpHeaders.EMPTY, requestId, ctx)
                     .map(UpstreamEvent::data);
         }
 

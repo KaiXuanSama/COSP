@@ -4,8 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineExecution;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineStep;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.MessagesToChatResponseTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ChatToMessagesRequestTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.TranslatorRegistry;
@@ -74,7 +74,7 @@ class ChatDispatchErrorSignalTests {
      * <p>用 Mockito 的 {@code Answer} 捕获而不是在用例里重新 {@code given(...)}：
      * 断言的是「编排层实际传了什么」，重新打桩会把被测行为一起替换掉。
      */
-    private final java.util.concurrent.atomic.AtomicReference<PipelineExecution> capturedExecution =
+    private final java.util.concurrent.atomic.AtomicReference<RequestPipelineContext> capturedExecution =
             new java.util.concurrent.atomic.AtomicReference<>();
 
     @BeforeEach
@@ -359,7 +359,7 @@ class ChatDispatchErrorSignalTests {
      * C2M 路径必须把<strong>管道执行登记</strong>透传给上游执行器。
      *
      * <h2>漏登记的症状为什么值得一组用例</h2>
-     * 登记决定空响应拦截是否介入（判据见 {@code PipelineExecution.shouldApplyEmptyResponseGate}）。
+     * 登记决定空响应拦截是否介入（判据见 {@code RequestPipelineContext.shouldApplyEmptyResponseGate}）。
      * 编排层若不登记「回程翻译已执行」，上游执行器会把这条线路当成
      * <strong>半轮实现态</strong>而跳过拦截 —— 于是 C2M 这条已全实现的线路
      * <em>静默失去空响应兜底</em>：中转站抽风返回的空回复会原样透给下游，
@@ -412,7 +412,7 @@ class ChatDispatchErrorSignalTests {
 
             chatCompletionService.chatCompletion(CHAT_REQUEST, "m", HttpHeaders.EMPTY, "req-p1").block();
 
-            PipelineExecution execution = capturedExecution.get();
+            RequestPipelineContext execution = capturedExecution.get();
             assertThat(execution).as("C2M 必须把登记传给上游执行器").isNotNull();
             assertThat(execution.hasCompleted(PipelineStep.REQUEST_TRANSLATION))
                     .as("去程已执行")
@@ -434,7 +434,7 @@ class ChatDispatchErrorSignalTests {
             chatCompletionService.chatCompletionStream(CHAT_REQUEST, "m", HttpHeaders.EMPTY, "req-p2")
                     .blockLast();
 
-            PipelineExecution execution = capturedExecution.get();
+            RequestPipelineContext execution = capturedExecution.get();
             assertThat(execution).as("C2M 必须把登记传给上游执行器").isNotNull();
             assertThat(execution.shouldApplyEmptyResponseGate())
                     .as("全实现的翻译线路必须照常拦截空响应")
@@ -445,7 +445,7 @@ class ChatDispatchErrorSignalTests {
          * 直连路径<strong>不传</strong>登记，走的是无登记的旧重载。
          *
          * <p>这不是遗漏而是刻意的：直连没有需要跳过的步骤，
-         * {@code PipelineExecution.empty()} 的语义就是「照常执行一切」，
+         * {@code RequestPipelineContext} 的语义就是「照常执行一切」，
          * 而「不传」与「传一个空登记」在行为上完全等价 —— 因此不额外构造，
          * 少一处需要维护的接线。
          *
