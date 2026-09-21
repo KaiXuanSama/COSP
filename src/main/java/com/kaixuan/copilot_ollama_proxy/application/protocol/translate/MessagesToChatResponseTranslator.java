@@ -1,7 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.application.protocol.translate;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslationContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
@@ -34,7 +33,7 @@ import java.util.UUID;
  *      响应侧协议翻译契约</a>
  */
 @Component
-public class MessagesToChatResponseTranslator implements ProtocolTranslator {
+public class MessagesToChatResponseTranslator implements ResponseProtocolTranslator {
 
     private final ObjectMapper objectMapper;
     private final MessagesToChatNonStreamTranslator nonStreamTranslator;
@@ -79,6 +78,7 @@ public class MessagesToChatResponseTranslator implements ProtocolTranslator {
      *
      * @param upstreamBody 上游原始响应体（统一形态）
      */
+    @Override
     public Mono<UpstreamEvent> translateResponse(Mono<UpstreamEvent> upstreamBody) {
         return upstreamBody
                 .map(UpstreamEvent::data)
@@ -111,6 +111,7 @@ public class MessagesToChatResponseTranslator implements ProtocolTranslator {
      *                       到达前的占位值
      * @param context        请求期上下文，提供 {@code include_usage}
      */
+    @Override
     public Flux<UpstreamEvent> translateStream(Flux<UpstreamEvent> upstreamEvents, String upstreamModel,
                                                TranslationContext context) {
         return Flux.defer(() -> {
@@ -158,6 +159,7 @@ public class MessagesToChatResponseTranslator implements ProtocolTranslator {
      * @param includeUsage   与出站保持一致，否则日志里的帧数与实际下发不符
      * @return 翻译结果与逐事件产帧数，后者供日志页做两栏对齐
      */
+    @Override
     public TranslatedChunkLog translateChunksForLog(List<String> upstreamEvents, String upstreamModel,
                                                     boolean includeUsage) {
         M2CStreamState state = new M2CStreamState(placeholderId(), upstreamModel, includeUsage);

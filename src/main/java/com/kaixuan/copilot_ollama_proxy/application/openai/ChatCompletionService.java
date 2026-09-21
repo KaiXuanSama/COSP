@@ -10,8 +10,9 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslation
 import com.kaixuan.copilot_ollama_proxy.application.protocol.RequestTranslationException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslatedRequest;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.MessagesToChatResponseTranslator;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ChatToMessagesRequestTranslator;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.RequestProtocolTranslator;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ResponseProtocolTranslator;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.TranslatorRegistry;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
@@ -61,8 +62,7 @@ public class ChatCompletionService {
     private final ProtocolDispatchManager protocolDispatchManager;
     private final GenericOpenAiChatService genericOpenAiChatService;
     private final GenericAnthropicChatService genericAnthropicChatService;
-    private final ChatToMessagesRequestTranslator c2mTranslator;
-    private final MessagesToChatResponseTranslator m2cTranslator;
+    private final TranslatorRegistry translatorRegistry;
 
     /**
      * 调用生命周期事件通知器，由 Spring 可选注入。
@@ -80,21 +80,18 @@ public class ChatCompletionService {
      * @param protocolDispatchManager 协议调度管理器
      * @param genericOpenAiChatService OpenAI 上游执行器
      * @param genericAnthropicChatService Anthropic 上游执行器
-     * @param c2mTranslator C2M 请求翻译器（去程）
-     * @param m2cTranslator M2C 响应翻译器（回程）
+     * @param translatorRegistry 翻译器查表（去程 / 回程各自按方向命中）
      */
     public ChatCompletionService(ProviderRouteResolver providerRouteResolver,
                                  ProtocolDispatchManager protocolDispatchManager,
                                  GenericOpenAiChatService genericOpenAiChatService,
                                  GenericAnthropicChatService genericAnthropicChatService,
-                                 ChatToMessagesRequestTranslator c2mTranslator,
-                                 MessagesToChatResponseTranslator m2cTranslator) {
+                                 TranslatorRegistry translatorRegistry) {
         this.providerRouteResolver = providerRouteResolver;
         this.protocolDispatchManager = protocolDispatchManager;
         this.genericOpenAiChatService = genericOpenAiChatService;
         this.genericAnthropicChatService = genericAnthropicChatService;
-        this.c2mTranslator = c2mTranslator;
-        this.m2cTranslator = m2cTranslator;
+        this.translatorRegistry = translatorRegistry;
     }
 
     @Autowired(required = false)
@@ -146,7 +143,7 @@ public class ChatCompletionService {
             return genericOpenAiChatService.chatCompletion(openAiRequest, route, downstreamHeaders, requestId);
         }
         
-        // 跨协议翻译：去程改写请求体、回程改写响应体。
+        // 跨协议翻译：去程与回程各自查表，两半独立缺省（方向文档 §2.3.2）。
         //
         // 翻译套在上游服务外侧，因而天然在 retryWhen 之外 ——
         // 空响应判定（AnthropicContentDetector）与 api_call_log 落库用的都是
@@ -155,14 +152,33 @@ public class ChatCompletionService {
         //
         // 模型名传下游原始的 model（含 [provider-key] 前缀）而非上游返回的裸名：
         // 本服务按前缀路由，把裸名透给下游会让它下一轮路由失败（第 7 节）。
-        if (decision.upstreamProtocol() == WireProtocol.MESSAGES) {
-            // 登记「去程与回程都已执行」—— 空响应拦截据此照常生效。
-            // 漏登记会让这条线路静默失去空响应兜底（拦截被当成半轮实现态而跳过）。
-            PipelineExecution execution = PipelineExecution
-                    .of(DOWNSTREAM_PROTOCOL, decision.upstreamProtocol())
-                    .withCompleted(PipelineStep.REQUEST_TRANSLATION)
-                    .withCompleted(PipelineStep.RESPONSE_TRANSLATION);
-            TranslatedRequest translated = c2mTranslator.translateRequest(openAiRequest);
+        WireProtocol upstreamProtocol = decision.upstreamProtocol();
+
+        // 去程未命中即「连请求翻译都没有」—— 报错。它与「回程未命中」不同：去程没有就
+        // 发不出上游能理解的请求，跳过只会让上游回 400，与「配置写错」现象相同、无信息量
+        // （§2.3.2）。跳过只在「去程已改写成功」时才有价值。
+        RequestProtocolTranslator requestTranslator = translatorRegistry
+                .findRequestTranslator(DOWNSTREAM_PROTOCOL, upstreamProtocol).orElse(null);
+        if (requestTranslator == null) {
+            return Mono.error(new ProtocolTranslationNotSupportedException(
+                    route.provider().providerKey(), decision.downstreamProtocol(), upstreamProtocol));
+        }
+        TranslatedRequest translated = requestTranslator.translateRequest(openAiRequest);
+        ResponseProtocolTranslator responseTranslator = translatorRegistry
+                .findResponseTranslator(DOWNSTREAM_PROTOCOL, upstreamProtocol).orElse(null);
+
+        // 登记：去程恒已执行；回程仅在命中时登记。空响应拦截据此决定介入还是跳过 ——
+        // 回程未命中（半轮实现态）时跳过，下游拿到的是上游原生帧，不该被重试压住。
+        // 漏登记回程会让全实现的线路静默失去空响应兜底（拦截被误当成半轮态而跳过）。
+        PipelineExecution execution = PipelineExecution
+                .of(DOWNSTREAM_PROTOCOL, upstreamProtocol)
+                .withCompleted(PipelineStep.REQUEST_TRANSLATION);
+        if (responseTranslator != null) {
+            execution = execution.withCompleted(PipelineStep.RESPONSE_TRANSLATION);
+        }
+
+        // 上游服务仍按协议选：服务合一是 Step 3.4 的事，本步只把翻译器改成查表。
+        if (upstreamProtocol == WireProtocol.MESSAGES) {
             // 非流式不改写 chunk：响应体是单一字符串，日志里记上游原文
             // 比记翻译后的更有用 —— 后者可以由前者推导，反之不行。
             // 流式不同：帧序列的切分方式无法从上游事件反推，见下方流式分支。
@@ -172,13 +188,18 @@ public class ChatCompletionService {
             Mono<UpstreamEvent> upstream = genericAnthropicChatService.messages(
                     translated.body(), route, downstreamHeaders, requestId,
                     DownstreamLogView.protocolOnly(DOWNSTREAM_PROTOCOL.name()), execution);
-            return m2cTranslator.translateResponse(upstream);
+            if (responseTranslator == null) {
+                // 半轮实现态：回程未接，原样透传上游响应 —— 但不静默（§2.3.2）。
+                warnResponseTranslationMissing(requestId, upstreamProtocol);
+                return upstream;
+            }
+            return responseTranslator.translateResponse(upstream);
         }
-        
-        // 其它协议组合：当前只有 OPENAI 与 ANTHROPIC 两种，走不到这里。
-        // 留个明确分支，将来加第三种协议时不会静默走错路。
+
+        // 有去程翻译却无对应上游服务分支：当前不可达（唯一去程 C2M 的上游是 MESSAGES）。
+        // 留个明确分支，将来加第三种上游协议时不会静默走错路。
         return Mono.error(new ProtocolTranslationNotSupportedException(
-                route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
+                route.provider().providerKey(), decision.downstreamProtocol(), upstreamProtocol));
     }
 
     /**
@@ -224,38 +245,85 @@ public class ChatCompletionService {
             return genericOpenAiChatService.chatCompletionStream(openAiRequest, route, downstreamHeaders, requestId);
         }
         
-        // 跨协议翻译：去程改写请求体、回程把 Anthropic 事件翻回 OpenAI chunk。
+        // 跨协议翻译：去程与回程各自查表，两半独立缺省（方向文档 §2.3.2）。
         //
         // 帧数不对等（第 2 节）：message_start 产 1 帧（唯一带 role），
         // content_block_start/stop 与 signature_delta 产 0 帧，
         // 而 [DONE] 由流结束触发而非 message_stop。
-        if (decision.upstreamProtocol() == WireProtocol.MESSAGES) {
-            // 登记同非流式：去程 + 回程都已执行，空响应拦截照常生效。
-            PipelineExecution execution = PipelineExecution
-                    .of(DOWNSTREAM_PROTOCOL, decision.upstreamProtocol())
-                    .withCompleted(PipelineStep.REQUEST_TRANSLATION)
-                    .withCompleted(PipelineStep.RESPONSE_TRANSLATION);
-            TranslatedRequest translated = c2mTranslator.translateRequest(openAiRequest);
+        WireProtocol upstreamProtocol = decision.upstreamProtocol();
+
+        // 去程未命中即报错（同非流式：跳过只在去程已改写成功时才有价值，§2.3.2）。
+        RequestProtocolTranslator requestTranslator = translatorRegistry
+                .findRequestTranslator(DOWNSTREAM_PROTOCOL, upstreamProtocol).orElse(null);
+        if (requestTranslator == null) {
+            return Flux.error(new ProtocolTranslationNotSupportedException(
+                    route.provider().providerKey(), decision.downstreamProtocol(), upstreamProtocol));
+        }
+        TranslatedRequest translated = requestTranslator.translateRequest(openAiRequest);
+        ResponseProtocolTranslator responseTranslator = translatorRegistry
+                .findResponseTranslator(DOWNSTREAM_PROTOCOL, upstreamProtocol).orElse(null);
+
+        // 登记：去程恒已执行；回程仅在命中时登记（同非流式，判据见 PipelineExecution）。
+        PipelineExecution execution = PipelineExecution
+                .of(DOWNSTREAM_PROTOCOL, upstreamProtocol)
+                .withCompleted(PipelineStep.REQUEST_TRANSLATION);
+        if (responseTranslator != null) {
+            execution = execution.withCompleted(PipelineStep.RESPONSE_TRANSLATION);
+        }
+
+        if (upstreamProtocol == WireProtocol.MESSAGES) {
             // 落库视图：下游协议记 CHAT，且 chunk 记翻译后的形态。
             // 流式必须重译而不能只记上游事件：帧数不对等（零帧/一帧/多帧），
             // 从上游事件反推不出下游到底收到了几帧、长什么样。
             // frameCounts 让日志页能把两栏按事件对齐 —— 零帧事件右侧留占位。
             // usage 同非流式分支：不在这里换算，解析层已给出归一口径。
-            DownstreamLogView logView = new DownstreamLogView(
-                    DOWNSTREAM_PROTOCOL.name(),
-                    chunks -> {
-                        var log = m2cTranslator.translateChunksForLog(
-                                chunks, route.model(), translated.context().includeUsage());
-                        return ChunkLogPayload.translated(log.translated(), chunks, log.frameCounts());
-                    });
+            //
+            // 回程未命中时落库退回「只记协议」：没有回程就没有翻译后的 chunk 可记，
+            // 记上游原生事件即可（半轮态下开发者要看的正是上游原文）。
+            DownstreamLogView logView = responseTranslator == null
+                    ? DownstreamLogView.protocolOnly(DOWNSTREAM_PROTOCOL.name())
+                    : new DownstreamLogView(
+                            DOWNSTREAM_PROTOCOL.name(),
+                            chunks -> {
+                                var log = responseTranslator.translateChunksForLog(
+                                        chunks, route.model(), translated.context().includeUsage());
+                                return ChunkLogPayload.translated(log.translated(), chunks, log.frameCounts());
+                            });
             Flux<UpstreamEvent> upstream = genericAnthropicChatService.messagesStream(
                     translated.body(), route, downstreamHeaders, requestId, logView, execution);
+            if (responseTranslator == null) {
+                // 半轮实现态：回程未接，原样透传上游事件流 —— 但不静默（§2.3.2）。
+                warnResponseTranslationMissing(requestId, upstreamProtocol);
+                return upstream;
+            }
             // 翻译器自己按输出协议分类，故直接用它伸出的流（与上游执行器同一原理）。
-            return m2cTranslator.translateStream(upstream, route.model(), translated.context());
+            return responseTranslator.translateStream(upstream, route.model(), translated.context());
         }
-        
+
         return Flux.error(new ProtocolTranslationNotSupportedException(
-                route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
+                route.provider().providerKey(), decision.downstreamProtocol(), upstreamProtocol));
+    }
+
+    /**
+     * 回程翻译未实现而原样透传时留痕 —— 透传本身可接受，但<strong>不能静默</strong>。
+     *
+     * <h2>为何是 warn 而非 debug</h2>
+     * 与 {@link ProtocolNotifier} 那条「补协议信息失败」的 debug 不同：那条是观测链路
+     * 自身的失败，无功能后果；而本条标记的是<strong>下游正在收到未翻译的上游响应</strong>，
+     * 是一个「有人应该看见」的事实。同一个坑（流挂住、界面转圈而无报错）已踩过一次
+     * （方向文档 §3.3），因此这里必须响 —— warn 平时不淹没日志、出现时一眼可见。
+     *
+     * <p>前端侧的可见性由已有的 {@code notifyProtocols} 承载：那条已把 {@code (下游, 上游)}
+     * 写进生命周期事件，Toast 显示 {@code C→M} 这类标记。开发者看到标记 + 这条 warn，
+     * 就知道自己在看的是原生上游响应，而非线上坏数据。
+     *
+     * @param requestId        调用标识，便于把日志与那次调用对上
+     * @param upstreamProtocol 上游协议，点明是哪条回程缺实现
+     */
+    private void warnResponseTranslationMissing(String requestId, WireProtocol upstreamProtocol) {
+        log.warn("回程翻译未实现，原样透传上游响应 [{}]：下游 {} ← 上游 {}（半轮实现态，"
+                        + "仅开发中间态应出现；合并主干前须补齐回程翻译）",
+                requestId, DOWNSTREAM_PROTOCOL, upstreamProtocol);
     }
 
     /**

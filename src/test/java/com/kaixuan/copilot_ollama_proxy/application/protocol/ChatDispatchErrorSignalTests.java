@@ -8,6 +8,7 @@ import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineExecution;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineStep;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.MessagesToChatResponseTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ChatToMessagesRequestTranslator;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.TranslatorRegistry;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
@@ -87,10 +88,13 @@ class ChatDispatchErrorSignalTests {
 
         // 翻译器用真实实例而非 mock：本测试要验证的正是「真实翻译器抛出的异常
         // 如何抵达下游」，mock 掉它就把被测行为一起 mock 掉了。
+        // 用真实 TranslatorRegistry 收两个真实翻译器：查表命中/未命中的分派逻辑
+        // 也是被测行为的一部分（C2M 去程命中、回程命中）。
         chatCompletionService = new ChatCompletionService(routeResolver, dispatchManager,
                 openAiChatService, anthropicChatService,
-                new ChatToMessagesRequestTranslator(objectMapper),
-                new MessagesToChatResponseTranslator(objectMapper));
+                new TranslatorRegistry(
+                        List.of(new ChatToMessagesRequestTranslator(objectMapper)),
+                        List.of(new MessagesToChatResponseTranslator(objectMapper))));
         messagesService = new MessagesService(routeResolver, dispatchManager, anthropicChatService);
         responsesService = new ResponsesService(routeResolver, dispatchManager, responsesChatService);
     }

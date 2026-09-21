@@ -1,7 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.application.protocol.translate;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.RequestTranslationException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslatedRequest;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslationContext;
@@ -55,7 +54,7 @@ import java.util.Set;
  *      协议翻译契约</a>
  */
 @Component
-public class ChatToMessagesRequestTranslator implements ProtocolTranslator {
+public class ChatToMessagesRequestTranslator implements RequestProtocolTranslator {
 
     /**
      * 直接搬运的顶层标量字段。
@@ -110,6 +109,7 @@ public class ChatToMessagesRequestTranslator implements ProtocolTranslator {
      * @return 翻译产物，含供响应侧使用的上下文
      * @throws RequestTranslationException 请求内容无法表达成 Anthropic 协议
      */
+    @Override
     public TranslatedRequest translateRequest(Map<String, Object> downstreamBody) {
         Map<String, Object> source = downstreamBody == null ? Map.of() : downstreamBody;
         Map<String, Object> target = new LinkedHashMap<>();
