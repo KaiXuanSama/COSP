@@ -463,4 +463,102 @@ class RequestPipelineContextTests {
             assertThat(ctx.shouldApplyEmptyResponseGate()).isFalse();
         }
     }
-}
+    @Nested
+    @DisplayName("端点创建 + 主干分步回填（3.4c-1 的两段式）")
+    class EndpointThenRouting {
+
+        /** 端点刚建出的 ctx：只知道下游侧事实，路由与上游协议都还没填。 */
+        @Test
+        void endpointContextKnowsOnlyDownstreamFacts() {
+            RequestPipelineContext ctx = RequestPipelineContext.forEndpoint(
+                    new LinkedHashMap<>(Map.of("model", "[relay-x] m")), "[relay-x] m",
+                    WireProtocol.CHAT, HttpHeaders.EMPTY, "req-ep");
+
+            assertThat(ctx.downstreamProtocol()).isEqualTo(WireProtocol.CHAT);
+            assertThat(ctx.model()).as("端点放进来的是请求模型名（带前缀）").isEqualTo("[relay-x] m");
+            assertThat(ctx.provider()).as("路由还没解析，供应商未知").isNull();
+            assertThat(ctx.translationContext()).isNull();
+        }
+
+        /**
+         * <strong>端点刚建出的 ctx 上不得判翻译</strong> —— 那时 {@code upstreamProtocol}
+         * 只是占位值，据此判断会得到错误的答案且不报错。
+         *
+         * <p>这是本项目最反复的失效形态：错误答案静默地看起来像正确答案。
+         * 故这里把它变成一个会响的异常。
+         */
+        @Test
+        void translationNeededIsRejectedBeforeRoutingIsFilled() {
+            RequestPipelineContext ctx = RequestPipelineContext.forEndpoint(
+                    new LinkedHashMap<>(), "m", WireProtocol.CHAT, HttpHeaders.EMPTY, "req-ep");
+
+            assertThatThrownBy(ctx::translationNeeded)
+                    .as("路由未回填时必须显式报错，而不是静默给出错误答案")
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("路由尚未回填");
+        }
+
+        /** 端点建 ctx 时 body 还是下游形态 —— 故查表键取 downstream。 */
+        @Test
+        void bodyProtocolStartsAsDownstreamOnEndpointCreation() {
+            RequestPipelineContext ctx = RequestPipelineContext.forEndpoint(
+                    new LinkedHashMap<>(), "m", WireProtocol.CHAT, HttpHeaders.EMPTY, "req-ep");
+
+            assertThat(ctx.bodyProtocol())
+                    .as("端点建 ctx 时 body 仍是下游形态 —— 这是与 of(...) 的关键差别")
+                    .isEqualTo(WireProtocol.CHAT);
+            assertThat(ctx.bodyProtocol()).isEqualTo(ctx.downstreamProtocol());
+        }
+
+        /** 主干回填路由：模型名换成目标名，供应商与上游协议就位。 */
+        @Test
+        void applyRoutingFillsRouteAndProtocol() {
+            RequestPipelineContext ctx = RequestPipelineContext.forEndpoint(
+                    new LinkedHashMap<>(), "[relay-x] m", WireProtocol.CHAT, HttpHeaders.EMPTY, "req-ep");
+
+            ctx.applyRouting("m", provider(), WireProtocol.MESSAGES);
+
+            assertThat(ctx.model()).as("请求模型名替换为目标模型名（已剥前缀）").isEqualTo("m");
+            assertThat(ctx.provider().providerKey()).isEqualTo("relay-x");
+            assertThat(ctx.upstreamProtocol()).isEqualTo(WireProtocol.MESSAGES);
+            assertThat(ctx.translationNeeded()).as("回填后判据才可用").isTrue();
+            assertThat(ctx.bodyProtocol())
+                    .as("回填不换 body —— 此时它仍是下游形态")
+                    .isEqualTo(WireProtocol.CHAT);
+        }
+
+        /** 翻译槽回填：body 换成上游形态、查表键跟着走、响应侧事实就位。 */
+        @Test
+        void applyTranslationSwapsBodyAndLookupKey() {
+            RequestPipelineContext ctx = RequestPipelineContext.forEndpoint(
+                    new LinkedHashMap<>(Map.of("messages", List.of())), "[relay-x] m",
+                    WireProtocol.CHAT, HttpHeaders.EMPTY, "req-ep");
+            ctx.applyRouting("m", provider(), WireProtocol.MESSAGES);
+
+            ctx.applyTranslation(new LinkedHashMap<>(Map.of("system", "s")), WireProtocol.MESSAGES,
+                    new TranslationContext(false, true));
+
+            assertThat(ctx.body()).as("body 已换成上游形态").containsKey("system");
+            assertThat(ctx.bodyProtocol())
+                    .as("查表键必须跟着 body 一起换 —— 只换一个会让查表挑到错实现")
+                    .isEqualTo(WireProtocol.MESSAGES);
+            assertThat(ctx.translationContext()).isNotNull();
+            assertThat(ctx.downstreamProtocol()).as("下游协议不因此改变").isEqualTo(WireProtocol.CHAT);
+        }
+
+        /** 两段式与 {@code of(...)} 一次成型在最终状态下等价。 */
+        @Test
+        void twoStepFillingMatchesOneShotFactory() {
+            RequestPipelineContext stepwise = RequestPipelineContext.forEndpoint(
+                    new LinkedHashMap<>(), "[relay-x] m", WireProtocol.CHAT, HttpHeaders.EMPTY, "req-1");
+            stepwise.applyRouting("m", provider(), WireProtocol.MESSAGES);
+            stepwise.applyTranslation(new LinkedHashMap<>(), WireProtocol.MESSAGES, null);
+
+            RequestPipelineContext oneShot = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
+                    WireProtocol.CHAT, WireProtocol.MESSAGES, provider(), HttpHeaders.EMPTY, "req-1", null);
+
+            assertThat(stepwise.bodyProtocol()).isEqualTo(oneShot.bodyProtocol());
+            assertThat(stepwise.model()).isEqualTo(oneShot.model());
+            assertThat(stepwise.translationNeeded()).isEqualTo(oneShot.translationNeeded());
+        }
+    }}

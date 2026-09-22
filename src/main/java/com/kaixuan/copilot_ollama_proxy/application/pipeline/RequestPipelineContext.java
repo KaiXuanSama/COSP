@@ -40,11 +40,14 @@ import java.util.Set;
  *       且是<strong>阶段查表的键</strong>。翻译是让两者分道扬镳的唯一动作。</li>
  * </ul>
  *
- * <p><strong>当前 {@code bodyProtocol} 恒等于 {@code upstreamProtocol}</strong>，
- * 因为翻译发生在应用服务层（编排器早已把 body 换成上游形态，再交给执行器与主干）。
- * 等 3.4 把 translate 移进主干之后，它才会变成「初值 = downstream、被 translate 改写」。
- * 这不是设计选择而是<strong>当前事实</strong>，且写错会很安静：
- * 查表用错的键，症状是「某个阶段没执行」而没有任何报错。
+ * <p><strong>{@code bodyProtocol} 的初值 = {@code downstreamProtocol}</strong>（3.4c-1 起）：
+ * 端点创建 ctx 时 body 还是下游形态，要等主干上的 translate 把它换成上游形态
+ * （{@code replaceBody} 成对更新）。写错会很安静：查表用错的键，
+ * 症状是「某个阶段没执行」而没有任何报错。
+ *
+ * <p>3.4c-1 之前它初值取 {@code upstreamProtocol} —— 那时翻译在应用服务层完成，
+ * 执行器拿到的 body 已是上游形态。改用下游作初值是「翻译进主干」的必然结果，
+ * 不是口味变化。
  *
  * <h2>与流级状态的分界（不要混）</h2>
  * 本类装的是<strong>请求级</strong>事实 —— 整条主干共用，重试<strong>不</strong>重置。
@@ -79,22 +82,32 @@ public final class RequestPipelineContext {
     /**
      * 本次调用用于上游请求的模型名。
      *
-     * <p>它是执行器入口需要的那个值（旧签名里的 {@code route.model()}，已剥供应商前缀）。
-     * 写入时机随阶段推进：当前（3.4d-1）由创建方在组装期直接写入；
-     * 等 3.4d-2 把 ctx 创建上移到端点后，改为**端点写请求模型名、主干解析后回填目标模型名**
-     * （见 plan_ Step 3.4 「Q1 a-1」），届时本字段随 {@code provider} / {@code upstreamProtocol}
-     * 一起改为可变。
+     * <p>它是执行器入口需要的那个值（{@code route.model()}，已剥供应商前缀）。
+     * <strong>写入分两步</strong>（3.4c-1 起）：端点创建时先放**请求模型名**
+     * （可带 {@code [provider-key]} 前缀），主干解析后回填**目标模型名**。
+     * 两步值在生产路径上通常相同，但不能合并 —— 解析结果只有主干才有。
      */
-    private final String model;
+    private String model;
 
-    /** 下游使用的协议（由它打的端点决定）。 */
+    /** 下游使用的协议（由它打的端点决定）。创建时即确定，不随阶段变。 */
     private final WireProtocol downstreamProtocol;
 
-    /** 实际对上游使用的协议（由供应商配置与调度决定）。 */
-    private final WireProtocol upstreamProtocol;
+    /**
+     * 实际对上游使用的协议（由供应商配置与调度决定）。
+     *
+     * <p><strong>可变</strong>：端点创建 ctx 时还不知道它（要先 resolve + dispatch），
+     * 由主干解析步骤回填（3.4c-1）。回填前它的值只是**临时占位**（取 downstream），
+     * 因此回填前不得据此判断是否需翻译 —— 那时还没有结论可言。
+     */
+    private WireProtocol upstreamProtocol;
 
-    /** 本次调用解析出的供应商运行时配置。 */
-    private final ProviderRuntimeConfiguration provider;
+    /**
+     * 本次调用解析出的供应商运行时配置。
+     *
+     * <p><strong>可变</strong>：与 {@link #upstreamProtocol} 同理，由主干解析步骤回填。
+     * 回填前为 null。
+     */
+    private ProviderRuntimeConfiguration provider;
 
     /** 下游请求头，供出站头装配与鉴权头探测使用。 */
     private final HttpHeaders downstreamHeaders;
@@ -105,10 +118,9 @@ public final class RequestPipelineContext {
     /**
      * 响应侧需要知道的请求侧事实。直连时为 null（没有去程翻译就没有它）。
      *
-     * <p><strong>当前主干上无人读它</strong>（它属响应侧，还没接进主干）。
-     * 按「允许冗余」照样携带，读取方出现时不必再动传递链。
+     * <p><strong>可变</strong>：翻译槽执行后回填（3.4c-1）。
      */
-    private final TranslationContext translationContext;
+    private TranslationContext translationContext;
 
     /**
      * 已执行的步骤。可变：步骤随推进逐个登记自己。
@@ -130,22 +142,98 @@ public final class RequestPipelineContext {
         this.downstreamHeaders = downstreamHeaders;
         this.requestId = requestId;
         this.translationContext = translationContext;
-        // bodyProtocol 初值取 upstreamProtocol：执行器拿到的 body 已经是上游形态
-        // （翻译在编排层完成）。理由与写错的代价见类注释。
-        this.bodyProtocol = upstreamProtocol;
+        // bodyProtocol 初值取 downstreamProtocol：端点建 ctx 时 body 还是下游形态，
+        // 要等主干上的 translate 把它换成上游形态（replaceBody 成对更新）。
+        // 理由与写错的代价见类注释。
+        this.bodyProtocol = downstreamProtocol;
     }
 
     /**
-     * 在应用服务层的组装期创建一个上下文。
+     * <strong>端点侧</strong>创建一个上下文（3.4c-1 起的唯一生产入口）。
      *
-     * <p>创建点是「已经知道路由与调度结论、但还没发请求」的那一刻 ——
-     * 因为本类的大多数字段正是那两个结论的产物。
+     * <p>创建点是端点服务 —— 它只知道「下游打的是哪个端点、请求的模型名是什么」，
+     * 而 <strong>不知道供应商与上游协议</strong>（那要等主干 resolve + dispatch）。
+     * 因此这两个字段先留空（{@code upstreamProtocol} 暂取 downstream 占位、
+     * {@code provider} 为 null），由主干解析步骤回填 —— 见 {@link #applyRouting}。
      *
-     * @param body               原始请求体（尚未经过任何阶段改写）
-     * @param model              本次调用用于上游请求的模型名
+     * <p>这与方向文档 §2.4 的「ctx 是本次调用的小型状态池」一致：
+     * 它不是一次填满的常量包，而是随步骤逐步被填的状态。
+     *
+     * @param body               原始请求体（下游形态，尚未经过任何阶段改写）
+     * @param requestedModel     客户端请求的模型名（可带 {@code [provider-key]} 前缀）
+     * @param downstreamProtocol 下游协议（本端点服务的那个）
+     * @param downstreamHeaders  下游请求头
+     * @param requestId          本次调用唯一标识
+     */
+    public static RequestPipelineContext forEndpoint(Map<String, Object> body,
+                                                     String requestedModel,
+                                                     WireProtocol downstreamProtocol,
+                                                     HttpHeaders downstreamHeaders,
+                                                     String requestId) {
+        return new RequestPipelineContext(body, requestedModel, downstreamProtocol,
+                downstreamProtocol, null, downstreamHeaders, requestId, null);
+    }
+
+    /**
+     * 主干解析步骤的<strong>回填</strong>：把「跟谁说话」与「用哪种协议说」写进 ctx。
+     *
+     * <p>它把这四件事一起写，因为它们**本就是一个结论的四个面**：
+     * 路由结果（目标模型名 + 供应商）与调度结果（上游协议）。分开写会留下
+     * 「模型名与供应商不同步」这类自相矛盾的中间态。
+     *
+     * <p>同时把 {@code bodyProtocol} 同步为回填前的形态事实 —— 此时 body 仍是**下游形态**，
+     * 故它等于 {@code downstreamProtocol}（即初值，无需再改）。
+     * 真正把它改成上游形态的是翻译槽的 {@link #replaceBody}。
+     *
+     * @param resolvedModel  已剥供应商前缀的目标模型名
+     * @param provider       解析出的供应商运行时配置
+     * @param upstreamProtocol 调度得出的上游协议
+     */
+    public void applyRouting(String resolvedModel, ProviderRuntimeConfiguration provider,
+                             WireProtocol upstreamProtocol) {
+        this.model = resolvedModel;
+        this.provider = provider;
+        this.upstreamProtocol = upstreamProtocol;
+    }
+
+    /**
+     * 翻译槽的<strong>回填</strong>：把去程翻译产出的事实写进 ctx。
+     *
+     * <p>它做两件事，且必须一起做：
+     * <ul>
+     *   <li>把 body 换成上游形态（{@link #replaceBody} 同时改查表键）；</li>
+     *   <li>记下响应侧需要的事实（{@link TranslationContext}）。</li>
+     * </ul>
+     * 分开写会留下「body 已是上游形态但回程不知道这个事实」的中间态。
+     *
+     * @param translatedBody    去程翻译产出的上游形态请求体
+     * @param upstreamProtocol  上游协议（与 {@link #applyRouting} 给定的一致）
+     * @param translationContext 去程翻译产出的响应侧事实
+     */
+    public void applyTranslation(Map<String, Object> translatedBody, WireProtocol upstreamProtocol,
+                                 TranslationContext translationContext) {
+        replaceBody(translatedBody, upstreamProtocol);
+        this.translationContext = translationContext;
+    }
+
+    /**
+     * 创建一个<strong>完整形态</strong>的上下文 —— 路由与翻译都已就绪，
+     * {@code body} 已是最终（上游）形态。
+     *
+     * <p><strong>它不是生产入口</strong>（生产走 {@link #forEndpoint} + {@link #applyRouting}
+     * + {@link #applyTranslation}）。它服务的是「直接拿一个就绪的 ctx 去调执行器」的场合：
+     * 单元测试与 {@code testing/PipelineContexts} 需要构造任意组合的 ctx
+     * （半轮态、全实现、直连）来验证执行器的拦截与落库，而那些测试的 body
+     * 本来就是 Anthropic / Responses 形态 —— 与 {@code upstreamProtocol} 一致。
+     *
+     * <p>因此本工厂把 {@link #bodyProtocol} 设为 {@code upstreamProtocol}，
+     * 而不是构造器默认的 {@code downstreamProtocol}。两者的差别只在「翻译是否已发生」。
+     *
+     * @param body               请求体（<strong>已是最终形态</strong>）
+     * @param model              用于上游请求的模型名
      * @param downstreamProtocol 下游协议
      * @param upstreamProtocol   上游协议
-     * @param translationContext 去程翻译产出的上下文；直连传 null
+     * @param translationContext 去程翻译产出的事实；直连传 null
      */
     public static RequestPipelineContext of(Map<String, Object> body,
                                             String model,
@@ -155,8 +243,11 @@ public final class RequestPipelineContext {
                                             HttpHeaders downstreamHeaders,
                                             String requestId,
                                             TranslationContext translationContext) {
-        return new RequestPipelineContext(body, model, downstreamProtocol, upstreamProtocol, provider,
-                downstreamHeaders, requestId, translationContext);
+        RequestPipelineContext ctx = new RequestPipelineContext(body, model, downstreamProtocol, upstreamProtocol,
+                provider, downstreamHeaders, requestId, translationContext);
+        // 完整形态：body 已是上游形态，故查表键取 upstream（与构造器的端点默认相反）。
+        ctx.bodyProtocol = upstreamProtocol;
+        return ctx;
     }
 
     /**
@@ -274,10 +365,19 @@ public final class RequestPipelineContext {
     /**
      * 两侧协议是否不同，即本次调用是否需要翻译组件介入。
      *
-     * <p>协议在本类里必定非空（创建时就要给出），因此这里不处理「未知」态 ——
-     * 那个态随 {@code PipelineExecution.empty()} 的退役一起消失了。
+     * <p><strong>只能在主干回填路由之后调用</strong>（{@link #applyRouting}）。
+     * 端点刚建出的 ctx 里 {@code provider} 为 null，那时 {@code upstreamProtocol}
+     * 只是占位值，据此判断会得到错误的答案且不会报错 —— 故这里显式拦住。
+     * 这正是本项目最反复的失效形态：错误答案静默地看起来像正确答案。
+     *
+     * @throws IllegalStateException 路由尚未回填（在端点与主干之间误调）
      */
     public boolean translationNeeded() {
+        if (provider == null) {
+            throw new IllegalStateException(
+                    "路由尚未回填，此时 upstreamProtocol 只是占位值 —— "
+                            + "translationNeeded() 只能在主干 applyRouting 之后调用");
+        }
         return downstreamProtocol != upstreamProtocol;
     }
 
