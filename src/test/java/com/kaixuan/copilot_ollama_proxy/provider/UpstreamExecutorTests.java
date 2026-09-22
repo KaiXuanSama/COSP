@@ -1,6 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.provider;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
@@ -283,26 +284,50 @@ class UpstreamExecutorTests {
 
     // ==================== 辅助：组装 ====================
 
+    /**
+     * 重试预算固定为 0 —— 本类测的是<strong>委派等价性</strong>，与重试无关。
+     *
+     * <p>不注入的话执行器会走生产默认（5 次 + 2s 起的指数退避）。一旦某条路的桩
+     * 形态写错被判空，症状就是<strong>静默挂起 62 秒然后超时</strong> ——
+     * 看起来像「测试没跑起来」，排查时极易误判。
+     * 预算归零后同样的错桩<strong>立即</strong>抛
+     * {@code EmptyUpstreamResponseException}：红得快、堆栈直指用例。
+     */
+    private static RetryPolicyService fixedRetryPolicy(int maxAttempts) {
+        return new RetryPolicyService(null) {
+            @Override
+            public int getMaxAttempts() {
+                return maxAttempts;
+            }
+        };
+    }
+
     private GenericOpenAiChatService openAiService() {
-        return new GenericOpenAiChatService(objectMapper,
+        GenericOpenAiChatService service = new GenericOpenAiChatService(objectMapper,
                 new ProviderRequestHeaderService(objectMapper),
                 new RequestBodyRuleEngine(objectMapper),
                 new ChunkStageRegistry(
                         List.of(new ChatChunkNormalizeStage(objectMapper)),
                         List.of(new ChatReasoningFallbackStage(objectMapper))));
+        service.setRetryPolicyService(fixedRetryPolicy(0));
+        return service;
     }
 
     private GenericAnthropicChatService anthropicService() {
-        return new GenericAnthropicChatService(objectMapper,
+        GenericAnthropicChatService service = new GenericAnthropicChatService(objectMapper,
                 new ProviderRequestHeaderService(objectMapper),
                 new RequestBodyRuleEngine(objectMapper),
                 PipelineContexts.registryWithMessagesStages(objectMapper));
+        service.setRetryPolicyService(fixedRetryPolicy(0));
+        return service;
     }
 
     private GenericResponsesChatService responsesService() {
-        return new GenericResponsesChatService(objectMapper,
+        GenericResponsesChatService service = new GenericResponsesChatService(objectMapper,
                 new ProviderRequestHeaderService(objectMapper),
                 new RequestBodyRuleEngine(objectMapper));
+        service.setRetryPolicyService(fixedRetryPolicy(0));
+        return service;
     }
 
     /** 供应商 Base URL 指向本地 HttpServer —— 端口动态，故取 upstream 的地址。 */
