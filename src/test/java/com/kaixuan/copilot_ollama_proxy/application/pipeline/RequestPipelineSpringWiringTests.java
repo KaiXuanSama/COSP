@@ -4,6 +4,11 @@ import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
 import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutorRegistry;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
+import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericResponsesChatService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -12,6 +17,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.util.ReflectionUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * 主干装配的结构断言 —— 三个应用服务真的把前奏托付给 {@link RequestPipeline} 了吗。
@@ -52,6 +58,9 @@ class RequestPipelineSpringWiringTests {
     @Autowired
     private ResponsesService responsesService;
 
+    @Autowired
+    private UpstreamExecutorRegistry executorRegistry;
+
     @Test
     @DisplayName("主干是 Spring Bean，且生命周期通知器已注入")
     void requestPipelineIsWiredAsBean() {
@@ -79,6 +88,37 @@ class RequestPipelineSpringWiringTests {
     }
 
     @Test
+    @DisplayName("主干持有两张表（翻译器 / 执行器），3.4c-2 起 send 也归它")
+    void trunkHoldsBothRegistries() {
+        assertThat(ReflectionTestUtils.getField(requestPipeline, "translatorRegistry"))
+                .as("主干必须持有翻译器表 —— 两个翻译插槽靠它查表")
+                .isNotNull();
+        assertThat(ReflectionTestUtils.getField(requestPipeline, "executorRegistry"))
+                .as("主干必须持有执行器表 —— send 插槽靠它选执行器")
+                .isNotNull();
+    }
+
+    @Test
+    @DisplayName("执行器注册表收齐三个协议 —— 漏一个会让那条线路的请求报装配错误")
+    void executorRegistryCoversAllThreeProtocols() {
+        for (WireProtocol protocol : WireProtocol.values()) {
+            // 未命中会抛 IllegalStateException（「装配坏了」而非「领域事实」），
+            // 故这里逐个 require：任何一条线路少执行器都会当场红。
+            assertThatCode(() -> executorRegistry.require(protocol))
+                    .as("协议 %s 必须有执行器 —— 否则那条线路一请求就报装配错误", protocol)
+                    .doesNotThrowAnyException();
+        }
+    }
+
+    @Test
+    @DisplayName("三个执行器注册的键与它们的类型对得上")
+    void eachProtocolMapsToItsOwnExecutor() {
+        assertThat(executorRegistry.require(WireProtocol.CHAT)).isInstanceOf(GenericOpenAiChatService.class);
+        assertThat(executorRegistry.require(WireProtocol.MESSAGES)).isInstanceOf(GenericAnthropicChatService.class);
+        assertThat(executorRegistry.require(WireProtocol.RESPONSES)).isInstanceOf(GenericResponsesChatService.class);
+    }
+
+    @Test
     @DisplayName("三个应用服务已无 routeResolver / dispatchManager / lifecycleNotifier 字段")
     void noServiceRetainsThePreambleDependencies() {
         for (Object service : new Object[]{chatCompletionService, messagesService, responsesService}) {
@@ -92,6 +132,19 @@ class RequestPipelineSpringWiringTests {
                     .isNull();
             assertThat(ReflectionUtils.findField(service.getClass(), "lifecycleNotifier"))
                     .as("%s 不该再有生命周期通知器字段：它随前奏一起上移了", name)
+                    .isNull();
+            // 3.4c-2：执行器与翻译器也不再由 Service 持有 —— 它们只在主干上。
+            assertThat(ReflectionUtils.findField(service.getClass(), "anthropicChatService"))
+                    .as("%s 不该再持有执行器：选执行器是主干 send 插槽的事", name)
+                    .isNull();
+            assertThat(ReflectionUtils.findField(service.getClass(), "genericOpenAiChatService"))
+                    .as("%s 不该再持有执行器", name)
+                    .isNull();
+            assertThat(ReflectionUtils.findField(service.getClass(), "responsesChatService"))
+                    .as("%s 不该再持有执行器", name)
+                    .isNull();
+            assertThat(ReflectionUtils.findField(service.getClass(), "translatorRegistry"))
+                    .as("%s 不该再持有翻译器表：翻译插槽的唯一归属是主干", name)
                     .isNull();
         }
     }

@@ -4,10 +4,12 @@ import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotif
 import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.TranslatorRegistry;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutorRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -50,7 +52,10 @@ class RequestPipelineTests {
     void setUp() {
         routeResolver = mock(ProviderRouteResolver.class);
         dispatchManager = new ProtocolDispatchManager();
-        pipeline = new RequestPipeline(routeResolver, dispatchManager);
+        // 本类只测前奏（run），不触及翻译与执行器查表 —— 故两张表给空的即可。
+        pipeline = new RequestPipeline(routeResolver, dispatchManager,
+                new TranslatorRegistry(List.of(), List.of()),
+                new UpstreamExecutorRegistry(List.of()));
     }
 
     @Test

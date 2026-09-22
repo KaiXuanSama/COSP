@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipeline;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutorRegistry;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.TranslatorRegistry;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.DatabaseRuntimeProviderCatalog;
@@ -133,12 +134,12 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 org.mockito.ArgumentMatchers.anyMap(), org.mockito.ArgumentMatchers.anyInt(),
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyLong());
         genericChatService.setApiCallLog(callLogService);
-        // 翻译落地后，ChatCompletionService 需要 Anthropic 上游与翻译器查表。
-        // 本测试只关注 OpenAI 直连路径，不走翻译：Anthropic 上游用 null 占位，
-        // 查表给一个空注册表（两个方向都查不到，但直连路径压根不查表）。
+        // 主干按协议查表选执行器，故注册表必须收本测试用的那个真实执行器。
+        // 翻译器表给空（两个方向都查不到）—— 本测试只走直连，压根不查表。
         ChatCompletionService chatCompletionService = new ChatCompletionService(
-                new RequestPipeline(new ProviderRouteResolver(catalog), new ProtocolDispatchManager()),
-                genericChatService, null, new TranslatorRegistry(List.of(), List.of()));
+                new RequestPipeline(new ProviderRouteResolver(catalog), new ProtocolDispatchManager(),
+                        new TranslatorRegistry(List.of(), List.of()),
+                        new UpstreamExecutorRegistry(List.of(genericChatService))));
 
         HttpHeaders downstreamHeaders = new HttpHeaders();
         downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-token");

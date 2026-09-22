@@ -18,6 +18,7 @@ import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthro
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericResponsesChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutorRegistry;
 import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -37,7 +38,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 /**
  * 两条聊天线路的<strong>组装期</strong>不得抛异常。
@@ -85,21 +87,28 @@ class ChatDispatchErrorSignalTests {
         openAiChatService = mock(GenericOpenAiChatService.class);
         anthropicChatService = mock(GenericAnthropicChatService.class);
         responsesChatService = mock(GenericResponsesChatService.class);
+        // 主干按协议查表选执行器，故 mock 必须声明自己的键。
+        given(openAiChatService.protocol()).willReturn(WireProtocol.CHAT);
+        given(anthropicChatService.protocol()).willReturn(WireProtocol.MESSAGES);
+        given(responsesChatService.protocol()).willReturn(WireProtocol.RESPONSES);
         ProtocolDispatchManager dispatchManager = new ProtocolDispatchManager();
 
         // 翻译器用真实实例而非 mock：本测试要验证的正是「真实翻译器抛出的异常
         // 如何抵达下游」，mock 掉它就把被测行为一起 mock 掉了。
         // 用真实 TranslatorRegistry 收两个真实翻译器：查表命中/未命中的分派逻辑
         // 也是被测行为的一部分（C2M 去程命中、回程命中）。
-        chatCompletionService = new ChatCompletionService(
-                new RequestPipeline(routeResolver, dispatchManager),
-                openAiChatService, anthropicChatService,
+        // 执行器注册表收三个 mock —— 本测试验的是分派与错误信号，不验具体执行器行为。
+        UpstreamExecutorRegistry executors = new UpstreamExecutorRegistry(
+                List.of(openAiChatService, anthropicChatService, responsesChatService));
+        RequestPipeline pipeline = new RequestPipeline(routeResolver, dispatchManager,
                 new TranslatorRegistry(
                         List.of(new ChatToMessagesRequestTranslator(objectMapper)),
-                        List.of(new MessagesToChatResponseTranslator(objectMapper))));
-        RequestPipeline pipeline = new RequestPipeline(routeResolver, dispatchManager);
-        messagesService = new MessagesService(pipeline, anthropicChatService);
-        responsesService = new ResponsesService(pipeline, responsesChatService);
+                        List.of(new MessagesToChatResponseTranslator(objectMapper))),
+                executors);
+        // 三个 Service 现在同形：只收主干。
+        chatCompletionService = new ChatCompletionService(pipeline);
+        messagesService = new MessagesService(pipeline);
+        responsesService = new ResponsesService(pipeline);
     }
 
     @Nested
@@ -346,6 +355,10 @@ class ChatDispatchErrorSignalTests {
          *
          * <p>少了这条，把路由失败改成「随便透传到上游」也能让上面六条全绿 ——
          * 而那正是本异常要防的误导：明明没连过上游，却报成上游连接失败。
+         *
+         * <p>只验 {@code invoke} / {@code invokeStream} 未被调用，不用
+         * {@code verifyNoInteractions} —— 后者会把装配期的 {@code protocol()}
+         * 也叫过来（注册表建索引时必然调它），那与「请求是否发出去了」无关。
          */
         @Test
         @DisplayName("任一上游执行器都不得被调用")
@@ -354,7 +367,12 @@ class ChatDispatchErrorSignalTests {
                             Map.of("model", "ghost-model"), "ghost-model", HttpHeaders.EMPTY, "req-r7"),
                     UnresolvedModelRouteException.class, "ghost-model");
 
-            verifyNoInteractions(openAiChatService, anthropicChatService, responsesChatService);
+            verify(openAiChatService, never()).invoke(any(), any());
+            verify(anthropicChatService, never()).invoke(any(), any());
+            verify(responsesChatService, never()).invoke(any(), any());
+            verify(openAiChatService, never()).invokeStream(any(), any());
+            verify(anthropicChatService, never()).invokeStream(any(), any());
+            verify(responsesChatService, never()).invokeStream(any(), any());
         }
     }
 
@@ -391,18 +409,18 @@ class ChatDispatchErrorSignalTests {
          * 而一个会正常返回的桩会让那条路径不再被执行）。
          */
         private void stubAnthropicNonStreamCapturingExecution() {
-            given(anthropicChatService.messages(any(), any(), any(), any(), any(), any()))
+            given(anthropicChatService.invoke(any(), any()))
                     .willAnswer(invocation -> {
-                        capturedExecution.set(invocation.getArgument(5));
+                        capturedExecution.set(invocation.getArgument(0));
                         return UpstreamStreams.single("{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}");
                     });
         }
 
         /** 流式同理：捕获登记并回一个终止事件，避免下游 REQUEST 被翻译器继续处理。 */
         private void stubAnthropicStreamCapturingExecution() {
-            given(anthropicChatService.messagesStream(any(), any(), any(), any(), any(), any()))
+            given(anthropicChatService.invokeStream(any(), any()))
                     .willAnswer(invocation -> {
-                        capturedExecution.set(invocation.getArgument(5));
+                        capturedExecution.set(invocation.getArgument(0));
                         return UpstreamStreams.messages("{\"type\":\"message_stop\"}");
                     });
         }
@@ -458,9 +476,9 @@ class ChatDispatchErrorSignalTests {
         @DisplayName("直连路径携带直连形态的上下文")
         void directPathCarriesADirectContext() {
             givenRoute("[\"CHAT\"]");
-            given(openAiChatService.chatCompletion(any(), any(), any(), any(), any()))
+            given(openAiChatService.invoke(any(), any()))
                     .willAnswer(invocation -> {
-                        capturedExecution.set(invocation.getArgument(4));
+                        capturedExecution.set(invocation.getArgument(0));
                         return UpstreamStreams.single("{\"ok\":true}");
                     });
 
@@ -492,7 +510,7 @@ class ChatDispatchErrorSignalTests {
         @Test
         void openAiNonStreamStillDelegatesToUpstream() {
             givenRoute("[\"CHAT\"]");
-            given(openAiChatService.chatCompletion(any(), any(), any(), any(), any()))
+            given(openAiChatService.invoke(any(), any()))
                     .willReturn(UpstreamStreams.single("{\"ok\":true}"));
 
             assertThat(chatCompletionService.chatCompletion(
@@ -504,7 +522,7 @@ class ChatDispatchErrorSignalTests {
         @Test
         void anthropicStreamStillDelegatesToUpstream() {
             givenRoute("[\"MESSAGES\"]");
-            given(anthropicChatService.messagesStream(any(), any(), any(), any(), any(), any()))
+            given(anthropicChatService.invokeStream(any(), any()))
                     .willReturn(UpstreamStreams.messages("event-1"));
 
             assertThat(messagesService.messagesStream(
@@ -517,7 +535,7 @@ class ChatDispatchErrorSignalTests {
         @Test
         void responsesNonStreamStillDelegatesToUpstream() {
             givenRoute("[\"RESPONSES\"]");
-            given(responsesChatService.responses(any(), any(), any(), any(), any()))
+            given(responsesChatService.invoke(any(), any()))
                     .willReturn(UpstreamStreams.single("{\"ok\":true}"));
 
             assertThat(responsesService.responses(
@@ -529,7 +547,7 @@ class ChatDispatchErrorSignalTests {
         @Test
         void responsesStreamStillDelegatesToUpstream() {
             givenRoute("[\"RESPONSES\"]");
-            given(responsesChatService.responsesStream(any(), any(), any(), any(), any()))
+            given(responsesChatService.invokeStream(any(), any()))
                     .willReturn(UpstreamStreams.responses("event-1"));
 
             assertThat(responsesService.responsesStream(

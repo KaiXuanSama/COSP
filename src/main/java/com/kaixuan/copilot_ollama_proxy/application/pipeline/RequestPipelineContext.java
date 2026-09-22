@@ -26,11 +26,26 @@ import java.util.Set;
  * <ul>
  *   <li><strong>可变</strong>：{@link #body} 会随阶段被改写（翻译把它换成上游形态、
  *       各注入步骤往里补字段）。做成不可变只会得到「外表不可变、内里可变」的假象 ——
- *       {@code body} 是 {@code Map}，原地改它本来就是主干的正常动作。</li>
+ *       {@code body} 是 {@code Map}，原地改它本来就是主干的正常动作。
+ *       3.4c-1 起 {@code model} / {@code upstreamProtocol} / {@code provider} /
+ *       {@code translationContext} <strong>也可变</strong>：端点建 ctx 时它们还未知，
+ *       由主干分步回填（{@link #applyRouting} / {@link #applyTranslation}）。</li>
  *   <li><strong>允许冗余</strong>：可以携带<em>当前无人读取</em>的字段。
- *       冗余字段是给后续步骤与后续功能预留的座位 —— 见 {@link #translationContext}。
- *       读取方出现时不必再改本类的形状（也就不必再动所有传递点）。</li>
+ *       冗余字段是给后续步骤与后续功能预留的座位，读取方出现时不必再改本类的形状。
+ *       例如 {@code translationContext} 在 3.4c-2 之前一直无人读 ——
+ *       它作为「响应侧的座位」存在了几个版本，直到回程翻译接进主干才被用上。</li>
  * </ul>
+ *
+ * <h2>两个创建入口（不要用错）</h2>
+ * <table>
+ *   <caption>工厂方法</caption>
+ *   <tr><th>入口</th><th>用途</th><th>{@code bodyProtocol} 初值</th></tr>
+ *   <tr><td>{@link #forEndpoint}</td><td><strong>唯一生产入口</strong>：端点建 ctx，
+ *       只填下游侧事实，路由与上游协议由主干回填</td><td>{@code downstream}</td></tr>
+ *   <tr><td>{@link #of}</td><td><strong>完整形态</strong>：body 已是最终（上游）形态，
+ *       供测试构造任意组合</td><td>{@code upstream}</td></tr>
+ * </table>
+ * 两者差别只在「翻译是否已发生」，故初值相反。生产路径只走前者。
  *
  * <h2>{@code bodyProtocol} 与两侧协议的分界</h2>
  * <ul>
@@ -250,33 +265,6 @@ public final class RequestPipelineContext {
         return ctx;
     }
 
-    /**
-     * 组装期创建一个<strong>直连</strong>上下文：两侧同协议、无翻译、无登记步骤。
-     *
-     * <p>直连是最常见的路径（三条线路各有一个直连分支），因此给它一个具名工厂，
-     * 让「这不是翻译路线」在调用点就看得见 —— 而不是写成
-     * {@code of(body, p, p, …)} 那样靠两个参数恰好相同来表达。
-     *
-     * <p>它与 3.3b-1 那个过渡辅助（已随旧重载一起退役）在判据上完全等价：
-     * {@code translationNeeded()} 为 false → 空响应拦截照常介入。
-     * 但两者性质不同 —— 那个是「没有 ctx 时凑一个」，本方法供**组装层显式调用**。
-     *
-     * @param body             原始请求体
-     * @param model            本次调用用于上游请求的模型名
-     * @param protocol         两侧共用的协议
-     * @param translationContext 直连没有去程翻译，通常传 null
-     */
-    public static RequestPipelineContext direct(Map<String, Object> body,
-                                                String model,
-                                                WireProtocol protocol,
-                                                ProviderRuntimeConfiguration provider,
-                                                HttpHeaders downstreamHeaders,
-                                                String requestId,
-                                                TranslationContext translationContext) {
-        return new RequestPipelineContext(body, model, protocol, protocol, provider,
-                downstreamHeaders, requestId, translationContext);
-    }
-
     /** 当前请求体。 */
     public Map<String, Object> body() {
         return body;
@@ -332,7 +320,12 @@ public final class RequestPipelineContext {
         return requestId;
     }
 
-    /** 响应侧需要知道的请求侧事实；直连时为 null，且当前主干上无人读它。 */
+    /**
+     * 响应侧需要知道的请求侧事实；直连时为 null。
+     *
+     * <p>由翻译槽的 {@link #applyTranslation} 写入，由主干在调回程翻译时读取
+     * （{@code includeUsage} 等）。3.4c-2 之前主干无人读它，故那时它只是「预留的座位」。
+     */
     public TranslationContext translationContext() {
         return translationContext;
     }

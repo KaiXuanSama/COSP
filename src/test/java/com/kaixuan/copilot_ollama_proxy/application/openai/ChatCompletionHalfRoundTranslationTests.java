@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineStep;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipeline;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ChatToMessagesRequestTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.MessagesToChatResponseTranslator;
@@ -16,6 +17,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolve
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutorRegistry;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
@@ -106,18 +108,24 @@ class ChatCompletionHalfRoundTranslationTests {
         anthropicChatService = mock(GenericAnthropicChatService.class);
         dispatchManager = new ProtocolDispatchManager();
 
+        // 主干按协议查表选执行器，故 mock 必须声明自己的键 —— 否则注册表查到 null。
+        given(anthropicChatService.protocol()).willReturn(WireProtocol.MESSAGES);
+        given(openAiChatService.protocol()).willReturn(WireProtocol.CHAT);
+        UpstreamExecutorRegistry executors =
+                new UpstreamExecutorRegistry(List.of(openAiChatService, anthropicChatService));
+
         // 半装配注册表：去程 C2M 有、回程 M2C 空。查回程即未命中 → 透传路径。
         TranslatorRegistry halfRoundRegistry = new TranslatorRegistry(
                 List.of(new ChatToMessagesRequestTranslator(objectMapper)),
                 List.of());
         halfRoundService = new ChatCompletionService(
-                new RequestPipeline(routeResolver, dispatchManager),
-                openAiChatService, anthropicChatService, halfRoundRegistry);
+                new RequestPipeline(routeResolver, dispatchManager, halfRoundRegistry, executors));
 
         // 供应商只勾 MESSAGES：下游 CHAT 打进来 → 调度判需要翻译、上游协议 MESSAGES。
         givenProviderSupporting("[\"MESSAGES\"]");
 
-        serviceLogger = (Logger) LoggerFactory.getLogger(ChatCompletionService.class);
+        // WARN 的归属已随翻译编排上移到主干，故监听主干类的 logger。
+        serviceLogger = (Logger) LoggerFactory.getLogger(RequestPipeline.class);
         logAppender = new ListAppender<>();
         logAppender.start();
         serviceLogger.addAppender(logAppender);
@@ -133,9 +141,9 @@ class ChatCompletionHalfRoundTranslationTests {
     @Test
     @DisplayName("非流式：回程未命中则透传上游原生响应，且只登记去程、跳过空响应拦截")
     void nonStreamPassesThroughAndSkipsGateWhenResponseTranslatorMissing() {
-        given(anthropicChatService.messages(any(), any(), any(), any(), any(), any()))
+        given(anthropicChatService.invoke(any(), any()))
                 .willAnswer(invocation -> {
-                    capturedExecution.set(invocation.getArgument(5));
+                    capturedExecution.set(invocation.getArgument(0));
                     return UpstreamStreams.single(RAW_ANTHROPIC_BODY);
                 });
 
@@ -163,9 +171,9 @@ class ChatCompletionHalfRoundTranslationTests {
     @Test
     @DisplayName("流式：回程未命中则透传上游原生事件流，未翻译成 OpenAI chunk")
     void streamPassesThroughWhenResponseTranslatorMissing() {
-        given(anthropicChatService.messagesStream(any(), any(), any(), any(), any(), any()))
+        given(anthropicChatService.invokeStream(any(), any()))
                 .willAnswer(invocation -> {
-                    capturedExecution.set(invocation.getArgument(5));
+                    capturedExecution.set(invocation.getArgument(0));
                     return UpstreamStreams.messages(RAW_ANTHROPIC_EVENT, RAW_ANTHROPIC_STOP);
                 });
 
@@ -187,7 +195,7 @@ class ChatCompletionHalfRoundTranslationTests {
     @Test
     @DisplayName("透传不静默：非流式透传前打 WARN 且带 requestId")
     void nonStreamWarnsWhenPassingThrough() {
-        given(anthropicChatService.messages(any(), any(), any(), any(), any(), any()))
+        given(anthropicChatService.invoke(any(), any()))
                 .willReturn(UpstreamStreams.single(RAW_ANTHROPIC_BODY));
 
         halfRoundService.chatCompletion(CHAT_REQUEST, "m", HttpHeaders.EMPTY, "req-half-3").block();
@@ -202,7 +210,7 @@ class ChatCompletionHalfRoundTranslationTests {
     @Test
     @DisplayName("透传不静默：流式透传前同样打 WARN")
     void streamWarnsWhenPassingThrough() {
-        given(anthropicChatService.messagesStream(any(), any(), any(), any(), any(), any()))
+        given(anthropicChatService.invokeStream(any(), any()))
                 .willReturn(UpstreamStreams.messages(RAW_ANTHROPIC_EVENT, RAW_ANTHROPIC_STOP));
 
         halfRoundService.chatCompletionStream(CHAT_REQUEST, "m", HttpHeaders.EMPTY, "req-half-4")
@@ -228,12 +236,12 @@ class ChatCompletionHalfRoundTranslationTests {
                 List.of(new ChatToMessagesRequestTranslator(objectMapper)),
                 List.of(new MessagesToChatResponseTranslator(objectMapper)));
         ChatCompletionService fullyWired = new ChatCompletionService(
-                new RequestPipeline(routeResolver, dispatchManager),
-                openAiChatService, anthropicChatService, fullRegistry);
+                new RequestPipeline(routeResolver, dispatchManager, fullRegistry,
+                        new UpstreamExecutorRegistry(List.of(openAiChatService, anthropicChatService))));
 
-        given(anthropicChatService.messages(any(), any(), any(), any(), any(), any()))
+        given(anthropicChatService.invoke(any(), any()))
                 .willAnswer(invocation -> {
-                    capturedExecution.set(invocation.getArgument(5));
+                    capturedExecution.set(invocation.getArgument(0));
                     return UpstreamStreams.single(TRANSLATABLE_ANTHROPIC_BODY);
                 });
 

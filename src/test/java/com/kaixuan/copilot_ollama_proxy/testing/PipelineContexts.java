@@ -6,6 +6,8 @@ import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineCont
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.ChunkStageRegistry;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutor;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutorRegistry;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.RequestBodyStageRegistry;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.chat.ChatChunkNormalizeStage;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.chat.ChatReasoningFallbackStage;
@@ -132,5 +134,22 @@ public final class PipelineContexts {
         return new ChunkStageRegistry(
                 List.of(new ChatChunkNormalizeStage(objectMapper)),
                 List.of(new ChatReasoningFallbackStage(objectMapper)));
+    }
+
+    /**
+     * 拼一个含指定执行器的注册表 —— 供直接 {@code new} 主干的测试使用。
+     *
+     * <p>理由同 {@link #registryWithMessagesStages}：不走 Spring 的测试拿不到集合注入。
+     * 与那两个不同的是，这里收的是**调用方传进来的**执行器实例 ——
+     * 主干测试常用 mock 的执行器（它们自己 stub {@code invoke}），
+     * 拼真实现反而验不到被测行为。
+     *
+     * <p><strong>注意</strong>：传给本方法的 mock 必须已 stub {@code protocol()}，
+     * 否则注册表建索引时拿到 null 键，查表恒未命中。
+     *
+     * @param executors 本次测试要装配的执行器
+     */
+    public static UpstreamExecutorRegistry executorRegistry(UpstreamExecutor... executors) {
+        return new UpstreamExecutorRegistry(List.of(executors));
     }
 }
