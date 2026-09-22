@@ -3,6 +3,47 @@
 > 本文档描述一次下游请求从进入 COSP 到发往上游之间经历的处理层，重点是
 > **应用服务层**（决定发给谁、用什么协议）与**上游执行层**（决定请求长什么样、怎么发）
 > 的分工与顺序。
+>
+> 本文描述的是**现状**（三个平行主干）。目标形态及其命名见 §0。
+
+## 0. 形态名：SESE Pipeline with Joining Branches
+
+本服务的请求处理链路有一个统一的形态名，写在注释、提交信息与文档里时统一使用：
+
+> ### **SESE Pipeline with Joining Branches**
+> **带汇回支线的单入口单出口管道**
+
+**一句话定义**：一条主干，沿途分出若干**会汇回**的支线，末端是一个分岔的**出口**。
+
+```
+                    ┌─ C2M ─┐
+主干 ── 分岔点 ─────┤       ├──── 汇回 ── 主干继续 ──→ 出口（按下游协议分岔，不汇回）
+                    └─ C2R ─┘
+```
+
+| 概念 | 判据 | 例子 |
+| --- | --- | --- |
+| **主干** | 协议差异是**数据** | 请求体规则（协议存在 `groups[].protocols` 里）、请求头规则、鉴权头再分配（`AuthHeaderSetting`） |
+| **支线** | 协议差异是**代码**，且**有进有出、同类型进出** | 请求翻译、响应翻译、思考注入 |
+| **出口** | **只有出没有回**，且**只有一个** | 错误渲染、SSE 信封 |
+
+**最关键的一条约束**：支线**必须汇回**主干。因此它只能同类型进出，契约被压得很窄
+（不能改下游协议／重试语义／落库形态）—— **扩展因此才安全**，这正是「加一个类就能接新协议」的前提。
+
+> ⚠️ **这个形状没有既有的单一名字**，`SESE Pipeline with Joining Branches` 是本项目自造的
+> 描述性命名（沿用了编译器领域 SESE 区域的术语）。**引用时不要写成「经典模式」那样的话**。
+>
+> 它最接近的成熟形态是**编译器的 pass 流水线**（Pass 是 IR → IR 的变换，必须单入口单出口，
+> 由 `PassRegistry` 收集、按名查找）。与它不同的是：本形态的阶段序列**顺序有语义**
+> （翻译必须在请求体规则之前），因此更接近编译器前端的固定降级链，而非可重排的优化池。
+>
+> 与几个**真实存在**的既有模式的关系：**Pipes and Filters** 不保证汇回；
+> **Chain of Responsibility** 允许处理者终结请求；**Intercepting Filter** 靠 `@Order` 约定、
+> 无类型保证（本项目被这个弱点打中过）。三者都缺「分叉必须汇回」这条约束，因此不要套用。
+
+**现状与目标的差距**：当前是**三个平行主干**（§1 全景里那三条），而非一条主干加支线。
+完整的目标形态、迁移顺序与依据见根目录的 `请求处理链路重构方向.md`
+（**该文件未入库**，根目录 `*.md` 被 `.gitignore` 忽略 —— 若它已不存在，本文节即为该术语的最小留存）。
 
 ## 1. 全景
 
@@ -111,33 +152,57 @@ ChatCompletionService.chatCompletion(...)
 
 请求体与请求头是**两条独立流水线**，汇入同一次 `WebClient` 发送。
 
-### 4.1 请求体装配
+### 4.1 请求体装配 —— 三条线路的阶段序列
 
-三条线路的顺序不同，差异来自「下游与上游是否同协议」。
+`prepareRequestBody` 是一根**显式阶段序列**（Step 3.3c 起），不再是若干散行。
+每条线路的序列在代码里逐阶段调用，阶段名即方法名 —— 因此本节与代码可以逐行对照。
+
+**三条线路共用的四个阶段**（形状相同，编号固定）：
+
+| # | 阶段 | 方法 | 为何在这个位置 |
+|---|---|---|---|
+| 1 | 复制 | `copyRequestBody` | 主干会逐阶段改写 body，不能污染调用方的 Map |
+| 2 | 解析模型名 | `resolveModel` | 后续阶段都要用它查模型配置 |
+| 3 | 写协议字段 | `writeProtocolFields` | model（已剥前缀）与 stream 是「主干对上游的陈述」 |
+| 末 | 清 null | `removeNullFields` | **必须是最后一步**，理由见下 |
+
+**差异全在中间**，且差异的成因只有一个：**下游与上游是否同协议**。
 
 ```
-GenericOpenAiChatService / GenericResponsesChatService（下游上游同为 OpenAI 系）
-    ① resolveModel      剥 [provider-key] 前缀 → 上游真实模型名
-    ② 设 stream 标志
-    ③ 思考深度          ReasoningEffortSetting.applyTo / applyToResponses
-                        → reasoning_effort（Responses 侧写 reasoning.effort）
-    ④ 请求体规则        RequestBodyRuleEngine.transform
-                        按声明适用 CHAT / RESPONSES 的规则组执行
-    ⑤ null 清洗         removeIf(Objects::isNull)
+Chat（GenericOpenAiChatService / AbstractUpstreamChatService）
+    1 复制 → 2 解析模型名 → 3 写协议字段
+    4 思考深度      ReasoningEffortSetting.applyTo
+                    → reasoning_effort / thinking（off 档写 thinking:"disabled"）
+    5 协议特定步骤  customizeRequestBody —— 子类钩子，本线路是请求体规则
+    末 清 null
+    共 6 阶段
 
+Responses（GenericResponsesChatService）
+    1 复制 → 2 解析模型名 → 3 写协议字段
+    4 思考深度      ReasoningEffortSetting.applyToResponses → reasoning.effort
+    5 请求体规则    RequestBodyRuleEngine.transform（按 RESPONSES 筛组）
+    末 清 null
+    共 6 阶段
+    · 与 Chat 形状一致，只有阶段 4 的出站形态不同
 
-GenericAnthropicChatService（下游 CHAT + 上游 MESSAGES 时，体已被 C2M 翻译过）
-    ① resolveModel      剥前缀 + 设 stream
-    ② extractSystemPrompt   system 从 messages 提到顶层（Anthropic 不接受 OpenAI 形态）
-    ③ ensureMaxTokens       max_tokens 必填注入（缺失上游 400）
-    ④ 思考深度              ReasoningEffortSetting.applyToAnthropic
-                            → 顶层 output_config.effort
-    ⑤ 思考方式              AnthropicThinkingSetting.applyTo
-                            → thinking 对象（④ 写了 disabled 时跳过本步）
-    ⑥ 剥 reasoning_effort   兼容副本，必须在 ④⑤ 之后
-    ⑦ 请求体规则            transform，按 MESSAGES 筛组
-    ⑧ null 清洗
+Anthropic（GenericAnthropicChatService）—— 阶段最多
+    1 复制 → 2 解析模型名 → 3 写协议字段
+    4 协议归一化    extractSystemPrompt  system 从 messages 提到顶层
+                    ensureMaxTokens      max_tokens 必填注入（缺失上游 400）
+    5 思考两维      applyThinkingDimensions   深度先、方式后，off 档跳过方式
+    6 剥兼容副本    dropReasoningEffortAlias  必须在阶段 5 之后
+    7 请求体规则    transform（按 MESSAGES 筛组）
+    末 清 null
+    共 8 阶段
+    · 阶段 4/5/6 都是「下游说 Chat、上游说 Anthropic」留下的债
 ```
+
+**每个阶段的位置都有理由，两类位置约束最容易被破坏**：
+
+- **`removeNullFields` 必须在最后。** 规则可能把字段显式设为 null 表达「删掉它」
+  （「设置字段值」留空即置 null），先清洗后执行规则会让那个 null 原样出站；
+  且预览不做 null 剥离，运行时先清洗会让同一条 `exists` 条件「预览命中、线上不命中」。
+- **Anthropic 的阶段 5/6 顺序不可交换。** 见 §6 顺序陷阱。
 
 **Responses 侧刻意不做的两个注入**（字段名看起来天造地设，容易顺手接上）：
 不注入 `max_output_tokens`（该字段在 Responses 里是**可选**的，接上会给所有
@@ -199,29 +264,38 @@ buildWebClientWithHeaders(...)
 | ⑤ | 上游执行 | `resolveModel` | 剥前缀还原真实模型名 + 设 `stream` |
 | ⑥ | 上游执行 | `ReasoningEffortSetting` | 写思考深度（Anthropic 侧另写 `thinking`） |
 | ⑦ | 上游执行 | `RequestBodyRuleEngine.transform` | 供应商规则组改 / 删字段 |
-| ⑧ | 上游执行 | `removeIf(Objects::isNull)` | 清掉规则产生的 null |
+| ⑧ | 上游执行 | `removeNullFields` | 清掉规则产生的 null |
 | ⑧a | 上游执行 | `applyAuthenticationHeaders` | 探测 → 决定头名 → 删两个 → 注一个 |
 | ⑧b | 上游执行 | `applyHeaders` 规则层 | `{apiKey}` 占位、`/del/` 删除 |
 | ⑨ | 上游执行 | `WebClient.post().bodyValue()` | 在重试预算内发出 |
 
+> 序 ①–⑨ 是**跨层**的端到端顺序。上游执行层内部的 ⑤–⑧ 是 `prepareRequestBody`
+> 那根阶段序列的一部分，逐阶段名与位置见 §4.1 —— 那里列的是 <strong>8 个阶段的完整形态</strong>
+> （Anthropic 侧），本表只列跨线路共同的骨架。
+
 ## 6. 顺序陷阱
 
-这几处顺序是刻意的，改动时不要「顺手理顺」。
+这几处顺序是刻意的，改动时不要「顺手理顺」。阶段编号对应 §4.1 的序列。
 
-**null 清洗排在请求体规则之后。** 两件事都依赖它：规则的「设置字段值」留空即置 null，
-若先清洗后执行规则，那个 null 会原样出站，而部分上游对多余的 null 字段并不宽容；
-且编辑器预览直接作用于用户粘贴的请求体、不做 null 剥离，若运行时先清洗，
-同一条 `exists` 条件会「预览命中、线上不命中」—— 预览一旦会说谎，它的全部价值就没了。
+**`removeNullFields`（末阶段）排在请求体规则（阶段 5/7）之后。** 两件事都依赖它：
+规则的「设置字段值」留空即置 null，若先清洗后执行规则，那个 null 会原样出站，
+而部分上游对多余的 null 字段并不宽容；且编辑器预览直接作用于用户粘贴的请求体、
+不做 null 剥离，若运行时先清洗，同一条 `exists` 条件会「预览命中、线上不命中」
+—— 预览一旦会说谎，它的全部价值就没了。
 
-**Anthropic 侧剥 `reasoning_effort` 排在两个思考设置层之后。** C2M 翻译器把
+**Anthropic 侧剥 `reasoning_effort`（阶段 6）排在思考两维（阶段 5）之后。** C2M 翻译器把
 `reasoning_effort` 映射到 `output_config.effort` 后**刻意保留一份兼容副本**，
 供思考深度与思考方式两层判定「下游是否已表态」。提前剥会让兜底档把一个已表态的请求
 当成未表态，静默退化成覆写档。
 
-**思考深度与思考方式在 Anthropic 侧不可交换。** 深度先、方式后，且深度写了
+**思考深度与思考方式在 Anthropic 侧不可交换（同属阶段 5）。** 深度先、方式后，且深度写了
 `thinking: {"type":"disabled"}` 时**跳过方式**。先方式后深度会让深度兜底档把方式刚写的
 字段误认为「下游已表态」；不跳过方式则会把 `disabled` 改写成 `adaptive`，
 把用户配的「关闭思考」静默丢弃。
+
+**协议归一化（Anthropic 阶段 4）排在请求体规则（阶段 7）之前。** 规则的字段路径是照
+最终发往上游的形态写的（`system` 已提顶层、`max_tokens` 已补齐），若在归一化前执行，
+用户看到的预览与实际请求体结构不一致。
 
 **请求头规则在鉴权装配之后。** 规则层拥有最终决定权：需要双头并存的中转站可以把
 被删的头加回来，需要非 Bearer 形态的可以用 `{apiKey}` 占位改写。
