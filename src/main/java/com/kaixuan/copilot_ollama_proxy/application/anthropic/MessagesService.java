@@ -1,20 +1,14 @@
 package com.kaixuan.copilot_ollama_proxy.application.anthropic;
 
-import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelinePreamble;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipeline;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchDecision;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
-import com.kaixuan.copilot_ollama_proxy.application.shared.ProtocolNotifier;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -56,46 +50,16 @@ import java.util.Map;
 @Service
 public class MessagesService {
 
-    private static final Logger log = LoggerFactory.getLogger(MessagesService.class);
-
     /** 本服务服务的下游端点协议，固定不变。 */
     private static final WireProtocol DOWNSTREAM_PROTOCOL = WireProtocol.MESSAGES;
 
-    private final ProviderRouteResolver providerRouteResolver;
-    private final ProtocolDispatchManager protocolDispatchManager;
+    private final RequestPipeline requestPipeline;
     private final GenericAnthropicChatService anthropicChatService;
 
-    /**
-     * 调用生命周期事件通知器，由 Spring 可选注入。
-     *
-     * <p>用途单一：调度结论出来后把协议信息补给生命周期事件，供前端 Toast 显示路径标记。
-     * 可选注入（与 provider 层同一范式）—— 单元测试直接 new 本类时不关心这条链路，
-     * 缺省即不发。当前 M2C 方向尚未实现，标记会显示为「A→O」后再收 FAILED，
-     * 这恰好让人一眼看出是哪条线路缺实现。
-     */
-    private CallLifecycleNotifier lifecycleNotifier;
-
-    public MessagesService(ProviderRouteResolver providerRouteResolver,
-                           ProtocolDispatchManager protocolDispatchManager,
+    public MessagesService(RequestPipeline requestPipeline,
                            GenericAnthropicChatService anthropicChatService) {
-        this.providerRouteResolver = providerRouteResolver;
-        this.protocolDispatchManager = protocolDispatchManager;
+        this.requestPipeline = requestPipeline;
         this.anthropicChatService = anthropicChatService;
-    }
-
-    @Autowired(required = false)
-    public void setLifecycleNotifier(CallLifecycleNotifier lifecycleNotifier) {
-        this.lifecycleNotifier = lifecycleNotifier;
-    }
-
-    /**
-     * 把调度结论补进生命周期事件，供前端 Toast 渲染路径标记（如「A→O」）。
-     *
-     * <p>实现已收归 {@link ProtocolNotifier}，本方法只做绑定；完整理由见那个类。
-     */
-    private void notifyProtocols(String requestId, ProtocolDispatchDecision decision) {
-        ProtocolNotifier.notifyProtocols(log, lifecycleNotifier, requestId,
-                DOWNSTREAM_PROTOCOL, decision);
     }
 
     /**
@@ -113,17 +77,10 @@ public class MessagesService {
 
     private Mono<UpstreamEvent> dispatchMessages(Map<String, Object> request, String model,
                                                  HttpHeaders downstreamHeaders, String requestId) {
-        ResolvedProviderRoute route = providerRouteResolver.resolve(model);
-        if (route == null) {
-            // 类型化异常：路由在本地目录就没解析出来，上游从未被连接。
-            return Mono.error(new UnresolvedModelRouteException(model));
-        }
-        ProtocolDispatchDecision decision =
-                protocolDispatchManager.dispatch(DOWNSTREAM_PROTOCOL, route.provider());
-        // 调度结论出来了：补协议信息供前端 Toast 显示「A」或「A→O」路径标记。
-        // 刻意放在抛未实现异常之前 —— 那样失败 Toast 上仍能看到「A→O」，
-        // 一眼认出是这条跨协议线路缺实现，而不是某个笼统的上游错误。
-        notifyProtocols(requestId, decision);
+        // 主干前奏（路由解析 → 协议调度 → 补生命周期事件）；在 defer 内调用。
+        PipelinePreamble preamble = requestPipeline.run(model, DOWNSTREAM_PROTOCOL, requestId);
+        ResolvedProviderRoute route = preamble.route();
+        ProtocolDispatchDecision decision = preamble.decision();
         // TODO(待实现) M2C 请求翻译（去程）+ C2M 响应翻译（回程）。
         //  两者是同一条链的两半，缺一半这条路就不可用，因此不拆开计划。
         //  接线约束与流式难点见类注释，契约见
@@ -152,14 +109,10 @@ public class MessagesService {
 
     private Flux<UpstreamEvent> dispatchMessagesStream(Map<String, Object> request, String model,
                                                        HttpHeaders downstreamHeaders, String requestId) {
-        ResolvedProviderRoute route = providerRouteResolver.resolve(model);
-        if (route == null) {
-            return Flux.error(new UnresolvedModelRouteException(model));
-        }
-        ProtocolDispatchDecision decision =
-                protocolDispatchManager.dispatch(DOWNSTREAM_PROTOCOL, route.provider());
-        // 同非流式：结论出来即补，前端 Tag 不必等到上游响应。
-        notifyProtocols(requestId, decision);
+        // 主干前奏（同非流式）；在 defer 内调用。
+        PipelinePreamble preamble = requestPipeline.run(model, DOWNSTREAM_PROTOCOL, requestId);
+        ResolvedProviderRoute route = preamble.route();
+        ProtocolDispatchDecision decision = preamble.decision();
         // TODO(待实现) 同非流式的 M2C 请求 + C2M 响应。流式还多一层帧数不对等：
         //  合成 message_start / content_block_start 等源里不存在的结构，且顺序必须合法。
         if (decision.translationNeeded()) {

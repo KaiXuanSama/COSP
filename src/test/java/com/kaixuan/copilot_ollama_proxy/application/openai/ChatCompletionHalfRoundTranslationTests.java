@@ -6,6 +6,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineStep;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipeline;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ChatToMessagesRequestTranslator;
@@ -109,7 +110,8 @@ class ChatCompletionHalfRoundTranslationTests {
         TranslatorRegistry halfRoundRegistry = new TranslatorRegistry(
                 List.of(new ChatToMessagesRequestTranslator(objectMapper)),
                 List.of());
-        halfRoundService = new ChatCompletionService(routeResolver, dispatchManager,
+        halfRoundService = new ChatCompletionService(
+                new RequestPipeline(routeResolver, dispatchManager),
                 openAiChatService, anthropicChatService, halfRoundRegistry);
 
         // 供应商只勾 MESSAGES：下游 CHAT 打进来 → 调度判需要翻译、上游协议 MESSAGES。
@@ -225,7 +227,8 @@ class ChatCompletionHalfRoundTranslationTests {
         TranslatorRegistry fullRegistry = new TranslatorRegistry(
                 List.of(new ChatToMessagesRequestTranslator(objectMapper)),
                 List.of(new MessagesToChatResponseTranslator(objectMapper)));
-        ChatCompletionService fullyWired = new ChatCompletionService(routeResolver, dispatchManager,
+        ChatCompletionService fullyWired = new ChatCompletionService(
+                new RequestPipeline(routeResolver, dispatchManager),
                 openAiChatService, anthropicChatService, fullRegistry);
 
         given(anthropicChatService.messages(any(), any(), any(), any(), any(), any()))

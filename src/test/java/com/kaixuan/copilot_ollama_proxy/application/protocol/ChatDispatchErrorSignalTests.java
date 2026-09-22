@@ -5,6 +5,7 @@ import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineStep;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipeline;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.MessagesToChatResponseTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ChatToMessagesRequestTranslator;
@@ -90,13 +91,15 @@ class ChatDispatchErrorSignalTests {
         // 如何抵达下游」，mock 掉它就把被测行为一起 mock 掉了。
         // 用真实 TranslatorRegistry 收两个真实翻译器：查表命中/未命中的分派逻辑
         // 也是被测行为的一部分（C2M 去程命中、回程命中）。
-        chatCompletionService = new ChatCompletionService(routeResolver, dispatchManager,
+        chatCompletionService = new ChatCompletionService(
+                new RequestPipeline(routeResolver, dispatchManager),
                 openAiChatService, anthropicChatService,
                 new TranslatorRegistry(
                         List.of(new ChatToMessagesRequestTranslator(objectMapper)),
                         List.of(new MessagesToChatResponseTranslator(objectMapper))));
-        messagesService = new MessagesService(routeResolver, dispatchManager, anthropicChatService);
-        responsesService = new ResponsesService(routeResolver, dispatchManager, responsesChatService);
+        RequestPipeline pipeline = new RequestPipeline(routeResolver, dispatchManager);
+        messagesService = new MessagesService(pipeline, anthropicChatService);
+        responsesService = new ResponsesService(pipeline, responsesChatService);
     }
 
     @Nested

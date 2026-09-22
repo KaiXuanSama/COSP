@@ -1,7 +1,8 @@
 package com.kaixuan.copilot_ollama_proxy.application.openai;
 
-import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelinePreamble;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineStep;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipeline;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchDecision;
@@ -13,17 +14,13 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.RequestProtocolTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ResponseProtocolTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.TranslatorRegistry;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
-import com.kaixuan.copilot_ollama_proxy.application.shared.ProtocolNotifier;
 import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -59,58 +56,27 @@ public class ChatCompletionService {
     /** 本服务服务的下游端点协议，固定不变。 */
     private static final WireProtocol DOWNSTREAM_PROTOCOL = WireProtocol.CHAT;
 
-    private final ProviderRouteResolver providerRouteResolver;
-    private final ProtocolDispatchManager protocolDispatchManager;
+    private final RequestPipeline requestPipeline;
     private final GenericOpenAiChatService genericOpenAiChatService;
     private final GenericAnthropicChatService genericAnthropicChatService;
     private final TranslatorRegistry translatorRegistry;
 
     /**
-     * 调用生命周期事件通知器，由 Spring 可选注入。
-     *
-     * <p>用途单一：调度结论出来后把协议信息补给生命周期事件，供前端 Toast 显示路径标记。
-     * 可选注入（与 provider 层同一范式）—— 单元测试直接 new 本类时不关心这条链路，
-     * 缺省即不发。
-     */
-    private CallLifecycleNotifier lifecycleNotifier;
-
-    /**
      * 创建聊天补全应用服务。
      *
-     * @param providerRouteResolver 供应商模型路由解析器
-     * @param protocolDispatchManager 协议调度管理器
+     * @param requestPipeline 主干（前奏：路由解析 + 协议调度 + 补生命周期事件）
      * @param genericOpenAiChatService OpenAI 上游执行器
      * @param genericAnthropicChatService Anthropic 上游执行器
      * @param translatorRegistry 翻译器查表（去程 / 回程各自按方向命中）
      */
-    public ChatCompletionService(ProviderRouteResolver providerRouteResolver,
-                                 ProtocolDispatchManager protocolDispatchManager,
+    public ChatCompletionService(RequestPipeline requestPipeline,
                                  GenericOpenAiChatService genericOpenAiChatService,
                                  GenericAnthropicChatService genericAnthropicChatService,
                                  TranslatorRegistry translatorRegistry) {
-        this.providerRouteResolver = providerRouteResolver;
-        this.protocolDispatchManager = protocolDispatchManager;
+        this.requestPipeline = requestPipeline;
         this.genericOpenAiChatService = genericOpenAiChatService;
         this.genericAnthropicChatService = genericAnthropicChatService;
         this.translatorRegistry = translatorRegistry;
-    }
-
-    @Autowired(required = false)
-    public void setLifecycleNotifier(CallLifecycleNotifier lifecycleNotifier) {
-        this.lifecycleNotifier = lifecycleNotifier;
-    }
-
-    /**
-     * 把调度结论补进生命周期事件，供前端 Toast 渲染路径标记（如「O→A」）。
-     *
-     * <p>实现已收归 {@link ProtocolNotifier}（与另两个 Service 共用）——
-     * 本方法只负责把本类持有的下游协议常量与 logger 绑给它。
-     * 完整理由（为何必须在 dispatch 之后且早于网络等待、为何失败只记 debug
-     * 从不中断调用）见那个类的注释。
-     */
-    private void notifyProtocols(String requestId, ProtocolDispatchDecision decision) {
-        ProtocolNotifier.notifyProtocols(log, lifecycleNotifier, requestId,
-                DOWNSTREAM_PROTOCOL, decision);
     }
 
     /**
@@ -128,17 +94,13 @@ public class ChatCompletionService {
     }
 
     private Mono<UpstreamEvent> dispatchChatCompletion(Map<String, Object> openAiRequest, String model,
-                                                       HttpHeaders downstreamHeaders, String requestId) {        ResolvedProviderRoute route = providerRouteResolver.resolve(model);
-        if (route == null) {
-            // 类型化异常而非裸 RuntimeException：路由在本地目录就没解析出来，
-            // 上游从未被连接，控制器据此回 400 而不是「无法连接到上游服务」502。
-            return Mono.error(new UnresolvedModelRouteException(model));
-        }
-        ProtocolDispatchDecision decision =
-                protocolDispatchManager.dispatch(DOWNSTREAM_PROTOCOL, route.provider());
-        // 调度结论出来了：把下游/上游协议补进生命周期事件，前端 Toast 才能显示路径标记。
-        notifyProtocols(requestId, decision);
-        
+                                                       HttpHeaders downstreamHeaders, String requestId) {
+        // 主干前奏：路由解析 → 协议调度 → 补生命周期事件。
+        // 异常同步抛出，而本方法在 Mono.defer 内被调用，故自动成为 onError 信号。
+        PipelinePreamble preamble = requestPipeline.run(model, DOWNSTREAM_PROTOCOL, requestId);
+        ResolvedProviderRoute route = preamble.route();
+        ProtocolDispatchDecision decision = preamble.decision();
+
         // 同协议直连，原请求体不变。
         if (!decision.translationNeeded()) {
             // 直连：两侧同协议。上下文在此处显式构建 —— 与翻译路线同一形状，
@@ -251,15 +213,11 @@ public class ChatCompletionService {
 
     private Flux<UpstreamEvent> dispatchChatCompletionStream(Map<String, Object> openAiRequest, String model,
                                                              HttpHeaders downstreamHeaders, String requestId) {
-        ResolvedProviderRoute route = providerRouteResolver.resolve(model);
-        if (route == null) {
-            return Flux.error(new UnresolvedModelRouteException(model));
-        }
-        ProtocolDispatchDecision decision =
-                protocolDispatchManager.dispatch(DOWNSTREAM_PROTOCOL, route.provider());
-        // 同非流式：结论出来后立刻补协议信息，前端 Tag 不必等到上游响应。
-        notifyProtocols(requestId, decision);
-        
+        // 主干前奏（同非流式）。异常同步抛出，而本方法在 Flux.defer 内被调用。
+        PipelinePreamble preamble = requestPipeline.run(model, DOWNSTREAM_PROTOCOL, requestId);
+        ResolvedProviderRoute route = preamble.route();
+        ProtocolDispatchDecision decision = preamble.decision();
+
         // 同协议直连，原请求体不变。
         if (!decision.translationNeeded()) {
             // 同非流式：直连也要在组装期建上下文。

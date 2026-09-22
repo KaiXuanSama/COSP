@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipeline;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.TranslatorRegistry;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.DatabaseRuntimeProviderCatalog;
@@ -136,7 +137,7 @@ class ProviderRequestBodyTransformationIntegrationTests {
         // 本测试只关注 OpenAI 直连路径，不走翻译：Anthropic 上游用 null 占位，
         // 查表给一个空注册表（两个方向都查不到，但直连路径压根不查表）。
         ChatCompletionService chatCompletionService = new ChatCompletionService(
-                new ProviderRouteResolver(catalog), new ProtocolDispatchManager(),
+                new RequestPipeline(new ProviderRouteResolver(catalog), new ProtocolDispatchManager()),
                 genericChatService, null, new TranslatorRegistry(List.of(), List.of()));
 
         HttpHeaders downstreamHeaders = new HttpHeaders();
