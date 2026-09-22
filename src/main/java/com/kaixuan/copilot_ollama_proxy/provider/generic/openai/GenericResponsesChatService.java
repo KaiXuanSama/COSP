@@ -22,6 +22,9 @@ import com.kaixuan.copilot_ollama_proxy.provider.EmptyUpstreamResponseException;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEventClassifier;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutor;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.ContentDetectorRegistry;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.ContentDetectorStage;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.EmptyResponseGate;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamCallReporter;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamRetryPolicy;
 import org.slf4j.Logger;
@@ -41,11 +44,11 @@ import reactor.netty.http.client.HttpClient;
 import reactor.util.retry.Retry;
 
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -67,8 +70,9 @@ import java.util.function.Function;
  * </ul>
  * 三者的空响应取值路径、usage 提取、终态判定全部不同。
  *
- * <p><strong>空响应 gate 的语义三条线一致（都扣住）</strong>，见下方
- * {@code chatCompletionStream} 里的 gate 注释。曾经这里不扣帧、只记「是否见过载荷」，
+ * <p><strong>空响应 gate 的语义三条线一致（都扣住）</strong>，机制本身已收归
+ * {@link EmptyResponseGate}（阶段 3.6b）—— 扣住-释放的完整理由见那个类的类注释。
+ * 曾经这里不扣帧、只记「是否见过载荷」，
  * 理由是「客户端是事件状态机，扣住 {@code response.created} 会让它无法初始化」——
  * 该理由不成立：扣住是暂时的，开闸时整批按序释放，下游看到的是完整合法前缀。
  * 而不扣帧会导致重试时下游收到重复的 {@code response.created}、
@@ -79,8 +83,9 @@ import java.util.function.Function;
  * 抽出去只剩一个空壳加一堆钩子 —— 模板方法反而让实现者看不见自己正在依赖什么。
  * 这与 Anthropic 当初不继承 Chat 是同一个判断。
  *
- * <p>代价是接线顺序在三处各写一遍。这是<strong>有意接受</strong>的：接线顺序写出来
- * 带注释比藏在基类里更可审。<strong>抽取的触发信号是三侧出现口径差异</strong>
+ * <p>空响应拦截的<strong>机制</strong>现已共享（{@link EmptyResponseGate}），
+ * 但<strong>接线顺序在三处仍各写一遍</strong>。这是<strong>有意接受</strong>的：
+ * 接线顺序写出来带注释比藏在基类里更可审。<strong>抽取的触发信号是三侧出现口径差异</strong>
  * （那才说明有一侧被遗忘了），而不是「现在结构相似所以应该合并」。
  *
  * <h2>与另两侧共享的策略（不可各自为政）</h2>
@@ -118,6 +123,14 @@ public class GenericResponsesChatService implements UpstreamExecutor {
     private final ProviderRequestHeaderService providerRequestHeaderService;
     private final RequestBodyRuleEngine requestBodyRuleEngine;
 
+    /**
+     * 内容检测器的查表 —— 空响应拦截的判据来源（阶段 3.6b）。
+     *
+     * <p>放构造器而非可选 setter：本表未命中是<strong>报错</strong>而非跳过，
+     * 漏注入会让整条线路的空响应兼底直接失效。与另两个执行器同一取舍。
+     */
+    private final ContentDetectorRegistry contentDetectorRegistry;
+
     private ApiCallLogService apiCallLog;
     private ApiCallUsageService apiCallUsage;
     private CallLifecycleNotifier lifecycleNotifier;
@@ -129,10 +142,12 @@ public class GenericResponsesChatService implements UpstreamExecutor {
 
     public GenericResponsesChatService(ObjectMapper objectMapper,
                                        ProviderRequestHeaderService providerRequestHeaderService,
-                                       RequestBodyRuleEngine requestBodyRuleEngine) {
+                                       RequestBodyRuleEngine requestBodyRuleEngine,
+                                       ContentDetectorRegistry contentDetectorRegistry) {
         this.objectMapper = objectMapper;
         this.providerRequestHeaderService = providerRequestHeaderService;
         this.requestBodyRuleEngine = requestBodyRuleEngine;
+        this.contentDetectorRegistry = contentDetectorRegistry;
     }
 
     @Autowired(required = false)
@@ -232,7 +247,10 @@ public class GenericResponsesChatService implements UpstreamExecutor {
         log.info("{} Responses 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
-        boolean gateActive = ctx.shouldApplyEmptyResponseGate();
+        // 判定机制收归 EmptyResponseGate（阶段 3.6b），检测器按上游协议查表。
+        EmptyResponseGate<String> gate = new EmptyResponseGate<>(ctx.shouldApplyEmptyResponseGate());
+        EmptyResponseGate.CallContext callCtx = new EmptyResponseGate.CallContext(provider.providerKey(), model, requestId);
+        ContentDetectorStage detector = contentDetectorRegistry.require(ctx.upstreamProtocol());
 
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
@@ -277,35 +295,22 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                     }
                 })
                 // 空响应兜底：转成异常以复用下方同一条 retryWhen 的预算。
-                .flatMap(entity -> {
-                    String body = entity.getBody();
-                    if (!gateActive) {
-                        // 半轮实现态：响应是上游协议的形态，本端点的判据对它没有意义 ——
-                        // 跳过拦截，原样放行。开发者要的正是这批帧本身。
-                        log.debug("{} 空响应拦截已跳过（回程翻译未实现），原样放行上游响应 [{}] {}",
-                                providerKey, model, requestId);
-                        return Mono.just(entity);
-                    }
-                    if (ResponsesContentDetector.hasMeaningfulPayload(objectMapper, body)) {
-                        return Mono.just(entity);
-                    }
-                    log.warn("{} 上游空响应（无正文/思考链/工具调用），body 长度 {}，将按重试预算重发 [{}] {}",
-                            providerKey, body == null ? 0 : body.length(), model, requestId);
-                    return Mono.error(new EmptyUpstreamResponseException(
-                            body == null ? List.of() : List.of(body)));
-                })
+                // 判定机制收归 EmptyResponseGate（阶段 3.6b）—— 三条线路同源。
+                .flatMap(entity -> EmptyResponseGate
+                        .checkNonStream(entity.getBody(), gate.active(), detector, log, callCtx)
+                        .thenReturn(entity))
                 .retryWhen(buildRetrySpec("responses", provider, requestId, modelName, stream))
                 // 空 body 已在上面被判空转成异常，此处 getBody() 不会为 null。
                 .map(entity -> entity.getBody())
                 // 空响应重试耗尽：放行最后一轮的原始 body，保持「透传上游真实返回」语义。
+                // 解包与告警文案收归 EmptyResponseGate（机制共用），本处只负责「怎么放行」。
                 .onErrorResume(error -> {
-                    EmptyUpstreamResponseException emptyResponse = UpstreamRetryPolicy.findEmptyUpstreamException(error);
-                    if (emptyResponse == null) {
+                    Optional<List<String>> exhausted = EmptyResponseGate.exhaustedFrames(error);
+                    if (exhausted.isEmpty()) {
                         return Mono.error(error);
                     }
-                    List<String> frames = emptyResponse.bufferedFrames();
-                    log.warn("{} 上游空响应重试耗尽，放行最后一轮的响应体给下游 [{}] {}",
-                            providerKey, model, requestId);
+                    List<String> frames = exhausted.get();
+                    EmptyResponseGate.logExhaustedPassthrough(log, callCtx, frames.size());
                     return Mono.just(frames.isEmpty() ? "" : frames.get(0));
                 })
                 // 包装成统一形态：非流式在本形态下就是「恰有一个元素的流」。
@@ -319,14 +324,16 @@ public class GenericResponsesChatService implements UpstreamExecutor {
     /**
      * 发送一次流式 Responses 请求。
      *
-     * <h2>不设 gate 的缓存-释放机制，与 Anthropic 侧同一理由</h2>
-     * Chat 侧需要 gate 是因为要在「确认非空」之前扣住帧不下发，而 Responses 的事件流
-     * <strong>必须按序完整下发</strong> —— 下游客户端是状态机，扣住
-     * {@code response.created} 会让它无法初始化。
+     * <h2>空响应 gate 与另两条线同构（扣住-释放）</h2>
+     * 机制已收归 {@link EmptyResponseGate}（阶段 3.6b），三条线路共用一份实现 ——
+     * 本方法只提供扣住的元素类型与检测器（查表得来）。
      *
-     * <p>因此改为「边下发边记录是否见过实质载荷」，整轮结束后若一次都没见过就抛异常触发重试。
-     * 代价是空响应那一轮的事件已经流到下游了；但那正是耗尽后本来也要做的事
-     * （透传上游真实返回），而重发的新一轮会追加在后面。
+     * <p>曾经这里<strong>不扣帧</strong>、只记「是否见过实质载荷」，理由是
+     * 「下游客户端是事件状态机，扣住 {@code response.created} 会让它无法初始化」。
+     * 该理由<strong>不成立</strong>：扣住是暂时的，开闸时整批按序释放，
+     * 下游看到的是一个完整合法前缀，只是晚了一点（那段时间由心跳保活）。
+     * 而不扣帧会导致重试时下游收到重复的 {@code response.created}，
+     * 以及耗尽时把已流走的事件再放行一遍。
      *
      * <h2>手动（静默）重试已接入</h2>
      * {@code CallRetryRegistry} + {@code takeUntilOther}，与另两侧同构。
@@ -346,7 +353,11 @@ public class GenericResponsesChatService implements UpstreamExecutor {
         log.info("{} Responses 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
-        boolean gateActive = ctx.shouldApplyEmptyResponseGate();
+        // 机制收归 EmptyResponseGate（阶段 3.6b）：闸门状态与缓存帧都在它那里，
+        // 本类只负责每轮 defer 内调 reset()。
+        EmptyResponseGate<String> gate = new EmptyResponseGate<>(ctx.shouldApplyEmptyResponseGate());
+        EmptyResponseGate.CallContext callCtx = new EmptyResponseGate.CallContext(provider.providerKey(), model, requestId);
+        ContentDetectorStage detector = contentDetectorRegistry.require(ctx.upstreamProtocol());
 
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
@@ -360,17 +371,6 @@ public class GenericResponsesChatService implements UpstreamExecutor {
         // Responses 的 usage 只在终态事件里出现一次、一次给全。仍用「最后一份非 null」
         // 而非「第一份」—— 若某个上游在中途也带 usage，终态那份才是结算值。
         AtomicReference<String> usageRaw = new AtomicReference<>(null);
-        // 空响应 gate 的两个状态，每轮往返在起点重置：
-        // gateOpen —— 闸门是否<strong>已开</strong>（开了就逐事件直接放行，不再扣住）。
-        // heldFrames —— 开闸前被拦下的事件，开闸时整批按到达顺序放行；轮末仍未开闸则随异常带出。
-        //
-        // ⚠️ 初始值取 {@code !gateActive} 而不是 {@code gateActive} —— 两者是<strong>相反</strong>的概念：
-        //   gateActive：拦截机制<em>要不要生效</em>（生效时就是要扣住事件）
-        //   gateOpen  ：闸门<em>当前是不是开的</em>（开着就不再扣）
-        // 拦截被跳过时（半轮实现态，见 RequestPipelineContext.shouldApplyEmptyResponseGate）
-        // 闸门直接置为常开：每事件原路放行、轮末也不会抛空响应异常。
-        AtomicBoolean gateOpen = new AtomicBoolean(!gateActive);
-        List<String> heldFrames = new CopyOnWriteArrayList<>();
         // 空响应耗尽放行标记：该轮已在 doOnError 落过库，收尾处据此跳过，避免重复记录。
         AtomicBoolean emptyResponsePassthrough = new AtomicBoolean(false);
 
@@ -382,11 +382,8 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                     logChunks.clear();
                     ttfbMs.set(-1);
                     usageRaw.set(null);
-                    // 重置为「本轮拦截是否生效」而不是硬编码 false ——
-                    // 拦截被跳过时（半轮实现态）每轮闸门都必须常开，否则第二轮又会走回判空重试。
-                    // 注意取反：gateActive 是「拦截要生效」，而闸门开着意味着「不再扣帧」。
-                    gateOpen.set(!gateActive);
-                    heldFrames.clear();
+                    // 闸门状态同理每轮重置（机制在 EmptyResponseGate 里，理由见它自己的注释）。
+                    gate.reset();
                     return buildWebClient(reqHeaders, provider, downstreamHeaders, stream)
                             .post().uri(responsesUri()).bodyValue(requestBody)
                             .exchangeToFlux(response -> {
@@ -430,55 +427,19 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                     logChunks.add(data);
                 })
                 // ── 空响应 gate ──────────────────────────────────────────────
-                // 挂在 retryWhen <strong>内侧</strong>，因此每轮重订阅各自独立判定。
-                // 开闸前逐事件缓存不下发；一旦出现实质载荷（正文/思考链/工具调用）立即整批释放，
-                // 之后当轮不再拦截。
-                //
-                // 为何必须扣住而不是「边下发边记标记」：扣住才保证「未见载荷」等价于
-                // 「下游什么都没收到」。否则会出两个问题 ——
-                //   1) 重试时下游收到重复的开场事件（第 1 轮的 response.created + 第 2 轮的），
-                //      而 Responses 协议里 response.created 每个响应只有一次，
-                //      客户端是事件状态机，会被搞乱；
-                //   2) 空响应耗尽时会把已经流走的事件再放行一遍。
-                //
-                // 扣住不会破坏客户端状态机：开闸时按到达顺序整批释放，下游看到的是一个
-                // 完整合法的前缀，只是晚了一点。代价是首载荷到达前看不到任何事件，
-                // 那段时间由心跳保活（与 Chat 线路一致）。
-                .concatMap(data -> {
-                    if (gateOpen.get()) {
-                        return Flux.just(data);
-                    }
-                    if (ResponsesContentDetector.eventHasPayload(objectMapper, data)) {
-                        gateOpen.set(true);
-                        // 整批释放：缓存事件按到达顺序在前，当前事件在后，下游看到的顺序与上游一致。
-                        List<String> released = new ArrayList<>(heldFrames);
-                        heldFrames.clear();
-                        released.add(data);
-                        return Flux.fromIterable(released);
-                    }
-                    heldFrames.add(data);
-                    return Flux.empty();
-                })
-                // 轮末综合判定：整轮从未开闸即为空响应。
-                // 放在 concatWith 而非 doFinally —— 只有前者能把错误信号注入流中。
-                // 此处也覆盖「0 事件」的情形：一个事件都没来，gate 自然没开。
-                .concatWith(Flux.defer(() -> {
-                    if (gateOpen.get()) {
-                        return Flux.<String>empty();
-                    }
-                    log.warn("{} 上游空响应（无正文/思考链/工具调用），事件数 {}，将按重试预算重发 [{}] {}",
-                            providerKey, heldFrames.size(), model, requestId);
-                    // 带出的是被扣下的事件（从未下发），因此耗尽时放行一次即为正确。
-                    return Flux.error(new EmptyUpstreamResponseException(List.copyOf(heldFrames)));
-                }))
+                // 机制收归 EmptyResponseGate（阶段 3.6b）：扣住 / 整批释放 / 轮末判空
+                // 三条线路共用一份实现，本类只提供检测器（查表得来）。
+                // 挂在 retryWhen 内侧，因此每轮重订阅各自独立判定；闸门状态已在上面的 defer 内 reset。
+                // 完整理由（为何必须扣住、为何不会破坏客户端状态机）见那个类的类注释。
+                .transform(flux -> gate.gate(flux, Function.identity(), detector, log, callCtx))
                 // 网络类失败往返：错误响应已在 exchangeToFlux 分支落库，
                 // 此处用 findWebResponseException == null 排除以免重复。
                 .doOnError(e -> {
-                    EmptyUpstreamResponseException emptyResponse = UpstreamRetryPolicy.findEmptyUpstreamException(e);
-                    if (emptyResponse != null) {
+                    Optional<List<String>> exhausted = EmptyResponseGate.exhaustedFrames(e);
+                    if (exhausted.isPresent()) {
                         saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
                                 capturedRespHeaders.get(), capturedStatusCode.get(),
-                                emptyResponse.bufferedFrames(), attemptStart.get(), ctx);
+                                exhausted.get(), attemptStart.get(), ctx);
                         publishCallRecorded();
                         return;
                     }
@@ -492,15 +453,16 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                 })
                 .retryWhen(buildRetrySpec("responsesStream", provider, requestId, model, stream))
                 // 空响应耗尽：放行最后一轮的事件，与其他失败「耗尽后透传最后一次响应」一致。
+                // 解包与告警文案收归 EmptyResponseGate（机制共用），本处只负责「怎么放行」。
                 .onErrorResume(error -> {
-                    EmptyUpstreamResponseException emptyResponse = UpstreamRetryPolicy.findEmptyUpstreamException(error);
-                    if (emptyResponse == null) {
+                    Optional<List<String>> exhausted = EmptyResponseGate.exhaustedFrames(error);
+                    if (exhausted.isEmpty()) {
                         return Flux.error(error);
                     }
-                    log.warn("{} 上游空响应重试耗尽，放行最后一轮的 {} 个事件给下游 [{}] {}",
-                            providerKey, emptyResponse.bufferedFrames().size(), model, requestId);
+                    List<String> frames = exhausted.get();
+                    EmptyResponseGate.logExhaustedPassthrough(log, callCtx, frames.size());
                     emptyResponsePassthrough.set(true);
-                    return Flux.fromIterable(emptyResponse.bufferedFrames());
+                    return Flux.fromIterable(frames);
                 });
 
         // 静默重试循环：与另两侧同构。把重试信号挂到整轮尝试（含 retryWhen 的 backoff 等待）上，

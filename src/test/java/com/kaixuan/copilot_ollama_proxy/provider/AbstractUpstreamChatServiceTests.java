@@ -11,6 +11,8 @@ import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.ContentDetectorRegistry;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.ContentDetectorStage;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.UpstreamChunkNormalizer;
 import org.junit.jupiter.api.Test;import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -1249,6 +1251,74 @@ class AbstractUpstreamChatServiceTests {
     }
 
     /**
+     * 主干<strong>真的查了表</strong> —— 把判据换成一个恒判空的检测器，同一请求必须开始重试。
+     *
+     * <h2>为何「注册表字段非空」不够（3.6b 新增）</h2>
+     * {@code ContentDetectorSpringWiringTests} 能证明执行器<strong>持有</strong>注册表，
+     * 但证明不了主干<strong>用了</strong>它：字段挂在那里、判定却仍走静态工具，
+     * 那样装配类测试照样全绿。本条从行为侧把这个方向钉死 ——
+     * 只要判据来自查表，换掉表里的实现就<strong>必然</strong>改变重试次数。
+     *
+     * <h2>对照关系</h2>
+     * 与 {@link #directConnectionKeepsGatingUntouched} 只差<strong>注册表内容</strong>：
+     * 那条用真实 CHAT 检测器，上游回的 {@code choices[].delta} 判非空 → 调用数 1、不重试；
+     * 本条用恒判空替身，<strong>同一份上游载荷</strong>被判空 → 吃掉重试预算。
+     *
+     * <p>若主干改回直调静态工具，恒判空替身就不会被看见，调用数会掉回 1 而失败。
+     */
+    @Test
+    void gateConsultsTheRegistryInsteadOfTheStaticTools() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService(alwaysEmptyChatDetectorRegistry());
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            upstreamCallCount.incrementAndGet();
+            // 形态正确、载荷真实 —— 真实检测器判非空，恒判空替身判空，这就是对照点。
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(Flux.just(
+                            sseData(factory, "{\"id\":\"c\",\"object\":\"chat.completion.chunk\","
+                                    + "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}"),
+                            sseData(factory, "[DONE]")))
+                    .build());
+        }));
+
+        RequestPipelineContext direct = PipelineContexts.direct(newRequest(), provider(), WireProtocol.CHAT, true);
+
+        List<String> received = service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-registry-lookup", direct)
+                .collectList().block(Duration.ofSeconds(20));
+
+        assertThat(upstreamCallCount.get())
+                .as("判据若仍来自静态工具，这份载荷不会被判空，调用数会是 1 —— 那说明查表是摆设")
+                .isGreaterThan(1);
+        assertThat(received)
+                .as("耗尽后仍须放行最后一轮，不能把内容吞掉")
+                .isNotEmpty();
+    }
+
+    /** 恒判空的 CHAT 检测器 —— 只为把「判据来源」暴露成可观测差异。 */
+    private static ContentDetectorRegistry alwaysEmptyChatDetectorRegistry() {
+        return new ContentDetectorRegistry(List.of(new ContentDetectorStage() {
+            @Override
+            public WireProtocol protocol() {
+                return WireProtocol.CHAT;
+            }
+
+            @Override
+            public boolean hasMeaningfulPayload(String fullBody) {
+                return false;
+            }
+
+            @Override
+            public boolean eventHasPayload(String eventData) {
+                return false;
+            }
+        }));
+    }
+
+    /**
      * 不覆盖退避时长的测试子类 —— 仅用于读取生产默认值。
      *
      * 其他用例用的 {@code TestOpenAiService} 覆盖了退避为毫秒级，无法验证生产时长。
@@ -1257,7 +1327,8 @@ class AbstractUpstreamChatServiceTests {
 
         private ProductionBackoffService() {
             super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
-                    PipelineContexts.registryWithChatChunkStages(new ObjectMapper()));
+                    PipelineContexts.registryWithChatChunkStages(new ObjectMapper()),
+                    PipelineContexts.contentDetectorRegistry(new ObjectMapper()));
         }
 
         private Duration exposeRetryFirstBackoff() {
@@ -1305,7 +1376,19 @@ class AbstractUpstreamChatServiceTests {
 
         private TestOpenAiService() {
             super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
-                    PipelineContexts.registryWithChatChunkStages(new ObjectMapper()));
+                    PipelineContexts.registryWithChatChunkStages(new ObjectMapper()),
+                    PipelineContexts.contentDetectorRegistry(new ObjectMapper()));
+        }
+
+        /**
+         * 换掉检测器注册表的构造 —— 用于证明主干<strong>真的查了表</strong>。
+         *
+         * <p>其余装配照旧，只替换「判据来源」这一处，使差异可归因。
+         */
+        private TestOpenAiService(ContentDetectorRegistry detectorRegistry) {
+            super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
+                    PipelineContexts.registryWithChatChunkStages(new ObjectMapper()),
+                    detectorRegistry);
         }
 
         private Map<String, Object> exposePrepareRequestBody(Map<String, Object> request, boolean stream,
@@ -1443,7 +1526,8 @@ class AbstractUpstreamChatServiceTests {
 
         private NullAssigningService() {
             super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
-                    PipelineContexts.registryWithChatChunkStages(new ObjectMapper()));
+                    PipelineContexts.registryWithChatChunkStages(new ObjectMapper()),
+                    PipelineContexts.contentDetectorRegistry(new ObjectMapper()));
         }
 
         private Map<String, Object> exposePrepareRequestBody(Map<String, Object> request, boolean stream,

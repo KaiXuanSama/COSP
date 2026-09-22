@@ -120,7 +120,8 @@ class ProviderRequestBodyTransformationIntegrationTests {
         GenericOpenAiChatService genericChatService = new GenericOpenAiChatService(
                 objectMapper, new ProviderRequestHeaderService(objectMapper),
                 new RequestBodyRuleEngine(objectMapper),
-                PipelineContexts.registryWithChatChunkStages(objectMapper));
+                PipelineContexts.registryWithChatChunkStages(objectMapper),
+                PipelineContexts.contentDetectorRegistry(objectMapper));
         genericChatService.setWebClientBuilder(WebClient.builder());
         AtomicReference<Map<String, String>> loggedRequestHeaders = new AtomicReference<>();
         ApiCallLogService callLogService = mock(ApiCallLogService.class);

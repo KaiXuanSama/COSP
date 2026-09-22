@@ -11,6 +11,7 @@ import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutor;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.ChunkStageRegistry;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.ContentDetectorRegistry;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -33,8 +34,9 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService implem
     public GenericOpenAiChatService(ObjectMapper objectMapper,
                                     ProviderRequestHeaderService providerRequestHeaderService,
                                     RequestBodyRuleEngine requestBodyRuleEngine,
-                                    ChunkStageRegistry chunkStageRegistry) {
-        super(objectMapper, providerRequestHeaderService, chunkStageRegistry);
+                                    ChunkStageRegistry chunkStageRegistry,
+                                    ContentDetectorRegistry contentDetectorRegistry) {
+        super(objectMapper, providerRequestHeaderService, chunkStageRegistry, contentDetectorRegistry);
         this.requestBodyRuleEngine = requestBodyRuleEngine;
     }
 

@@ -78,7 +78,8 @@ class GenericOpenAiChatServiceRequestBodyRulesTests {
         private TestGenericOpenAiChatService(ProviderRuntimeConfiguration configuration) {
             super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
                     new RequestBodyRuleEngine(new ObjectMapper()),
-                    PipelineContexts.registryWithChatChunkStages(new ObjectMapper()));
+                    PipelineContexts.registryWithChatChunkStages(new ObjectMapper()),
+                    PipelineContexts.contentDetectorRegistry(new ObjectMapper()));
             this.configuration = configuration;
         }
 

@@ -8,12 +8,16 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfi
 import com.kaixuan.copilot_ollama_proxy.provider.stage.ChunkStageRegistry;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutor;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutorRegistry;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.ContentDetectorRegistry;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.RequestBodyStageRegistry;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.chat.ChatChunkNormalizeStage;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.chat.ChatContentDetectorStage;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.chat.ChatReasoningFallbackStage;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.messages.MessagesContentDetectorStage;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.messages.MessagesMaxTokensStage;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.messages.MessagesSystemPromptStage;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.messages.MessagesThinkingStage;
+import com.kaixuan.copilot_ollama_proxy.provider.stage.responses.ResponsesContentDetectorStage;
 import org.springframework.http.HttpHeaders;
 
 import java.util.LinkedHashMap;
@@ -158,5 +162,23 @@ public final class PipelineContexts {
      */
     public static UpstreamExecutorRegistry executorRegistry(UpstreamExecutor... executors) {
         return new UpstreamExecutorRegistry(List.of(executors));
+    }
+
+    /**
+     * 拼一个含三个协议检测器的注册表 —— 供直接 {@code new} 执行器的测试使用。
+     *
+     * <p>理由同 {@link #registryWithChatChunkStages}：不走 Spring 的测试拿不到集合注入。
+     * 三个都要给：检测器表的<strong>未命中是报错</strong>（不是跳过），
+     * 缺一个会让那条线路在构造期就抛 {@code IllegalStateException}。
+     *
+     * <p>拼的是真实实现而非替身 —— 替身会让这些测试验的东西与生产不同。
+     *
+     * @param objectMapper 传给需要它的检测器实现
+     */
+    public static ContentDetectorRegistry contentDetectorRegistry(ObjectMapper objectMapper) {
+        return new ContentDetectorRegistry(List.of(
+                new ChatContentDetectorStage(objectMapper),
+                new MessagesContentDetectorStage(objectMapper),
+                new ResponsesContentDetectorStage(objectMapper)));
     }
 }

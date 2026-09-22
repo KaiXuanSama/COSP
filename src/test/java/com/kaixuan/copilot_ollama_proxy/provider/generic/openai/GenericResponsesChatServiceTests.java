@@ -936,7 +936,8 @@ class GenericResponsesChatServiceTests {
 
         private TestService() {
             super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
-                    new RequestBodyRuleEngine(new ObjectMapper()));
+                    new RequestBodyRuleEngine(new ObjectMapper()),
+                    PipelineContexts.contentDetectorRegistry(new ObjectMapper()));
         }
 
         private Mono<String> exposeResponses(Map<String, Object> request, ResolvedProviderRoute route) {

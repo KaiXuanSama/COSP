@@ -209,7 +209,8 @@ class UpstreamExecutorTests {
                 new RequestBodyRuleEngine(objectMapper),
                 new ChunkStageRegistry(
                         List.of(new ChatChunkNormalizeStage(objectMapper)),
-                        List.of(new ChatReasoningFallbackStage(objectMapper))));
+                        List.of(new ChatReasoningFallbackStage(objectMapper))),
+                PipelineContexts.contentDetectorRegistry(objectMapper));
         service.setRetryPolicyService(fixedRetryPolicy(0));
         return service;
     }
@@ -218,7 +219,8 @@ class UpstreamExecutorTests {
         GenericAnthropicChatService service = new GenericAnthropicChatService(objectMapper,
                 new ProviderRequestHeaderService(objectMapper),
                 new RequestBodyRuleEngine(objectMapper),
-                PipelineContexts.registryWithMessagesStages(objectMapper));
+                PipelineContexts.registryWithMessagesStages(objectMapper),
+                PipelineContexts.contentDetectorRegistry(objectMapper));
         service.setRetryPolicyService(fixedRetryPolicy(0));
         return service;
     }
@@ -226,7 +228,8 @@ class UpstreamExecutorTests {
     private GenericResponsesChatService responsesService() {
         GenericResponsesChatService service = new GenericResponsesChatService(objectMapper,
                 new ProviderRequestHeaderService(objectMapper),
-                new RequestBodyRuleEngine(objectMapper));
+                new RequestBodyRuleEngine(objectMapper),
+                PipelineContexts.contentDetectorRegistry(objectMapper));
         service.setRetryPolicyService(fixedRetryPolicy(0));
         return service;
     }
