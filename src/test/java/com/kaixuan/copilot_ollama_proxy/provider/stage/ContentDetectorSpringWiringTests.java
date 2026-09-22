@@ -21,12 +21,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 内容检测器支线的<strong>装配验证</strong>（阶段 3.6a）。
+ * 内容检测器支线的<strong>装配验证</strong>（阶段 3.6a）与<strong>接线验证</strong>（阶段 3.6b）。
  *
  * <h2>为何必须单独验</h2>
  * 与 {@code RequestBodyStageSpringWiringTests} / {@code ChatStageSpringWiringTests} 同一处境：
- * 支线在本步<strong>尚未接线</strong>（调用点仍在直接调静态工具），因此
- * 「新类型存在且被 Spring 收集」是唯一能验的东西 —— 行为与接线前逐字相同。
+ * 支线断了<strong>不会响</strong> —— 查不到检测器时「空响应判定失效」而功能看起来正常。
+ *
+ * <p>3.6a 只让支线成形（调用点仍在直调静态工具），那时能验的只有「新类型存在且被 Spring 收集」。
+ * 3.6b 把判定机制收归 {@code EmptyResponseGate} 之后接上了线，于是本类又多了两件可验的事：
+ * 「三个执行器都持有查表入口」与「主干确实用了它」（见类尾那两条）。
  *
  * <p>而它与另两个注册表有一处<strong>关键不同</strong>：本表的未命中是
  * <strong>报错</strong>而非跳过。因此「三个协议都注册齐」不是锦上添花，

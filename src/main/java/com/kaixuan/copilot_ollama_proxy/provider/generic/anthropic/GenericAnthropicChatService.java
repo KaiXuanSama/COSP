@@ -885,7 +885,8 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
      * <p><strong>下游协议的家是 ctx，不是参数</strong>：它曾由一个
      * {@code DownstreamLogView} 参数携带，而那个字段与 {@code ctx.downstreamProtocol()}
      * 在所有调用点<strong>恒等</strong>。两个家意味着两处可能不一致，因此它已被删除
-     * （3.3d-3，{@code docs/KNOWN_DEBT.md} 第十二条）。
+     * （3.3d-3 的 E 方案）。判断依据写在这里而非别处：删除的理由是「两个家会漂」，
+     * 不是「这里有点问题」—— 若将来有人想再加一个「日志视图」参数，先把那条恒等式推翻。
      */
     private Long saveNonStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders,
                                   Map<String, Object> requestBody, Map<String, String> respHeaders,
