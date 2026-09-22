@@ -47,7 +47,7 @@ public final class PipelineContexts {
     public static RequestPipelineContext direct(Map<String, Object> body,
                                                 ProviderRuntimeConfiguration provider,
                                                 WireProtocol protocol) {
-        return RequestPipelineContext.of(copyOf(body), protocol, protocol,
+        return RequestPipelineContext.of(copyOf(body), modelOf(body), protocol, protocol,
                 provider, HttpHeaders.EMPTY, null, null);
     }
 
@@ -55,7 +55,7 @@ public final class PipelineContexts {
     public static RequestPipelineContext halfRound(Map<String, Object> body,
                                                   ProviderRuntimeConfiguration provider,
                                                   WireProtocol downstream, WireProtocol upstream) {
-        RequestPipelineContext ctx = RequestPipelineContext.of(copyOf(body), downstream, upstream,
+        RequestPipelineContext ctx = RequestPipelineContext.of(copyOf(body), modelOf(body), downstream, upstream,
                 provider, HttpHeaders.EMPTY, null, null);
         ctx.markCompleted(PipelineStep.REQUEST_TRANSLATION);
         return ctx;
@@ -65,11 +65,23 @@ public final class PipelineContexts {
     public static RequestPipelineContext fullyTranslated(Map<String, Object> body,
                                                         ProviderRuntimeConfiguration provider,
                                                         WireProtocol downstream, WireProtocol upstream) {
-        RequestPipelineContext ctx = RequestPipelineContext.of(copyOf(body), downstream, upstream,
+        RequestPipelineContext ctx = RequestPipelineContext.of(copyOf(body), modelOf(body), downstream, upstream,
                 provider, HttpHeaders.EMPTY, null, null);
         ctx.markCompleted(PipelineStep.REQUEST_TRANSLATION);
         ctx.markCompleted(PipelineStep.RESPONSE_TRANSLATION);
         return ctx;
+    }
+
+    /**
+     * 从请求体里取模型名 —— 与生产路径一致（控制器把下游传来的 model 写进 body）。
+     *
+     * <p>测试构造的请求体未必带 {@code model}（如 Anthropic 侧只有 {@code messages}），
+     * 那时回退到占位名。执行器入口用 {@code ctx.model()}，而本辅助类只服务那些
+     * <strong>不关心 model</strong> 的用例（它们验的是重试/拦截/落库），故占位名足够。
+     */
+    private static String modelOf(Map<String, Object> body) {
+        Object model = body.get("model");
+        return model instanceof String value && !value.isBlank() ? value : "test-model";
     }
 
     /**

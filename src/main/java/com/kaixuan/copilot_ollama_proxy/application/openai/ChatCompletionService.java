@@ -105,7 +105,7 @@ public class ChatCompletionService {
         if (!decision.translationNeeded()) {
             // 直连：两侧同协议。上下文在此处显式构建 —— 与翻译路线同一形状，
             // 因为执行器只有一个入口（3.3b-2 已退役不带 ctx 的旧重载）。
-            RequestPipelineContext ctx = RequestPipelineContext.direct(openAiRequest, DOWNSTREAM_PROTOCOL,
+            RequestPipelineContext ctx = RequestPipelineContext.direct(openAiRequest, route.model(), DOWNSTREAM_PROTOCOL,
                     route.provider(), downstreamHeaders, requestId, null);
             return genericOpenAiChatService.chatCompletion(openAiRequest, route, downstreamHeaders, requestId, ctx);
         }
@@ -180,7 +180,7 @@ public class ChatCompletionService {
                                                      WireProtocol upstreamProtocol,
                                                      ResolvedProviderRoute route,
                                                      HttpHeaders downstreamHeaders, String requestId) {
-        return RequestPipelineContext.of(translated.body(), DOWNSTREAM_PROTOCOL, upstreamProtocol,
+        return RequestPipelineContext.of(translated.body(), route.model(), DOWNSTREAM_PROTOCOL, upstreamProtocol,
                 route.provider(), downstreamHeaders, requestId, translated.context());
     }
 
@@ -221,7 +221,7 @@ public class ChatCompletionService {
         // 同协议直连，原请求体不变。
         if (!decision.translationNeeded()) {
             // 同非流式：直连也要在组装期建上下文。
-            RequestPipelineContext ctx = RequestPipelineContext.direct(openAiRequest, DOWNSTREAM_PROTOCOL,
+            RequestPipelineContext ctx = RequestPipelineContext.direct(openAiRequest, route.model(), DOWNSTREAM_PROTOCOL,
                     route.provider(), downstreamHeaders, requestId, null);
             return genericOpenAiChatService.chatCompletionStream(openAiRequest, route, downstreamHeaders, requestId, ctx);
         }

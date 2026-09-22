@@ -76,6 +76,17 @@ public final class RequestPipelineContext {
      */
     private WireProtocol bodyProtocol;
 
+    /**
+     * 本次调用用于上游请求的模型名。
+     *
+     * <p>它是执行器入口需要的那个值（旧签名里的 {@code route.model()}，已剥供应商前缀）。
+     * 写入时机随阶段推进：当前（3.4d-1）由创建方在组装期直接写入；
+     * 等 3.4d-2 把 ctx 创建上移到端点后，改为**端点写请求模型名、主干解析后回填目标模型名**
+     * （见 plan_ Step 3.4 「Q1 a-1」），届时本字段随 {@code provider} / {@code upstreamProtocol}
+     * 一起改为可变。
+     */
+    private final String model;
+
     /** 下游使用的协议（由它打的端点决定）。 */
     private final WireProtocol downstreamProtocol;
 
@@ -107,11 +118,12 @@ public final class RequestPipelineContext {
      */
     private final Set<PipelineStep> completedSteps = EnumSet.noneOf(PipelineStep.class);
 
-    private RequestPipelineContext(Map<String, Object> body, WireProtocol downstreamProtocol,
+    private RequestPipelineContext(Map<String, Object> body, String model, WireProtocol downstreamProtocol,
                                    WireProtocol upstreamProtocol, ProviderRuntimeConfiguration provider,
                                    HttpHeaders downstreamHeaders, String requestId,
                                    TranslationContext translationContext) {
         this.body = body;
+        this.model = model;
         this.downstreamProtocol = downstreamProtocol;
         this.upstreamProtocol = upstreamProtocol;
         this.provider = provider;
@@ -130,18 +142,20 @@ public final class RequestPipelineContext {
      * 因为本类的大多数字段正是那两个结论的产物。
      *
      * @param body               原始请求体（尚未经过任何阶段改写）
+     * @param model              本次调用用于上游请求的模型名
      * @param downstreamProtocol 下游协议
      * @param upstreamProtocol   上游协议
      * @param translationContext 去程翻译产出的上下文；直连传 null
      */
     public static RequestPipelineContext of(Map<String, Object> body,
+                                            String model,
                                             WireProtocol downstreamProtocol,
                                             WireProtocol upstreamProtocol,
                                             ProviderRuntimeConfiguration provider,
                                             HttpHeaders downstreamHeaders,
                                             String requestId,
                                             TranslationContext translationContext) {
-        return new RequestPipelineContext(body, downstreamProtocol, upstreamProtocol, provider,
+        return new RequestPipelineContext(body, model, downstreamProtocol, upstreamProtocol, provider,
                 downstreamHeaders, requestId, translationContext);
     }
 
@@ -157,22 +171,29 @@ public final class RequestPipelineContext {
      * 但两者性质不同 —— 那个是「没有 ctx 时凑一个」，本方法供**组装层显式调用**。
      *
      * @param body             原始请求体
+     * @param model            本次调用用于上游请求的模型名
      * @param protocol         两侧共用的协议
      * @param translationContext 直连没有去程翻译，通常传 null
      */
     public static RequestPipelineContext direct(Map<String, Object> body,
+                                                String model,
                                                 WireProtocol protocol,
                                                 ProviderRuntimeConfiguration provider,
                                                 HttpHeaders downstreamHeaders,
                                                 String requestId,
                                                 TranslationContext translationContext) {
-        return new RequestPipelineContext(body, protocol, protocol, provider,
+        return new RequestPipelineContext(body, model, protocol, protocol, provider,
                 downstreamHeaders, requestId, translationContext);
     }
 
     /** 当前请求体。 */
     public Map<String, Object> body() {
         return body;
+    }
+
+    /** 本次调用用于上游请求的模型名。 */
+    public String model() {
+        return model;
     }
 
     /**

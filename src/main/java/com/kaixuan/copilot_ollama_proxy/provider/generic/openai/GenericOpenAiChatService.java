@@ -8,14 +8,18 @@ import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngi
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.provider.AbstractUpstreamChatService;
+import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutor;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.ChunkStageRegistry;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 /**
  * 通用 OpenAI 上游服务 —— 处理所有数据库供应商配置。
@@ -24,7 +28,7 @@ import java.util.Map;
  * 请求头和请求体规则均从 provider_request_transform 读取。
  */
 @Service
-public class GenericOpenAiChatService extends AbstractUpstreamChatService {
+public class GenericOpenAiChatService extends AbstractUpstreamChatService implements UpstreamExecutor {
 
     private final RequestBodyRuleEngine requestBodyRuleEngine;
 
@@ -39,6 +43,36 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService {
     @Override
     protected String defaultBaseUrl() {
         return "";
+    }
+
+    // ==================== 主干 send 插槽（3.4d-1，委派给原有方法） ====================
+
+    /** 本执行器服务的上游协议 —— <strong>查表键</strong>。 */
+    @Override
+    public WireProtocol protocol() {
+        return WireProtocol.CHAT;
+    }
+
+    /**
+     * 主干入口（非流式）—— 委派给原有方法。
+     *
+     * <p><strong>3.4d-1 是纯加法</strong>：本方法不改变任何行为，只把「旧签名里的 5 个参数」
+     * 改从 ctx 取（它们本就是 ctx 的字段），以便 3.4d-2 切换调用点时主干只需传 ctx。
+     * OpenAI 直连无落库改写，故 {@code chunkRewriter} 被忽略。
+     */
+    @Override
+    public Mono<UpstreamEvent> invoke(RequestPipelineContext ctx,
+                                      Function<List<String>, ChunkLogPayload> chunkRewriter) {
+        return super.chatCompletion(ctx.body(), ctx.model(), ctx.provider(), ctx.downstreamHeaders(),
+                ctx.requestId(), ctx);
+    }
+
+    /** 主干入口（流式）—— 委派给原有方法，理由同 {@link #invoke}。 */
+    @Override
+    public Flux<UpstreamEvent> invokeStream(RequestPipelineContext ctx,
+                                            Function<List<String>, ChunkLogPayload> chunkRewriter) {
+        return super.chatCompletionStream(ctx.body(), ctx.model(), ctx.provider(), ctx.downstreamHeaders(),
+                ctx.requestId(), ctx);
     }
 
     @Override

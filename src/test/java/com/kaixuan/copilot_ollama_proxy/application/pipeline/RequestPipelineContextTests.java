@@ -36,7 +36,7 @@ class RequestPipelineContextTests {
     }
 
     private static RequestPipelineContext chatToMessages() {
-        return RequestPipelineContext.of(new LinkedHashMap<>(Map.of("model", "m")),
+        return RequestPipelineContext.of(new LinkedHashMap<>(Map.of("model", "m")), "m",
                 WireProtocol.CHAT, WireProtocol.MESSAGES, provider(),
                 HttpHeaders.EMPTY, "req-1", null);
     }
@@ -77,7 +77,7 @@ class RequestPipelineContextTests {
         /** 直连：两侧同协议，{@code bodyProtocol} 自然也相同。 */
         @Test
         void directConnectionHasIdenticalProtocols() {
-            RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(),
+            RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
                     WireProtocol.MESSAGES, WireProtocol.MESSAGES, provider(),
                     HttpHeaders.EMPTY, "req-2", null);
 
@@ -99,7 +99,7 @@ class RequestPipelineContextTests {
         /** 翻译路线下携带去程产出的事实。 */
         @Test
         void translationContextIsCarriedOnTranslationRoute() {
-            RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(),
+            RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
                     WireProtocol.CHAT, WireProtocol.MESSAGES, provider(),
                     HttpHeaders.EMPTY, "req-3", new TranslationContext(false, true));
 
@@ -272,7 +272,7 @@ class RequestPipelineContextTests {
         /** 两侧同协议 → 不需要翻译（直连）。 */
         @Test
         void sameProtocolOnBothSidesMeansNoTranslation() {
-            RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(),
+            RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
                     WireProtocol.MESSAGES, WireProtocol.MESSAGES, provider(),
                     HttpHeaders.EMPTY, "req-1", null);
 
@@ -304,7 +304,7 @@ class RequestPipelineContextTests {
          */
         @Test
         void sameProtocolWithTranslationStepsRecordedStillClaimsNoTranslation() {
-            RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(),
+            RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
                     WireProtocol.CHAT, WireProtocol.CHAT, provider(),
                     HttpHeaders.EMPTY, "req-1", null);
 
@@ -342,7 +342,7 @@ class RequestPipelineContextTests {
          */
         @Test
         void directConnectionAlwaysGates() {
-            RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(),
+            RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
                     WireProtocol.CHAT, WireProtocol.CHAT, provider(), HttpHeaders.EMPTY, "req-1", null);
 
             assertThat(ctx.shouldApplyEmptyResponseGate()).isTrue();
@@ -419,7 +419,7 @@ class RequestPipelineContextTests {
          */
         @Test
         void sameProtocolGatesEvenIfTranslationStepsWereRecorded() {
-            RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(),
+            RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
                     WireProtocol.CHAT, WireProtocol.CHAT, provider(),
                     HttpHeaders.EMPTY, "req-1", null);
             ctx.markCompleted(PipelineStep.REQUEST_TRANSLATION);
@@ -436,7 +436,7 @@ class RequestPipelineContextTests {
          */
         @Test
         void directConnectionGatesAfterBothTranslationStepsRecorded() {
-            RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(),
+            RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
                     WireProtocol.CHAT, WireProtocol.CHAT, provider(),
                     HttpHeaders.EMPTY, "req-1", null);
             ctx.markCompleted(PipelineStep.REQUEST_TRANSLATION);

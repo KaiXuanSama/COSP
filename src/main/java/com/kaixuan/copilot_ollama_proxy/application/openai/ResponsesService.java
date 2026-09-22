@@ -98,7 +98,7 @@ public class ResponsesService {
                     route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
         }
         // 直连：两侧同协议。上下文在此处显式构建，与另两条线路同形。
-        RequestPipelineContext ctx = RequestPipelineContext.direct(request, DOWNSTREAM_PROTOCOL,
+        RequestPipelineContext ctx = RequestPipelineContext.direct(request, route.model(), DOWNSTREAM_PROTOCOL,
                 route.provider(), downstreamHeaders, requestId, null);
         return responsesChatService.responses(request, route, downstreamHeaders, requestId, ctx);
     }
@@ -127,7 +127,7 @@ public class ResponsesService {
                     route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
         }
         // 同非流式：上下文在此处显式构建。
-        RequestPipelineContext ctx = RequestPipelineContext.direct(request, DOWNSTREAM_PROTOCOL,
+        RequestPipelineContext ctx = RequestPipelineContext.direct(request, route.model(), DOWNSTREAM_PROTOCOL,
                 route.provider(), downstreamHeaders, requestId, null);
         return responsesChatService.responsesStream(request, route, downstreamHeaders, requestId, ctx);
     }

@@ -91,7 +91,7 @@ public class MessagesService {
                     route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
         }
         // 直连：两侧同协议、chunk 不需要改写（传 null）。上下文在此处显式构建。
-        RequestPipelineContext ctx = RequestPipelineContext.direct(request, DOWNSTREAM_PROTOCOL,
+        RequestPipelineContext ctx = RequestPipelineContext.direct(request, route.model(), DOWNSTREAM_PROTOCOL,
                 route.provider(), downstreamHeaders, requestId, null);
         return anthropicChatService.messages(request, route, downstreamHeaders, requestId, null, ctx);
     }
@@ -120,7 +120,7 @@ public class MessagesService {
                     route.provider().providerKey(), decision.downstreamProtocol(), decision.upstreamProtocol()));
         }
         // 同非流式：上下文在此处显式构建，chunk 不改写。
-        RequestPipelineContext ctx = RequestPipelineContext.direct(request, DOWNSTREAM_PROTOCOL,
+        RequestPipelineContext ctx = RequestPipelineContext.direct(request, route.model(), DOWNSTREAM_PROTOCOL,
                 route.provider(), downstreamHeaders, requestId, null);
         return anthropicChatService.messagesStream(request, route, downstreamHeaders, requestId, null, ctx);
     }

@@ -22,6 +22,7 @@ import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.provider.EmptyUpstreamResponseException;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEventClassifier;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutor;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamCallReporter;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamRetryPolicy;
 import org.slf4j.Logger;
@@ -50,6 +51,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 /**
  * 通用 <strong>Responses</strong> 上游服务 —— 对接 OpenAI Responses API 协议的供应商。
@@ -104,7 +106,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@code max_output_tokens} 与 Anthropic 的思考方式。
  */
 @Service
-public class GenericResponsesChatService {
+public class GenericResponsesChatService implements UpstreamExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(GenericResponsesChatService.class);
 
@@ -171,6 +173,35 @@ public class GenericResponsesChatService {
         if (httpClient != null) {
             this.httpClient = httpClient;
         }
+    }
+
+    // ==================== 主干 send 插槽（3.4d-1，委派给原有方法） ====================
+
+    /** 本执行器服务的上游协议 —— <strong>查表键</strong>。 */
+    @Override
+    public WireProtocol protocol() {
+        return WireProtocol.RESPONSES;
+    }
+
+    /**
+     * 主干入口（非流式）—— 委派给原有方法。
+     *
+     * <p><strong>3.4d-1 是纯加法</strong>：不改行为，只把旧签名里已是 ctx 字段的参数改从 ctx 取。
+     * Responses 直连无落库改写（R2x / x2R 未实现），故 {@code chunkRewriter} 被忽略。
+     */
+    @Override
+    public Mono<UpstreamEvent> invoke(RequestPipelineContext ctx,
+                                      Function<List<String>, ChunkLogPayload> chunkRewriter) {
+        return responses(ctx.body(), ctx.model(), ctx.provider(), ctx.downstreamHeaders(),
+                ctx.requestId(), ctx);
+    }
+
+    /** 主干入口（流式）—— 委派给原有方法，理由同 {@link #invoke}。 */
+    @Override
+    public Flux<UpstreamEvent> invokeStream(RequestPipelineContext ctx,
+                                            Function<List<String>, ChunkLogPayload> chunkRewriter) {
+        return responsesStream(ctx.body(), ctx.model(), ctx.provider(), ctx.downstreamHeaders(),
+                ctx.requestId(), ctx);
     }
 
     // ==================== 对外入口 ====================

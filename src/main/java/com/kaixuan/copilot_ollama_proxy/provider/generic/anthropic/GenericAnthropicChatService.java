@@ -25,6 +25,7 @@ import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.provider.EmptyUpstreamResponseException;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEventClassifier;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutor;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamCallReporter;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamRetryPolicy;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.RequestBodyStageRegistry;
@@ -96,7 +97,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 而非单个 {@code reasoning_effort} 字符串。
  */
 @Service
-public class GenericAnthropicChatService {
+public class GenericAnthropicChatService implements UpstreamExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(GenericAnthropicChatService.class);
 
@@ -193,6 +194,34 @@ public class GenericAnthropicChatService {
     }
 
     // ==================== 对外入口 ====================
+
+    /** 本执行器服务的上游协议 —— <strong>查表键</strong>。 */
+    @Override
+    public WireProtocol protocol() {
+        return WireProtocol.MESSAGES;
+    }
+
+    /**
+     * 主干入口（非流式）—— 委派给原有方法。
+     *
+     * <p><strong>3.4d-1 是纯加法</strong>：不改变任何行为，只把旧签名里已是 ctx 字段的那几个
+     * 参数改从 ctx 取。{@code chunkRewriter} 是本路线<strong>真正会用</strong>的那个 ——
+     * 它由编排层按回程翻译器构造，故仍留在签名上（3.3d-3 的 D2）。
+     */
+    @Override
+    public Mono<UpstreamEvent> invoke(RequestPipelineContext ctx,
+                                      Function<List<String>, ChunkLogPayload> chunkRewriter) {
+        return messages(ctx.body(), ctx.model(), ctx.provider(), ctx.downstreamHeaders(),
+                ctx.requestId(), chunkRewriter, ctx);
+    }
+
+    /** 主干入口（流式）—— 委派给原有方法，理由同 {@link #invoke}。 */
+    @Override
+    public Flux<UpstreamEvent> invokeStream(RequestPipelineContext ctx,
+                                            Function<List<String>, ChunkLogPayload> chunkRewriter) {
+        return messagesStream(ctx.body(), ctx.model(), ctx.provider(), ctx.downstreamHeaders(),
+                ctx.requestId(), chunkRewriter, ctx);
+    }
 
     /**
      * 非流式，接受应用层已解析的路由与管道上下文。
