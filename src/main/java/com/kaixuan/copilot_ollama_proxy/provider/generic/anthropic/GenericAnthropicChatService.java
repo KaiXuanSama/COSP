@@ -22,6 +22,7 @@ import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.provider.EmptyUpstreamResponseException;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamAutoRetry;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEventClassifier;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutor;
@@ -837,31 +838,29 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
         return ModelNameUtil.parse(model).modelName();
     }
 
-    // ==================== 重试（策略与 OpenAI 侧同源） ====================
+    // ==================== 重试（策略与另两侧同源） ====================
 
     /**
      * 构建重试策略。
      *
-     * <p>次数来自 {@link RetryPolicyService} 的 {@code retry_max_attempts} ——
-     * <strong>与 OpenAI 侧同一个配置项</strong>，管理后台改一次两个协议同时生效。
-     * 这是「重试次数只有一个来源」这条约束在跨协议后的延续：实现各写一份，
-     * 但配置来源不分叉。
+     * <h2>它只做三件事：取时长、报标识、委托</h2>
+     * 规格本身（读配置 + {@code Retry.backoff} + {@code filter} + {@code doBeforeRetry}
+     * 里的 RETRYING 事件与日志）已收归 {@link UpstreamAutoRetry}（阶段 3.6c-2），
+     * 三条线路共用一份。本方法保留为<strong>适配器</strong>：把本类的注入字段、
+     * 自己的 logger、自己那两个<strong>退避覆盖点</strong>绑给那个类。
+     *
+     * <p>原本它只与 OpenAI 侧共享「次数来自同一个配置项」这一条约束；
+     * 现连实现也共用。顺带补齐了一处<strong>抄漏</strong>：429 / {@code Retry-After}
+     * 的日志特化此前只在 Chat，而 429 是 HTTP 层事实、不是协议差异 ——
+     * 理由详见 {@link UpstreamAutoRetry} 的类注释。
      */
     private Retry buildRetrySpec(String method, ProviderRuntimeConfiguration provider,
                                  String requestId, String model, boolean stream) {
-        int configured = retryPolicyService != null
-                ? retryPolicyService.getMaxAttempts()
-                : RetryPolicyService.DEFAULT_MAX_ATTEMPTS;
-        long maxAttempts = RetryPolicyService.toReactorMaxAttempts(configured);
-        boolean unlimited = configured == RetryPolicyService.UNLIMITED_MAX_ATTEMPTS;
-        return Retry.backoff(maxAttempts, retryFirstBackoff()).maxBackoff(retryMaxBackoff())
-                .filter(UpstreamRetryPolicy::isRetryableFailure)
-                .doBeforeRetry(signal -> {
-                    int attempt = (int) (signal.totalRetries() + 1);
-                    publishLifecycle(CallLifecycleEvent.retrying(requestId, model, stream, attempt));
-                    log.warn("[{}] {} Anthropic 调用失败，重试第 {}/{} 次: {}", method, provider.providerKey(),
-                            attempt, unlimited ? -1 : maxAttempts, signal.failure().getMessage());
-                });
+        return UpstreamAutoRetry.build(
+                new UpstreamAutoRetry.CallContext(method, "Anthropic", provider.providerKey(),
+                        requestId, model, stream),
+                retryPolicyService, lifecycleNotifier,
+                retryFirstBackoff(), retryMaxBackoff(), log);
     }
 
     /** 首次退避时长。可覆盖以便测试压缩等待，理由同 OpenAI 侧。 */

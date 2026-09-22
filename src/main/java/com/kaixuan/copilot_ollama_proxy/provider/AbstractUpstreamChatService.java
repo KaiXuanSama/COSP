@@ -32,7 +32,6 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClientRequestException;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -73,9 +72,9 @@ import java.util.concurrent.atomic.AtomicReference;
  *   <caption>重试通道对照</caption>
  *   <tr><th>通道</th><th>触发者</th><th>消耗 5 次预算</th><th>实现位置</th></tr>
  *   <tr><td>异常重试</td><td>COSP 自身（上游失败 / 空响应）</td><td>是</td>
- *       <td>{@link #buildRetrySpec} 的 {@code retryWhen}</td></tr>
+ *       <td>{@link UpstreamAutoRetry} 构造的 {@code retryWhen}</td></tr>
  *   <tr><td>手动重试</td><td>用户在管理后台右键 Toast</td><td>否</td>
- *       <td>{@code CallRetryRegistry} + {@code takeUntilOther}</td></tr>
+ *       <td>{@link UpstreamSilentRetry}（{@code CallRetryRegistry} + {@code takeUntilOther}）</td></tr>
  * </table>
  * 手动重试不消耗预算是有意的：那是用户可感知的主动操作，不该挤占自动恢复的余量。
  *
@@ -115,7 +114,8 @@ public abstract class AbstractUpstreamChatService {
 
     /**
      * 重试次数策略，由 Spring 可选注入；未注入（如单元测试）时回退到默认 5 次。
-     * 只在 {@link #buildRetrySpec} 一处使用，保证重试次数只有一个来源。
+     * 只经 {@link #buildRetrySpec} 转交给 {@link UpstreamAutoRetry} ——
+     * 三个执行器都从同一个 {@code RetryPolicyService} 读，因此「重试次数」只有这一个来源。
      */
     private RetryPolicyService retryPolicyService;
 
@@ -217,8 +217,8 @@ public abstract class AbstractUpstreamChatService {
      *
      * <h2>空响应兜底</h2>
      * 与流式共用同一份重试预算：空响应被包成 {@link EmptyUpstreamResponseException} 抛出，
-     * 走的是下方同一条 {@code retryWhen}，因此「重试次数」始终只有 {@link #buildRetrySpec}
-     * 一个来源。判定挂在 {@code retryWhen} <strong>内侧</strong>（在 {@code doOnNext} 落库之后）
+     * 走的是下方同一条 {@code retryWhen}，而那条规格由 {@link UpstreamAutoRetry} 统一构造，
+     * 因此「重试次数」在三条线路上始终只有一个来源。判定挂在 {@code retryWhen} <strong>内侧</strong>（在 {@code doOnNext} 落库之后）
      * 才能触发重发；耗尽后由 {@code onErrorResume} 把最后一轮的原始 body 放行给下游，
      * 与其他失败「耗尽后透传最后一次响应」保持一致。
      *
@@ -941,55 +941,30 @@ public abstract class AbstractUpstreamChatService {
     }
 
     /**
-     * 构建 OpenAI 上游的统一重试策略。
+     * 构建 OpenAI 上游的重试策略。
      *
-     * <p>重试次数固定为 5（首次请求外再试 5 次），指数退避 2 秒起、上限 30 秒。
-     * 是否重试由 {@link UpstreamRetryPolicy#isRetryableFailure} 裁决，覆盖四类可恢复场景：
-     * <ol>
-     *   <li>429 上游限速（指数退避避免加重上游压力）；</li>
-     *   <li>5xx 服务端错误；</li>
-     *   <li>可重试的 400 错误；</li>
-     *   <li>网络层异常 —— 连接建立失败（{@link WebClientRequestException}）、
-     *       HTTP 200 后 SSE 流中途断开（cause chain 中的 {@code IOException}）、
-     *       TLS 握手失败（cause chain 中的 {@code SSLException}）。</li>
-     * </ol>
-     * 其余错误（如 401/403 等确定性 4xx）不重试 —— 请求内容未变，重试结果必然相同。
+     * <h2>它只做三件事：取时长、报标识、委托</h2>
+     * 规格本身（读配置 + {@code Retry.backoff} + {@code filter} + {@code doBeforeRetry}
+     * 里的 RETRYING 事件与日志）已收归 {@link UpstreamAutoRetry}（阶段 3.6c-2），
+     * 三条线路共用一份。本方法保留为<strong>适配器</strong>：
+     * 把本类的注入字段（策略服务、通知器）、自己的 logger、自己那两个
+     * <strong>退避覆盖点</strong>绑给那个类 —— 于是两个调用点（非流式 / 流式）一行未改。
      *
-     * <h2>重试次数来源</h2>
-     * 次数取自 {@code app_config} 的 {@code retry_max_attempts}（管理后台可改，改完即时生效）：
-     * 正数为具体次数，{@code 0} 不重试，{@code -1} 无限重试。未注入策略服务时（单元测试）
-     * 回退到 {@link RetryPolicyService#DEFAULT_MAX_ATTEMPTS}。
+     * <p>适配器若与签名不符会<strong>编译失败</strong>，属于「安全的重复」；
+     * 被抽走的是会<em>静默分叉</em>的东西（judgment、算子序列、日志文案）。
+     * 这条区分是判断「该不该抽」的实际依据，与 {@link UpstreamCallReporter} 同一取向。
      *
-     * <p>注意 {@code 0} 与「不加 retryWhen」并不完全等价：{@code filter} 与
-     * {@code doBeforeRetry} 依旧挂着，只是永远不会触发重订阅，异常照常透传。保留这条链
-     * 而不做分支，是为了让重试次数始终只有这一个来源。
-     *
-     * <h2>退避时长</h2>
-     * 首次退避 {@link #retryFirstBackoff()}、上限 {@link #retryMaxBackoff()}，两者均可被
-     * 子类覆盖以便测试压缩等待，见那两个方法的说明。
-     *
-     * @param method 调用方方法名，用于日志区分重试来源
-     * @param requestId 本次调用唯一标识，用于发出 RETRYING 生命周期事件
-     * @param model 模型名称（含前缀），用于 RETRYING 事件展示
-     * @param stream 是否流式请求
-     * @return 配置好的 Retry 实例
+     * <h2>退避时长为何仍是本类的 protected 方法</h2>
+     * 见 {@link #retryFirstBackoff()} 的说明 —— 它们是 7 个测试子类的
+     * <strong>覆盖点</strong>，不是可收归的逻辑。
      */
     protected Retry buildRetrySpec(String method, ProviderRuntimeConfiguration provider,
                                    String requestId, String model, boolean stream) {
-        int configured = retryPolicyService != null
-                ? retryPolicyService.getMaxAttempts()
-                : RetryPolicyService.DEFAULT_MAX_ATTEMPTS;
-        long maxAttempts = RetryPolicyService.toReactorMaxAttempts(configured);
-        boolean unlimited = configured == RetryPolicyService.UNLIMITED_MAX_ATTEMPTS;
-        return Retry.backoff(maxAttempts, retryFirstBackoff()).maxBackoff(retryMaxBackoff())
-                .filter(UpstreamRetryPolicy::isRetryableFailure)
-                .doBeforeRetry(signal -> {
-                    int attempt = (int) (signal.totalRetries() + 1);
-                    // RETRYING：让前端 Toast 从“已连接/等待中”切换到“上游异常，正在重试（第N次）”，
-                    // 避免重试期间静默卡顿让用户误以为卡死。无限模式下前端拿 total=-1 以示无上限。
-                    publishLifecycle(CallLifecycleEvent.retrying(requestId, model, stream, attempt));
-                    logRetryAttempt(method, provider, signal, attempt, unlimited ? -1 : (int) maxAttempts);
-                });
+        return UpstreamAutoRetry.build(
+                new UpstreamAutoRetry.CallContext(method, "OpenAI", provider.providerKey(),
+                        requestId, model, stream),
+                retryPolicyService, lifecycleNotifier,
+                retryFirstBackoff(), retryMaxBackoff(), log);
     }
 
     /**
@@ -1020,32 +995,6 @@ public abstract class AbstractUpstreamChatService {
      */
     protected Duration retryMaxBackoff() {
         return Duration.ofSeconds(30);
-    }
-
-    /**
-     * 记录一次重试的日志。
-     *
-     * <p>429 单独区分：限速是上游明确的节流信号，附带其 {@code Retry-After} 头
-     * 便于人工判断退避是否符合预期；其余失败只记异常消息。
-     *
-     * @param method 调用方方法名
-     * @param provider 供应商配置（取 providerKey 用于日志区分）
-     * @param signal 本次重试信号（含失败异常）
-     * @param attempt 当前重试序号，从 1 起
-     * @param maxAttempts 本次调用的重试上限；{@code -1} 表示无限
-     */
-    private void logRetryAttempt(String method, ProviderRuntimeConfiguration provider,
-                                 Retry.RetrySignal signal, int attempt, int maxAttempts) {
-        String budget = maxAttempts < 0 ? "∞" : String.valueOf(maxAttempts);
-        if (signal.failure() instanceof WebClientResponseException responseException
-                && responseException.getStatusCode().value() == 429) {
-            String retryAfter = responseException.getHeaders().getFirst("Retry-After");
-            log.warn("[{}] {} API 限速 (429)，重试第 {}/{} 次{}", method, provider.providerKey(), attempt, budget,
-                    retryAfter != null ? "，Retry-After: " + retryAfter + "s" : "");
-        } else {
-            log.warn("[{}] {} API 调用失败，重试第 {}/{} 次: {}", method, provider.providerKey(), attempt, budget,
-                    signal.failure().getMessage());
-        }
     }
 
     /**
