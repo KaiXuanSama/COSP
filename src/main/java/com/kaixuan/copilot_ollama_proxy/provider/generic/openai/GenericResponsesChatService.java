@@ -239,7 +239,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
 
         return Mono.defer(() -> {
                     attemptStart.set(System.currentTimeMillis());
-                    return buildWebClient(reqHeaders, provider, downstreamHeaders, false)
+                    return buildWebClient(reqHeaders, provider, downstreamHeaders, stream)
                             .post().uri(responsesUri()).bodyValue(requestBody).retrieve()
                             .toEntity(String.class);
                 })
@@ -253,7 +253,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                     Long logId = saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, respHeaders,
                             entity.getStatusCode().value(), entity.getBody(), attemptStart.get(), ctx);
                     // ttfb 传 null：非流式没有首字概念，与另两侧一致。
-                    saveUsage(logId, providerKey, modelName, false,
+                    saveUsage(logId, providerKey, modelName, stream,
                             ResponsesUsageParser.extractUsageRawJson(objectMapper, entity.getBody()),
                             null);
                 })
@@ -292,7 +292,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                     return Mono.error(new EmptyUpstreamResponseException(
                             body == null ? List.of() : List.of(body)));
                 })
-                .retryWhen(buildRetrySpec("responses", provider, requestId, modelName, false))
+                .retryWhen(buildRetrySpec("responses", provider, requestId, modelName, stream))
                 // 空 body 已在上面被判空转成异常，此处 getBody() 不会为 null。
                 .map(entity -> entity.getBody())
                 // 空响应重试耗尽：放行最后一轮的原始 body，保持「透传上游真实返回」语义。
@@ -337,8 +337,10 @@ public class GenericResponsesChatService implements UpstreamExecutor {
     protected Flux<UpstreamEvent> responsesStream(Map<String, Object> request, String model,
                                                    ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                    String requestId, RequestPipelineContext ctx) {
-        Map<String, Object> requestBody = prepareRequestBody(request, true, model, provider);
-        log.info("{} Responses 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
+        // stream 取自 ctx（3.5a）—— 同一方法体将来要服务两态（3.5b 合链），故不留字面量。
+        boolean stream = ctx.stream();
+        Map<String, Object> requestBody = prepareRequestBody(request, stream, model, provider);
+        log.info("{} Responses 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
         boolean gateActive = ctx.shouldApplyEmptyResponseGate();
@@ -382,7 +384,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                     // 注意取反：gateActive 是「拦截要生效」，而闸门开着意味着「不再扣帧」。
                     gateOpen.set(!gateActive);
                     heldFrames.clear();
-                    return buildWebClient(reqHeaders, provider, downstreamHeaders, true)
+                    return buildWebClient(reqHeaders, provider, downstreamHeaders, stream)
                             .post().uri(responsesUri()).bodyValue(requestBody)
                             .exchangeToFlux(response -> {
                                 Map<String, String> respHeaders = new LinkedHashMap<>();
@@ -485,7 +487,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                         publishCallRecorded();
                     }
                 })
-                .retryWhen(buildRetrySpec("responsesStream", provider, requestId, model, true))
+                .retryWhen(buildRetrySpec("responsesStream", provider, requestId, model, stream))
                 // 空响应耗尽：放行最后一轮的事件，与其他失败「耗尽后透传最后一次响应」一致。
                 .onErrorResume(error -> {
                     EmptyUpstreamResponseException emptyResponse = UpstreamRetryPolicy.findEmptyUpstreamException(error);
@@ -545,7 +547,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                         Long logId = saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
                                 capturedRespHeaders.get(), statusCode, logChunks, attemptStart.get(), ctx);
                         long ttfb = ttfbMs.get();
-                        saveUsage(logId, providerKey, modelName, true, usageRaw.get(),
+                        saveUsage(logId, providerKey, modelName, stream, usageRaw.get(),
                                 ttfb < 0 ? null : (int) ttfb);
                     }
                 });

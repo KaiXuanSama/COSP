@@ -241,7 +241,7 @@ public abstract class AbstractUpstreamChatService {
         // 非流式在本形态下就是「恰有一个元素的流」——统一后主干只需面对一种输入。
         return Mono.defer(() -> {
                     attemptStart.set(System.currentTimeMillis());
-                    return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, false)
+                    return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, stream)
                             .post().uri(chatCompletionsUri()).bodyValue(requestBody).retrieve()
                             .toEntity(String.class);
                 })
@@ -255,7 +255,7 @@ public abstract class AbstractUpstreamChatService {
                     Long logId = saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, respHeaders,
                             entity.getStatusCode().value(), entity.getBody(), attemptStart.get());
                     // 成功往返：从响应体提取 usage 写入独立用量表（非流式无首字概念，ttfb 传 null）。
-                    saveUsageIfPresent(logId, providerKey, modelName, false, entity.getBody(), null);
+                    saveUsageIfPresent(logId, providerKey, modelName, stream, entity.getBody(), null);
                 })
                 // 失败往返：每次失败（含被 retry 吞掉的中间失败）都各自落一条（在 retry 上游）。
                 .doOnError(e -> {
@@ -297,7 +297,7 @@ public abstract class AbstractUpstreamChatService {
                             body == null ? List.of() : List.of(body)));
                 })
                 // 重试挂在落库下游：中间失败已在上面各自记录，此处仅负责重订阅。
-                .retryWhen(buildRetrySpec("chatCompletion", provider, requestId, modelName, false))
+                .retryWhen(buildRetrySpec("chatCompletion", provider, requestId, modelName, stream))
                 // 取出响应体。空 body 场景已在上面被判空转成异常，走不到这里，
                 // 故此处不会再出现 getBody() 为 null 导致 Reactor 抛 NPE 的情况 ——
                 // 那个 NPE 曾让「200 + 空 body」被误报成「无法连接到上游服务」的 502。
@@ -421,8 +421,10 @@ public abstract class AbstractUpstreamChatService {
     protected Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, String model,
                                                        ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                        String requestId, RequestPipelineContext ctx) {
-        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, true, model, provider);
-        log.info("{} OpenAI 上游，模型: {}, 流式: true", provider.providerKey(), requestBody.get("model"));
+        // stream 取自 ctx（3.5a）—— 同一方法体将来要服务两态（3.5b 合链），故不留字面量。
+        boolean stream = ctx.stream();
+        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, stream, model, provider);
+        log.info("{} OpenAI 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
         // 见 RequestPipelineContext 的「生命周期」注释：写进 defer 里会让半实现态在第二轮又走回判空重试。
@@ -477,7 +479,7 @@ public abstract class AbstractUpstreamChatService {
                     // 注意取反：gateActive 是「拦截要生效」，而闸门开着意味着「不再扣帧」。
                     gateOpen.set(!gateActive);
                     heldFrames.clear();
-                    return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, true)
+                    return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, stream)
                             .post().uri(chatCompletionsUri()).bodyValue(requestBody)
                             .exchangeToFlux(response -> {
                                 Map<String, String> respHeaders = new LinkedHashMap<>();
@@ -569,7 +571,7 @@ public abstract class AbstractUpstreamChatService {
                 // EmptyUpstreamResponseException 抛出，UpstreamRetryPolicy.isRetryableFailure 认它，
                 // 因此无需第二套重试实现。
                 // 与之相对，手动静默重试走 takeUntilOther 的正常完成，不经过 retryWhen，故不消耗预算。
-                .retryWhen(buildRetrySpec("chatCompletionStream", provider, requestId, model, true))
+                .retryWhen(buildRetrySpec("chatCompletionStream", provider, requestId, model, stream))
                 // 空响应重试耗尽：把最后一轮被拦下的帧原样放给下游，与其他失败「耗尽后透传最后一次响应」
                 // 保持一致 —— 至少让下游看到上游真实返回了什么，而不是收到一个 500。
                 // 该轮已在上面的 doOnError 落库，故放行后由 emptyResponsePassthrough 让收尾跳过重复落库。
@@ -669,7 +671,7 @@ public abstract class AbstractUpstreamChatService {
                                 capturedRespHeaders.get(), statusCode, logChunks, attemptStart.get());
                         // 写入时序 A（串联）：仅成功且有 usage 时写用量表；log_id 拿不到则降级为孤儿行。
                         long ttfb = ttfbMs.get();
-                        saveUsage(logId, providerKey, modelName, true, usageRaw.get(),
+                        saveUsage(logId, providerKey, modelName, stream, usageRaw.get(),
                                 ttfb < 0 ? null : (int) ttfb);
                     }
                 });
