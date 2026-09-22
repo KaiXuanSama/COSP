@@ -40,7 +40,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 与 {@link UpstreamChunkNormalizer} 同一取向：本类读写的是 OpenAI 专属形态
  * （{@code choices[].delta.content} 与 {@code reasoning_content}），
  * 这是 Chat 特有的兼容措施。Anthropic 与 Responses 两条线路没有它是预期的协议差异，
- * 不是遗漏 —— 在 Stage 3.1 接线时它们<strong>未命中即跳过</strong>。
+ * 不是遗漏 —— 它在 Stage 3.1 成形、3.3d-2 完成查表接线（按
+ * {@code ctx.upstreamProtocol()}），另两条<strong>未命中即跳过</strong>。
  *
  * <h2>流级状态由调用方持有</h2>
  * 三个状态参数都是<strong>跨帧累积</strong>的流级状态（重试一次就要重置），

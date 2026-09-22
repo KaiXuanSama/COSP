@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * <h2>为何委托给静态工具而非把逻辑搬进来</h2>
  * 归一的纯逻辑仍留在 {@link UpstreamChunkNormalizer}（含它的一整套单测），
  * 本类只承担<strong>支线的三件事</strong>：声明协议键、带 {@code @Component} 让 Spring 收集、
- * 把调用转给静态工具。这样 Stage 3.1 是纯粹的「形状改造」——
+ * 把调用转给静态工具。这样 Stage 3.1（本类成形那一步）是纯粹的「形状改造」——
  * 逻辑一行未动、既有单测一行未改，只是让归一具备了被查表的资格。
  *
  * <p>{@code objectMapper} 由构造器注入：静态工具需要它做 JSON 解析，

@@ -35,7 +35,8 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>Anthropic 与 Responses 两条线路<strong>没有</strong>这一步是预期的协议差异，
  * 不是遗漏：它们的事件结构本就由各自协议规定，不存在「同义字段名」问题。
- * 因此本类在 Stage 3.1 接线时只会被 Chat 命中，另两条<strong>未命中即跳过</strong>。
+ * 因此本类在支线查表时（3.3d-2 起按 {@code ctx.upstreamProtocol()}）只会被 Chat 命中，
+ * 另两条<strong>未命中即跳过</strong>。
  *
  * <h2>为何不进主干阶段</h2>
  * 本类读写的是 OpenAI 专属形态（{@code choices[].delta} / {@code reasoning_content}

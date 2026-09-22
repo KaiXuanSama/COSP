@@ -14,17 +14,23 @@ import java.util.concurrent.atomic.AtomicReference;
  * 把归一做成接口，它才能像 {@code ProtocolTranslator} 那样被 Spring 集合注入按协议查表 ——
  * 「加一个协议的实现 = 加一个类」，主干一个字不动。
  *
- * <h2>为何现在就抽接口，但暂不查表</h2>
- * 查表需要两个前提：<strong>主干</strong>（挂接入点的地方）与 <strong>{@code bodyProtocol}</strong>
- * （查表键），两者都要 Step 3.3 抽主干时才存在。于是本步延续阶段 1 的手法：
- * <strong>先让组件长成可查表的形状，接线推迟到 3.3</strong>。当前唯一的实现
- * （{@link com.kaixuan.copilot_ollama_proxy.provider.stage.chat.ChatChunkNormalizeStage}）
- * 仍由 Chat 执行器<strong>直接注入并调用</strong>，未经 {@code Map} 查表。
+ * <h2>查表已接线（3.3d-2）</h2>
+ * 本接口在 3.1 成形、3.3d-2 完成接线，现在由
+ * {@link ChunkStageRegistry} 按 {@code ctx.upstreamProtocol()} 运行时查表。
+ *
+ * <p><strong>键是「上游协议」而不是 {@code bodyProtocol}</strong>：本支线处理的输入是
+ * <strong>上游原始 chunk</strong>，故「上游发来什么形态」才是判据。
+ * 用 {@code bodyProtocol} 会在 C2M 下错（那时 body 已是 Anthropic 形态，
+ * 而归一处理的帧属于上游协议）。
+ *
+ * <p>3.1 期间它是「直接注入并调用」的双路形态（注入或回退静态工具），
+ * 3.3d-2 已收成单路 —— 那时两条路逐字等价，装配断了也不会响，
+ * 因此改用「构造器注入 registry + 未命中即跳过」。
  *
  * <h2>「只有 Chat 一个实现」是预期，不是缺口</h2>
  * Chat 路径的上游 chunk 鱼龙混杂（各家字段名不一致），归一专为它做；
  * Anthropic / Responses 的事件结构由各自协议规定，不存在「同义字段名」问题，
- * 因此<strong>没有</strong>这一步。在查表接线后，另两条协议查不到实现 →
+ * 因此<strong>没有</strong>这一步。另两条协议查不到实现 →
  * <strong>未命中即跳过</strong>，这正确表达了「归一是 Chat 专属步骤」——
  * 定性为「跳过」比「不存在」更贴合它作为支线的意图。
  *

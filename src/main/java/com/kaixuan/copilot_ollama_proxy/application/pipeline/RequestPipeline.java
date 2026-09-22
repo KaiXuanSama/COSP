@@ -52,9 +52,16 @@ import java.util.function.Function;
  * 两个入口。合并后只剩 {@link #execute}，它返回统一的 {@code Flux<UpstreamEvent>}：
  * <strong>非流式就是「恰有一个元素的流」</strong>（见 {@code UpstreamEvent} 的类注释）。
  *
- * <p>本类内部<strong>只读一次</strong> {@code ctx.stream()}，用于在 send 与回程两处
+ * <p><strong>本类内部</strong>只读一次 {@code ctx.stream()}，用于在 send 与回程两处
  * <strong>选机制</strong> —— 那是 3.5.2 认定的两处真本质（一次取全 vs 逐事件）。
- * 其余步骤对两态完全无感知。
+ * 主干上的其余步骤对两态完全无感知。
+ *
+ * <p><strong>限定「本类内部」是因为执行器也各读一次</strong>：它们的两个方法体
+ * （{@code invoke} / {@code invokeStream}）都要拿流式标志去写 body、选 {@code Accept} 头、
+ * 定 ttfb 口径。那个读取不构成第二个事实源 —— 主干正是按 {@code ctx.stream()}
+ * 选中那两个方法之一的，因此两边必然一致。但这意味着一条<strong>依赖调用方守规矩的
+ * 不变式</strong>：直接调 {@code invokeStream} 而 ctx 里 {@code stream=false} 会走错路且不会响。
+ * 该不变式在 3.5b（两态合链）后自然消失，故现在只记录、不为此加防护。
  *
  * <h2>为何它能 own 全流程（而 3.4a/b 不能）</h2>
  * 因为「翻译会把 body 换掉」—— 翻译插槽一进主干，夹在它和解包之间的

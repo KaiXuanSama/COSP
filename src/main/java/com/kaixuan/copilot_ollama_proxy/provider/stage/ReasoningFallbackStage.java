@@ -21,9 +21,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 因此不必真的挪到 {@code doFinally}，随 stop chunk 就地触发即可。
  * 见方向文档 §5.1.1「步骤的生命周期位置」。
  *
- * <h2>为何是接口 / 为何只有 Chat 实现 / 为何暂不查表</h2>
- * 与 {@link ChunkNormalizeStage} 同一套理由：主干化要把支线做成可查表的类型，
- * 本步先成形、接线推迟到 3.3；Chat 专属（读写 {@code choices[].delta.content} 与
+ * <h2>为何是接口 / 为何只有 Chat 实现 / 查表键是上游协议</h2>
+ * 与 {@link ChunkNormalizeStage} 同一套理由：接口在 3.1 成形、
+ * 3.3d-2 由 {@link ChunkStageRegistry} 按 {@code ctx.upstreamProtocol()} 接线。
+ * Chat 专属（读写 {@code choices[].delta.content} 与
  * {@code reasoning_content} 这些 OpenAI 形态），另两条协议查不到实现即跳过，是预期行为。
  *
  * <h2>流级状态作参数传入</h2>

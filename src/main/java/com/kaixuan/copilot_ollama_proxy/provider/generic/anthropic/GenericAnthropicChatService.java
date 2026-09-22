@@ -244,6 +244,8 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                                            String requestId, Function<List<String>, ChunkLogPayload> chunkRewriter,
                                            RequestPipelineContext ctx) {
         // stream 取自 ctx（3.5a）：主干按 ctx.stream() 选了本方法，故这里二者必定一致。
+        // ⚠️ 这条一致性依赖调用方守规矩：直接调本方法而 ctx 里 stream=false 会走错路且不响。
+        //    该不变式在 3.5b（两态合链）后自然消失（与 executeStream 同属搁置项）。
         boolean stream = ctx.stream();
         Map<String, Object> requestBody = prepareRequestBody(request, stream, model, provider, ctx);
         log.info("{} Anthropic 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
@@ -363,7 +365,8 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                                                  ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                  String requestId, Function<List<String>, ChunkLogPayload> chunkRewriter,
                                                  RequestPipelineContext ctx) {
-        // stream 取自 ctx（3.5a）—— 同一方法体将来要服务两态（3.5b 合链），故不留字面量。
+        // stream 取自 ctx（3.5a）—— 它是请求级事实，与「哪条链被调了」同源，不留字面量。
+        // （3.5b 两态合链已搁置，故此处不再以后续步骤为由。）
         boolean stream = ctx.stream();
         Map<String, Object> requestBody = prepareRequestBody(request, stream, model, provider, ctx);
         log.info("{} Anthropic 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
@@ -750,9 +753,11 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
         // **完全由思考注入支配**（供其判定「下游已表态」），是它的内部临时产物。
         //
         // 查表键用 **bodyProtocol** 而非 upstreamProtocol：它描述的是「手里这份 body 长什么样」，
-        // 而三个支线读写的正是 body 的字段形态。当前两者恒等（翻译发生在应用服务层，
-        // 执行器拿到的已是上游形态），但语义上前者才正确 —— 等 3.4 把 translate 移进主干后
-        // 二者会分道扬镳，届时本处无需改动。
+        // 而三个支线读写的正是 body 的字段形态。
+        // ⚠️ 3.4 已把 translate 移进主干，二者**已经分道扬镳**：端点建 ctx 时 bodyProtocol
+        //    初值 = downstream（body 还是下游形态），主干 translate 才把它换成上游形态。
+        //    因此 C2M 路线下查表拿到的是**上游**实现，而直连时两者恒等 —— 与本节语义一致。
+        //    （注释原文写「当前两者恒等……等 3.4 后分道扬镳」，那是在 3.4 之前写的，已过期。）
         Map<String, Object> body = copyRequestBody(request);
         String resolvedModel = resolveModel(body.get("model"), model);
         writeProtocolFields(body, resolvedModel, stream);

@@ -19,17 +19,21 @@ package com.kaixuan.copilot_ollama_proxy.application.pipeline;
  * 「本方向未实现」的报错 —— 那个报错会让他无法判断自己的去程翻译对不对。
  *
  * <h2>为何暂时只有两个值</h2>
- * 只有一个消费者（空响应拦截），它只读这两个。阶段 3.1 把上游响应归一
- * （{@code UpstreamChunkNormalizer}）与 reasoning fallback 接成查表支线之后，
- * 「未命中即跳过」才成为那些步骤的一等状态，届时在这里补上对应枚举值。
+ * 只有一个消费者（空响应拦截），它只读这两个。
  *
- * <p><strong>现在不加</strong>：那些步骤目前根本没有「跳过」这一态 ——
- * 非 Chat 线路不是「跳过了归一」，而是压根没有这一步。登记一个无人读取的枚举值
- * 只会让人以为它在参与决策。等 3.1 给它接上读取方再加，那时它才有意义。
+ * <p><strong>3.1 把上游响应归一（{@code UpstreamChunkNormalizer}）与 reasoning fallback
+ * 接成查表支线之后，这里并没有补上对应枚举值</strong> —— 而那个预测是错的，
+ * 原因值得记下：那些步骤的「跳过」由<strong>查表未命中</strong>直接表达
+ * （{@code ChunkStageRegistry} 返回空即跳过），不需要额外登记一位状态。
+ * 登记是用来回答「这个步骤执行过了吗」的，而支线只需要回答「该不该执行」——
+ * 后者查表就有答案，多记一位反而会让人以为它在参与决策。
+ *
+ * <p>因此本枚举的成员权限收紧为：<strong>只登记「按协议组合可有可无、且判据要读它」的步骤</strong>。
+ * 目前这样的步骤只有翻译链的两半（空响应拦截要读回程登记来决定是否介入）。
  *
  * <h2>与协议的关系</h2>
  * 本枚举描述<strong>步骤</strong>而非协议。同一个步骤在不同协议组合下的有无实现，
- * 由编排层按请求逐个登记（见 {@link PipelineExecution}）——
+ * 由编排层按请求逐个登记（入口是 {@link RequestPipelineContext#markCompleted}）——
  * 不在这里写「哪个协议支持哪一步」的映射表，那种表会在新增协议时静默过期。
  */
 public enum PipelineStep {
@@ -48,7 +52,7 @@ public enum PipelineStep {
      * （{@link #REQUEST_TRANSLATION}）而没接回程，上游发回的帧就是上游协议的形态，
      * 而下游期待的是另一种形态。此时空响应拦截必须<strong>跳过</strong> ——
      * 它按<em>本服务所服务的协议</em>判「有没有内容」，而那批帧属于另一个协议，
-     * 判定结果没有意义。判据见 {@link PipelineExecution#shouldApplyEmptyResponseGate()}。
+     * 判定结果没有意义。判据见 {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
      */
     RESPONSE_TRANSLATION
 }

@@ -224,6 +224,8 @@ public abstract class AbstractUpstreamChatService {
                                                  String requestId, RequestPipelineContext ctx) {
         // stream 取自 ctx（3.5a）：主干按 ctx.stream() 选了本方法，故这里二者必定一致。
         // 写成字面量会让「哪条链被调了」与「body 里的 stream」两处各自为政。
+        // ⚠️ 这条一致性依赖调用方守规矩：直接调本方法而 ctx 里 stream=false 会走错路且不响。
+        //    该不变式在 3.5b（两态合链）后自然消失（与 executeStream 同属搁置项）。
         boolean stream = ctx.stream();
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, stream, model, provider);
         log.info("{} OpenAI 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
@@ -421,7 +423,8 @@ public abstract class AbstractUpstreamChatService {
     protected Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, String model,
                                                        ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                        String requestId, RequestPipelineContext ctx) {
-        // stream 取自 ctx（3.5a）—— 同一方法体将来要服务两态（3.5b 合链），故不留字面量。
+        // stream 取自 ctx（3.5a）—— 它是请求级事实，与「哪条链被调了」同源，不留字面量。
+        // （3.5b 两态合链已搁置，故此处不再以后续步骤为由。）
         boolean stream = ctx.stream();
         Map<String, Object> requestBody = prepareRequestBody(openAiRequest, stream, model, provider);
         log.info("{} OpenAI 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);

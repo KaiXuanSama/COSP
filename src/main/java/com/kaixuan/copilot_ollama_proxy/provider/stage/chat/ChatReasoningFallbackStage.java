@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>与 {@link ChatChunkNormalizeStage} 同一形状：纯逻辑仍在静态工具
  * {@link ReasoningFallback}（含其单测），本类只声明协议键、带 {@code @Component}、转调。
- * Stage 3.1 只改形状不改行为。
+ * Stage 3.1（本类成形那一步）只改形状不改行为。
  */
 @Component
 public class ChatReasoningFallbackStage implements ReasoningFallbackStage {
