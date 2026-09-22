@@ -15,7 +15,6 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
@@ -193,7 +192,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
         }
     }
 
-    // ==================== 对外入口 ====================
+    // ==================== 主干 send 插槽 ====================
 
     /** 本执行器服务的上游协议 —— <strong>查表键</strong>。 */
     @Override
@@ -202,11 +201,10 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
     }
 
     /**
-     * 主干入口（非流式）—— 委派给原有方法。
+     * 主干 send 插槽（非流式）。
      *
-     * <p><strong>3.4d-1 是纯加法</strong>：不改变任何行为，只把旧签名里已是 ctx 字段的那几个
-     * 参数改从 ctx 取。{@code chunkRewriter} 是本路线<strong>真正会用</strong>的那个 ——
-     * 它由编排层按回程翻译器构造，故仍留在签名上（3.3d-3 的 D2）。
+     * <p>参数全部来自 ctx。{@code chunkRewriter} 是本路线<strong>真正会用</strong>的那个 ——
+     * 它由主干按回程翻译器构造，故留在签名上（3.3d-3 的 D2）。
      */
     @Override
     public Mono<UpstreamEvent> invoke(RequestPipelineContext ctx,
@@ -215,45 +213,12 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                 ctx.requestId(), chunkRewriter, ctx);
     }
 
-    /** 主干入口（流式）—— 委派给原有方法，理由同 {@link #invoke}。 */
+    /** 主干 send 插槽（流式），理由同 {@link #invoke}。 */
     @Override
     public Flux<UpstreamEvent> invokeStream(RequestPipelineContext ctx,
                                             Function<List<String>, ChunkLogPayload> chunkRewriter) {
         return messagesStream(ctx.body(), ctx.model(), ctx.provider(), ctx.downstreamHeaders(),
                 ctx.requestId(), chunkRewriter, ctx);
-    }
-
-    /**
-     * 非流式，接受应用层已解析的路由与管道上下文。
-     *
-     * @param chunkRewriter 落库用的 chunk 改写器；直连传 {@code null}（不改写）。
-     *                      它由编排层构造 —— 那里才知道回程翻译器是谁
-     * @param ctx           本次请求的管道上下文，由编排层在组装期填好
-     */
-    public Mono<UpstreamEvent> messages(Map<String, Object> request, ResolvedProviderRoute route,
-                                        HttpHeaders downstreamHeaders, String requestId,
-                                        Function<List<String>, ChunkLogPayload> chunkRewriter,
-                                        RequestPipelineContext ctx) {
-        return messages(request, route.model(), route.provider(), downstreamHeaders, requestId,
-                chunkRewriter, ctx);
-    }
-
-    /**
-     * 流式，接受应用层已解析的路由与管道上下文。
-     *
-     * <p>上下文决定空响应拦截是否介入 —— 跨协议但回程翻译未实现时（开发新协议翻译的
-     * 半轮实现态）整轮放行，不判空、不重试。判据与理由见
-     * {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
-     *
-     * @param chunkRewriter 落库用的 chunk 改写器；直连传 {@code null}（不改写）
-     * @param ctx           本次请求的管道上下文，由编排层在组装期填好
-     */
-    public Flux<UpstreamEvent> messagesStream(Map<String, Object> request, ResolvedProviderRoute route,
-                                              HttpHeaders downstreamHeaders, String requestId,
-                                              Function<List<String>, ChunkLogPayload> chunkRewriter,
-                                              RequestPipelineContext ctx) {
-        return messagesStream(request, route.model(), route.provider(), downstreamHeaders, requestId,
-                chunkRewriter, ctx);
     }
 
     // ==================== 非流式 ====================

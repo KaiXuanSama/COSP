@@ -7,7 +7,6 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericResponsesChatService;
@@ -20,7 +19,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.http.HttpHeaders;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -34,28 +32,24 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * {@link UpstreamExecutor} 的<strong>协议键</strong>与<strong>委派等价性</strong>。
+ * 三个上游执行器经 {@link UpstreamExecutor} 接口调用时<strong>确实发出了正确的请求</strong>。
  *
- * <h2>为何这两件事必须单独测</h2>
- * 3.4d-1 让三个执行器 {@code implements UpstreamExecutor}，新方法只是<strong>委派</strong>旧方法。
- * 委派本身不会出错，但两处会静默错：
- * <ul>
- *   <li><strong>协议键写错</strong> —— {@code protocol()} 返回了别的值。它不报错，
- *       只会在 3.4d-2 查表时「按 Chat 查到 Anthropic 实现」，症状是出站字段名不对；</li>
- *   <li><strong>委派时参数取错</strong> —— 例如 {@code ctx.model()} 取成了别的字段。
- *       编译通过，症状是「模型名变成了别的东西」这类怪事。</li>
- * </ul>
- * 因此这里对每个执行器断言：键正确，且新入口与旧入口<strong>产生同样的出站请求体</strong>。
+ * <h2>这里在测什么（3.4e 起）</h2>
+ * 3.4d-1 时本类测的是「新接口方法委托旧方法，两者出站请求逐字相同」。
+ * 3.4e 删掉旧方法之后，对比对象没了 —— 于是改为直接断言**接口调用本身的行为**：
+ * 请求打到了正确的路径、请求体带上了 ctx 里的模型名与 body。
  *
- * <h2>为何用真实 HttpServer 抓请求体</h2>
- * 与三个执行器各自的测试同一手法（{@code GenericAnthropicChatServiceTests} 等）：
- * 起一个本地 HttpServer 记录收到的请求体，比对「走 invoke」与「走旧方法」两条路
- * 请求体 JSON 逐字相同。这是委派等价性最直接的证据 —— 比比对响应更强
- * （响应可能被 fallback / 清洗抹平差异）。
+ * <p>这样更强：原先的等价性只证明「新方法没抄错旧方法」，而旧方法对不对它管不着；
+ * 现在直接钉住「经主干那条路（查表 → invoke）真的把请求发出去了」。
  *
- * <h2>桩的响应体必须带实质载荷</h2>
- * 否则会被空响应兜底卷入重试，表现为超时而非断言失败（项目已踩过的坑）。
- * 故按协议回一个形态正常、内容非空的响应。
+ * <h2>桩的响应体必须带实质载荷、且形态要对</h2>
+ * 三协议的检测器各看各的取值路径：Chat 看 {@code choices[].delta}、
+ * Anthropic 看 {@code content[]}、Responses 看 {@code output[].content[].output_text}。
+ * 形态不对会被判空并卷入重试 —— 表现为超时而非断言失败，排查时极易误判成
+ * 「测试没跑起来」。故这里按协议各回一个形态正确的非空响应。
+ *
+ * <p>另注入<b>0 重试预算</b>：本类不测重试，预算归零后错桩会<strong>立即</strong>抛错，
+ * 而不是静默挂起约 62 秒。
  */
 class UpstreamExecutorTests {
 
@@ -63,6 +57,7 @@ class UpstreamExecutorTests {
 
     private HttpServer upstream;
     private final AtomicReference<String> capturedBody = new AtomicReference<>();
+    private final AtomicReference<String> capturedPath = new AtomicReference<>();
 
     @BeforeEach
     void startUpstream() throws IOException {
@@ -70,53 +65,19 @@ class UpstreamExecutorTests {
         upstream.createContext("/", exchange -> {
             String requestBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             capturedBody.set(requestBody);
-            // 流式请求要回 SSE，否则解码器不启动 → 空响应 → 触发兜底重试（慢且不稳）。
-            // 判据取请求体里的 "stream":true —— 那正是各执行器写进去的协议字段。
+            capturedPath.set(exchange.getRequestURI().getPath());
+            // 流式请求要回 SSE，否则解码器不启动 → 空响应 → 触发兜底重试。
             boolean streaming = requestBody.replace(" ", "").contains("\"stream\":true");
             String path = exchange.getRequestURI().getPath();
-            String body;
-            String contentType;
-            if (streaming) {
-                body = sseBodyFor(path);
-                contentType = "text/event-stream";
-            } else {
-                body = jsonBodyFor(path);
-                contentType = "application/json";
-            }
+            String body = streaming ? sseBodyFor(path) : jsonBodyFor(path);
             byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-            exchange.getResponseHeaders().set("Content-Type", contentType);
+            exchange.getResponseHeaders().set("Content-Type",
+                    streaming ? "text/event-stream" : "application/json");
             exchange.sendResponseHeaders(200, bytes.length);
             exchange.getResponseBody().write(bytes);
             exchange.close();
         });
         upstream.start();
-    }
-
-    /** 按路径挑非流式响应体（带实质载荷，避免被空响应兜底卷入重试）。 */
-    private static String jsonBodyFor(String path) {
-        if (path.endsWith("/messages")) {
-            return anthropicOkBody();
-        }
-        if (path.endsWith("/responses")) {
-            return responsesOkBody();
-        }
-        return chatOkBody();
-    }
-
-    /** 按路径挑流式响应体 —— 每协议一帧实质载荷 + 一个终止标记。 */
-    private static String sseBodyFor(String path) {
-        if (path.endsWith("/messages")) {
-            return "event: content_block_delta\n"
-                    + "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
-                    + "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
-        }
-        if (path.endsWith("/responses")) {
-            return "event: response.output_text.delta\n"
-                    + "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n"
-                    + "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\"}}\n\n";
-        }
-        return "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"
-                + "data: [DONE]\n\n";
     }
 
     @AfterEach
@@ -132,7 +93,7 @@ class UpstreamExecutorTests {
     @DisplayName("三个执行器各自声明正确的上游协议键")
     void eachExecutorDeclaresItsProtocol() {
         assertThat(openAiService().protocol())
-                .as("Chat 执行器必须声明 CHAT —— 键错了会在 3.4d-2 查到别的实现")
+                .as("Chat 执行器必须声明 CHAT —— 键错了主干会查到别的实现")
                 .isEqualTo(WireProtocol.CHAT);
         assertThat(anthropicService().protocol())
                 .as("Anthropic 执行器必须声明 MESSAGES")
@@ -142,157 +103,96 @@ class UpstreamExecutorTests {
                 .isEqualTo(WireProtocol.RESPONSES);
     }
 
-    // ==================== 委派等价性：非流式 ====================
+    // ==================== 经接口调用确实发出请求 ====================
 
     @Test
-    @DisplayName("Chat：invoke 与旧 chatCompletion 出站请求体逐字相同")
-    void openAiInvokeDelegatesToLegacyEntry() {
-        assertThat(captureOpenAiBody(true))
-                .as("invoke 只是委派，出站请求体必须与旧方法逐字相同")
-                .isEqualTo(captureOpenAiBody(false));
-    }
-
-    @Test
-    @DisplayName("Anthropic：invoke 与旧 messages 出站请求体逐字相同")
-    void anthropicInvokeDelegatesToLegacyEntry() {
-        assertThat(captureAnthropicBody(true)).isEqualTo(captureAnthropicBody(false));
-    }
-
-    @Test
-    @DisplayName("Responses：invoke 与旧 responses 出站请求体逐字相同")
-    void responsesInvokeDelegatesToLegacyEntry() {
-        assertThat(captureResponsesBody(true)).isEqualTo(captureResponsesBody(false));
-    }
-
-    // ==================== 委派等价性：流式 ====================
-
-    @Test
-    @DisplayName("Chat：invokeStream 与旧 chatCompletionStream 出站请求体逐字相同")
-    void openAiInvokeStreamDelegatesToLegacyEntry() {
-        assertThat(captureOpenAiStreamBody(true)).isEqualTo(captureOpenAiStreamBody(false));
-    }
-
-    @Test
-    @DisplayName("Anthropic：invokeStream 与旧 messagesStream 出站请求体逐字相同")
-    void anthropicInvokeStreamDelegatesToLegacyEntry() {
-        assertThat(captureAnthropicStreamBody(true)).isEqualTo(captureAnthropicStreamBody(false));
-    }
-
-    @Test
-    @DisplayName("Responses：invokeStream 与旧 responsesStream 出站请求体逐字相同")
-    void responsesInvokeStreamDelegatesToLegacyEntry() {
-        assertThat(captureResponsesStreamBody(true)).isEqualTo(captureResponsesStreamBody(false));
-    }
-
-    // ==================== 辅助：抓请求体 ====================
-
-    private String captureOpenAiBody(boolean viaInterface) {
+    @DisplayName("Chat：invoke 打到 /chat/completions，请求体带上 ctx 的模型名与 body")
+    void openAiInvokeSendsRequest() {
         GenericOpenAiChatService service = openAiService();
         Map<String, Object> request = chatRequest("gpt-x");
-        ProviderRuntimeConfiguration provider = providerOf();
-        ResolvedProviderRoute route = new ResolvedProviderRoute(provider, "gpt-x", "gpt-x");
-        RequestPipelineContext ctx = PipelineContexts.direct(request, provider, WireProtocol.CHAT);
+        RequestPipelineContext ctx = ctxFor(request, "gpt-x", WireProtocol.CHAT);
 
-        if (viaInterface) {
-            service.invoke(ctx, null).map(UpstreamEvent::data).block(Duration.ofSeconds(10));
-        } else {
-            service.chatCompletion(request, route, HttpHeaders.EMPTY, "req", ctx)
-                    .map(UpstreamEvent::data).block(Duration.ofSeconds(10));
-        }
-        return capturedBody.get();
+        service.invoke(ctx, null).map(UpstreamEvent::data).block(Duration.ofSeconds(10));
+
+        assertThat(capturedPath.get()).as("Chat 执行器的上游路径").endsWith("/chat/completions");
+        assertThat(capturedBody.get())
+                .as("请求体必须来自 ctx.body()，且模型名取自 ctx.model()")
+                .contains("\"model\":\"gpt-x\"")
+                .contains("\"messages\"");
     }
 
-    private String captureOpenAiStreamBody(boolean viaInterface) {
+    @Test
+    @DisplayName("Chat：invokeStream 同样打到 /chat/completions")
+    void openAiInvokeStreamSendsRequest() {
         GenericOpenAiChatService service = openAiService();
         Map<String, Object> request = chatRequest("gpt-x");
-        ProviderRuntimeConfiguration provider = providerOf();
-        ResolvedProviderRoute route = new ResolvedProviderRoute(provider, "gpt-x", "gpt-x");
-        RequestPipelineContext ctx = PipelineContexts.direct(request, provider, WireProtocol.CHAT);
+        RequestPipelineContext ctx = ctxFor(request, "gpt-x", WireProtocol.CHAT);
 
-        if (viaInterface) {
-            service.invokeStream(ctx, null).collectList().block(Duration.ofSeconds(10));
-        } else {
-            service.chatCompletionStream(request, route, HttpHeaders.EMPTY, "req", ctx)
-                    .collectList().block(Duration.ofSeconds(10));
-        }
-        return capturedBody.get();
+        service.invokeStream(ctx, null).collectList().block(Duration.ofSeconds(10));
+
+        assertThat(capturedPath.get()).endsWith("/chat/completions");
+        assertThat(capturedBody.get()).contains("\"stream\":true");
     }
 
-    private String captureAnthropicBody(boolean viaInterface) {
+    @Test
+    @DisplayName("Anthropic：invoke 打到 /messages，请求体带上 ctx 的模型名")
+    void anthropicInvokeSendsRequest() {
         GenericAnthropicChatService service = anthropicService();
         Map<String, Object> request = anthropicRequest();
-        ProviderRuntimeConfiguration provider = providerOf();
-        ResolvedProviderRoute route = new ResolvedProviderRoute(provider, "claude-x", "claude-x");
-        RequestPipelineContext ctx = PipelineContexts.direct(request, provider, WireProtocol.MESSAGES);
+        RequestPipelineContext ctx = ctxFor(request, "claude-x", WireProtocol.MESSAGES);
 
-        if (viaInterface) {
-            service.invoke(ctx, null).map(UpstreamEvent::data).block(Duration.ofSeconds(10));
-        } else {
-            service.messages(request, route, HttpHeaders.EMPTY, "req", null, ctx)
-                    .map(UpstreamEvent::data).block(Duration.ofSeconds(10));
-        }
-        return capturedBody.get();
+        service.invoke(ctx, null).map(UpstreamEvent::data).block(Duration.ofSeconds(10));
+
+        assertThat(capturedPath.get()).as("Anthropic 执行器的上游路径").endsWith("/messages");
+        assertThat(capturedBody.get()).contains("\"model\":\"claude-x\"");
     }
 
-    private String captureAnthropicStreamBody(boolean viaInterface) {
+    @Test
+    @DisplayName("Anthropic：invokeStream 打到 /messages")
+    void anthropicInvokeStreamSendsRequest() {
         GenericAnthropicChatService service = anthropicService();
         Map<String, Object> request = anthropicRequest();
-        ProviderRuntimeConfiguration provider = providerOf();
-        ResolvedProviderRoute route = new ResolvedProviderRoute(provider, "claude-x", "claude-x");
-        RequestPipelineContext ctx = PipelineContexts.direct(request, provider, WireProtocol.MESSAGES);
+        RequestPipelineContext ctx = ctxFor(request, "claude-x", WireProtocol.MESSAGES);
 
-        if (viaInterface) {
-            service.invokeStream(ctx, null).collectList().block(Duration.ofSeconds(10));
-        } else {
-            service.messagesStream(request, route, HttpHeaders.EMPTY, "req", null, ctx)
-                    .collectList().block(Duration.ofSeconds(10));
-        }
-        return capturedBody.get();
+        service.invokeStream(ctx, null).collectList().block(Duration.ofSeconds(10));
+
+        assertThat(capturedPath.get()).endsWith("/messages");
+        assertThat(capturedBody.get()).contains("\"stream\":true");
     }
 
-    private String captureResponsesBody(boolean viaInterface) {
+    @Test
+    @DisplayName("Responses：invoke 打到 /responses，请求体带上 ctx 的模型名")
+    void responsesInvokeSendsRequest() {
         GenericResponsesChatService service = responsesService();
         Map<String, Object> request = responsesRequest();
-        ProviderRuntimeConfiguration provider = providerOf();
-        ResolvedProviderRoute route = new ResolvedProviderRoute(provider, "resp-x", "resp-x");
-        RequestPipelineContext ctx = PipelineContexts.direct(request, provider, WireProtocol.RESPONSES);
+        RequestPipelineContext ctx = ctxFor(request, "resp-x", WireProtocol.RESPONSES);
 
-        if (viaInterface) {
-            service.invoke(ctx, null).map(UpstreamEvent::data).block(Duration.ofSeconds(10));
-        } else {
-            service.responses(request, route, HttpHeaders.EMPTY, "req", ctx)
-                    .map(UpstreamEvent::data).block(Duration.ofSeconds(10));
-        }
-        return capturedBody.get();
+        service.invoke(ctx, null).map(UpstreamEvent::data).block(Duration.ofSeconds(10));
+
+        assertThat(capturedPath.get()).as("Responses 执行器的上游路径").endsWith("/responses");
+        assertThat(capturedBody.get()).contains("\"model\":\"resp-x\"");
     }
 
-    private String captureResponsesStreamBody(boolean viaInterface) {
+    @Test
+    @DisplayName("Responses：invokeStream 打到 /responses")
+    void responsesInvokeStreamSendsRequest() {
         GenericResponsesChatService service = responsesService();
         Map<String, Object> request = responsesRequest();
-        ProviderRuntimeConfiguration provider = providerOf();
-        ResolvedProviderRoute route = new ResolvedProviderRoute(provider, "resp-x", "resp-x");
-        RequestPipelineContext ctx = PipelineContexts.direct(request, provider, WireProtocol.RESPONSES);
+        RequestPipelineContext ctx = ctxFor(request, "resp-x", WireProtocol.RESPONSES);
 
-        if (viaInterface) {
-            service.invokeStream(ctx, null).collectList().block(Duration.ofSeconds(10));
-        } else {
-            service.responsesStream(request, route, HttpHeaders.EMPTY, "req", ctx)
-                    .collectList().block(Duration.ofSeconds(10));
-        }
-        return capturedBody.get();
+        service.invokeStream(ctx, null).collectList().block(Duration.ofSeconds(10));
+
+        assertThat(capturedPath.get()).endsWith("/responses");
+        assertThat(capturedBody.get()).contains("\"stream\":true");
     }
 
-    // ==================== 辅助：组装 ====================
+    // ==================== 辅助 ====================
 
-    /**
-     * 重试预算固定为 0 —— 本类测的是<strong>委派等价性</strong>，与重试无关。
-     *
-     * <p>不注入的话执行器会走生产默认（5 次 + 2s 起的指数退避）。一旦某条路的桩
-     * 形态写错被判空，症状就是<strong>静默挂起 62 秒然后超时</strong> ——
-     * 看起来像「测试没跑起来」，排查时极易误判。
-     * 预算归零后同样的错桩<strong>立即</strong>抛
-     * {@code EmptyUpstreamResponseException}：红得快、堆栈直指用例。
-     */
+    /** 造一个「已就绪」的 ctx：body 已是最终形态、模型名已定。 */
+    private RequestPipelineContext ctxFor(Map<String, Object> body, String model, WireProtocol protocol) {
+        return PipelineContexts.direct(body, providerOf(), protocol);
+    }
+
     private static RetryPolicyService fixedRetryPolicy(int maxAttempts) {
         return new RetryPolicyService(null) {
             @Override
@@ -359,6 +259,33 @@ class UpstreamExecutorTests {
         return request;
     }
 
+    /** 按路径挑非流式响应体（带实质载荷，避免被空响应兜底卷入重试）。 */
+    private static String jsonBodyFor(String path) {
+        if (path.endsWith("/messages")) {
+            return anthropicOkBody();
+        }
+        if (path.endsWith("/responses")) {
+            return responsesOkBody();
+        }
+        return chatOkBody();
+    }
+
+    /** 按路径挑流式响应体 —— 每协议一帧实质载荷 + 一个终止标记。 */
+    private static String sseBodyFor(String path) {
+        if (path.endsWith("/messages")) {
+            return "event: content_block_delta\n"
+                    + "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
+                    + "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+        }
+        if (path.endsWith("/responses")) {
+            return "event: response.output_text.delta\n"
+                    + "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n"
+                    + "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\"}}\n\n";
+        }
+        return "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"
+                + "data: [DONE]\n\n";
+    }
+
     private static String chatOkBody() {
         return """
                 {"id":"chatcmpl-1","object":"chat.completion","choices":[
@@ -373,7 +300,7 @@ class UpstreamExecutorTests {
                 """;
     }
 
-    /** Responses 形态的非流式响应体 —— 形态必须对，否则 {@code ResponsesContentDetector} 判空并卷入重试。 */
+    /** Responses 形态的非流式响应体 —— 形态必须对，否则检测器判空。 */
     private static String responsesOkBody() {
         return """
                 {"id":"resp_1","object":"response","status":"completed",

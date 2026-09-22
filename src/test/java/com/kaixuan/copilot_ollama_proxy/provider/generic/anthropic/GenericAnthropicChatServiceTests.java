@@ -1434,7 +1434,8 @@ class GenericAnthropicChatServiceTests {
         private Mono<String> exposeMessages(Map<String, Object> request, ResolvedProviderRoute route) {
             // 同流式那个辅助方法：统一形态在此收口为字符串，使既有断言一行未改。
             // 落库改写器传 null：直连路线不改写 chunk。
-            return messages(request, route, HttpHeaders.EMPTY, "req-test",
+            // 3.4e 起执行器只留 invoke/invokeStream 两个入口，此处直调 protected 重载。
+            return messages(request, route.model(), route.provider(), HttpHeaders.EMPTY, "req-test",
                     null,
                     PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES))
                     .map(UpstreamEvent::data);
@@ -1443,7 +1444,7 @@ class GenericAnthropicChatServiceTests {
         private Flux<String> exposeMessagesStream(Map<String, Object> request, ResolvedProviderRoute route) {
             // 上游执行器现在伸统一形态；测试关心的是报文内容，故在此收口为字符串。
             // 这样既有断言（对 List<String> 的 contains / hasSize）一行未改。
-            return messagesStream(request, route, HttpHeaders.EMPTY, "req-test",
+            return messagesStream(request, route.model(), route.provider(), HttpHeaders.EMPTY, "req-test",
                     null,
                     PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES))
                     .map(com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent::data);

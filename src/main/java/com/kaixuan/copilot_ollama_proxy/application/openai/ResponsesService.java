@@ -1,14 +1,9 @@
 package com.kaixuan.copilot_ollama_proxy.application.openai;
 
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelinePreamble;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipeline;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchDecision;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
-import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericResponsesChatService;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;

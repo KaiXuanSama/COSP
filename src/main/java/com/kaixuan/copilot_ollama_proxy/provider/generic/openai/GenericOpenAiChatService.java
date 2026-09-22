@@ -5,14 +5,12 @@ import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineCont
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.provider.AbstractUpstreamChatService;
 import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutor;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.ChunkStageRegistry;
-import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -45,7 +43,7 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService implem
         return "";
     }
 
-    // ==================== 主干 send 插槽（3.4d-1，委派给原有方法） ====================
+    // ==================== 主干 send 插槽 ====================
 
     /** 本执行器服务的上游协议 —— <strong>查表键</strong>。 */
     @Override
@@ -54,10 +52,10 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService implem
     }
 
     /**
-     * 主干入口（非流式）—— 委派给原有方法。
+     * 主干 send 插槽（非流式）。
      *
-     * <p><strong>3.4d-1 是纯加法</strong>：本方法不改变任何行为，只把「旧签名里的 5 个参数」
-     * 改从 ctx 取（它们本就是 ctx 的字段），以便 3.4d-2 切换调用点时主干只需传 ctx。
+     * <p>参数全部来自 ctx —— 旧签名里的 {@code request} / {@code provider} / {@code headers} /
+     * {@code requestId} / {@code model} 本就都是 ctx 字段，故不再重复传递。
      * OpenAI 直连无落库改写，故 {@code chunkRewriter} 被忽略。
      */
     @Override
@@ -67,7 +65,7 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService implem
                 ctx.requestId(), ctx);
     }
 
-    /** 主干入口（流式）—— 委派给原有方法，理由同 {@link #invoke}。 */
+    /** 主干 send 插槽（流式），理由同 {@link #invoke}。 */
     @Override
     public Flux<UpstreamEvent> invokeStream(RequestPipelineContext ctx,
                                             Function<List<String>, ChunkLogPayload> chunkRewriter) {
@@ -96,37 +94,5 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService implem
             log.warn("请求体规则已跳过: ruleId={}, path={}, message={}",
                     warning.ruleId(), warning.fieldPath(), warning.message());
         }
-    }
-
-    /**
-     * 执行一次非流式聊天补全。
-     *
-     * @param openAiRequest 原始 OpenAI 请求体
-     * @param route 应用层解析出的供应商模型路由
-     * @param requestId 本次调用唯一标识，用于透传生命周期事件
-     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
-     * @return 统一形态的上游响应（单个 {@link UpstreamEvent.Body}）
-     */
-    public Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
-                                              HttpHeaders downstreamHeaders, String requestId,
-                                              RequestPipelineContext ctx) {
-        return super.chatCompletion(openAiRequest, route.model(), route.provider(), downstreamHeaders, requestId,
-                ctx);
-    }
-
-    /**
-     * 执行一次流式聊天补全。
-     *
-     * @param openAiRequest 原始 OpenAI 请求体
-     * @param route 应用层解析出的供应商模型路由
-     * @param requestId 本次调用唯一标识，用于透传生命周期事件
-     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
-     * @return 统一形态的上游事件流
-     */
-    public Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, ResolvedProviderRoute route,
-                                                     HttpHeaders downstreamHeaders, String requestId,
-                                                     RequestPipelineContext ctx) {
-        return super.chatCompletionStream(openAiRequest, route.model(), route.provider(), downstreamHeaders,
-                requestId, ctx);
     }
 }

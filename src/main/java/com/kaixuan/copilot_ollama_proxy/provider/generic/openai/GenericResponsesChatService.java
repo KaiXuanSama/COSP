@@ -12,7 +12,6 @@ import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngi
 import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
@@ -175,7 +174,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
         }
     }
 
-    // ==================== 主干 send 插槽（3.4d-1，委派给原有方法） ====================
+    // ==================== 主干 send 插槽 ====================
 
     /** 本执行器服务的上游协议 —— <strong>查表键</strong>。 */
     @Override
@@ -184,10 +183,10 @@ public class GenericResponsesChatService implements UpstreamExecutor {
     }
 
     /**
-     * 主干入口（非流式）—— 委派给原有方法。
+     * 主干 send 插槽（非流式）。
      *
-     * <p><strong>3.4d-1 是纯加法</strong>：不改行为，只把旧签名里已是 ctx 字段的参数改从 ctx 取。
-     * Responses 直连无落库改写（R2x / x2R 未实现），故 {@code chunkRewriter} 被忽略。
+     * <p>参数全部来自 ctx。Responses 直连无落库改写（R2x / x2R 未实现），
+     * 故 {@code chunkRewriter} 被忽略。
      */
     @Override
     public Mono<UpstreamEvent> invoke(RequestPipelineContext ctx,
@@ -196,40 +195,12 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                 ctx.requestId(), ctx);
     }
 
-    /** 主干入口（流式）—— 委派给原有方法，理由同 {@link #invoke}。 */
+    /** 主干 send 插槽（流式），理由同 {@link #invoke}。 */
     @Override
     public Flux<UpstreamEvent> invokeStream(RequestPipelineContext ctx,
                                             Function<List<String>, ChunkLogPayload> chunkRewriter) {
         return responsesStream(ctx.body(), ctx.model(), ctx.provider(), ctx.downstreamHeaders(),
                 ctx.requestId(), ctx);
-    }
-
-    // ==================== 对外入口 ====================
-
-    /**
-     * 非流式，接受应用层已解析的路由与<strong>管道上下文</strong>。
-     *
-     * <p>上下文决定空响应拦截是否介入 —— C2R / R2C 翻译落地时会用到：
-     * 只接了去程而没接回程的方向，应当整轮放行而不判空重试。
-     * 判据与理由见 {@link RequestPipelineContext#shouldApplyEmptyResponseGate()}。
-     *
-     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
-     */
-    public Mono<UpstreamEvent> responses(Map<String, Object> request, ResolvedProviderRoute route,
-                                         HttpHeaders downstreamHeaders, String requestId,
-                                         RequestPipelineContext ctx) {
-        return responses(request, route.model(), route.provider(), downstreamHeaders, requestId, ctx);
-    }
-
-    /**
-     * 流式，接受应用层已解析的路由与<strong>管道上下文</strong>。理由同非流式的那个重载。
-     *
-     * @param ctx 本次请求的管道上下文，由编排层在组装期填好
-     */
-    public Flux<UpstreamEvent> responsesStream(Map<String, Object> request, ResolvedProviderRoute route,
-                                               HttpHeaders downstreamHeaders, String requestId,
-                                               RequestPipelineContext ctx) {
-        return responsesStream(request, route.model(), route.provider(), downstreamHeaders, requestId, ctx);
     }
 
     // ==================== 非流式 ====================
