@@ -258,4 +258,68 @@ class UpstreamRetryPolicyTests {
                     new RuntimeException("net", new EOFException("closed")))).isNull();
         }
     }
+
+    /**
+     * {@code findWebResponseException} 的解包 —— 阶段 3.6c-1 从三个执行器收归。
+     *
+     * <p>它与空响应解包同族同因（都要穿透 {@code RetryExhaustedException}），
+     * 但两个方向都更隐蔽：
+     * <ul>
+     *   <li><strong>漏解</strong> —— 「错误响应已在 exchangeToFlux 落过库」这条排除失效，
+     *       于是同一次失败落<strong>两条</strong>日志；而多出来的那条会被当成网络失败，
+     *       状态码记 {@code -1} 且无错误体 —— 排查时指向网络，实际是上游回了 4xx；</li>
+     *   <li><strong>误解</strong> —— 把不含 HTTP 响应的失败认成 HTTP 失败，去读一个不存在的状态码。</li>
+     * </ul>
+     * 三条线路此前各有一份实现（Chat 是实例方法、另两条是静态私有），
+     * 都<strong>没有直接单测</strong>，只被「错误响应只落一条日志」那类集成用例间接覆盖。
+     */
+    @Nested
+    @DisplayName("HTTP 错误响应的解包")
+    class WebResponseUnwrapping {
+
+        @Test
+        @DisplayName("穿透 RetryExhaustedException 包装")
+        void findsThroughRetryExhaustedWrapper() {
+            WebClientResponseException upstream = upstreamError(HttpStatus.TOO_MANY_REQUESTS, "slow down");
+            Throwable exhausted = new RuntimeException("Retries exhausted: 5/5", upstream);
+
+            assertThat(UpstreamRetryPolicy.findWebResponseException(exhausted)).isSameAs(upstream);
+        }
+
+        @Test
+        @DisplayName("穿透多层包装")
+        void findsThroughMultipleLayers() {
+            WebClientResponseException upstream = upstreamError(HttpStatus.UNAUTHORIZED, "bad key");
+            Throwable nested = new RuntimeException("outer",
+                    new IllegalStateException("middle",
+                            new RuntimeException("Retries exhausted", upstream)));
+
+            assertThat(UpstreamRetryPolicy.findWebResponseException(nested)).isSameAs(upstream);
+        }
+
+        /** 纯网络失败（无上游错误响应）必须返回 null —— 否则会被记成 HTTP 失败并去读状态码。 */
+        @Test
+        @DisplayName("无 HTTP 响应时返回 null")
+        void returnsNullWhenAbsent() {
+            assertThat(UpstreamRetryPolicy.findWebResponseException(
+                    new RuntimeException("net", new EOFException("closed")))).isNull();
+            assertThat(UpstreamRetryPolicy.findWebResponseException(
+                    new EmptyUpstreamResponseException(List.of("{}")))).isNull();
+        }
+
+        /**
+         * 空响应与 HTTP 错误响应<strong>是两个轴</strong>，不得互相误认。
+         *
+         * <p>两者都可能出现在同一个换行链上（如「空响应耗尽」又套一层 HTTP 包装），
+         * 但各自的解包器只认自己那一种 —— 混用会让两条不同的兜底路径同时错位。
+         */
+        @Test
+        @DisplayName("与空响应解包互不误认")
+        void doesNotConfuseEmptyResponseWithHttpError() {
+            WebClientResponseException upstream = upstreamError(HttpStatus.BAD_GATEWAY, "boom");
+
+            assertThat(UpstreamRetryPolicy.findEmptyUpstreamException(upstream)).isNull();
+            assertThat(UpstreamRetryPolicy.findWebResponseException(upstream)).isSameAs(upstream);
+        }
+    }
 }

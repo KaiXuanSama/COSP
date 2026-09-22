@@ -27,6 +27,7 @@ import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEventClassifier;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutor;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamCallReporter;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamRetryPolicy;
+import com.kaixuan.copilot_ollama_proxy.provider.UpstreamSilentRetry;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.ContentDetectorRegistry;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.ContentDetectorStage;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.EmptyResponseGate;
@@ -297,7 +298,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                 })
                 // 失败往返：每次失败（含被 retry 吞掉的中间失败）都各自落一条。
                 .doOnError(e -> {
-                    WebClientResponseException responseException = findWebResponseException(e);
+                    WebClientResponseException responseException = UpstreamRetryPolicy.findWebResponseException(e);
                     if (responseException != null) {
                         Map<String, String> errHeaders = new LinkedHashMap<>();
                         responseException.getHeaders().forEach((k, v) -> errHeaders.put(k, String.join(", ", v)));
@@ -465,7 +466,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                 // 完整理由（为何必须扣住、为何不会破坏客户端状态机）见那个类的类注释。
                 .transform(flux -> gate.gate(flux, Function.identity(), detector, log, callCtx))
                 // 网络类失败往返：错误响应已在 exchangeToFlux 分支落库，
-                // 此处用 findWebResponseException == null 排除以免重复。
+                // 此处用 UpstreamRetryPolicy.findWebResponseException == null 排除以免重复。
                 .doOnError(e -> {
                     EmptyUpstreamResponseException emptyResponse = UpstreamRetryPolicy.findEmptyUpstreamException(e);
                     if (emptyResponse != null) {
@@ -475,7 +476,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                         publishCallRecorded();
                         return;
                     }
-                    if (findWebResponseException(e) == null) {
+                    if (UpstreamRetryPolicy.findWebResponseException(e) == null) {
                         int statusCode = capturedStatusCode.get() == 0 ? -1 : capturedStatusCode.get();
                         saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
                                 capturedRespHeaders.get(), statusCode, List.copyOf(logChunks),
@@ -497,35 +498,15 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                     return Flux.fromIterable(frames);
                 });
 
-        // 静默重试循环：与 OpenAI 侧同构。把重试信号挂到<strong>整轮尝试</strong>
-        // （含 retryWhen 的 backoff 等待）上，使请求进行中与退避等待两个阶段都能被信号中断。
-        // 被中断的轮次以无值完成收场，若标志为真则递归重发；每次重发都注册新鲜的信号，
-        // 因此可以连续点击。下游断连时整个链被取消，递归随之终止。
-        //
-        // 不消耗 retryWhen 的预算：那条预算属于「COSP 自己判定的失败」，
-        // 而这里是管理员的显式意图，两者不该互相挤占。
-        AtomicBoolean silentRetryRequested = new AtomicBoolean(false);
-        AtomicReference<Flux<UpstreamEvent>> attemptLoopRef = new AtomicReference<>();
-        Flux<UpstreamEvent> attemptLoop = Flux.defer(() -> {
-                    Mono<Void> silentRetrySignal = callRetryRegistry == null || requestId == null
-                            ? Mono.never()
-                            : callRetryRegistry.register(requestId)
-                                    .doOnSuccess(v -> silentRetryRequested.set(true));
-                    return attempt.takeUntilOther(silentRetrySignal)
-                            // 形态归一：把清洗后的事件分成「载荷」与「终止标记」两态。
-                            // 按<strong>上游协议</strong>分类 —— 本类发的就是 Anthropic 的事件。
-                            // 放在此处而非更外层：静默重发的那一轮也要经过分类。
-                            .map(data -> UpstreamEventClassifier.classify(
-                                    objectMapper, WireProtocol.MESSAGES, data));
-                })
-                .concatWith(Flux.defer(() -> {
-                    if (silentRetryRequested.compareAndSet(true, false)) {
-                        log.info("静默重试：重新发起 Anthropic 上游请求 [{}] {}", model, requestId);
-                        return attemptLoopRef.get();
-                    }
-                    return Flux.<UpstreamEvent>empty();
-                }));
-        attemptLoopRef.set(attemptLoop);
+        // 静默重试循环：机制收归 UpstreamSilentRetry（阶段 3.6c-1），三条线路共用一份实现。
+        // 形态归一是<strong>协议关联</strong>的一步，故留在本类、接在循环之外 ——
+        // 位置等价：静默重发的那一轮产物也是循环输出的一部分，同样经过分类。
+        Flux<UpstreamEvent> attemptLoop = UpstreamSilentRetry
+                .loop(attempt, callRetryRegistry, requestId, "Anthropic", log, model)
+                // 形态归一：把清洗后的事件分成「载荷」与「终止标记」两态。
+                // 按<strong>上游协议</strong>分类 —— 本类发的就是 Anthropic 的事件。
+                .map(data -> UpstreamEventClassifier.classify(
+                        objectMapper, WireProtocol.MESSAGES, data));
 
         return attemptLoop
                 // 成功往返收尾：仅在非错误终结时落一条成功记录。
@@ -891,18 +872,6 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
     /** 退避上限。可覆盖以便测试压缩等待。 */
     protected Duration retryMaxBackoff() {
         return Duration.ofSeconds(30);
-    }
-
-    /** 递归解包 WebClientResponseException（retryWhen 耗尽时被包进 RetryExhaustedException）。 */
-    private static WebClientResponseException findWebResponseException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof WebClientResponseException responseException) {
-                return responseException;
-            }
-            current = current.getCause();
-        }
-        return null;
     }
 
     // ==================== 落库与观测 ====================

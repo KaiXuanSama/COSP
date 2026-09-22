@@ -169,4 +169,32 @@ public final class UpstreamRetryPolicy {
         }
         return null;
     }
+
+    /**
+     * 从异常链中解包出 {@link WebClientResponseException} —— 与
+     * {@link #findEmptyUpstreamException} 同一族的<strong>解包器</strong>，同因同形。
+     *
+     * <p>同样必须递归：{@code retryWhen} 耗尽时原异常被包进
+     * {@code RetryExhaustedException}，只看最外层会漏判，于是
+     * 「失败往返落库」「错误响应不重复落库」两处判断同时失效 ——
+     * 症状是<strong>上游明明回了 4xx，日志里却记成 statusCode -1 且没有错误体</strong>。
+     *
+     * <h2>与 {@code api.shared.UpstreamFailureClassifier} 无关（同名不同事）</h2>
+     * 后者在<strong>出口</strong>按 {@code FailureKind} 分类，供控制器决定状态码与错误体；
+     * 本方法在<strong>主干</strong>只做「捞出来」，不关心它是哪一类失败。
+     * 两处都需要沿链查找，但产物与用途都不同，不合并。
+     *
+     * @param throwable 待解包异常
+     * @return 链上第一个 HTTP 错误响应异常；没有则返回 null
+     */
+    public static WebClientResponseException findWebResponseException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof WebClientResponseException responseException) {
+                return responseException;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
 }

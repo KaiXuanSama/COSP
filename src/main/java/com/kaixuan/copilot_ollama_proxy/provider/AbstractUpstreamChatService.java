@@ -280,7 +280,7 @@ public abstract class AbstractUpstreamChatService {
                 })
                 // 失败往返：每次失败（含被 retry 吞掉的中间失败）都各自落一条（在 retry 上游）。
                 .doOnError(e -> {
-                    WebClientResponseException responseException = findWebResponseException(e);
+                    WebClientResponseException responseException = UpstreamRetryPolicy.findWebResponseException(e);
                     if (responseException != null) {
                         Map<String, String> errHeaders = new LinkedHashMap<>();
                         responseException.getHeaders().forEach((k, v) -> errHeaders.put(k, String.join(", ", v)));
@@ -464,13 +464,11 @@ public abstract class AbstractUpstreamChatService {
         AtomicLong ttfbMs = new AtomicLong(-1);
         // 本次往返的 usage 原始 JSON：从上游原始 chunk 提取，成功收尾写用量表。往返起点清空。
         AtomicReference<String> usageRaw = new AtomicReference<>(null);
-        // 静默重试标志：上游尝试被重试信号中断时置位，收尾处据此重新发起一轮。
-        AtomicBoolean silentRetryRequested = new AtomicBoolean(false);
         // 空响应耗尽放行标记：该轮已在 doOnError 落过库，收尾处据此跳过，避免同一轮记两条。
         AtomicBoolean emptyResponsePassthrough = new AtomicBoolean(false);
 
-        // 单次上游尝试：每次订阅都注册新鲜的静默重试信号并把自己挂在信号上，
-        // 被触发时取消当前 WebClient 请求（无值完成），由外层循环决定是否重发。
+        // 单次上游尝试：状态由本类维护（重置计时、清收集、重置闸门），
+        // 中断与再发起由 UpstreamSilentRetry 负责（见下方循环）。
         Flux<ServerSentEvent<String>> rawAttempt = Flux.defer(() -> {
                     // 本次往返起点：重置计时与 chunk 收集，使每条日志只反映该次往返（不跨重试累加）。
                     attemptStart.set(System.currentTimeMillis());
@@ -524,7 +522,8 @@ public abstract class AbstractUpstreamChatService {
                 })
                 .transform(flux -> gate.gate(flux, ServerSentEvent::data, detector, log, callCtx))
                 // 网络类失败往返（无上游错误响应，如连接失败 / HTTP 200 后流中途断开）：即时落一条记录。
-                // 错误响应（4xx/5xx）已在 exchangeToFlux 分支落库，此处用 findWebResponseException==null 排除以免重复。
+                // 错误响应（4xx/5xx）已在 exchangeToFlux 分支落库，
+                // 此处用 UpstreamRetryPolicy.findWebResponseException == null 排除以免重复。
                 .doOnError(e -> {
                     Optional<List<String>> exhausted = EmptyResponseGate.exhaustedFrames(e);
                     if (exhausted.isPresent()) {
@@ -537,7 +536,7 @@ public abstract class AbstractUpstreamChatService {
                         publishCallRecorded();
                         return;
                     }
-                    if (findWebResponseException(e) == null) {
+                    if (UpstreamRetryPolicy.findWebResponseException(e) == null) {
                         int statusCode = capturedStatusCode.get() == 0 ? -1 : capturedStatusCode.get();
                         saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
                                 capturedRespHeaders.get(), statusCode, List.copyOf(logChunks), attemptStart.get());
@@ -566,25 +565,11 @@ public abstract class AbstractUpstreamChatService {
                             .map(data -> ServerSentEvent.builder(data).build());
                 });
 
-        // 静默重试循环：把重试信号挂到<strong>整轮尝试</strong>（含 retryWhen 的 backoff 等待）上，
-        // 使请求进行中与退避等待两个阶段都能被信号中断。被中断的轮次（无值完成）若标志为真则重发。
-        // 每次重发都重新注册新鲜的信号，连续点击可连续触发；下游断连时整个链被取消，递归随之终止。
-        AtomicReference<Flux<ServerSentEvent<String>>> attemptLoopRef = new AtomicReference<>();
-        Flux<ServerSentEvent<String>> attemptLoop = Flux.defer(() -> {
-                    Mono<Void> silentRetrySignal = callRetryRegistry == null || requestId == null
-                            ? Mono.never()
-                            : callRetryRegistry.register(requestId)
-                                    .doOnSuccess(v -> silentRetryRequested.set(true));
-                    return rawAttempt.takeUntilOther(silentRetrySignal);
-                })
-                .concatWith(Flux.defer(() -> {
-                    if (silentRetryRequested.compareAndSet(true, false)) {
-                        log.info("静默重试：重新发起上游请求 [{}] {}", model, requestId);
-                        return attemptLoopRef.get();
-                    }
-                    return Flux.<ServerSentEvent<String>>empty();
-                }));
-        attemptLoopRef.set(attemptLoop);
+        // 静默重试循环：机制收归 UpstreamSilentRetry（阶段 3.6c-1），三条线路共用一份实现。
+        // 本线路是唯一传 {@code ServerSentEvent} 的（与 EmptyResponseGate 泛型同理）——
+        // 循环挂在 mapNotNull 之前，而另两条挂在其后。
+        Flux<ServerSentEvent<String>> attemptLoop =
+                UpstreamSilentRetry.loop(rawAttempt, callRetryRegistry, requestId, "OpenAI", log, model);
 
         return attemptLoop
                 .mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))
@@ -880,21 +865,6 @@ public abstract class AbstractUpstreamChatService {
             // finally 语义：无论用量是否实际写入，用量流程走完即宣告该次调用的记录就绪。
             publishCallRecorded();
         }
-    }
-
-    /**
-     * 从异常链中查找 WebClientResponseException。
-     * 重试耗尽时原始异常被包装在 RetryExhaustedException 中，需要递归解包。
-     */
-    private WebClientResponseException findWebResponseException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof WebClientResponseException responseException) {
-                return responseException;
-            }
-            current = current.getCause();
-        }
-        return null;
     }
 
     /**
