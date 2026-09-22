@@ -1092,7 +1092,7 @@ class AbstractUpstreamChatServiceTests {
         }));
 
         RequestPipelineContext halfImplemented = PipelineContexts.halfRound(newRequest(), provider(),
-                WireProtocol.CHAT, WireProtocol.MESSAGES);
+                WireProtocol.CHAT, WireProtocol.MESSAGES, true);
 
         List<String> received = service
                 .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-half-stream", halfImplemented)
@@ -1133,7 +1133,7 @@ class AbstractUpstreamChatServiceTests {
         }));
 
         RequestPipelineContext fullyImplemented = PipelineContexts.fullyTranslated(newRequest(), provider(),
-                WireProtocol.CHAT, WireProtocol.MESSAGES);
+                WireProtocol.CHAT, WireProtocol.MESSAGES, true);
 
         List<String> received = service
                 .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-full-stream", fullyImplemented)
@@ -1164,7 +1164,7 @@ class AbstractUpstreamChatServiceTests {
         }));
 
         RequestPipelineContext halfImplemented = PipelineContexts.halfRound(newRequest(), provider(),
-                WireProtocol.CHAT, WireProtocol.MESSAGES);
+                WireProtocol.CHAT, WireProtocol.MESSAGES, false);
 
         String received = service
                 .exposeChatCompletion(newRequest(), "model-a", provider(), "req-half-nonstream", halfImplemented)
@@ -1199,7 +1199,7 @@ class AbstractUpstreamChatServiceTests {
         }));
 
         RequestPipelineContext fullyImplemented = PipelineContexts.fullyTranslated(newRequest(), provider(),
-                WireProtocol.CHAT, WireProtocol.MESSAGES);
+                WireProtocol.CHAT, WireProtocol.MESSAGES, false);
 
         String received = service
                 .exposeChatCompletion(newRequest(), "model-a", provider(), "req-full-nonstream", fullyImplemented)
@@ -1236,7 +1236,7 @@ class AbstractUpstreamChatServiceTests {
                     .body(body).build());
         }));
 
-        RequestPipelineContext direct = PipelineContexts.direct(newRequest(), provider(), WireProtocol.CHAT);
+        RequestPipelineContext direct = PipelineContexts.direct(newRequest(), provider(), WireProtocol.CHAT, true);
 
         List<String> received = service
                 .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-direct-gate", direct)
@@ -1335,14 +1335,14 @@ class AbstractUpstreamChatServiceTests {
         private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
                                                         ProviderRuntimeConfiguration provider) {
             return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, null,
-                    PipelineContexts.direct(request, provider, WireProtocol.CHAT))
+                    PipelineContexts.direct(request, provider, WireProtocol.CHAT, true))
                     .map(UpstreamEvent::data);
         }
 
         private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
                                                         ProviderRuntimeConfiguration provider, String requestId) {
             return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, requestId,
-                    PipelineContexts.direct(request, provider, WireProtocol.CHAT))
+                    PipelineContexts.direct(request, provider, WireProtocol.CHAT, true))
                     .map(UpstreamEvent::data);
         }
 
@@ -1351,7 +1351,7 @@ class AbstractUpstreamChatServiceTests {
             // 上游执行器现在伸统一形态；测试关心的是报文内容，故在此收口为字符串，
             // 使既有断言（对 String 的 contains / isEmpty）一行未改。
             return chatCompletion(request, model, provider, HttpHeaders.EMPTY, requestId,
-                    PipelineContexts.direct(request, provider, WireProtocol.CHAT))
+                    PipelineContexts.direct(request, provider, WireProtocol.CHAT, false))
                     .map(UpstreamEvent::data);
         }
 

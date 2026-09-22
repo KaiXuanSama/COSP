@@ -371,14 +371,14 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
         private Flux<UpstreamEvent> exposeChatCompletionStream(Map<String, Object> request, String model,
                                                                ProviderRuntimeConfiguration provider) {
             return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, null,
-                    PipelineContexts.direct(request, provider, WireProtocol.CHAT));
+                    PipelineContexts.direct(request, provider, WireProtocol.CHAT, true));
         }
 
         private Mono<String> exposeChatCompletion(Map<String, Object> request, String model,
                                                   ProviderRuntimeConfiguration provider) {
             // 同流式那个辅助方法：在此收口为字符串，让既有断言一行未改。
             return chatCompletion(request, model, provider, HttpHeaders.EMPTY, null,
-                    PipelineContexts.direct(request, provider, WireProtocol.CHAT))
+                    PipelineContexts.direct(request, provider, WireProtocol.CHAT, false))
                     .map(UpstreamEvent::data);
         }
 

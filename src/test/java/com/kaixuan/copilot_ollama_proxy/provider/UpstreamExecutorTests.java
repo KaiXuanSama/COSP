@@ -110,7 +110,7 @@ class UpstreamExecutorTests {
     void openAiInvokeSendsRequest() {
         GenericOpenAiChatService service = openAiService();
         Map<String, Object> request = chatRequest("gpt-x");
-        RequestPipelineContext ctx = ctxFor(request, "gpt-x", WireProtocol.CHAT);
+        RequestPipelineContext ctx = ctxFor(request, "gpt-x", WireProtocol.CHAT, false);
 
         service.invoke(ctx, null).map(UpstreamEvent::data).block(Duration.ofSeconds(10));
 
@@ -126,7 +126,7 @@ class UpstreamExecutorTests {
     void openAiInvokeStreamSendsRequest() {
         GenericOpenAiChatService service = openAiService();
         Map<String, Object> request = chatRequest("gpt-x");
-        RequestPipelineContext ctx = ctxFor(request, "gpt-x", WireProtocol.CHAT);
+        RequestPipelineContext ctx = ctxFor(request, "gpt-x", WireProtocol.CHAT, true);
 
         service.invokeStream(ctx, null).collectList().block(Duration.ofSeconds(10));
 
@@ -139,7 +139,7 @@ class UpstreamExecutorTests {
     void anthropicInvokeSendsRequest() {
         GenericAnthropicChatService service = anthropicService();
         Map<String, Object> request = anthropicRequest();
-        RequestPipelineContext ctx = ctxFor(request, "claude-x", WireProtocol.MESSAGES);
+        RequestPipelineContext ctx = ctxFor(request, "claude-x", WireProtocol.MESSAGES, false);
 
         service.invoke(ctx, null).map(UpstreamEvent::data).block(Duration.ofSeconds(10));
 
@@ -152,7 +152,7 @@ class UpstreamExecutorTests {
     void anthropicInvokeStreamSendsRequest() {
         GenericAnthropicChatService service = anthropicService();
         Map<String, Object> request = anthropicRequest();
-        RequestPipelineContext ctx = ctxFor(request, "claude-x", WireProtocol.MESSAGES);
+        RequestPipelineContext ctx = ctxFor(request, "claude-x", WireProtocol.MESSAGES, true);
 
         service.invokeStream(ctx, null).collectList().block(Duration.ofSeconds(10));
 
@@ -165,7 +165,7 @@ class UpstreamExecutorTests {
     void responsesInvokeSendsRequest() {
         GenericResponsesChatService service = responsesService();
         Map<String, Object> request = responsesRequest();
-        RequestPipelineContext ctx = ctxFor(request, "resp-x", WireProtocol.RESPONSES);
+        RequestPipelineContext ctx = ctxFor(request, "resp-x", WireProtocol.RESPONSES, false);
 
         service.invoke(ctx, null).map(UpstreamEvent::data).block(Duration.ofSeconds(10));
 
@@ -178,7 +178,7 @@ class UpstreamExecutorTests {
     void responsesInvokeStreamSendsRequest() {
         GenericResponsesChatService service = responsesService();
         Map<String, Object> request = responsesRequest();
-        RequestPipelineContext ctx = ctxFor(request, "resp-x", WireProtocol.RESPONSES);
+        RequestPipelineContext ctx = ctxFor(request, "resp-x", WireProtocol.RESPONSES, true);
 
         service.invokeStream(ctx, null).collectList().block(Duration.ofSeconds(10));
 
@@ -189,8 +189,9 @@ class UpstreamExecutorTests {
     // ==================== 辅助 ====================
 
     /** 造一个「已就绪」的 ctx：body 已是最终形态、模型名已定。 */
-    private RequestPipelineContext ctxFor(Map<String, Object> body, String model, WireProtocol protocol) {
-        return PipelineContexts.direct(body, providerOf(), protocol);
+    private RequestPipelineContext ctxFor(Map<String, Object> body, String model, WireProtocol protocol,
+                                          boolean stream) {
+        return PipelineContexts.direct(body, providerOf(), protocol, stream);
     }
 
     private static RetryPolicyService fixedRetryPolicy(int maxAttempts) {

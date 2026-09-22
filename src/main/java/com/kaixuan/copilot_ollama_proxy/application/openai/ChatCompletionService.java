@@ -3,7 +3,6 @@ package com.kaixuan.copilot_ollama_proxy.application.openai;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipeline;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.RequestTranslationException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
@@ -61,8 +60,10 @@ public class ChatCompletionService {
     public Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, String model,
                                               HttpHeaders downstreamHeaders, String requestId) {
         // defer 把主干各同步步骤的异常转成 onError 信号，控制器才能分类处置。理由见类注释。
+        // 主干只有一个入口（返回统一的事件流）；非流式是「恰有一个元素的流」，
+        // 故在**出口**收成 Mono —— 与上游形态的适配只发生在端点边界。
         return Mono.defer(() -> requestPipeline.execute(RequestPipelineContext.forEndpoint(
-                openAiRequest, model, DOWNSTREAM_PROTOCOL, downstreamHeaders, requestId)));
+                openAiRequest, model, DOWNSTREAM_PROTOCOL, downstreamHeaders, requestId, false)).single());
     }
 
     /**
@@ -88,8 +89,8 @@ public class ChatCompletionService {
                                                      HttpHeaders downstreamHeaders, String requestId) {
         // 同非流式：defer 让组装期异常成为 onError 信号，控制器才能发出 SSE error 帧
         // 而不是让 WebFlux 兜底成 500 JSON。
-        return Flux.defer(() -> requestPipeline.executeStream(RequestPipelineContext.forEndpoint(
-                openAiRequest, model, DOWNSTREAM_PROTOCOL, downstreamHeaders, requestId)));
+        return Flux.defer(() -> requestPipeline.execute(RequestPipelineContext.forEndpoint(
+                openAiRequest, model, DOWNSTREAM_PROTOCOL, downstreamHeaders, requestId, true)));
     }
 
     /**

@@ -948,14 +948,14 @@ class GenericResponsesChatServiceTests {
             // 同流式那个辅助方法：统一形态在此收口为字符串，使既有断言一行未改。
             // 3.4e 起执行器只留 invoke/invokeStream 两个入口，此处直调 protected 重载。
             return responses(request, route.model(), route.provider(), downstreamHeaders, "req-test",
-                    PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES))
+                    PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES, false))
                     .map(com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent::data);
         }
 
         private Flux<String> exposeResponsesStream(Map<String, Object> request, ResolvedProviderRoute route) {
             // 收口为字符串：本类断言的是报文内容与顺序，与分类无关。
             return responsesStream(request, route.model(), route.provider(), HttpHeaders.EMPTY, "req-test",
-                    PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES))
+                    PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES, true))
                     .map(com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent::data);
         }
 

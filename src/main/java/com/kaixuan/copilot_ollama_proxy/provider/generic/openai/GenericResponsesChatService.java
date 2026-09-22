@@ -224,8 +224,10 @@ public class GenericResponsesChatService implements UpstreamExecutor {
     protected Mono<UpstreamEvent> responses(Map<String, Object> request, String model,
                                             ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                             String requestId, RequestPipelineContext ctx) {
-        Map<String, Object> requestBody = prepareRequestBody(request, false, model, provider);
-        log.info("{} Responses 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
+        // stream 取自 ctx（3.5a）：主干按 ctx.stream() 选了本方法，故这里二者必定一致。
+        boolean stream = ctx.stream();
+        Map<String, Object> requestBody = prepareRequestBody(request, stream, model, provider);
+        log.info("{} Responses 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
         boolean gateActive = ctx.shouldApplyEmptyResponseGate();

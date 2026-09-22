@@ -222,8 +222,11 @@ public abstract class AbstractUpstreamChatService {
     protected Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, String model,
                                                  ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                  String requestId, RequestPipelineContext ctx) {
-        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, false, model, provider);
-        log.info("{} OpenAI 上游，模型: {}, 流式: false", provider.providerKey(), requestBody.get("model"));
+        // stream 取自 ctx（3.5a）：主干按 ctx.stream() 选了本方法，故这里二者必定一致。
+        // 写成字面量会让「哪条链被调了」与「body 里的 stream」两处各自为政。
+        boolean stream = ctx.stream();
+        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, stream, model, provider);
+        log.info("{} OpenAI 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
         // 见 RequestPipelineContext 的「生命周期」注释：写进 defer 里会让半实现态在第二轮又走回判空重试。

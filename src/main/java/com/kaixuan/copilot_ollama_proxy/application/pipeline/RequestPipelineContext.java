@@ -108,6 +108,24 @@ public final class RequestPipelineContext {
     private final WireProtocol downstreamProtocol;
 
     /**
+     * 本次调用是否为<strong>流式</strong>（下游请求体里的 {@code stream}）。
+     *
+     * <p>它是<strong>请求级事实</strong>：端点建 ctx 时就知道（控制器进的是流式还是非流式入口），
+     * 且整条主干与执行器都要用（{@code prepareRequestBody} 写 {@code stream} 字段、
+     * {@code buildWebClient} 选 {@code Accept} 头、{@code saveUsage} 选 ttfb 口径……）。
+     *
+     * <p><strong>为何是一个显式字段，而不是去 body 里读 {@code stream}</strong>：
+     * 读 body 会把「怎么执行」编码进「数据」—— 而那个字段是执行器内部
+     * {@code writeProtocolFields} 写的，两者一旦不一致就会静默走错路。
+     * 与 {@link #downstreamProtocol} 同一性质：都是「这次请求是什么」而非「报文长什么样」。
+     *
+     * <p>3.5a 之前它以 {@code boolean stream} <strong>参数</strong>在三处穿线
+     * （{@code prepareRequestBody} / {@code buildWebClient} / {@code saveUsage}）——
+     * 提进本类就是把已经在传的东西从参数搬进状态池。
+     */
+    private final boolean stream;
+
+    /**
      * 实际对上游使用的协议（由供应商配置与调度决定）。
      *
      * <p><strong>可变</strong>：端点创建 ctx 时还不知道它（要先 resolve + dispatch），
@@ -148,7 +166,7 @@ public final class RequestPipelineContext {
     private RequestPipelineContext(Map<String, Object> body, String model, WireProtocol downstreamProtocol,
                                    WireProtocol upstreamProtocol, ProviderRuntimeConfiguration provider,
                                    HttpHeaders downstreamHeaders, String requestId,
-                                   TranslationContext translationContext) {
+                                   TranslationContext translationContext, boolean stream) {
         this.body = body;
         this.model = model;
         this.downstreamProtocol = downstreamProtocol;
@@ -157,6 +175,7 @@ public final class RequestPipelineContext {
         this.downstreamHeaders = downstreamHeaders;
         this.requestId = requestId;
         this.translationContext = translationContext;
+        this.stream = stream;
         // bodyProtocol 初值取 downstreamProtocol：端点建 ctx 时 body 还是下游形态，
         // 要等主干上的 translate 把它换成上游形态（replaceBody 成对更新）。
         // 理由与写错的代价见类注释。
@@ -179,14 +198,16 @@ public final class RequestPipelineContext {
      * @param downstreamProtocol 下游协议（本端点服务的那个）
      * @param downstreamHeaders  下游请求头
      * @param requestId          本次调用唯一标识
+     * @param stream             本次调用是否流式
      */
     public static RequestPipelineContext forEndpoint(Map<String, Object> body,
                                                      String requestedModel,
                                                      WireProtocol downstreamProtocol,
                                                      HttpHeaders downstreamHeaders,
-                                                     String requestId) {
+                                                     String requestId,
+                                                     boolean stream) {
         return new RequestPipelineContext(body, requestedModel, downstreamProtocol,
-                downstreamProtocol, null, downstreamHeaders, requestId, null);
+                downstreamProtocol, null, downstreamHeaders, requestId, null, stream);
     }
 
     /**
@@ -249,6 +270,7 @@ public final class RequestPipelineContext {
      * @param downstreamProtocol 下游协议
      * @param upstreamProtocol   上游协议
      * @param translationContext 去程翻译产出的事实；直连传 null
+     * @param stream             本次调用是否流式
      */
     public static RequestPipelineContext of(Map<String, Object> body,
                                             String model,
@@ -257,9 +279,10 @@ public final class RequestPipelineContext {
                                             ProviderRuntimeConfiguration provider,
                                             HttpHeaders downstreamHeaders,
                                             String requestId,
-                                            TranslationContext translationContext) {
+                                            TranslationContext translationContext,
+                                            boolean stream) {
         RequestPipelineContext ctx = new RequestPipelineContext(body, model, downstreamProtocol, upstreamProtocol,
-                provider, downstreamHeaders, requestId, translationContext);
+                provider, downstreamHeaders, requestId, translationContext, stream);
         // 完整形态：body 已是上游形态，故查表键取 upstream（与构造器的端点默认相反）。
         ctx.bodyProtocol = upstreamProtocol;
         return ctx;
@@ -273,6 +296,11 @@ public final class RequestPipelineContext {
     /** 本次调用用于上游请求的模型名。 */
     public String model() {
         return model;
+    }
+
+    /** 本次调用是否流式 —— 请求级事实，供执行器与主干选机制。 */
+    public boolean stream() {
+        return stream;
     }
 
     /**

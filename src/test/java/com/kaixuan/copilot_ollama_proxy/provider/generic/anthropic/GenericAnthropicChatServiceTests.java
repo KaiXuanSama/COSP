@@ -1437,7 +1437,7 @@ class GenericAnthropicChatServiceTests {
             // 3.4e 起执行器只留 invoke/invokeStream 两个入口，此处直调 protected 重载。
             return messages(request, route.model(), route.provider(), HttpHeaders.EMPTY, "req-test",
                     null,
-                    PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES))
+                    PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES, false))
                     .map(UpstreamEvent::data);
         }
 
@@ -1446,7 +1446,7 @@ class GenericAnthropicChatServiceTests {
             // 这样既有断言（对 List<String> 的 contains / hasSize）一行未改。
             return messagesStream(request, route.model(), route.provider(), HttpHeaders.EMPTY, "req-test",
                     null,
-                    PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES))
+                    PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES, true))
                     .map(com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent::data);
         }
 

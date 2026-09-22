@@ -60,9 +60,9 @@ public class MessagesService {
     public Mono<UpstreamEvent> messages(Map<String, Object> request, String model,
                                         HttpHeaders downstreamHeaders, String requestId) {
         // defer 把主干各同步步骤的异常转成 onError 信号，理由见类注释。
-        // ctx 在 defer 内创建：主干会逐步填充它，且它不属于跨重试的共享状态。
+        // 非流式是「恰有一个元素的流」，故在**出口**收成 Mono。
         return Mono.defer(() -> requestPipeline.execute(RequestPipelineContext.forEndpoint(
-                request, model, DOWNSTREAM_PROTOCOL, downstreamHeaders, requestId)));
+                request, model, DOWNSTREAM_PROTOCOL, downstreamHeaders, requestId, false)).single());
     }
 
     /**
@@ -73,7 +73,7 @@ public class MessagesService {
     public Flux<UpstreamEvent> messagesStream(Map<String, Object> request, String model,
                                               HttpHeaders downstreamHeaders, String requestId) {
         // 同非流式：defer 让组装期异常成为 onError 信号，控制器才能发 Anthropic error 事件。
-        return Flux.defer(() -> requestPipeline.executeStream(RequestPipelineContext.forEndpoint(
-                request, model, DOWNSTREAM_PROTOCOL, downstreamHeaders, requestId)));
+        return Flux.defer(() -> requestPipeline.execute(RequestPipelineContext.forEndpoint(
+                request, model, DOWNSTREAM_PROTOCOL, downstreamHeaders, requestId, true)));
     }
 }

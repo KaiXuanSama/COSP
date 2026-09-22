@@ -38,7 +38,7 @@ class RequestPipelineContextTests {
     private static RequestPipelineContext chatToMessages() {
         return RequestPipelineContext.of(new LinkedHashMap<>(Map.of("model", "m")), "m",
                 WireProtocol.CHAT, WireProtocol.MESSAGES, provider(),
-                HttpHeaders.EMPTY, "req-1", null);
+                HttpHeaders.EMPTY, "req-1", null, false);
     }
 
     @Nested
@@ -62,9 +62,10 @@ class RequestPipelineContextTests {
          * <p>因为翻译发生在应用服务层：编排器把 body 换成上游形态之后才交给主干，
          * 所以主干拿到的 body 从一开始就是上游协议的形状。
          *
-         * <p>这条钉住的是「当前事实」而非「设计选择」—— 等 3.4 把 translate 移进主干，
-         * 初值语义会变成「= downstream、被 translate 改写」，届时本用例需一并更新，
-         * 而那正是它该提醒的事。
+         * <p>它描述的是 {@code of(...)} 这个<strong>完整形态工厂</strong>的语义：
+         * body 已是最终形态，故查表键取 upstream。
+         * <strong>端点建 ctx 时初值是 downstream</strong>（生产路径走 {@code forEndpoint}）——
+         * 两者差别只在「翻译是否已发生」，均由 3.4c-1 的两段式表达。
          */
         @Test
         void bodyProtocolStartsAsUpstreamProtocolBecauseTranslationHappensAbove() {
@@ -74,12 +75,28 @@ class RequestPipelineContextTests {
             assertThat(ctx.bodyProtocol()).isEqualTo(ctx.upstreamProtocol());
         }
 
+        /**
+         * {@code stream} 是<strong>请求级事实</strong>，由端点建 ctx 时声明（3.5a）。
+         *
+         * <p>主干与执行器都靠它选机制（send 调 invoke 还是 invokeStream、
+         * 回程走 translateResponse 还是 translateStream）。
+         * 它是显式字段而非去 body 里读—— 读 body 会把「怎么执行」编码进「数据」。
+         */
+        @Test
+        void carriesStreamFlagFromCreation() {
+            assertThat(chatToMessages().stream()).isFalse();
+
+            RequestPipelineContext streaming = RequestPipelineContext.forEndpoint(
+                    new LinkedHashMap<>(), "m", WireProtocol.CHAT, HttpHeaders.EMPTY, "req-s", true);
+            assertThat(streaming.stream()).as("端点声明流式时应如实带出").isTrue();
+        }
+
         /** 直连：两侧同协议，{@code bodyProtocol} 自然也相同。 */
         @Test
         void directConnectionHasIdenticalProtocols() {
             RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
                     WireProtocol.MESSAGES, WireProtocol.MESSAGES, provider(),
-                    HttpHeaders.EMPTY, "req-2", null);
+                    HttpHeaders.EMPTY, "req-2", null, false);
 
             assertThat(ctx.bodyProtocol()).isEqualTo(WireProtocol.MESSAGES);
             assertThat(ctx.downstreamProtocol()).isEqualTo(ctx.upstreamProtocol());
@@ -101,7 +118,7 @@ class RequestPipelineContextTests {
         void translationContextIsCarriedOnTranslationRoute() {
             RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
                     WireProtocol.CHAT, WireProtocol.MESSAGES, provider(),
-                    HttpHeaders.EMPTY, "req-3", new TranslationContext(false, true));
+                    HttpHeaders.EMPTY, "req-3", new TranslationContext(false, true), false);
 
             assertThat(ctx.translationContext()).isNotNull();
         }
@@ -274,7 +291,7 @@ class RequestPipelineContextTests {
         void sameProtocolOnBothSidesMeansNoTranslation() {
             RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
                     WireProtocol.MESSAGES, WireProtocol.MESSAGES, provider(),
-                    HttpHeaders.EMPTY, "req-1", null);
+                    HttpHeaders.EMPTY, "req-1", null, false);
 
             assertThat(ctx.translationNeeded()).isFalse();
         }
@@ -306,7 +323,7 @@ class RequestPipelineContextTests {
         void sameProtocolWithTranslationStepsRecordedStillClaimsNoTranslation() {
             RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
                     WireProtocol.CHAT, WireProtocol.CHAT, provider(),
-                    HttpHeaders.EMPTY, "req-1", null);
+                    HttpHeaders.EMPTY, "req-1", null, false);
 
             ctx.markCompleted(PipelineStep.REQUEST_TRANSLATION);
 
@@ -343,7 +360,7 @@ class RequestPipelineContextTests {
         @Test
         void directConnectionAlwaysGates() {
             RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
-                    WireProtocol.CHAT, WireProtocol.CHAT, provider(), HttpHeaders.EMPTY, "req-1", null);
+                    WireProtocol.CHAT, WireProtocol.CHAT, provider(), HttpHeaders.EMPTY, "req-1", null, false);
 
             assertThat(ctx.shouldApplyEmptyResponseGate()).isTrue();
         }
@@ -421,7 +438,7 @@ class RequestPipelineContextTests {
         void sameProtocolGatesEvenIfTranslationStepsWereRecorded() {
             RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
                     WireProtocol.CHAT, WireProtocol.CHAT, provider(),
-                    HttpHeaders.EMPTY, "req-1", null);
+                    HttpHeaders.EMPTY, "req-1", null, false);
             ctx.markCompleted(PipelineStep.REQUEST_TRANSLATION);
 
             assertThat(ctx.shouldApplyEmptyResponseGate()).isTrue();
@@ -438,7 +455,7 @@ class RequestPipelineContextTests {
         void directConnectionGatesAfterBothTranslationStepsRecorded() {
             RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
                     WireProtocol.CHAT, WireProtocol.CHAT, provider(),
-                    HttpHeaders.EMPTY, "req-1", null);
+                    HttpHeaders.EMPTY, "req-1", null, false);
             ctx.markCompleted(PipelineStep.REQUEST_TRANSLATION);
             ctx.markCompleted(PipelineStep.RESPONSE_TRANSLATION);
 
@@ -472,7 +489,7 @@ class RequestPipelineContextTests {
         void endpointContextKnowsOnlyDownstreamFacts() {
             RequestPipelineContext ctx = RequestPipelineContext.forEndpoint(
                     new LinkedHashMap<>(Map.of("model", "[relay-x] m")), "[relay-x] m",
-                    WireProtocol.CHAT, HttpHeaders.EMPTY, "req-ep");
+                    WireProtocol.CHAT, HttpHeaders.EMPTY, "req-ep", false);
 
             assertThat(ctx.downstreamProtocol()).isEqualTo(WireProtocol.CHAT);
             assertThat(ctx.model()).as("端点放进来的是请求模型名（带前缀）").isEqualTo("[relay-x] m");
@@ -490,7 +507,7 @@ class RequestPipelineContextTests {
         @Test
         void translationNeededIsRejectedBeforeRoutingIsFilled() {
             RequestPipelineContext ctx = RequestPipelineContext.forEndpoint(
-                    new LinkedHashMap<>(), "m", WireProtocol.CHAT, HttpHeaders.EMPTY, "req-ep");
+                    new LinkedHashMap<>(), "m", WireProtocol.CHAT, HttpHeaders.EMPTY, "req-ep", false);
 
             assertThatThrownBy(ctx::translationNeeded)
                     .as("路由未回填时必须显式报错，而不是静默给出错误答案")
@@ -502,7 +519,7 @@ class RequestPipelineContextTests {
         @Test
         void bodyProtocolStartsAsDownstreamOnEndpointCreation() {
             RequestPipelineContext ctx = RequestPipelineContext.forEndpoint(
-                    new LinkedHashMap<>(), "m", WireProtocol.CHAT, HttpHeaders.EMPTY, "req-ep");
+                    new LinkedHashMap<>(), "m", WireProtocol.CHAT, HttpHeaders.EMPTY, "req-ep", false);
 
             assertThat(ctx.bodyProtocol())
                     .as("端点建 ctx 时 body 仍是下游形态 —— 这是与 of(...) 的关键差别")
@@ -514,7 +531,7 @@ class RequestPipelineContextTests {
         @Test
         void applyRoutingFillsRouteAndProtocol() {
             RequestPipelineContext ctx = RequestPipelineContext.forEndpoint(
-                    new LinkedHashMap<>(), "[relay-x] m", WireProtocol.CHAT, HttpHeaders.EMPTY, "req-ep");
+                    new LinkedHashMap<>(), "[relay-x] m", WireProtocol.CHAT, HttpHeaders.EMPTY, "req-ep", false);
 
             ctx.applyRouting("m", provider(), WireProtocol.MESSAGES);
 
@@ -532,7 +549,7 @@ class RequestPipelineContextTests {
         void applyTranslationSwapsBodyAndLookupKey() {
             RequestPipelineContext ctx = RequestPipelineContext.forEndpoint(
                     new LinkedHashMap<>(Map.of("messages", List.of())), "[relay-x] m",
-                    WireProtocol.CHAT, HttpHeaders.EMPTY, "req-ep");
+                    WireProtocol.CHAT, HttpHeaders.EMPTY, "req-ep", false);
             ctx.applyRouting("m", provider(), WireProtocol.MESSAGES);
 
             ctx.applyTranslation(new LinkedHashMap<>(Map.of("system", "s")), WireProtocol.MESSAGES,
@@ -550,12 +567,12 @@ class RequestPipelineContextTests {
         @Test
         void twoStepFillingMatchesOneShotFactory() {
             RequestPipelineContext stepwise = RequestPipelineContext.forEndpoint(
-                    new LinkedHashMap<>(), "[relay-x] m", WireProtocol.CHAT, HttpHeaders.EMPTY, "req-1");
+                    new LinkedHashMap<>(), "[relay-x] m", WireProtocol.CHAT, HttpHeaders.EMPTY, "req-1", false);
             stepwise.applyRouting("m", provider(), WireProtocol.MESSAGES);
             stepwise.applyTranslation(new LinkedHashMap<>(), WireProtocol.MESSAGES, null);
 
             RequestPipelineContext oneShot = RequestPipelineContext.of(new LinkedHashMap<>(), "m",
-                    WireProtocol.CHAT, WireProtocol.MESSAGES, provider(), HttpHeaders.EMPTY, "req-1", null);
+                    WireProtocol.CHAT, WireProtocol.MESSAGES, provider(), HttpHeaders.EMPTY, "req-1", null, false);
 
             assertThat(stepwise.bodyProtocol()).isEqualTo(oneShot.bodyProtocol());
             assertThat(stepwise.model()).isEqualTo(oneShot.model());

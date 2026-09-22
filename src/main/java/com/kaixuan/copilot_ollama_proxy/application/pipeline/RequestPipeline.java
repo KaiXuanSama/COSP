@@ -20,19 +20,16 @@ import com.kaixuan.copilot_ollama_proxy.provider.UpstreamExecutorRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 import java.util.List;
-import java.util.Map;
 import java.util.function.Function;
 
 /**
  * 主干 —— 三个下游端点共享的那条线的<strong>前奏段</strong>。
  *
- * <h2>它现在 own 整条线（3.4c-2 起）</h2>
+ * <h2>它 own 整条线，且只有一个入口（3.5a 起）</h2>
  * 3.4a/b 只收下前奏（{@code resolve → dispatch → notifyProtocols}）；
  * 3.4c-2 把<strong>主干剩下的全部</strong>也收进来：
  *
@@ -49,6 +46,15 @@ import java.util.function.Function;
  * </ul>
  * send 也是一个插槽，且<strong>未命中即报错</strong> —— 协议被声明支持却没有执行器，
  * 那是装配坏了，不是领域事实。三者语义不同，是插槽各自的属性（见 plan_ Step 3.4）。
+ *
+ * <h2>流式 / 非流式：两条入口已于 3.5a 合成一条</h2>
+ * 此前是 {@code execute}（非流式，返回 {@code Mono}）与 {@code executeStream}（流式）
+ * 两个入口。合并后只剩 {@link #execute}，它返回统一的 {@code Flux<UpstreamEvent>}：
+ * <strong>非流式就是「恰有一个元素的流」</strong>（见 {@code UpstreamEvent} 的类注释）。
+ *
+ * <p>本类内部<strong>只读一次</strong> {@code ctx.stream()}，用于在 send 与回程两处
+ * <strong>选机制</strong> —— 那是 3.5.2 认定的两处真本质（一次取全 vs 逐事件）。
+ * 其余步骤对两态完全无感知。
  *
  * <h2>为何它能 own 全流程（而 3.4a/b 不能）</h2>
  * 因为「翻译会把 body 换掉」—— 翻译插槽一进主干，夹在它和解包之间的
@@ -136,47 +142,46 @@ public class RequestPipeline {
     // ==================== 主干全流程 ====================
 
     /**
-     * 跑完整条主干（非流式）—— 调用方只需交出端点建好的 ctx。
+     * 跑完整条主干 —— <strong>唯一入口</strong>，流式与非流式共用（3.5a 起的形状）。
      *
      * <p>流程：前奏 → 回填路由 → 【translate 插槽】→ send（查表选执行器）→
      * 【responseTranslate 插槽】。各步骤的顺序约束与理由见类注释。
      *
+     * <h2>两态的分歧收敛到这一处</h2>
+     * 本方法内部只读一次 {@code ctx.stream()}，用于**选机制**：
+     * send 阶段选 {@code invoke} / {@code invokeStream}，回程阶段选
+     * {@code translateResponse} / {@code translateStream}。除此之外，
+     * 主干上的每一步对两态**完全无感知** —— 这正是「把纵向复制压成一个字段的分叉」。
+     *
+     * <p>那两处机制之所以必须分开，是 3.5.2 认定的**真本质**：
+     * 非流式一次拿到全部（无「扣住」可言），流式要逐事件处理且帧数不对等。
+     * 其余 5 处「同判据不同机制」的分歧在 3.5b 收束。
+     *
      * @param ctx 端点建好的上下文（{@code forEndpoint}）；本方法会逐步填充它
-     * @return 统一形态的上游响应（跨协议且回程已接时，已被翻译回下游形态）
+     * @return 统一形态的上游事件流（非流式即「恰有一个元素的流」；
+     *         跨协议且回程已接时，已被翻译回下游形态）
      */
-    public Mono<UpstreamEvent> execute(RequestPipelineContext ctx) {
+    public Flux<UpstreamEvent> execute(RequestPipelineContext ctx) {
         ResponseProtocolTranslator responseTranslator = prepareForSend(ctx);
-        Mono<UpstreamEvent> upstream = executorRegistry.require(ctx.upstreamProtocol()).invoke(ctx, null);
-        if (responseTranslator == null) {
-            warnIfHalfRound(ctx);
-            return upstream;
-        }
-        return responseTranslator.translateResponse(upstream);
-    }
+        // 主干上唯一一次读「是不是流式」—— 下面两处选机制都由它驱动。
+        boolean stream = ctx.stream();
+        UpstreamExecutor executor = executorRegistry.require(ctx.upstreamProtocol());
 
-    /**
-     * 跑完整条主干（流式）—— 与非流式同一条流程，两处差异见下。
-     *
-     * <p>差异一：落库用的 chunk 改写器只有流式才构造 ——
-     * 非流式的响应体是单一字符串，日志记上游原文比记翻译后的更有用
-     * （后者可由前者推导，反之不行）；而流式的<strong>帧切分方式无法从上游事件反推</strong>，
-     * 故必须重译一遍才能记下「下游实际收到了几帧」。
-     *
-     * <p>差异二：回程翻译走 {@code translateStream}（内含帧数不对等的状态机），
-     * 且需要 {@code translationContext} 里的 {@code include_usage}。
-     *
-     * @param ctx 端点建好的上下文（{@code forEndpoint}）；本方法会逐步填充它
-     * @return 统一形态的上游事件流（跨协议且回程已接时，已被翻译回下游形态）
-     */
-    public Flux<UpstreamEvent> executeStream(RequestPipelineContext ctx) {
-        ResponseProtocolTranslator responseTranslator = prepareForSend(ctx);
-        Flux<UpstreamEvent> upstream = executorRegistry.require(ctx.upstreamProtocol())
-                .invokeStream(ctx, chunkRewriterFor(ctx, responseTranslator));
+        // send 插槽：非流式一次取全（chunk 不改写，故 rewriter 传 null），
+        // 流式逐事件取，且落库需要 chunk 改写器（帧切分方式无法从上游事件反推）。
+        Flux<UpstreamEvent> upstream = stream
+                ? executor.invokeStream(ctx, chunkRewriterFor(ctx, responseTranslator))
+                : executor.invoke(ctx, null).flux();
+
         if (responseTranslator == null) {
             warnIfHalfRound(ctx);
             return upstream;
         }
-        return responseTranslator.translateStream(upstream, ctx.model(), ctx.translationContext());
+        // 回程插槽：非流式的回程翻译收/吐 Mono（单一响应体），故先把单元素流收成 Mono；
+        // 流式要走帧数不对等的状态机（Flux→Flux）。
+        return stream
+                ? responseTranslator.translateStream(upstream, ctx.model(), ctx.translationContext())
+                : responseTranslator.translateResponse(upstream.single()).flux();
     }
 
     /**

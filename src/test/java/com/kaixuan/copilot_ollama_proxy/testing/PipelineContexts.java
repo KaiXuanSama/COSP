@@ -45,20 +45,26 @@ public final class PipelineContexts {
     private PipelineContexts() {
     }
 
-    /** 直连：两侧同协议、无翻译步骤。空响应拦截照常介入。 */
+    /**
+     * 直连：两侧同协议、无翻译步骤。空响应拦截照常介入。
+     *
+     * @param stream 本次调用是否流式（直传进 ctx，执行器据此选机制）
+     */
     public static RequestPipelineContext direct(Map<String, Object> body,
                                                 ProviderRuntimeConfiguration provider,
-                                                WireProtocol protocol) {
+                                                WireProtocol protocol,
+                                                boolean stream) {
         return RequestPipelineContext.of(copyOf(body), modelOf(body), protocol, protocol,
-                provider, HttpHeaders.EMPTY, null, null);
+                provider, HttpHeaders.EMPTY, null, null, stream);
     }
 
     /** 半轮实现态：跨协议且<strong>只登记了去程</strong> —— 拦截跳过。 */
     public static RequestPipelineContext halfRound(Map<String, Object> body,
                                                   ProviderRuntimeConfiguration provider,
-                                                  WireProtocol downstream, WireProtocol upstream) {
+                                                  WireProtocol downstream, WireProtocol upstream,
+                                                  boolean stream) {
         RequestPipelineContext ctx = RequestPipelineContext.of(copyOf(body), modelOf(body), downstream, upstream,
-                provider, HttpHeaders.EMPTY, null, null);
+                provider, HttpHeaders.EMPTY, null, null, stream);
         ctx.markCompleted(PipelineStep.REQUEST_TRANSLATION);
         return ctx;
     }
@@ -66,9 +72,10 @@ public final class PipelineContexts {
     /** 全实现翻译：跨协议且去程与回程都已登记 —— 拦截照常。 */
     public static RequestPipelineContext fullyTranslated(Map<String, Object> body,
                                                         ProviderRuntimeConfiguration provider,
-                                                        WireProtocol downstream, WireProtocol upstream) {
+                                                        WireProtocol downstream, WireProtocol upstream,
+                                                        boolean stream) {
         RequestPipelineContext ctx = RequestPipelineContext.of(copyOf(body), modelOf(body), downstream, upstream,
-                provider, HttpHeaders.EMPTY, null, null);
+                provider, HttpHeaders.EMPTY, null, null, stream);
         ctx.markCompleted(PipelineStep.REQUEST_TRANSLATION);
         ctx.markCompleted(PipelineStep.RESPONSE_TRANSLATION);
         return ctx;
