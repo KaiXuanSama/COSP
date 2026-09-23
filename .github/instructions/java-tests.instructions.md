@@ -17,7 +17,7 @@ Surefire 的其它默认命名模式，也不要新增 `*IT` 而不显式接入�
 1. **Web 集成**：`@SpringBootTest(webEnvironment = RANDOM_PORT)` + `WebTestClient.bindToServer().baseUrl("http://localhost:" + port)`，用 `@MockBean` 替换服务层。流式断言用 `FluxExchangeResult<ServerSentEvent<String>>`。参考 `api/openai/OpenAiControllerStreamingTests`。
    - 控制器只依赖一两个可直接 new 的 Bean 时，用 `WebTestClient.bindToController(...)` 而非整个上下文 —— 拉起完整应用对「请求体进、响应出」没有额外价值，却要付启动代价。参考 `api/RequestBodyRulePreviewControllerTests`。
 2. **JDBC / 迁移**：用 `@TempDir` 建临时 SQLite 文件，**绝不使用根目录 `admin.db`**。参考 `infrastructure/persistence/RepositoryUpsertTests`、`infrastructure/config/SchemaMigrationRunnerTests`。
-3. **上游调用**：给 `WebClient` 注入自定义 `ExchangeFunction`，需要 SSE 时用 `DefaultDataBufferFactory` 手工造 `DataBuffer`。参考 `provider/AbstractUpstreamChatServiceTests`（OpenAI）、`provider/generic/anthropic/GenericAnthropicChatServiceTests`（Anthropic，请求构造那批走真实 `HttpServer` 因为 `ClientRequest.body()` 读不出已序列化内容）。
+3. **上游调用**：给 `WebClient` 注入自定义 `ExchangeFunction`，需要 SSE 时用 `DefaultDataBufferFactory` 手工造 `DataBuffer`。参考 `upstream/send/chat/AbstractUpstreamChatServiceTests`（OpenAI）、`upstream/send/messages/GenericAnthropicChatServiceTests`（Anthropic，请求构造那批走真实 `HttpServer` 因为 `ClientRequest.body()` 读不出已序列化内容）。
 4. **纯单元**：JUnit 5 + AssertJ + Mockito，无 Spring 上下文。逻辑密集的类用 `@Nested` 分组（如 `ModelNameUtilTests`）。
 
 断言统一 `org.assertj.core.api.Assertions.assertThat`。

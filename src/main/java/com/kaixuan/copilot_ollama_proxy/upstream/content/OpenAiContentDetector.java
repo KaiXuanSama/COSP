@@ -41,7 +41,7 @@ import java.util.Map;
  *
  * <h2>与 Anthropic 侧对称</h2>
  * 本类只服务 <strong>OpenAI Chat Completions</strong> 协议（读 {@code choices[].delta}
- * 与 {@code choices[].message}），与 {@code provider.generic.anthropic.AnthropicContentDetector}
+ * 与 {@code choices[].message}），与 {@code upstream.content.AnthropicContentDetector}
  * 是同一职责的两个协议实现：<strong>类别定义共享（正文 / 思考链 / 工具调用），
  * 取值路径各自独立</strong>。早期叫 {@code UpstreamChunkContentDetector} 并放在
  * {@code provider} 根下，那是「只有一种协议时」的产物，{@code Upstream} 一词隐含了

@@ -46,10 +46,10 @@ import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
  * 不是「这种协议没有这一步」。因此主干查不到执行器时**必须报错**，
  * 不能像 chunk 归一那样静默跳过。见 plan_ Step 3.4「未命中语义通则」。
  *
- * <h2>旧方法仍然保留（3.4d-1 是纯加法）</h2>
- * 本步只让三个执行器 {@code implements} 本接口、新方法<strong>委派</strong>旧方法，
- * 调用点一个未改。切换调用点是 3.4d-2 的事 —— 那样本步可独立回退，
- * 且「7 处测试破坏面」的风险被隔离在下一步。
+ * <h2>执行器只留这三个方法（3.4e 起）</h2>
+ * 三个执行器旧有的公开方法（{@code chatCompletion} / {@code messages} / {@code responses}
+ * 及其 Stream 版）已在 3.4e 删除 —— 生产调用点在 3.4c-2 后已归零。
+ * 本接口的 {@code invoke} / {@code invokeStream} 是它们<b>唯一</b>的入口。
  */
 public interface UpstreamExecutor {
 

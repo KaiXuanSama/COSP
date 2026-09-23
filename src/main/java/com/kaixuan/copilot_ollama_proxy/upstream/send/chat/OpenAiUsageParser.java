@@ -28,7 +28,7 @@ import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
  * <h2>与 Anthropic 侧对称</h2>
  * 本类只服务 OpenAI 协议（硬编码 {@code prompt_tokens} / {@code completion_tokens}，
  * 以及一条 OpenAI 兼容生态特有的 cached_tokens fallback 链），与
- * {@code provider.generic.anthropic.AnthropicUsageParser} 是同一职责的两个协议实现。
+ * {@code upstream.send.messages.AnthropicUsageParser} 是同一职责的两个协议实现。
  * 早期叫 {@code UsageParser} 并放在 {@code application.usage}，那是「只有一种协议时」
  * 的产物；现已改名并与 Anthropic 侧同层。
  *

@@ -27,7 +27,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * 判成空并重试。
  *
  * <h2>与 OpenAI 侧对称</h2>
- * 本类与 {@code provider.generic.openai.OpenAiContentDetector} 是<strong>同一职责的两个协议实现</strong>，
+ * 本类与 {@code upstream.content.OpenAiContentDetector} 是<strong>同一职责的两个协议实现</strong>，
  * 位于同一层级、命名风格一致：类别定义共享，取值路径各自独立。
  */
 public final class AnthropicContentDetector {

@@ -274,5 +274,8 @@ public void applyHeaders(HttpHeaders headers, String apiKey, String headerRulesJ
 | 主题 | 文件 |
 | --- | --- |
 | 供应商适配史与请求转换取舍 | [PROVIDER_ADAPTATIONS.md](./PROVIDER_ADAPTATIONS.md) |
-| 已知技术债与刻意不做的取舍 | [KNOWN_DEBT.md](./KNOWN_DEBT.md) |
-| anyrouter 的供应商行为调查 | [ANYROUTER_INVESTIGATION.md](./ANYROUTER_INVESTIGATION.md) |
+| anyrouter 的供应商行为调查 | *`ANYROUTER_INVESTIGATION.md`（本机不存在，见下）* |
+
+> ⚠️ `PROVIDER_ADAPTATIONS.md` 与本文曾引用的 `KNOWN_DEBT.md`、`ANYROUTER_INVESTIGATION.md`
+> 在本机**均不存在**（也不在任何分支的 git 历史里）—— 疑为另一台开发机上的未入库文件。
+> 若你需要那两份内容，请向持有它们的机器要；**不要仅凭引用号（如「第十条」）推断其内容**。

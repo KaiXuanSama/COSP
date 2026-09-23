@@ -38,8 +38,8 @@ import org.slf4j.Logger;
  *
  * <p>{@code log} 之所以也走参数：让它保持<strong>子类的 logger</strong>。
  * 若本类自带 logger，这三条日志的分类会从
- * {@code c.k.c.p.g.a.GenericAnthropicChatService} 变成
- * {@code c.k.c.p.UpstreamCallReporter} —— 按执行器类名过滤日志的人会看不到它们。
+ * {@code c.k.c.p.u.s.m.GenericAnthropicChatService} 变成
+ * {@code c.k.c.p.u.UpstreamCallReporter} —— 按执行器类名过滤日志的人会看不到它们。
  * 这是本步「零行为变更」的一部分，不是随手加的参数。
  *
  * <h2>为何各执行器仍保留一个两行的同名方法</h2>

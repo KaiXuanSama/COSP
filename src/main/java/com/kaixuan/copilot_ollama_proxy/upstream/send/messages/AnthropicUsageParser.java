@@ -79,7 +79,7 @@ import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
  * 因此流式链路不能只取一个事件就完事，需要跨事件合并 —— 见 {@link #merge}。
  *
  * <h2>与 OpenAI 侧对称</h2>
- * 本类与 {@code provider.generic.openai.OpenAiUsageParser} 是<strong>同一职责的两个协议实现</strong>，
+ * 本类与 {@code upstream.send.chat.OpenAiUsageParser} 是<strong>同一职责的两个协议实现</strong>，
  * 位于同一层级、命名风格一致。
  *
  * <p>{@link UsageTokens} 不在此列 —— 它是<strong>共享的输出契约</strong>

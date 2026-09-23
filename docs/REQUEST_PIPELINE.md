@@ -4,7 +4,9 @@
 > **应用服务层**（决定发给谁、用什么协议）与**上游执行层**（决定请求长什么样、怎么发）
 > 的分工与顺序。
 >
-> 本文描述的是**现状**（三个平行主干）。目标形态及其命名见 §0。
+> 本文描述的是**现状**。**§0 的「三个平行主干」已经过时**：阶段 3.4 已把三个应用服务收成
+> 「建 ctx + 交主干」，主干（`RequestPipeline`）唯一。下文 §1/§3 已同步为现状；
+> 形态名与判据见 §0（那是术语的最小留存，与实现状态无关）。
 
 ## 0. 形态名：SESE Pipeline with Joining Branches
 
@@ -41,9 +43,12 @@
 > **Chain of Responsibility** 允许处理者终结请求；**Intercepting Filter** 靠 `@Order` 约定、
 > 无类型保证（本项目被这个弱点打中过）。三者都缺「分叉必须汇回」这条约束，因此不要套用。
 
-**现状与目标的差距**：当前是**三个平行主干**（§1 全景里那三条），而非一条主干加支线。
-完整的目标形态、迁移顺序与依据见根目录的 `请求处理链路重构方向.md`
-（**该文件未入库**，根目录 `*.md` 被 `.gitignore` 忽略 —— 若它已不存在，本文节即为该术语的最小留存）。
+**现状**：**主干已经唯一**（阶段 3.4 全部完成后，三个应用服务退化为「建 ctx + 交主干」，
+`RequestPipeline.execute(ctx)` 是唯一入口）。形态名「SESE Pipeline with Joining Branches」已成立，
+尚未做的只是**包结构重排**（见 `plan_.md` 阶段 3.7：
+**① 控制面出列 ✅ · ② `provider`→`upstream`+解散 `generic` ✅ · ③ 支线按接入点·步骤分包 ✅**，仅剩收尾）。
+目标形态与迁移依据见根目录的 `请求处理链路重构方向.md`
+（**该文件未入库**，根目录 `*.md` 被 `.gitignore` 忽略 —— 若它已不存在，本节即为该术语的最小留存）。
 
 ## 1. 全景
 
@@ -62,12 +67,15 @@
 │   ├─ 流式 → Flux<ServerSentEvent>；非流式 → Mono + 取消信号
 │   └─ onErrorResume 按异常类型分派状态码（全服务唯一的错误出口）
 │
-├─ 三、应用服务层（无 I/O 的路由与编排）
-│   ├─ ChatCompletionService / MessagesService / ResponsesService
-│   ├─ ① 路由解析   ProviderRouteResolver
-│   ├─ ② 协议调度   ProtocolDispatchManager
-│   ├─ ③ 分派       直连 / 跨协议翻译 / 未实现
-│   └─ ④ 翻译编排   ChatToMessagesRequestTranslator（去程）
+├─ 三、应用服务层（建上下文 + 交主干）
+│   ├─ ChatCompletionService / MessagesService / ResponsesService（**三者同形**）
+│   └─ RequestPipeline.execute(ctx) —— **主干唯一入口**（流式与非流式共用）
+│       ├─ 前奏：ProviderRouteResolver.resolve → ProtocolDispatchManager.dispatch
+│       │        → ProtocolNotifier.notifyProtocols（产出 PipelinePreamble）
+│       ├─ ctx 回填路由   applyRouting
+│       ├─ 请求翻译插槽    TranslatorRegistry.findRequestTranslator（未命中→报错）
+│       ├─ send 插槽      UpstreamExecutorRegistry.require（未命中→报错）
+│       └─ 响应翻译插槽    TranslatorRegistry.findResponseTranslator（未命中→透传+WARN）
 │
 └─ 四、上游执行层（有 I/O 的装配与发送）
     ├─ GenericOpenAiChatService / GenericAnthropicChatService /
@@ -84,7 +92,8 @@
     上游供应商
 ```
 
-**一句话分工**：应用服务层回答「发给谁、用什么协议、要不要翻译」；
+**一句话分工**：应用服务层只负责「建上下文并交给主干」；
+主干回答「发给谁、用什么协议、要不要翻译」；
 上游执行层回答「请求体和请求头各长什么样、怎么发出去」。
 
 ## 2. WebFilter 链
@@ -109,42 +118,58 @@ SPA 路由回退（`SpaRoutingConfig.spaRoutes()`）**不在这个链上** —�
 
 ## 3. 应用服务层
 
-三个应用服务结构对称，方法体都裹在 `Mono.defer` / `Flux.defer` 里 ——
-下面 ①②④ 都是**同步**调用且会抛异常，不包 defer 时异常会在 **Mono 组装期**
-逃出控制器方法，`onErrorResume` 根本不在链上。
+三个应用服务自 3.4c-2 起**同形**：只做「建 `RequestPipelineContext`（`forEndpoint`）
++ 交主干」，**零回填、零协议分支**。方法体裹在 `Mono.defer` / `Flux.defer` 里 ——
+主干内的路由解析、调度、翻译都是**同步**调用且会抛异常，不包 defer 时异常会在
+**Mono 组装期**逃出控制器方法，`onErrorResume` 根本不在链上。
 
 ```
-ChatCompletionService.chatCompletion(...)
+ChatCompletionService.chatCompletion(...)          ← 三个服务同形，只是端点不同
     │  Mono.defer 包裹（同步异常 → onError 信号）
+    ↓
+    RequestPipelineContext.forEndpoint(body, model, 下游协议, headers, requestId, stream)
+    ↓
+    RequestPipeline.execute(ctx)                   ← 主干唯一入口，流式/非流式共用
+    │  （内部只读一次 ctx.stream() 用于「选机制」）
     ↓
     ① 路由解析
     │   ProviderRouteResolver.resolve(model)
     │     · 有 [provider-key] 前缀 → 精确取该供应商，且模型须在它名下
     │     · 无前缀 → 必须在全部启用供应商中唯一命中，否则返回 null
     │     · 只按模型名路由；协议不参与候选集筛选
-    │     · 返回 null → 控制器报「没有可用的上游服务」
+    │     · 返回 null → 抛 UnresolvedModelRouteException → 控制器 400
     ↓
     ② 协议调度
     │   ProtocolDispatchManager.dispatch(下游协议, provider)
     │     规则 1：供应商支持下游同名协议 → 直连（translationNeeded=false）
     │     规则 2：不支持 → 按 TRANSLATION_FALLBACK_ORDER 挑一个，标记需翻译
     │     规则 3：一个都不支持 → 抛 NoSupportedProtocolException → 400
-    │   · 无 I/O 的纯决策组件，四种组合可被纯单元测试穷举
+    │   · 无 I/O 的纯决策组件，组合可被纯单元测试穷举
     ↓
-    ③ 补生命周期协议信息（best-effort，供前端 Toast 显示 O→A 标记）
+    ③ 补生命周期协议信息（best-effort，供前端 Toast 显示 C→M 标记）
     ↓
-    ④ 分派
-        ├─ 直连 ─────────────→ 原请求体不变，直接进上游执行层
-        ├─ C2M（下游 CHAT、上游 MESSAGES）
-        │      去程 ChatToMessagesRequestTranslator.translateRequest
-        │        · OpenAI 请求体 → Anthropic 请求体
-        │        · 保留一份 reasoning_effort 兼容副本（供上游执行层判定「已表态」）
-        │      → 进上游执行层
-        │      ← 回程 MessagesToChatResponseTranslator
-        └─ 其它方向 → 抛 ProtocolTranslationNotSupportedException → 400
+    ④ ctx.applyRouting(resolvedModel, provider, 上游协议)
+    ↓
+    ⑤ 请求翻译插槽（仅跨协议；直连时整个翻译链不存在）
+        TranslatorRegistry.findRequestTranslator(下游, 上游)
+        ├─ 命中 C2M（下游 CHAT、上游 MESSAGES）
+        │     ChatToMessagesRequestTranslator.translateRequest
+        │       · OpenAI 请求体 → Anthropic 请求体
+        │       · 保留一份 reasoning_effort 兼容副本（供上游执行层判定「已表态」）
+        │       → ctx.applyTranslation(body, 上游协议, translationContext)
+        └─ 未命中 → 抛 ProtocolTranslationNotSupportedException → 400
+    ↓
+    ⑥ send 插槽   UpstreamExecutorRegistry.require(上游协议)
+        ├─ 命中 → invoke / invokeStream（按 ctx.stream() 选，见 §4）
+        └─ 未命中 → 抛 IllegalStateException（协议被声明支持却无执行器 = 装配坏了）
+    ↓
+    ⑦ 响应翻译插槽（仅跨协议）
+        TranslatorRegistry.findResponseTranslator(下游, 上游)
+        ├─ 命中 → 回程 MessagesToChatResponseTranslator
+        └─ 未命中（半轮实现态）→ 原样透传 + WARN
 ```
 
-**翻译器套在上游执行层外侧**，因此天然在 `retryWhen` 与空响应判定之外 ——
+**请求翻译插槽套在上游执行层外侧**，因此天然在 `retryWhen` 与空响应判定之外 ——
 上游执行层内部看到的始终是**上游原生形态**。若把翻译挪进重试内侧，
 空响应判定器会把每一轮都当成空响应。
 
@@ -246,9 +271,11 @@ buildWebClientWithHeaders(...)
     · clientConnector 用注入的 httpClient（JDK DNS 解析器）
     · filter 抓取出站头快照 → 写 api_call_log
   .post().uri(chatCompletionsUri()).bodyValue(requestBody)
-    · 外层包 RetryPolicyService 的重试预算
-    · 空响应判定用各线路自己的 Detector（OpenAI 用 OpenAiContentDetector，
-      Anthropic 用 AnthropicContentDetector，不可互相套用）
+    · 外层包 RetryPolicyService 的重试预算（UpstreamAutoRetry.build 造出的 Retry）
+    · 空响应拦截由 EmptyResponseGate（机制，三条线路共用）负责，
+      判据由 ContentDetectorRegistry 按上游协议查表得到：
+      OpenAI 用 OpenAiContentDetector，Anthropic 用 AnthropicContentDetector，
+      Responses 用 ResponsesContentDetector，三者不可互相套用
 ```
 
 ## 5. 完整顺序表
@@ -257,21 +284,22 @@ buildWebClientWithHeaders(...)
 |---|---|---|---|
 | — | WebFilter | `GatewayAuthFilter` | 校验下游凭据（OR 判据），失败 401 |
 | — | 控制器 | `OpenAiController.chatCompletions` | 虚拟模型拦截、建 requestId、分流、错误分类 |
-| ① | 应用服务 | `ProviderRouteResolver.resolve` | 剥前缀选唯一供应商 |
-| ② | 应用服务 | `ProtocolDispatchManager.dispatch` | 判直连 / 翻译 / 无支持 |
-| ③ | 应用服务 | `ChatCompletionService` 分派 | 直连走原体，跨协议进翻译 |
-| ④ | 应用服务 | `ChatToMessagesRequestTranslator` | OpenAI 体 → Anthropic 体（上游执行层外侧） |
+| ① | 主干 | `RequestPipeline.run` → `ProviderRouteResolver.resolve` | 剥前缀选唯一供应商 |
+| ② | 主干 | `RequestPipeline.run` → `ProtocolDispatchManager.dispatch` | 判直连 / 翻译 / 无支持 |
+| ③ | 主干 | `ProtocolNotifier.notifyProtocols` + `ctx.applyRouting` | 补协议信息、回填路由 |
+| ④ | 主干 | `TranslatorRegistry.findRequestTranslator` | 命中则 `ChatToMessagesRequestTranslator`（上游执行层外侧） |
 | ⑤ | 上游执行 | `resolveModel` | 剥前缀还原真实模型名 + 设 `stream` |
 | ⑥ | 上游执行 | `ReasoningEffortSetting` | 写思考深度（Anthropic 侧另写 `thinking`） |
 | ⑦ | 上游执行 | `RequestBodyRuleEngine.transform` | 供应商规则组改 / 删字段 |
 | ⑧ | 上游执行 | `removeNullFields` | 清掉规则产生的 null |
 | ⑧a | 上游执行 | `applyAuthenticationHeaders` | 探测 → 决定头名 → 删两个 → 注一个 |
 | ⑧b | 上游执行 | `applyHeaders` 规则层 | `{apiKey}` 占位、`/del/` 删除 |
-| ⑨ | 上游执行 | `WebClient.post().bodyValue()` | 在重试预算内发出 |
+| ⑨ | 上游执行 | `UpstreamExecutorRegistry.require` → `WebClient.post().bodyValue()` | 查表选中执行器，在重试预算内发出 |
+| ⑩ | 主干 | `TranslatorRegistry.findResponseTranslator` | 命中则回程翻译；未命中透传 + WARN |
 
-> 序 ①–⑨ 是**跨层**的端到端顺序。上游执行层内部的 ⑤–⑧ 是 `prepareRequestBody`
-> 那根阶段序列的一部分，逐阶段名与位置见 §4.1 —— 那里列的是 <strong>8 个阶段的完整形态</strong>
-> （Anthropic 侧），本表只列跨线路共同的骨架。
+> 序 ①–④ / ⑩ 是**主干自己的步骤**（`RequestPipeline`）；⑤–⑨ 是上游执行层内部的阶段序列。
+> ⑤–⑧ 是 `prepareRequestBody` 那根阶段序列的一部分，逐阶段名与位置见 §4.1 ——
+> 那里列的是 <strong>8 个阶段的完整形态</strong>（Anthropic 侧），本表只列跨线路共同的骨架。
 
 ## 6. 顺序陷阱
 
@@ -303,6 +331,14 @@ buildWebClientWithHeaders(...)
 **空响应判定用各线路自己的 Detector。** 三份实现（`OpenAiContentDetector`、
 `AnthropicContentDetector`、`ResponsesContentDetector`）的判据互不通用，
 把 OpenAI 的 JSON/SSE 判定套到 Anthropic 上会把正常响应的头两个事件判成空。
+三个阶段 3.6 起由 `ContentDetectorRegistry` 按 `ctx.upstreamProtocol()` **查表**取得
+（未命中即报错；三个实现分别是 `ChatContentDetectorStage` / `MessagesContentDetectorStage`
+/ `ResponsesContentDetectorStage`）。
+
+> ⚠️ **Chat 的接线是「反」的。** `OpenAiContentDetector` 里叫 `hasMeaningfulPayload`
+> 的那个方法**其实是流式用的**（读 `choices[].delta`），非流式那个叫
+> `hasMeaningfulNonStreamPayload`（读 `choices[].message`）。
+> `ChatContentDetectorStage` 已按**取值路径**而非名字接好 —— 改它时不要「顺手理顺」。
 
 ## 7. 相关文档
 

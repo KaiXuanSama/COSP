@@ -144,7 +144,7 @@ P2 = 既有能力，回归时可抽查。
 
 > **B3 值得优先补**：3.6c-2 把 429 的日志特化从「只在 Chat」扩到三条线路，
 > 那是**行为变更**，而当前**没有任何 mock 能验证它**。单测只到「429 会重试」为止
-> （日志文案按项目约定不测，见 `docs/KNOWN_DEBT.md` 与 `UpstreamCallReporterTests`）。
+> （日志文案按项目约定不测，见 `UpstreamCallReporterTests`）。
 
 ---
 
@@ -194,4 +194,6 @@ P2 = 既有能力，回归时可抽查。
 | 跳协议契约（C2M 请求侧） | [PROTOCOL_TRANSLATION_CONTRACT.md](./PROTOCOL_TRANSLATION_CONTRACT.md) |
 | 跳协议契约（响应侧） | [PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md](./PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md) |
 | 上游适配史与取舍 | [PROVIDER_ADAPTATIONS.md](./PROVIDER_ADAPTATIONS.md) |
-| 已知技术债与刻意不做的取舍 | [KNOWN_DEBT.md](./KNOWN_DEBT.md) |
+
+> ⚠️ 本文此前引用的 `KNOWN_DEBT.md` 在本机**不存在**（也不在任何分支的 git 历史里），
+> 疑为另一台开发机上的未入库文件。上面的引用已就地改为指向 `UpstreamCallReporterTests`。
