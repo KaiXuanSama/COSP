@@ -9,8 +9,8 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfi
 import com.kaixuan.copilot_ollama_proxy.upstream.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.UpstreamExecutor;
-import com.kaixuan.copilot_ollama_proxy.upstream.stage.ChunkStageRegistry;
-import com.kaixuan.copilot_ollama_proxy.upstream.stage.ContentDetectorRegistry;
+import com.kaixuan.copilot_ollama_proxy.upstream.chunk.ChunkStageRegistry;
+import com.kaixuan.copilot_ollama_proxy.upstream.content.ContentDetectorRegistry;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;

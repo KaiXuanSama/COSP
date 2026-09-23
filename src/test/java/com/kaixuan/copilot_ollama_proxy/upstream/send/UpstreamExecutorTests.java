@@ -10,9 +10,9 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfi
 import com.kaixuan.copilot_ollama_proxy.upstream.send.messages.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.chat.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.responses.GenericResponsesChatService;
-import com.kaixuan.copilot_ollama_proxy.upstream.stage.ChunkStageRegistry;
-import com.kaixuan.copilot_ollama_proxy.upstream.stage.chat.ChatChunkNormalizeStage;
-import com.kaixuan.copilot_ollama_proxy.upstream.stage.chat.ChatReasoningFallbackStage;
+import com.kaixuan.copilot_ollama_proxy.upstream.chunk.ChunkStageRegistry;
+import com.kaixuan.copilot_ollama_proxy.upstream.chunk.normalize.ChatChunkNormalizeStage;
+import com.kaixuan.copilot_ollama_proxy.upstream.chunk.fallback.ChatReasoningFallbackStage;
 import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;

@@ -11,9 +11,9 @@ import com.kaixuan.copilot_ollama_proxy.control.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
-import com.kaixuan.copilot_ollama_proxy.upstream.stage.ContentDetectorRegistry;
-import com.kaixuan.copilot_ollama_proxy.upstream.stage.ContentDetectorStage;
-import com.kaixuan.copilot_ollama_proxy.upstream.stage.UpstreamChunkNormalizer;
+import com.kaixuan.copilot_ollama_proxy.upstream.content.ContentDetectorRegistry;
+import com.kaixuan.copilot_ollama_proxy.upstream.content.ContentDetectorStage;
+import com.kaixuan.copilot_ollama_proxy.upstream.chunk.normalize.UpstreamChunkNormalizer;
 import org.junit.jupiter.api.Test;import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -1458,8 +1458,10 @@ class AbstractUpstreamChatServiceTests {
         /**
          * 直接调清洗类，不再走反射。
          *
-         * <p>清洗与 fallback 已搬到 {@code provider.stage.UpstreamChunkNormalizer}
-         * （Stage 1.4 纯搬运）。此前本方法是反射调 {@code AbstractUpstreamChatService}
+         * <p>清洗与 fallback 已搬到 {@code upstream.chunk.normalize.UpstreamChunkNormalizer}
+         * （Stage 1.4 纯搬运；阶段 3.7 第③批起该包在 {@code upstream/chunk/normalize/}，
+         * 更早为 {@code provider.stage}）。
+         * 此前本方法是反射调 {@code AbstractUpstreamChatService}
          * 的私有 {@code normalizeUpstreamChunk}，搬走后那个方法名不复存在 ——
          * 反射的失败形态是运行时 {@code NoSuchMethodException}，不是编译错误，
          * 因此这里改为直接调用，让「方法不存在」重新变成编译期能发现的问题。

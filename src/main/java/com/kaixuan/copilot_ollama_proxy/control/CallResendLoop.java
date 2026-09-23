@@ -95,7 +95,7 @@ public final class CallResendLoop {
      * @param model              模型名（含前缀），仅用于日志
      * @param <T>                帧元素类型 —— 三条线路不同（Chat 是 {@code ServerSentEvent<String>}，
      *                           另两条是裸 {@code String}），故与
-     *                           {@link com.kaixuan.copilot_ollama_proxy.upstream.stage.EmptyResponseGate}
+     *                           {@link com.kaixuan.copilot_ollama_proxy.upstream.EmptyResponseGate}
      *                           同样做成泛型
      * @return 可被中断并自动重发的循环
      */
