@@ -13,7 +13,8 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
+import com.kaixuan.copilot_ollama_proxy.control.CallResendLoop;
+import com.kaixuan.copilot_ollama_proxy.control.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.OpenAiContentDetector;
@@ -74,7 +75,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *   <tr><td>异常重试</td><td>COSP 自身（上游失败 / 空响应）</td><td>是</td>
  *       <td>{@link UpstreamAutoRetry} 构造的 {@code retryWhen}</td></tr>
  *   <tr><td>手动重试</td><td>用户在管理后台右键 Toast</td><td>否</td>
- *       <td>{@link UpstreamSilentRetry}（{@code CallRetryRegistry} + {@code takeUntilOther}）</td></tr>
+ *       <td>{@link CallResendLoop}（{@code CallRetryRegistry} + {@code takeUntilOther}）</td></tr>
  * </table>
  * 手动重试不消耗预算是有意的：那是用户可感知的主动操作，不该挤占自动恢复的余量。
  *
@@ -468,7 +469,7 @@ public abstract class AbstractUpstreamChatService {
         AtomicBoolean emptyResponsePassthrough = new AtomicBoolean(false);
 
         // 单次上游尝试：状态由本类维护（重置计时、清收集、重置闸门），
-        // 中断与再发起由 UpstreamSilentRetry 负责（见下方循环）。
+        // 中断与再发起由 CallResendLoop 负责（见下方循环）。
         Flux<ServerSentEvent<String>> rawAttempt = Flux.defer(() -> {
                     // 本次往返起点：重置计时与 chunk 收集，使每条日志只反映该次往返（不跨重试累加）。
                     attemptStart.set(System.currentTimeMillis());
@@ -567,11 +568,11 @@ public abstract class AbstractUpstreamChatService {
                             .map(data -> ServerSentEvent.builder(data).build());
                 });
 
-        // 静默重试循环：机制收归 UpstreamSilentRetry（阶段 3.6c-1），三条线路共用一份实现。
+        // 静默重试循环：机制收归 CallResendLoop（阶段 3.6c-1），三条线路共用一份实现。
         // 本线路是唯一传 {@code ServerSentEvent} 的（与 EmptyResponseGate 泛型同理）——
         // 循环挂在 mapNotNull 之前，而另两条挂在其后。
         Flux<ServerSentEvent<String>> attemptLoop =
-                UpstreamSilentRetry.loop(rawAttempt, callRetryRegistry, requestId, "OpenAI", log, model);
+                CallResendLoop.loop(rawAttempt, callRetryRegistry, requestId, "OpenAI", log, model);
 
         return attemptLoop
                 .mapNotNull(ServerSentEvent::data).filter(chunk -> !chunk.isBlank() && !"null".equals(chunk))

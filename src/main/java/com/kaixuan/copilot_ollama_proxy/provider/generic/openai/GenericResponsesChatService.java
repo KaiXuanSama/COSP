@@ -14,7 +14,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfi
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
+import com.kaixuan.copilot_ollama_proxy.control.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
@@ -28,7 +28,7 @@ import com.kaixuan.copilot_ollama_proxy.provider.stage.ContentDetectorStage;
 import com.kaixuan.copilot_ollama_proxy.provider.stage.EmptyResponseGate;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamCallReporter;
 import com.kaixuan.copilot_ollama_proxy.provider.UpstreamRetryPolicy;
-import com.kaixuan.copilot_ollama_proxy.provider.UpstreamSilentRetry;
+import com.kaixuan.copilot_ollama_proxy.control.CallResendLoop;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -467,10 +467,10 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                     return Flux.fromIterable(frames);
                 });
 
-        // 静默重试循环：机制收归 UpstreamSilentRetry（阶段 3.6c-1），三条线路共用一份实现。
+        // 静默重试循环：机制收归 CallResendLoop（阶段 3.6c-1），三条线路共用一份实现。
         // 形态归一是<strong>协议关联</strong>的一步，故留在本类、接在循环之外 ——
         // 位置等价：静默重发的那一轮产物也是循环输出的一部分，同样经过分类。
-        Flux<UpstreamEvent> attemptLoop = UpstreamSilentRetry
+        Flux<UpstreamEvent> attemptLoop = CallResendLoop
                 .loop(attempt, callRetryRegistry, requestId, "Responses", log, model)
                 // 形态归一：把清洗后的事件分成「载荷」与「终止标记」两态。
                 // 按<strong>上游协议</strong>分类 —— 本类发的就是 Responses 的事件。

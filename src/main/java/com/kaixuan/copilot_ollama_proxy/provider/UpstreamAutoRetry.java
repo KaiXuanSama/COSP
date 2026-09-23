@@ -13,20 +13,26 @@ import java.time.Duration;
  * 自动重试的<strong>规格构造</strong> —— 三个上游执行器共用一份实现。
  *
  * <h2>它管的是「重试几次、等多久」，不是「要不要重试」</h2>
- * 那两件事刻意分居两类，因为回答它们所需的信息不同：
+ * 那两件事刻意分居两类，因为回答它们所需的信息不同。
+ * <strong>「自动重试」就是这两类、两件事</strong>：
  *
  * <table>
- *   <caption>重试这个词下的三个独立功能</caption>
+ *   <caption>自动重试的两件事</caption>
  *   <tr><th>类</th><th>管的事</th><th>性质</th></tr>
  *   <tr><td>{@link UpstreamRetryPolicy}</td><td><strong>要不要</strong>重试（429 / 5xx / 网络 / 空响应）</td>
  *       <td>纯判定，无状态，不读配置</td></tr>
  *   <tr><td><strong>本类</strong></td><td><strong>几次、多久</strong>（读配置 + 组装 {@code Retry}）</td>
  *       <td>组装，读配置</td></tr>
- *   <tr><td>{@link UpstreamSilentRetry}</td><td><strong>人工触发</strong>的重新发起</td>
- *       <td>组装，不读配置</td></tr>
  * </table>
  *
- * <p>{@link UpstreamRetryPolicy} 的类注释已明确排除后两者：「要不要重试」是纯判定，
+ * <h2>第三件曾与此二者并列，现已出列（阶段 3.7 第①批）</h2>
+ * 人工触发的重新发起（原 {@code UpstreamSilentRetry}）曾与本二者同住 {@code provider/} 顶层，
+ * 排出一副「重试三件套」的样子 —— 但那只是<strong>按词聚的</strong>，不是按功能聚的。
+ * 它此后移入 {@link com.kaixuan.copilot_ollama_proxy.control.CallResendLoop}，
+ * 因为它是「<strong>外部信号驱动的重发</strong>」：只服务流式、入口是 HTTP 端点、不消耗本类读的那个预算。
+ * <strong>三者不是一件事的三面，「自动重试」只是两个类。</strong>
+ *
+ * <p>{@link UpstreamRetryPolicy} 的类注释已明确排除「几次、多久」：「要不要重试」是纯判定，
  * 与「重试几次、等多久」是两件事。因此本类独立存在，而不是塞进那个类。
  *
  * <h2>429 的日志特化在<strong>这里</strong>，且三条线路共用</h2>

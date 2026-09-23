@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.infrastructure.web;
+package com.kaixuan.copilot_ollama_proxy.control;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

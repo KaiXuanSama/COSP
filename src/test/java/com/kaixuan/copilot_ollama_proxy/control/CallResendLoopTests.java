@@ -1,6 +1,5 @@
-package com.kaixuan.copilot_ollama_proxy.provider;
+package com.kaixuan.copilot_ollama_proxy.control;
 
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -20,7 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * {@link UpstreamSilentRetry} 的中断-重发语义。
+ * {@link CallResendLoop} 的中断-重发语义。
  *
  * <h2>为何这些用例值得存在</h2>
  * 本类取代的是三个执行器里三份同构的递归循环。那三份此前只被
@@ -41,9 +40,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 见 {@code AnthropicSilentRetryBehaviorTests} 的同类说明），
  * 而这里要断言的只是「第几轮到达」与「终止信号」，用不上虚拟时间与背压控制。
  */
-class UpstreamSilentRetryTests {
+class CallResendLoopTests {
 
-    private static final Logger LOG = LoggerFactory.getLogger(UpstreamSilentRetryTests.class);
+    private static final Logger LOG = LoggerFactory.getLogger(CallResendLoopTests.class);
 
     /** 订阅到结束，返回收到的元素；超时则失败。 */
     private static List<String> collect(Flux<String> flux) {
@@ -77,7 +76,7 @@ class UpstreamSilentRetryTests {
         void nullRegistryKeepsSingleRound() {
             AtomicInteger rounds = new AtomicInteger(0);
 
-            List<String> received = collect(UpstreamSilentRetry.loop(
+            List<String> received = collect(CallResendLoop.loop(
                     Flux.defer(() -> Flux.just("round-" + rounds.incrementAndGet())),
                     null, "req-1", "OpenAI", LOG, "model-a"));
 
@@ -91,7 +90,7 @@ class UpstreamSilentRetryTests {
             CallRetryRegistry registry = new CallRetryRegistry();
             AtomicInteger rounds = new AtomicInteger(0);
 
-            List<String> received = collect(UpstreamSilentRetry.loop(
+            List<String> received = collect(CallResendLoop.loop(
                     Flux.defer(() -> Flux.just("round-" + rounds.incrementAndGet())),
                     registry, null, "OpenAI", LOG, "model-a"));
 
@@ -126,7 +125,7 @@ class UpstreamSilentRetryTests {
             CountDownLatch firstArrived = new CountDownLatch(1);
             CountDownLatch completed = new CountDownLatch(1);
 
-            UpstreamSilentRetry.loop(attempt, registry, "req-2", "OpenAI", LOG, "model-a")
+            CallResendLoop.loop(attempt, registry, "req-2", "OpenAI", LOG, "model-a")
                     .doOnNext(data -> {
                         received.add(data);
                         if ("first-round".equals(data)) {
@@ -170,7 +169,7 @@ class UpstreamSilentRetryTests {
             CountDownLatch secondArrived = new CountDownLatch(1);
             CountDownLatch completed = new CountDownLatch(1);
 
-            UpstreamSilentRetry.loop(attempt, registry, "req-3", "OpenAI", LOG, "model-a")
+            CallResendLoop.loop(attempt, registry, "req-3", "OpenAI", LOG, "model-a")
                     .doOnNext(data -> {
                         received.add(data);
                         if ("round-1".equals(data)) {
@@ -201,7 +200,7 @@ class UpstreamSilentRetryTests {
             CallRetryRegistry registry = new CallRetryRegistry();
             AtomicInteger rounds = new AtomicInteger(0);
 
-            List<String> received = collect(UpstreamSilentRetry.loop(
+            List<String> received = collect(CallResendLoop.loop(
                     Flux.defer(() -> Flux.just("round-" + rounds.incrementAndGet())),
                     registry, "req-4", "OpenAI", LOG, "model-a"));
 
@@ -251,7 +250,7 @@ class UpstreamSilentRetryTests {
             AtomicReference<Duration> elapsed = new AtomicReference<>();
 
             long start = System.nanoTime();
-            UpstreamSilentRetry.loop(attempt, registry, "req-5", "OpenAI", LOG, "model-a")
+            CallResendLoop.loop(attempt, registry, "req-5", "OpenAI", LOG, "model-a")
                     .doOnNext(data -> {
                         received.add(data);
                         if ("first-attempt".equals(data)) {
@@ -300,7 +299,7 @@ class UpstreamSilentRetryTests {
                 CountDownLatch firstArrived = new CountDownLatch(1);
                 CountDownLatch completed = new CountDownLatch(1);
 
-                UpstreamSilentRetry.loop(attempt, registry, "req-6", label, LOG, "model-a")
+                CallResendLoop.loop(attempt, registry, "req-6", label, LOG, "model-a")
                         .doOnNext(data -> {
                             received.add(data);
                             if ("first-round".equals(data)) {

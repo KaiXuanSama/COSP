@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic;
 
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
+import com.kaixuan.copilot_ollama_proxy.control.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.provider.AbstractUpstreamChatService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

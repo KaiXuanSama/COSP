@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.provider;
+package com.kaixuan.copilot_ollama_proxy.control;
 
 /**
  * 表示一次调用被管理后台主动取消（「上游迟迟不吐首字」时用户点击取消按钮）。

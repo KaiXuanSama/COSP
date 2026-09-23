@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.infrastructure.web;
+package com.kaixuan.copilot_ollama_proxy.control;
 
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;

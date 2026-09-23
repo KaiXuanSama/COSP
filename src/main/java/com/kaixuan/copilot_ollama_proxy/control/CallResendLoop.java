@@ -1,6 +1,5 @@
-package com.kaixuan.copilot_ollama_proxy.provider;
+package com.kaixuan.copilot_ollama_proxy.control;
 
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
 import org.slf4j.Logger;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -11,13 +10,32 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * 静默重试的<strong>递归循环</strong> —— 三个上游执行器共用一份实现。
  *
+ * <h2>它为什么住在 {@code control} 包（阶段 3.7 第①批）</h2>
+ * 它此前叫 {@code CallResendLoop} 且住在 {@code provider/} 顶层，与
+ * {@code UpstreamRetryPolicy} / {@code UpstreamAutoRetry} 并列 —— 那个摆法把它摆成了
+ * 「自动重试的第三件」，而<strong>它根本不是</strong>。三条实测依据：
+ * <ul>
+ *   <li>它<strong>只服务流式</strong>：只在三个 {@code *Stream} 方法里被调用，
+ *       三个非流式方法里零引用（人工重发需要一条尚未断开的连接来续）；</li>
+ *   <li>它的入口是一个 <strong>HTTP 端点</strong>（管理后台 {@code retry}），
+ *       属入站控制，不是管道的一步；</li>
+ *   <li>它的孪生兄弟是<strong>取消</strong>（{@link CallCancellationRegistry} +
+ *       {@link CallCanceledException}），同样由外部信号驱动。</li>
+ * </ul>
+ * 因此它与那两个「自动重试」不属于同一条轴，而与取消同族 —— 都归入本包。
+ * 于是 {@code upstream/} 只回答一个问题「一次请求的数据怎么流」，
+ * 而「人可能在中途插手」是另一条轴、集中在这里。
+ *
+ * <p>改名的理由：它不再与「重试」那两个共处一类，「Retry」字样会继续误导
+ * （见下「与自动重试不是一回事」的错误前提）。{@code Resend} 描述的是它真正做的事。
+ *
  * <h2>它是独立功能，与自动重试不是一回事</h2>
  * 「重试」在这条链路里指两种完全不同的东西，触发者、预算与观感都不同：
  *
  * <table>
  *   <caption>两种重试的分野</caption>
- *   <tr><th></th><th>自动重试（{@link UpstreamRetryPolicy} + 各执行器的 {@code retryWhen}）</th>
- *       <th>静默重试（本类）</th></tr>
+ *   <tr><th></th><th>自动重试（{@code UpstreamRetryPolicy} + {@code UpstreamAutoRetry}）</th>
+ *       <th>人工重发（本类）</th></tr>
  *   <tr><td><strong>触发者</strong></td><td>COSP 自己判定（429 / 5xx / 网络中断 / 空响应）</td>
  *       <td><strong>人</strong> —— 管理后台右键 Toast 点「静默重试」</td></tr>
  *   <tr><td><strong>预算</strong></td><td>消耗 {@code retry_max_attempts}</td>
@@ -55,12 +73,12 @@ import java.util.concurrent.atomic.AtomicReference;
  *       接在外侧同样覆盖静默重发的那一轮 —— 重发的产物正是循环输出的一部分。</li>
  * </ul>
  *
- * <p>{@code log} 走参数而非本类自带，理由同 {@link UpstreamCallReporter}：
+ * <p>{@code log} 走参数而非本类自带，理由同 {@code UpstreamCallReporter}：
  * 保持<strong>子类的 logger</strong>，按执行器类名过滤日志的人不会漏掉它。
  */
-public final class UpstreamSilentRetry {
+public final class CallResendLoop {
 
-    private UpstreamSilentRetry() {
+    private CallResendLoop() {
     }
 
     /**
@@ -76,7 +94,9 @@ public final class UpstreamSilentRetry {
      * @param log                调用方的 logger，用于保留日志归属
      * @param model              模型名（含前缀），仅用于日志
      * @param <T>                帧元素类型 —— 三条线路不同（Chat 是 {@code ServerSentEvent<String>}，
-     *                           另两条是裸 {@code String}），故与 {@link EmptyResponseGate} 同样做成泛型
+     *                           另两条是裸 {@code String}），故与
+     *                           {@link com.kaixuan.copilot_ollama_proxy.provider.stage.EmptyResponseGate}
+     *                           同样做成泛型
      * @return 可被中断并自动重发的循环
      */
     public static <T> Flux<T> loop(Flux<T> roundAttempt,

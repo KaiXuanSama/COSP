@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.infrastructure.web;
+package com.kaixuan.copilot_ollama_proxy.control;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,8 +12,13 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 单次调用的<strong>静默重试</strong>协调器。
  *
+ * <p>所属包为 {@code control}（阶段 3.7 第①批）：与 {@link CallCancellationRegistry}、
+ * {@link CallCanceledException}、{@code CallResendLoop} 同族 —— 这四者都是
+ * 「<strong>外部信号作用于在途请求</strong>」（人在管理后台操作），与「一次请求的数据怎么流」
+ * 是两条轴，故不放在 {@code upstream/}（原 {@code provider/}）里。
+ *
  * <p>与 {@link CallCancellationRegistry} 同构：管理后台右键 Toast 点「静默重试」时，
- * 通过 retry 端点触发对应 requestId 的信号，让 provider 层中断当前上游请求并重新发起。
+ * 通过 retry 端点触发对应 requestId 的信号，让上游执行层中断当前上游请求并重新发起。
  * 区别在于语义：
  * <ul>
  *   <li><strong>取消</strong> —— 终止整条调用链，下游连接随之关闭；</li>
@@ -21,11 +26,11 @@ import java.util.concurrent.ConcurrentHashMap;
  *       重新发起的请求继续沿同一条流下发。下游 Copilot 无感知。</li>
  * </ul>
  *
- * <p>provider 层每次上游尝试开始时 {@link #register} 一个信号，并挂到自身
- * （{@code takeUntilOther}）；被触发时当前请求被中止，provider 据标志位重新发起。
+ * <p>上游执行层每次上游尝试开始时 {@link #register} 一个信号，并挂到自身
+ * （{@code takeUntilOther}）；被触发时当前请求被中止，由 {@code CallResendLoop} 重新发起。
  * 由于每次尝试注册的都是<strong>新鲜</strong>的 sink，连续点击可连续触发多次重发。
  *
- * <p>信号只在调用仍存活时有意义：{@code doFinally} 里 provider 会 {@link #remove}，
+ * <p>信号只在调用仍存活时有意义：{@code doFinally} 里执行器会 {@link #remove}，
  * 调用已终结后点击重试返回 false（前端据此提示「调用已结束」）。
  */
 @Component

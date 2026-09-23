@@ -1,8 +1,8 @@
 package com.kaixuan.copilot_ollama_proxy.api;
 
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
+import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallRetryRegistry;
+import com.kaixuan.copilot_ollama_proxy.control.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.SseConnectionGate;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import org.springframework.http.MediaType;
