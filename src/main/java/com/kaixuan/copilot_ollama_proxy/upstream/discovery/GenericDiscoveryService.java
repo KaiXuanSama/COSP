@@ -14,6 +14,12 @@ import java.util.Map;
 /**
  * 通用模型发现服务 —— 处理所有数据库供应商配置。
  * 从数据库动态读取配置，提供模型发现和详情查询能力。
+ *
+ * <h2>它在管道中的位置</h2>
+ * 形态：支线（发现链路） · 位置：{@code upstream/discovery/}
+ * <strong>不在聊天链路上</strong>—— 模型详情执行器（{@code /api/show}）
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  */
 @Service
 public class GenericDiscoveryService {

@@ -9,6 +9,11 @@ import java.util.Map;
  * system 提示词抬升的<strong>纯逻辑</strong> —— 被 {@link SystemPromptNormalizeStage} 的
  * MESSAGES 实现与 Anthropic 执行器共同调用。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：支线<strong>实现体</strong>（静态工具） · 位置：{@code upstream/requestbody/system/}
+ * 步骤「system 抬升」的纯逻辑
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为何是静态工具而不是把逻辑放进实现类</h2>
  * 与 {@code UpstreamChunkNormalizer} / {@code ReasoningFallback} 同一取向：
  * 支线化（Step 3.3d）**先让组件长成可查表的形状**，而调用点的切换是下一步的事。

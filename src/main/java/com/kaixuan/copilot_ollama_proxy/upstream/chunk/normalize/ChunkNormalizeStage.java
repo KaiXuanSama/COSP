@@ -8,6 +8,11 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * 上游 chunk 的<strong>形态归一支线</strong> —— 主干上一个按协议查表的接入点。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：<strong>契约</strong>（支线） · 位置：{@code upstream/chunk/normalize/}
+ * 步骤「chunk 形态归一」—— Chat 专属（统一 reasoning 别名 / finish_reason / 剪空）
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为何是接口而不是继续用静态工具</h2>
  * 主干化（阶段 3）要把「三个平行执行器」收敛成「一条主干 + 若干支线」，支线的载体是
  * <strong>类型</strong>而非静态方法（方向文档 §2.3：链接的是类型，不是类）。

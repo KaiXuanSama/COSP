@@ -32,6 +32,12 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>信号只在调用仍存活时有意义：{@code doFinally} 里执行器会 {@link #remove}，
  * 调用已终结后点击重试返回 false（前端据此提示「调用已结束」）。
+ *
+ * <h2>它在管道中的位置</h2>
+ * 形态：控制面（<strong>不是主干/支线</strong>） · 位置：{@code control/}
+ * 重发信号注册表—— 入口是 HTTP 端点（{@code CallLifecycleController}）
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  */
 @Component
 public class CallRetryRegistry {

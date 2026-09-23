@@ -14,6 +14,11 @@ import java.util.concurrent.atomic.AtomicReference;
  * 上游 chunk 的<strong>形态归一</strong> —— 把各供应商五花八门的 SSE chunk
  * 统一成本服务内部约定的 OpenAI 标准形态。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：支线<strong>实现体</strong>（静态工具） · 位置：{@code upstream/chunk/normalize/}
+ * 步骤「chunk 形态归一」的纯逻辑
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它做什么</h2>
  * <ol>
  *   <li>统一 reasoning 字段名：{@code thinking} / {@code reasoning} / {@code reasoning_text}

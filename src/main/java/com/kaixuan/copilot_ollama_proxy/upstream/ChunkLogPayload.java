@@ -6,6 +6,11 @@ import java.util.function.Function;
 /**
  * 落库到 {@code api_call_log.chunks} 的载荷形态。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：主干<strong>值类型</strong> · 位置：{@code upstream/}（层根）
+ * 步骤「落库」所用的 chunk 载荷（含翻译改写）
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为何用「一列两形」而不加新列</h2>
  * 跨协议翻译时，日志需要同时保留<strong>上游原始事件</strong>与<strong>下游实际收到的
  * chunk</strong>：前者用于确认上游到底发了什么，后者用于确认客户端看到了什么，

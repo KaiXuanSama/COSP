@@ -16,6 +16,11 @@ import java.util.function.Function;
 /**
  * 空响应拦截的<strong>机制</strong> —— 三个上游协议共用一份实现。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：主干<strong>机制</strong> · 位置：{@code upstream/}（层根）
+ * 步骤「空响应拦截」—— 检测器（支线）作参数传入，故机制本身留在主干、不进 {@code content/}
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它替代了什么</h2>
  * 阶段 3.6 的实测结论：这个机制原先在三个执行器里<strong>各有一份</strong>
  * （9 份 = 流式 gate / 非流式一次判 / 耗尽放行，每协议三份），

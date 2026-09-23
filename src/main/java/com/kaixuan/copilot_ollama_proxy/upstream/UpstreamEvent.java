@@ -3,6 +3,11 @@ package com.kaixuan.copilot_ollama_proxy.upstream;
 /**
  * 上游响应在管道里的<strong>统一形态</strong>。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：主干<strong>值类型</strong> · 位置：{@code upstream/}（层根）
+ * 步骤「统一形态出口」—— 主干与执行器之间传递的唯一形态；非流式 = 恰有一个元素的流
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它统一的是什么</h2>
  * 管道此前有两种传输形态：非流式是 {@code Mono<String>}（一个完整响应体），
  * 流式是 {@code Flux<String>}（一串帧）。两者在重试、空响应判定、落库三处

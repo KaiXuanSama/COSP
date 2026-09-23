@@ -7,6 +7,11 @@ import java.util.Map;
 /**
  * 把 {@code messages} 里的 system 消息抬到顶层 {@code system} 字段的<strong>支线</strong>。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：<strong>契约</strong>（支线） · 位置：{@code upstream/requestbody/system/}
+ * 步骤「system 抬升」—— system 从 messages 提到顶层
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为什么它是支线而不是主干</h2>
  * 按方向文档 §2.1 的判据：<strong>协议差异是代码 → 支线；是数据 → 主干</strong>。
  * 「system 可以是顶层字段」是 Anthropic 独有的形态约束，OpenAI 的 Chat 把它作为

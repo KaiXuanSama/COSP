@@ -23,6 +23,12 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>取消信号仅在「CONNECTED 后等待首字」窗口内有意义：此时流式响应尚未吐出任何 chunk，
  * 中止后向下游注入错误是干净的，不会截断已发送的内容。
+ *
+ * <h2>它在管道中的位置</h2>
+ * 形态：控制面（<strong>不是主干/支线</strong>） · 位置：{@code control/}
+ * 取消信号注册表—— 与重发同族（外部信号作用于在途请求）
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  */
 @Component
 public class CallCancellationRegistry {

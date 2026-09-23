@@ -33,6 +33,24 @@ Surefire 的其它默认命名模式，也不要新增 `*IT` 而不显式接入�
 ./mvnw test                    # 全量，含前端构建
 ```
 
+## 批量改文件 / 跑脚本的坑（实测踩过）
+
+1. **源码文件写入必须是无 BOM 的 UTF-8**：`[System.IO.File]::WriteAllText($p, $c, (New-Object System.Text.UTF8Encoding($false)))`。
+   PowerShell 的 `Set-Content` / `Out-File` 默认会带 BOM，会让 javac 报「非法字符 `\ufeff`」。
+2. **`.ps1` 脚本文件恰恰相反 —— 必须有 BOM**（或纯 ASCII）：`created` 出来的无 BOM UTF-8 `.ps1`
+   会被 **PowerShell 5.1 按 ANSI 读**，中文全变乱码、语法解析直接失败。
+   即：**给 `.java` 写内容时不带 BOM，写 `.ps1` 脚本文件时带 BOM** —— 两条相反的规则，别记混。
+3. **不要删整个 `target/`**：VS Code 的 Java 语言服务**同时在写** `target`，整目录删除会与它争抢，
+   编译时报 `could not create parent directories`。**只删 `target\classes` / `target\test-classes`**；
+   真坏了就**重载 VS Code 窗口**。
+4. **移动/改名包后必须删 `target\classes` / `target\test-classes` 再编译** —— 增量编译会**假绿**
+   （本项目已发生多次）。
+5. **「测试数变少」是文件丢失的可靠信号**：`git mv` 的目标目录不存在时会**静默失败**，
+   症状就是总数下降（比任何断言都早发现）。
+6. **元编程式补 import 不可靠**：文本扫描会把 Javadoc 里的类名当成引用、且可能把 import
+   插到 `static import` 之后破坏语法。**编译器是唯一可信的「缺失依赖」清单来源** ——
+   先做原子替换，再按编译报错逐个补。
+
 ## Tag 分层：迁移测试默认不跑
 
 `SchemaMigrationRunnerTests` 整个类带 `@Tag("schema-migration")`，`pom.xml` 的

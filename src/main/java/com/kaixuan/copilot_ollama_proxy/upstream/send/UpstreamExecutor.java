@@ -13,6 +13,11 @@ import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
 /**
  * 上游执行器的<strong>共同入口</strong> —— 主干上 {@code send} 那个插槽的实现契约。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：<strong>契约</strong>（send 插槽） · 位置：{@code upstream/send/}
+ * 步骤「发送」—— 主干按 {@code ctx.upstreamProtocol()} 查表选中实现
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为什么需要它</h2>
  * 三个执行器（Chat / Anthropic / Responses）此前各有一套公开方法名
  * （{@code chatCompletion} / {@code messages} / {@code responses}），

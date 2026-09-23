@@ -8,6 +8,11 @@ import java.util.Map;
 /**
  * 思考注入的<strong>支线</strong> —— 把模型配置里的思考档位与方式写成出站字段。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：<strong>契约</strong>（支线） · 位置：{@code upstream/requestbody/thinking/}
+ * 步骤「思考注入」—— 深度与方式两维，作为一个整体施加
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为什么它是支线而不是主干</h2>
  * 按方向文档 §2.1 的判据：<strong>协议差异是代码 → 支线</strong>。
  * 三种协议的出站字段<strong>各不相同</strong>：

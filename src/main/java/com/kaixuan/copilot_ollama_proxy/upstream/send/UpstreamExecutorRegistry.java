@@ -10,6 +10,11 @@ import java.util.Map;
 /**
  * 上游执行器的查表 —— 按 {@link WireProtocol} 查 {@link UpstreamExecutor} 实现。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：<strong>注册表</strong>（接入点级） · 位置：{@code upstream/send/}
+ * 步骤「选执行器」—— 未命中即<strong>报错</strong>（装配坏了，不是领域事实）
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它就是主干 {@code send} 插槽的落点</h2>
  * 主干上只有一行：
  * <pre>

@@ -14,6 +14,11 @@ import java.util.function.Function;
 /**
  * 流式 chunk 支线的查表 —— 按 {@link WireProtocol} 查归一与 fallback 的实现。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：<strong>注册表</strong>（接入点级） · 位置：{@code upstream/chunk/}
+ * 步骤「chunk 形态归一」与「reasoning fallback」的聚合查表；未命中即<strong>跳过</strong>
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它替掉了什么</h2>
  * 这两个支线在 Stage 3.1 就已成形（接口 + {@code @Component}），但调用点当时是
  * <strong>「优先注入、回退静态工具」的双路形态</strong>，且注入时**硬编码 filter CHAT**：

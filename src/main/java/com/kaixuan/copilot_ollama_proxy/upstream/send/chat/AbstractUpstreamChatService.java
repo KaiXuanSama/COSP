@@ -70,6 +70,11 @@ import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamRetryPolicy;
  *
  * 运行时配置（API Key、Base URL、模型列表）由调用方显式传入。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：<strong>执行器实现</strong>（CHAT 线路） · 位置：{@code upstream/send/chat/}
+ * 步骤「发送」—— 并 own 请求体装配 / 出站头 / 上游往返 / 回程帧 / 落库整条 Chat 线路
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>两条重试通道</h2>
  * 「静默」指重试发生在 COSP 内部、下游连接保持打开、Copilot 全程无感知。两条通道都是静默的，
  * 区别只在触发者与是否消耗预算：

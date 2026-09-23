@@ -5,6 +5,11 @@ import java.util.Map;
 /**
  * OpenAI Responses 流的<strong>终态事件</strong>清单。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：支线<strong>协作类</strong> · 位置：{@code upstream/send/responses/}
+ * 步骤「回程帧处理」—— Responses 的事件类型常量与终态清单
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为何独立成类</h2>
  * 这份清单有两个消费者，而它们对「终态」的用途完全不同：
  * <ul>

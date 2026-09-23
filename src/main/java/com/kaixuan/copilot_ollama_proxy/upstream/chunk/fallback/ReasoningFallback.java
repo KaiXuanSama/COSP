@@ -11,6 +11,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * 只有思考链、没有正文时的<strong>兜底回退</strong> —— 把累积的思考内容当作正文补发。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：支线<strong>实现体</strong>（静态工具） · 位置：{@code upstream/chunk/fallback/}
+ * 步骤「reasoning fallback」的纯逻辑
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它解决的问题</h2>
  * 早期部分模型会把思考链<strong>当作正文输出</strong>，即「只吐 reasoning_content、
  * 正文一个字符都没有」。下游看到的是<strong>空白回复</strong> —— 内容明明产生了，

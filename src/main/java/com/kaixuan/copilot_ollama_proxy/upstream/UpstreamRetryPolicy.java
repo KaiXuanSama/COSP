@@ -7,6 +7,11 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
 /**
  * 上游失败的<strong>可重试判定</strong> —— 三类上游执行器共用的唯一口径。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：主干 · 位置：{@code upstream/}（层根）
+ * 步骤「自动重试①」—— <strong>要不要</strong>重试（纯判定）+ 两个异常解包
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它回答的问题</h2>
  * 「这次上游失败值得重发吗」。答案只依赖<strong>异常类型与 HTTP 状态码</strong>，
  * 与上下游协议、与请求体形态都无关 —— 这正是它能跨三条线路共用的原因。

@@ -5,6 +5,11 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 /**
  * 判定上游响应是否带<strong>实质载荷</strong>的支线 —— 空响应拦截的判据来源。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：<strong>契约</strong>（支线） · 位置：{@code upstream/content/}
+ * 步骤「空响应判定」—— 经 {@link ContentDetectorRegistry} 按上游协议查表取得
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为什么它是支线</h2>
  * 按方向文档 §2.1 的判据：<strong>协议差异是代码 → 支线；是数据 → 主干</strong>。
  * 「什么算有内容」这件事三条线路的实现毫无交集（实测取值路径）：

@@ -10,6 +10,11 @@ import java.util.List;
  * 也没有工具调用（{@code tool_calls}）。第三方中转站偶发此类响应：HTTP 200、
  * 甚至连收尾 {@code [DONE]} 与 usage 都没有，直接透传给下游会让 Copilot 侧看到一次空回复。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：主干<strong>值类型</strong> · 位置：{@code upstream/}（层根）
+ * 步骤「空响应拦截」的信号异常—— 借它复用自动重试的那份预算
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为何是异常</h2>
  * 做成异常纯粹为了<strong>复用 {@code retryWhen} 的重试预算</strong>：
  * {@code retryWhen} 只认异常，不关心异常由谁造。把「空响应」包成异常抛出，

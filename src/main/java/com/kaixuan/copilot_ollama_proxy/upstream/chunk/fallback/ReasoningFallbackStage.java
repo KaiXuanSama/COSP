@@ -8,6 +8,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * 只有思考链、没有正文时的<strong>兜底回退支线</strong> —— 主干上一个按协议查表的接入点。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：<strong>契约</strong>（支线） · 位置：{@code upstream/chunk/fallback/}
+ * 步骤「reasoning fallback」—— 只有思考链没有正文时补一对伪 chunk
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它做什么</h2>
  * 早期部分模型会把思考链<strong>当作正文输出</strong>（只吐 {@code reasoning_content}、
  * 正文一字没有），下游看到的是空白回复。本支线在流的终止 chunk 到达时发现这种情形，

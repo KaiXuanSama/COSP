@@ -10,6 +10,11 @@ import java.util.Map;
 /**
  * {@link ThinkingInjectStage} 的 <strong>MESSAGES</strong> 实现 —— 当前唯一的实现。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：支线<strong>包装</strong>（MESSAGES） · 位置：{@code upstream/requestbody/thinking/}
+ * 步骤「思考注入」—— 当前唯一实现
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为何是一个支线而不是两个</h2>
  * Anthropic 侧有两个正交维度（深度 = {@code output_config.effort}、
  * 方式 = {@code thinking} 对象），但它们必须作为<strong>一个整体</strong>施加：

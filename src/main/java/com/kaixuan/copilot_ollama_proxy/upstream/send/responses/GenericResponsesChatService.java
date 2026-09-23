@@ -60,6 +60,11 @@ import java.util.function.Function;
 /**
  * 通用 <strong>Responses</strong> 上游服务 —— 对接 OpenAI Responses API 协议的供应商。
  *
+ * <h2>它在管道中的位置</h2>
+ * 形态：支线<strong>实现</strong>（RESPONSES） · 位置：{@code upstream/send/responses/}
+ * 步骤「发送」—— 独立类，<strong>不继承</strong> {@link AbstractUpstreamChatService}
+ * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为何与另两个上游服务平级，而不复用它们</h2>
  * 三条线路的 Reactor 链体<strong>结构不同</strong>：
  * <ul>
