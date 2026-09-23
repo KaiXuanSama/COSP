@@ -550,18 +550,20 @@ public abstract class AbstractUpstreamChatService {
                 .retryWhen(buildRetrySpec("chatCompletionStream", provider, requestId, model, stream))
                 // 空响应重试耗尽：把最后一轮被拦下的帧原样放给下游，与其他失败「耗尽后透传最后一次响应」
                 // 保持一致 —— 至少让下游看到上游真实返回了什么，而不是收到一个 500。
+                // 解包与告警文案收归 EmptyResponseGate（机制共用），本处只负责「怎么放行」——
+                // 与另两条线路的流式侧同形，三个执行器的耗尽放行因此共用同一套措辞。
                 // 该轮已在上面的 doOnError 落库，故放行后由 emptyResponsePassthrough 让收尾跳过重复落库。
-                // 注意用 UpstreamRetryPolicy.findEmptyUpstreamException 解包而非按类型匹配：
-                // retryWhen 耗尽时原异常被包进 RetryExhaustedException，onErrorResume(Class) 匹配不到。
                 .onErrorResume(error -> {
-                    EmptyUpstreamResponseException emptyResponse = UpstreamRetryPolicy.findEmptyUpstreamException(error);
-                    if (emptyResponse == null) {
+                    Optional<List<String>> exhausted = EmptyResponseGate.exhaustedFrames(error);
+                    if (exhausted.isEmpty()) {
                         return Flux.error(error);
                     }
-                    log.warn("{} 上游空响应重试耗尽，放行最后一轮的 {} 帧给下游 [{}] {}",
-                            provider.providerKey(), emptyResponse.bufferedFrames().size(), model, requestId);
+                    List<String> frames = exhausted.get();
+                    EmptyResponseGate.logExhaustedPassthrough(log, callCtx, frames.size());
                     emptyResponsePassthrough.set(true);
-                    return Flux.fromIterable(emptyResponse.bufferedFrames())
+                    // 放行的是**裸 data 字符串**（异常只携带 List<String>），故须就地重建 SSE 信封；
+                    // 原始信封的 event/id/retry 字段在这一路径上本就随异常丢失，属既有设计。
+                    return Flux.fromIterable(frames)
                             .map(data -> ServerSentEvent.builder(data).build());
                 });
 
