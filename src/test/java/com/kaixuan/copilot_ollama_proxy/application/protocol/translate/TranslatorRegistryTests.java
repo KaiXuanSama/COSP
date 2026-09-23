@@ -3,7 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.application.protocol.translate;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslatedRequest;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslationContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
-import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;

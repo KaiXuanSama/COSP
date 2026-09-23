@@ -3,7 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.application.ollama;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.protocol.ollama.OllamaShowResponse;
-import com.kaixuan.copilot_ollama_proxy.provider.generic.discovery.GenericDiscoveryService;
+import com.kaixuan.copilot_ollama_proxy.upstream.discovery.GenericDiscoveryService;
 import org.springframework.stereotype.Service;
 
 /**

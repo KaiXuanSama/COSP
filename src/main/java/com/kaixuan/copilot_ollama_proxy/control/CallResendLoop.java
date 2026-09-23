@@ -8,10 +8,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * 静默重试的<strong>递归循环</strong> —— 三个上游执行器共用一份实现。
+ * 人工重发（管理后台「静默重试」）的<strong>递归循环</strong> —— 三个上游执行器共用一份实现。
  *
  * <h2>它为什么住在 {@code control} 包（阶段 3.7 第①批）</h2>
- * 它此前叫 {@code CallResendLoop} 且住在 {@code provider/} 顶层，与
+ * 它此前叫 {@code UpstreamSilentRetry} 且住在 {@code provider/} 顶层，与
  * {@code UpstreamRetryPolicy} / {@code UpstreamAutoRetry} 并列 —— 那个摆法把它摆成了
  * 「自动重试的第三件」，而<strong>它根本不是</strong>。三条实测依据：
  * <ul>
@@ -95,7 +95,7 @@ public final class CallResendLoop {
      * @param model              模型名（含前缀），仅用于日志
      * @param <T>                帧元素类型 —— 三条线路不同（Chat 是 {@code ServerSentEvent<String>}，
      *                           另两条是裸 {@code String}），故与
-     *                           {@link com.kaixuan.copilot_ollama_proxy.provider.stage.EmptyResponseGate}
+     *                           {@link com.kaixuan.copilot_ollama_proxy.upstream.stage.EmptyResponseGate}
      *                           同样做成泛型
      * @return 可被中断并自动重发的循环
      */

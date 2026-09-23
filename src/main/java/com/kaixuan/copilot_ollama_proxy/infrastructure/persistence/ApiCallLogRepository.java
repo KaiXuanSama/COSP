@@ -3,7 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
-import com.kaixuan.copilot_ollama_proxy.provider.ChunkLogPayload;
+import com.kaixuan.copilot_ollama_proxy.upstream.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.LogEventPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

@@ -2,7 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.application.protocol.translate;
 
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslationContext;
-import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 

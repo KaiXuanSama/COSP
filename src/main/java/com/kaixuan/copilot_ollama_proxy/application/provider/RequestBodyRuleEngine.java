@@ -21,7 +21,8 @@ import java.util.Map;
  *
  * <h2>为何放在 application 而不是某个协议包下</h2>
  * 规则本身只是 JSON 路径操作，与报文格式无关 —— OpenAI 与 Anthropic 两侧共用同一份实现。
- * 它原先在 {@code provider/generic/openai} 下，那个位置暗示「这是 OpenAI 专属能力」，
+ * 它原先在 {@code upstream/send/chat} 下（更早为 {@code provider/generic/openai}），
+ * 那个位置暗示「这是 OpenAI 专属能力」，
  * 而 Anthropic 侧接入后该暗示就是错的。协议差异只体现在<strong>规则组声明适用哪条线路</strong>，
  * 由 {@link #transform(Map, String, WireProtocol)} 的筛选完成，不影响执行语义。
  *

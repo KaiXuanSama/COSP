@@ -10,9 +10,9 @@ import com.kaixuan.copilot_ollama_proxy.protocol.anthropic.AnthropicMessagesRequ
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.control.CallCanceledException;
-import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEvent;
-import com.kaixuan.copilot_ollama_proxy.provider.UpstreamEventClassifier;
-import com.kaixuan.copilot_ollama_proxy.provider.generic.anthropic.AnthropicUsageParser;
+import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEventClassifier;
+import com.kaixuan.copilot_ollama_proxy.upstream.send.messages.AnthropicUsageParser;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import org.slf4j.Logger;
