@@ -54,7 +54,7 @@ public final class AnthropicThinkingNormalizer {
                                                ProviderRuntimeConfiguration provider,
                                                ObjectMapper objectMapper) {
         // 深度先。
-        boolean thinkingDisabled = resolveReasoningEffort(resolvedModel, provider, objectMapper)
+        boolean thinkingDisabled = ReasoningEffortSetting.forModel(resolvedModel, provider, objectMapper)
                 .applyToAnthropic(body);
         // 方式后，且深度明确要求关闭时跳过 —— 否则会把 disabled 改写成 adaptive，
         // 用户配的「关闭思考」被静默丢弃。
@@ -88,36 +88,5 @@ public final class AnthropicThinkingNormalizer {
             }
         }
         return AnthropicThinkingSetting.defaults();
-    }
-
-    /**
-     * 从运行时模型配置中读取思考深度设置。
-     *
-     * <p>与 OpenAI 侧读的是<strong>同一列</strong>（{@code provider_model.reasoning_effort}）、
-     * 同一份解析与同一套四档语义，只有出站的字段名与形态不同。因此此处不引入
-     * 第二份配置 —— 用户在界面上看到的就是一个模型一个档位，无论它走哪条线路。
-     *
-     * <p>模型名查不到时用 {@link ReasoningEffortSetting#defaults()}（medium + 兜底），
-     * 与 OpenAI 侧 {@code resolveReasoningEffort} 同一形状。
-     *
-     * <p><strong>本方法在三个执行器各有一份逐字相同的副本</strong>
-     * （{@code AbstractUpstreamChatService} / {@code GenericResponsesChatService} 也有）。
-     * 本步只把 Anthropic 那份搬来此处，另两份的合流是后续步骤的事 —— 现在动它们
-     * 会超出「协议特定步骤支线化」的范围。
-     *
-     * @param resolvedModel 已剥供应商前缀的真实模型名
-     * @param provider      本次调用的供应商运行时配置
-     * @param objectMapper  用于解析配置 JSON
-     * @return 该模型的思考深度设置；模型名查不到时为默认值
-     */
-    public static ReasoningEffortSetting resolveReasoningEffort(String resolvedModel,
-                                                               ProviderRuntimeConfiguration provider,
-                                                               ObjectMapper objectMapper) {
-        for (var model : provider.models()) {
-            if (resolvedModel.equals(model.modelName())) {
-                return ReasoningEffortSetting.parse(model.reasoningEffort(), objectMapper);
-            }
-        }
-        return ReasoningEffortSetting.defaults();
     }
 }

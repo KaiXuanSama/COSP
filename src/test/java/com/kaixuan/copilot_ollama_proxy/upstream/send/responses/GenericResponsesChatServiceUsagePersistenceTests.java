@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
@@ -385,24 +386,31 @@ class GenericResponsesChatServiceUsagePersistenceTests {
      */
     private static final class TestService extends GenericResponsesChatService {
 
+        /** 请求体装配器 —— 落库的 body 是装配后的（含 stream 字段），故辅助方法要先跑它。 */
+        private final com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler assembler;
+
         private TestService() {
             super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
-                    new RequestBodyRuleEngine(new ObjectMapper()),
                     PipelineContexts.contentDetectorRegistry(new ObjectMapper()));
+            this.assembler = new com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler(
+                    PipelineContexts.registryWithAllBodyStages(new ObjectMapper()),
+                    new RequestBodyRuleEngine(new ObjectMapper()));
         }
 
         private Mono<String> exposeResponses(Map<String, Object> request, ResolvedProviderRoute route) {
             // 同流式那个辅助方法：在此收口为字符串，让既有断言一行未改。
-            // 3.4e 起执行器只留 invoke/invokeStream 两个入口，此处直调 protected 重载。
-            return responses(request, route.model(), route.provider(), HttpHeaders.EMPTY, "req-persist",
-                    PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES, false))
+            // 本类验落库，而落库的 body 是装配后的（含 stream），故先跑装配器 —— 与生产路径一致。
+            RequestPipelineContext ctx = PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES, false);
+            assembler.assemble(ctx);
+            return responses(ctx.body(), route.model(), route.provider(), HttpHeaders.EMPTY, "req-persist", ctx)
                     .map(com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent::data);
         }
 
         private Flux<String> exposeResponsesStream(Map<String, Object> request, ResolvedProviderRoute route) {
             // 收口为字符串：本类断言的是落库内容，与分类无关。
-            return responsesStream(request, route.model(), route.provider(), HttpHeaders.EMPTY, "req-persist",
-                    PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES, true))
+            RequestPipelineContext ctx = PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES, true);
+            assembler.assemble(ctx);
+            return responsesStream(ctx.body(), route.model(), route.provider(), HttpHeaders.EMPTY, "req-persist", ctx)
                     .map(com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent::data);
         }
 

@@ -17,6 +17,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRoute
 import com.kaixuan.copilot_ollama_proxy.upstream.send.messages.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.chat.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.responses.GenericResponsesChatService;
+import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.UpstreamExecutorRegistry;
 import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
@@ -104,7 +105,11 @@ class ChatDispatchErrorSignalTests {
                 new TranslatorRegistry(
                         List.of(new ChatToMessagesRequestTranslator(objectMapper)),
                         List.of(new MessagesToChatResponseTranslator(objectMapper))),
-                executors);
+                executors,
+                new RequestBodyAssembler(
+                        new com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyStageRegistry(
+                                List.of(), List.of(), List.of()),
+                        new com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine(objectMapper)));
         // 三个 Service 现在同形：只收主干。
         chatCompletionService = new ChatCompletionService(pipeline);
         messagesService = new MessagesService(pipeline);

@@ -14,6 +14,7 @@ import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKe
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderRequestTransformRepository;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.chat.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import com.sun.net.httpserver.HttpServer;
@@ -119,7 +120,6 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 providerConfigRepository, apiKeyRepository, transformRepository);
         GenericOpenAiChatService genericChatService = new GenericOpenAiChatService(
                 objectMapper, new ProviderRequestHeaderService(objectMapper),
-                new RequestBodyRuleEngine(objectMapper),
                 PipelineContexts.registryWithChatChunkStages(objectMapper),
                 PipelineContexts.contentDetectorRegistry(objectMapper));
         genericChatService.setWebClientBuilder(WebClient.builder());
@@ -140,7 +140,9 @@ class ProviderRequestBodyTransformationIntegrationTests {
         ChatCompletionService chatCompletionService = new ChatCompletionService(
                 new RequestPipeline(new ProviderRouteResolver(catalog), new ProtocolDispatchManager(),
                         new TranslatorRegistry(List.of(), List.of()),
-                        new UpstreamExecutorRegistry(List.of(genericChatService))));
+                        new UpstreamExecutorRegistry(List.of(genericChatService)),
+                        new RequestBodyAssembler(PipelineContexts.registryWithAllBodyStages(objectMapper),
+                                new RequestBodyRuleEngine(objectMapper))));
 
         HttpHeaders downstreamHeaders = new HttpHeaders();
         downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-token");

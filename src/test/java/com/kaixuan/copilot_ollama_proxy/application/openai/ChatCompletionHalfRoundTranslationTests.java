@@ -17,9 +17,12 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolve
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.UpstreamExecutorRegistry;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.messages.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.chat.GenericOpenAiChatService;
+import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
+import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -119,7 +122,8 @@ class ChatCompletionHalfRoundTranslationTests {
                 List.of(new ChatToMessagesRequestTranslator(objectMapper)),
                 List.of());
         halfRoundService = new ChatCompletionService(
-                new RequestPipeline(routeResolver, dispatchManager, halfRoundRegistry, executors));
+                new RequestPipeline(routeResolver, dispatchManager, halfRoundRegistry, executors,
+                        assembler()));
 
         // 供应商只勾 MESSAGES：下游 CHAT 打进来 → 调度判需要翻译、上游协议 MESSAGES。
         givenProviderSupporting("[\"MESSAGES\"]");
@@ -237,7 +241,8 @@ class ChatCompletionHalfRoundTranslationTests {
                 List.of(new MessagesToChatResponseTranslator(objectMapper)));
         ChatCompletionService fullyWired = new ChatCompletionService(
                 new RequestPipeline(routeResolver, dispatchManager, fullRegistry,
-                        new UpstreamExecutorRegistry(List.of(openAiChatService, anthropicChatService))));
+                        new UpstreamExecutorRegistry(List.of(openAiChatService, anthropicChatService)),
+                        assembler()));
 
         given(anthropicChatService.invoke(any(), any()))
                 .willAnswer(invocation -> {
@@ -271,5 +276,16 @@ class ChatCompletionHalfRoundTranslationTests {
                 "relay-x", "https://example.invalid/v1", "key", List.of(),
                 "[]", "{\"version\":2,\"groups\":[]}", supportedProtocolsJson, "");
         given(routeResolver.resolve(any())).willReturn(new ResolvedProviderRoute(provider, "m", "m"));
+    }
+
+    /**
+     * 主干需要的请求体装配器（阶段 4 刀 1）。
+     *
+     * <p>本类的执行器是 mock，装配后的 body 不会真正出站；但主干在调执行器前必调装配器，
+     * 因此这里给一个真实实例，避免 NPE。装配序列对本类的断言（透传 / WARN / 登记）无影响。
+     */
+    private RequestBodyAssembler assembler() {
+        return new RequestBodyAssembler(PipelineContexts.registryWithAllBodyStages(objectMapper),
+                new RequestBodyRuleEngine(objectMapper));
     }
 }

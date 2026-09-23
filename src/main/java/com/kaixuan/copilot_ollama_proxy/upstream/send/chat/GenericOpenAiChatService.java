@@ -4,8 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
-import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.upstream.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.UpstreamExecutor;
@@ -16,7 +14,6 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
-import java.util.Map;
 import java.util.function.Function;
 
 /**
@@ -34,15 +31,11 @@ import java.util.function.Function;
 @Service
 public class GenericOpenAiChatService extends AbstractUpstreamChatService implements UpstreamExecutor {
 
-    private final RequestBodyRuleEngine requestBodyRuleEngine;
-
     public GenericOpenAiChatService(ObjectMapper objectMapper,
                                     ProviderRequestHeaderService providerRequestHeaderService,
-                                    RequestBodyRuleEngine requestBodyRuleEngine,
                                     ChunkStageRegistry chunkStageRegistry,
                                     ContentDetectorRegistry contentDetectorRegistry) {
         super(objectMapper, providerRequestHeaderService, chunkStageRegistry, contentDetectorRegistry);
-        this.requestBodyRuleEngine = requestBodyRuleEngine;
     }
 
     @Override
@@ -83,23 +76,5 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService implem
     @Override
     protected String chatCompletionsUri() {
         return "/chat/completions";
-    }
-
-    /**
-     * 根据 body_rules_json 对请求体进行动态转换。
-     *
-     * 只执行声明适用于 {@link WireProtocol#CHAT} 的规则组；协议筛选由引擎完成。
-     */
-    @Override
-    protected void customizeRequestBody(Map<String, Object> body, String resolvedModel,
-                                        ProviderRuntimeConfiguration provider) {
-        RequestBodyRuleEngine.TransformResult result = requestBodyRuleEngine.transform(
-                body, provider.bodyRulesJson(), WireProtocol.CHAT);
-        body.clear();
-        body.putAll(result.output());
-        for (RequestBodyRuleEngine.TransformWarning warning : result.warnings()) {
-            log.warn("请求体规则已跳过: ruleId={}, path={}, message={}",
-                    warning.ruleId(), warning.fieldPath(), warning.message());
-        }
     }
 }

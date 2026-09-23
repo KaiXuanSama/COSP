@@ -404,11 +404,5 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
         protected String chatCompletionsUri() {
             return "/v1/chat/completions";
         }
-
-        @Override
-        protected void customizeRequestBody(Map<String, Object> body, String resolvedModel,
-                                            ProviderRuntimeConfiguration provider) {
-            body.put("customized", true);
-        }
     }
 }

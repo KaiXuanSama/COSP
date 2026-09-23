@@ -3,7 +3,6 @@ package com.kaixuan.copilot_ollama_proxy.upstream.requestbody;
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
-import com.kaixuan.copilot_ollama_proxy.upstream.send.messages.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.maxtokens.MaxTokensNormalizeStage;
 import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.maxtokens.MessagesMaxTokensStage;
 import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.system.MessagesSystemPromptStage;
@@ -24,24 +23,23 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 请求体支线的<strong>装配验证</strong>：三个 MESSAGES 支线真的被 Spring 收集并进了查表吗。
+ * 请求体支线的<strong>装配验证</strong>：协议特定支线真的被 Spring 收集并进了查表吗。
  *
  * <h2>为何必须单独验（与 {@code ChatStageSpringWiringTests} 同一理由）</h2>
- * 支线未命中时主干会<strong>跳过该步骤</strong>，而不是报错 —— 这是刻意的语义
+ * 支线未命中时装配器会<strong>跳过该步骤</strong>，而不是报错 —— 这是刻意的语义
  * （「别的协议没有这一步」是合法的）。但它的副作用是：
  * <strong>漏了 {@code @Component}、扫描不到、@Autowired 写错，行为会静默降级</strong> ——
  * Anthropic 请求不再抬升 system、不再补 max_tokens，而功能看起来「能用」，
  * 直到上游用 400 回答或系统提示词凭空消失。
  *
  * <p>故这里断言的是「收集到了、查得到、能调用」，而不是「行为正确」——
- * 后者由既有的 {@code GenericAnthropicChatServiceTests} 覆盖（它们走生产路径，
- * 本步之后仍调同一份静态工具，因此一行未改）。
+ * 后者由 {@code RequestBodyAssemblerTests} 与 {@code GenericAnthropicChatServiceTests} 覆盖。
  *
- * <h2>为何还要钉「查表键对得上」</h2>
- * 这是本步<strong>新引入的失效面</strong>：调研实测 {@code RequestPipelineContext.bodyProtocol()}
- * 在此之前<strong>零调用方</strong>，从未被任何测试验证过。等 3.3d-2 用它查表时，
- * 若初值语义错了，症状是「查到错误实现或查不到」—— 两种都不会抛异常。
- * 因此这里提前钉住「MESSAGES 键确实能查到 MESSAGES 实现」。
+ * <h2>阶段 4 刀 1 起：查表入口在装配器（主干），不在执行器</h2>
+ * 请求体装配收归主干的 {@code RequestBodyAssembler}，它持有本注册表。执行器不再持有 ——
+ * 因此本类断言的「谁拿到查表入口」从执行器改为装配器（见
+ * {@link #assemblerHoldsTheRegistry}）。同时 {@code thinking/} 从 1 个实现（仅 MESSAGES）
+ * 扩为 3 个（三协议各一），因为装配器要对三条线路各自查 thinking。
  */
 @SpringBootTest(classes = CopilotOllamaProxyApplication.class)
 class RequestBodyStageSpringWiringTests {
@@ -50,7 +48,7 @@ class RequestBodyStageSpringWiringTests {
     private RequestBodyStageRegistry registry;
 
     @Autowired
-    private GenericAnthropicChatService anthropicChatService;
+    private RequestBodyAssembler assembler;
 
     @Autowired
     private List<SystemPromptNormalizeStage> systemPromptStages;
@@ -62,21 +60,24 @@ class RequestBodyStageSpringWiringTests {
     private List<ThinkingInjectStage> thinkingStages;
 
     @Test
-    @DisplayName("集合注入收集到三个 MESSAGES 支线，且各只有 MESSAGES 一个实现")
+    @DisplayName("集合注入收集到各支线：system/max_tokens 各 1（MESSAGES），thinking 3（三协议）")
     void collectionInjectionCollectsAllThreeStages() {
         assertThat(systemPromptStages)
                 .as("system 抬升支线应被收集（@Component 在扫描范围内）")
                 .hasSize(1);
         assertThat(maxTokensStages).hasSize(1);
-        assertThat(thinkingStages).hasSize(1);
+        // thinking 三协议各一（阶段 4 刀 1）：Chat 写 reasoning_effort、Responses 写 reasoning.effort、
+        // Messages 写 output_config.effort + thinking 方式。
+        assertThat(thinkingStages).hasSize(3);
 
         assertThat(systemPromptStages.getFirst().protocol()).isEqualTo(WireProtocol.MESSAGES);
         assertThat(maxTokensStages.getFirst().protocol()).isEqualTo(WireProtocol.MESSAGES);
-        assertThat(thinkingStages.getFirst().protocol()).isEqualTo(WireProtocol.MESSAGES);
+        assertThat(thinkingStages.stream().map(ThinkingInjectStage::protocol))
+                .containsExactlyInAnyOrder(WireProtocol.CHAT, WireProtocol.MESSAGES, WireProtocol.RESPONSES);
     }
 
     @Test
-    @DisplayName("三个支线都能按 MESSAGES 键查到")
+    @DisplayName("system/max_tokens 按 MESSAGES 键查到，thinking 三协议都查得到")
     void allThreeStagesAreFoundByMessagesKey() {
         assertThat(registry.findSystemPromptStage(WireProtocol.MESSAGES))
                 .as("查不到会让 Anthropic 的 system 抬升静默失效")
@@ -86,25 +87,30 @@ class RequestBodyStageSpringWiringTests {
                 .containsInstanceOf(MessagesMaxTokensStage.class);
         assertThat(registry.findThinkingStage(WireProtocol.MESSAGES))
                 .containsInstanceOf(MessagesThinkingStage.class);
+        // 阶段 4 刀 1：Chat / Responses 的思考注入也支线化了，故三协议都能查到 thinking。
+        assertThat(registry.findThinkingStage(WireProtocol.CHAT)).isPresent();
+        assertThat(registry.findThinkingStage(WireProtocol.RESPONSES)).isPresent();
     }
 
     /**
-     * 另两条协议查不到实现 —— <strong>这是预期，不是缺口</strong>。
+     * system / max_tokens 两条支线在 CHAT / RESPONSES 上查不到 —— <strong>这是预期，不是缺口</strong>。
      *
      * <p>「跳过」比「不存在」更贴合意图：Chat 不需要抬升 system 到顶层
      * （它本来就是那个形态）、Responses 不需要补 max_tokens（该字段在它那里可选）。
      * 若某天有人给这两条协议补了实现，本用例会失败 —— 那是提醒他确认
      * 「确实该在这个协议上跑这一步」，而不是顺手加上。
+     *
+     * <p>思考注入<strong>不在此列</strong>：阶段 4 刀 1 已把它对三协议都支线化
+     * （见 {@link #allThreeStagesAreFoundByMessagesKey}），因为思考深度是三条线路都有、
+     * 只是出站字段不同的步骤。
      */
     @Test
-    @DisplayName("CHAT / RESPONSES 查不到实现（本步只搬了 MESSAGES 侧）")
+    @DisplayName("CHAT / RESPONSES 查不到 system/max_tokens（那两步是 MESSAGES 特有）")
     void otherProtocolsFindNothingYet() {
         assertThat(registry.findSystemPromptStage(WireProtocol.CHAT)).isEmpty();
         assertThat(registry.findSystemPromptStage(WireProtocol.RESPONSES)).isEmpty();
         assertThat(registry.findMaxTokensStage(WireProtocol.CHAT)).isEmpty();
         assertThat(registry.findMaxTokensStage(WireProtocol.RESPONSES)).isEmpty();
-        assertThat(registry.findThinkingStage(WireProtocol.CHAT)).isEmpty();
-        assertThat(registry.findThinkingStage(WireProtocol.RESPONSES)).isEmpty();
     }
 
     /**
@@ -199,22 +205,21 @@ class RequestBodyStageSpringWiringTests {
     }
 
     /**
-     * <strong>执行器确实拿到了查表入口</strong> —— 不是绕开查表直接调静态工具。
+     * <strong>装配器确实拿到了查表入口</strong> —— 不是绕开查表直接调静态工具。
      *
      * <h2>为何这条必须存在</h2>
      * 接入点接线后，两条路仍然**逐字等价**（查到的支线只转调同一个静态工具），
      * 因此「走了查表」与「还在直接调工具」<strong>从行为上完全无法区分</strong>。
      * 若构造器参数被换成一个空注册表、或将来有人为了「省事」改回直接调工具，
-     * 行为一切正常，而 3.3d 的成果（协议特定步骤可查表扩展）<strong>静默归零</strong>。
+     * 行为一切正常，而协议特定步骤可查表扩展的成果<strong>静默归零</strong>。
      *
-     * <p>因此这里读字段断言它非空 —— 与 {@code ChatStageSpringWiringTests} 同一处境：
-     * <em>两条路等价时，只有结构断言能验出接线断了</em>。
+     * <p>阶段 4 刀 1 起查表入口在装配器（主干）而非执行器，故这里断言的是装配器持有它。
      * 代价是绑定了字段名，改名即红，那正是应有的提醒。
      */
     @Test
-    @DisplayName("Anthropic 执行器已拿到查表入口（而非绕开查表）")
-    void anthropicExecutorHoldsTheRegistry() {
-        assertThat(ReflectionTestUtils.getField(anthropicChatService, "requestBodyStageRegistry"))
+    @DisplayName("装配器已拿到查表入口（而非绕开查表）")
+    void assemblerHoldsTheRegistry() {
+        assertThat(ReflectionTestUtils.getField(assembler, "stageRegistry"))
                 .as("为 null 会让三个协议特定步骤静默全跳过，而功能看起来仍然正常")
                 .isNotNull();
     }

@@ -15,6 +15,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRoute
 import com.kaixuan.copilot_ollama_proxy.application.shared.ProtocolNotifier;
 import com.kaixuan.copilot_ollama_proxy.upstream.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.UpstreamExecutor;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.UpstreamExecutorRegistry;
 import org.slf4j.Logger;
@@ -93,6 +94,7 @@ public class RequestPipeline {
     private final ProtocolDispatchManager protocolDispatchManager;
     private final TranslatorRegistry translatorRegistry;
     private final UpstreamExecutorRegistry executorRegistry;
+    private final RequestBodyAssembler requestBodyAssembler;
 
     /**
      * 调用生命周期事件通知器，由 Spring 可选注入。
@@ -105,11 +107,13 @@ public class RequestPipeline {
     public RequestPipeline(ProviderRouteResolver providerRouteResolver,
                            ProtocolDispatchManager protocolDispatchManager,
                            TranslatorRegistry translatorRegistry,
-                           UpstreamExecutorRegistry executorRegistry) {
+                           UpstreamExecutorRegistry executorRegistry,
+                           RequestBodyAssembler requestBodyAssembler) {
         this.providerRouteResolver = providerRouteResolver;
         this.protocolDispatchManager = protocolDispatchManager;
         this.translatorRegistry = translatorRegistry;
         this.executorRegistry = executorRegistry;
+        this.requestBodyAssembler = requestBodyAssembler;
     }
 
     @Autowired(required = false)
@@ -170,6 +174,9 @@ public class RequestPipeline {
      */
     public Flux<UpstreamEvent> execute(RequestPipelineContext ctx) {
         ResponseProtocolTranslator responseTranslator = prepareForSend(ctx);
+        // 请求体装配（阶段 4 刀 1）：协议无关的公共序列在主干，协议特定三步走支线。
+        // 放在 send 之前、translate 之后 —— body 已是最终（上游）形态，装配据 bodyProtocol 查表。
+        requestBodyAssembler.assemble(ctx);
         // 主干上唯一一次读「是不是流式」—— 下面两处选机制都由它驱动。
         boolean stream = ctx.stream();
         UpstreamExecutor executor = executorRegistry.require(ctx.upstreamProtocol());

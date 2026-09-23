@@ -1,8 +1,8 @@
 package com.kaixuan.copilot_ollama_proxy.upstream.send.messages;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
-import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
@@ -215,17 +215,16 @@ class AnthropicSilentRetryBehaviorTests {
 
         private TestService() {
             super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
-                    new RequestBodyRuleEngine(new ObjectMapper()),
-                    PipelineContexts.registryWithMessagesStages(new ObjectMapper()),
                     PipelineContexts.contentDetectorRegistry(new ObjectMapper()));
         }
 
         private Flux<String> exposeMessagesStream(Map<String, Object> request, ResolvedProviderRoute route) {
             // 收口为字符串：本类断言的是「重试了几次、收到什么事件」，与分类无关。
-            // 3.4e 起执行器只留 invoke/invokeStream 两个入口，此处直调 protected 重载。
-            return messagesStream(request, route.model(), route.provider(), HttpHeaders.EMPTY, "req-test",
-                    null,
-                    PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES, true))
+            // 本类不验请求体装配（那是 RequestBodyAssemblerTests 的事），故不跑装配器 ——
+            // 执行器读 ctx.body()，direct(...) 已把 request 复制进去。
+            RequestPipelineContext ctx = PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES, true);
+            return messagesStream(ctx.body(), route.model(), route.provider(), HttpHeaders.EMPTY, "req-test",
+                    null, ctx)
                     .map(com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent::data);
         }
 

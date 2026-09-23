@@ -7,6 +7,7 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
+import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.messages.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.chat.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.responses.GenericResponsesChatService;
@@ -189,10 +190,19 @@ class UpstreamExecutorTests {
 
     // ==================== 辅助 ====================
 
-    /** 造一个「已就绪」的 ctx：body 已是最终形态、模型名已定。 */
+    /**
+     * 造一个「已就绪」的 ctx：body 已经过主干装配（写好 model / stream / 思考深度等）。
+     *
+     * <p>阶段 4 刀 1 起请求体装配在主干的 {@code RequestBodyAssembler}，执行器只读 {@code ctx.body()}。
+     * 本类直接调执行器（不走完整主干），因此在这里补跑一遍装配 —— 与生产路径一致，
+     * 否则 {@code stream} 等字段不会出现在出站 body 里。
+     */
     private RequestPipelineContext ctxFor(Map<String, Object> body, String model, WireProtocol protocol,
                                           boolean stream) {
-        return PipelineContexts.direct(body, providerOf(), protocol, stream);
+        RequestPipelineContext ctx = PipelineContexts.direct(body, providerOf(), protocol, stream);
+        new RequestBodyAssembler(PipelineContexts.registryWithAllBodyStages(objectMapper),
+                new RequestBodyRuleEngine(objectMapper)).assemble(ctx);
+        return ctx;
     }
 
     private static RetryPolicyService fixedRetryPolicy(int maxAttempts) {
@@ -207,7 +217,6 @@ class UpstreamExecutorTests {
     private GenericOpenAiChatService openAiService() {
         GenericOpenAiChatService service = new GenericOpenAiChatService(objectMapper,
                 new ProviderRequestHeaderService(objectMapper),
-                new RequestBodyRuleEngine(objectMapper),
                 new ChunkStageRegistry(
                         List.of(new ChatChunkNormalizeStage(objectMapper)),
                         List.of(new ChatReasoningFallbackStage(objectMapper))),
@@ -219,8 +228,6 @@ class UpstreamExecutorTests {
     private GenericAnthropicChatService anthropicService() {
         GenericAnthropicChatService service = new GenericAnthropicChatService(objectMapper,
                 new ProviderRequestHeaderService(objectMapper),
-                new RequestBodyRuleEngine(objectMapper),
-                PipelineContexts.registryWithMessagesStages(objectMapper),
                 PipelineContexts.contentDetectorRegistry(objectMapper));
         service.setRetryPolicyService(fixedRetryPolicy(0));
         return service;
@@ -229,7 +236,6 @@ class UpstreamExecutorTests {
     private GenericResponsesChatService responsesService() {
         GenericResponsesChatService service = new GenericResponsesChatService(objectMapper,
                 new ProviderRequestHeaderService(objectMapper),
-                new RequestBodyRuleEngine(objectMapper),
                 PipelineContexts.contentDetectorRegistry(objectMapper));
         service.setRetryPolicyService(fixedRetryPolicy(0));
         return service;

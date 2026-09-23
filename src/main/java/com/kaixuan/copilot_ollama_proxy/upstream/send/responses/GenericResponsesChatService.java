@@ -8,12 +8,9 @@ import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
-import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
-import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.control.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
@@ -49,7 +46,6 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -128,7 +124,6 @@ public class GenericResponsesChatService implements UpstreamExecutor {
 
     private final ObjectMapper objectMapper;
     private final ProviderRequestHeaderService providerRequestHeaderService;
-    private final RequestBodyRuleEngine requestBodyRuleEngine;
 
     /**
      * 内容检测器的查表 —— 空响应拦截的判据来源（阶段 3.6b）。
@@ -149,11 +144,9 @@ public class GenericResponsesChatService implements UpstreamExecutor {
 
     public GenericResponsesChatService(ObjectMapper objectMapper,
                                        ProviderRequestHeaderService providerRequestHeaderService,
-                                       RequestBodyRuleEngine requestBodyRuleEngine,
                                        ContentDetectorRegistry contentDetectorRegistry) {
         this.objectMapper = objectMapper;
         this.providerRequestHeaderService = providerRequestHeaderService;
-        this.requestBodyRuleEngine = requestBodyRuleEngine;
         this.contentDetectorRegistry = contentDetectorRegistry;
     }
 
@@ -250,7 +243,8 @@ public class GenericResponsesChatService implements UpstreamExecutor {
         // ⚠️ 这条一致性依赖调用方守规矩：直接调本方法而 ctx 里 stream=false 会走错路且不响。
         //    该不变式在 3.5b（两态合链）后自然消失（与 executeStream 同属搁置项）。
         boolean stream = ctx.stream();
-        Map<String, Object> requestBody = prepareRequestBody(request, stream, model, provider);
+        // 请求体已由主干的 RequestBodyAssembler 装配好（阶段 4 刀 1），直接取用。
+        Map<String, Object> requestBody = ctx.body();
         log.info("{} Responses 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
@@ -356,7 +350,8 @@ public class GenericResponsesChatService implements UpstreamExecutor {
         // stream 取自 ctx（3.5a）—— 它是请求级事实，与「哪条链被调了」同源，不留字面量。
         // （3.5b 两态合链已搁置，故此处不再以后续步骤为由。）
         boolean stream = ctx.stream();
-        Map<String, Object> requestBody = prepareRequestBody(request, stream, model, provider);
+        // 请求体已由主干的 RequestBodyAssembler 装配好（阶段 4 刀 1），直接取用。
+        Map<String, Object> requestBody = ctx.body();
         log.info("{} Responses 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
@@ -580,167 +575,6 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                     capturedHeaders.putAll(providerRequestHeaderService.createLogSnapshot(request.headers()));
                     return next.exchange(request);
                 }).build();
-    }
-
-    /**
-     * 准备 Responses 请求体。
-     *
-     * <h2>比另两条线路少得多，因为直连不需要形态转换</h2>
-     * 只做四件事：改模型名（剥供应商前缀）、设 {@code stream}、注入思考深度、执行规则。
-     * Anthropic 那份还要提取 system 到顶层、补必填的 {@code max_tokens}、协调两个思考维度，
-     * 那些都是「下游说 Chat、上游说 Anthropic」留下的债 —— 这里下游与上游说同一种协议。
-     *
-     * <h2>两个刻意不做的注入</h2>
-     * <ol>
-     *   <li><strong>不注入 {@code max_output_tokens}。</strong>
-     *       {@code MaxOutputTokensSetting} 只有 Anthropic 线路消费，因为那条线路
-     *       {@code max_tokens} <strong>必填</strong>、不补就发不出去。Responses 的
-     *       {@code max_output_tokens} 与 Chat 的 {@code max_tokens} 一样是<strong>可选</strong>的，
-     *       接上会给所有「下游没带」的调用凭空补一个上限 —— 而 Copilot 通常就是不带。
-     *       <p>这一点很容易顺手接上（字段名就叫 {@code max_output_tokens}，看起来天造地设），
-     *       所以在这里写清为什么不接，而不是留个空白让人补。</li>
-     *   <li><strong>不注入 Anthropic 的思考方式。</strong>
-     *       {@code AnthropicThinkingSetting} 写的是 {@code thinking} 对象，那是 Anthropic
-     *       的形态，Responses 协议里没有这个字段。思考深度已由
-     *       {@link ReasoningEffortSetting#applyToResponses} 写成 {@code reasoning.effort}，
-     *       而这条线路上不存在第二个思考维度需要协调 —— 也因此这里不需要 Anthropic 侧
-     *       那套「深度先、方式后、off 档跳过方式」的顺序约束。</li>
-     * </ol>
-     *
-     * <h2>请求体转换规则的执行位置</h2>
-     * 规则在协议字段注入<strong>之后</strong>执行，但在
-     * {@code removeIf(Objects::isNull)} <strong>之前</strong>：
-     * <ul>
-     *   <li>在注入之后 —— 规则的字段路径是照最终发往上游的形态写的，
-     *       若在注入前执行，用户看到的预览与实际请求体结构不一致；</li>
-     *   <li>在清洗之前 —— 规则可能把某个字段显式设为 null 表达「删掉它」，
-     *       最终清洗必须是链条的最后一步。</li>
-     * </ul>
-     *
-     * <p>协议筛选由引擎完成：只有声明适用 {@link WireProtocol#RESPONSES} 的规则组才会执行。
-     * 库里那些照 Chat 或 Anthropic 结构写的规则不会在此静默匹配失败。
-     */
-    private Map<String, Object> prepareRequestBody(Map<String, Object> request, boolean stream,
-                                                   String model, ProviderRuntimeConfiguration provider) {
-        // 阶段序列 —— 比另两条线路短，因为直连不需要形态转换：
-        //   1. 复制           copyRequestBody     主干会逐阶段改写 body
-        //   2. 解析模型名     resolveModel        后续阶段都要用它查配置
-        //   3. 写协议字段     writeProtocolFields 主干自己决定的 model 与 stream
-        //   4. 思考深度       applyReasoningEffort 写 reasoning.effort（Responses 的形态）
-        //   5. 请求体规则     applyBodyRules      协议筛选由引擎完成
-        //   6. 清 null        removeNullFields    必须是最后一步
-        Map<String, Object> body = copyRequestBody(request);
-        String resolvedModel = resolveModel(body.get("model"), model);
-        writeProtocolFields(body, resolvedModel, stream);
-        applyReasoningEffort(body, resolvedModel, provider);
-        applyBodyRules(body, provider);
-        removeNullFields(body);
-        return body;
-    }
-
-    /**
-     * 阶段 1：复制请求体 —— 理由同另两条线路。
-     */
-    private static Map<String, Object> copyRequestBody(Map<String, Object> source) {
-        return new LinkedHashMap<>(source);
-    }
-
-    /**
-     * 阶段 3：写入主干自己决定的协议字段 —— 理由同另两条线路。
-     */
-    private static void writeProtocolFields(Map<String, Object> body, String resolvedModel, boolean stream) {
-        body.put("model", resolvedModel);
-        body.put("stream", stream);
-    }
-
-    /**
-     * 阶段 4：思考深度。
-     *
-     * <p>本线路写的是 Responses 的 {@code reasoning.effort}（形态与另两条线路都不同），
-     * 由 {@link ReasoningEffortSetting#applyToResponses} 负责。
-     *
-     * <p>这里<strong>不需要</strong> Anthropic 那套「深度先、方式后、off 档跳过方式」的
-     * 顺序约束：本线路上不存在第二个思考维度需要协调，理由见本方法原先的 javadoc
-     * （「两个刻意不做的注入」已在 {@code prepareRequestBody} 的序列说明中保留）。
-     */
-    private void applyReasoningEffort(Map<String, Object> body, String resolvedModel,
-                                      ProviderRuntimeConfiguration provider) {
-        resolveReasoningEffort(resolvedModel, provider).applyToResponses(body);
-    }
-
-    /**
-     * 阶段 6：清掉所有值为 {@code null} 的字段 —— <strong>必须是链条的最后一步</strong>。
-     *
-     * <p>理由同另两条线路：规则可能把字段显式设为 null 表达「删掉它」。
-     */
-    private static void removeNullFields(Map<String, Object> body) {
-        body.values().removeIf(Objects::isNull);
-    }
-
-    /**
-     * 从运行时模型配置中读取思考深度设置。
-     *
-     * <p>与另两条线路读的是<strong>同一列</strong>（{@code provider_model.reasoning_effort}）、
-     * 同一份解析与同一套四档语义，只有出站的字段名与形态不同。因此此处不引入
-     * 第二份配置 —— 用户在界面上看到的就是一个模型一个档位，无论它走哪条线路。
-     *
-     * <p>模型名查不到时用 {@link ReasoningEffortSetting#defaults()}（medium + 兜底），
-     * 与另两侧同一形状。
-     */
-    private ReasoningEffortSetting resolveReasoningEffort(String resolvedModel,
-                                                         ProviderRuntimeConfiguration provider) {
-        for (var candidate : provider.models()) {
-            if (resolvedModel.equals(candidate.modelName())) {
-                return ReasoningEffortSetting.parse(candidate.reasoningEffort(), objectMapper);
-            }
-        }
-        return ReasoningEffortSetting.defaults();
-    }
-
-    /**
-     * 执行适用于 Responses 线路的请求体规则组。
-     *
-     * <p>引擎返回新 Map 而非原地修改，这里原地替换内容以保留调用方持有的引用。
-     */
-    private void applyBodyRules(Map<String, Object> body, ProviderRuntimeConfiguration provider) {
-        RequestBodyRuleEngine.TransformResult result = requestBodyRuleEngine.transform(
-                body, provider.bodyRulesJson(), WireProtocol.RESPONSES);
-        body.clear();
-        body.putAll(result.output());
-        for (RequestBodyRuleEngine.TransformWarning warning : result.warnings()) {
-            log.warn("[Responses] 请求体规则已跳过: ruleId={}, path={}, message={}",
-                    warning.ruleId(), warning.fieldPath(), warning.message());
-        }
-    }
-
-    /**
-     * 剥离供应商前缀，取真实上游模型名。与另两侧同一工具、同一顺序。
-     *
-     * <p>优先用请求体里的 {@code model}，缺失时回退到路由解析出的那个；两者都空则返回空串
-     * —— 不返回 null，那会让 {@code body.put("model", ...)} 塞进一个 null 并在
-    /**
-     * 解析出真实的上游模型名（剥除供应商前缀）。与另两条线路同一语义。
-     *
-     * <p>两个来源不是「回退关系」，是同一个值的两条路：{@code requestModel} 来自请求体、
-     * {@code routedModel} 来自路由解析，生产路径上二者同值，测试常只给其中一个。
-     * 从前的第三层（可枚举的默认模型名）已在 3.3a 剔除 —— 理由见
-     * {@code AbstractUpstreamChatService.resolveModel} 的注释。
-     *
-     * @param requestModel 请求体里的模型名，可能为 null
-     * @param routedModel  路由解析出的模型名，可能为 null
-     * @return 剥除供应商前缀后的真实模型名
-     */
-    private String resolveModel(Object requestModel, String routedModel) {
-        String model;
-        if (requestModel instanceof String value && !value.isBlank()) {
-            model = value;
-        } else if (routedModel != null && !routedModel.isBlank()) {
-            model = routedModel;
-        } else {
-            // 不可达：路由层已拦。保留显式抛错而非凭空返回，理由同 Chat 侧。
-            throw new IllegalArgumentException("请求缺少 model：路由层应已拒绝，不应到达此处");
-        }
-        return ModelNameUtil.parse(model).modelName();
     }
 
     // ==================== 重试 ====================

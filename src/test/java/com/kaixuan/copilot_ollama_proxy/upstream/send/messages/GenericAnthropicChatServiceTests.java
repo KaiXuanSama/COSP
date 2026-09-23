@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
@@ -1425,29 +1426,39 @@ class GenericAnthropicChatServiceTests {
      */
     private static final class TestService extends GenericAnthropicChatService {
 
+        /**
+         * 请求体装配器 —— 阶段 4 刀 1 起装配收归主干，执行器只读 {@code ctx.body()}。
+         * 本类的请求构造用例（system 抬升 / max_tokens / thinking）验的正是装配结果，
+         * 因此在调 {@code messages} 前先跑一遍装配，把主干那一步补上。
+         */
+        private final com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler assembler;
+
         private TestService() {
             super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
-                    new RequestBodyRuleEngine(new ObjectMapper()),
-                    PipelineContexts.registryWithMessagesStages(new ObjectMapper()),
                     PipelineContexts.contentDetectorRegistry(new ObjectMapper()));
+            this.assembler = new com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler(
+                    PipelineContexts.registryWithAllBodyStages(new ObjectMapper()),
+                    new RequestBodyRuleEngine(new ObjectMapper()));
         }
 
         private Mono<String> exposeMessages(Map<String, Object> request, ResolvedProviderRoute route) {
             // 同流式那个辅助方法：统一形态在此收口为字符串，使既有断言一行未改。
             // 落库改写器传 null：直连路线不改写 chunk。
             // 3.4e 起执行器只留 invoke/invokeStream 两个入口，此处直调 protected 重载。
-            return messages(request, route.model(), route.provider(), HttpHeaders.EMPTY, "req-test",
-                    null,
-                    PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES, false))
+            RequestPipelineContext ctx = PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES, false);
+            assembler.assemble(ctx);
+            return messages(ctx.body(), route.model(), route.provider(), HttpHeaders.EMPTY, "req-test",
+                    null, ctx)
                     .map(UpstreamEvent::data);
         }
 
         private Flux<String> exposeMessagesStream(Map<String, Object> request, ResolvedProviderRoute route) {
             // 上游执行器现在伸统一形态；测试关心的是报文内容，故在此收口为字符串。
             // 这样既有断言（对 List<String> 的 contains / hasSize）一行未改。
-            return messagesStream(request, route.model(), route.provider(), HttpHeaders.EMPTY, "req-test",
-                    null,
-                    PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES, true))
+            RequestPipelineContext ctx = PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES, true);
+            assembler.assemble(ctx);
+            return messagesStream(ctx.body(), route.model(), route.provider(), HttpHeaders.EMPTY, "req-test",
+                    null, ctx)
                     .map(com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent::data);
         }
 

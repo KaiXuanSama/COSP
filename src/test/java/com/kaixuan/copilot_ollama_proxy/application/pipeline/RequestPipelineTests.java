@@ -9,6 +9,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolve
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
+import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.UpstreamExecutorRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -52,10 +53,15 @@ class RequestPipelineTests {
     void setUp() {
         routeResolver = mock(ProviderRouteResolver.class);
         dispatchManager = new ProtocolDispatchManager();
-        // 本类只测前奏（run），不触及翻译与执行器查表 —— 故两张表给空的即可。
+        // 本类只测前奏（run），不触及翻译、执行器查表与请求体装配 —— 故这些依赖给空/占位即可。
         pipeline = new RequestPipeline(routeResolver, dispatchManager,
                 new TranslatorRegistry(List.of(), List.of()),
-                new UpstreamExecutorRegistry(List.of()));
+                new UpstreamExecutorRegistry(List.of()),
+                new RequestBodyAssembler(
+                        new com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyStageRegistry(
+                                List.of(), List.of(), List.of()),
+                        new com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine(
+                                new com.fasterxml.jackson.databind.ObjectMapper())));
     }
 
     @Test

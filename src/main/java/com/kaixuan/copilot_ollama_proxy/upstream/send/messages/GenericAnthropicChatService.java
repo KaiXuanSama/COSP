@@ -9,14 +9,9 @@ import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
-import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.AnthropicThinkingSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.MaxOutputTokensSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
-import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.control.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
@@ -32,7 +27,6 @@ import com.kaixuan.copilot_ollama_proxy.control.CallResendLoop;
 import com.kaixuan.copilot_ollama_proxy.upstream.content.ContentDetectorRegistry;
 import com.kaixuan.copilot_ollama_proxy.upstream.content.ContentDetectorStage;
 import com.kaixuan.copilot_ollama_proxy.upstream.EmptyResponseGate;
-import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyStageRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -53,7 +47,6 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -127,29 +120,12 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
 
     private final ObjectMapper objectMapper;
     private final ProviderRequestHeaderService providerRequestHeaderService;
-    private final RequestBodyRuleEngine requestBodyRuleEngine;
-
-    /**
-     * 请求体支线的查表 —— 三个协议特定步骤按 {@code ctx.bodyProtocol()} 查实现。
-     *
-     * <h2>为何是构造器参数而不是可选 setter</h2>
-     * 项目里其它可选依赖（日志、用量、WebClient）用 {@code @Autowired(required = false)}，
-     * 因为「未注入」是合法状态（测试直接 new 时不需要它们）。
-     * <strong>本字段不同</strong>：它是主干上的查表入口，缺失意味着三个协议特定步骤
-     * 全部静默跳过 —— 而「未命中即跳过」在查表语义下是<strong>正常结果</strong>，
-     * 于是「装配漏了」与「该协议没这个步骤」在行为上无从区分。
-     *
-     * <p>因此把它放进构造器：漏传会<strong>编译失败</strong>，而不是悄悄少做三步。
-     * 这也符合「不做安全跳过」的取舍 —— 安全跳过会产出永远为真的测试。
-     */
-    private final RequestBodyStageRegistry requestBodyStageRegistry;
 
     /**
      * 内容检测器的查表 —— 空响应拦截的判据来源（阶段 3.6b）。
      *
-     * <p>与 {@link #requestBodyStageRegistry} 同一取舍：放构造器而非可选 setter。
-     * 本表未命中是<strong>报错</strong>而非跳过，因此漏注入的后果比漏一个支线更重 ——
-     * 整条线路的空响应兼底会直接失效。
+     * <p>放构造器而非可选 setter：本表未命中是<strong>报错</strong>而非跳过，
+     * 漏注入会让整条线路的空响应兼底直接失效。与另两个执行器同一取舍。
      */
     private final ContentDetectorRegistry contentDetectorRegistry;
 
@@ -164,13 +140,9 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
 
     public GenericAnthropicChatService(ObjectMapper objectMapper,
                                        ProviderRequestHeaderService providerRequestHeaderService,
-                                       RequestBodyRuleEngine requestBodyRuleEngine,
-                                       RequestBodyStageRegistry requestBodyStageRegistry,
                                        ContentDetectorRegistry contentDetectorRegistry) {
         this.objectMapper = objectMapper;
         this.providerRequestHeaderService = providerRequestHeaderService;
-        this.requestBodyRuleEngine = requestBodyRuleEngine;
-        this.requestBodyStageRegistry = requestBodyStageRegistry;
         this.contentDetectorRegistry = contentDetectorRegistry;
     }
 
@@ -268,7 +240,8 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
         // ⚠️ 这条一致性依赖调用方守规矩：直接调本方法而 ctx 里 stream=false 会走错路且不响。
         //    该不变式在 3.5b（两态合链）后自然消失（与 executeStream 同属搁置项）。
         boolean stream = ctx.stream();
-        Map<String, Object> requestBody = prepareRequestBody(request, stream, model, provider, ctx);
+        // 请求体已由主干的 RequestBodyAssembler 装配好（阶段 4 刀 1），直接取用。
+        Map<String, Object> requestBody = ctx.body();
         log.info("{} Anthropic 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
@@ -381,7 +354,8 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
         // stream 取自 ctx（3.5a）—— 它是请求级事实，与「哪条链被调了」同源，不留字面量。
         // （3.5b 两态合链已搁置，故此处不再以后续步骤为由。）
         boolean stream = ctx.stream();
-        Map<String, Object> requestBody = prepareRequestBody(request, stream, model, provider, ctx);
+        // 请求体已由主干的 RequestBodyAssembler 装配好（阶段 4 刀 1），直接取用。
+        Map<String, Object> requestBody = ctx.body();
         log.info("{} Anthropic 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
@@ -628,157 +602,16 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                 }).build();
     }
 
-    /**
-     * 准备 Anthropic 请求体 —— <strong>一条显式阶段序列</strong>。
-     *
-     * <h2>阶段序列（顺序有语义）</h2>
-     * <pre>
-     * 1. 复制           copyRequestBody          主干会逐阶段改写 body
-     * 2. 解析模型名     resolveModel             后续阶段都要用它查配置
-     * 3. 写协议字段     writeProtocolFields      主干自己决定的 model 与 stream
-     * 4. 协议归一化     normalizeRequest         system 提取 + max_tokens 补齐
-     * 5. 思考两维       applyThinkingDimensions  <b>深度先、方式后</b>，off 档跳过方式
-     * 6. 剥兼容副本     dropReasoningEffortAlias 必须在阶段 5 <b>之后</b>
-     * 7. 请求体规则     applyBodyRules           协议筛选由引擎完成
-     * 8. 清 null        removeNullFields         <b>必须是最后一步</b>
-     * </pre>
-     * 本线路的阶段最多：阶段 4 与阶段 5/6 都是「下游说 Chat、上游说 Anthropic」留下的债。
-     *
-     * <h2>三处与 OpenAI 的硬差异（阶段 4/5 的内容）</h2>
-     * <ol>
-     *   <li><strong>{@code system} 是顶层字段</strong> —— OpenAI 把它作为
-     *       {@code messages} 里 {@code role: system} 的一条，Anthropic 不接受那种形态，
-     *       必须提取出来。多条 system 消息按顺序拼接。</li>
-     *   <li><strong>{@code max_tokens} 必填</strong> —— 缺失时上游返回 400。
-     *       按模型配置的 {@code max_output_tokens} 注入（覆写 / 兜底两档），
-     *       模型未配置时用 {@link MaxOutputTokensSetting#defaults()}。</li>
-     *   <li><strong>思考方式用 {@code thinking} 对象</strong> ——
-     *       按模型配置的 {@code thinking_mode} 与 {@code thinking_budget_tokens} 注入
-     *       （覆写 / 兜底 / 透传三档），模型未配置时用
-     *       {@link AnthropicThinkingSetting#defaults()}。
-     *       <p>思考<strong>深度</strong>是另一维，写成顶层
-     *       {@code output_config.effort}（而非 OpenAI 的 {@code reasoning_effort}），
-     *       四档注入模式与 OpenAI 侧同一套，见
-     *       {@link ReasoningEffortSetting#applyToAnthropic}。</li>
-     * </ol>
-     *
-     * <h2>两个思考维度的施加顺序不可交换（阶段 5）</h2>
-     * <strong>深度先、方式后</strong>，且深度写了
-     * {@code thinking:{"type":"disabled"}} 时跳过方式。两者都会写 {@code thinking}，
-     * 而它们对那个字段的权限不对等：深度只在 {@code off} 档动它（五档里没有
-     * 「不思考」，只能借这个字段表达），方式则把它当作自己的主场。
-     *
-     * <p>先方式后深度会让深度的兜底档把方式刚写的 {@code thinking} 误认为
-     * 「下游已表态」，于是自己不再注入 —— 一个下游从未发过的字段反而封住了
-     * 用户配的档位。不跳过方式则相反：方式的覆写档会把 {@code disabled} 改写成
-     * {@code adaptive}，用户配的「关闭思考」被静默丢弃。前端的
-     * {@code anthropicThinkingLockedByEffort} 置灰就是同一条规则的界面表达。
-     *
-     * <h2>请求体转换规则的执行位置（阶段 7）</h2>
-     * 规则在协议归一化<strong>之后</strong>执行（{@code system} 已提到顶层、
-     * {@code max_tokens} 已补齐），因为规则的字段路径是照最终发往上游的形态写的 ——
-     * 若在归一化前执行，用户看到的预览与实际请求体结构不一致。
-     *
-     * <p>但要在 {@code removeIf(Objects::isNull)} 之前：规则可能把某个字段显式设为 null，
-     * 而 Anthropic 对多余的 null 字段并不宽容，最终清洗必须是链条的最后一步。
-     *
-     * <p>协议筛选由引擎完成：只有声明适用 {@link WireProtocol#MESSAGES} 的规则组才会执行。
-     * 库里那些照 OpenAI 结构写的旧规则被归一为「仅 OPENAI」，因此不会在此静默匹配失败。
-     */
-    private Map<String, Object> prepareRequestBody(Map<String, Object> request, boolean stream,
-                                                   String model, ProviderRuntimeConfiguration provider,
-                                                   RequestPipelineContext ctx) {
-        // 阶段序列 —— 顺序有语义，逐步理由见各阶段方法自己的注释：
-        //   1. 复制                 copyRequestBody         主干会逐阶段改写 body
-        //   2. 解析模型名           resolveModel            后续阶段都要用它查配置
-        //   3. 写协议字段           writeProtocolFields     主干自己决定的 model 与 stream
-        //   4. system 抬升          【支线】按 bodyProtocol 查表，未命中即跳过
-        //   5. max_tokens 补齐      【支线】同上
-        //   6. 思考注入             【支线】同上（含剥 reasoning_effort 兼容副本）
-        //   7. 请求体规则           applyBodyRules          主干（协议差异在规则数据里）
-        //   8. 清 null              removeNullFields        必须是最后一步
-        //
-        // 阶段 6 早先拆成「思考两维」与「剥兼容副本」两步，现已合并：那个副本的生命周期
-        // **完全由思考注入支配**（供其判定「下游已表态」），是它的内部临时产物。
-        //
-        // 查表键用 **bodyProtocol** 而非 upstreamProtocol：它描述的是「手里这份 body 长什么样」，
-        // 而三个支线读写的正是 body 的字段形态。
-        // ⚠️ 3.4 已把 translate 移进主干，二者**已经分道扬镳**：端点建 ctx 时 bodyProtocol
-        //    初值 = downstream（body 还是下游形态），主干 translate 才把它换成上游形态。
-        //    因此 C2M 路线下查表拿到的是**上游**实现，而直连时两者恒等 —— 与本节语义一致。
-        //    （注释原文写「当前两者恒等……等 3.4 后分道扬镳」，那是在 3.4 之前写的，已过期。）
-        Map<String, Object> body = copyRequestBody(request);
-        String resolvedModel = resolveModel(body.get("model"), model);
-        writeProtocolFields(body, resolvedModel, stream);
-
-        WireProtocol bodyProtocol = ctx.bodyProtocol();
-        // 未命中即跳过：这表达「这种协议没有这个步骤」（如 Chat 不需要抬升 system），
-        // 是合法结果而非错误。装配漏了则由 RequestBodyStageSpringWiringTests 的结构断言兜住。
-        requestBodyStageRegistry.findSystemPromptStage(bodyProtocol)
-                .ifPresent(stage -> stage.apply(body));
-        requestBodyStageRegistry.findMaxTokensStage(bodyProtocol)
-                .ifPresent(stage -> stage.apply(body, resolvedModel, provider));
-        requestBodyStageRegistry.findThinkingStage(bodyProtocol)
-                .ifPresent(stage -> stage.apply(body, resolvedModel, provider));
-
-        applyBodyRules(body, provider);
-        removeNullFields(body);
-        return body;
-    }
-
-    /**
-     * 阶段 1：复制请求体 —— 理由同 OpenAI 侧。
-     */
-    private static Map<String, Object> copyRequestBody(Map<String, Object> source) {
-        return new LinkedHashMap<>(source);
-    }
-
-    /**
-     * 阶段 3：写入主干自己决定的协议字段 —— 理由同 OpenAI 侧。
-     */
-    private static void writeProtocolFields(Map<String, Object> body, String resolvedModel, boolean stream) {
-        body.put("model", resolvedModel);
-        body.put("stream", stream);
-    }
-
-    /**
-     * 阶段 7：清掉所有值为 {@code null} 的字段 —— <strong>必须是链条的最后一步</strong>。
-     *
-     * <p>理由与 OpenAI 侧相同：规则可能把字段显式设为 null，而 Anthropic
-     * 对多余的 null 字段并不宽容。
-     */
-    private static void removeNullFields(Map<String, Object> body) {
-        body.values().removeIf(Objects::isNull);
-    }
-
-    /**
-     * 执行适用于 Anthropic 线路的请求体规则组。
-     *
-     * <p>引擎返回新 Map 而非原地修改，这里原地替换内容以保留调用方持有的引用。
-     *
-     * <p><strong>本步骤是主干而非支线</strong>：协议差异在**规则数据**里
-     * （{@code groups[].protocols}），引擎只是照着筛 —— 加一个协议不需要改代码，
-     * 只需写一条新规则。按方向文档 §2.1 的判据（差异是数据 → 主干）它属主干。
-     */
-    private void applyBodyRules(Map<String, Object> body, ProviderRuntimeConfiguration provider) {
-        RequestBodyRuleEngine.TransformResult result = requestBodyRuleEngine.transform(
-                body, provider.bodyRulesJson(), WireProtocol.MESSAGES);
-        body.clear();
-        body.putAll(result.output());
-        for (RequestBodyRuleEngine.TransformWarning warning : result.warnings()) {
-            log.warn("[Anthropic] 请求体规则已跳过: ruleId={}, path={}, message={}",
-                    warning.ruleId(), warning.fieldPath(), warning.message());
-        }
-    }
-
     /*
      * ========================================================================
      * 思考**深度**在 Anthropic 线路上的形态选择：已落地的决定与遗留代价
      * ========================================================================
      *
-     * 深度与思考**方式**（AnthropicThinkingSetting，见 resolveThinking）是两个正交维度：
+     * 深度与思考**方式**（AnthropicThinkingSetting）是两个正交维度：
      * 方式管「预算怎么算」（adaptive / enabled+budget），深度管「想多深」（档位字符串）。
      * 两者都已接入持久化并生效 —— 方式自 V10、深度走 ReasoningEffortSetting.applyToAnthropic。
+     * 实现现由 requestbody/thinking 支线（MessagesThinkingStage → AnthropicThinkingNormalizer）
+     * 承载；本执行器不再持有请求体装配（阶段 4 刀 1，装配收归主干 RequestBodyAssembler）。
      *
      * ## 出站形态：output_config.effort
      *
@@ -791,7 +624,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
      * 选了第一个。第二个要求把档位换算成 token 预算，而请求侧契约第 4.4 节已据「三个参考
      * 项目的换算表互不相同、反向阈值也互不相同」决定不做这个换算 —— 换算被排除后，
      * output_config.effort 是唯一自洽的落点。第三个只覆盖 off 档，因此它只作为 off 档的
-     * 出站形态，见 writeConfiguredAnthropicEffort。
+     * 出站形态，见 ReasoningEffortSetting.applyToAnthropic。
      *
      * ## 遗留代价：4.5 及更早的模型不认识 output_config
      *
@@ -812,36 +645,6 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
      * 而不是在翻译过程里静默改写用户的请求。
      */
 
-    /**
-     * 解析出真实的上游模型名（剥除供应商前缀）。与另两条线路同一语义。
-     *
-     * <h2>两个来源不是「回退关系」，是同一个值的两条路</h2>
-     * {@code requestModel} 来自请求体（控制器会写进去），{@code routedModel} 来自路由解析。
-     * 生产路径上二者同值；测试常只给其中一个（本类的测试构造的请求体只有 {@code messages}，
-     * 模型名完全来自路由参数），故两个都要接受。
-     *
-     * <h2>剔除了的是第三层：可枚举的默认模型名（3.3a）</h2>
-     * 从前这里还接受一个 {@code fallbackModel}，并在两者都为空时返回空串。
-     * 那是「特定供应商」时代的产物（当年有可枚举的回退模型名），现在是范式供应商，
-     * 那些名字一个都不存在了。现在两者都为空时<strong>显式抛错</strong>：
-     * 「下游必须携带 model」由路由层保证并报 400。
-     *
-     * @param requestModel 请求体里的模型名，可能为 null
-     * @param routedModel  路由解析出的模型名，可能为 null
-     * @return 剥除供应商前缀后的真实模型名
-     */
-    private String resolveModel(Object requestModel, String routedModel) {
-        String model;
-        if (requestModel instanceof String value && !value.isBlank()) {
-            model = value;
-        } else if (routedModel != null && !routedModel.isBlank()) {
-            model = routedModel;
-        } else {
-            // 不可达：路由层已拦。保留显式抛错而非凭空返回，理由同 Chat 侧。
-            throw new IllegalArgumentException("请求缺少 model：路由层应已拒绝，不应到达此处");
-        }
-        return ModelNameUtil.parse(model).modelName();
-    }
 
     // ==================== 重试（策略与另两侧同源） ====================
 

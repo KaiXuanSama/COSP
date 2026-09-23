@@ -3,8 +3,6 @@ package com.kaixuan.copilot_ollama_proxy.upstream.send.chat;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.ReasoningEffortSetting;
-import com.kaixuan.copilot_ollama_proxy.application.util.ModelNameUtil;
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
@@ -43,7 +41,6 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -222,8 +219,8 @@ public abstract class AbstractUpstreamChatService {
     /**
      * 发送一次非流式 Chat Completions 请求。
      *
-     * 请求体会经过 {@link #prepareRequestBody} 处理，包括模型名称解析、
-     * stream 标志设置和子类的自定义字段注入。
+     * 请求体已由主干的 {@code RequestBodyAssembler} 装配好（阶段 4 刀 1），本方法直接用
+     * {@code ctx.body()}，包括模型名称解析、stream 标志设置和请求体规则。
      *
      * <h2>空响应兜底</h2>
      * 与流式共用同一份重试预算：空响应被包成 {@link EmptyUpstreamResponseException} 抛出，
@@ -252,7 +249,8 @@ public abstract class AbstractUpstreamChatService {
         // ⚠️ 这条一致性依赖调用方守规矩：直接调本方法而 ctx 里 stream=false 会走错路且不响。
         //    该不变式在 3.5b（两态合链）后自然消失（与 executeStream 同属搁置项）。
         boolean stream = ctx.stream();
-        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, stream, model, provider);
+        // 请求体已由主干的 RequestBodyAssembler 装配好（阶段 4 刀 1），直接取用。
+        Map<String, Object> requestBody = ctx.body();
         log.info("{} OpenAI 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
@@ -437,7 +435,8 @@ public abstract class AbstractUpstreamChatService {
         // stream 取自 ctx（3.5a）—— 它是请求级事实，与「哪条链被调了」同源，不留字面量。
         // （3.5b 两态合链已搁置，故此处不再以后续步骤为由。）
         boolean stream = ctx.stream();
-        Map<String, Object> requestBody = prepareRequestBody(openAiRequest, stream, model, provider);
+        // 请求体已由主干的 RequestBodyAssembler 装配好（阶段 4 刀 1），直接取用。
+        Map<String, Object> requestBody = ctx.body();
         log.info("{} OpenAI 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
@@ -696,104 +695,6 @@ public abstract class AbstractUpstreamChatService {
     }
 
     /**
-    * 准备请求体 —— <strong>一条显式阶段序列</strong>。
-     *
-     * <h2>阶段序列（顺序有语义）</h2>
-     * <pre>
-     * 1. 复制           copyRequestBody        主干会逐阶段改写 body
-     * 2. 解析模型名     resolveModel           后续阶段都要用它查配置
-     * 3. 写协议字段     writeProtocolFields    主干自己决定的 model 与 stream
-     * 4. 思考深度       applyReasoningEffort   覆写 / 兜底 / 透传 / 删除四档
-     * 5. 协议特定步骤   customizeRequestBody   子类钩子（本线路是请求体规则）
-     * 6. 清 null        removeNullFields       <b>必须是最后一步</b>
-     * </pre>
-     * 三条线路共用阶段 1/2/3/6（形状相同），差异在中间：本线路（Chat）只有思考深度与规则；
-     * {@code GenericAnthropicChatService} 多一步协议归一化（system 提取 + max_tokens 补齐）
-     * 与思考的第二维；{@code GenericResponsesChatService} 与本节一致。
-     *
-     * <h2>为何 null 清洗必须在规则之后</h2>
-     * 两件事都依赖这个顺序：
-     * <ol>
-     *   <li><strong>规则产生的 null 不能发给上游。</strong>「设置字段值」留空即置 null，
-     *       若先清洗后执行规则，那个 null 会原样出站；而部分上游对多余的 null 字段并不宽容。</li>
-     *   <li><strong>规则看到的输入要与编辑器预览一致。</strong>预览里规则直接作用于用户粘贴的
-     *       请求体，不做任何 null 剥离；若运行时先清洗，同一条 {@code exists} 条件就会
-     *       「预览命中、线上不命中」—— 预览一旦会说谎，它的全部价值就没了。</li>
-     * </ol>
-     *
-     * <p>与 {@code GenericAnthropicChatService.prepareRequestBody} 的顺序保持一致 ——
-     * 两侧都是「协议归一化 → 规则 → null 清洗」。这不是巧合而是必须：同一条规则在两条线路上
-     * 应当产生同一种结果，否则「换个协议试试」会得到无法解释的差异。
-     *
-     * @param openAiRequest 请求体的初始 Map 结构
-     * @param stream 是否启用流式响应
-     * @param model 模型名称
-     * @return 最终准备好的请求体 Map 结构，已经解析了模型名称并设置了流式标志
-     */
-    protected Map<String, Object> prepareRequestBody(Map<String, Object> openAiRequest, boolean stream, String model,
-                                                      ProviderRuntimeConfiguration provider) {
-        // 阶段序列 —— 顺序有语义，逐步理由见各阶段方法自己的注释：
-        //   1. 复制           copyRequestBody       主干会逐阶段改写 body
-        //   2. 解析模型名     resolveModel          后续阶段都要用它查配置
-        //   3. 写协议字段     writeProtocolFields   主干自己决定的 model 与 stream
-        //   4. 思考深度       applyReasoningEffort  覆写 / 兜底 / 透传 / 删除四档
-        //   5. 协议特定步骤   customizeRequestBody  子类钩子，本线路是请求体规则
-        //   6. 清 null        removeNullFields      必须是最后一步
-        Map<String, Object> body = copyRequestBody(openAiRequest);
-        String resolvedModel = resolveModel(body.get("model"), model);
-        writeProtocolFields(body, resolvedModel, stream);
-        applyReasoningEffort(body, resolvedModel, provider);
-        customizeRequestBody(body, resolvedModel, provider);
-        removeNullFields(body);
-        return body;
-    }
-
-    /**
-     * 阶段 1：复制请求体。
-     *
-     * <p>主干会逐阶段改写它（写模型名、设 stream、注入思考、执行规则），
-     * 因此不能把调用方持有的那个 Map 直接交出去 —— 那会让一次请求的准备过程
-     * 污染调用方的数据。
-     */
-    private static Map<String, Object> copyRequestBody(Map<String, Object> source) {
-        return new LinkedHashMap<>(source);
-    }
-
-    /**
-     * 阶段 3：写入主干自己决定的协议字段。
-     *
-     * <p>两者都是「主干对上游的陈述」而非「下游说了什么」：模型名已剥前缀
-     * （{@link #resolveModel} 的结果），stream 由入口方法按调用的是流式还是非流式给出。
-     */
-    private static void writeProtocolFields(Map<String, Object> body, String resolvedModel, boolean stream) {
-        body.put("model", resolvedModel);
-        body.put("stream", stream);
-    }
-
-    /**
-     * 阶段 4：思考深度。
-     *
-     * <p>按模型配置的注入模式处理：覆写 / 兜底 / 透传 / 删除四档。
-     * 本线路写的是 OpenAI 的 {@code reasoning_effort} 与 {@code thinking}
-     * （{@code off} 档写 {@code thinking:{"type":"disabled"}}）——
-     * 两者成对操作的理由见 {@link ReasoningEffortSetting#applyTo}。
-     */
-    private void applyReasoningEffort(Map<String, Object> body, String resolvedModel,
-                                      ProviderRuntimeConfiguration provider) {
-        resolveReasoningEffort(resolvedModel, provider).applyTo(body);
-    }
-
-    /**
-     * 阶段 6：清掉所有值为 {@code null} 的字段 —— <strong>必须是链条的最后一步</strong>。
-     *
-     * <p>它的位置由两件事共同决定，两步理由见 {@link #prepareRequestBody} 的 javadoc：
-     * 规则产生的 {@code null} 不能出站，且规则看到的输入要与编辑器预览逐字节一致。
-     */
-    private static void removeNullFields(Map<String, Object> body) {
-        body.values().removeIf(Objects::isNull);
-    }
-
-    /**
      * 保存非流式调用日志。
      *
      * @return 新插入日志行的自增 id；日志未启用或写入失败时返回 null
@@ -877,79 +778,6 @@ public abstract class AbstractUpstreamChatService {
             // finally 语义：无论用量是否实际写入，用量流程走完即宣告该次调用的记录就绪。
             publishCallRecorded();
         }
-    }
-
-    /**
-     * 从运行时模型配置中读取思考深度设置。
-     *
-     * <h2>模型未配置时给默认值而非跳过</h2>
-     * 找不到匹配的模型仍返回 {@link ReasoningEffortSetting#defaults()}（中等档位 + 透传），
-     * 与旧实现的硬编码 {@code "medium"} 保持一致。这个兜底值是可疑的 —— 对一个未配置的、
-     * 可能根本不是思考模型的模型名，凭空注入 {@code reasoning_effort} 未必正确 ——
-     * 但改变它会影响所有「模型名带前缀但库里查不到」的调用，不属于本次改动范围。
-     */
-    private ReasoningEffortSetting resolveReasoningEffort(String resolvedModel,
-                                                         ProviderRuntimeConfiguration provider) {
-        for (var m : provider.models()) {
-            if (resolvedModel.equals(m.modelName())) {
-                return ReasoningEffortSetting.parse(m.reasoningEffort(), objectMapper);
-            }
-        }
-        return ReasoningEffortSetting.defaults();
-    }
-
-    /**
-     * 子类可以重写此方法在请求体中添加特定的字段或格式转换，例如将模型名称转换为特定服务识别的格式。
-     * <p>
-     * @param body 请求体的 Map 结构，子类可以直接修改该 Map 来添加或修改字段
-     * @param resolvedModel 已经解析出的模型名称，子类可以根据该名称来决定是否进行特定的字段添加或格式转换
-     */
-    protected void customizeRequestBody(Map<String, Object> body, String resolvedModel,
-                                        ProviderRuntimeConfiguration provider) {
-    }
-
-    /**
-     * 解析请求中的模型名称，如果请求中没有指定模型或指定的模型名称无效，则使用提供的 fallbackModel 进行回退，如果 fallbackModel 也无效则使用全局默认模型。
-     * <p>
-    /**
-     * 解析出真实的上游模型名（剥除供应商前缀）。
-     *
-     * <h2>两个来源不是「回退关系」，是同一个值的两条路</h2>
-     * <ul>
-     *   <li>{@code requestModel} —— 请求体里的 {@code model}。控制器会写进去，
-     *       所以生产路径上它必定存在；</li>
-     *   <li>{@code routedModel} —— 路由（{@code ProviderRouteResolver}）解析出的模型名。
-     *       生产路径上它与 {@code requestModel} 同值（控制器写的就是下游传来的那个模型名）。</li>
-     * </ul>
-     * 之所以两个都留：测试常直接调 {@code prepareRequestBody} 并只给其中一个 ——
-     * 例如 {@code GenericAnthropicChatServiceTests} 构造的请求体只有 {@code messages}，
-     * 模型名完全来自路由参数。两个来源互补，不是先后关系。
-     *
-     * <h2>已剔除的是第三层：可枚举的默认模型名（3.3a）</h2>
-     * 从前两个来源都为空时还会回退到一个 {@code fallbackDefaultModel} 字段。
-     * 那是「特定供应商」时代的产物 —— 当年有可枚举的回退模型名；现在是范式供应商，
-     * 那些名字一个都不存在了，字段的值退化成空串却留在代码里。
-     *
-     * <p>现在两者都为空时<strong>显式抛错</strong>：「下游必须携带 model」由路由层保证并报 400，
-     * 这是众多多供应商代理的常规实现。若将来路由改成宽容模式，这里会立刻响，
-     * 而不是把一个空模型名发给上游（那会让上游报一个指向别处的错）。
-     *
-     * @param requestModel 请求体里的模型名，可能为 null
-     * @param routedModel  路由解析出的模型名，可能为 null
-     * @return 剥除供应商前缀后的真实模型名
-     */
-    protected String resolveModel(Object requestModel, String routedModel) {
-        String model;
-        if (requestModel instanceof String value && !value.isBlank()) {
-            model = value;
-        } else if (routedModel != null && !routedModel.isBlank()) {
-            model = routedModel;
-        } else {
-            // 不可达：路由层已在更早的一步拒绝（它先按「模型名可解析」筛过）。
-            throw new IllegalArgumentException("请求缺少 model：路由层应已拒绝，不应到达此处");
-        }
-        // 去除供应商前缀（如 [DeepSeek]deepseek-v4-flash → deepseek-v4-flash）
-        return ModelNameUtil.parse(model).modelName();
     }
 
     /**

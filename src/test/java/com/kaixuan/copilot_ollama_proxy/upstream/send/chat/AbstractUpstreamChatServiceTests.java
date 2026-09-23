@@ -41,47 +41,6 @@ import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
 class AbstractUpstreamChatServiceTests {
 
     @Test
-    void prepareRequestBodyResolvesFallbackModelAndRunsCustomizationHook() {
-        TestOpenAiService service = new TestOpenAiService();
-
-        Map<String, Object> request = new LinkedHashMap<>();
-        request.put("model", null);
-        request.put("temperature", 0.7);
-        request.put("tool_choice", null);
-
-        Map<String, Object> prepared = service.exposePrepareRequestBody(request, true, "fallback-model", provider());
-
-        assertThat(prepared).containsEntry("model", "fallback-model");
-        assertThat(prepared).containsEntry("stream", true);
-        assertThat(prepared).containsEntry("customized", true);
-        assertThat(prepared).doesNotContainKey("tool_choice");
-    }
-
-    /**
-     * 规则产生的 null 不会发给上游 —— null 清洗必须排在规则之后。
-     *
-     * <p>「设置字段值」留空即置 null 是既定语义，因此规则完全可能产出 null；
-     * 而部分上游对多余的 null 字段并不宽容。清洗若排在规则之前，那个 null 就直接出站。
-     *
-     * <p>这条用例同时钉住两条线路的顺序一致性：Anthropic 侧的
-     * {@code prepareRequestBody} 也是「归一化 → 规则 → 清洗」，两侧一致才能保证
-     * 同一条规则换个协议不会得到无法解释的差异。
-     */
-    @Test
-    void requestBodyRulesRunBeforeNullStrippingSoRuleAssignedNullNeverReachesUpstream() {
-        NullAssigningService service = new NullAssigningService();
-
-        Map<String, Object> request = new LinkedHashMap<>();
-        request.put("model", "m");
-        request.put("temperature", 0.7);
-
-        Map<String, Object> prepared = service.exposePrepareRequestBody(request, false, "m", provider());
-
-        assertThat(prepared).doesNotContainKey("temperature");
-        assertThat(prepared).containsEntry("model", "m");
-    }
-
-    @Test
     void normalizeChunkRemovesEmptyToolCallsAndNormalizesFinishReason() throws Exception {
         TestOpenAiService service = new TestOpenAiService();
 
@@ -1392,11 +1351,6 @@ class AbstractUpstreamChatServiceTests {
                     detectorRegistry);
         }
 
-        private Map<String, Object> exposePrepareRequestBody(Map<String, Object> request, boolean stream,
-                                                              String model, ProviderRuntimeConfiguration provider) {
-            return prepareRequestBody(request, stream, model, provider);
-        }
-
         private WebClient exposeBuildWebClient(Map<String, String> capturedHeaders,
                                                ProviderRuntimeConfiguration provider) {
             return buildWebClientWithHeaders(capturedHeaders, provider, HttpHeaders.EMPTY, false);
@@ -1510,50 +1464,9 @@ class AbstractUpstreamChatServiceTests {
         protected String chatCompletionsUri() {
             return "/v1/chat/completions";
         }
-
-        @Override
-        protected void customizeRequestBody(Map<String, Object> body, String resolvedModel,
-                                            ProviderRuntimeConfiguration provider) {
-            body.put("customized", true);
-        }
     }
 
-    /**
-     * 转换钩子把字段置为 null 的测试子类。
-     *
-     * <p>模拟「设置字段值」留空的规则效果，用于验证 null 清洗排在规则之后。
-     * 不复用 {@link TestOpenAiService} 是因为那个钩子的 {@code customized} 标记
-     * 被多条用例断言，往里塞 null 赋值会让那些用例的意图变模糊。
-     */
-    private static final class NullAssigningService extends AbstractUpstreamChatService {
-
-        private NullAssigningService() {
-            super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
-                    PipelineContexts.registryWithChatChunkStages(new ObjectMapper()),
-                    PipelineContexts.contentDetectorRegistry(new ObjectMapper()));
-        }
-
-        private Map<String, Object> exposePrepareRequestBody(Map<String, Object> request, boolean stream,
-                                                             String model, ProviderRuntimeConfiguration provider) {
-            return prepareRequestBody(request, stream, model, provider);
-        }
-
-        @Override
-        protected String defaultBaseUrl() {
-            return "https://example.com";
-        }
-
-        @Override
-        protected String chatCompletionsUri() {
-            return "/v1/chat/completions";
-        }
-
-        @Override
-        protected void customizeRequestBody(Map<String, Object> body, String resolvedModel,
-                                            ProviderRuntimeConfiguration provider) {
-            body.put("temperature", null);
-        }
-    }
+    // ===== 非流式兜底与清洗 =====
 
     // ===== 非流式兜底与清洗 =====
 
@@ -1637,127 +1550,6 @@ class AbstractUpstreamChatServiceTests {
         assertThat(received).doesNotContain("\"thinking\"");
         // 空 content 应被 fallback 填充
         assertThat(received).contains("\"content\":\"deep thought\"");
-    }
-
-    @Test
-    void modelConfiguredMaxReasoningEffortIsNormalizedForOpenAiRequest() {
-        TestOpenAiService service = new TestOpenAiService();
-        Map<String, Object> request = new LinkedHashMap<>();
-
-        Map<String, Object> prepared = service.exposePrepareRequestBody(
-                request, true, "model-a", providerWithReasoningEffort("Max"));
-
-        assertThat(prepared).containsEntry("reasoning_effort", "max");
-    }
-
-    @Test
-    void explicitReasoningEffortTakesPrecedenceOverModelConfiguration() {
-        TestOpenAiService service = new TestOpenAiService();
-        Map<String, Object> request = new LinkedHashMap<>();
-        request.put("reasoning_effort", "low");
-
-        Map<String, Object> prepared = service.exposePrepareRequestBody(
-                request, false, "model-a", providerWithReasoningEffort("Max"));
-
-        assertThat(prepared).containsEntry("reasoning_effort", "low");
-    }
-
-    /**
-     * 覆写模式无视下游携带的档位。
-     *
-     * <p>这是 V2 引入注入模式的全部目的：此前无论如何配置，下游一旦带了这个字段
-     * 就一定以它为准，用户没有办法从代理侧强制一个档位。
-     */
-    @Test
-    void overrideModeReplacesDownstreamReasoningEffort() {
-        TestOpenAiService service = new TestOpenAiService();
-        Map<String, Object> request = new LinkedHashMap<>();
-        request.put("reasoning_effort", "low");
-
-        Map<String, Object> prepared = service.exposePrepareRequestBody(request, false, "model-a",
-                providerWithReasoningEffort("{\"reasoning_effort\":\"max\",\"overwrite_mode\":\"override\"}"));
-
-        assertThat(prepared).containsEntry("reasoning_effort", "max");
-    }
-
-    /** 删除模式连下游自己带的也一并移除，让上游用它自己的默认。 */
-    @Test
-    void deleteModeStripsDownstreamReasoningEffort() {
-        TestOpenAiService service = new TestOpenAiService();
-        Map<String, Object> request = new LinkedHashMap<>();
-        request.put("reasoning_effort", "low");
-
-        Map<String, Object> prepared = service.exposePrepareRequestBody(request, false, "model-a",
-                providerWithReasoningEffort("{\"reasoning_effort\":\"max\",\"overwrite_mode\":\"delete\"}"));
-
-        assertThat(prepared).doesNotContainKey("reasoning_effort");
-    }
-
-    /** 兜底模式与 V2 之前的行为一致：下游没带才注入配置值。这也是升级后的默认。 */
-    @Test
-    void fallbackModeInjectsConfiguredEffortOnlyWhenDownstreamOmitted() {
-        TestOpenAiService service = new TestOpenAiService();
-        String config = "{\"reasoning_effort\":\"high\",\"overwrite_mode\":\"fallback\"}";
-
-        Map<String, Object> injected = service.exposePrepareRequestBody(
-                new LinkedHashMap<>(), false, "model-a", providerWithReasoningEffort(config));
-        assertThat(injected).containsEntry("reasoning_effort", "high");
-
-        Map<String, Object> request = new LinkedHashMap<>();
-        request.put("reasoning_effort", "low");
-        Map<String, Object> kept = service.exposePrepareRequestBody(
-                request, false, "model-a", providerWithReasoningEffort(config));
-        assertThat(kept).containsEntry("reasoning_effort", "low");
-    }
-
-    /**
-     * 透传模式一个字段都不碰：下游没带就不发，配置的档位只是界面上的记忆值。
-     *
-     * <p>它与删除模式的差别在下游**带了**值时才显现（透传保留、删除剥离），
-     * 与兜底的差别则在下游**没带**时才显现（兜底补上、透传不补）。因此这两条
-     * 断言合起来才能把 PASSTHROUGH 与另外两档区分开。
-     */
-    @Test
-    void passthroughModeLeavesReasoningEffortEntirelyToDownstream() {
-        TestOpenAiService service = new TestOpenAiService();
-        String config = "{\"reasoning_effort\":\"high\",\"overwrite_mode\":\"passthrough\"}";
-
-        Map<String, Object> omitted = service.exposePrepareRequestBody(
-                new LinkedHashMap<>(), false, "model-a", providerWithReasoningEffort(config));
-        assertThat(omitted).doesNotContainKey("reasoning_effort");
-
-        Map<String, Object> request = new LinkedHashMap<>();
-        request.put("reasoning_effort", "low");
-        Map<String, Object> kept = service.exposePrepareRequestBody(
-                request, false, "model-a", providerWithReasoningEffort(config));
-        assertThat(kept).containsEntry("reasoning_effort", "low");
-    }
-
-    /**
-     * 遗留的 {@code None} 仍表示不发送。
-     *
-     * <p>若把它当作认不出的档位回退成 medium，这些模型会在升级后突然开始向上游
-     * 发送思考深度 —— 用户没做任何操作，行为却变了。
-     */
-    @Test
-    void legacyNoneStillMeansDoNotSendReasoningEffort() {
-        TestOpenAiService service = new TestOpenAiService();
-        Map<String, Object> request = new LinkedHashMap<>();
-        request.put("reasoning_effort", "low");
-
-        Map<String, Object> prepared = service.exposePrepareRequestBody(
-                request, false, "model-a", providerWithReasoningEffort("None"));
-
-        assertThat(prepared).doesNotContainKey("reasoning_effort");
-    }
-
-    /**
-     * 将后台模型配置构造成运行时快照，验证思考档位确实经过后端而非只停留在前端。
-     */
-    private ProviderRuntimeConfiguration providerWithReasoningEffort(String effort) {
-        return new ProviderRuntimeConfiguration("stub", "", "", List.of(
-                new com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeModel(
-                        "model-a", 32768, false, false, effort)));
     }
 
     private ProviderRuntimeConfiguration provider() {

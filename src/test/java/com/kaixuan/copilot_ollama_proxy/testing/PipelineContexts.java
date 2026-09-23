@@ -16,7 +16,9 @@ import com.kaixuan.copilot_ollama_proxy.upstream.chunk.fallback.ChatReasoningFal
 import com.kaixuan.copilot_ollama_proxy.upstream.content.MessagesContentDetectorStage;
 import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.maxtokens.MessagesMaxTokensStage;
 import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.system.MessagesSystemPromptStage;
+import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.thinking.ChatThinkingStage;
 import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.thinking.MessagesThinkingStage;
+import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.thinking.ResponsesThinkingStage;
 import com.kaixuan.copilot_ollama_proxy.upstream.content.ResponsesContentDetectorStage;
 import org.springframework.http.HttpHeaders;
 
@@ -130,6 +132,24 @@ public final class PipelineContexts {
                 List.of(new MessagesSystemPromptStage()),
                 List.of(new MessagesMaxTokensStage(objectMapper)),
                 List.of(new MessagesThinkingStage(objectMapper)));
+    }
+
+    /**
+     * 拼一个含<strong>全部</strong>请求体支线的注册表 —— 供 {@code RequestBodyAssembler} 测试使用。
+     *
+     * <p>与 {@link #registryWithMessagesStages} 的区别：thinking 支线三协议都装
+     * （Chat / Responses / Messages），因为装配器要对三条线路各自查表。
+     * system / max_tokens 仍只有 MESSAGES 实现 —— 那是领域事实（另两条协议不需要这两步）。
+     *
+     * @param objectMapper 传给需要它的支线实现
+     */
+    public static RequestBodyStageRegistry registryWithAllBodyStages(ObjectMapper objectMapper) {
+        return new RequestBodyStageRegistry(
+                List.of(new MessagesSystemPromptStage()),
+                List.of(new MessagesMaxTokensStage(objectMapper)),
+                List.of(new ChatThinkingStage(objectMapper),
+                        new ResponsesThinkingStage(objectMapper),
+                        new MessagesThinkingStage(objectMapper)));
     }
 
     /**
