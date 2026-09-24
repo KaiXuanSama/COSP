@@ -16,6 +16,9 @@ import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKe
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderRequestTransformRepository;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler;
+import com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestStageRegistry;
+import com.kaixuan.copilot_ollama_proxy.upstream.outbound.chat.ChatOutboundStage;
 import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.chat.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
@@ -142,12 +145,18 @@ class ProviderRequestBodyTransformationIntegrationTests {
         genericChatService.setApiCallLog(callLogService);
         // 主干按协议查表选执行器，故注册表必须收本测试用的那个真实执行器。
         // 翻译器表给空（两个方向都查不到）—— 本测试只走直连，压根不查表。
+        // 出站装配器收 ChatOutboundStage（本测试下游/上游都是 CHAT）：真实发请求到 HttpServer，
+        // 出站头与地址必须由发送前块装好（刀 3 B），否则执行器读到 null 头会 NPE。
         ChatCompletionService chatCompletionService = new ChatCompletionService(
                 new RequestPipeline(
                         new BeforeSend(new ProviderRouteResolver(catalog), new ProtocolDispatchManager(),
                                 new TranslatorRegistry(List.of(), List.of()),
                                 new RequestBodyAssembler(PipelineContexts.registryWithAllBodyStages(objectMapper),
-                                        new RequestBodyRuleEngine(objectMapper))),
+                                        new RequestBodyRuleEngine(objectMapper)),
+                                new OutboundRequestAssembler(
+                                        new ProviderRequestHeaderService(objectMapper),
+                                        new OutboundRequestStageRegistry(List.of(new ChatOutboundStage())),
+                                        objectMapper)),
                         new AfterSend(new UpstreamExecutorRegistry(List.of(genericChatService)))));
 
         HttpHeaders downstreamHeaders = new HttpHeaders();

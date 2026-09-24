@@ -13,6 +13,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolve
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import com.kaixuan.copilot_ollama_proxy.application.shared.ProtocolNotifier;
+import com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler;
 import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,12 +30,14 @@ import org.springframework.stereotype.Service;
  *
  * <h2>为什么能是「一步步改 ctx」的形态</h2>
  * 发送前的每一步都是<strong>同步</strong>的：拿到 ctx → 改 ctx → 返回。数据当场就在，
- * 没有「未来才到」的东西。因此本块把自己拆成三个语义明确的 {@code void step(ctx)}：
+ * 没有「未来才到」的东西。因此本块把自己拆成四个语义明确的 {@code void step(ctx)}：
  * <ol>
  *   <li>{@link #routeStep} —— 找供应商 + 定协议，回填 ctx（route + dispatch + notify）；</li>
  *   <li>{@link #translateStep} —— 【支线】按协议对查翻译器，跨协议时改 {@code ctx.body}，
  *       并把翻译对记进 ctx；</li>
- *   <li>{@link #assembleStep} —— 请求体装配（复用 {@link RequestBodyAssembler}），改 {@code ctx.body}。</li>
+ *   <li>{@link #assembleStep} —— 请求体装配（复用 {@link RequestBodyAssembler}），改 {@code ctx.body}；</li>
+ *   <li>{@link #assembleOutboundStep} —— 【支线】出站请求装配（复用 {@link OutboundRequestAssembler}），
+ *       定下「发去哪、带什么头」，写 {@code ctx.outboundHeaders/outboundBaseUrl}。</li>
  * </ol>
  * 与<strong>发送后块</strong>（{@code AfterSend}）的分界是「真正发出 HTTP」：那之后是异步状态机，
  * 无法写成 {@code void step(ctx)}（函数在数据到达前就返回 {@code Flux}）。这条缝是同步/异步的
@@ -59,6 +62,7 @@ public class BeforeSend {
     private final ProtocolDispatchManager protocolDispatchManager;
     private final TranslatorRegistry translatorRegistry;
     private final RequestBodyAssembler requestBodyAssembler;
+    private final OutboundRequestAssembler outboundRequestAssembler;
 
     /**
      * 生命周期通知器，可选注入（与旧 {@code RequestPipeline} 同一范式）——
@@ -69,11 +73,13 @@ public class BeforeSend {
     public BeforeSend(ProviderRouteResolver providerRouteResolver,
                       ProtocolDispatchManager protocolDispatchManager,
                       TranslatorRegistry translatorRegistry,
-                      RequestBodyAssembler requestBodyAssembler) {
+                      RequestBodyAssembler requestBodyAssembler,
+                      OutboundRequestAssembler outboundRequestAssembler) {
         this.providerRouteResolver = providerRouteResolver;
         this.protocolDispatchManager = protocolDispatchManager;
         this.translatorRegistry = translatorRegistry;
         this.requestBodyAssembler = requestBodyAssembler;
+        this.outboundRequestAssembler = outboundRequestAssembler;
     }
 
     @Autowired(required = false)
@@ -93,6 +99,7 @@ public class BeforeSend {
         routeStep(ctx);
         translateStep(ctx);
         assembleStep(ctx);
+        assembleOutboundStep(ctx);
     }
 
     /**
@@ -183,5 +190,21 @@ public class BeforeSend {
      */
     private void assembleStep(RequestPipelineContext ctx) {
         requestBodyAssembler.assemble(ctx);
+    }
+
+    /**
+     * 步骤 4【支线】：出站请求装配 —— 定下「发去哪、带什么头」，写进 ctx。
+     *
+     * <p>协议无关的三层头装配（下游头透传 / 鉴权头再分配 / 请求头规则）在主干，协议特定的两件事
+     * （读哪一列地址 / 补哪个协议必需头，如 {@code anthropic-version}）走
+     * {@link OutboundRequestAssembler} 的出站支线（按 {@code upstreamProtocol} 查表）。
+     * 完整顺序与「协议头为何在规则之后」见 {@link OutboundRequestAssembler}。
+     *
+     * <p>放在请求体装配<strong>之后</strong>：鉴权头装配要读 {@code ctx.stream()} 选 Accept，
+     * 地址解析要读回填好的 {@code provider} —— 二者此时都已就绪。产出的
+     * {@code outboundHeaders} / {@code outboundBaseUrl} 交给发送后块的 {@code buildWebClient} 直接铺用。
+     */
+    private void assembleOutboundStep(RequestPipelineContext ctx) {
+        outboundRequestAssembler.assemble(ctx);
     }
 }

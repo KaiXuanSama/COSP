@@ -56,14 +56,19 @@ class RequestPipelineTests {
     void setUp() {
         routeResolver = mock(ProviderRouteResolver.class);
         dispatchManager = new ProtocolDispatchManager();
-        // 本类只测路由步骤，不触及翻译与装配 —— 故 translatorRegistry 给空、装配器给占位即可。
+        // 本类只测路由步骤，不触及翻译 / 装配 / 出站 —— 故后三个协作者给占位即可。
         beforeSend = new BeforeSend(routeResolver, dispatchManager,
                 new TranslatorRegistry(List.of(), List.of()),
                 new RequestBodyAssembler(
                         new com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyStageRegistry(
                                 List.of(), List.of(), List.of()),
                         new com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine(
-                                new com.fasterxml.jackson.databind.ObjectMapper())));
+                                new com.fasterxml.jackson.databind.ObjectMapper())),
+                new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler(
+                        new com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService(
+                                new com.fasterxml.jackson.databind.ObjectMapper()),
+                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestStageRegistry(List.of()),
+                        new com.fasterxml.jackson.databind.ObjectMapper()));
     }
 
     /** 造一个端点刚建好的 ctx（只含下游侧事实），交给 routeStep 回填。 */

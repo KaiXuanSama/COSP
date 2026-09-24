@@ -1300,11 +1300,6 @@ class AbstractUpstreamChatServiceTests {
         }
 
         @Override
-        protected String defaultBaseUrl() {
-            return "https://example.com";
-        }
-
-        @Override
         protected String chatCompletionsUri() {
             return "/v1/chat/completions";
         }
@@ -1353,14 +1348,34 @@ class AbstractUpstreamChatServiceTests {
 
         private WebClient exposeBuildWebClient(Map<String, String> capturedHeaders,
                                                ProviderRuntimeConfiguration provider) {
-            return buildWebClientWithHeaders(capturedHeaders, provider, HttpHeaders.EMPTY, false);
+            return exposeBuildWebClient(capturedHeaders, provider, HttpHeaders.EMPTY);
         }
 
-        /** 带下游请求头的重载，用于验证鉴权头装配的「取下游」探测。 */
+        /**
+         * 带下游请求头的重载，用于验证鉴权头装配的「取下游」探测。
+         *
+         * <p>阶段 4 刀 3 B 起出站头由发送前块的 {@code OutboundRequestAssembler} 装配、写进 ctx，
+         * {@code buildWebClientWithHeaders} 只铺 ctx 的头。故这里先跑一遍真实的出站装配
+         * （与生产同一条 {@code ProviderRequestHeaderService.applyHeaders} + ChatOutboundStage），
+         * 再把装好的 ctx 交给 buildWebClient —— 这三条头用例仍在验「装配 → 发送」的端到端结果。
+         */
         private WebClient exposeBuildWebClient(Map<String, String> capturedHeaders,
                                                ProviderRuntimeConfiguration provider,
                                                HttpHeaders downstreamHeaders) {
-            return buildWebClientWithHeaders(capturedHeaders, provider, downstreamHeaders, false);
+            RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(Map.of("model", "model-a")),
+                    "model-a", WireProtocol.CHAT, WireProtocol.CHAT, provider, downstreamHeaders, "req", null, false);
+            newOutboundAssembler().assemble(ctx);
+            return buildWebClientWithHeaders(capturedHeaders, ctx);
+        }
+
+        /** 出站装配器：与生产同源，收 ChatOutboundStage（本类线路恒为 CHAT）。 */
+        private com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler newOutboundAssembler() {
+            ObjectMapper mapper = new ObjectMapper();
+            return new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler(
+                    new ProviderRequestHeaderService(mapper),
+                    new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestStageRegistry(List.of(
+                            new com.kaixuan.copilot_ollama_proxy.upstream.outbound.chat.ChatOutboundStage())),
+                    mapper);
         }
 
         /**
@@ -1426,11 +1441,6 @@ class AbstractUpstreamChatServiceTests {
         private String exposeTranslateChunk(String chunk) {
             return UpstreamChunkNormalizer.normalize(new ObjectMapper(), chunk,
                     new AtomicBoolean(false), new StringBuilder(), new AtomicReference<String>("chatcmpl-unknown"));
-        }
-
-        @Override
-        protected String defaultBaseUrl() {
-            return "https://example.com";
         }
 
         /**

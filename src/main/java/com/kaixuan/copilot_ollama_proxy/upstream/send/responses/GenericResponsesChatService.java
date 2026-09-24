@@ -8,7 +8,6 @@ import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.control.CallRetryRegistry;
@@ -261,7 +260,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
         return UpstreamCallRunner.runNonStream(attempt, gate, detector, callCtx,
                 buildRetrySpec("responses", provider, requestId, modelName, stream), log,
                 new UpstreamCallRunner.NonStreamPipeline(
-                        () -> buildWebClient(reqHeaders, provider, downstreamHeaders, stream)
+                        () -> buildWebClient(reqHeaders, ctx)
                                 .post().uri(responsesUri()).bodyValue(requestBody).retrieve()
                                 .toEntity(String.class),
                         // 成功往返：立即落一条成功记录（在 retry 上游，每次往返各自记录）。
@@ -358,7 +357,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
         UpstreamCallRunner.StreamPipeline<String> pipeline = new UpstreamCallRunner.StreamPipeline<>(
                 () -> {
                     usageRaw.set(null);
-                    return buildWebClient(reqHeaders, provider, downstreamHeaders, stream)
+                    return buildWebClient(reqHeaders, ctx)
                             .post().uri(responsesUri()).bodyValue(requestBody)
                             .exchangeToFlux(response -> {
                                 Map<String, String> respHeaders = new LinkedHashMap<>();
@@ -456,41 +455,18 @@ public class GenericResponsesChatService implements UpstreamExecutor {
     }
 
     /**
-     * 归一化 Responses 上游 Base URL，但<strong>不裁切路径</strong>。
-     *
-     * <p>取值来自 {@link ProviderRuntimeConfiguration#resolveResponsesBaseUrl()}：优先用
-     * {@code provider_config.responses_base_url}，未配置时回退到 {@code base_url}。
-     *
-     * <p>独立成列而非从 base_url 推导，理由与 Anthropic 端点相同（中转站把端点摆在哪里
-     * 不可预测，任何全局推导规则都只对某一批供应商成立）。但<strong>常态不同</strong>：
-     * 多数中转站根本没有 Responses 端点，因此「留空回退 base_url」在这条线路上是
-     * 常见情形而非例外 —— 那时请求会打到一个不存在的路径并得到 404，而那正是
-     * 让用户感知到「这家不支持」并取消勾选的方式。
-     */
-    private String normalizeResponsesBaseUrl(ProviderRuntimeConfiguration provider) {
-        return providerRequestHeaderService.normalizeBaseUrl(provider.resolveResponsesBaseUrl());
-    }
-
-    /**
      * 构建 WebClient 并抓取出站请求头快照。
      *
-     * <p>结构与另两侧同形（两级抓取：WebClient 过滤器记录规则头，
-     * Reactor Netty 的 {@code doAfterRequest} 再用传输层快照覆盖，
-     * 因此日志里能看到 User-Agent、Host 等底层补入的头）。
-     * 刻意不抽公共方法：它依赖三个注入字段，抽出去要传三个参数或再造一个 Bean，
-     * 而本身只有二十行。
+     * <p><strong>出站头与地址已由发送前块装配好（阶段 4 刀 3 B）</strong>：本方法直接铺
+     * {@code ctx.outboundHeaders()} 与 {@code ctx.outboundBaseUrl()}。三层头装配与地址解析
+     * （{@code responses_base_url} 回退 base_url）现由 {@code OutboundRequestAssembler} +
+     * {@code ResponsesOutboundStage} 在发送前完成。
      *
-     * <p>本方法比 Anthropic 那份短，唯一原因是这条线路<strong>不需要</strong>
-     * {@code anthropic-version} 那样的协议必需头。鉴权头不在此列 —— 它的头名由
-     * {@link AuthHeaderSetting} 这个供应商级配置决定，与协议无关，因此这条线路上出站的
-     * 也可能是 {@code x-api-key}（依据见
-     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders}）。
+     * <p>结构与另两侧同形（两级抓取：WebClient 过滤器记录已装配好的头，
+     * Reactor Netty 的 {@code doAfterRequest} 再用传输层快照覆盖，
+     * 因此日志里能看到 User-Agent、Host 等底层补入的头）。抓取要等真正发出请求那一刻，故留发送后块。
      */
-    private WebClient buildWebClient(Map<String, String> capturedHeaders,
-                                     ProviderRuntimeConfiguration provider,
-                                     HttpHeaders downstreamHeaders, boolean stream) {
-        String apiKey = provider.apiKey();
-        String normalizedUrl = normalizeResponsesBaseUrl(provider);
+    private WebClient buildWebClient(Map<String, String> capturedHeaders, RequestPipelineContext ctx) {
         HttpClient capturingHttpClient = httpClient.doAfterRequest((request, connection) -> {
             HttpHeaders transportHeaders = new HttpHeaders();
             request.requestHeaders().forEach(entry ->
@@ -500,16 +476,9 @@ public class GenericResponsesChatService implements UpstreamExecutor {
 
         return webClientBuilder.clone()
                 .clientConnector(new ReactorClientHttpConnector(capturingHttpClient))
-                .baseUrl(normalizedUrl)
-                .defaultHeaders(headers -> {
-                    // 复用共享的请求头装配（下游头透传白名单、hop-by-hop 排除、鉴权头装配、
-                    // 供应商头规则含 {apiKey} 占位与删除标记）。
-                    // 出站鉴权头由供应商级配置决定，与本服务的协议无关 —— 「走 OpenAI 系」
-                    // 不代表该发 Bearer，头名取决于用户配的「取下游 / 取设置」与承载方式。
-                    providerRequestHeaderService.applyHeaders(
-                            headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream,
-                            AuthHeaderSetting.parse(provider.authHeaderJson(), objectMapper));
-                })
+                .baseUrl(ctx.outboundBaseUrl())
+                // 出站头已由发送前块 OutboundRequestAssembler 装配好，这里只铺进去。
+                .defaultHeaders(headers -> headers.addAll(ctx.outboundHeaders()))
                 .filter((request, next) -> {
                     capturedHeaders.clear();
                     capturedHeaders.putAll(providerRequestHeaderService.createLogSnapshot(request.headers()));

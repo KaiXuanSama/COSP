@@ -9,7 +9,6 @@ import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.control.CallRetryRegistry;
@@ -104,16 +103,6 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
     private static final ParameterizedTypeReference<ServerSentEvent<String>> STRING_SSE_TYPE =
             new ParameterizedTypeReference<>() {
             };
-
-    /**
-     * Anthropic API 版本头。这是<strong>必需</strong>的请求头，缺失时官方 API 返回 400。
-     *
-     * <p>值固定而非可配：它标识的是「本代理按哪一版协议构造请求」，属于代码事实
-     * 而非用户偏好。升级协议版本必然伴随代码改动，那时一并改这里。
-     */
-    private static final String ANTHROPIC_VERSION_HEADER = "anthropic-version";
-    private static final String ANTHROPIC_VERSION_VALUE = "2023-06-01";
-
 
     private final ObjectMapper objectMapper;
     private final ProviderRequestHeaderService providerRequestHeaderService;
@@ -259,7 +248,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
         return UpstreamCallRunner.runNonStream(attempt, gate, detector, callCtx,
                 buildRetrySpec("messages", provider, requestId, modelName, stream), log,
                 new UpstreamCallRunner.NonStreamPipeline(
-                        () -> buildWebClient(reqHeaders, provider, downstreamHeaders, stream)
+                        () -> buildWebClient(reqHeaders, ctx)
                                 .post().uri(messagesUri()).bodyValue(requestBody).retrieve()
                                 .toEntity(String.class),
                         // 成功往返：立即落一条成功记录（在 retry 上游，每次往返各自记录）。
@@ -367,7 +356,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                 () -> {
                     usageAccumulator.set(UsageTokens.EMPTY);
                     archivedUsageRaw.set(null);
-                    return buildWebClient(reqHeaders, provider, downstreamHeaders, stream)
+                    return buildWebClient(reqHeaders, ctx)
                             .post().uri(messagesUri()).bodyValue(requestBody)
                             .exchangeToFlux(response -> {
                                 Map<String, String> respHeaders = new LinkedHashMap<>();
@@ -462,55 +451,26 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
      * 因而实际请求为 {@code .../v1/messages}。这与 Anthropic 官方及 tokenrhythm
      * 的实测端点一致。
      *
-     * @see #normalizeAnthropicBaseUrl
+     * <p>地址解析（读 {@code anthropic_base_url} 回退 base_url）自阶段 4 刀 3 B 移至
+     * {@code MessagesOutboundStage.resolveBaseUrl}，随出站装配一起上移发送前块。
      */
     private String messagesUri() {
         return "/messages";
     }
 
     /**
-     * 归一化 Anthropic 上游 Base URL，但<strong>不裁切路径</strong>。
-     *
-     * <p>原先的乐观规则会把尾部 {@code /v1} 剥掉（{@code .../v1 → ...}），再接
-     * {@code /messages}；对 tokenrhythm 实测得到站点根路径的 405，而其 Anthropic
-     * 端点实际是 {@code POST /v1/messages}。因此规则改为完整保留数据库中的路径，
-     * 只做已有的尾斜杠归一化。
-     *
-     * <h2>V8.8 起地址来源可由用户指定</h2>
-     * 取值来自 {@link ProviderRuntimeConfiguration#resolveAnthropicBaseUrl()}：优先用
-     * {@code provider_config.anthropic_base_url}，未配置时回退到 {@code base_url}
-     * （即 V8.8 之前的行为）。
-     *
-     * <p>之所以要独立成列而不是继续从 OpenAI 地址推导：中转站把 Anthropic 端点摆在哪里
-     * 是不可预测的 —— 有的在 {@code /v1/messages}，有的在根路径，有的换了子域名。
-     * 任何全局推导规则都只是对某一批供应商成立，遇到不符合的就是「配了却调不通」，
-     * 而用户从界面上看不出代码在背后做了什么拼接，无从排查。给出一列让他显式声明，
-     * 猜错的可能性归零。
-     */
-    private String normalizeAnthropicBaseUrl(ProviderRuntimeConfiguration provider) {
-        return providerRequestHeaderService.normalizeBaseUrl(provider.resolveAnthropicBaseUrl());
-    }
-
-    /**
      * 构建 WebClient 并抓取出站请求头快照。
      *
-     * <p>结构与 OpenAI 侧同形（两级抓取：WebClient 过滤器记录规则头，
-     * Reactor Netty 的 {@code doAfterRequest} 再用传输层快照覆盖，
-     * 因此日志里能看到 User-Agent、Host 等底层补入的头）。
-     * 刻意不抽公共方法：它依赖三个注入字段，抽出去要传三个参数或再造一个 Bean，
-     * 而本身只有二十行。
+     * <p><strong>出站头与地址已由发送前块装配好（阶段 4 刀 3 B）</strong>：本方法直接铺
+     * {@code ctx.outboundHeaders()} 与 {@code ctx.outboundBaseUrl()}。三层头装配、地址解析
+     * （{@code anthropic_base_url} 回退 base_url）与 {@code anthropic-version} 头现由
+     * {@code OutboundRequestAssembler} + {@code MessagesOutboundStage} 在发送前完成。
      *
-     * <p>Anthropic 唯一特有的是必须带 {@code anthropic-version} 头。鉴权头<strong>不</strong>
-     * 属于这一类：它由 {@link AuthHeaderSetting} 这个供应商级配置决定头名，与本服务走哪个
-     * 协议无关（依据与反面证据见
-     * {@code ProviderRequestHeaderService.applyAuthenticationHeaders}）。
-     * 因此这条线路上出站的可能是 {@code x-api-key}，也可能是 {@code Authorization: Bearer}。
+     * <p>结构与另两侧同形（两级抓取：WebClient 过滤器记录已装配好的头，
+     * Reactor Netty 的 {@code doAfterRequest} 再用传输层快照覆盖，
+     * 因此日志里能看到 User-Agent、Host 等底层补入的头）。抓取要等真正发出请求那一刻，故留发送后块。
      */
-    private WebClient buildWebClient(Map<String, String> capturedHeaders,
-                                     ProviderRuntimeConfiguration provider,
-                                     HttpHeaders downstreamHeaders, boolean stream) {
-        String apiKey = provider.apiKey();
-        String normalizedUrl = normalizeAnthropicBaseUrl(provider);
+    private WebClient buildWebClient(Map<String, String> capturedHeaders, RequestPipelineContext ctx) {
         HttpClient capturingHttpClient = httpClient.doAfterRequest((request, connection) -> {
             HttpHeaders transportHeaders = new HttpHeaders();
             request.requestHeaders().forEach(entry ->
@@ -520,21 +480,9 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
 
         return webClientBuilder.clone()
                 .clientConnector(new ReactorClientHttpConnector(capturingHttpClient))
-                .baseUrl(normalizedUrl)
-                .defaultHeaders(headers -> {
-                    // 复用共享的请求头装配（下游头透传白名单、hop-by-hop 排除、鉴权头装配、
-                    // 供应商头规则含 {apiKey} 占位与删除标记）。
-                    // 出站鉴权头由供应商级配置决定，与本服务的协议无关 —— 「走 Anthropic」
-                    // 不代表该发 x-api-key，头名取决于用户配的「取下游 / 取设置」与承载方式。
-                    providerRequestHeaderService.applyHeaders(
-                            headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream,
-                            AuthHeaderSetting.parse(provider.authHeaderJson(), objectMapper));
-                    // Anthropic 必需的版本头。放在 applyHeaders 之后，
-                    // 使供应商头规则仍可覆盖它（某些中转站要求特定版本）。
-                    if (!headers.containsKey(ANTHROPIC_VERSION_HEADER)) {
-                        headers.set(ANTHROPIC_VERSION_HEADER, ANTHROPIC_VERSION_VALUE);
-                    }
-                })
+                .baseUrl(ctx.outboundBaseUrl())
+                // 出站头已由发送前块 OutboundRequestAssembler 装配好（含 anthropic-version），这里只铺进去。
+                .defaultHeaders(headers -> headers.addAll(ctx.outboundHeaders()))
                 .filter((request, next) -> {
                     capturedHeaders.clear();
                     capturedHeaders.putAll(providerRequestHeaderService.createLogSnapshot(request.headers()));

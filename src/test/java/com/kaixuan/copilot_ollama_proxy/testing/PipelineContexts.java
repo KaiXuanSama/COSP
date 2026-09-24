@@ -60,8 +60,24 @@ public final class PipelineContexts {
                                                 ProviderRuntimeConfiguration provider,
                                                 WireProtocol protocol,
                                                 boolean stream) {
-        return RequestPipelineContext.of(copyOf(body), modelOf(body), protocol, protocol,
-                provider, HttpHeaders.EMPTY, null, null, stream);
+        return direct(body, provider, protocol, stream, HttpHeaders.EMPTY);
+    }
+
+    /**
+     * 直连（带下游请求头）—— 供需要验证鉴权头「取下游」探测的用例使用。
+     *
+     * <p>下游头会进 ctx，出站装配据此探测「下游带了哪个鉴权头」。默认重载给
+     * {@link HttpHeaders#EMPTY}，那时探测两项皆假、落到配置值。
+     */
+    public static RequestPipelineContext direct(Map<String, Object> body,
+                                                ProviderRuntimeConfiguration provider,
+                                                WireProtocol protocol,
+                                                boolean stream,
+                                                HttpHeaders downstreamHeaders) {
+        RequestPipelineContext ctx = RequestPipelineContext.of(copyOf(body), modelOf(body), protocol, protocol,
+                provider, downstreamHeaders, null, null, stream);
+        assembleOutbound(ctx);
+        return ctx;
     }
 
     /** 半轮实现态：跨协议且<strong>只登记了去程</strong> —— 拦截跳过。 */
@@ -72,6 +88,7 @@ public final class PipelineContexts {
         RequestPipelineContext ctx = RequestPipelineContext.of(copyOf(body), modelOf(body), downstream, upstream,
                 provider, HttpHeaders.EMPTY, null, null, stream);
         ctx.markCompleted(PipelineStep.REQUEST_TRANSLATION);
+        assembleOutbound(ctx);
         return ctx;
     }
 
@@ -84,7 +101,30 @@ public final class PipelineContexts {
                 provider, HttpHeaders.EMPTY, null, null, stream);
         ctx.markCompleted(PipelineStep.REQUEST_TRANSLATION);
         ctx.markCompleted(PipelineStep.RESPONSE_TRANSLATION);
+        assembleOutbound(ctx);
         return ctx;
+    }
+
+    /**
+     * 跑一遍出站装配（阶段 4 刀 3 B）—— 把出站头与地址写进 ctx。
+     *
+     * <h2>为何这里也要装配</h2>
+     * 出站头与地址自刀 3 B 起由发送前块的 {@code OutboundRequestAssembler} 装配、写进 ctx，
+     * 执行器 {@code buildWebClient} 只读 {@code ctx.outboundHeaders/outboundBaseUrl}。
+     * 本类的三个工厂<strong>直接喂执行器、绕过发送前块</strong>，故必须补上这一步 ——
+     * 否则执行器拿到 {@code null} 头会 NPE。与生产同一条 {@code OutboundRequestAssembler}、
+     * 收全三条出站支线，使「测试构造的 ctx」与「主干产出的 ctx」形状一致。
+     */
+    private static void assembleOutbound(RequestPipelineContext ctx) {
+        ObjectMapper mapper = new ObjectMapper();
+        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler(
+                new com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService(mapper),
+                new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestStageRegistry(List.of(
+                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.chat.ChatOutboundStage(),
+                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.messages.MessagesOutboundStage(),
+                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.responses.ResponsesOutboundStage())),
+                mapper)
+                .assemble(ctx);
     }
 
     /**

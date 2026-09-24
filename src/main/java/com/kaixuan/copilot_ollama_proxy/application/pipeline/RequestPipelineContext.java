@@ -52,6 +52,11 @@ import java.util.Set;
  * 去程翻译器在发送前块当场选、当场用，严格说不必进 ctx；一并存入是为了让二者作为
  * 「本次请求的翻译对」成为一个对称的单一概念（代价仅一个引用字段）。
  *
+ * <p><strong>出站头与地址同理跨块（阶段 4 刀 3 B）</strong>：{@link #outboundHeaders} /
+ * {@link #outboundBaseUrl} 由发送前块的出站装配步骤算好，发送后块 {@code buildWebClient}
+ * 直接铺进 WebClient。它们是<strong>数据</strong>（装配的产物）而非策略，与 body 同类 ——
+ * 「这次请求实际发什么头、发去哪」是本次请求特有的事实，故进 ctx。
+ *
  * <h2>两个创建入口（不要用错）</h2>
  * <table>
  *   <caption>工厂方法</caption>
@@ -189,6 +194,28 @@ public final class RequestPipelineContext {
     private ResponseProtocolTranslator responseTranslator;
 
     /**
+     * 装配好的<strong>出站请求头</strong> —— 发往上游那份 headers 的最终形态。
+     *
+     * <p><strong>可变</strong>：由发送前块的出站装配步骤写入（{@link #applyOutbound}）。
+     * 它在<strong>发送后块</strong>被消费（{@code buildWebClient} 直接铺进 WebClient），
+     * 跨了「发送前块装配」与「发送后块发送」的边界 —— 与翻译对同一性质，故经 ctx 传。
+     *
+     * <p>它是<strong>数据</strong>而非策略：三层装配（下游头透传 / 鉴权头再分配 / 请求头规则）
+     * 加协议特定头（如 {@code anthropic-version}）的产物，回填前为 null。装配逻辑本身
+     * 仍在无状态协作者里（{@code ProviderRequestHeaderService} + 出站支线），ctx 只存结果。
+     */
+    private HttpHeaders outboundHeaders;
+
+    /**
+     * 装配好的<strong>出站基础地址</strong> —— 已按协议选源（Chat 用 base_url、
+     * Anthropic 用 anthropic_base_url、Responses 用 responses_base_url）并归一化。
+     *
+     * <p><strong>可变</strong>：与 {@link #outboundHeaders} 一同由出站装配步骤写入，
+     * 发送后块 {@code buildWebClient} 直接用它当 {@code baseUrl}。回填前为 null。
+     */
+    private String outboundBaseUrl;
+
+    /**
      * 已执行的步骤。可变：步骤随推进逐个登记自己。
      *
      * <p>被跳过的步骤<strong>没有机会登记自己</strong>（它压根没执行），
@@ -309,6 +336,31 @@ public final class RequestPipelineContext {
     /** 本次请求选中的回程翻译器；直连或回程未实现时为 null。发送后块据此决定翻译还是透传。 */
     public ResponseProtocolTranslator responseTranslator() {
         return responseTranslator;
+    }
+
+    /**
+     * 出站装配步骤的<strong>回填</strong>：把发往上游的最终请求头与基础地址写进 ctx。
+     *
+     * <p>由发送前块的出站装配步骤调用（阶段 4 刀 3 B）。二者一起写，因为它们同源 ——
+     * 都是「这次请求实际怎么发给上游」的产物。发送后块 {@code buildWebClient} 随后直接消费，
+     * 不再自己装配头或解析地址。
+     *
+     * @param outboundHeaders 三层装配 + 协议特定头后的最终出站请求头
+     * @param outboundBaseUrl  已按协议选源并归一化的上游基础地址
+     */
+    public void applyOutbound(HttpHeaders outboundHeaders, String outboundBaseUrl) {
+        this.outboundHeaders = outboundHeaders;
+        this.outboundBaseUrl = outboundBaseUrl;
+    }
+
+    /** 装配好的出站请求头；发送后块直接铺进 WebClient。出站装配步骤执行前为 null。 */
+    public HttpHeaders outboundHeaders() {
+        return outboundHeaders;
+    }
+
+    /** 装配好的出站基础地址（已选源 + 归一化）；发送后块用作 baseUrl。装配前为 null。 */
+    public String outboundBaseUrl() {
+        return outboundBaseUrl;
     }
 
     /**

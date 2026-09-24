@@ -38,11 +38,6 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService implem
         super(objectMapper, providerRequestHeaderService, chunkStageRegistry, contentDetectorRegistry);
     }
 
-    @Override
-    protected String defaultBaseUrl() {
-        return "";
-    }
-
     // ==================== 主干 send 插槽 ====================
 
     /** 本执行器服务的上游协议 —— <strong>查表键</strong>。 */

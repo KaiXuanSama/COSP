@@ -117,14 +117,18 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
 > （本项目已有同类教训：plan 里记过的「行号会漂」）。**类注释里写的是步骤的「基名」（如
 > `空响应判定`）而非编号**。引用某一步时，请写**基名**或**类名**。
 
-> ⚠️ **协议无关步骤的归位进度（2026-09-24，块化后步骤号见步骤树）**：曾经这批步骤**全在 send
-> 插槽内部**执行（三执行器各持私有管道、控制流方向反了）。**阶段 4 刀 1/2/3 已矫正**：
-> - **刀 1 ✅** 请求体装配上移主干（现为发送前块步骤 6 `assembleStep`）；出站头装配仍在执行器内（步骤 9）；
+> ⚠️ **协议无关步骤的归位进度（2026-09-25，块化后步骤号见步骤树）**：曾经这批步骤**全在 send
+> 插槽内部**执行（三执行器各持私有管道、控制流方向反了）。**阶段 4 刀 1/2/3（含 B）已矫正**：
+> - **刀 1 ✅** 请求体装配上移主干（现为发送前块步骤 6 `assembleStep`）；
 > - **刀 2 ✅** 内层 gate 编排 / 帧处理 / 落库 / `retryWhen`（步骤 10–14）收归
 >   `send/UpstreamCallRunner`（**无状态静态编排件**），流级状态入 `send/AttemptContext`；
 > - **刀 3 ✅** 块化：`RequestPipeline.execute` 按「真正发出 HTTP」拆成发送前块 `BeforeSend`
->   （同步 `void step(ctx)`，步骤 4–6）与发送后块 `AfterSend`（返回 Flux 的异步状态机，步骤 7 起）；
+>   （同步 `void step(ctx)`，步骤 4–7）与发送后块 `AfterSend`（返回 Flux 的异步状态机，步骤 8 起）；
 >   翻译对经 ctx 跨块传递（回程翻译器在发送前块选、发送后块用）。
+> - **刀 3 B ✅** 出站头与地址装配上移发送前块（现为步骤 7 `assembleOutboundStep` →
+>   `outbound/OutboundRequestAssembler`）：协议无关三层头在主干、协议特定的选列 + 补版本头走
+>   `outbound/` 支线（按 `upstreamProtocol` 查表，未命中报错）。执行器 `buildWebClient` 只剩
+>   「铺 ctx 的头和地址 + 抓传输层快照 + 发送」，那些要等真正发请求那一刻，故留发送后块。
 >
 > 现在的形态是「主干（经 runner 编排）持流程，执行器只填传输 + 协议特有中段」。
 > 步骤前缀 `主干：执行器内部` 是**过渡措辞** —— 编排已不在执行器里，
@@ -149,8 +153,8 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
 步骤 3  主干：管道入口（唯一）        RequestPipeline.execute(ctx)
         主干唯一入口，只有两行：beforeSend.process(ctx) → return afterSend.process(ctx)
         以「真正发出 HTTP」为界拆成两个功能块（阶段 4 刀 3 块化）：
-          ├─ 发送前块 BeforeSend —— 同步 void step(ctx) 序列（步骤 4~8）
-          └─ 发送后块 AfterSend  —— 返回 Flux 的异步状态机（步骤 9 起）
+          ├─ 发送前块 BeforeSend —— 同步 void step(ctx) 序列（步骤 4~7）
+          └─ 发送后块 AfterSend  —— 返回 Flux 的异步状态机（步骤 8 起）
 
 ── 发送前块（BeforeSend.process：同步改 ctx）─────────────────────────────────
 
@@ -191,15 +195,29 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
           └─ 分支：请求体规则 RequestBodyRuleEngine.transform（按协议筛组）
         ★ 装配放在翻译之后 —— body 此时已是上游形态，装配据 bodyProtocol 查表
 
+步骤 7  发送前块：出站装配步骤【支线】 BeforeSend.assembleOutboundStep(ctx) → OutboundRequestAssembler.assemble(ctx)
+        定下「发去哪、带什么头」，写进 ctx.outboundHeaders/outboundBaseUrl：
+          ① 解析地址   支线 resolveBaseUrl（读协议特定列）→ normalizeBaseUrl（协议无关尾斜杠归一）
+          ② 三层头     主干：透传下游头（除 hop-by-hop / Host / Content-Length）
+                       → 按供应商级配置装鉴权头（AuthHeaderSetting，先删两个再注一个）
+                       → 应用请求头规则（{apiKey} 占位、/del/ 删除）**拥有最终决定权**
+          ③ 协议头     支线 applyProtocolHeaders（set-if-absent）—— **必须在②之后**，规则才能覆盖
+          ├─ 支线：出站装配（OutboundRequestStageRegistry，键 = upstreamProtocol）
+          │    未命中语义：**报错**（每条线路都必须能解析出地址）
+          │      chat/       ChatOutboundStage      → 读 base_url，无协议头
+          │      messages/   MessagesOutboundStage  → 读 anthropic_base_url，补 anthropic-version
+          │      responses/  ResponsesOutboundStage → 读 responses_base_url，无协议头
+        ★ 协议无关的三层头装配在主干，协议特定的两件事（选列 / 补版本头）在支线
+
 ── 发送后块（AfterSend.process：返回 Flux 的异步状态机）───────────────────────
 
-步骤 7  发送后块：读两态 + 选执行器    AfterSend.process(ctx)
+步骤 8  发送后块：读两态 + 选执行器    AfterSend.process(ctx)
           ├─ ctx.responseTranslator()                 从 ctx 读回程翻译器（不再自己查表）
           ├─ ctx.stream()                             主干上唯一一次读「是不是流式」
           └─ UpstreamExecutorRegistry.require(ctx.upstreamProtocol())
              未命中语义：**报错**（装配坏了，不是领域事实）
 
-步骤 8  插槽：发送                    UpstreamExecutor
+步骤 9  插槽：发送                    UpstreamExecutor
           invoke(ctx, chunkRewriter)        → Mono<UpstreamEvent>（一次取全）
           invokeStream(ctx, chunkRewriter)  → Flux<UpstreamEvent>（逐事件）
         ★ 主干按 ctx.stream() 选这两个方法之一 —— 两态分岔的第一处
@@ -207,17 +225,13 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
           ├─ 分支：GenericAnthropicChatService（上游 MESSAGES）
           └─ 分支：GenericResponsesChatService（上游 RESPONSES）
 
-步骤 9  主干：执行器内部 —— 出站头装配（三层，后者覆盖前者）
-          ① 透传下游头（除 hop-by-hop / Host / Content-Length）
-          ② 按供应商级配置装配鉴权头（AuthHeaderSetting）—— 先删两个再注一个
-          ③ 应用数据库请求头规则（{apiKey} 占位、/del/ 删除）—— **拥有最终决定权**
-        ★ 协议不参与这个决定（出站头是供应商级事实）
-
 步骤 10 主干：执行器内部 —— 上游往返（一次）
-          ① Flux.defer 每轮起点重置（计时 / chunk 收集 / gate.reset）
-          ② HTTP 往返（流式 exchangeToFlux；非流式 retrieve().toEntity）
-          ③ 错误响应分支 → 即时落库 + Flux.error(WebClientResponseException)
-          ④ 发 CONNECTED 生命周期事件
+          ① 建 WebClient：铺 ctx.outboundHeaders + ctx.outboundBaseUrl（出站装配已在步骤 7 完成）
+             + capturingHttpClient / filter（抓传输层头快照，须待真正发出请求那一刻）
+          ② Flux.defer 每轮起点重置（计时 / chunk 收集 / gate.reset）
+          ③ HTTP 往返（流式 exchangeToFlux；非流式 retrieve().toEntity）
+          ④ 错误响应分支 → 即时落库 + Flux.error(WebClientResponseException)
+          ⑤ 发 CONNECTED 生命周期事件
 
 步骤 11 支线：空响应拦截
         机制（主干）：EmptyResponseGate —— 流式扣放 / 非流式一次判 / 耗尽放行

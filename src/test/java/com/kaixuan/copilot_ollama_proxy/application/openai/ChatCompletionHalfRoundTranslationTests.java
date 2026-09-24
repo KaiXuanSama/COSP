@@ -291,12 +291,24 @@ class ChatCompletionHalfRoundTranslationTests {
     /**
      * 用发送前块 + 发送后块拼出 {@link RequestPipeline}（阶段 4 刀 3 块化后的构造形态）。
      *
-     * <p>路由/调度/翻译/装配归 {@link BeforeSend}，执行器与回程翻译归 {@link AfterSend}；
-     * 门面只按序转交。本类只关心「半轮态透传 + WARN」，两块的接缝对断言透明。
+     * <p>路由/调度/翻译/装配/出站装配归 {@link BeforeSend}，执行器与回程翻译归 {@link AfterSend}；
+     * 门面只按序转交。本类执行器是 mock，出站装配跑真实实例（避免 ctx.outboundHeaders 为 null），
+     * 但装配结果不出站，故对「半轮态透传 + WARN」的断言透明。
      */
     private RequestPipeline pipelineOf(TranslatorRegistry registry, UpstreamExecutorRegistry executors) {
         return new RequestPipeline(
-                new BeforeSend(routeResolver, dispatchManager, registry, assembler()),
+                new BeforeSend(routeResolver, dispatchManager, registry, assembler(), outboundAssembler()),
                 new AfterSend(executors));
+    }
+
+    /** 出站装配器：三条出站支线齐备（本类上游走 MESSAGES，需 MessagesOutboundStage 解析地址）。 */
+    private com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler outboundAssembler() {
+        return new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler(
+                new com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService(objectMapper),
+                new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestStageRegistry(List.of(
+                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.chat.ChatOutboundStage(),
+                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.messages.MessagesOutboundStage(),
+                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.responses.ResponsesOutboundStage())),
+                objectMapper);
     }
 }

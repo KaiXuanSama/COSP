@@ -958,7 +958,9 @@ class GenericResponsesChatServiceTests {
                                              HttpHeaders downstreamHeaders) {
             // 同流式那个辅助方法：统一形态在此收口为字符串，使既有断言一行未改。
             // 3.4e 起执行器只留 invoke/invokeStream 两个入口，此处直调 protected 重载。
-            RequestPipelineContext ctx = PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES, false);
+            // 出站头与地址由 direct/directWithHeaders 跑出站装配写好（刀 3 B）。
+            RequestPipelineContext ctx = PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES,
+                    false, downstreamHeaders);
             assembler.assemble(ctx);
             return responses(ctx.body(), route.model(), route.provider(), downstreamHeaders, "req-test", ctx)
                     .map(com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent::data);

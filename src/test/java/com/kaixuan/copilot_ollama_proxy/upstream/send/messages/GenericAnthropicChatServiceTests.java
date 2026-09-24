@@ -1445,6 +1445,8 @@ class GenericAnthropicChatServiceTests {
             // 同流式那个辅助方法：统一形态在此收口为字符串，使既有断言一行未改。
             // 落库改写器传 null：直连路线不改写 chunk。
             // 3.4e 起执行器只留 invoke/invokeStream 两个入口，此处直调 protected 重载。
+            // 出站头与地址由 PipelineContexts.direct 跑出站装配写好（刀 3 B），本类的出站路径 /
+            // anthropic-version / 鉴权头用例验的正是那一步的产物。
             RequestPipelineContext ctx = PipelineContexts.direct(request, route.provider(), WireProtocol.MESSAGES, false);
             assembler.assemble(ctx);
             return messages(ctx.body(), route.model(), route.provider(), HttpHeaders.EMPTY, "req-test",

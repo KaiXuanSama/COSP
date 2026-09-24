@@ -1,7 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.upstream.send.chat;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
@@ -273,7 +272,7 @@ public abstract class AbstractUpstreamChatService {
         return UpstreamCallRunner.runNonStream(attempt, gate, detector, callCtx,
                 buildRetrySpec("chatCompletion", provider, requestId, modelName, stream), log,
                 new UpstreamCallRunner.NonStreamPipeline(
-                        () -> buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, stream)
+                        () -> buildWebClientWithHeaders(reqHeaders, ctx)
                                 .post().uri(chatCompletionsUri()).bodyValue(requestBody).retrieve()
                                 .toEntity(String.class),
                         // 成功往返：立即落一条成功记录（在 retry 上游，每次往返各自记录）。
@@ -451,7 +450,7 @@ public abstract class AbstractUpstreamChatService {
                     reasoningBuffer.setLength(0);
                     chunkId.set("chatcmpl-unknown");
                     usageRaw.set(null);
-                    return buildWebClientWithHeaders(reqHeaders, provider, downstreamHeaders, stream)
+                    return buildWebClientWithHeaders(reqHeaders, ctx)
                             .post().uri(chatCompletionsUri()).bodyValue(requestBody)
                             .exchangeToFlux(response -> {
                                 Map<String, String> respHeaders = new LinkedHashMap<>();
@@ -569,9 +568,15 @@ public abstract class AbstractUpstreamChatService {
     /**
      * 构建 WebClient，并在 WebClient 与 Reactor Netty 两个层级记录出站请求头。
      *
-     * WebClient 过滤器先记录默认头、转换规则头和请求级头；Reactor Netty 的
-     * doOnRequest 随后用传输层快照覆盖它，因此生产日志还包含 User-Agent、Host
-     * 等由底层 HTTP 客户端最后补入的头。重试时快照更新为最后一次实际尝试。
+     * <p><strong>出站头与地址已由发送前块装配好（阶段 4 刀 3 B）</strong>：本方法直接铺
+     * {@code ctx.outboundHeaders()} 与 {@code ctx.outboundBaseUrl()}，不再自己调 {@code applyHeaders}
+     * 或解析地址。三层头装配（下游头透传 / 鉴权头再分配 / 请求头规则）与协议必需头
+     * （{@code anthropic-version}）现由 {@code OutboundRequestAssembler} + 出站支线在发送前完成。
+     *
+     * <p>留在本方法的是<strong>真正发出请求时才有意义</strong>的两件事：
+     * WebClient 过滤器先记录已装配好的头，Reactor Netty 的 {@code doAfterRequest} 随后用传输层快照
+     * 覆盖它，因此生产日志还包含 User-Agent、Host 等由底层 HTTP 客户端最后补入的头。
+     * 重试时快照更新为最后一次实际尝试 —— 这些都要等真正发出请求那一刻，故留发送后块。
      *
      * 注意：此处用注入的 {@code httpClient} 派生 capturingHttpClient 并覆盖了
      * webClientBuilder 自带的 connector，因此实际的 DNS 解析行为由注入的
@@ -580,14 +585,11 @@ public abstract class AbstractUpstreamChatService {
      * 只改 webClientBuilder 的 connector 不会在这条链上生效。
      *
      * @param capturedHeaders 用于存放最终请求头安全快照的 Map
+     * @param ctx             本次请求的上下文（出站头与地址已装配）
      * @return 配置好的 WebClient 实例
      */
     protected WebClient buildWebClientWithHeaders(Map<String, String> capturedHeaders,
-                                                  ProviderRuntimeConfiguration provider,
-                                                  HttpHeaders downstreamHeaders, boolean stream) {
-        String apiKey = provider.apiKey();
-        String baseUrl = provider.baseUrl().isBlank() ? defaultBaseUrl() : provider.baseUrl();
-        String normalizedUrl = providerRequestHeaderService.normalizeBaseUrl(baseUrl);
+                                                  RequestPipelineContext ctx) {
         HttpClient capturingHttpClient = httpClient.doAfterRequest((request, connection) -> {
             HttpHeaders transportHeaders = new HttpHeaders();
             request.requestHeaders().forEach(entry ->
@@ -597,13 +599,10 @@ public abstract class AbstractUpstreamChatService {
 
         return webClientBuilder.clone()
             .clientConnector(new ReactorClientHttpConnector(capturingHttpClient))
-            .baseUrl(normalizedUrl).defaultHeaders(headers -> {
-                // 出站鉴权头由供应商级配置决定，与本管道的协议无关 —— 头名取决于用户配的
-                // 「取下游 / 取设置」与承载方式，而不是「这里走 Chat」。
-                providerRequestHeaderService.applyHeaders(
-                    headers, downstreamHeaders, apiKey, provider.headerRulesJson(), stream,
-                    AuthHeaderSetting.parse(provider.authHeaderJson(), objectMapper));
-        }).filter((request, next) -> {
+            .baseUrl(ctx.outboundBaseUrl())
+            // 出站头已由发送前块 OutboundRequestAssembler 装配好，这里只铺进去。
+            .defaultHeaders(headers -> headers.addAll(ctx.outboundHeaders()))
+            .filter((request, next) -> {
             capturedHeaders.clear();
             capturedHeaders.putAll(providerRequestHeaderService.createLogSnapshot(request.headers()));
             return next.exchange(request);
@@ -738,13 +737,6 @@ public abstract class AbstractUpstreamChatService {
     private void publishCallRecorded() {
         UpstreamCallReporter.publishCallRecorded(log, apiCallLog);
     }
-
-    /**
-     * 提供默认的 Base URL，当运行时配置中未指定地址时使用。
-     *
-     * @return 默认 Base URL，以协议开头，不含路径后缀
-     */
-    protected abstract String defaultBaseUrl();
 
     /**
      * 提供 Chat Completions 端点的 URI 路径。

@@ -111,7 +111,16 @@ class ChatDispatchErrorSignalTests {
                         new RequestBodyAssembler(
                                 new com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyStageRegistry(
                                         List.of(), List.of(), List.of()),
-                                new com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine(objectMapper))),
+                                new com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine(objectMapper)),
+                        // 出站装配器：部分用例（*StillDelegatesToUpstream）会走到发送阶段，
+                        // 故收全三条出站支线，否则 assembleOutboundStep 会因 require 未命中而抛错。
+                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler(
+                                new com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService(objectMapper),
+                                new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestStageRegistry(List.of(
+                                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.chat.ChatOutboundStage(),
+                                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.messages.MessagesOutboundStage(),
+                                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.responses.ResponsesOutboundStage())),
+                                objectMapper)),
                 new AfterSend(executors));
         // 三个 Service 现在同形：只收主干。
         chatCompletionService = new ChatCompletionService(pipeline);

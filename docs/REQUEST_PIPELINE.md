@@ -73,33 +73,29 @@
 │       只有两行：beforeSend.process(ctx) → return afterSend.process(ctx)
 │       以「真正发出 HTTP」为界拆成两个功能块（阶段 4 刀 3 块化）：
 │       ├─ 发送前块 BeforeSend（同步 void step(ctx)）
-│       │   ├─ routeStep     ProviderRouteResolver.resolve → ProtocolDispatchManager.dispatch
-│       │   │                → ProtocolNotifier.notifyProtocols → ctx.applyRouting（就地回填）
-│       │   ├─ translateStep 请求翻译插槽（未命中→报错）+ 回程翻译器选好记进 ctx
-│       │   └─ assembleStep  RequestBodyAssembler.assemble（请求体装配）
+│       │   ├─ routeStep           ProviderRouteResolver.resolve → ProtocolDispatchManager.dispatch
+│       │   │                      → ProtocolNotifier.notifyProtocols → ctx.applyRouting（就地回填）
+│       │   ├─ translateStep       请求翻译插槽（未命中→报错）+ 回程翻译器选好记进 ctx
+│       │   ├─ assembleStep        RequestBodyAssembler.assemble（请求体装配）
+│       │   └─ assembleOutboundStep OutboundRequestAssembler.assemble（出站头 + 地址，写进 ctx）
 │       └─ 发送后块 AfterSend（返回 Flux 的异步状态机）
 │           ├─ 读 ctx.responseTranslator() + ctx.stream()
 │           ├─ send 插槽      UpstreamExecutorRegistry.require（未命中→报错）
 │           └─ 响应翻译插槽    从 ctx 取回程翻译器（未命中→透传+WARN）
 │
-└─ 四、上游执行层（有 I/O 的装配与发送）
+└─ 四、上游执行层（有 I/O 的发送）
     ├─ GenericOpenAiChatService / GenericAnthropicChatService /
     │  GenericResponsesChatService（父类 AbstractUpstreamChatService）
-    ├─ ⑤ 模型名还原   resolveModel
-    ├─ ⑥ 思考注入     ReasoningEffortSetting
-    ├─ ⑦ 请求体规则   RequestBodyRuleEngine
-    ├─ ⑧ null 清洗
-    ├─ ⑧a 鉴权头      applyAuthenticationHeaders
-    ├─ ⑧b 请求头规则  applyHeaders 规则层
-    └─ ⑨ 发送         WebClient.post().bodyValue()（在 retryWhen 内）
+    │  ⑤–⑧ 请求体装配、⑧a–⑧b+地址 出站装配 均已上移发送前块（刀 1 / 刀 3 B）
+    └─ ⑨ 发送         buildWebClient 铺 ctx.outboundHeaders/outboundBaseUrl → post().bodyValue()（在 retryWhen 内）
         │
         ▼
     上游供应商
 ```
 
 **一句话分工**：应用服务层只负责「建上下文并交给主干」；
-主干回答「发给谁、用什么协议、要不要翻译」；
-上游执行层回答「请求体和请求头各长什么样、怎么发出去」。
+主干（发送前块）回答「发给谁、用什么协议、要不要翻译、请求体和请求头各长什么样、发去哪」；
+上游执行层（发送后块）只负责「把装好的请求发出去、处理响应」。
 
 ## 2. WebFilter 链
 
@@ -297,14 +293,15 @@ buildWebClientWithHeaders(...)
 | ⑥ | 主干·发送前块 | `assembleStep` → `ReasoningEffortSetting` | 写思考深度（Anthropic 侧另写 `thinking`） |
 | ⑦ | 主干·发送前块 | `assembleStep` → `RequestBodyRuleEngine.transform` | 供应商规则组改 / 删字段 |
 | ⑧ | 主干·发送前块 | `assembleStep` → `removeNullFields` | 清掉规则产生的 null |
-| ⑧a | 上游执行 | `applyAuthenticationHeaders` | 探测 → 决定头名 → 删两个 → 注一个 |
-| ⑧b | 上游执行 | `applyHeaders` 规则层 | `{apiKey}` 占位、`/del/` 删除 |
-| ⑨ | 上游执行 | `UpstreamExecutorRegistry.require` → `WebClient.post().bodyValue()` | 查表选中执行器，在重试预算内发出 |
+| ⑧a | 主干·发送前块 | `assembleOutboundStep` → `applyHeaders`（三层）+ 出站支线 | 探测→头名→删两注一；地址按协议选列 |
+| ⑧b | 主干·发送前块 | 出站支线 `applyProtocolHeaders` | Anthropic 补 `anthropic-version`（规则可覆盖） |
+| ⑨ | 上游执行·发送后块 | `UpstreamExecutorRegistry.require` → `buildWebClient` 铺 ctx 出站头/地址 → `post().bodyValue()` | 查表选中执行器，在重试预算内发出 |
 | ⑩ | 主干·发送后块 | `AfterSend` 读 `ctx.responseTranslator()`（发送前块步骤 5 已选好） | 命中则回程翻译；未命中透传 + WARN |
 
-> 序 ①–④ / ⑩ 是**主干自己的步骤**：①–④ 在发送前块（`BeforeSend`）、⑩ 在发送后块（`AfterSend`）；
-> ⑤–⑨ 中，⑤–⑧ 请求体装配自阶段 4 刀 1 已上移主干（发送前块 `assembleStep` → `RequestBodyAssembler`），
-> ⑧a–⑨ 出站头装配与发送仍在上游执行层内部。
+> 序 ①–⑧b / ⑩ 是**主干自己的步骤**：①–⑧b 全在发送前块（`BeforeSend`）、⑩ 在发送后块（`AfterSend`）；
+> ⑤–⑧ 请求体装配自刀 1 上移主干（`assembleStep` → `RequestBodyAssembler`），
+> ⑧a–⑧b 出站头装配自刀 3 B 上移主干（`assembleOutboundStep` → `OutboundRequestAssembler` + `outbound/` 支线）。
+> 只剩 ⑨「真正发出请求」在上游执行层（发送后块）。
 > ⑤–⑧ 是 `RequestBodyAssembler` 那根阶段序列的一部分，逐阶段名与位置见 §4.1 ——
 > 那里列的是 <strong>8 个阶段的完整形态</strong>（Anthropic 侧），本表只列跨线路共同的骨架。
 

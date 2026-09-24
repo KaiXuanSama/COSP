@@ -388,11 +388,6 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
                     .map(UpstreamEvent::data);
         }
 
-        @Override
-        protected String defaultBaseUrl() {
-            return "https://example.com";
-        }
-
         /** 退避压成毫秒级：本类验证落库联动，不验证等待时长。理由同姊妹测试类。 */
         @Override
         protected Duration retryFirstBackoff() {
