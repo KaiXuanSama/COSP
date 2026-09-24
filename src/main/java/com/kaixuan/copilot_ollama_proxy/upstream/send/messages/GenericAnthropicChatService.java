@@ -20,10 +20,11 @@ import com.kaixuan.copilot_ollama_proxy.upstream.EmptyUpstreamResponseException;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamAutoRetry;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEventClassifier;
+import com.kaixuan.copilot_ollama_proxy.upstream.send.AttemptContext;
+import com.kaixuan.copilot_ollama_proxy.upstream.send.UpstreamCallRunner;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.UpstreamExecutor;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamCallReporter;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamRetryPolicy;
-import com.kaixuan.copilot_ollama_proxy.control.CallResendLoop;
 import com.kaixuan.copilot_ollama_proxy.upstream.content.ContentDetectorRegistry;
 import com.kaixuan.copilot_ollama_proxy.upstream.content.ContentDetectorStage;
 import com.kaixuan.copilot_ollama_proxy.upstream.EmptyResponseGate;
@@ -39,7 +40,6 @@ import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.SignalType;
 import reactor.netty.http.client.HttpClient;
 import reactor.util.retry.Retry;
 
@@ -47,9 +47,6 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -253,69 +250,53 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
         Map<String, String> reqHeaders = new LinkedHashMap<>();
-        AtomicLong attemptStart = new AtomicLong(System.currentTimeMillis());
+        // 流级状态收归 AttemptContext（阶段 4 刀 2）：非流式只用到 attemptStart。
+        AttemptContext attempt = new AttemptContext();
 
-        return Mono.defer(() -> {
-                    attemptStart.set(System.currentTimeMillis());
-                    return buildWebClient(reqHeaders, provider, downstreamHeaders, stream)
-                            .post().uri(messagesUri()).bodyValue(requestBody).retrieve()
-                            .toEntity(String.class);
-                })
-                // 成功往返：立即落一条成功记录（在 retry 上游，每次往返各自记录）。
-                .doOnNext(entity -> {
-                    log.debug("{} 响应: {}", providerKey, entity.getBody());
-                    // CONNECTED：非流式无首字概念，完整响应到达即视为已连接。
-                    publishLifecycle(CallLifecycleEvent.of(requestId, CallPhase.CONNECTED, modelName, false));
-                    Map<String, String> respHeaders = new LinkedHashMap<>();
-                    entity.getHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
-                    Long logId = saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, respHeaders,
-                            entity.getStatusCode().value(), entity.getBody(), attemptStart.get(), ctx);
-                    // ttfb 传 null：非流式没有首字概念，与 OpenAI 侧一致。
-                    saveUsage(logId, providerKey, modelName, stream,
-                            AnthropicUsageParser.extractUsageRawJson(objectMapper, entity.getBody()),
-                            null);
-                })
-                // 失败往返：每次失败（含被 retry 吞掉的中间失败）都各自落一条。
-                .doOnError(e -> {
-                    WebClientResponseException responseException = UpstreamRetryPolicy.findWebResponseException(e);
-                    if (responseException != null) {
-                        Map<String, String> errHeaders = new LinkedHashMap<>();
-                        responseException.getHeaders().forEach((k, v) -> errHeaders.put(k, String.join(", ", v)));
-                        saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, errHeaders,
-                                responseException.getStatusCode().value(),
-                                responseException.getResponseBodyAsString(), attemptStart.get(), ctx);
-                        publishCallRecorded();
-                    } else {
-                        // 状态码 -1：非 HTTP 异常的占位值，与 OpenAI 侧同一约定。
-                        saveNonStreamLog(providerKey, modelName, reqHeaders, requestBody, Map.of(), -1, null,
-                                attemptStart.get(), ctx);
-                        publishCallRecorded();
-                    }
-                })
-                // 空响应兜底：转成异常以复用下方同一条 retryWhen 的预算。
-                // 判定机制收归 EmptyResponseGate（阶段 3.6b）—— 三条线路同源，
-                // 因此不会出现「切一下 stream 开关，同一个上游故障的结论就不同」。
-                .flatMap(entity -> EmptyResponseGate
-                        .checkNonStream(entity.getBody(), gate.active(), detector, log, callCtx)
-                        .thenReturn(entity))
-                .retryWhen(buildRetrySpec("messages", provider, requestId, modelName, stream))
-                // 空 body 已在上面被判空转成异常，此处 getBody() 不会为 null。
-                .map(entity -> entity.getBody())
-                // 空响应重试耗尽：放行最后一轮的原始 body，保持「透传上游真实返回」语义。
-                // 解包与告警文案收归 EmptyResponseGate（机制共用），本处只负责「怎么放行」。
-                .onErrorResume(error -> {
-                    Optional<List<String>> exhausted = EmptyResponseGate.exhaustedFrames(error);
-                    if (exhausted.isEmpty()) {
-                        return Mono.error(error);
-                    }
-                    List<String> frames = exhausted.get();
-                    EmptyResponseGate.logExhaustedPassthrough(log, callCtx, frames.size());
-                    return Mono.just(frames.isEmpty() ? "" : frames.get(0));
-                })
-                // 包装成统一形态：非流式在本形态下就是「恰有一个元素的流」。
-                // 直接用 body 而不走分类器：非流式的响应体里不存在协议级终止标记，
-                // 「说完了」由流的 onComplete 表达 —— 这是已确定的事实，不必运行时再判一次。
-                .map(UpstreamEvent::body);
+        // 外层骨架（defer → 落库 → 判空 → retryWhen → 取 body → 耗尽放行 → 包装）收归主干 runner；
+        // 本方法只提供协议特定的 transport（含 URI）、成功/失败落库、以及「body 转统一形态」这三段闭包。
+        // chunkRewriter 在非流式不参与（无帧可改写），与另两侧一致。
+        return UpstreamCallRunner.runNonStream(attempt, gate, detector, callCtx,
+                buildRetrySpec("messages", provider, requestId, modelName, stream), log,
+                new UpstreamCallRunner.NonStreamPipeline(
+                        () -> buildWebClient(reqHeaders, provider, downstreamHeaders, stream)
+                                .post().uri(messagesUri()).bodyValue(requestBody).retrieve()
+                                .toEntity(String.class),
+                        // 成功往返：立即落一条成功记录（在 retry 上游，每次往返各自记录）。
+                        entity -> {
+                            log.debug("{} 响应: {}", providerKey, entity.getBody());
+                            // CONNECTED：非流式无首字概念，完整响应到达即视为已连接。
+                            publishLifecycle(CallLifecycleEvent.of(requestId, CallPhase.CONNECTED, modelName, false));
+                            Map<String, String> respHeaders = new LinkedHashMap<>();
+                            entity.getHeaders().forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
+                            Long logId = UpstreamCallRunner.saveNonStreamLog(apiCallLog, ctx, reqHeaders, requestBody,
+                                    respHeaders, entity.getStatusCode().value(), entity.getBody(), attempt.attemptStart());
+                            // ttfb 传 null：非流式没有首字概念，与 OpenAI 侧一致。
+                            saveUsage(logId, providerKey, modelName, stream,
+                                    AnthropicUsageParser.extractUsageRawJson(objectMapper, entity.getBody()),
+                                    null);
+                        },
+                        // 失败往返：每次失败（含被 retry 吞掉的中间失败）都各自落一条。
+                        e -> {
+                            WebClientResponseException responseException = UpstreamRetryPolicy.findWebResponseException(e);
+                            if (responseException != null) {
+                                Map<String, String> errHeaders = new LinkedHashMap<>();
+                                responseException.getHeaders().forEach((k, v) -> errHeaders.put(k, String.join(", ", v)));
+                                UpstreamCallRunner.saveNonStreamLog(apiCallLog, ctx, reqHeaders, requestBody, errHeaders,
+                                        responseException.getStatusCode().value(),
+                                        responseException.getResponseBodyAsString(), attempt.attemptStart());
+                                publishCallRecorded();
+                            } else {
+                                // 状态码 -1：非 HTTP 异常的占位值，与 OpenAI 侧同一约定。
+                                UpstreamCallRunner.saveNonStreamLog(apiCallLog, ctx, reqHeaders, requestBody, Map.of(),
+                                        -1, null, attempt.attemptStart());
+                                publishCallRecorded();
+                            }
+                        },
+                        // 包装成统一形态：非流式在本形态下就是「恰有一个元素的流」。
+                        // 直接用 body 而不走分类器：非流式的响应体里不存在协议级终止标记，
+                        // 「说完了」由流的 onComplete 表达 —— 这是已确定的事实，不必运行时再判一次。
+                        UpstreamEvent::body));
     }
 
     // ==================== 流式 ====================
@@ -369,48 +350,38 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
         Map<String, String> reqHeaders = new LinkedHashMap<>();
-        List<String> logChunks = new java.util.concurrent.CopyOnWriteArrayList<>();
-        AtomicReference<Map<String, String>> capturedRespHeaders = new AtomicReference<>(Map.of());
-        AtomicReference<Integer> capturedStatusCode = new AtomicReference<>(0);
-        AtomicLong attemptStart = new AtomicLong(System.currentTimeMillis());
-        AtomicLong ttfbMs = new AtomicLong(-1);
+        // 流级状态收归 AttemptContext（阶段 4 刀 2）：计时 / chunk 收集 / 首字 / 耗尽标记。
+        AttemptContext attempt = new AttemptContext();
         // 本轮累积的 usage：input_tokens 来自 message_start、output_tokens 来自 message_delta，
-        // 必须跨事件合并才完整。
+        // 必须跨事件合并才完整。它是<strong>协议特有</strong>的流级态（Anthropic 独有的跨事件合并），
+        // 故留本方法闭包、不进 AttemptContext。
         AtomicReference<UsageTokens> usageAccumulator = new AtomicReference<>(UsageTokens.EMPTY);
         // 存档用的 usage 原文。挑「信息量最大」的那一份而非最后一份，打平时取结算态
         // （message_delta），理由见 pickRicherUsageRaw —— 有的上游每个事件都带 usage，
         // 且尾事件全零；也不跨事件拼字段，那会造出上游从未发出过的报文。
         AtomicReference<String> archivedUsageRaw = new AtomicReference<>(null);
-        // 空响应耗尽放行标记：该轮已在 doOnError 落过库，收尾处据此跳过，避免重复记录。
-        AtomicBoolean emptyResponsePassthrough = new AtomicBoolean(false);
 
-        Flux<String> attempt = Flux.defer(() -> {
-                    // 每轮往返起点重置：使每条日志只反映该次往返，不跨重试累加。
-                    // 状态在 defer 内重置而非声明处初始化 —— retryWhen 会重订阅，
-                    // 若不重置，第二轮会带着第一轮的 gate 状态与事件记录。
-                    attemptStart.set(System.currentTimeMillis());
-                    logChunks.clear();
-                    ttfbMs.set(-1);
+        // transport：defer 内每轮重置协议特有的 usage 累积（AttemptContext 由 runner 重置），
+        // 建 WebClient + 发送 + preGate 处理（mapNotNull/filter/首字打点/usage 合并/chunk 记录）。
+        UpstreamCallRunner.StreamPipeline<String> pipeline = new UpstreamCallRunner.StreamPipeline<>(
+                () -> {
                     usageAccumulator.set(UsageTokens.EMPTY);
                     archivedUsageRaw.set(null);
-                    // 闸门状态同理每轮重置（机制在 EmptyResponseGate 里，理由见它自己的注释）。
-                    gate.reset();
                     return buildWebClient(reqHeaders, provider, downstreamHeaders, stream)
                             .post().uri(messagesUri()).bodyValue(requestBody)
                             .exchangeToFlux(response -> {
                                 Map<String, String> respHeaders = new LinkedHashMap<>();
                                 response.headers().asHttpHeaders()
                                         .forEach((k, v) -> respHeaders.put(k, String.join(", ", v)));
-                                capturedRespHeaders.set(respHeaders);
-                                capturedStatusCode.set(response.statusCode().value());
+                                attempt.captureResponse(respHeaders, response.statusCode().value());
                                 if (response.statusCode().isError()) {
                                     return response.bodyToMono(String.class).flatMapMany(errorBody -> {
                                         log.warn("{} 上游返回错误响应 {}: {}", providerKey,
                                                 response.statusCode().value(), errorBody);
-                                        saveStreamLogWithError(providerKey, modelName, reqHeaders, requestBody,
+                                        UpstreamCallRunner.saveStreamLogWithError(apiCallLog, ctx, reqHeaders, requestBody,
                                                 respHeaders, response.statusCode().value(), List.of(),
                                                 respHeaders, response.statusCode().value(), errorBody,
-                                                attemptStart.get(), chunkRewriter, ctx);
+                                                attempt.attemptStart(), chunkRewriter);
                                         publishCallRecorded();
                                         return Flux.error(new WebClientResponseException(
                                                 response.statusCode().value(), "上游错误响应", null,
@@ -420,96 +391,65 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                                 // CONNECTED：收到非错误响应头的那一刻。
                                 publishLifecycle(CallLifecycleEvent.of(requestId, CallPhase.CONNECTED, model, true));
                                 return response.bodyToFlux(STRING_SSE_TYPE);
+                            })
+                            .mapNotNull(ServerSentEvent::data)
+                            .filter(data -> !data.isBlank() && !"null".equals(data))
+                            .doOnNext(data -> {
+                                attempt.recordFirstByteIfAbsent();
+                                log.debug("{} 上游事件: {}", providerKey, data);
+                                // usage 跨事件合并：message_start 给输入、message_delta 给输出。
+                                String rawUsage = AnthropicUsageParser.extractUsageRawJson(objectMapper, data);
+                                if (rawUsage != null) {
+                                    archivedUsageRaw.set(pickRicherUsageRaw(archivedUsageRaw.get(), rawUsage,
+                                            isSettlementEvent(data)));
+                                    usageAccumulator.set(AnthropicUsageParser.merge(usageAccumulator.get(),
+                                            AnthropicUsageParser.parseUsageObject(objectMapper, rawUsage)));
+                                }
+                                attempt.addChunk(data);
                             });
-                })
-                .mapNotNull(ServerSentEvent::data)
-                .filter(data -> !data.isBlank() && !"null".equals(data))
-                .doOnNext(data -> {
-                    if (ttfbMs.get() < 0) {
-                        ttfbMs.set(System.currentTimeMillis() - attemptStart.get());
-                    }
-                    log.debug("{} 上游事件: {}", providerKey, data);
-                    // usage 跨事件合并：message_start 给输入、message_delta 给输出。
-                    String rawUsage = AnthropicUsageParser.extractUsageRawJson(objectMapper, data);
-                    if (rawUsage != null) {
-                        archivedUsageRaw.set(pickRicherUsageRaw(archivedUsageRaw.get(), rawUsage,
-                                isSettlementEvent(data)));
-                        usageAccumulator.set(AnthropicUsageParser.merge(usageAccumulator.get(),
-                                AnthropicUsageParser.parseUsageObject(objectMapper, rawUsage)));
-                    }
-                    logChunks.add(data);
-                })
-                // ── 空响应 gate ──────────────────────────────────────────────
-                // 机制收归 EmptyResponseGate（阶段 3.6b）：扣住 / 整批释放 / 轮末判空
-                // 三条线路共用一份实现，本类只提供检测器（查表得来）。
-                // 挂在 retryWhen 内侧，因此每轮重订阅各自独立判定；闸门状态已在上面的 defer 内 reset。
-                // 完整理由（为何必须扣住、为何不会破坏客户端状态机）见那个类的类注释。
-                .transform(flux -> gate.gate(flux, Function.identity(), detector, log, callCtx))
-                // 网络类失败往返：错误响应已在 exchangeToFlux 分支落库，
-                // 此处用 UpstreamRetryPolicy.findWebResponseException == null 排除以免重复。
-                .doOnError(e -> {
+                },
+                // gate 挂在 mapNotNull 之后，扣的已是裸 data，故 dataOf = identity。
+                Function.identity(),
+                // 每轮失败落库：空响应往返用异常携带的缓存帧落库，网络类失败用捕获的 chunk。
+                e -> {
                     EmptyUpstreamResponseException emptyResponse = UpstreamRetryPolicy.findEmptyUpstreamException(e);
                     if (emptyResponse != null) {
-                        saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
-                                capturedRespHeaders.get(), capturedStatusCode.get(),
-                                emptyResponse.bufferedFrames(), attemptStart.get(), chunkRewriter, ctx);
+                        UpstreamCallRunner.saveStreamLog(apiCallLog, ctx, reqHeaders, requestBody,
+                                attempt.respHeaders(), attempt.statusCode(),
+                                emptyResponse.bufferedFrames(), attempt.attemptStart(), chunkRewriter);
                         publishCallRecorded();
                         return;
                     }
+                    // 错误响应已在 exchangeToFlux 分支落库，此处按异常类型排除以免重复。
                     if (UpstreamRetryPolicy.findWebResponseException(e) == null) {
-                        int statusCode = capturedStatusCode.get() == 0 ? -1 : capturedStatusCode.get();
-                        saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
-                                capturedRespHeaders.get(), statusCode, List.copyOf(logChunks),
-                                attemptStart.get(), chunkRewriter, ctx);
+                        int statusCode = attempt.statusCode() == 0 ? -1 : attempt.statusCode();
+                        UpstreamCallRunner.saveStreamLog(apiCallLog, ctx, reqHeaders, requestBody,
+                                attempt.respHeaders(), statusCode, attempt.chunksSnapshot(),
+                                attempt.attemptStart(), chunkRewriter);
                         publishCallRecorded();
                     }
-                })
-                .retryWhen(buildRetrySpec("messagesStream", provider, requestId, model, stream))
-                // 空响应耗尽：放行最后一轮的事件，与其他失败「耗尽后透传最后一次响应」一致。
-                // 解包与告警文案收归 EmptyResponseGate（机制共用），本处只负责「怎么放行」。
-                .onErrorResume(error -> {
-                    Optional<List<String>> exhausted = EmptyResponseGate.exhaustedFrames(error);
-                    if (exhausted.isEmpty()) {
-                        return Flux.error(error);
+                },
+                // 耗尽放行：Anthropic 扣的是裸 data，还原恒等（Chat 才要重建 SSE 信封）。
+                Flux::fromIterable,
+                // postLoop：静默重发循环之后按上游协议分类 —— 本类发的就是 Anthropic 的事件。
+                loop -> loop.map(data -> UpstreamEventClassifier.classify(
+                        objectMapper, WireProtocol.MESSAGES, data)),
+                // 成功收尾落库 + 用量写入（流式传已跨事件合并好的 tokens）。
+                () -> {
+                    int statusCode = attempt.statusCode();
+                    if (statusCode == 0 && attempt.noChunks()) {
+                        statusCode = -1;
                     }
-                    List<String> frames = exhausted.get();
-                    EmptyResponseGate.logExhaustedPassthrough(log, callCtx, frames.size());
-                    emptyResponsePassthrough.set(true);
-                    return Flux.fromIterable(frames);
+                    Long logId = UpstreamCallRunner.saveStreamLog(apiCallLog, ctx, reqHeaders, requestBody,
+                            attempt.respHeaders(), statusCode, attempt.chunks(), attempt.attemptStart(), chunkRewriter);
+                    long ttfb = attempt.ttfb();
+                    saveUsage(logId, providerKey, modelName, stream, archivedUsageRaw.get(),
+                            ttfb < 0 ? null : (int) ttfb, usageAccumulator.get());
                 });
 
-        // 静默重试循环：机制收归 CallResendLoop（阶段 3.6c-1），三条线路共用一份实现。
-        // 形态归一是<strong>协议关联</strong>的一步，故留在本类、接在循环之外 ——
-        // 位置等价：静默重发的那一轮产物也是循环输出的一部分，同样经过分类。
-        Flux<UpstreamEvent> attemptLoop = CallResendLoop
-                .loop(attempt, callRetryRegistry, requestId, "Anthropic", log, model)
-                // 形态归一：把清洗后的事件分成「载荷」与「终止标记」两态。
-                // 按<strong>上游协议</strong>分类 —— 本类发的就是 Anthropic 的事件。
-                .map(data -> UpstreamEventClassifier.classify(
-                        objectMapper, WireProtocol.MESSAGES, data));
-
-        return attemptLoop
-                // 成功往返收尾：仅在非错误终结时落一条成功记录。
-                .doFinally(signal -> {
-                    if (callRetryRegistry != null && requestId != null) {
-                        callRetryRegistry.remove(requestId);
-                    }
-                    if (emptyResponsePassthrough.get()) {
-                        return;
-                    }
-                    if (signal != SignalType.ON_ERROR) {
-                        int statusCode = capturedStatusCode.get();
-                        if (statusCode == 0 && logChunks.isEmpty()) {
-                            statusCode = -1;
-                        }
-                        Long logId = saveStreamLog(providerKey, modelName, reqHeaders, requestBody,
-                                capturedRespHeaders.get(), statusCode, logChunks, attemptStart.get(),
-                                chunkRewriter, ctx);
-                        long ttfb = ttfbMs.get();
-                        saveUsage(logId, providerKey, modelName, stream, archivedUsageRaw.get(),
-                                ttfb < 0 ? null : (int) ttfb, usageAccumulator.get());
-                    }
-                });
+        return UpstreamCallRunner.runStream(attempt, gate, detector, callCtx,
+                buildRetrySpec("messagesStream", provider, requestId, model, stream),
+                callRetryRegistry, "Anthropic", log, pipeline);
     }
 
     // ==================== 请求构造 ====================
@@ -682,67 +622,6 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
     }
 
     // ==================== 落库与观测 ====================
-
-    /**
-     * 落库。
-     *
-     * <h2>上游协议恒为 ANTHROPIC，下游协议从 ctx 取</h2>
-     * 直连时两者相同；翻译路线下游是 CHAT，因此日志里能看出
-     * 这是一次跳协议调用。
-     *
-     * <p><strong>下游协议的家是 ctx，不是参数</strong>：它曾由一个
-     * {@code DownstreamLogView} 参数携带，而那个字段与 {@code ctx.downstreamProtocol()}
-     * 在所有调用点<strong>恒等</strong>。两个家意味着两处可能不一致，因此它已被删除
-     * （3.3d-3 的 E 方案）。判断依据写在这里而非别处：删除的理由是「两个家会漂」，
-     * 不是「这里有点问题」—— 若将来有人想再加一个「日志视图」参数，先把那条恒等式推翻。
-     */
-    private Long saveNonStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders,
-                                  Map<String, Object> requestBody, Map<String, String> respHeaders,
-                                  int statusCode, String responseBody, long startTime,
-                                  RequestPipelineContext ctx) {
-        if (apiCallLog == null) return null;
-        long duration = System.currentTimeMillis() - startTime;
-        return apiCallLog.saveNonStream(providerKey, modelName,
-                ctx.downstreamProtocol().name(), WireProtocol.MESSAGES.name(),
-                reqHeaders, requestBody, respHeaders,
-                statusCode, responseBody, duration);
-    }
-
-    /**
-     * 流式落库。
-     *
-     * <p>chunk 过一道改写器：翻译路线下日志要记<strong>下游实际收到的</strong>
-     * OpenAI chunk，而不是上游的 Anthropic 事件 —— 否则排查「客户端为何解析失败」
-     * 时，日志里没有客户端真正看到的东西。直连时改写器为 {@code null}，
-     * 落上游原文（裸数组）。退回语义见 {@link ChunkLogPayload#from}。
-     */
-    private Long saveStreamLog(String providerKey, String modelName, Map<String, String> reqHeaders,
-                               Map<String, Object> requestBody, Map<String, String> respHeaders,
-                               int statusCode, List<String> chunks, long startTime,
-                               Function<List<String>, ChunkLogPayload> chunkRewriter,
-                               RequestPipelineContext ctx) {
-        if (apiCallLog == null) return null;
-        long duration = System.currentTimeMillis() - startTime;
-        return apiCallLog.saveStream(providerKey, modelName,
-                ctx.downstreamProtocol().name(), WireProtocol.MESSAGES.name(),
-                reqHeaders, requestBody, respHeaders,
-                statusCode, ChunkLogPayload.from(chunkRewriter, chunks), duration);
-    }
-
-    private Long saveStreamLogWithError(String providerKey, String modelName, Map<String, String> reqHeaders,
-                                        Map<String, Object> requestBody, Map<String, String> respHeaders,
-                                        int statusCode, List<String> chunks, Map<String, String> errorHeaders,
-                                        int errorCode, String errorBody, long startTime,
-                                        Function<List<String>, ChunkLogPayload> chunkRewriter,
-                                        RequestPipelineContext ctx) {
-        if (apiCallLog == null) return null;
-        long duration = System.currentTimeMillis() - startTime;
-        return apiCallLog.saveStreamWithError(providerKey, modelName,
-                ctx.downstreamProtocol().name(), WireProtocol.MESSAGES.name(),
-                reqHeaders, requestBody, respHeaders, statusCode,
-                ChunkLogPayload.from(chunkRewriter, chunks), errorHeaders,
-                errorCode, errorBody, duration);
-    }
 
     /** 非流式用量写入：从原始 usage JSON 解析。 */
     private void saveUsage(Long logId, String providerKey, String modelName, boolean stream,
