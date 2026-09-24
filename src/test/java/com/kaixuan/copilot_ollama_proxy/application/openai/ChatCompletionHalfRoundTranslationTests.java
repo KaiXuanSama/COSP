@@ -6,6 +6,8 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineStep;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.AfterSend;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.BeforeSend;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipeline;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
@@ -121,15 +123,13 @@ class ChatCompletionHalfRoundTranslationTests {
         TranslatorRegistry halfRoundRegistry = new TranslatorRegistry(
                 List.of(new ChatToMessagesRequestTranslator(objectMapper)),
                 List.of());
-        halfRoundService = new ChatCompletionService(
-                new RequestPipeline(routeResolver, dispatchManager, halfRoundRegistry, executors,
-                        assembler()));
+        halfRoundService = new ChatCompletionService(pipelineOf(halfRoundRegistry, executors));
 
         // 供应商只勾 MESSAGES：下游 CHAT 打进来 → 调度判需要翻译、上游协议 MESSAGES。
         givenProviderSupporting("[\"MESSAGES\"]");
 
-        // WARN 的归属已随翻译编排上移到主干，故监听主干类的 logger。
-        serviceLogger = (Logger) LoggerFactory.getLogger(RequestPipeline.class);
+        // WARN 的归属在发送后块（AfterSend），故监听它的 logger。
+        serviceLogger = (Logger) LoggerFactory.getLogger(AfterSend.class);
         logAppender = new ListAppender<>();
         logAppender.start();
         serviceLogger.addAppender(logAppender);
@@ -240,9 +240,8 @@ class ChatCompletionHalfRoundTranslationTests {
                 List.of(new ChatToMessagesRequestTranslator(objectMapper)),
                 List.of(new MessagesToChatResponseTranslator(objectMapper)));
         ChatCompletionService fullyWired = new ChatCompletionService(
-                new RequestPipeline(routeResolver, dispatchManager, fullRegistry,
-                        new UpstreamExecutorRegistry(List.of(openAiChatService, anthropicChatService)),
-                        assembler()));
+                pipelineOf(fullRegistry,
+                        new UpstreamExecutorRegistry(List.of(openAiChatService, anthropicChatService))));
 
         given(anthropicChatService.invoke(any(), any()))
                 .willAnswer(invocation -> {
@@ -287,5 +286,17 @@ class ChatCompletionHalfRoundTranslationTests {
     private RequestBodyAssembler assembler() {
         return new RequestBodyAssembler(PipelineContexts.registryWithAllBodyStages(objectMapper),
                 new RequestBodyRuleEngine(objectMapper));
+    }
+
+    /**
+     * 用发送前块 + 发送后块拼出 {@link RequestPipeline}（阶段 4 刀 3 块化后的构造形态）。
+     *
+     * <p>路由/调度/翻译/装配归 {@link BeforeSend}，执行器与回程翻译归 {@link AfterSend}；
+     * 门面只按序转交。本类只关心「半轮态透传 + WARN」，两块的接缝对断言透明。
+     */
+    private RequestPipeline pipelineOf(TranslatorRegistry registry, UpstreamExecutorRegistry executors) {
+        return new RequestPipeline(
+                new BeforeSend(routeResolver, dispatchManager, registry, assembler()),
+                new AfterSend(executors));
     }
 }

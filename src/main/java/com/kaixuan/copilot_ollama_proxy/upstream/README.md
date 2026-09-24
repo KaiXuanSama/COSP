@@ -117,15 +117,18 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
 > （本项目已有同类教训：plan 里记过的「行号会漂」）。**类注释里写的是步骤的「基名」（如
 > `空响应判定`）而非编号**。引用某一步时，请写**基名**或**类名**。
 
-> ⚠️ **步骤 11–17 的归位进度（2026-09-24）**：曾经这批协议无关的步骤**全在 send 插槽内部**执行
-> （三执行器各持私有管道、控制流方向反了）。**阶段 4 刀 1/2 已矫正**：
-> - **刀 1 ✅** 请求体 + 出站头装配（步骤 11–12）上移主干；
-> - **刀 2 ✅** 内层 gate 编排 / 帧处理 / 落库 / `retryWhen`（步骤 13–17）收归
->   `send/UpstreamCallRunner`（**无状态静态编排件**），流级状态入 `send/AttemptContext`。
+> ⚠️ **协议无关步骤的归位进度（2026-09-24，块化后步骤号见步骤树）**：曾经这批步骤**全在 send
+> 插槽内部**执行（三执行器各持私有管道、控制流方向反了）。**阶段 4 刀 1/2/3 已矫正**：
+> - **刀 1 ✅** 请求体装配上移主干（现为发送前块步骤 6 `assembleStep`）；出站头装配仍在执行器内（步骤 9）；
+> - **刀 2 ✅** 内层 gate 编排 / 帧处理 / 落库 / `retryWhen`（步骤 10–14）收归
+>   `send/UpstreamCallRunner`（**无状态静态编排件**），流级状态入 `send/AttemptContext`；
+> - **刀 3 ✅** 块化：`RequestPipeline.execute` 按「真正发出 HTTP」拆成发送前块 `BeforeSend`
+>   （同步 `void step(ctx)`，步骤 4–6）与发送后块 `AfterSend`（返回 Flux 的异步状态机，步骤 7 起）；
+>   翻译对经 ctx 跨块传递（回程翻译器在发送前块选、发送后块用）。
 >
 > 现在的形态是「主干（经 runner 编排）持流程，执行器只填传输 + 协议特有中段」。
-> 下文步骤前缀 `主干：执行器内部` 是**刀 3 之前的过渡措辞** —— 编排已不在执行器里，
-> 但契约收缩（`UpstreamExecutor` → transport）留待刀 3，故执行器仍是这些步骤的**装配入口**。
+> 步骤前缀 `主干：执行器内部` 是**过渡措辞** —— 编排已不在执行器里，
+> 但契约收缩（`UpstreamExecutor` → transport）留待后续，故执行器仍是这些步骤的**装配入口**。
 > `EmptyResponseGate` / `UpstreamAutoRetry` 等机制一直是主干件；刀 2 把**编排**也搬回了主干侧。
 
 ```
@@ -144,41 +147,36 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
         作用：defer 包裹 → ctx.forEndpoint(...) → RequestPipeline.execute(ctx)
 
 步骤 3  主干：管道入口（唯一）        RequestPipeline.execute(ctx)
-        主干唯一入口，流式与非流式共用；内部只读一次 ctx.stream() 用于「选机制」
+        主干唯一入口，只有两行：beforeSend.process(ctx) → return afterSend.process(ctx)
+        以「真正发出 HTTP」为界拆成两个功能块（阶段 4 刀 3 块化）：
+          ├─ 发送前块 BeforeSend —— 同步 void step(ctx) 序列（步骤 4~8）
+          └─ 发送后块 AfterSend  —— 返回 Flux 的异步状态机（步骤 9 起）
 
-步骤 4  主干：前奏（路由 + 调度）      RequestPipeline.run(...)
+── 发送前块（BeforeSend.process：同步改 ctx）─────────────────────────────────
+
+步骤 4  发送前块：路由步骤            BeforeSend.routeStep(ctx)
           ├─ ProviderRouteResolver.resolve(model)     解析供应商 + 剥 [provider-key] 前缀
           ├─ ProtocolDispatchManager.dispatch(...)    决定「直连还是翻译 + 上游协议」
-          └─ ProtocolNotifier.notifyProtocols(...)    把 (下游, 上游) 写进生命周期事件
-        产出：PipelinePreamble（route + decision）
+          ├─ ProtocolNotifier.notifyProtocols(...)    把 (下游, 上游) 写进生命周期事件
+          └─ RequestPipelineContext.applyRouting(...) 就地回填路由与调度结论进 ctx
+        （块化后不再返回 PipelinePreamble —— route 结论直接写 ctx）
 
-步骤 5  主干：ctx 回填路由            RequestPipelineContext.applyRouting(...)
+步骤 5  发送前块：翻译步骤【支线】     BeforeSend.translateStep(ctx)
+        ★ 仅跨协议时执行（ctx.translationNeeded() 为假则整步跳过）
+          ├─ 去程 RequestProtocolTranslator（键 = downstream + upstream）
+          │    未命中语义：**报错**
+          │      ├─ 分支 C2M（下游 CHAT、上游 MESSAGES，已实现）
+          │      │    ChatToMessagesRequestTranslator → MessageTranslator / ToolTranslator /
+          │      │    ContentBlockTranslator / ToolPairingNormalizer / StopReasonMapper
+          │      └─ 分支 其余方向 → 未实现，抛 ProtocolTranslationNotSupportedException
+          ├─ 回程 ResponseProtocolTranslator（未命中记 null，留给发送后块透传）
+          ├─ RequestPipelineContext.applyTranslation(...)   回填翻译后 body + 上游协议
+          ├─ RequestPipelineContext.applyTranslators(去程, 回程)  翻译对进 ctx（回程跨块用）
+          └─ RequestPipelineContext.markCompleted(REQUEST/RESPONSE_TRANSLATION)
+             作用：shouldApplyEmptyResponseGate() 读它 —— 半轮实现态跳过空响应拦截
 
-步骤 6  插槽：请求翻译                RequestProtocolTranslator（键 = downstream + upstream）
-        未命中语义：**报错**
-          ├─ 分支 C2M（下游 CHAT、上游 MESSAGES，已实现）
-          │    ChatToMessagesRequestTranslator → MessageTranslator / ToolTranslator /
-          │    ContentBlockTranslator / ToolPairingNormalizer / StopReasonMapper
-          └─ 分支 其余方向 → 未实现，抛 ProtocolTranslationNotSupportedException
-
-步骤 7  主干：ctx 回填翻译结论        RequestPipelineContext.applyTranslation(...)
-        ★ 仅跨协议时执行（直连跳过）
-
-步骤 8  主干：登记去程/回程            RequestPipelineContext.markCompleted(PipelineStep)
-        作用：shouldApplyEmptyResponseGate() 读它 —— 半轮实现态跳过空响应拦截
-
-步骤 9  主干：选执行器                UpstreamExecutorRegistry.require(ctx.upstreamProtocol())
-        未命中语义：**报错**（装配坏了，不是领域事实）
-
-步骤 10 插槽：发送                    UpstreamExecutor
-          invoke(ctx, chunkRewriter)        → Mono<UpstreamEvent>（一次取全）
-          invokeStream(ctx, chunkRewriter)  → Flux<UpstreamEvent>（逐事件）
-        ★ 主干按 ctx.stream() 选这两个方法之一 —— 两态分岔的第一处
-          ├─ 分支：GenericOpenAiChatService（上游 CHAT）
-          ├─ 分支：GenericAnthropicChatService（上游 MESSAGES）
-          └─ 分支：GenericResponsesChatService（上游 RESPONSES）
-
-步骤 11 主干：执行器内部 —— 请求体装配（显式阶段序列 prepareRequestBody）
+步骤 6  发送前块：装配步骤            BeforeSend.assembleStep(ctx) → RequestBodyAssembler.assemble(ctx)
+        显式阶段序列（协议无关公共序列 + 协议特定支线）：
           ① copyRequestBody         浅拷贝，不污染调用方
           ② resolveModel            剥前缀
           ③ writeProtocolFields     写 model + stream
@@ -191,20 +189,37 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
           │      maxtokens/   MaxTokensNormalizeStage       → MessagesMaxTokensStage
           │      thinking/    ThinkingInjectStage           → MessagesThinkingStage
           └─ 分支：请求体规则 RequestBodyRuleEngine.transform（按协议筛组）
+        ★ 装配放在翻译之后 —— body 此时已是上游形态，装配据 bodyProtocol 查表
 
-步骤 12 主干：执行器内部 —— 出站头装配（三层，后者覆盖前者）
+── 发送后块（AfterSend.process：返回 Flux 的异步状态机）───────────────────────
+
+步骤 7  发送后块：读两态 + 选执行器    AfterSend.process(ctx)
+          ├─ ctx.responseTranslator()                 从 ctx 读回程翻译器（不再自己查表）
+          ├─ ctx.stream()                             主干上唯一一次读「是不是流式」
+          └─ UpstreamExecutorRegistry.require(ctx.upstreamProtocol())
+             未命中语义：**报错**（装配坏了，不是领域事实）
+
+步骤 8  插槽：发送                    UpstreamExecutor
+          invoke(ctx, chunkRewriter)        → Mono<UpstreamEvent>（一次取全）
+          invokeStream(ctx, chunkRewriter)  → Flux<UpstreamEvent>（逐事件）
+        ★ 主干按 ctx.stream() 选这两个方法之一 —— 两态分岔的第一处
+          ├─ 分支：GenericOpenAiChatService（上游 CHAT）
+          ├─ 分支：GenericAnthropicChatService（上游 MESSAGES）
+          └─ 分支：GenericResponsesChatService（上游 RESPONSES）
+
+步骤 9  主干：执行器内部 —— 出站头装配（三层，后者覆盖前者）
           ① 透传下游头（除 hop-by-hop / Host / Content-Length）
           ② 按供应商级配置装配鉴权头（AuthHeaderSetting）—— 先删两个再注一个
           ③ 应用数据库请求头规则（{apiKey} 占位、/del/ 删除）—— **拥有最终决定权**
         ★ 协议不参与这个决定（出站头是供应商级事实）
 
-步骤 13 主干：执行器内部 —— 上游往返（一次）
+步骤 10 主干：执行器内部 —— 上游往返（一次）
           ① Flux.defer 每轮起点重置（计时 / chunk 收集 / gate.reset）
           ② HTTP 往返（流式 exchangeToFlux；非流式 retrieve().toEntity）
           ③ 错误响应分支 → 即时落库 + Flux.error(WebClientResponseException)
           ④ 发 CONNECTED 生命周期事件
 
-步骤 14 支线：空响应拦截
+步骤 11 支线：空响应拦截
         机制（主干）：EmptyResponseGate —— 流式扣放 / 非流式一次判 / 耗尽放行
         契约（支线）：ContentDetectorStage，经 ContentDetectorRegistry.require(upstreamProtocol) 查表
         未命中语义：**报错**（每协议都必须能判空，判不了 = 空响应兜底对那条线路失效）
@@ -213,10 +228,10 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
           ├─ 分支：MessagesContentDetectorStage  → AnthropicContentDetector
           └─ 分支：ResponsesContentDetectorStage → ResponsesContentDetector
 
-步骤 15 主干：自动重试                UpstreamAutoRetry.build(...) → Retry
+步骤 12 主干：自动重试                UpstreamAutoRetry.build(...) → Retry
         filter(UpstreamRetryPolicy::isRetryableFailure) + 指数退避 + 发 RETRYING 事件
 
-步骤 16 主干：回程帧处理（仅流式）
+步骤 13 主干：回程帧处理（仅流式）
           ① mapNotNull(ServerSentEvent::data) 拆信封
           ② 提取 usage 原始 JSON（三个 *UsageParser）
           ③ 形态归一（见下方支线）
@@ -230,22 +245,23 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
                未命中语义：**跳过**
                 fallback/   ReasoningFallbackStage → ChatReasoningFallbackStage → ReasoningFallback
 
-步骤 17 主干：落库（每次上游往返各一条）  ApiCallLogService / ApiCallUsageService
+步骤 14 主干：落库（每次上游往返各一条）  ApiCallLogService / ApiCallUsageService
         ★ 刀 2 起收归 UpstreamCallRunner 的 2 份静态方法（saveNonStreamLog / saveStreamLog[WithError]）
           上游协议统一从 ctx.upstreamProtocol() 取 —— 曾经的 9 份（两态 × 三协议）已塌成一份
 
-步骤 18 插槽：响应翻译                ResponseProtocolTranslator（键 = downstream + upstream）
+步骤 15 插槽：响应翻译                ResponseProtocolTranslator（键 = downstream + upstream）
         未命中语义：**透传 + WARN**（半轮实现态是正常中间态）
-        ★ 套在执行器**外侧**，因而在 retryWhen **之外** —— 判定与落库看的是上游原生形态
+        ★ 从 ctx.responseTranslator() 取（发送前块步骤 5 已选好），套在执行器**外侧**、
+          因而在 retryWhen **之外** —— 判定与落库看的是上游原生形态
           └─ 分支 M2C：MessagesToChatResponseTranslator
                → MessagesToChatStreamTranslator / MessagesToChatNonStreamTranslator /
                  M2CStreamState / AnthropicUsageAccumulator / OpenAiResponseShapes / TranslatedChunkLog
 
-步骤 19 主干：统一形态出口            UpstreamEvent（Body / Terminal 两态）
+步骤 16 主干：统一形态出口            UpstreamEvent（Body / Terminal 两态）
 
 ── 主干结束 ────────────────────────────────────────────────────────────────
 
-步骤 20 出口：错误渲染与 SSE 收尾（api/ 的三个 Controller，按下游协议分岔）
+步骤 17 出口：错误渲染与 SSE 收尾（api/ 的三个 Controller，按下游协议分岔）
         openAiErrorResponse / anthropicErrorResponse / responsesErrorResponse —— 三套骨架**刻意不同**
         StreamLifecycle.attach(...) 收尾协议（心跳 / 取消 / 终止 / 错误帧）
         UpstreamFailureClassifier 把异常归入 FailureKind

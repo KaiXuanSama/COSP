@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.AfterSend;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.BeforeSend;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipeline;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.UpstreamExecutorRegistry;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
@@ -141,11 +143,12 @@ class ProviderRequestBodyTransformationIntegrationTests {
         // 主干按协议查表选执行器，故注册表必须收本测试用的那个真实执行器。
         // 翻译器表给空（两个方向都查不到）—— 本测试只走直连，压根不查表。
         ChatCompletionService chatCompletionService = new ChatCompletionService(
-                new RequestPipeline(new ProviderRouteResolver(catalog), new ProtocolDispatchManager(),
-                        new TranslatorRegistry(List.of(), List.of()),
-                        new UpstreamExecutorRegistry(List.of(genericChatService)),
-                        new RequestBodyAssembler(PipelineContexts.registryWithAllBodyStages(objectMapper),
-                                new RequestBodyRuleEngine(objectMapper))));
+                new RequestPipeline(
+                        new BeforeSend(new ProviderRouteResolver(catalog), new ProtocolDispatchManager(),
+                                new TranslatorRegistry(List.of(), List.of()),
+                                new RequestBodyAssembler(PipelineContexts.registryWithAllBodyStages(objectMapper),
+                                        new RequestBodyRuleEngine(objectMapper))),
+                        new AfterSend(new UpstreamExecutorRegistry(List.of(genericChatService)))));
 
         HttpHeaders downstreamHeaders = new HttpHeaders();
         downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-token");

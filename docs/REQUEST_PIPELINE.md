@@ -70,12 +70,17 @@
 ├─ 三、应用服务层（建上下文 + 交主干）
 │   ├─ ChatCompletionService / MessagesService / ResponsesService（**三者同形**）
 │   └─ RequestPipeline.execute(ctx) —— **主干唯一入口**（流式与非流式共用）
-│       ├─ 前奏：ProviderRouteResolver.resolve → ProtocolDispatchManager.dispatch
-│       │        → ProtocolNotifier.notifyProtocols（产出 PipelinePreamble）
-│       ├─ ctx 回填路由   applyRouting
-│       ├─ 请求翻译插槽    TranslatorRegistry.findRequestTranslator（未命中→报错）
-│       ├─ send 插槽      UpstreamExecutorRegistry.require（未命中→报错）
-│       └─ 响应翻译插槽    TranslatorRegistry.findResponseTranslator（未命中→透传+WARN）
+│       只有两行：beforeSend.process(ctx) → return afterSend.process(ctx)
+│       以「真正发出 HTTP」为界拆成两个功能块（阶段 4 刀 3 块化）：
+│       ├─ 发送前块 BeforeSend（同步 void step(ctx)）
+│       │   ├─ routeStep     ProviderRouteResolver.resolve → ProtocolDispatchManager.dispatch
+│       │   │                → ProtocolNotifier.notifyProtocols → ctx.applyRouting（就地回填）
+│       │   ├─ translateStep 请求翻译插槽（未命中→报错）+ 回程翻译器选好记进 ctx
+│       │   └─ assembleStep  RequestBodyAssembler.assemble（请求体装配）
+│       └─ 发送后块 AfterSend（返回 Flux 的异步状态机）
+│           ├─ 读 ctx.responseTranslator() + ctx.stream()
+│           ├─ send 插槽      UpstreamExecutorRegistry.require（未命中→报错）
+│           └─ 响应翻译插槽    从 ctx 取回程翻译器（未命中→透传+WARN）
 │
 └─ 四、上游执行层（有 I/O 的装配与发送）
     ├─ GenericOpenAiChatService / GenericAnthropicChatService /
@@ -284,21 +289,23 @@ buildWebClientWithHeaders(...)
 |---|---|---|---|
 | — | WebFilter | `GatewayAuthFilter` | 校验下游凭据（OR 判据），失败 401 |
 | — | 控制器 | `OpenAiController.chatCompletions` | 虚拟模型拦截、建 requestId、分流、错误分类 |
-| ① | 主干 | `RequestPipeline.run` → `ProviderRouteResolver.resolve` | 剥前缀选唯一供应商 |
-| ② | 主干 | `RequestPipeline.run` → `ProtocolDispatchManager.dispatch` | 判直连 / 翻译 / 无支持 |
-| ③ | 主干 | `ProtocolNotifier.notifyProtocols` + `ctx.applyRouting` | 补协议信息、回填路由 |
-| ④ | 主干 | `TranslatorRegistry.findRequestTranslator` | 命中则 `ChatToMessagesRequestTranslator`（上游执行层外侧） |
-| ⑤ | 上游执行 | `resolveModel` | 剥前缀还原真实模型名 + 设 `stream` |
-| ⑥ | 上游执行 | `ReasoningEffortSetting` | 写思考深度（Anthropic 侧另写 `thinking`） |
-| ⑦ | 上游执行 | `RequestBodyRuleEngine.transform` | 供应商规则组改 / 删字段 |
-| ⑧ | 上游执行 | `removeNullFields` | 清掉规则产生的 null |
+| ① | 主干·发送前块 | `BeforeSend.routeStep` → `ProviderRouteResolver.resolve` | 剥前缀选唯一供应商 |
+| ② | 主干·发送前块 | `BeforeSend.routeStep` → `ProtocolDispatchManager.dispatch` | 判直连 / 翻译 / 无支持 |
+| ③ | 主干·发送前块 | `ProtocolNotifier.notifyProtocols` + `ctx.applyRouting` | 补协议信息、回填路由 |
+| ④ | 主干·发送前块 | `BeforeSend.translateStep` → `TranslatorRegistry.findRequestTranslator` | 命中则 `ChatToMessagesRequestTranslator`；回程翻译器一并选好记进 ctx |
+| ⑤ | 主干·发送前块 | `assembleStep` → `RequestBodyAssembler.resolveModel` | 剥前缀还原真实模型名 + 设 `stream` |
+| ⑥ | 主干·发送前块 | `assembleStep` → `ReasoningEffortSetting` | 写思考深度（Anthropic 侧另写 `thinking`） |
+| ⑦ | 主干·发送前块 | `assembleStep` → `RequestBodyRuleEngine.transform` | 供应商规则组改 / 删字段 |
+| ⑧ | 主干·发送前块 | `assembleStep` → `removeNullFields` | 清掉规则产生的 null |
 | ⑧a | 上游执行 | `applyAuthenticationHeaders` | 探测 → 决定头名 → 删两个 → 注一个 |
 | ⑧b | 上游执行 | `applyHeaders` 规则层 | `{apiKey}` 占位、`/del/` 删除 |
 | ⑨ | 上游执行 | `UpstreamExecutorRegistry.require` → `WebClient.post().bodyValue()` | 查表选中执行器，在重试预算内发出 |
-| ⑩ | 主干 | `TranslatorRegistry.findResponseTranslator` | 命中则回程翻译；未命中透传 + WARN |
+| ⑩ | 主干·发送后块 | `AfterSend` 读 `ctx.responseTranslator()`（发送前块步骤 5 已选好） | 命中则回程翻译；未命中透传 + WARN |
 
-> 序 ①–④ / ⑩ 是**主干自己的步骤**（`RequestPipeline`）；⑤–⑨ 是上游执行层内部的阶段序列。
-> ⑤–⑧ 是 `prepareRequestBody` 那根阶段序列的一部分，逐阶段名与位置见 §4.1 ——
+> 序 ①–④ / ⑩ 是**主干自己的步骤**：①–④ 在发送前块（`BeforeSend`）、⑩ 在发送后块（`AfterSend`）；
+> ⑤–⑨ 中，⑤–⑧ 请求体装配自阶段 4 刀 1 已上移主干（发送前块 `assembleStep` → `RequestBodyAssembler`），
+> ⑧a–⑨ 出站头装配与发送仍在上游执行层内部。
+> ⑤–⑧ 是 `RequestBodyAssembler` 那根阶段序列的一部分，逐阶段名与位置见 §4.1 ——
 > 那里列的是 <strong>8 个阶段的完整形态</strong>（Anthropic 侧），本表只列跨线路共同的骨架。
 
 ## 6. 顺序陷阱

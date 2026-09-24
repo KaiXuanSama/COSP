@@ -50,6 +50,12 @@ class RequestPipelineSpringWiringTests {
     private RequestPipeline requestPipeline;
 
     @Autowired
+    private BeforeSend beforeSend;
+
+    @Autowired
+    private AfterSend afterSend;
+
+    @Autowired
     private ChatCompletionService chatCompletionService;
 
     @Autowired
@@ -62,14 +68,22 @@ class RequestPipelineSpringWiringTests {
     private UpstreamExecutorRegistry executorRegistry;
 
     @Test
-    @DisplayName("主干是 Spring Bean，且生命周期通知器已注入")
+    @DisplayName("主干是 Spring Bean，且由两个功能块组成（发送前 / 发送后）")
     void requestPipelineIsWiredAsBean() {
         assertThat(requestPipeline).as("主干必须由容器提供").isNotNull();
-        assertThat(ReflectionTestUtils.getField(requestPipeline, "providerRouteResolver"))
-                .as("主干必须持有路由解析器 —— 它是前奏的第一步")
+        // 块化（阶段 4 刀 3）后主干只组合两个块 —— 门面持有的就是这两个块。
+        assertThat(ReflectionTestUtils.getField(requestPipeline, "beforeSend"))
+                .as("主干必须持有发送前块 —— 路由 / 调度 / 翻译 / 装配都归它")
+                .isSameAs(beforeSend);
+        assertThat(ReflectionTestUtils.getField(requestPipeline, "afterSend"))
+                .as("主干必须持有发送后块 —— 选执行器 / send / 回程翻译都归它")
+                .isSameAs(afterSend);
+        // 前奏依赖随 route 逻辑一起进了发送前块（不再挂在门面上）。
+        assertThat(ReflectionTestUtils.getField(beforeSend, "providerRouteResolver"))
+                .as("发送前块必须持有路由解析器 —— 它是前奏的第一步")
                 .isNotNull();
-        assertThat(ReflectionTestUtils.getField(requestPipeline, "protocolDispatchManager"))
-                .as("主干必须持有协议调度器 —— 它是前奏的第二步")
+        assertThat(ReflectionTestUtils.getField(beforeSend, "protocolDispatchManager"))
+                .as("发送前块必须持有协议调度器 —— 它是前奏的第二步")
                 .isNotNull();
     }
 
@@ -88,13 +102,13 @@ class RequestPipelineSpringWiringTests {
     }
 
     @Test
-    @DisplayName("主干持有两张表（翻译器 / 执行器），3.4c-2 起 send 也归它")
+    @DisplayName("两张表各归其块：翻译器表在发送前块、执行器表在发送后块（刀 3 块化）")
     void trunkHoldsBothRegistries() {
-        assertThat(ReflectionTestUtils.getField(requestPipeline, "translatorRegistry"))
-                .as("主干必须持有翻译器表 —— 两个翻译插槽靠它查表")
+        assertThat(ReflectionTestUtils.getField(beforeSend, "translatorRegistry"))
+                .as("翻译器表归发送前块 —— 「选翻译策略」是发送前的事")
                 .isNotNull();
-        assertThat(ReflectionTestUtils.getField(requestPipeline, "executorRegistry"))
-                .as("主干必须持有执行器表 —— send 插槽靠它选执行器")
+        assertThat(ReflectionTestUtils.getField(afterSend, "executorRegistry"))
+                .as("执行器表归发送后块 —— send 插槽靠它选执行器")
                 .isNotNull();
     }
 

@@ -2,6 +2,8 @@ package com.kaixuan.copilot_ollama_proxy.application.pipeline;
 
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslationContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.RequestProtocolTranslator;
+import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ResponseProtocolTranslator;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import org.springframework.http.HttpHeaders;
 
@@ -35,6 +37,20 @@ import java.util.Set;
  *       例如 {@code translationContext} 在 3.4c-2 之前一直无人读 ——
  *       它作为「响应侧的座位」存在了几个版本，直到回程翻译接进主干才被用上。</li>
  * </ul>
+ *
+ * <h2>它装「数据」，也装「本次选中的策略」（阶段 4 刀 3 起）</h2>
+ * 原则上本类装的是<strong>数据</strong>（协议、body、头）。阶段 4 块化后，它另装两个
+ * <strong>策略对象</strong>：{@link #requestTranslator} / {@link #responseTranslator} ——
+ * 本次请求按协议对选中的去程 / 回程翻译器。这不违反「装数据」的初衷：
+ * 翻译器是<strong>无状态单例</strong>（{@code @Component}），把它的引用放进 per-request 的 ctx
+ * 与放一个「函数指针」等价（C 里按菜单底标载入不同函数指针再调用，是同一手法）——
+ * 没有状态泄漏。判据是：<strong>「本次请求选中的策略」进 ctx，「谁都能用的工具」（注册表、装配器）
+ * 留在块类里当依赖</strong>。
+ *
+ * <p>为何回程翻译器<strong>必须</strong>进 ctx：它在<strong>发送后块</strong>（{@code AfterSend}）
+ * 被调用，跨了「发送前块选中它」与「发送后块用它」的边界 —— 跨边界的策略只能经 ctx 传。
+ * 去程翻译器在发送前块当场选、当场用，严格说不必进 ctx；一并存入是为了让二者作为
+ * 「本次请求的翻译对」成为一个对称的单一概念（代价仅一个引用字段）。
  *
  * <h2>两个创建入口（不要用错）</h2>
  * <table>
@@ -156,6 +172,23 @@ public final class RequestPipelineContext {
     private TranslationContext translationContext;
 
     /**
+     * 本次请求选中的<strong>去程</strong>翻译器（下游 → 上游）。直连时为 null。
+     *
+     * <p><strong>可变</strong>：由发送前块的翻译步骤按协议对查表后写入（{@link #applyTranslators}）。
+     * 它在发送前块当场用掉，存入 ctx 只为与回程翻译器成对（见类注释「装策略」段）。
+     */
+    private RequestProtocolTranslator requestTranslator;
+
+    /**
+     * 本次请求选中的<strong>回程</strong>翻译器（上游 → 下游）。直连或回程未实现时为 null。
+     *
+     * <p><strong>可变</strong>：由发送前块的翻译步骤按协议对查表后写入（{@link #applyTranslators}）。
+     * 它在<strong>发送后块</strong>被读取（跨块边界），因此<strong>必须</strong>经 ctx 传递 ——
+     * 这是本字段存在的根本理由（见类注释「装策略」段）。
+     */
+    private ResponseProtocolTranslator responseTranslator;
+
+    /**
      * 已执行的步骤。可变：步骤随推进逐个登记自己。
      *
      * <p>被跳过的步骤<strong>没有机会登记自己</strong>（它压根没执行），
@@ -250,6 +283,32 @@ public final class RequestPipelineContext {
                                  TranslationContext translationContext) {
         replaceBody(translatedBody, upstreamProtocol);
         this.translationContext = translationContext;
+    }
+
+    /**
+     * 记下本次请求选中的<strong>翻译对</strong>（去程 + 回程）。
+     *
+     * <p>由发送前块的翻译步骤按协议对查表后调用。回程翻译器随后在<strong>发送后块</strong>
+     * 被读取（跨块边界），故必须经 ctx 传 —— 这是本方法与两个字段存在的根本理由。
+     * 去程一并存入只为对称（见类注释「装策略」段）。直连时两者皆传 null。
+     *
+     * @param requestTranslator  去程翻译器；直连传 null
+     * @param responseTranslator 回程翻译器；直连或回程未实现传 null
+     */
+    public void applyTranslators(RequestProtocolTranslator requestTranslator,
+                                 ResponseProtocolTranslator responseTranslator) {
+        this.requestTranslator = requestTranslator;
+        this.responseTranslator = responseTranslator;
+    }
+
+    /** 本次请求选中的去程翻译器；直连时为 null。 */
+    public RequestProtocolTranslator requestTranslator() {
+        return requestTranslator;
+    }
+
+    /** 本次请求选中的回程翻译器；直连或回程未实现时为 null。发送后块据此决定翻译还是透传。 */
+    public ResponseProtocolTranslator responseTranslator() {
+        return responseTranslator;
     }
 
     /**

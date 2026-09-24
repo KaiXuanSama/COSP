@@ -5,6 +5,8 @@ import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.PipelineStep;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.AfterSend;
+import com.kaixuan.copilot_ollama_proxy.application.pipeline.BeforeSend;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipeline;
 import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.MessagesToChatResponseTranslator;
@@ -101,15 +103,16 @@ class ChatDispatchErrorSignalTests {
         // 执行器注册表收三个 mock —— 本测试验的是分派与错误信号，不验具体执行器行为。
         UpstreamExecutorRegistry executors = new UpstreamExecutorRegistry(
                 List.of(openAiChatService, anthropicChatService, responsesChatService));
-        RequestPipeline pipeline = new RequestPipeline(routeResolver, dispatchManager,
-                new TranslatorRegistry(
-                        List.of(new ChatToMessagesRequestTranslator(objectMapper)),
-                        List.of(new MessagesToChatResponseTranslator(objectMapper))),
-                executors,
-                new RequestBodyAssembler(
-                        new com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyStageRegistry(
-                                List.of(), List.of(), List.of()),
-                        new com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine(objectMapper)));
+        RequestPipeline pipeline = new RequestPipeline(
+                new BeforeSend(routeResolver, dispatchManager,
+                        new TranslatorRegistry(
+                                List.of(new ChatToMessagesRequestTranslator(objectMapper)),
+                                List.of(new MessagesToChatResponseTranslator(objectMapper))),
+                        new RequestBodyAssembler(
+                                new com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyStageRegistry(
+                                        List.of(), List.of(), List.of()),
+                                new com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine(objectMapper))),
+                new AfterSend(executors));
         // 三个 Service 现在同形：只收主干。
         chatCompletionService = new ChatCompletionService(pipeline);
         messagesService = new MessagesService(pipeline);
