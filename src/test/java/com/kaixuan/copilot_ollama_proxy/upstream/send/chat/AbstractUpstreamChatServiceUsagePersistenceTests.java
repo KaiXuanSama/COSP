@@ -42,6 +42,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import com.kaixuan.copilot_ollama_proxy.upstream.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
 
 /**
@@ -73,7 +74,8 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
 
     @Test
     void streamSuccessWithUsageWritesRowLinkedToLogIdWithTtfb() {
-        when(logService.saveStream(anyString(), anyString(), any(), any(), any(), anyInt(), any(), anyLong()))
+        // 落库 9→2（阶段 4 刀 2）：Chat 现经协议感知重载落库（直连 CHAT/CHAT，落库效果与旧 DEFAULT_PROTOCOL 一致）。
+        when(logService.saveStream(anyString(), anyString(), anyString(), anyString(), any(), any(), any(), anyInt(), any(ChunkLogPayload.class), anyLong()))
                 .thenReturn(4242L);
 
         service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
@@ -178,7 +180,8 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
 
     @Test
     void nonStreamSuccessWithUsageWritesRowWithNullTtfb() {
-        when(logService.saveNonStream(anyString(), anyString(), any(), any(), any(), anyInt(), any(), anyLong()))
+        // 落库 9→2（阶段 4 刀 2）：非流式经协议感知重载落库（10 参，含 downProto/upProto）。
+        when(logService.saveNonStream(anyString(), anyString(), anyString(), anyString(), any(), any(), any(), anyInt(), any(), anyLong()))
                 .thenReturn(7L);
 
         service.setWebClientBuilder(WebClient.builder().exchangeFunction(request ->
@@ -243,7 +246,8 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
     @Test
     void streamSuccessWritesOrphanRowWhenLogIdIsNull() {
         // 日志写入失败返回 null → usage 仍写孤儿行（log_id=null，软链接容错）。
-        when(logService.saveStream(anyString(), anyString(), any(), any(), any(), anyInt(), any(), anyLong()))
+        // 落库 9→2（阶段 4 刀 2）：经协议感知重载。
+        when(logService.saveStream(anyString(), anyString(), anyString(), anyString(), any(), any(), any(), anyInt(), any(ChunkLogPayload.class), anyLong()))
                 .thenReturn(null);
 
         service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
@@ -274,7 +278,7 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
      */
     @Test
     void callRecordedSignalIsPublishedAfterUsageWrite() {
-        when(logService.saveStream(anyString(), anyString(), any(), any(), any(), anyInt(), any(), anyLong()))
+        when(logService.saveStream(anyString(), anyString(), anyString(), anyString(), any(), any(), any(), anyInt(), any(ChunkLogPayload.class), anyLong()))
                 .thenReturn(7L);
 
         service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
@@ -293,7 +297,7 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
         service.exposeChatCompletionStream(request, "model-a", provider()).blockLast(Duration.ofSeconds(20));
 
         InOrder order = inOrder(logService, usageService);
-        order.verify(logService).saveStream(anyString(), anyString(), any(), any(), any(), anyInt(), any(), anyLong());
+        order.verify(logService).saveStream(anyString(), anyString(), anyString(), anyString(), any(), any(), any(), anyInt(), any(ChunkLogPayload.class), anyLong());
         order.verify(usageService).save(any(), anyString(), anyString(), anyBoolean(), any(), any(), any());
         order.verify(logService).publishCallRecorded();
     }

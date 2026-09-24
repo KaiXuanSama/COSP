@@ -126,10 +126,13 @@ class ProviderRequestBodyTransformationIntegrationTests {
         AtomicReference<Map<String, String>> loggedRequestHeaders = new AtomicReference<>();
         ApiCallLogService callLogService = mock(ApiCallLogService.class);
         doAnswer(invocation -> {
-            Map<String, String> headers = invocation.getArgument(2);
+            // 落库 9→2 后（阶段 4 刀 2）主干 runner 调协议感知重载：
+            // 参数序为 (pk, model, downProto, upProto, reqHeaders, ...)，故请求头在 arg 4。
+            Map<String, String> headers = invocation.getArgument(4);
             loggedRequestHeaders.set(new LinkedHashMap<>(headers));
             return null;
         }).when(callLogService).saveNonStream(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyMap(), org.mockito.ArgumentMatchers.anyMap(),
                 org.mockito.ArgumentMatchers.anyMap(), org.mockito.ArgumentMatchers.anyInt(),
