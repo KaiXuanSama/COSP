@@ -47,6 +47,10 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
 ├── send/                        ★ 接入点：发送（唯一一步）
 │   ├── UpstreamExecutor           契约：protocol() + invoke / invokeStream
 │   ├── UpstreamExecutorRegistry   查表（键 = 上游协议；**未命中即报错**）
+│   ├── UpstreamCallRunner         外层编排骨架（**无状态静态**，刀 2 起）：主干后半段的家 ——
+│   │                              defer/gate/retryWhen/耗尽放行/resendloop/doFinally + 落库 2 份
+│   ├── AttemptContext             协议无关的流级状态容器（刀 2 起）：计时 / logChunks /
+│   │                              respHeaders / statusCode / ttfb / emptyResponsePassthrough
 │   ├── chat/       AbstractUpstreamChatService + GenericOpenAiChatService + OpenAiUsageParser
 │   ├── messages/   GenericAnthropicChatService + AnthropicUsageParser
 │   └── responses/  GenericResponsesChatService + ResponsesUsageParser + ResponsesStreamEvents
@@ -99,7 +103,11 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
 > `ChunkNormalizeStage` 实现**不会被调用** —— 调用点在别的执行器里、根本不查这张表。
 > 这不是注册表的缺陷，而是 **send 插槽边界画错**的表征（见 `plan_.md` 阶段 4）：
 > 请求体装配与回程处理本应是主干步骤、对所有协议统一调用，现在却各自锁在执行器内部。
-> **在阶段 4 矫正之前，这两条支线的「可扩展」是名义上的。**
+>
+> **2026-09-24 进度**：刀 2 把**编排**（gate/retry/落库/defer）收归 `UpstreamCallRunner` 后，
+> 回程帧的**归一/fallback 中段仍留执行器闭包**（`postLoop`，协议特有），`RequestBodyStageRegistry`
+> 的调用点也未变。因此**这两条支线的「可扩展」仍是名义上的** —— 要真正统一到主干、对所有协议
+> 一致查表，须待**刀 3 契约收缩**把中段的协议特有部分与传输部分彻底分离。
 
 ---
 
@@ -109,13 +117,16 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
 > （本项目已有同类教训：plan 里记过的「行号会漂」）。**类注释里写的是步骤的「基名」（如
 > `空响应判定`）而非编号**。引用某一步时，请写**基名**或**类名**。
 
-> ⚠️ **步骤 11–17 标注为「主干」是按*应然*，非*实然*。** 它们目前**全部在 send 插槽内部执行**
-> —— 三个执行器各持一条私有管道（共 3021 行）。它们调用的 `EmptyResponseGate` /
-> `UpstreamAutoRetry` / `UpstreamRetryPolicy` 等**机制**确实只有一份且是主干件，但**编排这些机制的
-> 控制流在插槽里各写一份**。按 §0 的判据（协议差异是*数据*才算主干），这批协议无关的步骤
-> 本应由主干统一持有 —— 当前的形态是「插槽持流程、主干供工具」，**方向是反的**。
-> 矫正方案见 `plan_.md` 阶段 4「send 插槽边界矫正」。下面的 `主干：执行器内部` 前缀即标记
-> 「本步在语义上属主干，物理上在执行器内」这一待矫正状态。
+> ⚠️ **步骤 11–17 的归位进度（2026-09-24）**：曾经这批协议无关的步骤**全在 send 插槽内部**执行
+> （三执行器各持私有管道、控制流方向反了）。**阶段 4 刀 1/2 已矫正**：
+> - **刀 1 ✅** 请求体 + 出站头装配（步骤 11–12）上移主干；
+> - **刀 2 ✅** 内层 gate 编排 / 帧处理 / 落库 / `retryWhen`（步骤 13–17）收归
+>   `send/UpstreamCallRunner`（**无状态静态编排件**），流级状态入 `send/AttemptContext`。
+>
+> 现在的形态是「主干（经 runner 编排）持流程，执行器只填传输 + 协议特有中段」。
+> 下文步骤前缀 `主干：执行器内部` 是**刀 3 之前的过渡措辞** —— 编排已不在执行器里，
+> 但契约收缩（`UpstreamExecutor` → transport）留待刀 3，故执行器仍是这些步骤的**装配入口**。
+> `EmptyResponseGate` / `UpstreamAutoRetry` 等机制一直是主干件；刀 2 把**编排**也搬回了主干侧。
 
 ```
 下游请求（三条端点之一）
@@ -220,7 +231,8 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
                 fallback/   ReasoningFallbackStage → ChatReasoningFallbackStage → ReasoningFallback
 
 步骤 17 主干：落库（每次上游往返各一条）  ApiCallLogService / ApiCallUsageService
-        ★ 9 份实现（两态 × 三协议）—— 见 §4 落库条与 §4.1（阶段 4 刀 2 一并塌成一份）
+        ★ 刀 2 起收归 UpstreamCallRunner 的 2 份静态方法（saveNonStreamLog / saveStreamLog[WithError]）
+          上游协议统一从 ctx.upstreamProtocol() 取 —— 曾经的 9 份（两态 × 三协议）已塌成一份
 
 步骤 18 插槽：响应翻译                ResponseProtocolTranslator（键 = downstream + upstream）
         未命中语义：**透传 + WARN**（半轮实现态是正常中间态）
@@ -275,20 +287,23 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
 | `content/` 与 `send/` **不套子包** | 接入点只有一步时，接入点即步骤。加一层求「深度整齐」会重复一次含义 |
 | `EmptyResponseGate` 住在**层根**而非 `content/` | 它协议无关（三条线路共用同一套扣放机制），只有**检测器**因协议而异。层根持机制 + 契约、`content/` 供各协议检测器实现，是「主干持契约、支线供实现」的直接体现 |
 | 两个执行器**不继承** `AbstractUpstreamChatService` | 强行抽公共父类会退化成一堆钩子（子类看不见自己依赖什么）。**抽特征，不抽骨架** |
-| 落库 **9 份暂不合并** | 差异是**声明的参数**（上游协议常量、`from` vs `direct`）而非沉默分叉；牵动 `api_call_log` 两列各自两型。**将在阶段 4 刀 2 随主干后半段归位一并塌成一份** |
+| 落库 **9→2 已合并**（阶段 4 刀 2） | 曾按「两态 × 三协议」写 9 份；刀 2 收归 `UpstreamCallRunner` 两份静态方法，上游协议从 `ctx.upstreamProtocol()` 取。`api_call_log` 两列各自两型不变（未压平），两列取值回归全绿 |
 
 ---
 
-## 4.1 已知的**结构偏离**（待阶段 4 矫正，不是「刻意保留」）
+## 4.1 已知的**结构偏离**（阶段 4 矫正中，不是「刻意保留」）
 
-上表是*刻意*的不对称；本节是*待修*的偏离 —— 区别在于前者不该动，后者该动只是还没动。
+上表是*刻意*的不对称；本节是*待修*的偏离 —— 区别在于前者不该动，后者该动。
+**2026-09-24：刀 1/2 已矫正主干后半段归位与请求体上移，刀 3 收尾契约收缩。**
 
 | 偏离 | 表征 | 矫正 |
 |---|---|---|
-| **send 插槽吞掉主干后半段** | 步骤 11–17（协议无关的 body 装配 / 头装配 / 兜底 / 重试 / 落库）在三个执行器里各写一份，共 3021 行；主干 `execute` 只有 5 步 | `plan_.md` 阶段 4 三刀：发送前上移 → 内层+重试上移（引入 AttemptContext）→ 契约收缩为 transport |
-| **思考注入只插槽化了 1/3** | `thinking/` 只有 `MessagesThinkingStage`；CHAT / RESPONSES 的注入仍在各自执行器的 `applyReasoningEffort` 里 | 阶段 4 刀 1 把 thinking 插槽补到另两条协议 |
-| **步骤 11 有第三种扩展机制** | Chat 走 `customizeRequestBody` **虚方法钩子**，Messages 走 `RequestBodyStageRegistry` **查表**，Responses 直接**不接** —— 同一件事三种做法 | 阶段 4 刀 1 拆掉钩子，统一到查表（但须先拆 send，否则只是换个写法） |
-| **ctx 统一原则在插槽内没执行** | 主干 `execute(ctx)` 单参，但插槽内 `prepareRequestBody` 仍是 `(request, stream, model, provider[, ctx])` 参数穿线；Chat / Responses 那两个甚至读不到 `ctx.bodyProtocol()` | 阶段 4 刀 1/2，随步骤上移自然消解 |
+| **send 插槽吞掉主干后半段** ✅刀1/2 | 步骤 11–17（协议无关的 body 装配 / 头装配 / 兜底 / 重试 / 落库）曾在三执行器各写一份 | 刀 1 上移 body/头（步骤 11–12）；刀 2 内层+重试+落库收归 `UpstreamCallRunner`、流级态入 `AttemptContext`。**编排已回主干侧** |
+| **思考注入只插槽化了 1/3** ✅刀1 | `thinking/` 曾只有 `MessagesThinkingStage`；CHAT / RESPONSES 的注入在各自 `applyReasoningEffort` 里 | 刀 1 已把 thinking 步骤对齐（详见刀 1 落地记录） |
+| **步骤 11 有第三种扩展机制** ✅刀1 | Chat 曾走 `customizeRequestBody` 虚方法钩子、Messages 走查表、Responses 不接 | 刀 1 统一到主干显式阶段序列 |
+| **ctx 统一原则在插槽内没执行** ✅刀1/2 | 曾 `prepareRequestBody` 参数穿线、Chat/Responses 读不到 `ctx.bodyProtocol()` | 刀 1/2 随步骤上移消解；runner 与 `AttemptContext` 均以 ctx 为准 |
+| **回程中段仍在执行器闭包** ⏳刀3 | 帧归一 / reasoning fallback / usage 解析（协议特有）留在执行器 `postLoop` 闭包；`RequestBodyStageRegistry` 调用点键仍为常量 | 刀 3 契约收缩：`UpstreamExecutor` → transport，分离协议特有中段与传输 |
+| **`buildWebClient` 三份** ⏳刀3 | 三执行器各一份，差异仅 baseUrl 来源 + `anthropic-version` 头 | 刀 3 归并为按协议取端点的单一构造 |
 
 ---
 
