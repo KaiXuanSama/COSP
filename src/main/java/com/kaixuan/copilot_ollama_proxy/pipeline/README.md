@@ -20,12 +20,14 @@
 | **主干-支干** | 一次请求的数据怎么流；协议差异是**数据**（主干）还是**代码**（支线） | 下游收到的**内容**会变 | **`pipeline/`**（本层） |
 | **下游边界（出口）** | 怎么收进来、怎么送出去；按**下游**协议分岔 | 下游**收不到**东西 | `api/` |
 | **控制面** | **人**在外部作用于在途请求（取消 / 人工重发） | 人**没法插手** | `control/` |
-| **观测** | 让**人**看见发生了什么（Toast / 明细日志 / 统计） | 下游收到的**完全不变**，但后台瞎了 | 暂与 `application/` · `infrastructure/` 混住（待归拢） |
+| **观测** | 让**人**看见发生了什么（Toast / 明细日志 / 统计） | 下游收到的**完全不变**，但后台瞎了 | **`observability/`**（已归拢） |
 
 **最后那条测试是识别观测轴的关键**：观测的东西可以整段删掉而请求照常成功
 （`UpstreamCallReporter` / `CallLifecyclePublisher` / `ApiUsageCollector` 都满足它）。
 
 **依赖方向**：`主干 → 观测` 单向（与 `主干 → 应用服务` 同向）。观测**永不**被主干依赖回来。
+**已实测兑现**（第 7a-1 步）：`observability/` 对外只 import `protocol/` 与自身，
+对 `application/` / `infrastructure/` / `api/` / `control/` 零反向依赖。
 
 > 另外三个顶层包是**支撑**而非轴：`application/`（应用服务与后台查询）·
 > `protocol/`（纯 DTO，无 Spring 依赖）· `infrastructure/`（持久化 / 安全 / 配置）。
@@ -103,8 +105,8 @@ pipeline/                         ← 主干-支干轴（阶段 5 归拢后的�
 │   │   ├── UpstreamRetryPolicy            自动重试①：要不要重试（纯判定）+ 两个异常解包
 │   │   ├── UpstreamAutoRetry              自动重试②：几次、多久（读配置 + 组装 Retry）
 │   │   ├── EmptyResponseGate              空响应拦截机制（流式扣放 / 非流式一次判 / 耗尽放行）
-│   │   ├── EmptyUpstreamResponseException 空响应信号异常（复用重试预算）
-│   │   └── UpstreamCallReporter           生命周期事件 / 调用记录信号的 best-effort 通知
+│   │   └── EmptyUpstreamResponseException 空响应信号异常（复用重试预算）
+│   │       （`UpstreamCallReporter` 第 7a-1 步已搬 `observability/notify/`：它零主干依赖）
 │   ├── send/                      ★ 接入点：发送（唯一一步）
 │   │   ├── UpstreamExecutor           契约：protocol() + invoke / invokeStream
 │   │   ├── UpstreamExecutorRegistry   查表（键 = 上游协议；**未命中即报错**）
@@ -128,13 +130,18 @@ pipeline/                         ← 主干-支干轴（阶段 5 归拢后的�
     ├── WireProtocol                   三协议枚举（**全项目扇出最高**：56 个 main 文件）
     ├── UpstreamEvent                  统一形态（Body / Terminal 两态）；`api/` 也消费
     ├── UpstreamEventClassifier        把一帧分成「载荷」与「终止标记」两态
-    ├── ChunkLogPayload                落库的 chunk 载荷（含翻译改写）；`infrastructure/` 也消费
     ├── NoSupportedProtocolException · ProtocolTranslationNotSupportedException
     │   RequestTranslationException · ResponseTranslationException   ← 出口做状态码映射要用
     ├── ProtocolTranslator · TranslatedRequest · TranslationContext
     └── translate/                     请求/响应翻译支线（17 个实现 + 契约 + 注册表）
         RequestProtocolTranslator · ResponseProtocolTranslator · TranslatorRegistry
 ```
+
+> **两个跨层的值类型已上提到顶层 `protocol/`**（第 7a-1 步），因为它们消费方跨三个顶层包，
+> 留在本层会让那些包反向依赖 `pipeline/`：
+> - `protocol/ChunkLogPayload` —— 生产在块 2，消费在 `observability/record/` 与 `infrastructure/persistence/`；
+> - `protocol/usage/UsageTokens` —— 生产在块 2（三个 `*UsageParser`），消费在 `observability/record/`
+>   （本来它在 `application/usage/`，会让 `application ⇄ observability` 成环）。
 
 ### 四条读法（为什么长这样）
 
@@ -383,31 +390,48 @@ pipeline/                         ← 主干-支干轴（阶段 5 归拢后的�
 > 是**自动重试**的两件事；人工重发**不在请求流里**、**不消耗预算**、**只服务流式** ——
 > 它只是碰巧也叫「重试」。
 
-### 3.2 观测轴（**尚未归拢**，现散在三处）
+### 3.2 观测轴（**已收拢** —— 顶层包 `observability/`，第 7a-1 步）
 
 「让**人**看见发生了什么」是**第四条轴**。其判据是**删掉它下游收到的不变，但后台瞎了** ——
 `UpstreamCallReporter` / `CallLifecyclePublisher` / `ApiUsageCollector` / `LogEventPublisher`
-全都满足它。
+全都满足它。此前它散在三处（`application/` · `infrastructure/web/` · 主干内两个薄适配器），
+现已按**延迟**分四组归到顶层 `observability/`：
 
-| 现在住哪 | 是什么 | 性质 |
+```
+observability/
+├─ port/       CallLifecycleNotifier（生命周期通知端口，DIP）
+├─ publisher/  CallLifecyclePublisher · UsageEventPublisher · LogEventPublisher   ← 实时
+├─ record/     ApiCallLogService · ApiCallUsageService · ApiUsageDailyService     ← 明细 + 聚合
+└─ notify/     UpstreamCallReporter（零主干依赖，可搬）
+```
+
+| 归拢后住哪 | 是什么 | 延迟 |
 |---|---|---|
-| `after/attempt/UpstreamCallReporter` | 生命周期事件 / 调用记录信号的 best-effort 通知 | 主干内的**薄适配器** |
-| `before/notify/ProtocolNotifier` | 把协议决策写成生命周期事件（Toast 的 C→M 标记） | 主干内的**薄适配器** |
-| `infrastructure/web/` 的 `CallLifecyclePublisher` · `UsageEventPublisher` · `LogEventPublisher` | 实时推送（Toast 相位 / 统计卡 / 日志列表） | 写侧实现 |
-| `infrastructure/web/ApiUsageCollector` | 日聚合（统计卡） | 写侧 |
-| `application/lifecycle/CallLifecycleNotifier` | 生命周期通知**端口**（DIP） | 端口 |
-| `application/logging/ApiCallLogService` · `ApiCallUsageService` | 明细落库（`api_call_log` / `api_call_usage`） | 写侧（在流内） |
+| `publisher/` 三个 | 实时推送（Toast 相位 / 统计卡 / 日志列表） | **实时** |
+| `record/ApiCallLogService` · `ApiCallUsageService` | 明细落库（`api_call_log` / `api_call_usage`），每次往返一行 | **明细** |
+| `record/ApiUsageDailyService`（**新抽的端口**） | 日聚合（`api_usage_daily`，统计卡数据源） | **聚合** |
+| `notify/UpstreamCallReporter` | 生命周期事件 / 调用记录信号的 best-effort 通知 | 实时 |
+| `port/CallLifecycleNotifier` | 生命周期通知**端口**（DIP） | — |
 
-**三种延迟**（收拢后才显出来）：**实时**（三个 publisher）· **明细**（每次往返一行）·
-**聚合**（日 / 时统计卡）。
-
-> **两个适配器为何留主干**：`ProtocolNotifier` 的归属有两条依据，**依赖方向那条是决定性的** ——
-> 它 import `ProtocolDispatchDecision`（主干数据），搬进 `observability/` 会让
-> `observability → pipeline`，**与既定方向（主干 → 观测）相反**。
-> `UpstreamCallReporter` 则零主干依赖（只 import 端口与事件类型），可搬。
+> **`ProtocolNotifier` 留 `before/notify/`**（未搬）：它的归属有两条依据，
+> **依赖方向那条是决定性的** —— 它 import `ProtocolDispatchDecision`（主干数据），
+> 搬进 `observability/` 会让 `observability → pipeline`，**与既定方向（主干 → 观测）相反**。
+> 对照：`UpstreamCallReporter` 零主干依赖（只 import 端口与事件类型），故可搬。
+> 两者的差别正在于「有没有反向依赖主干的数据」。
 >
-> **归拢是独立的后续步骤**（`plan_.md` §4.8.8 第 7 步），因为它**要动行为接线**
-> （usage 记账点位移 + `ApiUsageCollector` 抽接口），与纯搬包分开才能各自验证。
+> **实测兑现**：收拢后 `observability/` 对外只 import `protocol/` 与自身，
+> 对 `application/` / `infrastructure/` / `api/` / `control/` **零反向依赖**。
+
+> **落库的触发点仍在块 2**（`UpstreamCallRunner` 在 `doFinally` 里调 `saveStreamLog`，
+> 三个执行器调 `apiCallUsage.save`）—— 观测轴只提供**能力**（端口），
+> 因为只有块 2 知道「一次上游往返结束了、拿到了什么字节」。这是
+> `主干 → 观测` 单向依赖的正常形态（同 `UpstreamCallReporter` 的「主干内薄适配器」）。
+> **不要在归拢时把触发点也搬走** —— 观测轴无法得知那一刻。
+
+> **待决策点已作废**（2026-09-26 实测）：`plan_.md` §4.8.8 第 8 节曾记
+> 「`ApiCallLogService` / `ApiCallUsageService` 的搬迁要拆读写接口」，但两者 javadoc
+> 已明写「仅暴露 provider 需要的写入能力；查询能力保留在 infrastructure 的 Repository 上」，
+> 且读侧独立在 `CallLogQueryService` —— **读写早已分离**，故为纯写端口，直接搬。
 
 ### 3.3 出口（`api/`，不在本层）
 
@@ -455,7 +479,8 @@ pipeline/                         ← 主干-支干轴（阶段 5 归拢后的�
 | **ctx 统一原则在插槽内没执行** ✅刀1/2 | 曾 `prepareRequestBody` 参数穿线、Chat/Responses 读不到 `ctx.bodyProtocol()` | 刀 1/2 随步骤上移消解；runner 与 `AttemptContext` 均以 ctx 为准 |
 | **回程中段仍在执行器闭包** ⏳可选 | 帧归一 / reasoning fallback / usage 解析（协议特有）留在执行器 `postLoop` 闭包 —— 这是**协议特有**的正当归属，不是偏差；仅其「消费者只有 Chat 执行器」一点与主干化取向不一致 | 契约收缩（`UpstreamExecutor` → transport）可分离协议特有中段与传输，**已降级为可选清理**（块化已拿走主要收益） |
 | **`buildWebClient` 三份** ✅刀3 B | 三执行器各一份，曾差异为 baseUrl 来源 + `anthropic-version` 头 | 刀 3 B 把那些差异归进 `before/outbound/` 支线，三份现**逐字同形**（只差方法名/可见性）；合并是随时可做的纯清理 |
-| **usage 被解析两遍** ⏳待修 | 发送块解析一次（写 `api_call_usage`）；`api/` 三个 Controller 又解析一次（写 `api_usage_daily` + 推前端）。且 `ResponsesController.recordStreamUsage` 里复制了一份协议语义（「最后一份非 null 胜出，与 Anthropic 需跨事件 merge 不同」） | **不是「搬位置」而是「消重复」**：发送块解析一次 → 把结果交出（照 `ctx.applyTranslators` / `ctx.applyOutbound` 的跨块手法），观测在边上消费、不重新解析。见 §3.3 的出口判据与 `plan_.md` §4.8.8 第 9/10 步 7 |
+| **观测轴散在三处** ✅步7a-1 | `application/lifecycle` · `infrastructure/web/` · 主干内两个薄适配器 | 已收拢到顶层 `observability/{port,publisher,record,notify}/`；依赖方向实测单向（见 §3.2） |
+| **usage 被解析两遍** ⏳步7b | 发送块解析一次（写 `api_call_usage`）；`api/` 三个 Controller 又解析一次（写 `api_usage_daily` + 推前端）。且 `ResponsesController.recordStreamUsage` 里复制了一份协议语义（「最后一份非 null 胜出，与 Anthropic 需跨事件 merge 不同」） | **不是「搬位置」而是「消重复」**：发送块解析一次 → 把结果交出（照 `ctx.applyTranslators` / `ctx.applyOutbound` 的跨块手法），观测在边上消费、不重新解析。见 §3.3 的出口判据与 `plan_.md` §4.8.8 第 9/10 步 7 |
 
 ---
 
@@ -492,3 +517,16 @@ pipeline/                         ← 主干-支干轴（阶段 5 归拢后的�
    > ⚠️ **`clean test` 可能偶发失败，那不是回归**：`clean` 删掉 `target/test-admin.db` 后，
    > 首次启动的 schema 迁移与并发测试存在竞态（报 `no such table: app_config` / `api_call_log`）。
    > **复跑即绿**（阶段 5 第 4 步实测：第一次失败、后两次连续 1309 全绿）。
+4. **`package` 声明与 import 要分两步改，别指望一次替换全覆盖**（第 7a-1 步实测）：
+   「按 FQN 精确锚定」的替换**不包含**搬移文件自己的 `package` 行（那里只有包名、无类名）。
+   搬完必须**单独扫一遍搬移文件的首行**确认。本次 9 个 main + 4 个 test 共 13 处都是这样补的。
+5. **先建目标目录再 `git mv`**（第 7a-1 步实测）：`git mv` 对**不存在的目标目录**直接报
+   `fatal: renaming ... failed: No such file or directory`，**且不会自动建目录**。
+   本次 `src/test/.../protocol/` 未预先创建，四个文件里三个成功、一个失败 ——
+   而**文件数守恒检查会立即暴露它**（test 110 ≠ 111）。
+   > 这正是「测试数变少 = 文件丢失的可靠信号」那条纪律的又一次印证。
+6. **拆包后要扫的不是「报错文件」而是「所有引用方」**（第 7a-1 步实测）：
+   本次 `ApiUsageCollector`（`infrastructure/web/`）引用同包的 `UsageEventPublisher`、
+   `UpstreamAutoRetry`（`pipeline/after/attempt/`）引用同包的 `UpstreamCallReporter` ——
+   两者都**原本无 import**，拆包后必须补。编译报错能找出来，但**第一轮只会报第一批**
+   （test 侧要有 `test-compile` 才暴露）；搬包后应直接把 `mvnw test` 跑到位，别只看 `compile`。
