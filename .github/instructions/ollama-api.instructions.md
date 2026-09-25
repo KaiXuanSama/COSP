@@ -1,5 +1,5 @@
 ---
-applyTo: "**/api/ollama/**,**/protocol/ollama/**,**/upstream/discovery/**,**/application/ollama/**,**/application/catalog/**"
+applyTo: "**/api/ollama/**,**/protocol/ollama/**,**/application/discovery/**,**/application/ollama/**,**/application/catalog/**"
 description: "Ollama 模型发现协议开发指南。Use when: 修改 /api/version、/api/tags、/api/show 或其 DTO、模型目录与发现服务。"
 ---
 
