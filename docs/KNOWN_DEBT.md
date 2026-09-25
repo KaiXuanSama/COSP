@@ -131,7 +131,7 @@
 与单一真源。而 `ProviderAdminService.java:347` 正是这么做的，于是同一个类里存在两种口径。
 
 **后两处保留字面量是对的**：SQL 无法引用枚举；`ProviderRuntimeConfiguration` 若引用枚举会造成
-`application.runtime` 与 `application.protocol` 双向依赖（该文件注释已说明）。它们只需保留
+`application.runtime` 与 `pipeline.protocol` 双向依赖（该文件注释已说明）。它们只需保留
 交叉引用注释。
 
 **漏改的症状**：`ProviderAdminService` 漏改 → 界面上勾不到新协议；
@@ -227,7 +227,7 @@ return `${path}.protocols[${index}] 必须是以下之一：${
 
 ## 十、落库那一族的跨协议合并（阶段 3.6 的收尾余项）—— **✅ 已解决（阶段 4 刀 2，2026-09-24）**
 
-> **已落地**：9 份 `saveXxxLog` 收归 `upstream/send/UpstreamCallRunner` 的三个静态方法
+> **已落地**：9 份 `saveXxxLog` 收归 `pipeline/after/send/UpstreamCallRunner` 的三个静态方法
 > （`saveNonStreamLog` / `saveStreamLog` / `saveStreamLogWithError`），上游协议统一从
 > `ctx.upstreamProtocol()` 取。三个执行器不再各留一份，`DEFAULT_PROTOCOL` 脆弱性随之消失
 > （见下）。验收：`AbstractUpstreamChatServiceUsagePersistenceTests` /
@@ -275,6 +275,10 @@ return `${path}.protocols[${index}] 必须是以下之一：${
 > 收益：发送后块现在只剩「铺 ctx 装好的头/地址 + 抓传输层快照 + 发送」。
 >
 > 控制流方向已完全矫正 —— 主干持流程，插槽只填传输 + 协议特有中段。
+> **阶段 5 包结构归拢（2026-09-25）随后落地前 5 步**：`upstream/` 顶层包**消失**，
+> 其内容按块归属分入 `pipeline/before/`（`requestbody` · `outbound`）与 `pipeline/after/`
+> （`send` · `chunk` · `content` · `attempt`）；`discovery/` 回 `application/`。
+> 详见 `plan_.md` §4.8.8 与 [`pipeline/README.md`](../src/main/java/com/kaixuan/copilot_ollama_proxy/pipeline/README.md)。
 > 下文分析基于「三刀全未做」时写就，作为背景保留；「怎么还」一节的完成状态见其内标注。
 
 **这是当前最严重的结构债，也是第十条、第四条的共同根因。** 单列一条是因为它牵动的不是

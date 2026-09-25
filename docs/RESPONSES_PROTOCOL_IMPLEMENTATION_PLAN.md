@@ -306,8 +306,12 @@ C2R/R2C 照这个形态加分支。现在 `decision.translationNeeded()` 为真�
 
 需要新建的类（按既有命名与职责划分）：
 
+> ⚠️ **路径已随阶段 5 归拢变更（2026-09-25）**：翻译器目录从
+> `application/protocol/translate/` 移到 **`pipeline/protocol/translate/`**。
+> 下文所有该前缀的路径请按此替换。
+
 ```
-application/protocol/translate/
+pipeline/protocol/translate/
 ├── ChatToResponsesRequestTranslator.java     # C2R 去程
 ├── ResponsesToChatResponseTranslator.java    # R2C 回程总入口
 ├── ResponsesToChatStreamTranslator.java      # 流式（需要跨事件状态机）
