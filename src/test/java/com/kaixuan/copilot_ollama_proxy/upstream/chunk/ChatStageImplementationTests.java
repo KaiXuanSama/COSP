@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.upstream.chunk;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.upstream.chunk.fallback.ChatReasoningFallbackStage;
 import com.kaixuan.copilot_ollama_proxy.upstream.chunk.fallback.ReasoningFallback;
 import com.kaixuan.copilot_ollama_proxy.upstream.chunk.normalize.ChatChunkNormalizeStage;

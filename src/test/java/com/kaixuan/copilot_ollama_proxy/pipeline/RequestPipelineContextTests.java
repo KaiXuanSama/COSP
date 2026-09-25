@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline;
 
-import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslationContext;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.TranslationContext;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;

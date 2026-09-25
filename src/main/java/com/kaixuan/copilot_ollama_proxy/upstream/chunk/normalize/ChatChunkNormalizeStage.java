@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.upstream.chunk.normalize;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import org.springframework.stereotype.Component;
 
 import java.util.concurrent.atomic.AtomicBoolean;

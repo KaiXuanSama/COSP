@@ -1,14 +1,14 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline;
 
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchDecision;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslatedRequest;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.RequestProtocolTranslator;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ResponseProtocolTranslator;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.TranslatorRegistry;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.dispatch.ProtocolDispatchDecision;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.dispatch.ProtocolDispatchManager;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.TranslatedRequest;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.RequestProtocolTranslator;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.ResponseProtocolTranslator;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.TranslatorRegistry;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
@@ -114,7 +114,7 @@ public class BeforeSend {
      * 断言 ctx 回填与异常，而不必跑完整个 {@link #process}（后两步要真实装配器）。
      *
      * @throws UnresolvedModelRouteException 路由在本地目录未解析出唯一供应商（控制器回 400）
-     * @throws com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException
+     * @throws com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException
      *         供应商未声明支持任何协议
      */
     void routeStep(RequestPipelineContext ctx) {

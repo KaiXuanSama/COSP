@@ -2,11 +2,11 @@ package com.kaixuan.copilot_ollama_proxy.api.shared;
 
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier.Failure;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier.FailureKind;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.RequestTranslationException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ResponseTranslationException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.RequestTranslationException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ResponseTranslationException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;

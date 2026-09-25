@@ -3,7 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.testing;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.pipeline.PipelineStep;
 import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipelineContext;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.upstream.chunk.ChunkStageRegistry;
 import com.kaixuan.copilot_ollama_proxy.upstream.send.UpstreamExecutor;

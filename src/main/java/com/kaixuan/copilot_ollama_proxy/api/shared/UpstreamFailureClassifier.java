@@ -1,9 +1,9 @@
 package com.kaixuan.copilot_ollama_proxy.api.shared;
 
-import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.RequestTranslationException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ResponseTranslationException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.RequestTranslationException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ResponseTranslationException;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 

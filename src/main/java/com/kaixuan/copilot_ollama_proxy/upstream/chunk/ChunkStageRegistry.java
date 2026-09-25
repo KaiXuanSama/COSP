@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.upstream.chunk;
 
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.upstream.chunk.fallback.ReasoningFallbackStage;
 import com.kaixuan.copilot_ollama_proxy.upstream.chunk.normalize.ChunkNormalizeStage;
 import org.springframework.stereotype.Component;

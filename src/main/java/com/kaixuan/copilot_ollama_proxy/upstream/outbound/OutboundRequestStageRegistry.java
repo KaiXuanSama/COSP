@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.upstream.outbound;
 
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;

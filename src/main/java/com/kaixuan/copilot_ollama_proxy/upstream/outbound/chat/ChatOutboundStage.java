@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.upstream.outbound.chat;
 
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestStage;
 import org.springframework.stereotype.Component;

@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.upstream.content;
 
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 
 /**
  * 判定上游响应是否带<strong>实质载荷</strong>的支线 —— 空响应拦截的判据来源。

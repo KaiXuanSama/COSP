@@ -2,7 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.application.openai;
 
 import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipeline;
 import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipelineContext;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
@@ -48,7 +48,7 @@ import java.util.Map;
  *
  * <h2>为何两个方法体都裹在 defer 里</h2>
  * 主干的准备与调度都是<strong>同步</strong>调用，且会抛
- * {@link com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException}。
+ * {@link com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException}。
  * 控制器那侧的 {@code Mono.firstWithSignal(responses(...), cancelSignal)} 参数是 eager 求值的：
  * 不包 defer 时异常在组装期就逃出了控制器方法，{@code onErrorResume} 不在链上，
  * 下游拿到 WebFlux 默认 500 而不是那句点名成因的错误体。

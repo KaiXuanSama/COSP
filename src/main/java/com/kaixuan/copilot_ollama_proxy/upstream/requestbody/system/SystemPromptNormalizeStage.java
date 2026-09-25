@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.upstream.requestbody.system;
 
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 
 import java.util.Map;
 

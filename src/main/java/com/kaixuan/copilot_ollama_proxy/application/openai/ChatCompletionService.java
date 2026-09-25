@@ -2,9 +2,9 @@ package com.kaixuan.copilot_ollama_proxy.application.openai;
 
 import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipeline;
 import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipelineContext;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.RequestTranslationException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.RequestTranslationException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;

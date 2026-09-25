@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.upstream.requestbody;
 
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.maxtokens.MaxTokensNormalizeStage;
 import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.maxtokens.MessagesMaxTokensStage;

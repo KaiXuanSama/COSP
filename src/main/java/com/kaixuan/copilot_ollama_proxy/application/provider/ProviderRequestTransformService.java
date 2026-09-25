@@ -38,7 +38,7 @@ public class ProviderRequestTransformService {
     /**
      * 规则组可声明的线路协议。
      *
-     * 字面量与 {@link com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol}
+     * 字面量与 {@link com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol}
      * 的枚举常量名一致；此处刻意不直接引用枚举 —— 该白名单校验的是**外部输入的字符串**，
      * 用 {@code valueOf} 会把非法值变成异常控制流，而这里要的是与其他三个白名单一致的
      * 「集合包含判断 + 统一错误消息」。
