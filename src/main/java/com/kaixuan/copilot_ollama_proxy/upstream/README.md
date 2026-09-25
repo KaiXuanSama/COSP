@@ -33,6 +33,17 @@
 
 ## 1. 目录树与它的读法
 
+> ⚠️ **状态更新（阶段 5 第 4 步，2026-09-25）**：本树描述的是**归拢前**的形态。
+> 已经迁出的（下方树中仍列出，仅作对照）：
+> - `send/` · `chunk/` · `content/` → `pipeline/after/{send,chunk,content}/`
+> - 层根 5 个机制（`EmptyResponseGate` / `UpstreamRetryPolicy` / `UpstreamAutoRetry` /
+>   `UpstreamCallReporter` / `EmptyUpstreamResponseException`）→ `pipeline/after/attempt/`
+> - 层根 3 个词汇（`UpstreamEvent` / `UpstreamEventClassifier` / `ChunkLogPayload`）→ `pipeline/protocol/`
+>
+> `upstream/` 现只剩 `requestbody/` · `outbound/` · `discovery/`（第 5 步将再搬走前两者）。
+> **第 6 步会重写本文件的目录树与阅读指南**（含文件位置调整）—— 在那之前，
+> 读结构请以**源码树 + `plan_.md` §4.8.8** 为准。
+
 ```
 upstream/                        ← 层根 = 主干（协议无关的共用件，扁平住这里）
 ├── UpstreamEvent                统一形态（Body / Terminal）；非流式 = 恰有一个元素的流

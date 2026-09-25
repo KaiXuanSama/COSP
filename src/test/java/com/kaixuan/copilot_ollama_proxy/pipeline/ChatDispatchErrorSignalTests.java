@@ -16,12 +16,12 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolve
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
-import com.kaixuan.copilot_ollama_proxy.upstream.send.messages.GenericAnthropicChatService;
-import com.kaixuan.copilot_ollama_proxy.upstream.send.chat.GenericOpenAiChatService;
-import com.kaixuan.copilot_ollama_proxy.upstream.send.responses.GenericResponsesChatService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.messages.GenericAnthropicChatService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.chat.GenericOpenAiChatService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.responses.GenericResponsesChatService;
 import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
-import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
-import com.kaixuan.copilot_ollama_proxy.upstream.send.UpstreamExecutorRegistry;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.UpstreamExecutorRegistry;
 import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;

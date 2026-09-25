@@ -2,8 +2,8 @@ package com.kaixuan.copilot_ollama_proxy.testing;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
-import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
-import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEventClassifier;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEventClassifier;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 

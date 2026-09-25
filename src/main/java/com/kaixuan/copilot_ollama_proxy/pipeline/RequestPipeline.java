@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline;
 
-import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 

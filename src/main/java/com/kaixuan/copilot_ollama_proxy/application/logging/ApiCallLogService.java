@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.application.logging;
 
-import com.kaixuan.copilot_ollama_proxy.upstream.ChunkLogPayload;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ChunkLogPayload;
 
 import java.util.List;
 import java.util.Map;

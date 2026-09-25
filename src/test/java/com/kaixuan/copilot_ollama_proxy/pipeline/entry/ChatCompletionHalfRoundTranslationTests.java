@@ -18,11 +18,11 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.TranslatorRe
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
-import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
-import com.kaixuan.copilot_ollama_proxy.upstream.send.UpstreamExecutorRegistry;
-import com.kaixuan.copilot_ollama_proxy.upstream.send.messages.GenericAnthropicChatService;
-import com.kaixuan.copilot_ollama_proxy.upstream.send.chat.GenericOpenAiChatService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.UpstreamExecutorRegistry;
+import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.messages.GenericAnthropicChatService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.chat.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;

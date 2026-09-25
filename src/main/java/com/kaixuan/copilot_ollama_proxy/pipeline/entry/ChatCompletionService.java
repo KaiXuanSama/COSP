@@ -5,7 +5,7 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.RequestTranslationException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
-import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;

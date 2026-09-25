@@ -1,10 +1,10 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline;
 
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.ResponseProtocolTranslator;
-import com.kaixuan.copilot_ollama_proxy.upstream.ChunkLogPayload;
-import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
-import com.kaixuan.copilot_ollama_proxy.upstream.send.UpstreamExecutor;
-import com.kaixuan.copilot_ollama_proxy.upstream.send.UpstreamExecutorRegistry;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ChunkLogPayload;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.UpstreamExecutor;
+import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.UpstreamExecutorRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;

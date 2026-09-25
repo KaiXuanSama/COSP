@@ -8,7 +8,7 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNot
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import org.junit.jupiter.api.BeforeEach;
-import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
