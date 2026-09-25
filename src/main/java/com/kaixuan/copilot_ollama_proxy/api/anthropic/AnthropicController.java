@@ -3,7 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.api.anthropic;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
-import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.anthropic.AnthropicMessagesRequest;

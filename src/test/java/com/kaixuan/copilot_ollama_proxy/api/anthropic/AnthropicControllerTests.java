@@ -1,8 +1,8 @@
 package com.kaixuan.copilot_ollama_proxy.api.anthropic;
 
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
-import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.MessagesService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNotSupportedException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;

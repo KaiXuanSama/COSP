@@ -1,9 +1,9 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.MessagesService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ResponsesService;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.dispatch.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNotSupportedException;

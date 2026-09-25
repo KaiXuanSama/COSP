@@ -3,7 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.application.provider;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.pipeline.AfterSend;
 import com.kaixuan.copilot_ollama_proxy.pipeline.BeforeSend;
 import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipeline;

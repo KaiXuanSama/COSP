@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.application.anthropic;
+package com.kaixuan.copilot_ollama_proxy.pipeline.entry;
 
 import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipeline;
 import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipelineContext;

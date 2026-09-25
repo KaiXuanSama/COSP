@@ -18,9 +18,9 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
-import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.MessagesService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ResponsesService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.AppConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.security.ApiKeyCryptoService.EncryptedValue;

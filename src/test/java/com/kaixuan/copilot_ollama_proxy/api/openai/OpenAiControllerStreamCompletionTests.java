@@ -2,7 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;

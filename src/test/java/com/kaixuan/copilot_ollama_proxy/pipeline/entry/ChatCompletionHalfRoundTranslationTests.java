@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.application.openai;
+package com.kaixuan.copilot_ollama_proxy.pipeline.entry;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;

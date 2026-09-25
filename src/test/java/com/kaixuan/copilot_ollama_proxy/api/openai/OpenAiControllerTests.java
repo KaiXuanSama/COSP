@@ -18,7 +18,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNotSupportedException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.RequestTranslationException;

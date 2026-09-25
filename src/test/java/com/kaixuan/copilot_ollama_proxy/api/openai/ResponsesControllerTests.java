@@ -2,7 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ResponsesService;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNotSupportedException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;

@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ResponsesService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
