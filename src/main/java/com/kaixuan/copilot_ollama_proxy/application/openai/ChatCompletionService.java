@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.application.openai;
 
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipeline;
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
+import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipeline;
+import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.RequestTranslationException;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;

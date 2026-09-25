@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.application.pipeline;
+package com.kaixuan.copilot_ollama_proxy.pipeline;
 
 import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchDecision;
@@ -12,7 +12,7 @@ import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.Translato
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
-import com.kaixuan.copilot_ollama_proxy.application.shared.ProtocolNotifier;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.notify.ProtocolNotifier;
 import com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler;
 import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
 import org.slf4j.Logger;
@@ -24,7 +24,7 @@ import org.springframework.stereotype.Service;
  * <strong>发送前块</strong> —— 主干「真正发出 HTTP 之前」那一段（阶段 4 刀 3 块化）。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：主干<strong>功能块</strong>（发送前） · 位置：{@code application/pipeline/}
+ * 形态：主干<strong>功能块</strong>（发送前） · 位置：{@code pipeline/}（阶段 5 归拢后将进 {@code pipeline/before/}）
  * <p>{@link RequestPipeline#execute} 现在只有两行：{@code beforeSend.process(ctx)} 与
  * {@code return afterSend.process(ctx)}。本类是前者。
  *

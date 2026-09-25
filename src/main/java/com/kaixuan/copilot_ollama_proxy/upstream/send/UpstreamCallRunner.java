@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.upstream.send;
 
 import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
+import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.control.CallResendLoop;
 import com.kaixuan.copilot_ollama_proxy.control.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.upstream.ChunkLogPayload;

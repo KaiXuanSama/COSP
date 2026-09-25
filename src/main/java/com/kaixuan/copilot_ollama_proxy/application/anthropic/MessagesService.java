@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.application.anthropic;
 
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipeline;
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
+import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipeline;
+import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.upstream.UpstreamEvent;
 import org.springframework.http.HttpHeaders;

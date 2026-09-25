@@ -3,7 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.upstream.send.chat;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
+import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.AuthHeaderSetting;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;

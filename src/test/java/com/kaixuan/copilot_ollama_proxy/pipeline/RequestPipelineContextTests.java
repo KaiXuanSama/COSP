@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.application.pipeline;
+package com.kaixuan.copilot_ollama_proxy.pipeline;
 
 import com.kaixuan.copilot_ollama_proxy.application.protocol.TranslationContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;

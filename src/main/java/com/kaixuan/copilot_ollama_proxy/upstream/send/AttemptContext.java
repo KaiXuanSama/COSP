@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  *
  * <h2>它为什么存在（方向文档 §2.4 的「流级状态」有了家）</h2>
- * {@link com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext} 装的是
+ * {@link com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipelineContext} 装的是
  * <strong>请求级</strong>事实（route、两协议、headers），整条主干共用、重试<strong>不</strong>重置。
  * 而计时、chunk 收集、首字延迟、耗尽放行标记这些是<strong>流级</strong>累积量：
  * 重试一次就得清零，且只在一次往返内有意义。它们此前没有家 —— 三个执行器各自在方法体里声明

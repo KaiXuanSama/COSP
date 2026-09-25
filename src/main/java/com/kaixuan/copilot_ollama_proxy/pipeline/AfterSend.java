@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.application.pipeline;
+package com.kaixuan.copilot_ollama_proxy.pipeline;
 
 import com.kaixuan.copilot_ollama_proxy.application.protocol.translate.ResponseProtocolTranslator;
 import com.kaixuan.copilot_ollama_proxy.upstream.ChunkLogPayload;
@@ -17,7 +17,7 @@ import java.util.function.Function;
  * <strong>发送后块</strong> —— 主干「真正发出 HTTP 之后」那一段（阶段 4 刀 3 块化）。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：主干<strong>功能块</strong>（发送后） · 位置：{@code application/pipeline/}
+ * 形态：主干<strong>功能块</strong>（发送后） · 位置：{@code pipeline/}（阶段 5 归拢后将进 {@code pipeline/after/}）
  * <p>{@link RequestPipeline#execute} 的第二行 {@code return afterSend.process(ctx)} 就是它。
  *
  * <h2>为什么它<strong>不能</strong>是「一步步改 ctx」的形态</h2>

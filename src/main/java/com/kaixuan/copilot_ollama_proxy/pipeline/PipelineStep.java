@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.application.pipeline;
+package com.kaixuan.copilot_ollama_proxy.pipeline;
 
 /**
  * 请求处理管道里的一个<strong>可能被跳过的步骤</strong>。

@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.upstream.requestbody;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.pipeline.RequestPipelineContext;
+import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
