@@ -387,12 +387,12 @@ class GenericResponsesChatServiceUsagePersistenceTests {
     private static final class TestService extends GenericResponsesChatService {
 
         /** 请求体装配器 —— 落库的 body 是装配后的（含 stream 字段），故辅助方法要先跑它。 */
-        private final com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler assembler;
+        private final com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler assembler;
 
         private TestService() {
             super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
                     PipelineContexts.contentDetectorRegistry(new ObjectMapper()));
-            this.assembler = new com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler(
+            this.assembler = new com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler(
                     PipelineContexts.registryWithAllBodyStages(new ObjectMapper()),
                     new RequestBodyRuleEngine(new ObjectMapper()));
         }

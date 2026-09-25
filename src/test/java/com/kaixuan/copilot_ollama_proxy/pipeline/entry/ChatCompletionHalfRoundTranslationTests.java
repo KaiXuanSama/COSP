@@ -19,7 +19,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolve
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
-import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.UpstreamExecutorRegistry;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.messages.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.chat.GenericOpenAiChatService;
@@ -302,13 +302,13 @@ class ChatCompletionHalfRoundTranslationTests {
     }
 
     /** 出站装配器：三条出站支线齐备（本类上游走 MESSAGES，需 MessagesOutboundStage 解析地址）。 */
-    private com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler outboundAssembler() {
-        return new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler(
+    private com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestAssembler outboundAssembler() {
+        return new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestAssembler(
                 new com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService(objectMapper),
-                new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestStageRegistry(List.of(
-                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.chat.ChatOutboundStage(),
-                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.messages.MessagesOutboundStage(),
-                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.responses.ResponsesOutboundStage())),
+                new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestStageRegistry(List.of(
+                        new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.chat.ChatOutboundStage(),
+                        new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.messages.MessagesOutboundStage(),
+                        new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.responses.ResponsesOutboundStage())),
                 objectMapper);
     }
 }

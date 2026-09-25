@@ -9,16 +9,16 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.after.chunk.ChunkStageRegistry;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.UpstreamExecutor;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.UpstreamExecutorRegistry;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.content.ContentDetectorRegistry;
-import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyStageRegistry;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyStageRegistry;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.chunk.normalize.ChatChunkNormalizeStage;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.content.ChatContentDetectorStage;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.chunk.fallback.ChatReasoningFallbackStage;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.content.MessagesContentDetectorStage;
-import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.maxtokens.MessagesMaxTokensStage;
-import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.system.MessagesSystemPromptStage;
-import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.thinking.ChatThinkingStage;
-import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.thinking.MessagesThinkingStage;
-import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.thinking.ResponsesThinkingStage;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.maxtokens.MessagesMaxTokensStage;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.system.MessagesSystemPromptStage;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.thinking.ChatThinkingStage;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.thinking.MessagesThinkingStage;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.thinking.ResponsesThinkingStage;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.content.ResponsesContentDetectorStage;
 import org.springframework.http.HttpHeaders;
 
@@ -117,12 +117,12 @@ public final class PipelineContexts {
      */
     private static void assembleOutbound(RequestPipelineContext ctx) {
         ObjectMapper mapper = new ObjectMapper();
-        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler(
+        new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestAssembler(
                 new com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService(mapper),
-                new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestStageRegistry(List.of(
-                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.chat.ChatOutboundStage(),
-                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.messages.MessagesOutboundStage(),
-                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.responses.ResponsesOutboundStage())),
+                new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestStageRegistry(List.of(
+                        new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.chat.ChatOutboundStage(),
+                        new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.messages.MessagesOutboundStage(),
+                        new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.responses.ResponsesOutboundStage())),
                 mapper)
                 .assemble(ctx);
     }

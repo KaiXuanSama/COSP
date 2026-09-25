@@ -1369,12 +1369,12 @@ class AbstractUpstreamChatServiceTests {
         }
 
         /** 出站装配器：与生产同源，收 ChatOutboundStage（本类线路恒为 CHAT）。 */
-        private com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler newOutboundAssembler() {
+        private com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestAssembler newOutboundAssembler() {
             ObjectMapper mapper = new ObjectMapper();
-            return new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler(
+            return new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestAssembler(
                     new ProviderRequestHeaderService(mapper),
-                    new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestStageRegistry(List.of(
-                            new com.kaixuan.copilot_ollama_proxy.upstream.outbound.chat.ChatOutboundStage())),
+                    new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestStageRegistry(List.of(
+                            new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.chat.ChatOutboundStage())),
                     mapper);
         }
 

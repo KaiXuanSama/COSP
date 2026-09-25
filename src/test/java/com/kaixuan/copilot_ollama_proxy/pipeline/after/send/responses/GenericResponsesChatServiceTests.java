@@ -940,12 +940,12 @@ class GenericResponsesChatServiceTests {
          * 本类的请求体用例（stream 覆盖 / 前缀剥离 / reasoning.effort / bodyRules）验的是装配结果，
          * 因此在调 {@code responses} 前先跑一遍装配。
          */
-        private final com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler assembler;
+        private final com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler assembler;
 
         private TestService() {
             super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
                     PipelineContexts.contentDetectorRegistry(new ObjectMapper()));
-            this.assembler = new com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler(
+            this.assembler = new com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler(
                     PipelineContexts.registryWithAllBodyStages(new ObjectMapper()),
                     new RequestBodyRuleEngine(new ObjectMapper()));
         }

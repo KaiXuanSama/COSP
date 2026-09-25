@@ -90,7 +90,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <h2>请求体的协议差异</h2>
  * Anthropic 与 OpenAI 的请求体有三处硬差异，现由请求体支线承担（阶段 4 刀 1 起装配收归
- * 主干 {@link com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler}，
+ * 主干 {@link com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler}，
  * 协议特定三步走 {@code RequestBodyStageRegistry}）：
  * {@code system} 是顶层字段而非 {@code messages} 里的一条、{@code max_tokens} 必填、
  * 思考用 {@code thinking} 对象（方式）加顶层 {@code output_config.effort}（深度）

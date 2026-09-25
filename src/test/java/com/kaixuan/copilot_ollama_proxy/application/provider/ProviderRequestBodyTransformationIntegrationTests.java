@@ -16,10 +16,10 @@ import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKe
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderRequestTransformRepository;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
-import com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler;
-import com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestStageRegistry;
-import com.kaixuan.copilot_ollama_proxy.upstream.outbound.chat.ChatOutboundStage;
-import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestAssembler;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestStageRegistry;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.chat.ChatOutboundStage;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.chat.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import com.sun.net.httpserver.HttpServer;

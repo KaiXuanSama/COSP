@@ -9,7 +9,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolve
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
-import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -60,14 +60,14 @@ class RequestPipelineTests {
         beforeSend = new BeforeSend(routeResolver, dispatchManager,
                 new TranslatorRegistry(List.of(), List.of()),
                 new RequestBodyAssembler(
-                        new com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyStageRegistry(
+                        new com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyStageRegistry(
                                 List.of(), List.of(), List.of()),
                         new com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine(
                                 new com.fasterxml.jackson.databind.ObjectMapper())),
-                new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler(
+                new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestAssembler(
                         new com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService(
                                 new com.fasterxml.jackson.databind.ObjectMapper()),
-                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestStageRegistry(List.of()),
+                        new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestStageRegistry(List.of()),
                         new com.fasterxml.jackson.databind.ObjectMapper()));
     }
 

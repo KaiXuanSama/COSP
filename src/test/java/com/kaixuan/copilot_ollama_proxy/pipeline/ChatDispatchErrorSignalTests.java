@@ -19,7 +19,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRoute
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.messages.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.chat.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.responses.GenericResponsesChatService;
-import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.UpstreamExecutorRegistry;
 import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
@@ -109,17 +109,17 @@ class ChatDispatchErrorSignalTests {
                                 List.of(new ChatToMessagesRequestTranslator(objectMapper)),
                                 List.of(new MessagesToChatResponseTranslator(objectMapper))),
                         new RequestBodyAssembler(
-                                new com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyStageRegistry(
+                                new com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyStageRegistry(
                                         List.of(), List.of(), List.of()),
                                 new com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine(objectMapper)),
                         // 出站装配器：部分用例（*StillDelegatesToUpstream）会走到发送阶段，
                         // 故收全三条出站支线，否则 assembleOutboundStep 会因 require 未命中而抛错。
-                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler(
+                        new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestAssembler(
                                 new com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService(objectMapper),
-                                new com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestStageRegistry(List.of(
-                                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.chat.ChatOutboundStage(),
-                                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.messages.MessagesOutboundStage(),
-                                        new com.kaixuan.copilot_ollama_proxy.upstream.outbound.responses.ResponsesOutboundStage())),
+                                new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestStageRegistry(List.of(
+                                        new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.chat.ChatOutboundStage(),
+                                        new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.messages.MessagesOutboundStage(),
+                                        new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.responses.ResponsesOutboundStage())),
                                 objectMapper)),
                 new AfterSend(executors));
         // 三个 Service 现在同形：只收主干。

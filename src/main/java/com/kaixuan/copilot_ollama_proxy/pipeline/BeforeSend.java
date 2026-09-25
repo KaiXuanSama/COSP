@@ -13,8 +13,8 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolve
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ResolvedProviderRoute;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.notify.ProtocolNotifier;
-import com.kaixuan.copilot_ollama_proxy.upstream.outbound.OutboundRequestAssembler;
-import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestAssembler;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;

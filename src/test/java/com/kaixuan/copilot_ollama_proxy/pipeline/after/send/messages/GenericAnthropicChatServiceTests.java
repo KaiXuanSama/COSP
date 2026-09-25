@@ -1431,12 +1431,12 @@ class GenericAnthropicChatServiceTests {
          * 本类的请求构造用例（system 抬升 / max_tokens / thinking）验的正是装配结果，
          * 因此在调 {@code messages} 前先跑一遍装配，把主干那一步补上。
          */
-        private final com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler assembler;
+        private final com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler assembler;
 
         private TestService() {
             super(new ObjectMapper(), new ProviderRequestHeaderService(new ObjectMapper()),
                     PipelineContexts.contentDetectorRegistry(new ObjectMapper()));
-            this.assembler = new com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler(
+            this.assembler = new com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler(
                     PipelineContexts.registryWithAllBodyStages(new ObjectMapper()),
                     new RequestBodyRuleEngine(new ObjectMapper()));
         }

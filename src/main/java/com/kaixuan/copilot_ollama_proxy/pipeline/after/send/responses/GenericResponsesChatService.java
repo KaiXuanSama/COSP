@@ -104,7 +104,7 @@ import java.util.function.Function;
  * 注入思考深度、执行规则），而 Anthropic 那条还要提取 system、补 {@code max_tokens}、
  * 协调两个思考维度。原因是<strong>下游与上游说的是同一种协议</strong>——
  * 直连不需要任何形态转换。
- * <p>装配自阶段 4 刀 1 收归主干 {@link com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler}
+ * <p>装配自阶段 4 刀 1 收归主干 {@link com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler}
  * （协议特定步骤走 {@code RequestBodyStageRegistry}），本类只读 {@code ctx.body()}。
  *
  * <p>两个刻意<strong>不做</strong>的注入（见 {@code ResponsesThinkingStage} 与

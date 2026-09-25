@@ -7,7 +7,7 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
-import com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.messages.GenericAnthropicChatService;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.chat.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.responses.GenericResponsesChatService;
