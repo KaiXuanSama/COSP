@@ -100,12 +100,15 @@ import java.util.function.Function;
  * </ul>
  *
  * <h2>请求体的协议差异：比另两条线路少得多</h2>
- * 本类的 {@link #prepareRequestBody} 只做四件事（改模型名、设 {@code stream}、
- * 注入思考深度、执行规则），而 Anthropic 那份还要提取 system、补 {@code max_tokens}、
+ * 本线路的请求体装配只做四件事（改模型名、设 {@code stream}、
+ * 注入思考深度、执行规则），而 Anthropic 那条还要提取 system、补 {@code max_tokens}、
  * 协调两个思考维度。原因是<strong>下游与上游说的是同一种协议</strong>——
  * 直连不需要任何形态转换。
+ * <p>装配自阶段 4 刀 1 收归主干 {@link com.kaixuan.copilot_ollama_proxy.upstream.requestbody.RequestBodyAssembler}
+ * （协议特定步骤走 {@code RequestBodyStageRegistry}），本类只读 {@code ctx.body()}。
  *
- * <p>两个刻意<strong>不做</strong>的注入见 {@link #prepareRequestBody}：
+ * <p>两个刻意<strong>不做</strong>的注入（见 {@code ResponsesThinkingStage} 与
+ * {@code RequestBodyAssembler} 的类注释）：
  * {@code max_output_tokens} 与 Anthropic 的思考方式。
  */
 @Service
@@ -448,7 +451,8 @@ public class GenericResponsesChatService implements UpstreamExecutor {
      * 再接 {@code /responses}。已有供应商的 Base URL 通常是 {@code .../v1}，
      * 因而实际请求为 {@code .../v1/responses} —— 与官方端点一致。
      *
-     * @see #normalizeResponsesBaseUrl
+     * <p>地址解析（读 {@code responses_base_url} 回退 base_url）自阶段 4 刀 3 B 移至
+     * {@code ResponsesOutboundStage.resolveBaseUrl}，随出站装配一起上移发送前块。
      */
     private String responsesUri() {
         return "/responses";

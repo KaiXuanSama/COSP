@@ -34,10 +34,13 @@ import java.util.Map;
  * <strong>完全由本步骤支配</strong>（供其判定「下游已表态」），因此它是本步骤的
  * <strong>内部临时产物</strong>：独立成阶段反而让「谁该删它」变成跨阶段的隐式契约。
  *
- * <h2>当前只有 MESSAGES 一个实现</h2>
- * Chat 与 Responses 的注入目前仍在各自执行器的 <code>applyReasoningEffort</code> 里
- * （它们分别写 {@code reasoning_effort} 与 {@code reasoning.effort}）。
- * 把它们也支线化是后续步骤的事；本步只搬 Anthropic 侧这一份。
+ * <h2>三协议各一个实现（刀 1 起）</h2>
+ * MESSAGES = {@code MessagesThinkingStage}（两维 + 剥兼容副本）、
+ * CHAT = {@code ChatThinkingStage}（写 {@code reasoning_effort}；off 档写 {@code thinking:"disabled"}）、
+ * RESPONSES = {@code ResponsesThinkingStage}（写 {@code reasoning.effort}）。
+ * 后两者不需要 Anthropic 那套「深度先方式后、off 档跳过方式」编排 —— 那套约束只存在于
+ * 两个正交维度之间，单字段协议一行就够。
+ * <p>注：本接口的「剥兼容副本」职责只对 Anthropic 有意义 —— 那个副本是 C2M 翻译器留的。
  */
 public interface ThinkingInjectStage {
 

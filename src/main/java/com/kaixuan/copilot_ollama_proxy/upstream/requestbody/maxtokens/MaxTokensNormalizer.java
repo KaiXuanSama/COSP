@@ -84,7 +84,8 @@ public final class MaxTokensNormalizer {
      * 从运行时模型配置中读取最大输出设置。
      *
      * <p>找不到匹配的模型时返回 {@link MaxOutputTokensSetting#defaults()}（64K + 兜底），
-     * 与 OpenAI 侧 {@code resolveReasoningEffort} 同一形状。这里的兜底比思考深度那个安全得多 ——
+     * 与思考深度的 {@code ReasoningEffortSetting.forModel} 同一形状（按模型名查、查不到给默认）。
+     * 这里的兜底比思考深度那个安全得多 ——
      * 给一个未配置的模型注入 {@code max_tokens} 不会改变语义，而缺了它这条线路根本发不出去。
      *
      * <p>线性查找而非建 Map：模型数量是个位到几十的量级，且这个方法每轮请求只调一次。

@@ -131,16 +131,17 @@ ChatCompletionService.chatCompletion(...)          ← 三个服务同形，只�
     RequestPipelineContext.forEndpoint(body, model, 下游协议, headers, requestId, stream)
     ↓
     RequestPipeline.execute(ctx)                   ← 主干唯一入口，流式/非流式共用
-    │  （内部只读一次 ctx.stream() 用于「选机制」）
+    │  （只有两行：beforeSend.process(ctx) → return afterSend.process(ctx)）
     ↓
-    ① 路由解析
+── 发送前块 BeforeSend（同步 void step(ctx)）──────────────────
+    ① 路由解析   routeStep
     │   ProviderRouteResolver.resolve(model)
     │     · 有 [provider-key] 前缀 → 精确取该供应商，且模型须在它名下
     │     · 无前缀 → 必须在全部启用供应商中唯一命中，否则返回 null
     │     · 只按模型名路由；协议不参与候选集筛选
     │     · 返回 null → 抛 UnresolvedModelRouteException → 控制器 400
     ↓
-    ② 协议调度
+    ② 协议调度   routeStep
     │   ProtocolDispatchManager.dispatch(下游协议, provider)
     │     规则 1：供应商支持下游同名协议 → 直连（translationNeeded=false）
     │     规则 2：不支持 → 按 TRANSLATION_FALLBACK_ORDER 挑一个，标记需翻译
@@ -149,9 +150,9 @@ ChatCompletionService.chatCompletion(...)          ← 三个服务同形，只�
     ↓
     ③ 补生命周期协议信息（best-effort，供前端 Toast 显示 C→M 标记）
     ↓
-    ④ ctx.applyRouting(resolvedModel, provider, 上游协议)
+    ④ ctx.applyRouting(resolvedModel, provider, 上游协议)   routeStep 末
     ↓
-    ⑤ 请求翻译插槽（仅跨协议；直连时整个翻译链不存在）
+    ⑤ 请求翻译插槽（仅跨协议；直连时整个翻译链不存在）   translateStep
         TranslatorRegistry.findRequestTranslator(下游, 上游)
         ├─ 命中 C2M（下游 CHAT、上游 MESSAGES）
         │     ChatToMessagesRequestTranslator.translateRequest
@@ -159,13 +160,21 @@ ChatCompletionService.chatCompletion(...)          ← 三个服务同形，只�
         │       · 保留一份 reasoning_effort 兼容副本（供上游执行层判定「已表态」）
         │       → ctx.applyTranslation(body, 上游协议, translationContext)
         └─ 未命中 → 抛 ProtocolTranslationNotSupportedException → 400
+        · 回程翻译器在此一并选好记进 ctx（供发送后块用）
     ↓
-    ⑥ send 插槽   UpstreamExecutorRegistry.require(上游协议)
+    ⑥ 请求体装配   assembleStep
+        RequestBodyAssembler.assemble（阶段序列见 §4.1）
+    ↓
+    ⑦ 出站装配   assembleOutboundStep
+        OutboundRequestAssembler.assemble（三层头 + 地址，见 §4.2）
+        产出 ctx.outboundHeaders / ctx.outboundBaseUrl
+── 发送后块 AfterSend（返回 Flux 的异步状态机）─────────────────
+    ⑧ send 插槽   UpstreamExecutorRegistry.require(上游协议)
         ├─ 命中 → invoke / invokeStream（按 ctx.stream() 选，见 §4）
         └─ 未命中 → 抛 IllegalStateException（协议被声明支持却无执行器 = 装配坏了）
     ↓
-    ⑦ 响应翻译插槽（仅跨协议）
-        TranslatorRegistry.findResponseTranslator(下游, 上游)
+    ⑨ 响应翻译插槽（仅跨协议）
+        从 ctx.responseTranslator() 取（发送前块已选好）
         ├─ 命中 → 回程 MessagesToChatResponseTranslator
         └─ 未命中（半轮实现态）→ 原样透传 + WARN
 ```
@@ -176,51 +185,54 @@ ChatCompletionService.chatCompletion(...)          ← 三个服务同形，只�
 
 ## 4. 上游执行层
 
-请求体与请求头是**两条独立流水线**，汇入同一次 `WebClient` 发送。
+请求体与请求头是**两条独立流水线**（都在发送前块完成），随后汇入同一次 `WebClient` 发送。
 
 ### 4.1 请求体装配 —— 三条线路的阶段序列
 
-`prepareRequestBody` 是一根**显式阶段序列**（Step 3.3c 起），不再是若干散行。
-每条线路的序列在代码里逐阶段调用，阶段名即方法名 —— 因此本节与代码可以逐行对照。
+装配由主干 `RequestBodyAssembler.assemble` 驱动，是**一根显式阶段序列**（Step 3.3c 起，
+阶段 4 刀 1 收归主干），不再是若干散行 —— 因此本节与代码可以逐行对照。
+协议**无关**的公共序列在装配器里逐阶段调用，协议**特定**的中间三步走
+`RequestBodyStageRegistry` 支线（按 `ctx.bodyProtocol()` 查表，未命中即跳过）。
 
-**三条线路共用的四个阶段**（形状相同，编号固定）：
+**三条线路共用的四个阶段**（形状相同，编号固定；除 `resolveModel` / `applyBodyRules`
+是真方法外，其余阶段是装配器里的编号注释片段）：
 
-| # | 阶段 | 方法 | 为何在这个位置 |
+| # | 阶段 | 位置 | 为何在这个位置 |
 |---|---|---|---|
-| 1 | 复制 | `copyRequestBody` | 主干会逐阶段改写 body，不能污染调用方的 Map |
-| 2 | 解析模型名 | `resolveModel` | 后续阶段都要用它查模型配置 |
-| 3 | 写协议字段 | `writeProtocolFields` | model（已剥前缀）与 stream 是「主干对上游的陈述」 |
-| 末 | 清 null | `removeNullFields` | **必须是最后一步**，理由见下 |
+| 1 | 复制 | `assemble` 内联 | 主干会逐阶段改写 body，不能污染调用方的 Map |
+| 2 | 解析模型名 | `resolveModel`（私有静态） | 后续阶段都要用它查模型配置 |
+| 3 | 写协议字段 | `assemble` 内联 | model（已剥前缀）与 stream 是「主干对上游的陈述」 |
+| 末 | 清 null | `assemble` 内联 | **必须是最后一步**，理由见下 |
 
 **差异全在中间**，且差异的成因只有一个：**下游与上游是否同协议**。
+中间三步（`system` 抬升 / `max_tokens` 落定 / 思考注入）各协议在**自己的支线实现**里表态。
 
 ```
-Chat（GenericOpenAiChatService / AbstractUpstreamChatService）
+Chat（ChatThinkingStage + RequestBodyRuleEngine）
     1 复制 → 2 解析模型名 → 3 写协议字段
-    4 思考深度      ReasoningEffortSetting.applyTo
+    4 思考注入      ChatThinkingStage → ReasoningEffortSetting.applyTo
                     → reasoning_effort / thinking（off 档写 thinking:"disabled"）
-    5 协议特定步骤  customizeRequestBody —— 子类钩子，本线路是请求体规则
+    5 请求体规则    RequestBodyRuleEngine.transform（按 CHAT 筛组）
     末 清 null
-    共 6 阶段
+    · system 抬升 / max_tokens 落定在该协议未命中 → 跳过（那两步是 Anthropic 特有）
 
-Responses（GenericResponsesChatService）
+Responses（ResponsesThinkingStage + RequestBodyRuleEngine）
     1 复制 → 2 解析模型名 → 3 写协议字段
-    4 思考深度      ReasoningEffortSetting.applyToResponses → reasoning.effort
+    4 思考注入      ResponsesThinkingStage → applyToResponses → reasoning.effort
     5 请求体规则    RequestBodyRuleEngine.transform（按 RESPONSES 筛组）
     末 清 null
-    共 6 阶段
     · 与 Chat 形状一致，只有阶段 4 的出站形态不同
 
-Anthropic（GenericAnthropicChatService）—— 阶段最多
+Anthropic（Messages*Stage 三步 + RequestBodyRuleEngine）—— 中间步骤最多
     1 复制 → 2 解析模型名 → 3 写协议字段
-    4 协议归一化    extractSystemPrompt  system 从 messages 提到顶层
-                    ensureMaxTokens      max_tokens 必填注入（缺失上游 400）
-    5 思考两维      applyThinkingDimensions   深度先、方式后，off 档跳过方式
-    6 剥兼容副本    dropReasoningEffortAlias  必须在阶段 5 之后
-    7 请求体规则    transform（按 MESSAGES 筛组）
+    4 协议归一化    MessagesSystemPromptStage  system 从 messages 提到顶层
+                    MessagesMaxTokensStage    max_tokens 必填注入（缺失上游 400）
+    5 思考两维      MessagesThinkingStage → applyThinkingDimensions
+                    深度先、方式后，off 档跳过方式；末了剥 reasoning_effort 兼容副本
+    6 请求体规则    transform（按 MESSAGES 筛组）
     末 清 null
-    共 8 阶段
-    · 阶段 4/5/6 都是「下游说 Chat、上游说 Anthropic」留下的债
+    · 阶段 4/5 都是「下游说 Chat、上游说 Anthropic」留下的债
+    · 阶段 5 里「剥兼容副本」必须在深度+方式之后（见 §6 顺序陷阱）
 ```
 
 **每个阶段的位置都有理由，两类位置约束最容易被破坏**：
@@ -237,7 +249,9 @@ Anthropic（GenericAnthropicChatService）—— 阶段最多
 
 ### 4.2 请求头装配
 
-在 `buildWebClientWithHeaders` 的 `defaultHeaders(...)` 中执行。三层，后者覆盖前者。
+在**发送前块**的 `BeforeSend.assembleOutboundStep` → `OutboundRequestAssembler.assemble` 中执行
+（阶段 4 刀 3 B 前，它在 `buildWebClient` 的 `defaultHeaders(...)` 里、每轮重试跑一遍）。
+三层，后者覆盖前者；协议无关的三层在主干，协议特定的选列 + 补版本头走 `outbound/` 支线。
 
 ```
 applyHeaders(headers, downstreamHeaders, apiKey, headerRulesJson, stream, authHeader)
@@ -262,15 +276,23 @@ applyHeaders(headers, downstreamHeaders, apiKey, headerRulesJson, stream, authHe
             · Accept: text/event-stream（流式）或 */*（非流式）
             · 供应商规则：{apiKey} 占位替换、/del/ 删除
               —— 拥有最终决定权（在鉴权装配之后，可把被删的头加回来）
+    ↓
+    第 4 步  协议必需头【支线】applyProtocolHeaders（set-if-absent）
+            · Messages 补 anthropic-version；Chat / Responses 无
+            · **必须在第 3 层之后** —— 规则才能覆盖它（某些中转站要求特定版本）
 ```
+
+产出的 `ctx.outboundHeaders` / `ctx.outboundBaseUrl` 由发送后块的 `buildWebClient` 直接铺用。
 
 ### 4.3 发送
 
 ```
-buildWebClientWithHeaders(...)
+buildWebClient(...)
     · 复用注入的 WebClient.Builder（禁止裸 WebClient.builder()）
     · clientConnector 用注入的 httpClient（JDK DNS 解析器）
-    · filter 抓取出站头快照 → 写 api_call_log
+    · baseUrl(ctx.outboundBaseUrl) + defaultHeaders(addAll ctx.outboundHeaders)
+      —— 头与地址已在发送前块装好，这里只铺
+    · filter 抓取出站头快照 → 写 api_call_log（传输层头要等真正发请求那一刻）
   .post().uri(chatCompletionsUri()).bodyValue(requestBody)
     · 外层包 RetryPolicyService 的重试预算（UpstreamAutoRetry.build 造出的 Retry）
     · 空响应拦截由 EmptyResponseGate（机制，三条线路共用）负责，
@@ -307,25 +329,28 @@ buildWebClientWithHeaders(...)
 
 ## 6. 顺序陷阱
 
-这几处顺序是刻意的，改动时不要「顺手理顺」。阶段编号对应 §4.1 的序列。
+这几处顺序是刻意的，改动时不要「顺手理顺」。阶段编号对应 §4.1 的序列
+（**编号会随插入而漂，引用时优先用基名**）。
 
-**`removeNullFields`（末阶段）排在请求体规则（阶段 5/7）之后。** 两件事都依赖它：
+**清 null（末阶段）排在请求体规则之后。** 两件事都依赖它：
 规则的「设置字段值」留空即置 null，若先清洗后执行规则，那个 null 会原样出站，
 而部分上游对多余的 null 字段并不宽容；且编辑器预览直接作用于用户粘贴的请求体、
 不做 null 剥离，若运行时先清洗，同一条 `exists` 条件会「预览命中、线上不命中」
 —— 预览一旦会说谎，它的全部价值就没了。
 
-**Anthropic 侧剥 `reasoning_effort`（阶段 6）排在思考两维（阶段 5）之后。** C2M 翻译器把
-`reasoning_effort` 映射到 `output_config.effort` 后**刻意保留一份兼容副本**，
+**Anthropic 侧剥 `reasoning_effort` 排在思考深度与方式之后（同在「思考注入」阶段内）。**
+C2M 翻译器把 `reasoning_effort` 映射到 `output_config.effort` 后**刻意保留一份兼容副本**，
 供思考深度与思考方式两层判定「下游是否已表态」。提前剥会让兜底档把一个已表态的请求
 当成未表态，静默退化成覆写档。
+（阶段 4 刀 1 前它曾是独立的一步，现将这个「剥副本」收在
+`AnthropicThinkingNormalizer.applyThinkingDimensions` 的第三步 —— 条件不变，只是同属一个阶段了。）
 
-**思考深度与思考方式在 Anthropic 侧不可交换（同属阶段 5）。** 深度先、方式后，且深度写了
+**思考深度与思考方式在 Anthropic 侧不可交换（同属「思考注入」阶段）。** 深度先、方式后，且深度写了
 `thinking: {"type":"disabled"}` 时**跳过方式**。先方式后深度会让深度兜底档把方式刚写的
 字段误认为「下游已表态」；不跳过方式则会把 `disabled` 改写成 `adaptive`，
 把用户配的「关闭思考」静默丢弃。
 
-**协议归一化（Anthropic 阶段 4）排在请求体规则（阶段 7）之前。** 规则的字段路径是照
+**协议归一化（Anthropic 阶段 4）排在请求体规则之前。** 规则的字段路径是照
 最终发往上游的形态写的（`system` 已提顶层、`max_tokens` 已补齐），若在归一化前执行，
 用户看到的预览与实际请求体结构不一致。
 

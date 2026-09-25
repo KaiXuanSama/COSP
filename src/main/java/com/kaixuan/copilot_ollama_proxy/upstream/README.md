@@ -20,7 +20,7 @@
 | 概念 | 判据 | 本层里的例子 |
 |---|---|---|
 | **主干** | 协议差异是**数据** | `UpstreamEvent`、`UpstreamRetryPolicy`、`EmptyResponseGate`、`UpstreamCallReporter` |
-| **支线** | 协议差异是**代码**，且**有进有出、同类型进出** | `content/`、`chunk/`、`requestbody/`、`send/` 四个接入点 |
+| **支线** | 协议差异是**代码**，且**有进有出、同类型进出** | `content/`、`chunk/`、`requestbody/`、`outbound/`、`send/` 五个接入点 |
 | **出口** | **只有出没有回** | 不在这层（在 `api/` 的三个 Controller 里，按下游协议分岔） |
 
 **最关键的一条约束**：支线**必须汇回**主干。因此它只能同类型进出，契约被压得很窄
@@ -56,10 +56,20 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
 │   └── responses/  GenericResponsesChatService + ResponsesUsageParser + ResponsesStreamEvents
 │
 ├── requestbody/                 ★ 接入点：请求体装配（含 3 步）
+│   ├── RequestBodyAssembler        主干侧编排（刀 1 起）：协议无关阶段序列 + 查表调三步支线
 │   ├── RequestBodyStageRegistry   接入点级查表（键 = bodyProtocol；未命中**跳过**）
 │   ├── system/      SystemPromptNormalizeStage + SystemPromptNormalizer + MessagesSystemPromptStage
 │   ├── maxtokens/   MaxTokensNormalizeStage + MaxTokensNormalizer + MessagesMaxTokensStage
-│   └── thinking/    ThinkingInjectStage + AnthropicThinkingNormalizer + MessagesThinkingStage
+│   └── thinking/    ThinkingInjectStage + AnthropicThinkingNormalizer +
+│                    Messages / Chat / ResponsesThinkingStage（三协议各一）
+│
+├── outbound/                    ★ 接入点 = 步骤：出站请求装配（唯一一步，刀 3 B）
+│   ├── OutboundRequestStage       契约：protocol() + resolveBaseUrl + applyProtocolHeaders
+│   ├── OutboundRequestStageRegistry  查表（键 = upstreamProtocol；**未命中即报错**）
+│   ├── OutboundRequestAssembler   主干侧编排：三层头装配 + 支线选列/补协议头 → ctx.applyOutbound
+│   ├── chat/       ChatOutboundStage      （读 base_url；无协议必需头）
+│   ├── messages/   MessagesOutboundStage  （读 anthropic_base_url；补 anthropic-version）
+│   └── responses/  ResponsesOutboundStage （读 responses_base_url；无协议必需头）
 │
 ├── chunk/                       ★ 接入点：回程帧处理（含 2 步）
 │   ├── ChunkStageRegistry         接入点级查表（键 = upstreamProtocol；未命中**跳过**）
@@ -79,10 +89,14 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
 1. **层根即主干** —— 协议无关的共用件**直接住在 `upstream/` 下**，不另设 `core/`。
    支线**依附**主干，因此用**嵌套**（接入点是子包）表达依附，而不是靠命名声明同级。
 2. **接入点作子包** —— 子包名 = 这条支线**挂在主干的哪个接入点**：
-   `send`（发送）/ `requestbody`（请求体装配）/ `chunk`（回程帧）/ `content`（空响应判定）。
+   `send`（发送）/ `requestbody`（请求体装配）/ `outbound`（出站请求装配）/ `chunk`（回程帧）/
+   `content`（空响应判定）。
 3. **步骤自成子包** —— 接入点下每个**步骤**一个子包，内含「1 个契约接口 + 各协议的实现 + 包装」。
-   **接入点只有一步时，接入点即步骤** —— 所以 `content/` 与 `send/` **自己就是步骤**，
+   **接入点只有一步时，接入点即步骤** —— 所以 `content/`、`outbound/`、`send/` **自己就是步骤**，
    不再套一层。这个不规则是**事实的不规则**，不是命名不一致。
+4. **协议实现的分组看数量** —— 每个协议只有一两个小类时**平铺**（`content/`）；
+   每个协议有一组专属类时按协议**分子包**（`send/` 的 chat/messages/responses、
+   `outbound/` 的同名三个）。两种都在用，因为分组是为了可读，不是为了整齐。
 
 > **为什么一定要按步骤拆**：`system` / `max_tokens` / `thinking` 三步确实都围绕 body，
 > 但那只是**位置共性**；它们在 `RequestBodyStageRegistry` 里是**三张独立表、三个独立查表键**，
@@ -92,22 +106,25 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
 
 | 你要做的事 | 落点 | 代价 |
 |---|---|---|
-| 加一个**上游协议** | 每个**步骤的包**里加一个实现类（`@Component`）；`send/` 下加一个执行器 | 动 N 个包 —— 但那正是领域事实：**每个步骤都得能为新协议表态** |
+| 加一个**上游协议** | 每个**步骤的包**里加一个实现类（`@Component`）—— 含 `requestbody/` 三步、`chunk/` 两步、`content/` `outbound/` 各一步；`send/` 下加一个执行器 | 动 N 个包 —— 但那正是领域事实：**每个步骤都得能为新协议表态**，少一个会在那条线路上报装配错误或静默跳过 |
 | 加一个**步骤** | 加一个子包（契约 + 各协议实现 + 在接入点注册表的表里加一项） | 主干一个字不动 |
 | 加一个**接入点** | 加一个子包 + 一个接入点级注册表 | 主干加一个调用点 |
 
-> ⚠️ **上表的「加一个 `@Component` 即被查表命中」目前只对 `content/` 与 `send/` 成立。**
-> `requestbody/` 与 `chunk/` 两个注册表当前**各只有一个消费者，且消费者的查表键是常量**：
-> `RequestBodyStageRegistry` 只被 `GenericAnthropicChatService` 调用（键恒为 `MESSAGES`），
-> `ChunkStageRegistry` 只被 Chat 执行器调用（键恒为 `CHAT`）。因此给 `MESSAGES` 补一个
-> `ChunkNormalizeStage` 实现**不会被调用** —— 调用点在别的执行器里、根本不查这张表。
-> 这不是注册表的缺陷，而是 **send 插槽边界画错**的表征（见 `plan_.md` 阶段 4）：
-> 请求体装配与回程处理本应是主干步骤、对所有协议统一调用，现在却各自锁在执行器内部。
+> ⚠️ **上表的「加一个 `@Component` 即被查表命中」的成立范围（2026-09-25 核实）。**
+> 它曾**只对 `content/` 与 `send/` 成立** —— 那时 `requestbody/` 与 `chunk/` 两个注册表的
+> **查表键是常量**（`RequestBodyStageRegistry` 只被 Messages 执行器调用、恒查 `MESSAGES`；
+> `ChunkStageRegistry` 只被 Chat 执行器调用、恒查 `CHAT`），于是给别的协议补实现**不会被调用**。
+> 那是 **send 插槽边界画错**的表征（阶段 4）。
 >
-> **2026-09-24 进度**：刀 2 把**编排**（gate/retry/落库/defer）收归 `UpstreamCallRunner` 后，
-> 回程帧的**归一/fallback 中段仍留执行器闭包**（`postLoop`，协议特有），`RequestBodyStageRegistry`
-> 的调用点也未变。因此**这两条支线的「可扩展」仍是名义上的** —— 要真正统一到主干、对所有协议
-> 一致查表，须待**刀 3 契约收缩**把中段的协议特有部分与传输部分彻底分离。
+> **阶段 4 刀 1 / 刀 3 B 已消解这一条**：
+> - `RequestBodyStageRegistry` 的消费者已上移主干（`RequestBodyAssembler`，发送前块的装配步骤），
+>   键是 **`ctx.bodyProtocol()`**（动态）→ 给任一协议补实现都会被调用；
+> - `ChunkStageRegistry` 的键是 **`ctx.upstreamProtocol()`**（动态，跨协议路由下会是上游协议那个值）
+>   → 同样命中；它的消费者仍只有 Chat 执行器（`AbstractUpstreamChatService`），
+>   那是**回程中段仍在执行器闭包**的残留（见 §4.1），不是查表键的问题。
+>
+> 因此「加一个 `@Component`」现在对**五张表**（`requestbody/` `chunk/` `content/` `outbound/`
+> `send/`）都成立。剩下的偏差是「谁调用」而非「能不能命中」。
 
 ---
 
@@ -131,8 +148,11 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
 >   「铺 ctx 的头和地址 + 抓传输层快照 + 发送」，那些要等真正发请求那一刻，故留发送后块。
 >
 > 现在的形态是「主干（经 runner 编排）持流程，执行器只填传输 + 协议特有中段」。
-> 步骤前缀 `主干：执行器内部` 是**过渡措辞** —— 编排已不在执行器里，
-> 但契约收缩（`UpstreamExecutor` → transport）留待后续，故执行器仍是这些步骤的**装配入口**。
+> 步骤树里唯一标着「执行器」的那一步（上游往返）是执行器交出的**传输闭包** ——
+> 由 runner 在每轮 `defer` 内调起，既不是主干持有的步骤、也不属于某个抽象「支线」包，
+> 因此**不再带「主干：」前缀**。其余步骤都已归主干或具名支线。
+> 契约收缩（`UpstreamExecutor` → transport）**已降级为可选清理**（见 §4.1），
+> 故执行器仍持有这些闭包 —— 那不是偏差，是「协议特有的传输细节」的正当归属。
 > `EmptyResponseGate` / `UpstreamAutoRetry` 等机制一直是主干件；刀 2 把**编排**也搬回了主干侧。
 
 ```
@@ -180,18 +200,20 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
              作用：shouldApplyEmptyResponseGate() 读它 —— 半轮实现态跳过空响应拦截
 
 步骤 6  发送前块：装配步骤            BeforeSend.assembleStep(ctx) → RequestBodyAssembler.assemble(ctx)
-        显式阶段序列（协议无关公共序列 + 协议特定支线）：
-          ① copyRequestBody         浅拷贝，不污染调用方
-          ② resolveModel            剥前缀
-          ③ writeProtocolFields     写 model + stream
-          ④ applyReasoningEffort    思考深度四档
-          ⑤ ★ 协议特定步骤（见下方支线）★
-          ⑥ removeNullFields        **必须最后**
+        八阶段的显式序列（协议无关公共序列 + 协议特定支线）：
+          ① 复制             浅拷贝，不污染调用方
+          ② 解析模型名       剥前缀
+          ③ 写协议字段       写 model + stream
+          ④ system 抬升      【支线】未命中即跳过（Chat/Responses 没有这一步）
+          ⑤ max_tokens 落定  【支线】同上（只有 Anthropic 有）
+          ⑥ 思考注入         【支线】同上（三协议各一实现；Anthropic 内部再分深度/方式）
+          ⑦ 请求体规则       RequestBodyRuleEngine.transform（按 bodyProtocol 筛组）
+          ⑧ 清 null          **必须最后**
           ├─ 支线：请求体协议特定步骤（RequestBodyStageRegistry，键 = bodyProtocol）
           │    未命中语义：**跳过**（「该协议没这一步」是领域事实）
           │      system/      SystemPromptNormalizeStage    → MessagesSystemPromptStage
           │      maxtokens/   MaxTokensNormalizeStage       → MessagesMaxTokensStage
-          │      thinking/    ThinkingInjectStage           → MessagesThinkingStage
+          │      thinking/    ThinkingInjectStage           → Messages / Chat / ResponsesThinkingStage
           └─ 分支：请求体规则 RequestBodyRuleEngine.transform（按协议筛组）
         ★ 装配放在翻译之后 —— body 此时已是上游形态，装配据 bodyProtocol 查表
 
@@ -225,13 +247,15 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
           ├─ 分支：GenericAnthropicChatService（上游 MESSAGES）
           └─ 分支：GenericResponsesChatService（上游 RESPONSES）
 
-步骤 10 主干：执行器内部 —— 上游往返（一次）
+步骤 10 执行器：上游往返（一次）
           ① 建 WebClient：铺 ctx.outboundHeaders + ctx.outboundBaseUrl（出站装配已在步骤 7 完成）
              + capturingHttpClient / filter（抓传输层头快照，须待真正发出请求那一刻）
           ② Flux.defer 每轮起点重置（计时 / chunk 收集 / gate.reset）
           ③ HTTP 往返（流式 exchangeToFlux；非流式 retrieve().toEntity）
           ④ 错误响应分支 → 即时落库 + Flux.error(WebClientResponseException)
           ⑤ 发 CONNECTED 生命周期事件
+        ★ 前缀是「执行器」而非「主干」：本步是执行器交出的**传输闭包**
+          （由 runner 在每轮 defer 内调起），不属于主干持有的步骤。见上方归位说明。
 
 步骤 11 支线：空响应拦截
         机制（主干）：EmptyResponseGate —— 流式扣放 / 非流式一次判 / 耗尽放行
@@ -312,9 +336,9 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
 | 项 | 为什么保留 |
 |---|---|
 | 三个 `*ContentDetector` 的**方法名骗人** | `OpenAiContentDetector` 里叫 `hasMeaningfulPayload` 的**其实是流式用的**（读 `delta`）；非流式那个叫 `hasMeaningfulNonStreamPayload`（读 `message`）。`ChatContentDetectorStage` 已按**取值路径**接好 —— 不要按名字改 |
-| 三个注册表的**未命中语义不同** | `requestbody/` `chunk/` → **跳过**（「该协议没这一步」是领域事实）；`content/` `send/` → **报错**（装配坏了）。**不要统一** |
+| 各注册表的**未命中语义不同** | `requestbody/` `chunk/` → **跳过**（「该协议没这一步」是领域事实）；`content/` `send/` `outbound/` → **报错**（装配坏了，不是领域事实）。**不要统一** |
 | 两个插槽的**未命中语义不同** | 去程 → 报错；回程 → 透传 + WARN（半轮态是开发中间态） |
-| `content/` 与 `send/` **不套子包** | 接入点只有一步时，接入点即步骤。加一层求「深度整齐」会重复一次含义 |
+| `content/` `outbound/` `send/` **不套步骤层子包** | 接入点只有一步时，接入点即步骤。加一层求「深度整齐」会重复一次含义（三个的**协议实现**分组方式不同，见 §1 读法 4） |
 | `EmptyResponseGate` 住在**层根**而非 `content/` | 它协议无关（三条线路共用同一套扣放机制），只有**检测器**因协议而异。层根持机制 + 契约、`content/` 供各协议检测器实现，是「主干持契约、支线供实现」的直接体现 |
 | 两个执行器**不继承** `AbstractUpstreamChatService` | 强行抽公共父类会退化成一堆钩子（子类看不见自己依赖什么）。**抽特征，不抽骨架** |
 | 落库 **9→2 已合并**（阶段 4 刀 2） | 曾按「两态 × 三协议」写 9 份；刀 2 收归 `UpstreamCallRunner` 两份静态方法，上游协议从 `ctx.upstreamProtocol()` 取。`api_call_log` 两列各自两型不变（未压平），两列取值回归全绿 |
@@ -324,16 +348,16 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
 ## 4.1 已知的**结构偏离**（阶段 4 矫正中，不是「刻意保留」）
 
 上表是*刻意*的不对称；本节是*待修*的偏离 —— 区别在于前者不该动，后者该动。
-**2026-09-24：刀 1/2 已矫正主干后半段归位与请求体上移，刀 3 收尾契约收缩。**
+**2026-09-25：刀 1/2/3（含 B）已全部落地，主干后半段归位、请求体与出站装配上移、编排块化。**
 
 | 偏离 | 表征 | 矫正 |
 |---|---|---|
-| **send 插槽吞掉主干后半段** ✅刀1/2 | 步骤 11–17（协议无关的 body 装配 / 头装配 / 兜底 / 重试 / 落库）曾在三执行器各写一份 | 刀 1 上移 body/头（步骤 11–12）；刀 2 内层+重试+落库收归 `UpstreamCallRunner`、流级态入 `AttemptContext`。**编排已回主干侧** |
+| **send 插槽吞掉主干后半段** ✅刀1/2/3 | 步骤（协议无关的 body 装配 / 头与地址装配 / 兜底 / 重试 / 落库）曾在三执行器各写一份 | 刀 1 上移 body；刀 2 内层+重试+落库收归 `UpstreamCallRunner`、流级态入 `AttemptContext`；刀 3 B 上移出站头/地址。**编排与装配已全回主干侧** |
 | **思考注入只插槽化了 1/3** ✅刀1 | `thinking/` 曾只有 `MessagesThinkingStage`；CHAT / RESPONSES 的注入在各自 `applyReasoningEffort` 里 | 刀 1 已把 thinking 步骤对齐（详见刀 1 落地记录） |
-| **步骤 11 有第三种扩展机制** ✅刀1 | Chat 曾走 `customizeRequestBody` 虚方法钩子、Messages 走查表、Responses 不接 | 刀 1 统一到主干显式阶段序列 |
+| **步骤有第三种扩展机制** ✅刀1 | Chat 曾走 `customizeRequestBody` 虚方法钩子、Messages 走查表、Responses 不接 | 刀 1 统一到主干显式阶段序列 |
 | **ctx 统一原则在插槽内没执行** ✅刀1/2 | 曾 `prepareRequestBody` 参数穿线、Chat/Responses 读不到 `ctx.bodyProtocol()` | 刀 1/2 随步骤上移消解；runner 与 `AttemptContext` 均以 ctx 为准 |
-| **回程中段仍在执行器闭包** ⏳刀3 | 帧归一 / reasoning fallback / usage 解析（协议特有）留在执行器 `postLoop` 闭包；`RequestBodyStageRegistry` 调用点键仍为常量 | 刀 3 契约收缩：`UpstreamExecutor` → transport，分离协议特有中段与传输 |
-| **`buildWebClient` 三份** ⏳刀3 | 三执行器各一份，差异仅 baseUrl 来源 + `anthropic-version` 头 | 刀 3 归并为按协议取端点的单一构造 |
+| **回程中段仍在执行器闭包** ⏳可选 | 帧归一 / reasoning fallback / usage 解析（协议特有）留在执行器 `postLoop` 闭包 —— 这是**协议特有**的正当归属，不是偏差；仅其「消费者只有 Chat 执行器」一点与主干化取向不一致 | 契约收缩（`UpstreamExecutor` → transport）可分离协议特有中段与传输，**已降级为可选清理**（块化已拿走主要收益） |
+| **`buildWebClient` 三份** ✅刀3 B | 三执行器各一份，曾差异为 baseUrl 来源 + `anthropic-version` 头 | 刀 3 B 把那些差异归进 `outbound/` 支线，三份现**逐字同形**（只差方法名/可见性）；合并是随时可做的纯清理 |
 
 ---
 
@@ -347,4 +371,4 @@ upstream/                        ← 层根 = 主干（协议无关的共用件�
    它们是「路径即契约」的配置，移动是它们失效的**唯一原因**，而失效时**完全静默**。
 4. **注意「测试数变少」** —— 那是文件丢失的可靠信号（比任何断言都早），
    常见原因是 `git mv` 的目标目录不存在而**静默失败**。
-5. **全量验证**：`.\mvnw.cmd compiler:compile compiler:testCompile surefire:test`，基线 **1297**。
+5. **全量验证**：`.\mvnw.cmd compiler:compile compiler:testCompile surefire:test`，基线 **1309**。

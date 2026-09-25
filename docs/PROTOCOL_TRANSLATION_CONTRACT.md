@@ -82,7 +82,8 @@ C2M = OpenAI Chat Completions → Anthropic Messages；M2C = 反向。
 
 ### 2.1 不能前置的一行
 
-`GenericAnthropicChatService.prepareRequestBody` 里的
+思考注入支线里的这行（现位于 `AnthropicThinkingNormalizer.applyThinkingDimensions`，
+阶段 4 刀 1 前它是 `GenericAnthropicChatService.prepareRequestBody` 里的一行）：
 
 ```java
 body.remove("reasoning_effort");

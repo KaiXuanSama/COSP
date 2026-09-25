@@ -48,7 +48,7 @@ public class AnthropicMessagesRequest {
      * 最大输出 token 数。
      *
      * <p>Anthropic 规范里<strong>必填</strong>，但本 DTO 不加校验：缺失时由上游服务
-     * 按模型配置的最大输出补齐（见 {@code GenericAnthropicChatService#ensureMaxTokens}），
+     * 按模型配置的最大输出补齐（见 {@code MaxTokensNormalizer#ensureMaxTokens}），
      * 这样下游忘带也不会被本代理拒绝。
      *
      * <p>注意下游<strong>带了</strong>也不一定原样出站：模型可以配成覆写档，

@@ -22,10 +22,12 @@ import java.util.Map;
  * 最后还要剥掉 {@code reasoning_effort} 兼容副本。
  * 拆成两个支线会让这套顺序约束变成跨支线的隐式契约，而它们本就是同一条协议里的同一件事。
  *
- * <h2>另两条协议为何没有实现（本步不搬）</h2>
+ * <h2>另两条协议也有实现（阶段 4 刀 1 补齐）</h2>
  * Chat 与 Responses 的思考注入分别写 {@code reasoning_effort} 与 {@code reasoning.effort}，
- * 目前仍在各自执行器的 {@code applyReasoningEffort} 里。把它们也支线化是后续步骤的事 ——
- * 本步只做 Anthropic 侧，一次搬一个协议才能让「既有测试一行未改」可验证。
+ * 现各自有 {@link ChatThinkingStage} / {@code ResponsesThinkingStage}（三协议在
+ * {@code RequestBodyStageRegistry} 的 thinking 表里各占一席）。
+ * 它们不需要本类的「深度先方式后、off 档跳过方式」编排：那套约束只存在于
+ * Anthropic 侧的两个正交维度之间（见下），单字段协议一行就够。
  *
  * <p>为何委托给静态工具：见 {@link MessagesSystemPromptStage} 的同段说明。
  */

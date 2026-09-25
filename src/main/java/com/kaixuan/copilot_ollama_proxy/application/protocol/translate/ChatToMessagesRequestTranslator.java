@@ -35,7 +35,7 @@ import java.util.Set;
  *       {@code thinking: {"type":"adaptive"}}，翻译后该字段就是缺失的，
  *       由兜底档决定补什么。</li>
  *   <li><strong>不提取 system 到顶层</strong>。那是
- *       {@code GenericAnthropicChatService.extractSystemPrompt} 的职责，
+ *       {@code SystemPromptNormalizer.extractSystemPrompt}（经 {@code MessagesSystemPromptStage}）的职责，
  *       在本类之后执行。重复实现两份迟早分叉。</li>
  *   <li><strong>不补 max_tokens 默认值</strong>。{@code MaxOutputTokensSetting}
  *       已经管这件事，且它的两档语义在翻译路线上同样适用。</li>

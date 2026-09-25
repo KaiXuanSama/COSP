@@ -27,7 +27,7 @@ import java.util.Map;
  * Chat 的 {@code max_tokens} 与 Responses 的 {@code max_output_tokens} 都是可选的，
  * 接上会给所有「下游没带」的调用凭空补一个上限 —— 而 Copilot 通常就是不带。
  * 因此这两条协议**不该**有这个实现。详见
- * {@code GenericResponsesChatService#prepareRequestBody} 的说明。
+ * {@code RequestBodyAssembler} 的类注释与 {@code ResponsesOutboundStage} 附近的说明。
  */
 public interface MaxTokensNormalizeStage {
 

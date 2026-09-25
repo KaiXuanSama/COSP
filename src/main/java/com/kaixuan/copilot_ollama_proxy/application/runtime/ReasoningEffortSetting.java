@@ -319,8 +319,8 @@ public record ReasoningEffortSetting(String effort, Mode mode) {
      * 那个 null 随后由调用方的 {@code removeIf(Objects::isNull)} 清掉，等效于不发送。
      *
      * <p>原地修改传入的 Map 而非返回新 Map：调用方
-     * （{@code AbstractUpstreamChatService.prepareRequestBody}）已经持有一份可变副本，
-     * 再造一个只会让「哪一份才是最终请求体」变得不明确。
+     * （{@code RequestBodyAssembler} 经 {@code ThinkingInjectStage} 调用本方法）
+     * 已经持有一份可变副本，再造一个只会让「哪一份才是最终请求体」变得不明确。
      */
     public void applyTo(Map<String, Object> body) {
         switch (mode) {

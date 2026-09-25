@@ -17,8 +17,9 @@ import java.util.Map;
  * 而消息之间有邻接与交替约束（见 {@link ToolPairingNormalizer}）。
  *
  * <h2>不处理 system</h2>
- * system 消息由 {@code GenericAnthropicChatService.extractSystemPrompt} 提到顶层，
- * 那一步在翻译之后。这里把 system 消息<strong>原样留在数组里</strong>交给它，
+ * system 消息由 {@code SystemPromptNormalizer.extractSystemPrompt}
+ * （经 {@code MessagesSystemPromptStage}）提到顶层，那一步在翻译之后。
+ * 这里把 system 消息<strong>原样留在数组里</strong>交给它，
  * 不重复实现一遍——两份实现迟早会分叉。
  *
  * <p>{@code developer} 角色改写成 {@code system}，因为下游那一步只认 system。

@@ -132,16 +132,16 @@ public final class RequestPipelineContext {
      * 本次调用是否为<strong>流式</strong>（下游请求体里的 {@code stream}）。
      *
      * <p>它是<strong>请求级事实</strong>：端点建 ctx 时就知道（控制器进的是流式还是非流式入口），
-     * 且整条主干与执行器都要用（{@code prepareRequestBody} 写 {@code stream} 字段、
-     * {@code buildWebClient} 选 {@code Accept} 头、{@code saveUsage} 选 ttfb 口径……）。
+     * 且整条主干与执行器都要用（{@code RequestBodyAssembler} 写 {@code stream} 字段、
+     * {@code OutboundRequestAssembler} 选 {@code Accept} 头、{@code saveUsage} 选 ttfb 口径……）。
      *
      * <p><strong>为何是一个显式字段，而不是去 body 里读 {@code stream}</strong>：
-     * 读 body 会把「怎么执行」编码进「数据」—— 而那个字段是执行器内部
-     * {@code writeProtocolFields} 写的，两者一旦不一致就会静默走错路。
+     * 读 body 会把「怎么执行」编码进「数据」—— 而那个字段是装配步骤
+     * （{@code writeProtocolFields}）写的，两者一旦不一致就会静默走错路。
      * 与 {@link #downstreamProtocol} 同一性质：都是「这次请求是什么」而非「报文长什么样」。
      *
      * <p>3.5a 之前它以 {@code boolean stream} <strong>参数</strong>在三处穿线
-     * （{@code prepareRequestBody} / {@code buildWebClient} / {@code saveUsage}）——
+     * （各执行器的 {@code prepareRequestBody} / {@code buildWebClient} / {@code saveUsage}）——
      * 提进本类就是把已经在传的东西从参数搬进状态池。
      */
     private final boolean stream;

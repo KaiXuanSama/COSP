@@ -292,7 +292,7 @@ public class ResponsesController {
      * 这样无需逐个建模即可透传。
      *
      * <p>{@code stream} 不在此处设置：由上游服务按调用入口决定
-     * （{@code prepareRequestBody} 会覆写），避免下游误传导致模式不符。
+     * （主干装配的 {@code writeProtocolFields} 会覆写），避免下游误传导致模式不符。
      */
     private Map<String, Object> buildRequestBody(ResponsesRequest request) {
         Map<String, Object> body = new LinkedHashMap<>();
