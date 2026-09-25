@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline.after.send.messages;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 

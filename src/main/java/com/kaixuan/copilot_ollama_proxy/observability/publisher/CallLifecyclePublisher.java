@@ -1,6 +1,6 @@
-package com.kaixuan.copilot_ollama_proxy.infrastructure.web;
+package com.kaixuan.copilot_ollama_proxy.observability.publisher;
 
-import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
+import com.kaixuan.copilot_ollama_proxy.observability.port.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import org.springframework.stereotype.Component;

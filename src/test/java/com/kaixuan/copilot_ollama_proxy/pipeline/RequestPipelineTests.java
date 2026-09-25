@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline;
 
-import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
+import com.kaixuan.copilot_ollama_proxy.observability.port.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.dispatch.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;

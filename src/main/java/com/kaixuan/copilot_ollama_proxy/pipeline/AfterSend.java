@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline;
 
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.ResponseProtocolTranslator;
-import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ChunkLogPayload;
+import com.kaixuan.copilot_ollama_proxy.protocol.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.UpstreamExecutor;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.UpstreamExecutorRegistry;

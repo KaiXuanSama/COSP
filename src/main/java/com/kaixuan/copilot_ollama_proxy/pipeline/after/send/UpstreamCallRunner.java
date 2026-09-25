@@ -1,10 +1,10 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline.after.send;
 
-import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.control.CallResendLoop;
 import com.kaixuan.copilot_ollama_proxy.control.CallRetryRegistry;
-import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ChunkLogPayload;
+import com.kaixuan.copilot_ollama_proxy.protocol.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.attempt.EmptyResponseGate;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.content.ContentDetectorStage;
@@ -40,7 +40,7 @@ import java.util.function.Supplier;
  * 交出去的薄适配器（{@link StreamPipeline} / {@link NonStreamPipeline}）。
  *
  * <h2>它<strong>无状态、纯静态</strong>：依赖全部按调用传入</h2>
- * 与 {@link com.kaixuan.copilot_ollama_proxy.pipeline.after.attempt.UpstreamCallReporter} /
+ * 与 {@link com.kaixuan.copilot_ollama_proxy.observability.notify.UpstreamCallReporter} /
  * {@link CallResendLoop} / {@link com.kaixuan.copilot_ollama_proxy.pipeline.after.attempt.UpstreamAutoRetry} 同一形状：
  * 不做 Spring Bean、不持有任何字段。{@code apiCallLog} / {@code callRetryRegistry} 等是
  * <strong>各执行器</strong>的可选注入字段，由执行器在调用时作为参数传进来。

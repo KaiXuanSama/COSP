@@ -1,7 +1,8 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline.after.attempt;
 
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
-import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
+import com.kaixuan.copilot_ollama_proxy.observability.notify.UpstreamCallReporter;
+import com.kaixuan.copilot_ollama_proxy.observability.port.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import org.slf4j.Logger;
 import org.springframework.web.reactive.function.client.WebClientResponseException;

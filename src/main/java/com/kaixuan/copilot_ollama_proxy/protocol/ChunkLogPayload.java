@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.pipeline.protocol;
+package com.kaixuan.copilot_ollama_proxy.protocol;
 
 import java.util.List;
 import java.util.function.Function;

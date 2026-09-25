@@ -5,7 +5,7 @@ import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
 import com.kaixuan.copilot_ollama_proxy.pipeline.entry.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.anthropic.AnthropicMessagesRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
@@ -13,8 +13,8 @@ import com.kaixuan.copilot_ollama_proxy.control.CallCanceledException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEventClassifier;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.messages.AnthropicUsageParser;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -65,12 +65,12 @@ public class AnthropicController {
 
     private final MessagesService messagesService;
     private final ObjectMapper objectMapper;
-    private final ApiUsageCollector apiUsageCollector;
+    private final ApiUsageDailyService apiUsageCollector;
     private final CallLifecyclePublisher callLifecyclePublisher;
     private final CallCancellationRegistry callCancellationRegistry;
 
     public AnthropicController(MessagesService messagesService, ObjectMapper objectMapper,
-                               ApiUsageCollector apiUsageCollector,
+                               ApiUsageDailyService apiUsageCollector,
                                CallLifecyclePublisher callLifecyclePublisher,
                                CallCancellationRegistry callCancellationRegistry) {
         this.messagesService = messagesService;

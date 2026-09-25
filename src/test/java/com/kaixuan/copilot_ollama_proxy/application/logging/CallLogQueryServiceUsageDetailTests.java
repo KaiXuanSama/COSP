@@ -1,11 +1,11 @@
 package com.kaixuan.copilot_ollama_proxy.application.logging;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallUsageRepository;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.LogEventPublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.UsageEventPublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.LogEventPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

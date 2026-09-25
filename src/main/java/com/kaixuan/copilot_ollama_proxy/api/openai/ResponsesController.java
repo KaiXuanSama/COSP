@@ -5,10 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
 import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ResponsesService;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.ResponsesRequest;
@@ -79,12 +79,12 @@ public class ResponsesController {
 
     private final ResponsesService responsesService;
     private final ObjectMapper objectMapper;
-    private final ApiUsageCollector apiUsageCollector;
+    private final ApiUsageDailyService apiUsageCollector;
     private final CallLifecyclePublisher callLifecyclePublisher;
     private final CallCancellationRegistry callCancellationRegistry;
 
     public ResponsesController(ResponsesService responsesService, ObjectMapper objectMapper,
-                               ApiUsageCollector apiUsageCollector,
+                               ApiUsageDailyService apiUsageCollector,
                                CallLifecyclePublisher callLifecyclePublisher,
                                CallCancellationRegistry callCancellationRegistry) {
         this.responsesService = responsesService;

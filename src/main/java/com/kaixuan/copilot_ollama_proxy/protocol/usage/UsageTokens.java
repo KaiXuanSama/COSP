@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.application.usage;
+package com.kaixuan.copilot_ollama_proxy.protocol.usage;
 
 /**
  * 从上游 usage 对象解析出的核心 token 指标。

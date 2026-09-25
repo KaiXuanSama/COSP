@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.infrastructure.web;
+package com.kaixuan.copilot_ollama_proxy.observability.publisher;
 
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;

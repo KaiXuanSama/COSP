@@ -2,7 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.pipeline.after.send.responses;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
 
 /**
  * OpenAI <strong>Responses</strong> API 的 usage 解析。

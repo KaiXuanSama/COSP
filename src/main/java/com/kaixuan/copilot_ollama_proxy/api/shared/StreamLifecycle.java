@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.api.shared;
 
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import org.slf4j.Logger;

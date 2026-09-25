@@ -2,8 +2,8 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.LogEventPublisher;
-import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ChunkLogPayload;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.LogEventPublisher;
+import com.kaixuan.copilot_ollama_proxy.protocol.ChunkLogPayload;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

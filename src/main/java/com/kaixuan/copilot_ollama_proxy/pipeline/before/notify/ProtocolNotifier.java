@@ -1,6 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline.before.notify;
 
-import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
+import com.kaixuan.copilot_ollama_proxy.observability.port.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.dispatch.ProtocolDispatchDecision;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import org.slf4j.Logger;

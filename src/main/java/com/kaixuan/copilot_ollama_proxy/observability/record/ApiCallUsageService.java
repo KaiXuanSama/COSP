@@ -1,6 +1,6 @@
-package com.kaixuan.copilot_ollama_proxy.application.logging;
+package com.kaixuan.copilot_ollama_proxy.observability.record;
 
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
 
 /**
  * API 调用 token 用量写入服务 —— 领域接口。

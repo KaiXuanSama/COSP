@@ -1,7 +1,7 @@
-package com.kaixuan.copilot_ollama_proxy.pipeline.after.attempt;
+package com.kaixuan.copilot_ollama_proxy.observability.notify;
 
-import com.kaixuan.copilot_ollama_proxy.application.lifecycle.CallLifecycleNotifier;
-import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
+import com.kaixuan.copilot_ollama_proxy.observability.port.CallLifecycleNotifier;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import org.junit.jupiter.api.BeforeEach;

@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipelineContext;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
-import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ChunkLogPayload;
+import com.kaixuan.copilot_ollama_proxy.protocol.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.UpstreamExecutor;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.chunk.ChunkStageRegistry;

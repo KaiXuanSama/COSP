@@ -7,9 +7,9 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolExc
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNotSupportedException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.ResponsesRequest;
@@ -58,7 +58,7 @@ import static org.mockito.Mockito.mock;
 class ResponsesControllerTests {
 
     private final ResponsesService responsesService = mock(ResponsesService.class);
-    private final ApiUsageCollector apiUsageCollector = mock(ApiUsageCollector.class);
+    private final ApiUsageDailyService apiUsageCollector = mock(ApiUsageDailyService.class);
     private final CallLifecyclePublisher lifecyclePublisher = new CallLifecyclePublisher();
     private final CallCancellationRegistry cancellationRegistry = new CallCancellationRegistry();
     private final ObjectMapper objectMapper = new ObjectMapper();

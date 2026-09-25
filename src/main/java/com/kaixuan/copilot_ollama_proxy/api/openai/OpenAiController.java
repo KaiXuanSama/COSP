@@ -7,11 +7,11 @@ import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
 import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.chat.OpenAiUsageParser;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
 import com.kaixuan.copilot_ollama_proxy.control.CallCanceledException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
@@ -52,7 +52,7 @@ public class OpenAiController {
 
     private final ChatCompletionService chatCompletionService;
     private final ObjectMapper objectMapper;
-    private final ApiUsageCollector apiUsageCollector;
+    private final ApiUsageDailyService apiUsageCollector;
     private final ModelCatalogService modelCatalogService;
     private final CallLifecyclePublisher callLifecyclePublisher;
     private final CallCancellationRegistry callCancellationRegistry;
@@ -71,7 +71,7 @@ public class OpenAiController {
      * @param serverPort 服务器监听端口（环境变量 SERVER_PORT，默认 11434）
      */
     public OpenAiController(ChatCompletionService chatCompletionService, ObjectMapper objectMapper,
-                            ApiUsageCollector apiUsageCollector, ModelCatalogService modelCatalogService,
+                            ApiUsageDailyService apiUsageCollector, ModelCatalogService modelCatalogService,
                             CallLifecyclePublisher callLifecyclePublisher,
                             CallCancellationRegistry callCancellationRegistry,
                             @Value("${readme.host:localhost}") String readmeHost,

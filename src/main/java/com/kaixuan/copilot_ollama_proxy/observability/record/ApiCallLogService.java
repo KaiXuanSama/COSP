@@ -1,6 +1,6 @@
-package com.kaixuan.copilot_ollama_proxy.application.logging;
+package com.kaixuan.copilot_ollama_proxy.observability.record;
 
-import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ChunkLogPayload;
+import com.kaixuan.copilot_ollama_proxy.protocol.ChunkLogPayload;
 
 import java.util.List;
 import java.util.Map;

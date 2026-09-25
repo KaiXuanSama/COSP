@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.infrastructure.web;
+package com.kaixuan.copilot_ollama_proxy.observability.publisher;
 
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;

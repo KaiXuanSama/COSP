@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.UsageEventPublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageRecordDelta;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

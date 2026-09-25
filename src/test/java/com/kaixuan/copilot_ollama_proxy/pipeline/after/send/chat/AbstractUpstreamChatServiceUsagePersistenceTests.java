@@ -1,12 +1,12 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline.after.send.chat;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
-import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiCallLogService;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,7 +42,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ChunkLogPayload;
+import com.kaixuan.copilot_ollama_proxy.protocol.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 
 /**

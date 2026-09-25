@@ -2,7 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.application.usage;
 
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.UsageEventPublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownPage;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
 import org.junit.jupiter.api.BeforeEach;

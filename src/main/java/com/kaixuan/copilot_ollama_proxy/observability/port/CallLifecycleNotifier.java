@@ -1,4 +1,4 @@
-package com.kaixuan.copilot_ollama_proxy.application.lifecycle;
+package com.kaixuan.copilot_ollama_proxy.observability.port;
 
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 

@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageDateBounds;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.UsageEventPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
