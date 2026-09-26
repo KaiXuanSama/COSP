@@ -250,7 +250,6 @@ public class OpenAiController {
                 // 那个判断在翻译路线下会拿下游协议去比对上游报文，而分类跟着
                 // 「帧是哪个协议」走 —— 只有生产它的那一层知道答案。
                 .doOnNext(event -> {
-                    String chunk = event.data();
                     accumulateStreamUsage(event, streamUsage);
                     // Layer 1（语义信号优先）：收到终止标记即认定上游内容已发完，立即 finalize，
                     // 不必等上游关闭 TCP 连接。修复「上游发完 [DONE] 却不断连，Toast 永远悬挂在 CHUNK」的偶发 bug。

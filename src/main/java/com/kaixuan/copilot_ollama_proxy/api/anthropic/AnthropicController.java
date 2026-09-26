@@ -13,7 +13,6 @@ import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.control.CallCanceledException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEventClassifier;
-import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.messages.AnthropicUsageParser;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
 import org.slf4j.Logger;
@@ -177,7 +176,6 @@ public class AnthropicController {
                 messagesService.messagesStream(requestBody, model, requestHeaders, requestId)
                 // 分类已由上游执行器完成：本层只读 isTerminal()。
                 .doOnNext(upstreamEvent -> {
-                    String event = upstreamEvent.data();
                     accumulateUsage(upstreamEvent, usage);
                     // Layer 1：message_stop 是协议终止标记，不计入事件数。
                     if (upstreamEvent.isTerminal()) {
