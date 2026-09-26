@@ -482,6 +482,11 @@ $$\text{删掉 } \texttt{api/shared/} \;\Rightarrow\; \text{下游}\textbf{什�
 | **body 形状** | 各端点的 `ErrorBodies` | **协议决定**：Chat 分两档 `type`，Anthropic 多一层，Responses 流式扁平 |
 | **usage 记账** | `UsageAccounting` | 三条共用；两档语义**刻意不同**（见 §4.2） |
 | **SSE 收尾协议** | `StreamLifecycle` | 三条共用；协议差异由回调表达 |
+| **非流式收尾** | `NonStreamLifecycle`（步 2 新增） | 三条共用；**回调只有一个**（错误响应），因为非流式没有 Layer 1 —— 终态恒为 `COMPLETED` |
+
+**两个 Lifecycle 的差异是两态本质差异，不要抹平**：取消检测（`takeUntilOther`+标志 vs
+`firstWithSignal`+异常）、产物类型（`Flux<SSE>` vs `Mono<ResponseEntity<?>>`）、
+状态码能否改、有无心跳。六合一会把这些压成标志位，读的人看不出走的是哪一支。
 
 **必须保留的差异**（不得抹平）：Responses 流式错误体**不能**复用非流式骨架 ——
 顶层无 `type` 时事件状态机无法分派，症状是**流挂住、界面转圈**而非报错。

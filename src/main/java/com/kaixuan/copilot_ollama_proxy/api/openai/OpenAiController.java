@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.kaixuan.copilot_ollama_proxy.api.shared.NonStreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UsageAccounting;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamErrorRenderer;
@@ -13,7 +14,6 @@ import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
-import com.kaixuan.copilot_ollama_proxy.control.CallCanceledException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
@@ -160,51 +160,14 @@ public class OpenAiController {
                     .body(streamBody));
         }
 
-        // 非流式：获取完整响应后提取 usage 进行记录，并返回给客户端。
-        // CONNECTED 现由 provider 层在上游响应真正到达时发出（更准确），此处不再乐观发出。
-        // 注册取消信号：外部点击取消时，cancelSignal 正常 complete，firstWithSignal 会抛 CallCanceledException 中止 chat 链。
-        // 取消权限不分阶段——前端右键 Toast 即可随时断连，后端不需要超时看门狗。
-        Mono<String> cancelSignal = callCancellationRegistry.register(requestId)
-                .then(Mono.error(new CallCanceledException()));
-        return Mono.firstWithSignal(
-                        // 出口处拆包：主干是统一形态（UpstreamEvent），本端点下游要的是裸 JSON ——
-                        // 形态在这里变回 String。流式侧读 isTerminal()、非流式侧取 data()，
-                        // 两者都是「出口按下游需要适配」，主干本身不感知。
-                        // usage 记账必须发生在取 data() 之前 —— 它读的是事件上的槽。
-                        chatCompletionService.chatCompletion(requestBody, model, requestHeaders, requestId)
-                                .doOnNext(this::recordUsage)
-                                .map(UpstreamEvent::data),
-                        cancelSignal)
-                // COMPLETED：非流式无 chunk 计数，最终计数为 0。
-                .doOnNext(json -> callLifecyclePublisher.publish(
-                        CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, stream, 0)))
-                .<ResponseEntity<?>>map(openAiJson -> ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(openAiJson))
-                .onErrorResume(ex -> {
-                    // ABORTED：管理后台主动取消，静默断开连接（不注入错误体），下游 Copilot 自行处理。
-                    if (ex instanceof CallCanceledException) {
-                        callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.ABORTED, model, stream));
-                        log.info("调用被主动取消 [{}] {}", model, requestId);
-                        return Mono.empty();
-                    }
-                    if (UpstreamFailureClassifier.isClientDisconnect(ex)) {
-                        // CANCELED：客户端主动断连，发出终态让 Toast 收尾淡出，避免僵尸 Toast。
-                        callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, stream));
-                        return Mono.empty();
-                    }
-                    // FAILED：上游错误或连接失败（客户端主动断连已在上面 return，不计入）。
-                    callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.FAILED, model, stream));
-                    return Mono.just(openAiErrorResponse(ex, model));
-                })
-                // CANCELED：下游（Copilot）主动断连是 Reactor 的 cancel 信号，onErrorResume 捕获不到，
-                // 必须用 doOnCancel 感知，否则不发终态事件 → inFlight 记录永久留存 → 僵尸 toast。
-                .doOnCancel(() -> {
-                    callLifecyclePublisher.publish(CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, stream));
-                    log.info("下游主动断连 [{}] {}", model, requestId);
-                })
-                // 无论正常结束、失败还是取消，都清理注册表，避免内存泄漏。
-                .doFinally(signal -> {
-                    callCancellationRegistry.remove(requestId);
-                });
+        // 非流式：收尾协议（注册取消 → firstWithSignal → 记 usage → COMPLETED
+        // → 三分支错误 → doOnCancel → doFinally）收归 NonStreamLifecycle ——
+        // 三条端点此前各写一份逐字相同的实现。本处只交代「哪条链」与「错误长什么样」。
+        return NonStreamLifecycle.attach(
+                chatCompletionService.chatCompletion(requestBody, model, requestHeaders, requestId),
+                new NonStreamLifecycle.CallContext(requestId, model, stream,
+                        callLifecyclePublisher, callCancellationRegistry, apiUsageCollector, log),
+                ex -> openAiErrorResponse(ex, model));
     }
 
     /**
@@ -473,15 +436,6 @@ public class OpenAiController {
                 + escapedContent + "\"},\"finish_reason\":\"stop\"}],"
                 + "\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}}";
         return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(json);
-    }
-
-    /**
-     * 从非流式响应记账 —— 读事件上由主干填好的槽，不自行解析。
-     *
-     * <p>读的是 {@link UpstreamEvent#usage()}，两档语义见 {@link UsageAccounting}。
-     */
-    private void recordUsage(UpstreamEvent event) {
-        UsageAccounting.recordNonStream(apiUsageCollector, event);
     }
 
     /**

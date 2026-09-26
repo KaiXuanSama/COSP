@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.api.shared.NonStreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamErrorRenderer;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
@@ -14,7 +15,6 @@ import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePub
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.ResponsesRequest;
-import com.kaixuan.copilot_ollama_proxy.control.CallCanceledException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEventClassifier;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.responses.ResponsesStreamEvents;
@@ -122,44 +122,13 @@ public class ResponsesController {
                     .body(streamBody));
         }
 
-        // 非流式：注册取消信号，外部点击取消时抛 CallCanceledException 中止链。
-        Mono<String> cancelSignal = callCancellationRegistry.register(requestId)
-                .then(Mono.error(new CallCanceledException()));
-        return Mono.firstWithSignal(
-                        // 出口处拆包：主干是统一形态（UpstreamEvent），本端点下游要的是裸 JSON。
-                        // usage 从事件上的槽读取 —— 解析已收归主干（阶段 5 步 7b-1）。
-                        responsesService.responses(requestBody, model, requestHeaders, requestId)
-                                .doOnNext(this::recordUsage)
-                                .map(UpstreamEvent::data),
-                        cancelSignal)
-                // COMPLETED：非流式无事件计数，最终计数为 0（前端已按 stream 分支处理文案）。
-                .doOnNext(json -> callLifecyclePublisher.publish(
-                        CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, stream, 0)))
-                .<ResponseEntity<?>>map(json -> ResponseEntity.ok()
-                        .contentType(MediaType.APPLICATION_JSON).body(json))
-                .onErrorResume(ex -> {
-                    if (ex instanceof CallCanceledException) {
-                        callLifecyclePublisher.publish(
-                                CallLifecycleEvent.of(requestId, CallPhase.ABORTED, model, stream));
-                        log.info("调用被主动取消 [{}] {}", model, requestId);
-                        return Mono.empty();
-                    }
-                    if (UpstreamFailureClassifier.isClientDisconnect(ex)) {
-                        callLifecyclePublisher.publish(
-                                CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, stream));
-                        return Mono.empty();
-                    }
-                    callLifecyclePublisher.publish(
-                            CallLifecycleEvent.of(requestId, CallPhase.FAILED, model, stream));
-                    return Mono.just(errorResponse(ex, model));
-                })
-                // CANCELED：下游断连是 Reactor 的 cancel 信号，onErrorResume 捕获不到。
-                .doOnCancel(() -> {
-                    callLifecyclePublisher.publish(
-                            CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, stream));
-                    log.info("下游主动断连 [{}] {}", model, requestId);
-                })
-                .doFinally(signal -> callCancellationRegistry.remove(requestId));
+        // 非流式：收尾协议收归 NonStreamLifecycle —— 三条端点此前各写一份逐字相同的实现。
+        // 本处只交代「哪条链」与「错误长什么样」。
+        return NonStreamLifecycle.attach(
+                responsesService.responses(requestBody, model, requestHeaders, requestId),
+                new NonStreamLifecycle.CallContext(requestId, model, stream,
+                        callLifecyclePublisher, callCancellationRegistry, apiUsageCollector, log),
+                ex -> errorResponse(ex, model));
     }
 
     /**
@@ -325,15 +294,6 @@ public class ResponsesController {
      */
     private void recordStreamUsage(UpstreamEvent event, AtomicReference<UsageTokens> usage) {
         UsageAccounting.accumulate(event, usage);
-    }
-
-    /**
-     * 从非流式响应记账 —— 读事件上由主干填好的槽，不自行解析。
-     *
-     * <p>读的是 {@link UpstreamEvent#usage()}，两档语义见 {@link UsageAccounting}。
-     */
-    private void recordUsage(UpstreamEvent event) {
-        UsageAccounting.recordNonStream(apiUsageCollector, event);
     }
 
     /**
