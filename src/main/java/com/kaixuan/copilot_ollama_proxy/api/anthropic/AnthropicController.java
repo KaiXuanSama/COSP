@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.api.anthropic;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
+import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamErrorRenderer;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UsageAccounting;
 import com.kaixuan.copilot_ollama_proxy.pipeline.entry.MessagesService;
@@ -25,7 +26,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
@@ -184,7 +184,8 @@ public class AnthropicController {
                     }
                     callLifecyclePublisher.publish(CallLifecycleEvent.of(
                             requestId, CallPhase.CHUNK, model, true, eventCount.incrementAndGet()));
-                })                // event 类型必须回填：Anthropic 客户端靠它驱动状态机，只发 data 无法解析。
+                })
+                // event 类型必须回填：Anthropic 客户端靠它驱动状态机，只发 data 无法解析。
                 .map(upstreamEvent -> {
                     String event = upstreamEvent.data();
                     String type = extractEventType(event);
@@ -291,50 +292,37 @@ public class AnthropicController {
     /**
      * 把调用失败渲染成<strong>非流式</strong>响应。
      *
-     * <p>分类交给 {@link UpstreamFailureClassifier}（三条线路共用一份判定）；
-     * 错误 JSON 骨架留在本类 —— 那是<strong>出口</strong>，Anthropic 比 OpenAI 系
-     * 多一层 {@code "type":"error"}，客户端据此区分错误帧与内容帧。
+     * <h2>分工</h2>
+     * 分类交给 {@link UpstreamFailureClassifier}；状态码与日志交给
+     * {@link UpstreamErrorRenderer}；<strong>body 骨架留在本类</strong> ——
+     * Anthropic 比 OpenAI 系多一层 {@code "type":"error"}，客户端据此区分错误帧与内容帧。
      *
-     * <p>状态码分两层：四个「上游没被连上」的类别回 400（改配置 / 改请求 / 改模型名即可，
-     * 与上游可用性无关，5xx 会诱导无意义的重试），其余回 502。
-     * 上游 HTTP 错误原样透传状态码与错误体。
+     * <p>状态码分层的理由（400 vs 502、上游 HTTP 原样透传）见渲染器的 Javadoc。
      */
     private ResponseEntity<?> errorResponse(Throwable ex, String model) {
-        UpstreamFailureClassifier.Failure failure = UpstreamFailureClassifier.classify(ex);
-        switch (failure.kind()) {
-            case PROTOCOL_UNSUPPORTED -> {
-                log.warn("协议不可用 [{}]: {}", model, failure.message());
-                return badRequest(failure.message());
-            }
-            case NO_SUPPORTED_PROTOCOL -> {
-                log.warn("供应商未配置任何协议 [{}]: {}", model, failure.message());
-                return badRequest(failure.message());
-            }
-            case UNRESOLVED_MODEL_ROUTE -> {
-                log.warn("模型未解析到供应商 [{}]: {}", model, failure.message());
-                return badRequest(failure.message());
-            }
-            case UPSTREAM_HTTP -> {
-                WebClientResponseException upstream = failure.asHttpFailure();
-                log.warn("上游 API 返回错误 [{}] {}: {}", model,
-                        upstream.getStatusCode().value(), upstream.getResponseBodyAsString());
-                return ResponseEntity.status(upstream.getStatusCode().value())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .body(upstream.getResponseBodyAsString());
-            }
-            default -> {
-                log.warn("上游 API 调用失败 [{}]: {}", model, ex.getMessage());
-                return ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                        .body(anthropicErrorBody("无法连接到上游服务"));
-            }
-        }
+        return UpstreamErrorRenderer.response(ex, model, log, BODIES);
     }
 
-    /** 400 + Anthropic 风格错误体。三个「上游没被连上」类别共用这一形。 */
-    private ResponseEntity<?> badRequest(String message) {
-        return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
-                .body(anthropicErrorBody(message));
-    }
+    /**
+     * Anthropic 形态的错误体 —— 本端点自备。
+     *
+     * <p><strong>与非流式/流式共用同一形</strong>：Anthropic 的流式错误事件与非流式错误体
+     * 都是 {@code {"type":"error","error":{...}}}（这是它与 Responses 的差异 ——
+     * 后者两者刻意不同）。因此这里只有一个 {@code badRequest}/{@code upstreamError} 实现，
+     * 供两条路径共用。
+     */
+    private final UpstreamErrorRenderer.ErrorBodies BODIES =
+            new UpstreamErrorRenderer.ErrorBodies() {
+                @Override
+                public String badRequest(String message) {
+                    return anthropicErrorBody(message);
+                }
+
+                @Override
+                public String upstreamError(String message) {
+                    return anthropicErrorBody(message);
+                }
+            };
 
     /**
      * 构造流式错误事件的 body，透传上游错误体。
@@ -342,31 +330,7 @@ public class AnthropicController {
      * <p>与非流式共用同一份分类，仅送出口不同（流式状态码已定，只能靠事件体表达）。
      */
     private String errorEventBody(Throwable error, String model) {
-        UpstreamFailureClassifier.Failure failure = UpstreamFailureClassifier.classify(error);
-        return switch (failure.kind()) {
-            case PROTOCOL_UNSUPPORTED -> {
-                log.warn("协议不可用 [{}]: {}", model, failure.message());
-                yield anthropicErrorBody(failure.message());
-            }
-            case NO_SUPPORTED_PROTOCOL -> {
-                log.warn("供应商未配置任何协议 [{}]: {}", model, failure.message());
-                yield anthropicErrorBody(failure.message());
-            }
-            case UNRESOLVED_MODEL_ROUTE -> {
-                log.warn("模型未解析到供应商 [{}]: {}", model, failure.message());
-                yield anthropicErrorBody(failure.message());
-            }
-            case UPSTREAM_HTTP -> {
-                WebClientResponseException upstream = failure.asHttpFailure();
-                log.warn("上游 API 返回错误 [{}] {}: {}", model,
-                        upstream.getStatusCode().value(), upstream.getResponseBodyAsString());
-                yield upstream.getResponseBodyAsString();
-            }
-            default -> {
-                log.warn("上游 API 调用失败 [{}]: {}", model, error.getMessage());
-                yield anthropicErrorBody("无法连接到上游服务");
-            }
-        };
+        return UpstreamErrorRenderer.streamBody(error, model, log, BODIES);
     }
 
     /**

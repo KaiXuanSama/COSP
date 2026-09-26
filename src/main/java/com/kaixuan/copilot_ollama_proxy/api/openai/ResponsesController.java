@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
+import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamErrorRenderer;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UsageAccounting;
 import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ResponsesService;
@@ -161,13 +162,6 @@ public class ResponsesController {
                 .doFinally(signal -> callCancellationRegistry.remove(requestId));
     }
 
-    /**
-     * 处理流式响应，把上游事件流映射为带 {@code event:} 类型的 SSE 帧下发。
-     *
-     * <p>完成判定沿用另两个端点的两层结构：
-     * Layer 1 收到终态事件即 finalize（不必等 TCP 关闭），
-     * Layer 2 上游关闭连接时兜底，用 CAS 去重保证只 finalize 一次。
-     */
     /**
      * 处理流式响应，把上游事件流映射为带 {@code event:} 类型的 SSE 帧下发。
      *
@@ -345,105 +339,92 @@ public class ResponsesController {
     /**
      * 把调用失败渲染成<strong>非流式</strong>响应。
      *
-     * <p>分类交给 {@link UpstreamFailureClassifier}（三条线路共用一份判定）；
-     * 错误 JSON 骨架留在本类 —— 那是<strong>出口</strong>，且 Responses 流式与非流式
-     * 的骨架刻意不同（见 {@link #errorEventBody}）。
+     * <h2>分工</h2>
+     * 分类交给 {@link UpstreamFailureClassifier}；状态码与日志交给
+     * {@link UpstreamErrorRenderer}；<strong>body 骨架留在本类</strong> ——
+     * 非流式与 Chat 同形（同为 OpenAI 系，客户端错误解析代码通常共用）。
      *
-     * <p>状态码分两层：三个「上游没被连上」的类别回 400，其余回 502。
-     * 上游 HTTP 错误原样透传状态码与错误体。
+     * <p>状态码分层的理由（400 vs 502、上游 HTTP 原样透传）见渲染器的 Javadoc。
      */
     private ResponseEntity<?> errorResponse(Throwable ex, String model) {
-        UpstreamFailureClassifier.Failure failure = UpstreamFailureClassifier.classify(ex);
-        switch (failure.kind()) {
-            case PROTOCOL_UNSUPPORTED -> {
-                log.warn("协议不可用 [{}]: {}", model, failure.message());
-                return badRequest(failure.message());
-            }
-            case NO_SUPPORTED_PROTOCOL -> {
-                log.warn("供应商未配置任何协议 [{}]: {}", model, failure.message());
-                return badRequest(failure.message());
-            }
-            case UNRESOLVED_MODEL_ROUTE -> {
-                log.warn("模型未解析到供应商 [{}]: {}", model, failure.message());
-                return badRequest(failure.message());
-            }
-            case UPSTREAM_HTTP -> {
-                WebClientResponseException upstream = failure.asHttpFailure();
-                log.warn("上游 API 返回错误 [{}] {}: {}", model,
-                        upstream.getStatusCode().value(), upstream.getResponseBodyAsString());
-                return ResponseEntity.status(upstream.getStatusCode().value())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .body(upstream.getResponseBodyAsString());
-            }
-            default -> {
-                log.warn("上游 API 调用失败 [{}]: {}", model, ex.getMessage());
-                return ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                        .body(errorBody("无法连接到上游服务"));
-            }
-        }
+        return UpstreamErrorRenderer.response(ex, model, log, BODIES);
     }
 
-    /** 400 + 非流式错误体（{@code {"error":{...}}}，与 Chat 同形）。 */
-    private ResponseEntity<?> badRequest(String message) {
-        return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
-                .body(errorBody(message));
-    }
+    /**
+     * Responses 形态的错误体 —— 本端点自备，且<strong>两条路径刻意不同形</strong>。
+     *
+     * <table border="1">
+     *   <caption>为何 400 与 502 是两个实现</caption>
+     *   <tr><th>档位</th><th>非流式</th><th>流式</th></tr>
+     *   <tr><td>400 类</td><td rowspan="2">{@code {"error":{...}}}（与 Chat 同形）</td>
+     *       <td>{@link #streamErrorBody}（扁平，顶层带 {@code type}）</td></tr>
+     *   <tr><td>502 类</td><td>{@link #streamErrorBody}</td></tr>
+     * </table>
+     *
+     * <h2>为何本类的流式与非流式不能共用骨架</h2>
+     * 非流式的错误是一个普通 HTTP 响应体，用 Chat 形态合理 —— 两者同为 OpenAI 系。
+     * 但流式的错误是一个<strong>协议事件</strong>，得守事件契约：Responses 客户端是
+     * 事件状态机，靠 {@code type} 分派。Chat 形态的错误体<strong>顶层没有 {@code type}</strong>，
+     * 只认 JSON 的客户端会把这帧当成无法分派的脏数据 ——
+     * 症状不是 400/502，而是<strong>流挂住、界面转圈不动</strong>。
+     *
+     * <p>因此本类的 {@code ErrorBodies} 只能服务非流式；流式那条走
+     * {@link #errorEventBody}，它自己调 {@link #streamErrorBody}。
+     */
+    private final UpstreamErrorRenderer.ErrorBodies BODIES =
+            new UpstreamErrorRenderer.ErrorBodies() {
+                @Override
+                public String badRequest(String message) {
+                    return errorBody(message);
+                }
+
+                @Override
+                public String upstreamError(String message) {
+                    return errorBody(message);
+                }
+            };
 
     /**
      * 构造流式错误<strong>事件</strong>的 body。
      *
-     * <h2>与非流式刻意不共用同一个 JSON 骨架</h2>
-     * 非流式的错误是一个普通 HTTP 响应体，用 Chat 形态
-     * （{@code {"error":{...}}}）合理 —— 两者同为 OpenAI 系，客户端错误解析代码通常共用。
-     * 但流式的错误是一个<strong>协议事件</strong>，得守事件的契约：Responses 客户端是
-     * 事件状态机，靠 {@code type} 分派。本方法上方那段 {@code map} 正是在把 JSON 的
-     * {@code type} 回填到 SSE 的 {@code event:} 行 —— 而 Chat 形态的错误体<strong>顶层
-     * 没有 {@code type}</strong>，只认 JSON 的客户端会把这帧当成无法分派的脏数据。
-     *
-     * <p>症状因此不是 400/502，而是<strong>流挂住、界面转圈不动</strong> ——
-     * 错误信息其实已经送到，只是客户端不认。排查时极易误判成超时或网络问题。
-     *
-     * <p>此前这里直接调 {@code errorBody}，就是踩在「一个方法服务两条契约不同的路」上。
-     *
-     * @see #streamErrorBody(String) 官方 {@code ResponseErrorEvent} 的形态
+     * <p>与非流式<strong>不能共用</strong>同一个 JSON 骨架（理由见 {@link #BODIES} 的注释）。
+     * 但<strong>分类骨架仍然共用</strong> —— 这里复用 {@link UpstreamErrorRenderer#streamBody}，
+     * 只把{@code ErrorBodies} 换成一个流式专用的实例：两者都是
+     * {@link #streamErrorBody}，即流式的 400 与 502 <strong>同形</strong>
+     * （区别于非流式的 {@code errorBody}）。
      */
     private String errorEventBody(Throwable error, String model) {
-        UpstreamFailureClassifier.Failure failure = UpstreamFailureClassifier.classify(error);
-        String upstreamBody = failure.kind() == UpstreamFailureClassifier.FailureKind.UPSTREAM_HTTP
-                ? failure.asHttpFailure().getResponseBodyAsString()
-                : null;
-        // UPSTREAM_HTTP 单拎出来：上游原文的处理是本类独有的（要判它能不能被状态机分派），
-        // 不适合塞进 switch 的表达式位置。
-        if (upstreamBody != null) {
-            log.warn("上游 API 返回错误 [{}] {}: {}", model,
-                    failure.asHttpFailure().getStatusCode().value(), upstreamBody);
-            // 上游原文优先，但必须能被状态机分派 —— 直连 Responses 上游的 4xx 通常是
-            // REST 错误体（Chat 形态、顶层无 type），原样下发等于制造一帧脏数据。
-            // 已是合法 error 事件的（少数上游把 SSE 错误帧当响应体返回）则原样透传，
-            // 那才是最准确的信息。
-            return isResponsesErrorEvent(upstreamBody)
-                    ? upstreamBody
-                    : streamErrorBody(upstreamMessageOf(upstreamBody, failure.asHttpFailure()));
-        }
-        return switch (failure.kind()) {
-            case PROTOCOL_UNSUPPORTED -> {
-                log.warn("协议不可用 [{}]: {}", model, failure.message());
-                yield streamErrorBody(failure.message());
-            }
-            case NO_SUPPORTED_PROTOCOL -> {
-                log.warn("供应商未配置任何协议 [{}]: {}", model, failure.message());
-                yield streamErrorBody(failure.message());
-            }
-            case UNRESOLVED_MODEL_ROUTE -> {
-                log.warn("模型未解析到供应商 [{}]: {}", model, failure.message());
-                yield streamErrorBody(failure.message());
-            }
-            default -> {
-                log.warn("上游 API 调用失败 [{}]: {}", model, error.getMessage());
-                yield streamErrorBody("无法连接到上游服务");
-            }
-        };
+        return UpstreamErrorRenderer.streamBody(error, model, log, STREAM_BODIES);
     }
+
+    /**
+     * 流式专用的 body 形状：两档都是扁平的 {@link #streamErrorBody}。
+     *
+     * <p>{@link #adaptUpstreamBody} 是本类独有的覆写 —— 上游原文可能是 REST 错误体
+     * （顶层无 {@code type}），原样下发等于制造一帧脏数据；只有能 {@link #isResponsesErrorEvent}
+     * 识别的才原样透传。
+     */
+    private final UpstreamErrorRenderer.ErrorBodies STREAM_BODIES =
+            new UpstreamErrorRenderer.ErrorBodies() {
+                @Override
+                public String badRequest(String message) {
+                    return streamErrorBody(message);
+                }
+
+                @Override
+                public String upstreamError(String message) {
+                    return streamErrorBody(message);
+                }
+
+                @Override
+                public String adaptUpstreamBody(String raw, WebClientResponseException exception) {
+                    // 已是合法 error 事件的（少数上游把 SSE 错误帧当响应体返回）则原样透传，
+                    // 那才是最准确的信息。
+                    return isResponsesErrorEvent(raw)
+                            ? raw
+                            : streamErrorBody(upstreamMessageOf(raw, exception));
+                }
+            };
 
     /**
      * 官方 {@code ResponseErrorEvent} 形态的错误事件体。

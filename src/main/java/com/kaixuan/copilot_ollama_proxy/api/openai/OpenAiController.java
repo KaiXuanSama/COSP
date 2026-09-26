@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UsageAccounting;
+import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamErrorRenderer;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
 import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
@@ -27,7 +28,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
@@ -497,71 +497,38 @@ public class OpenAiController {
     /**
      * 把调用失败渲染成<strong>非流式</strong>响应。
      *
-     * <h2>分类与渲染的分工</h2>
-     * 「这是什么失败」交给 {@link UpstreamFailureClassifier}（三条线路共用一份判定，
-     * 避免同一个上游故障在 Chat 上报 400、在 Responses 上报 502）；
-     * 「长什么样」留在本类 —— 错误 JSON 骨架是<strong>出口</strong>，由下游协议决定。
+     * <h2>分工</h2>
+     * 「这是什么失败」交给 {@link UpstreamFailureClassifier}（三条线路共用一份判定）；
+     * 「状态码与日志」交给 {@link UpstreamErrorRenderer}（同样三条共用）；
+     * <strong>「长什么样」留在本类</strong> —— 错误 JSON 骨架是<strong>出口</strong>，由下游协议决定。
      *
-     * <h2>两种状态码的分界：上游到底有没有被连上</h2>
-     * <ul>
-     *   <li><strong>400</strong>（四个类别）—— 请求根本没发出去。
-     *       与 502 的区别在于「改什么才能解决」：改配置、改请求、改模型名，都与上游可用性无关。
-     *       用 5xx 会诱导客户端重试，而重试同一份输入结果不会变。</li>
-     *   <li><strong>502</strong>（响应翻译失败）—— 请求发出去了、上游也回了 2xx，
-     *       但我们解析不了。下游没做错任何事，不该报 400。</li>
-     * </ul>
-     *
-     * <p>上游 HTTP 错误<strong>原样透传状态码与错误体</strong>，不包一层自己的解释：
-     * 上游那句话（余额不足、模型不存在、限流）往往比我们能编的任何文案都准确。
-     *
-     * @return 已具备状态码与错误体的响应
+     * <p>状态码分层的理由（400 vs 502、上游 HTTP 原样透传）见渲染器的 Javadoc。
      */
     private ResponseEntity<?> openAiErrorResponse(Throwable ex, String model) {
-        UpstreamFailureClassifier.Failure failure = UpstreamFailureClassifier.classify(ex);
-        switch (failure.kind()) {
-            case PROTOCOL_UNSUPPORTED -> {
-                log.warn("协议不可用 [{}]: {}", model, failure.message());
-                return badRequest(failure.message());
-            }
-            case NO_SUPPORTED_PROTOCOL -> {
-                log.warn("供应商未配置任何协议 [{}]: {}", model, failure.message());
-                return badRequest(failure.message());
-            }
-            case REQUEST_TRANSLATION -> {
-                log.warn("请求翻译失败 [{}]: {}", model, failure.message());
-                return badRequest(failure.message());
-            }
-            case UNRESOLVED_MODEL_ROUTE -> {
-                log.warn("模型未解析到供应商 [{}]: {}", model, failure.message());
-                return badRequest(failure.message());
-            }
-            case UPSTREAM_HTTP -> {
-                WebClientResponseException upstream = failure.asHttpFailure();
-                log.warn("上游 API 返回错误 [{}] {}: {}", model,
-                        upstream.getStatusCode().value(), upstream.getResponseBodyAsString());
-                return ResponseEntity.status(upstream.getStatusCode().value())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .body(upstream.getResponseBodyAsString());
-            }
-            case RESPONSE_TRANSLATION -> {
-                log.warn("响应翻译失败 [{}]: {}", model, failure.message());
-                return ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                        .body(openAiErrorBody(failure.message(), "upstream_error"));
-            }
-            default -> {
-                log.warn("上游 API 调用失败 [{}]: {} ({})", model,
-                        extractRootCause(ex), extractRequestUrl(ex));
-                return ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                        .body(openAiErrorBody("无法连接到上游服务", "upstream_error"));
-            }
-        }
+        return UpstreamErrorRenderer.response(ex, model, log, BODIES);
     }
 
-    /** 400 + {@code invalid_request_error}。四个「上游没被连上」类别共用这一形。 */
-    private ResponseEntity<?> badRequest(String message) {
-        return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
-                .body(openAiErrorBody(message, "invalid_request_error"));
-    }
+    /**
+     * OpenAI 形态的错误体 —— 本端点自备（出口判据：形状由下游协议决定）。
+     *
+     * <p>{@code type} 取值分两档：400 类用 {@code invalid_request_error}，
+     * 502 类用 {@code upstream_error}。
+     *
+     * <p>是<strong>实例字段</strong>而非 static：它要调 {@link #openAiErrorBody}，
+     * 而后者用注入的 {@code objectMapper} 序列化。
+     */
+    private final UpstreamErrorRenderer.ErrorBodies BODIES =
+            new UpstreamErrorRenderer.ErrorBodies() {
+                @Override
+                public String badRequest(String message) {
+                    return openAiErrorBody(message, "invalid_request_error");
+                }
+
+                @Override
+                public String upstreamError(String message) {
+                    return openAiErrorBody(message, "upstream_error");
+                }
+            };
 
     /**
      * 把调用失败渲染成<strong>流式</strong> error 帧。
@@ -569,49 +536,15 @@ public class OpenAiController {
      * <p>与非流式<strong>不能共用</strong> {@link #openAiErrorResponse}：流式的状态码在第一帧
      * 就提交了，之后改它没有意义 —— 客户端只能靠 SSE 的 {@code event: error} 识别失败。
      * 两者的<strong>类别判定完全相同</strong>（那是分类器的职责），
-     * 只有「怎么送出去」不同，这正是本方法存在的理由。
+     * 只有「怎么送出去」不同 —— 所以共享件给两个入口，本方法负责包信封。
      *
      * <p>上游 HTTP 错误在流式下也<strong>原样透传错误体</strong>（不带状态码，那已无处可放），
      * 与非流式同一取向：上游那句话最准确。
      */
     private ServerSentEvent<String> openAiErrorFrame(Throwable error, String model) {
-        UpstreamFailureClassifier.Failure failure = UpstreamFailureClassifier.classify(error);
-        String body = switch (failure.kind()) {
-            case PROTOCOL_UNSUPPORTED -> {
-                log.warn("协议不可用 [{}]: {}", model, failure.message());
-                yield openAiErrorBody(failure.message(), "invalid_request_error");
-            }
-            case NO_SUPPORTED_PROTOCOL -> {
-                log.warn("供应商未配置任何协议 [{}]: {}", model, failure.message());
-                yield openAiErrorBody(failure.message(), "invalid_request_error");
-            }
-            case REQUEST_TRANSLATION -> {
-                // 能走到这里是因为服务层的 Flux.defer 把组装期异常转成了 onError 信号；
-                // 否则它会逃出控制器变成 500 JSON。
-                log.warn("请求翻译失败 [{}]: {}", model, failure.message());
-                yield openAiErrorBody(failure.message(), "invalid_request_error");
-            }
-            case UNRESOLVED_MODEL_ROUTE -> {
-                log.warn("模型未解析到供应商 [{}]: {}", model, failure.message());
-                yield openAiErrorBody(failure.message(), "invalid_request_error");
-            }
-            case UPSTREAM_HTTP -> {
-                WebClientResponseException upstream = failure.asHttpFailure();
-                log.warn("上游 API 返回错误 [{}] {}: {}", model,
-                        upstream.getStatusCode().value(), upstream.getResponseBodyAsString());
-                yield upstream.getResponseBodyAsString();
-            }
-            case RESPONSE_TRANSLATION -> {
-                log.warn("响应翻译失败 [{}]: {}", model, failure.message());
-                yield openAiErrorBody(failure.message(), "upstream_error");
-            }
-            default -> {
-                log.warn("上游 API 调用失败 [{}]: {} ({})", model,
-                        extractRootCause(error), extractRequestUrl(error));
-                yield openAiErrorBody("无法连接到上游服务", "upstream_error");
-            }
-        };
-        return ServerSentEvent.<String>builder(body).event("error").build();
+        return ServerSentEvent.<String>builder(UpstreamErrorRenderer.streamBody(error, model, log, BODIES))
+                .event("error")
+                .build();
     }
 
     /**
@@ -631,49 +564,5 @@ public class OpenAiController {
         } catch (Exception exception) {
             return "{\"error\":{\"message\":\"上游调用失败\",\"type\":\"upstream_error\"}}";
         }
-    }
-
-    /**
-     * 从异常链中提取最底层的有意义错误信息，过滤掉 Reactor/Netty 内部异常。
-     * 例如 DNS 解析失败会提取 "Failed to resolve 'api.kimi.com'"。
-     */
-    private String extractRootCause(Throwable throwable) {
-        Throwable deepest = throwable;
-        Throwable current = throwable;
-        while (current.getCause() != null && current.getCause() != current) {
-            current = current.getCause();
-            String msg = current.getMessage();
-            // 跳过无意义的包装异常（Reactor、Netty 内部）
-            if (msg != null && !msg.isBlank() && !msg.startsWith("Retries exhausted")) {
-                deepest = current;
-            }
-        }
-        String msg = deepest.getMessage();
-        return (msg != null && !msg.isBlank()) ? msg : deepest.getClass().getSimpleName();
-    }
-
-    /**
-     * 从异常中提取请求 URL（如有）。
-     * WebClientRequestException 的 message 中通常包含目标 URL。
-     */
-    private String extractRequestUrl(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof org.springframework.web.reactive.function.client.WebClientRequestException requestEx) {
-                java.net.URI uri = requestEx.getUri();
-                if (uri != null) return uri.toString();
-            }
-            // 从 Reactor checkpoint 中提取 URL
-            String msg = current.getMessage();
-            if (msg != null && msg.contains("Request to POST ")) {
-                int start = msg.indexOf("Request to POST ") + 16;
-                int end = msg.indexOf(" ", start);
-                if (end < 0) end = msg.indexOf("]", start);
-                if (end < 0) end = msg.length();
-                return msg.substring(start, end).trim();
-            }
-            current = current.getCause();
-        }
-        return "unknown";
     }
 }

@@ -433,15 +433,58 @@ observability/
 > 已明写「仅暴露 provider 需要的写入能力；查询能力保留在 infrastructure 的 Repository 上」，
 > 且读侧独立在 `CallLogQueryService` —— **读写早已分离**，故为纯写端口，直接搬。
 
-### 3.3 出口（`api/`，不在本层）
+### 3.3 出口轴（`api/`）
 
-三个 Controller 按**下游协议**分岔：三套错误 JSON 骨架、SSE 事件名回填策略、
-`sse` 收尾协议（`StreamLifecycle`）均**刻意不同**。详见 `docs/REQUEST_PIPELINE.md`。
+> **它不是第五轴 —— 它一直是第二轴**（§0 四轴表的第 2 行），判据是
+> 「删掉它下游**收不到**东西」。本小节描述的是它的**内部拓扑**（阶段 6，2026-09-26）。
+
+```
+api/
+├─ openai/  anthropic/     三个协议端点
+├─ shared/                 出口自己的共享件（≠ 观测轴，≠ 控制面）
+│     UpstreamFailureClassifier · UpstreamErrorRenderer · StreamLifecycle · UsageAccounting
+├─ ollama/                 模型发现（不是出口）
+└─ CallLifecycle / CallLog / UsageQuery / ProviderAdmin …  后台 API（不是出口）
+```
+
+**三个 Controller 按下游协议分岔**：三套错误 JSON 骨架、SSE 事件名回填策略、
+`sse` 收尾协议均**刻意不同**。详见 `docs/REQUEST_PIPELINE.md`。
 
 **一条判据**（归拢讨论的产物）：**出口可以知道「这些字节要包成什么 HTTP 形状」，
 不该知道「这些字节在协议上是什么意思」**。
-据此 usage 的**解析**（协议语义，含 Anthropic 的跨事件 merge）属主干、
-而**日聚合与推前端**属观测 —— 现两者重复解析同一份字节，是待修的重复（见 §4.1）。
+
+#### 3.3.1 反复出现的误判：`api/shared/` 不是观测轴
+
+它看起来像 —— 因为出口代码里最显眼的行都在调观测（`publish(...)`）。但按判据测：
+
+$$\text{删掉 } \texttt{api/shared/} \;\Rightarrow\; \text{下游}\textbf{什么都收不到}$$
+
+而观测轴是「删掉它，下游收到的**完全不变**，但后台瞎了」。两者正相反。
+
+实测三个类的对外依赖，恰好说明「**出口在使用另外三条轴**」：
+
+| `api/shared/` 的类 | 它用谁 | 它自己是什么 |
+|---|---|---|
+| `UpstreamFailureClassifier` | `pipeline.protocol`（4 个异常）· `application.runtime` | **出口**的共享件 |
+| `UpstreamErrorRenderer` | 同类（只因分类结果而依赖） | **出口**的共享件 |
+| `UsageAccounting` | `observability.record`（端口）· `pipeline.protocol` · `protocol.usage` | **出口**的共享件 |
+| `StreamLifecycle` | **`control`**（取消注册表）· `observability.publisher` · `protocol.lifecycle` | **出口**的共享件 |
+
+> 与 7a-1 同源：**轴 = 代码住在哪，≠ 这段代码在跟谁说话**。
+> 观测轴的实现全在 `observability/`；`api/shared/` 只是**在调用它**。
+
+#### 3.3.2 什么该共用、什么必须各备
+
+| 层 | 谁负责 | 为何 |
+|---|---|---|
+| **分类**（这是什么失败） | `UpstreamFailureClassifier` | 三条共用；分岔会得到不同结论 |
+| **状态码 + 日志** | `UpstreamErrorRenderer` | 三条共用；状态码表达「用户该去改什么」，与下游协议无关 |
+| **body 形状** | 各端点的 `ErrorBodies` | **协议决定**：Chat 分两档 `type`，Anthropic 多一层，Responses 流式扁平 |
+| **usage 记账** | `UsageAccounting` | 三条共用；两档语义**刻意不同**（见 §4.2） |
+| **SSE 收尾协议** | `StreamLifecycle` | 三条共用；协议差异由回调表达 |
+
+**必须保留的差异**（不得抹平）：Responses 流式错误体**不能**复用非流式骨架 ——
+顶层无 `type` 时事件状态机无法分派，症状是**流挂住、界面转圈**而非报错。
 
 ### 3.4 两态轴（流式 / 非流式）
 
@@ -547,9 +590,9 @@ observability/
    随 `discovery/` 搬走而失效，已改 `**/application/discovery/**`。
 4. **注意「测试数变少」** —— 那是文件丢失的可靠信号（比任何断言都早），
    常见原因是 `git mv` 的目标目录不存在而**静默失败**。
-5. **全量验证**：`.\mvnw.cmd compiler:compile compiler:testCompile surefire:test`，基线 **1324**
-   （阶段 5 步 7a-1 前为 1309；步 7b-1 新增 `OpenAiControllerUsageSlotTests` 6 条，
-   步 7b-2 新增 `UsageAccountingTests` 9 条）。
+5. **全量验证**：`.\mvnw.cmd compiler:compile compiler:testCompile surefire:test`，基线 **1333**
+   （阶段 5 步 7a-1 前为 1309；步 7b-1 +6 `OpenAiControllerUsageSlotTests`，
+   步 7b-2 +9 `UsageAccountingTests`，阶段 6 步 1 +9 `UpstreamErrorRendererTests`）。
 
 ### 5.1 搬包实操的三条细则（阶段 5 实测，后续搬包直接复用）
 
