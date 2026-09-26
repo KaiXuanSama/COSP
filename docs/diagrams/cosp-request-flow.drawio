@@ -1,0 +1,351 @@
+<mxfile host="app.diagrams.net" agent="cosp">
+  <diagram id="cosp-request-flow" name="完整请求流程">
+    <mxGraphModel dx="3548" dy="3052" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="1920" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="legend" parent="1" style="swimlane;whiteSpace=wrap;html=1;rounded=0;startSize=26;fillColor=#ffffff;strokeColor=#999999;fontStyle=1;fontSize=13;" value="图例" vertex="1">
+          <mxGeometry height="196" width="520" x="1320" y="40" as="geometry">
+            <mxRectangle height="30" width="70" x="1260" y="40" as="alternateBounds" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="lg1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" value="主干（数据怎么流）" vertex="1">
+          <mxGeometry height="34" width="220" x="1340" y="76" as="geometry" />
+        </mxCell>
+        <mxCell id="lg2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" value="支线（协议差异是代码）" vertex="1">
+          <mxGeometry height="34" width="240" x="1580" y="76" as="geometry" />
+        </mxCell>
+        <mxCell id="lg3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" value="出口（下游边界）" vertex="1">
+          <mxGeometry height="34" width="220" x="1340" y="120" as="geometry" />
+        </mxCell>
+        <mxCell id="lg4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" value="正交轴（control / observability）" vertex="1">
+          <mxGeometry height="34" width="240" x="1580" y="120" as="geometry" />
+        </mxCell>
+        <mxCell id="lg5" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;fontStyle=1;" value="同步 → 异步 的缝" vertex="1">
+          <mxGeometry height="34" width="220" x="1340" y="164" as="geometry" />
+        </mxCell>
+        <mxCell id="lg6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;dashed=1;fontSize=11;" value="虚线 = 正交轴交互 / 查表支线 / 循环" vertex="1">
+          <mxGeometry height="34" width="240" x="1580" y="164" as="geometry" />
+        </mxCell>
+        <mxCell id="lg7" parent="1" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontStyle=2;fontColor=#555555;" value="边上标注 = 该处数据的形态" vertex="1">
+          <mxGeometry height="20" width="480" x="1340" y="206" as="geometry" />
+        </mxCell>
+        <mxCell id="client" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" value="&lt;b&gt;下游客户端&lt;/b&gt;&lt;br&gt;Copilot · Claude Code · 任意 OpenAI / Anthropic 兼容客户端" vertex="1">
+          <mxGeometry height="70" width="520" x="555" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="filters" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=11;align=center;" value="&lt;b&gt;步骤 0 · WebFilter 链（infrastructure，不是主干）&lt;/b&gt;&lt;br&gt;GatewayAuthFilter 鉴权（三聊天端点） · RequestLoggingFilter / ResponseLoggingFilter 日志 · SseConnectionGate 连接闸门" vertex="1">
+          <mxGeometry height="80" width="640" x="495" y="160" as="geometry" />
+        </mxCell>
+        <mxCell id="epOpenAi" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;align=center;" value="&lt;b&gt;OpenAiController&lt;/b&gt; (api/openai)&lt;br&gt;POST /v1/chat/completions；&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;GET /v1/models&lt;/span&gt;&lt;div&gt;&lt;div&gt;下游协议 = &lt;b&gt;CHAT&lt;/b&gt;&lt;br&gt;&lt;i&gt;虚拟模型拦截：nano_llm / readme&lt;/i&gt;&lt;/div&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="110" width="300" x="335" y="280" as="geometry" />
+        </mxCell>
+        <mxCell id="epAnthropic" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;align=center;" value="&lt;b&gt;AnthropicController&lt;/b&gt; (api/anthropic)&lt;br&gt;POST /v1/messages&lt;br&gt;下游协议 = &lt;b&gt;MESSAGES&lt;/b&gt;" vertex="1">
+          <mxGeometry height="110" width="300" x="665" y="280" as="geometry" />
+        </mxCell>
+        <mxCell id="epResponses" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;align=center;" value="&lt;b&gt;ResponsesController&lt;/b&gt; (api/openai)&lt;br&gt;POST /v1/responses&lt;br&gt;下游协议 = &lt;b&gt;RESPONSES&lt;/b&gt;" vertex="1">
+          <mxGeometry height="110" width="300" x="995" y="280" as="geometry" />
+        </mxCell>
+        <mxCell id="epNote" parent="1" style="text;html=1;align=center;fontSize=10;fontStyle=2;" value="&lt;span style=&quot;font-style: normal;&quot;&gt;RECEIVED 生命周期事件（观测轴：Toast 起点）&lt;/span&gt;" vertex="1">
+          <mxGeometry height="20" width="961" x="334" y="450" as="geometry" />
+        </mxCell>
+        <mxCell id="entry" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;align=center;" value="&lt;b&gt;步骤 2 · 端点服务（pipeline/entry，三者同形）&lt;/b&gt;&lt;br&gt;ChatCompletionService · MessagesService · ResponsesService&lt;br&gt;&lt;i&gt;defer 包裹 → RequestPipelineContext.forEndpoint(...) → RequestPipeline.execute(ctx)&lt;/i&gt;" vertex="1">
+          <mxGeometry height="70" width="830" x="400" y="490" as="geometry" />
+        </mxCell>
+        <mxCell id="reqpipe" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;align=center;" value="&lt;b&gt;步骤 3 · RequestPipeline.execute(ctx) —— 门面，只有两行&lt;/b&gt;&lt;br&gt;beforeSend.process(ctx) &amp;nbsp;→&amp;nbsp; return afterSend.process(ctx)" vertex="1">
+          <mxGeometry height="70" width="830" x="400" y="640" as="geometry" />
+        </mxCell>
+        <mxCell id="beforeBlock" parent="1" style="swimlane;whiteSpace=wrap;html=1;rounded=0;startSize=32;fillColor=#ffffff;strokeColor=#6c8ebf;fontStyle=1;fontSize=12;" value="&lt;b&gt;发送前块 · BeforeSend.process(ctx)&lt;/b&gt; &amp;nbsp;—— 同步 void step(ctx) 序列，就地改 ctx" vertex="1">
+          <mxGeometry height="390" width="890" x="370" y="750" as="geometry" />
+        </mxCell>
+        <mxCell id="step4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=8;" value="&lt;b&gt;④ routeStep&lt;/b&gt; &amp;nbsp;路由 + 调度 + 通知&lt;br&gt;ProviderRouteResolver.resolve(model) → ProtocolDispatchManager.dispatch(直连还是翻译 + 上游协议)&lt;br&gt;→ ProtocolNotifier.notifyProtocols(C→M Toast) → ctx.applyRouting(...)" vertex="1">
+          <mxGeometry height="62" width="830" x="400" y="792" as="geometry" />
+        </mxCell>
+        <mxCell id="step5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=8;" value="&lt;b&gt;⑤ translateStep&lt;/b&gt; 【支线 · 仅跨协议（ctx.translationNeeded()）】&lt;br&gt;去程 RequestProtocolTranslator（键=downstream+upstream；&lt;b&gt;未命中报错&lt;/b&gt;）→ 回程 ResponseProtocolTranslator（未命中记 null）&lt;br&gt;→ ctx.applyTranslation + ctx.applyTranslators(去程,回程) + markCompleted" vertex="1">
+          <mxGeometry height="66" width="830" x="400" y="872" as="geometry" />
+        </mxCell>
+        <mxCell id="step6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=8;" value="&lt;b&gt;⑥ assembleStep&lt;/b&gt; → RequestBodyAssembler.assemble(ctx)&lt;br&gt;八阶段：① 复制 → ② 解析模型名 → ③ 写协议字段(model/stream) → ④ system 抬升 → ⑤ max_tokens 落定&lt;br&gt;→ ⑥ 思考注入 → ⑦ 请求体规则 RequestBodyRuleEngine → ⑧ 清 null（&lt;b&gt;必须最后&lt;/b&gt;）" vertex="1">
+          <mxGeometry height="66" width="830" x="400" y="966" as="geometry" />
+        </mxCell>
+        <mxCell id="step7" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=8;" value="&lt;b&gt;⑦ assembleOutboundStep&lt;/b&gt; → OutboundRequestAssembler.assemble(ctx)&lt;br&gt;① 解析地址（支线 resolveBaseUrl，读协议特定列）→ ② 三层头（透传下游头 → 鉴权头 → 请求头规则&lt;b&gt;拥有最终决定权&lt;/b&gt;）→ ③ 协议头（set-if-absent，&lt;b&gt;必须在②后&lt;/b&gt;）&lt;br&gt;→ ctx.applyOutbound(headers, baseUrl)" vertex="1">
+          <mxGeometry height="78" width="830" x="400" y="1050" as="geometry" />
+        </mxCell>
+        <mxCell id="brTranslators" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;align=left;spacingLeft=6;" value="&lt;b&gt;支线 · pipeline/protocol/translate&lt;/b&gt;&lt;br&gt;ChatToMessagesRequestTranslator（&lt;b&gt;C2M 已实现&lt;/b&gt;）&lt;br&gt;其余方向抛 ProtocolTranslationNotSupportedException&lt;br&gt;&lt;i&gt;未命中 = 该方向未实现&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="250" x="10" y="859" as="geometry" />
+        </mxCell>
+        <mxCell id="brBodySteps" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;align=left;spacingLeft=6;" value="&lt;b&gt;支线 · before/requestbody/&lt;/b&gt;&lt;br&gt;system/ · maxtokens/ · thinking/&lt;br&gt;查表键 = ctx.bodyProtocol()&lt;br&gt;&lt;i&gt;未命中 = 跳过（该协议没这一步）&lt;/i&gt;" vertex="1">
+          <mxGeometry height="80" width="250" x="10" y="958" as="geometry" />
+        </mxCell>
+        <mxCell id="brOutboundStages" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;align=left;spacingLeft=6;" value="&lt;b&gt;支线 · before/outbound/&lt;/b&gt;&lt;br&gt;chat/ · messages/ · responses/&lt;br&gt;查表键 = ctx.upstreamProtocol()&lt;br&gt;&lt;i&gt;未命中 = 报错（必须能解析出地址）&lt;/i&gt;" vertex="1">
+          <mxGeometry height="80" width="250" x="10" y="1048" as="geometry" />
+        </mxCell>
+        <mxCell id="seam" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;fontStyle=1;" value="━━━━ &lt;b&gt;缝：真正发出 HTTP&lt;/b&gt; &amp;nbsp;（同步 → 异步 &amp;nbsp;|&amp;nbsp; void step(ctx) → Flux）━━━━" vertex="1">
+          <mxGeometry height="42" width="950" x="340" y="1170" as="geometry" />
+        </mxCell>
+        <mxCell id="afterBlock" parent="1" style="swimlane;whiteSpace=wrap;html=1;rounded=0;startSize=32;fillColor=#ffffff;strokeColor=#6c8ebf;fontStyle=1;fontSize=12;" value="&lt;b&gt;发送后块 · AfterSend.process(ctx)&lt;/b&gt; &amp;nbsp;—— 返回 Flux&lt;UpstreamEvent&gt; 的异步状态机" vertex="1">
+          <mxGeometry height="845" width="890" x="370" y="1245" as="geometry">
+            <mxRectangle height="32" width="390" x="310" y="1195" as="alternateBounds" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="step8" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=8;" value="&lt;b&gt;⑧ 读两态 + 选执行器&lt;/b&gt; &amp;nbsp;AfterSend.process(ctx)&lt;br&gt;ctx.responseTranslator()（回程翻译器，从 ctx 读）· ctx.stream()（&lt;b&gt;主干唯一一次读两态&lt;/b&gt;）→ UpstreamExecutorRegistry.require(upstreamProtocol)" vertex="1">
+          <mxGeometry height="58" width="830" x="400" y="1290" as="geometry" />
+        </mxCell>
+        <mxCell id="step9" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=8;" value="&lt;b&gt;⑨ 插槽：发送&lt;/b&gt; &amp;nbsp;UpstreamExecutor（按 ctx.stream() 二选一）&lt;br&gt;&lt;b&gt;非流式&lt;/b&gt; invoke(ctx, rewriter) → Mono&lt;UpstreamEvent&gt; &amp;nbsp;|&amp;nbsp; &lt;b&gt;流式&lt;/b&gt; invokeStream(ctx, rewriter) → Flux&lt;UpstreamEvent&gt;" vertex="1">
+          <mxGeometry height="56" width="830" x="400" y="1410" as="geometry" />
+        </mxCell>
+        <mxCell id="step10" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=8;" value="&lt;b&gt;⑩ 执行器 transport（传输闭包）&lt;/b&gt; &amp;nbsp;GenericOpenAiChatService · GenericAnthropicChatService · GenericResponsesChatService&lt;br&gt;buildWebClient（铺 ctx.outboundHeaders/BaseUrl + 抓传输层快照）→ &lt;b&gt;Flux.defer 每轮重置&lt;/b&gt;（计时 / chunk 收集 / gate.reset）&lt;br&gt;→ HTTP 往返（流式 exchangeToFlux · 非流式 retrieve().toEntity）→ &lt;b&gt;错误响应分支：即时落库 + Flux.error&lt;/b&gt; → CONNECTED 事件 → 首字打点" vertex="1">
+          <mxGeometry height="82" width="830" x="400" y="1530" as="geometry" />
+        </mxCell>
+        <mxCell id="step11" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=8;" value="&lt;b&gt;⑪ 空响应拦截&lt;/b&gt; &amp;nbsp;机制 EmptyResponseGate（协议无关）+ 检测器 ContentDetectorStage（查表）&lt;br&gt;流式 &lt;b&gt;扣住-释放&lt;/b&gt;（先攒够实质载荷再放行）· 非流式 &lt;b&gt;一次判&lt;/b&gt; · &lt;b&gt;耗尽放行&lt;/b&gt;（重试耗尽后把缓存帧原样放出 + 标记 emptyResponsePassthrough）&lt;br&gt;&lt;i&gt;检测器未命中 = 报错（每协议都必须能判空）&lt;/i&gt;" vertex="1">
+          <mxGeometry height="58" width="830" x="400" y="1650" as="geometry" />
+        </mxCell>
+        <mxCell id="step12" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=8;" value="&lt;b&gt;⑫ 自动重试&lt;/b&gt; &amp;nbsp;UpstreamAutoRetry.build(...) → Retry&lt;br&gt;filter(UpstreamRetryPolicy::isRetryableFailure) + 指数退避（2s → 30s）+ RETRYING 事件；401/403 等不可重试立即失败" vertex="1">
+          <mxGeometry height="58" width="830" x="400" y="1730" as="geometry" />
+        </mxCell>
+        <mxCell id="step13" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=8;" value="&lt;b&gt;⑬ 回程帧处理（仅流式）&lt;/b&gt; &amp;nbsp;postLoop&lt;br&gt;mapNotNull 拆信封 → &lt;b&gt;usage 提取 + 挂到事件 usage 槽&lt;/b&gt;（Chat 在这里提取；Anthropic/Responses 在⑩已提，这里只挂）→ 形态归一（支线）→ reasoning fallback（支线）→ &lt;b&gt;classify&lt;/b&gt; 分「Body | Terminal」两态&lt;br&gt;&lt;i&gt;分类必须看清洗后的最终内容&lt;/i&gt;&amp;nbsp;&amp;nbsp;·&amp;nbsp;&amp;nbsp;&lt;b&gt;非流式挂槽在 bodyToEvent&lt;/b&gt;（⑩ 的 onSuccess 提取，map 转统一形态时挂上）" vertex="1">
+          <mxGeometry height="70" width="830" x="400" y="1810" as="geometry" />
+        </mxCell>
+        <mxCell id="step14" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=8;" value="&lt;b&gt;⑭ 落库（每次上游往返各一条）&lt;/b&gt; &amp;nbsp;doFinally → onSuccessFinalize&lt;br&gt;UpstreamCallRunner.saveStreamLog / saveNonStreamLog → api_call_log；apiCallUsage.save → api_call_usage（成功且有 usage）" vertex="1">
+          <mxGeometry height="56" width="830" x="400" y="1930" as="geometry" />
+        </mxCell>
+        <mxCell id="step15" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=8;" value="&lt;b&gt;⑮ 响应翻译插槽（仅跨协议且回程已接）&lt;/b&gt; &amp;nbsp;套在执行器外侧 ⇒ &lt;b&gt;在 retryWhen 之外&lt;/b&gt;&lt;br&gt;translateStream(Flux→Flux，帧数不对等状态机) / translateResponse(Mono→Mono)；&lt;b&gt;未命中 = 透传 + WARN&lt;/b&gt;（半轮实现态）" vertex="1">
+          <mxGeometry height="58" width="830" x="400" y="2010" as="geometry" />
+        </mxCell>
+        <mxCell id="brContent" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;align=left;spacingLeft=6;" value="&lt;b&gt;支线 · after/content/&lt;/b&gt;&lt;br&gt;Chat / Messages / ResponsesContentDetector&lt;br&gt;查表键 = upstreamProtocol&lt;br&gt;&lt;i&gt;未命中 = 报错&lt;/i&gt;" vertex="1">
+          <mxGeometry height="76" width="250" x="10" y="1641" as="geometry" />
+        </mxCell>
+        <mxCell id="brChunk" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;align=left;spacingLeft=6;" value="&lt;b&gt;支线 · after/chunk/&lt;/b&gt;&lt;br&gt;normalize/（形态归一）+ fallback/（reasoning fallback）&lt;br&gt;查表键 = upstreamProtocol&lt;br&gt;&lt;i&gt;未命中 = 跳过（该协议没这一步）&lt;/i&gt;" vertex="1">
+          <mxGeometry height="86" width="250" x="10" y="1802" as="geometry" />
+        </mxCell>
+        <mxCell id="unified" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;align=center;" value="&lt;b&gt;⑯ 统一形态出口：UpstreamEvent&lt;/b&gt; &amp;nbsp;（主干结束）&lt;br&gt;Body | Terminal 两态 &amp;nbsp;+&amp;nbsp; &lt;b&gt;usage 槽&lt;/b&gt;（生产者挂累积值，出口只读）&lt;br&gt;&lt;i&gt;两态在主干内已合流：非流式 = 恰有一个元素的流&lt;/i&gt;" vertex="1">
+          <mxGeometry height="82" width="520" x="555" y="2140" as="geometry" />
+        </mxCell>
+        <mxCell id="splitStream" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" value="&lt;b&gt;分支 · 流式&lt;/b&gt; &amp;nbsp;(stream = true)" vertex="1">
+          <mxGeometry height="46" width="270" x="390" y="2280" as="geometry" />
+        </mxCell>
+        <mxCell id="splitNonStream" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" value="&lt;b&gt;分支 · 非流式&lt;/b&gt; &amp;nbsp;(stream = false)" vertex="1">
+          <mxGeometry height="46" width="270" x="940" y="2280" as="geometry" />
+        </mxCell>
+        <mxCell id="streamLife" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=10;" value="&lt;b&gt;StreamLifecycle.stream&lt;/b&gt;(upstream, ctx, &lt;b&gt;terminalPhase&lt;/b&gt;, &lt;b&gt;frameMapper&lt;/b&gt;, &lt;b&gt;errorBody&lt;/b&gt;)&lt;br&gt;&lt;br&gt;&lt;b&gt;逐帧副作用&lt;/b&gt;：accumulate usage（读槽）→ &lt;b&gt;Layer 1&lt;/b&gt; 见终止标记即收尾（不等 TCP 关闭）→ CHUNK 事件&lt;br&gt;&lt;br&gt;&lt;b&gt;帧映射&lt;/b&gt;：frameMapper 回调 —— Chat &lt;b&gt;不回填&lt;/b&gt; event 名；Anthropic / Responses 回填&lt;br&gt;&lt;br&gt;&lt;b&gt;收尾协议&lt;/b&gt;：takeUntilOther→&lt;b&gt;ABORTED&lt;/b&gt;（静默，不注入错误帧）· doOnComplete→&lt;b&gt;Layer 2&lt;/b&gt;→COMPLETED&lt;br&gt;· onErrorResume→&lt;b&gt;FAILED&lt;/b&gt;+error 帧 · doOnCancel→&lt;b&gt;CANCELED&lt;/b&gt; · doFinally→清理注册表 + 停心跳&lt;br&gt;&lt;br&gt;&lt;b&gt;merge 心跳&lt;/b&gt;（5s 注释帧，空闲期保活以及时发现断连）" vertex="1">
+          <mxGeometry height="167" width="510" x="270" y="2500" as="geometry" />
+        </mxCell>
+        <mxCell id="nonStreamLife" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=10;" value="&lt;b&gt;NonStreamLifecycle.attach&lt;/b&gt;(mono, ctx, &lt;b&gt;errorResponse&lt;/b&gt;)&lt;br&gt;&lt;br&gt;&lt;b&gt;注册取消&lt;/b&gt; → &lt;b&gt;firstWithSignal&lt;/b&gt;（与取消信号赛跑）&lt;br&gt;&lt;br&gt;&lt;b&gt;读 usage 槽记账&lt;/b&gt;（&lt;b&gt;有才记&lt;/b&gt;）→ &lt;b&gt;COMPLETED&lt;/b&gt; → ResponseEntity&lt;JSON&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;onErrorResume 三分支&lt;/b&gt;：CallCanceledException→&lt;b&gt;ABORTED&lt;/b&gt;（静默）&lt;br&gt;· isClientDisconnect→&lt;b&gt;CANCELED&lt;/b&gt; · 其余→&lt;b&gt;FAILED&lt;/b&gt; + 错误响应体（带状态码）&lt;br&gt;&lt;br&gt;doOnCancel→CANCELED · doFinally→清理注册表&lt;br&gt;&lt;br&gt;&lt;i&gt;没有 Layer 1 —— Mono.onComplete 是唯一信号，故终态恒 COMPLETED&lt;/i&gt;" vertex="1">
+          <mxGeometry height="175" width="510" x="820" y="2375" as="geometry" />
+        </mxCell>
+        <mxCell id="errRenderer" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;spacingLeft=8;" value="&lt;b&gt;UpstreamErrorRenderer（三条共用）&lt;/b&gt; &amp;nbsp;+&amp;nbsp; UpstreamFailureClassifier（分类：这是什么失败）&lt;br&gt;两个入口：response(...)&lt;b&gt;带状态码&lt;/b&gt;（非流式） / streamBody(...)&lt;b&gt;只出 body&lt;/b&gt;（流式，状态码第一帧就提交了）&lt;br&gt;状态码骨架共用（400 = 上游没被连上 · 502 = 连上了但无法处理 · UPSTREAM_HTTP 原样透传）&lt;br&gt;&lt;b&gt;body 形状各协议自备&lt;/b&gt;（ErrorBodies）：Chat 分两档 type · Anthropic 多一层 type:error · Responses 流式扁平" vertex="1">
+          <mxGeometry height="86" width="1080" x="260" y="2800" as="geometry" />
+        </mxCell>
+        <mxCell id="joinClient" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" value="&lt;b&gt;下游收到&lt;/b&gt;&lt;br&gt;流式 = text/event-stream（SSE 帧流）&amp;nbsp;|&amp;nbsp; 非流式 = application/json（完整响应体）" vertex="1">
+          <mxGeometry height="76" width="480" x="560" y="2700" as="geometry" />
+        </mxCell>
+        <mxCell id="axesBlock" parent="1" style="swimlane;whiteSpace=wrap;html=1;rounded=0;startSize=32;fillColor=#ffffff;strokeColor=#9673a6;fontStyle=1;fontSize=12;" value="&lt;b&gt;正交轴&lt;/b&gt;（与「数据怎么流」正交）" vertex="1">
+          <mxGeometry height="710" width="490" x="1780" y="1450" as="geometry" />
+        </mxCell>
+        <mxCell id="ctrlAxis" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;spacingLeft=10;" value="&lt;b&gt;控制面 · control/&lt;/b&gt; &amp;nbsp;—— &lt;b&gt;人&lt;/b&gt;在外部作用于在途请求&lt;br&gt;&lt;br&gt;CallCancellationRegistry — 注册/取消（管理后台右键 Toast 取消）&lt;br&gt;CallCanceledException — 取消信号异常&lt;br&gt;&lt;br&gt;CallRetryRegistry + CallResendLoop — &lt;b&gt;静默重发&lt;/b&gt;（管理后台点重试）&lt;br&gt;&lt;i&gt;只服务流式 · 不消耗自动重试预算 · 不在请求流里&lt;/i&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;删掉它：人没法插手&lt;/b&gt;" vertex="1">
+          <mxGeometry height="220" width="470" x="1790" y="1918" as="geometry" />
+        </mxCell>
+        <mxCell id="obsAxis" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;align=left;spacingLeft=10;" value="&lt;b&gt;观测轴 · observability/&lt;/b&gt; &amp;nbsp;—— 让&lt;b&gt;人&lt;/b&gt;看见发生了什么&lt;br&gt;&lt;br&gt;port/  CallLifecycleNotifier（DIP 端口）&lt;br&gt;publisher/  CallLifecyclePublisher（Toast）· UsageEventPublisher · LogEventPublisher —— &lt;b&gt;实时&lt;/b&gt;&lt;br&gt;record/  ApiCallLogService · ApiCallUsageService —— &lt;b&gt;明细&lt;/b&gt;（每次往返一行）&lt;br&gt;record/  ApiUsageDailyService —— &lt;b&gt;聚合&lt;/b&gt;（日统计卡）&lt;br&gt;notify/  UpstreamCallReporter（主干内薄适配器：生命周期 + 记录信号）&lt;br&gt;&lt;br&gt;&lt;b&gt;删掉它：下游收到的完全不变，但后台瞎了&lt;/b&gt;&lt;br&gt;&lt;i&gt;落库触发点仍在块 2 —— 只有块 2 知道一次往返何时结束&lt;/i&gt;" vertex="1">
+          <mxGeometry height="185" width="470" x="1790" y="1504" as="geometry" />
+        </mxCell>
+        <mxCell id="obsNote" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;dashed=1;fontSize=10;align=left;spacingLeft=10;" value="&lt;b&gt;辨析：观测 ≠ 观察&lt;/b&gt;&lt;br&gt;&lt;br&gt;看是为了 &lt;b&gt;改变数据怎么走&lt;/b&gt; → 主干-支干轴&lt;br&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;例：EmptyResponseGate 看 chunk 够不够格、判定器看有没有内容、执行器攒 usage&lt;br&gt;&lt;br&gt;看是为了 &lt;b&gt;让人知道&lt;/b&gt; → 观测轴&lt;br&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;例：Toast 相位、明细日志、日聚合" vertex="1">
+          <mxGeometry height="160" width="470" x="1790" y="1730" as="geometry" />
+        </mxCell>
+        <mxCell id="e1" edge="1" parent="1" source="client" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;fontSize=10;fontColor=#555555;labelBackgroundColor=#ffffff;" target="filters" value="三协议请求（JSON）+ 请求头">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" edge="1" parent="1" source="filters" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;" target="epOpenAi" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" edge="1" parent="1" source="filters" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;" target="epAnthropic" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" edge="1" parent="1" source="filters" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;" target="epResponses" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" edge="1" parent="1" source="epOpenAi" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;fontSize=10;fontColor=#555555;labelBackgroundColor=#ffffff;exitX=0.5;exitY=1;entryX=0.25;entryY=0;" target="entry" value="&lt;i&gt;requestBody Map + HttpHeaders + model + requestId&lt;/i&gt;">
+          <mxGeometry relative="1" x="-0.8298" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e6" edge="1" parent="1" source="epAnthropic" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="entry" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" edge="1" parent="1" source="epResponses" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.75;entryY=0;" target="entry" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" edge="1" parent="1" source="entry" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;fontSize=10;fontColor=#555555;labelBackgroundColor=#ffffff;" target="reqpipe" value="&lt;i&gt;ctx（RequestPipelineContext）——&amp;nbsp; defer 内创建，含下游侧事实&lt;/i&gt;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e9" edge="1" parent="1" source="reqpipe" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;" target="beforeBlock" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" edge="1" parent="1" source="step4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;" target="step5" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" edge="1" parent="1" source="step5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;" target="step6" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" edge="1" parent="1" source="step6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;" target="step7" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e13" edge="1" parent="1" source="step5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;endFill=0;dashed=1;fontSize=9;fontColor=#d79b00;labelBackgroundColor=#ffffff;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" target="brTranslators" value="查表&lt;br&gt;(downstream, upstream)">
+          <mxGeometry relative="1" x="0.0968" y="-15" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e14" edge="1" parent="1" source="step6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;endFill=0;dashed=1;fontSize=9;fontColor=#d79b00;labelBackgroundColor=#ffffff;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" target="brBodySteps" value="查表&lt;br&gt;bodyProtocol">
+          <mxGeometry relative="1" x="0.0968" y="-19" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e15" edge="1" parent="1" source="step7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;endFill=0;dashed=1;fontSize=9;fontColor=#d79b00;labelBackgroundColor=#ffffff;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" target="brOutboundStages" value="查表&lt;br&gt;upstreamProtocol">
+          <mxGeometry relative="1" x="0.0968" y="-19" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e16" edge="1" parent="1" source="beforeBlock" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;fontSize=10;fontColor=#555555;labelBackgroundColor=#ffffff;" target="seam" value="&lt;b&gt;ctx 已就绪&lt;/b&gt;：body（&lt;b&gt;上游形态&lt;/b&gt;）· outboundHeaders · outboundBaseUrl · translator 对">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e17" edge="1" parent="1" source="seam" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;fontSize=10;fontColor=#555555;labelBackgroundColor=#ffffff;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="afterBlock" value="&lt;i&gt;Flux&lt;UpstreamEvent&gt; / Mono&lt;UpstreamEvent&gt;（形态已统一）&lt;/i&gt;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e18" edge="1" parent="1" source="step8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;fontSize=10;fontColor=#555555;labelBackgroundColor=#ffffff;" target="step9" value="按 ctx.stream() 二选一">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e19" edge="1" parent="1" source="step9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;fontSize=10;fontColor=#555555;labelBackgroundColor=#ffffff;" target="step10" value="&lt;i&gt;传输闭包&lt;/i&gt;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e20" edge="1" parent="1" source="step10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;fontSize=10;fontColor=#555555;labelBackgroundColor=#ffffff;" target="step11" value="&lt;i&gt;Flux&lt;T&gt; / Mono&lt;T&gt;&lt;/i&gt;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e21" edge="1" parent="1" source="step11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;" target="step12" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e22" edge="1" parent="1" source="step12" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;" target="step13" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e23" edge="1" parent="1" source="step12" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;dashed=1;strokeColor=#cc0000;fontSize=9;fontColor=#cc0000;labelBackgroundColor=#ffffff;exitX=1;exitY=0.5;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" target="step10" value="&lt;b&gt;retryWhen 重订阅&lt;/b&gt;&lt;div&gt;（退避 2s→30s）；&lt;br&gt;defer 内每轮重置计时 / chunk / gate&lt;br&gt;401/403 等不可重试 → 立即失败&lt;/div&gt;">
+          <mxGeometry relative="1" x="-0.6718" y="29" as="geometry">
+            <mxPoint as="offset" />
+            <Array as="points">
+              <mxPoint x="1420" y="1759" />
+              <mxPoint x="1420" y="1591.51" />
+            </Array>
+            <mxPoint x="1230" y="1560" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e24" edge="1" parent="1" source="step11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;endFill=0;dashed=1;fontSize=9;fontColor=#d79b00;labelBackgroundColor=#ffffff;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" target="brContent" value="查表&lt;br&gt;upstreamProtocol">
+          <mxGeometry relative="1" y="-13" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e25" edge="1" parent="1" source="step13" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;endFill=0;dashed=1;fontSize=9;fontColor=#d79b00;labelBackgroundColor=#ffffff;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" target="brChunk" value="查表&lt;br&gt;upstreamProtocol">
+          <mxGeometry relative="1" y="-13" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e26" edge="1" parent="1" source="step13" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;fontSize=10;fontColor=#555555;labelBackgroundColor=#ffffff;" target="step14" value="&lt;b&gt;UpstreamEvent&lt;/b&gt;（Body | Terminal，&lt;br&gt;含 usage 槽）">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e27" edge="1" parent="1" source="step14" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;" target="step15" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e28" edge="1" parent="1" source="step14" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;dashed=1;strokeColor=#cc0000;fontSize=9;fontColor=#cc0000;labelBackgroundColor=#ffffff;exitX=1;exitY=0.25;entryX=1;entryY=0.5;entryDx=0;entryDy=0;exitDx=0;exitDy=0;" target="step10" value="&lt;b&gt;静默重发 loop&lt;/b&gt;&lt;div&gt;（CallResendLoop 包在 attemptFlux 外、重订阅整条，&lt;br&gt;仅流式 · 不消耗自动重试预算 · 从 &lt;b&gt;transport&lt;/b&gt; 重新开始）&lt;/div&gt;">
+          <mxGeometry relative="1" x="-0.7359" y="24" as="geometry">
+            <mxPoint as="offset" />
+            <Array as="points">
+              <mxPoint x="1460" y="1944.03" />
+              <mxPoint x="1460" y="1571" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e29" edge="1" parent="1" source="step15" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;fontSize=10;fontColor=#555555;labelBackgroundColor=#ffffff;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" target="unified" value="&lt;i&gt;翻译后（下游形态）| 未命中则&lt;b&gt;透传上游原生&lt;/b&gt; + WARN&lt;/i&gt;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e30" edge="1" parent="1" source="unified" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;exitX=0.25;exitY=1;entryX=0.5;entryY=0;" target="splitStream" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e31" edge="1" parent="1" source="unified" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;exitX=0.75;exitY=1;entryX=0.5;entryY=0;exitDx=0;exitDy=0;" target="splitNonStream" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e32" edge="1" parent="1" source="splitStream" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;fontSize=10;fontColor=#555555;labelBackgroundColor=#ffffff;" target="streamLife" value="&lt;i&gt;Flux&lt;UpstreamEvent&gt;&lt;/i&gt;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e33" edge="1" parent="1" source="splitNonStream" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;fontSize=10;fontColor=#555555;labelBackgroundColor=#ffffff;" target="nonStreamLife" value="&lt;i&gt;Mono&lt;UpstreamEvent&gt;&lt;br&gt;（恰有一个元素）&lt;/i&gt;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e34" edge="1" parent="1" source="streamLife" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;fontSize=10;fontColor=#555555;labelBackgroundColor=#ffffff;exitX=0.5;exitY=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="joinClient" value="&lt;b&gt;SSE 帧流&lt;/b&gt;&lt;br&gt;Flux&lt;ServerSentEvent&lt;String&gt;&gt;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e35" edge="1" parent="1" source="nonStreamLife" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;fontSize=10;fontColor=#555555;labelBackgroundColor=#ffffff;exitX=0.5;exitY=1;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" target="joinClient" value="&lt;b&gt;JSON 响应体&lt;/b&gt;&lt;br&gt;Mono&lt;ResponseEntity&lt;String&gt;&gt;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e36" edge="1" parent="1" source="streamLife" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;endFill=0;dashed=1;fontSize=9;fontColor=#d6b656;labelBackgroundColor=#ffffff;exitX=0.25;exitY=1;entryX=0.127;entryY=-0.004;entryDx=0;entryDy=0;entryPerimeter=0;" target="errRenderer" value="错误渲染（FAILED 时）">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e37" edge="1" parent="1" source="nonStreamLife" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;endFill=0;dashed=1;fontSize=9;fontColor=#d6b656;labelBackgroundColor=#ffffff;exitX=0.75;exitY=1;entryX=0.873;entryY=-0.035;entryDx=0;entryDy=0;entryPerimeter=0;" target="errRenderer" value="错误渲染（FAILED 时）">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e40" edge="1" parent="1" source="ctrlAxis" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;endFill=0;dashed=1;strokeColor=#b85450;fontSize=9;fontColor=#b85450;labelBackgroundColor=#ffffff;exitX=0;exitY=0.75;entryX=1;entryY=0.75;entryDx=0;entryDy=0;exitDx=0;exitDy=0;" target="streamLife" value="&lt;b&gt;取消信号&lt;/b&gt;&lt;div&gt;（takeUntilOther → ABORTED）&lt;/div&gt;">
+          <mxGeometry relative="1" x="-0.8982" y="-13" as="geometry">
+            <mxPoint as="offset" />
+            <Array as="points">
+              <mxPoint x="1660" y="2083" />
+              <mxPoint x="1660" y="2625.24" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e41" edge="1" parent="1" source="ctrlAxis" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;endFill=0;dashed=1;strokeColor=#b85450;fontSize=9;fontColor=#b85450;labelBackgroundColor=#ffffff;exitX=0;exitY=0.5;entryX=1;entryY=0.5;exitDx=0;exitDy=0;entryDx=0;entryDy=0;labelWidth=100;" target="nonStreamLife" value="&lt;b&gt;取消信号&lt;/b&gt;&lt;div&gt;（firstWithSignal → ABORTED）&lt;/div&gt;">
+          <mxGeometry relative="1" x="-0.825" y="-18" as="geometry">
+            <mxPoint as="offset" />
+            <Array as="points">
+              <mxPoint x="1620" y="2028.03" />
+              <mxPoint x="1620" y="2462.49" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e42" edge="1" parent="1" source="ctrlAxis" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;endFill=0;dashed=1;strokeColor=#b85450;fontSize=9;fontColor=#b85450;labelBackgroundColor=#ffffff;exitX=0;exitY=0.25;entryX=1;entryY=0.75;exitDx=0;exitDy=0;entryDx=0;entryDy=0;" target="step14" value="&lt;b&gt;静默重发信号&lt;/b&gt;&lt;span style=&quot;background-color: light-dark(rgb(255, 255, 255), rgb(18, 18, 18)); color: light-dark(rgb(184, 84, 80), rgb(215, 129, 126));&quot;&gt;（仅流式）&lt;/span&gt;">
+          <mxGeometry relative="1" x="-0.7661" y="-15" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e50" edge="1" parent="1" source="obsAxis" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;endFill=0;dashed=1;strokeColor=#9673a6;fontSize=9;fontColor=#9673a6;labelBackgroundColor=#ffffff;exitX=0;exitY=0.25;entryX=1;entryY=0.25;entryDx=0;entryDy=0;exitDx=0;exitDy=0;" target="step10" value="&lt;b&gt;生命周期事件&lt;/b&gt;（CONNECTED / RETRYING）&lt;br&gt;+ 每轮落库触发（UpstreamCallReporter）">
+          <mxGeometry relative="1" x="-0.5725" y="-15" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e51" edge="1" parent="1" source="obsAxis" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;endFill=0;dashed=1;strokeColor=#9673a6;fontSize=9;fontColor=#9673a6;labelBackgroundColor=#ffffff;exitX=0;exitY=0.5;entryX=1;entryY=0.5;entryDx=0;entryDy=0;exitDx=0;exitDy=0;" target="step14" value="&lt;b&gt;明细落库写侧&lt;/b&gt;&lt;br&gt;api_call_log + api_call_usage&lt;br&gt;（ApiCallLogService / ApiCallUsageService）">
+          <mxGeometry relative="1" x="-0.7389" y="-22" as="geometry">
+            <mxPoint as="offset" />
+            <Array as="points">
+              <mxPoint x="1500" y="1596.52" />
+              <mxPoint x="1500" y="1958.03" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e52" edge="1" parent="1" source="obsAxis" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;endFill=0;dashed=1;strokeColor=#9673a6;fontSize=9;fontColor=#9673a6;labelBackgroundColor=#ffffff;exitX=0;exitY=0.75;entryX=1;entryY=0.5;entryDx=0;entryDy=0;exitDx=0;exitDy=0;" target="streamLife" value="&lt;b&gt;Toast 相位&lt;/b&gt;（COMPLETED / FAILED / CANCELED）&lt;br&gt;+ &lt;b&gt;usage 日聚合&lt;/b&gt;（api_usage_daily）">
+          <mxGeometry relative="1" x="-0.8776" y="-13" as="geometry">
+            <mxPoint as="offset" />
+            <Array as="points">
+              <mxPoint x="1540" y="1642.8" />
+              <mxPoint x="1540" y="2583.52" />
+            </Array>
+            <mxPoint x="1740" y="1642.75" as="sourcePoint" />
+            <mxPoint x="780" y="2603.5000000000005" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e53" edge="1" parent="1" source="obsAxis" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;endFill=0;dashed=1;strokeColor=#9673a6;fontSize=9;fontColor=#9673a6;labelBackgroundColor=#ffffff;exitX=0.25;exitY=1;entryX=1;entryY=0.25;exitDx=0;exitDy=0;entryDx=0;entryDy=0;" target="nonStreamLife" value="&lt;b&gt;COMPLETED&lt;/b&gt; + &lt;b&gt;usage 日聚合&lt;/b&gt;">
+          <mxGeometry relative="1" x="-0.6316" y="-10" as="geometry">
+            <mxPoint as="offset" />
+            <Array as="points">
+              <mxPoint x="1907.49" y="1710.03" />
+              <mxPoint x="1580" y="1710.03" />
+              <mxPoint x="1580" y="2418.77" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
