@@ -8,10 +8,10 @@ import org.springframework.http.HttpHeaders;
  * 出站请求的<strong>协议特定装配</strong>支线 —— 每个上游协议一份实现。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>契约</strong>（出站装配） · 位置：{@code upstream/outbound/}
+ * 形态：支线<strong>契约</strong>（出站装配） · 位置：{@code pipeline/before/outbound/}
  * 步骤「出站请求装配」—— 发送前块在<strong>请求体装配之后</strong>调它，把「发去哪」与
  * 「协议必需的那几个头」定下来，连同协议无关的三层头装配一起写进 {@code ctx.outboundHeaders/outboundBaseUrl}。
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  *
  * <h2>它承载两件协议特有的事，其余交给主干</h2>

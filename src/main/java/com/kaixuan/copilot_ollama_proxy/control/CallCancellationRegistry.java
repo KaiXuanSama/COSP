@@ -27,7 +27,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <h2>它在管道中的位置</h2>
  * 形态：控制面（<strong>不是主干/支线</strong>） · 位置：{@code control/}
  * 取消信号注册表—— 与重发同族（外部信号作用于在途请求）
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  */
 @Component

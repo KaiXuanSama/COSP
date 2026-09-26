@@ -17,7 +17,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 阶段一验证与锁定：下钻用量明细用例层的天数钳制与结果透传。
+ * 下钻用量明细用例层的天数钳制与结果透传。
  *
  * <p>覆盖：
  * <ul>

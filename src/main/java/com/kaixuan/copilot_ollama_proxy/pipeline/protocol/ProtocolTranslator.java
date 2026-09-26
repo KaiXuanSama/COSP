@@ -39,7 +39,7 @@ package com.kaixuan.copilot_ollama_proxy.pipeline.protocol;
  * 推翻了：查表让「回程未接」表现为<strong>回程表未命中</strong>，从而把
  * {@code PipelineExecution} 里那个「回程翻译已执行」的登记<strong>从手写状态位变成查表派生</strong> ——
  * 加一个 {@code @Component} 就自动接管，删掉就自动退回透传，不再有 bool 开关要记得维护
- * （方向文档 §2.3.1② / §2.3.2）。这个收益不依赖链条数量，因此查表在只有一条链时就值得建。
+ * 。这个收益不依赖链条数量，因此查表在只有一条链时就值得建。
  *
  * <h2>实现现状</h2>
  * <ul>
@@ -74,7 +74,7 @@ public interface ProtocolTranslator {
     //  声明方向 (MESSAGES, CHAT)、带 @Component —— 它们会自动进 TranslatorRegistry 的查表。
     //  但 MessagesService 目前尚未改用查表（它对这两个方向仍无条件抛
     //  ProtocolTranslationNotSupportedException），要让这条链可用，需先把 MessagesService
-    //  的翻译分支改成查 TranslatorRegistry（与 ChatCompletionService 同一手法，见 Step 3.4）。
+    //  的翻译分支改成查 TranslatorRegistry（与 ChatCompletionService 同一手法）。
     //  翻译器仍要套在上游服务外侧。
 
     /** 本翻译器接受的下游协议。 */

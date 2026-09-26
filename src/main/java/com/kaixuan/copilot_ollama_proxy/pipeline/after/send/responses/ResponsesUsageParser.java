@@ -8,9 +8,9 @@ import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
  * OpenAI <strong>Responses</strong> API 的 usage 解析。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>协作类</strong> · 位置：{@code upstream/send/responses/}
+ * 形态：支线<strong>协作类</strong> · 位置：{@code pipeline/after/send/responses/}
  * 步骤「回程帧处理」—— 提取 Responses 的 usage
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为何独立于 {@code OpenAiUsageParser} 而非复用它</h2>
  * 字段名不同：Chat 用 {@code prompt_tokens} / {@code completion_tokens}，

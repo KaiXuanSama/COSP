@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 阶段三验证与锁定：api_call_usage 落库层。
+ * {@code api_call_usage} 落库层的行为锁定。
  *
  * <p>核心断言：
  * <ul>

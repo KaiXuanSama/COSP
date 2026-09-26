@@ -8,9 +8,9 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
  * 上游失败的<strong>可重试判定</strong> —— 三类上游执行器共用的唯一口径。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：主干 · 位置：{@code upstream/}（层根）
+ * 形态：主干 · 位置：{@code pipeline/after/}（层根）
  * 步骤「自动重试①」—— <strong>要不要</strong>重试（纯判定）+ 两个异常解包
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它回答的问题</h2>
  * 「这次上游失败值得重发吗」。答案只依赖<strong>异常类型与 HTTP 状态码</strong>，
@@ -48,14 +48,13 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
  * 并把「三侧出现口径差异」定为抽取的触发信号。
  *
  * <p><strong>那个触发信号至今未出现，本类是按另一条理由落地的</strong>：
- * 主干化重构（见 {@code PLAN.md} / {@code 请求处理链路重构方向.md}）要把三条线路
- * 收敛成「主干 + 支线」，此后它们不再各有各的执行器、而是共用同一条主干。
- * 那种形态下「三份副本」这个前提本身消失了 —— 判定必须有一个单一来源，
- * 否则重构过程中任意一次改动都可能只落在其中一条线路上，
+ * 主干化要求三条线路收敛成「主干 + 支线」，此后它们不再各有各的执行器、
+ * 而是共用同一条主干。那种形态下「三份副本」这个前提本身消失了 ——
+ * 判定必须有一个单一来源，否则任意一次改动都可能只落在其中一条线路上，
  * 而口径分叉正是那份 Javadoc 自己预警的、真正危险的情况。
  *
  * <p>换言之：<strong>原判断在其前提（三份独立执行器长期并存）下是对的，
- * 是前提变了。</strong>这也解释了为何先做阶段 0（错误分类收归）再做本步 ——
+ * 是前提变了。</strong>这也解释了为何它常与错误分类收归一起做 ——
  * 两步是同一件事的两个面：一个管「这是哪类失败」，一个管「要不要重发」。
  *
  * <h2>无状态</h2>

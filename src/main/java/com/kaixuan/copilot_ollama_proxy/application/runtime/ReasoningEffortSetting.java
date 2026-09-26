@@ -185,7 +185,7 @@ public record ReasoningEffortSetting(String effort, Mode mode) {
      *
      * <p>三条上游线路（Chat / Responses / Anthropic）此前各有一份<strong>逐字相同</strong>的
      * {@code resolveReasoningEffort} —— 都是「按模型名查配置，查不到给默认值」。收归此处，
-     * 避免刀 1 补两个 Thinking 支线时再造第 4 份副本（{@code AnthropicThinkingNormalizer}
+     * 避免补两个 Thinking 支线时再造第 4 份副本（{@code AnthropicThinkingNormalizer}
      * 的注释早记了这个债）。
      *
      * <p>读的是<strong>同一列</strong>（{@code provider_model.reasoning_effort}）、同一份解析、

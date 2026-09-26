@@ -260,7 +260,7 @@ class UpstreamRetryPolicyTests {
     }
 
     /**
-     * {@code findWebResponseException} 的解包 —— 阶段 3.6c-1 从三个执行器收归。
+     * {@code findWebResponseException} 的解包 ——  从三个执行器收归。
      *
      * <p>它与空响应解包同族同因（都要穿透 {@code RetryExhaustedException}），
      * 但两个方向都更隐蔽：

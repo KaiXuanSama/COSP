@@ -9,9 +9,9 @@ import org.slf4j.Logger;
  * 两类「best-effort 通知」的<strong>唯一实现</strong>：生命周期事件与调用记录变更信号。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：主干 · 位置：{@code upstream/}（层根）
+ * 形态：主干内的薄适配器 · 位置：{@code observability/notify/}
  * 跨步骤观测—— 生命周期事件 / 调用记录信号的 best-effort 通知
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>共同的契约：观测定不能反过来伤到主链路</h2>
  * 两者都是<strong>观测</strong>：生命周期事件驱动前端 Toast，变更信号驱动日志页回拉。
@@ -45,7 +45,7 @@ import org.slf4j.Logger;
  * 若本类自带 logger，这三条日志的分类会从
  * {@code c.k.c.p.u.s.m.GenericAnthropicChatService} 变成
  * {@code c.k.c.p.u.UpstreamCallReporter} —— 按执行器类名过滤日志的人会看不到它们。
- * 这是本步「零行为变更」的一部分，不是随手加的参数。
+ * 这是「零行为变更」的一部分，不是随手加的参数。
  *
  * <h2>为何各执行器仍保留一个两行的同名方法</h2>
  * 那是<strong>适配器</strong>：把「自己的可选字段 + 自己的 logger」绑给本类。

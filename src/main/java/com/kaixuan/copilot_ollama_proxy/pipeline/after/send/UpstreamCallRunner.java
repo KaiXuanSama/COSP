@@ -23,17 +23,17 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
- * 上游一次调用的<strong>编排骨架</strong> —— 主干后半段的家（阶段 4 刀 2）。
+ * 上游一次调用的<strong>编排骨架</strong> —— 主干后半段的家。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：主干<strong>编排器</strong>（无状态静态工具） · 位置：{@code upstream/send/}
+ * 形态：主干<strong>编排器</strong>（无状态静态工具） · 位置：{@code pipeline/after/send/}
  * 步骤「发送」的外层骨架 —— 三条执行器共用它串起
  * defer → gate → retryWhen → 耗尽放行 → 静默重发 → 落库
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  *
  * <h2>它为什么存在（控制流被扳正）</h2>
- * 阶段 4 §4.0 认定：{@code send} 插槽<strong>吞掉了主干的后半段</strong> ——
+ * {@code send} 插槽<strong>吞掉了主干的后半段</strong> ——
  * 请求往返、空响应兜底、自动重试、落库这些<strong>协议无关</strong>的编排，
  * 本该由主干持有，却在三个执行器里各写一遍（控制流是反的：插槽持流程、主干供工具）。
  * 本类把那段<strong>外层骨架</strong>收归一处，执行器退化成把<strong>协议特定闭包</strong>
@@ -49,7 +49,7 @@ import java.util.function.Supplier;
  * 需要保证二者同步 —— 收益为零、风险非零（{@code UpstreamCallReporter} 的类注释已论证同一点）。
  * 执行器的 setter 因此<strong>一个都不用改</strong>，现有测试子类无需任何额外注入。
  *
- * <h2>落库 9→2（{@code KNOWN_DEBT} 第十条在此塌缩）</h2>
+ * <h2>落库路径 9 份收归一处（{@code KNOWN_DEBT} 第十条在此塌缩）</h2>
  * 三个执行器此前各有一族 {@code saveNonStreamLog} / {@code saveStreamLog} /
  * {@code saveStreamLogWithError}（两态 × 三协议 = 9 份），差异<strong>只有两处</strong>：
  * 上游协议常量、以及 {@code ChunkLogPayload.from(rewriter, chunks)} vs {@code .direct(chunks)}
@@ -204,7 +204,7 @@ public final class UpstreamCallRunner {
                 .map(pipeline.bodyToEvent());
     }
 
-    // ==================== 落库 9→2 ====================
+    // ==================== 日志落库 ====================
 
     /**
      * 非流式落库。上游协议从 {@code ctx.upstreamProtocol()} 取（不再硬编码常量）。

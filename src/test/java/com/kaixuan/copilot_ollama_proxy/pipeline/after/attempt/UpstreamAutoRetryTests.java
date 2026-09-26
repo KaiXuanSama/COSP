@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link UpstreamAutoRetry} 构造出的重试规格 —— <strong>真跑一遍</strong>。
  *
  * <h2>为何这些用例值得存在</h2>
- * 本类取代的是三个执行器里三份 {@code buildRetrySpec}（阶段 3.6c-2）。那三份此前
+ * 本类取代的是三个执行器里三份 {@code buildRetrySpec}。那三份此前
  * <strong>没有直接单测</strong> —— 只被「重试到耗尽」那类集成用例间接覆盖，
  * 而那类用例要起真实上游 stub，成本高且只说「重试了」不说「按什么规格重试」。
  *
@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 「事件发了几个」。这是行为而不是实现细节。
  *
  * <h2>不测日志文案（刻意的）</h2>
- * 429 的日志特化是本步的行为变更之一，但本项目<strong>没有日志捕获设施，
+ * 429 的日志特化是收归带来的行为变更之一，但本项目<strong>没有日志捕获设施，
  * 且既有约定不把日志文案当断言目标</strong>（见 {@code UpstreamCallReporterTests}：
  * 「mock 一个 Logger 会让『日志文案有没有变』变成断言目标，而那属于实现细节」）。
  * 故这里只钉「429 走同一条可重试判定」，文案由单个实现保证一致性。

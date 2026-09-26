@@ -22,9 +22,9 @@ import java.util.function.Function;
 /**
  * 三条流式端点共用的<strong>完整出口链</strong>：从主干产物一路到可下发的 SSE 流。
  *
- * <h2>它现在是一个入口，不是半个</h2>
- * 阶段 6 步 3 之前，本类只包住<strong>收尾</strong>（取消 / 终止 / 心跳 / 清理），
- * 而「逐帧判终止、累积 usage、数 CHUNK」那半段仍由三个 Controller 各写一遍
+ * <h2>它是一个完整入口，不是半个</h2>
+ * 本类曾只包住<strong>收尾</strong>（取消 / 终止 / 心跳 / 清理），
+ * 而「逐帧判终止、累积 usage、数 CHUNK」那半段由三个 Controller 各写一遍
  * （约 35 行 × 3，逐字同构）。现在前半段也进来了 —— 调用点从「两段拼起来」
  * 变成<strong>一行</strong>，本类名副其实。
  *

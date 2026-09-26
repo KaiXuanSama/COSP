@@ -1,11 +1,10 @@
 # `pipeline/` —— 主干-支干轴
 
 > **本文件入库**（`.gitignore` 的 `/*.md` 只忽略**根目录**，且 `!README.md` 全局豁免）。
-> 因此它是这批结构里**唯一能跟着 `git pull` 到达另一台设备**的说明 ——
-> `plan_.md` / `AGENTS.md` / `REFACTOR_HANDOFF.md` 都在仓库根、都不入库，靠人带。
+> 因此它是结构说明里**唯一能跟着 `git pull` 到达另一台设备**的那份。
 > **跨设备协作时以本文件为准。**
 
-> **历史**：本文件原属 `upstream/` 层（`upstream/README.md`），阶段 5 包结构归拢时随包整体
+> **历史**：本文件原属 `upstream/` 层（`upstream/README.md`），包结构归拢时随包整体
 > 迁到 `pipeline/`。它描述的形态随之从「上游执行层」升级为「**主干-支干轴**」——
 > 因为归拢后，发送前块与发送后块终于同属一个顶层包。
 
@@ -25,8 +24,17 @@
 **最后那条测试是识别观测轴的关键**：观测的东西可以整段删掉而请求照常成功
 （`UpstreamCallReporter` / `CallLifecyclePublisher` / `ApiUsageCollector` 都满足它）。
 
+> **「观测」在本框架里是特指**：让**人**看见发生了什么（可整段删掉而下游收到的**完全不变**）。
+> 与之易混的是**运行时的「观察」** —— 代码读流里的数据以**决定数据怎么走**
+> （`EmptyResponseGate` 看 chunk 够不够格、内容判定器看有没有内容、执行器攒 usage）。
+> 后者是**主干上的判定**，删掉它下游收到的就变了。
+>
+> **判据**：看是为了**改变数据怎么走** → 主干-支干轴；看是为了**让人知道** → 观测轴。
+> 这个歧义造成过三次误判（把 `UpstreamCallReporter` 当主干、把 `api/shared/` 当观测层、
+> 把控制器的链当观测），故在此显式钉住。
+
 **依赖方向**：`主干 → 观测` 单向（与 `主干 → 应用服务` 同向）。观测**永不**被主干依赖回来。
-**已实测兑现**（第 7a-1 步）：`observability/` 对外只 import `protocol/` 与自身，
+**已实测兑现**：`observability/` 对外只 import `protocol/` 与自身，
 对 `application/` / `infrastructure/` / `api/` / `control/` 零反向依赖。
 
 > 另外三个顶层包是**支撑**而非轴：`application/`（应用服务与后台查询）·
@@ -69,7 +77,7 @@
 ## 1. 目录树与它的读法
 
 ```text
-pipeline/                         ← 主干-支干轴（阶段 5 归拢后的形态）
+pipeline/                         ← 主干-支干轴（主干-支干轴的形态）
 ├── RequestPipeline               门面（两行：beforeSend.process → return afterSend.process）
 ├── RequestPipelineContext        请求级状态 + 本次选中的策略（跨块传递）
 ├── PipelineStep                  可跳过步骤的词汇表（枚举）
@@ -91,7 +99,7 @@ pipeline/                         ← 主干-支干轴（阶段 5 归拢后的�
 │   │   ├── maxtokens/   MaxTokensNormalizeStage + MaxTokensNormalizer + MessagesMaxTokensStage
 │   │   └── thinking/    ThinkingInjectStage + AnthropicThinkingNormalizer +
 │   │                    Messages / Chat / ResponsesThinkingStage（三协议各一）
-│   └── outbound/                  ★ 接入点 = 步骤：出站请求装配（刀 3 B）
+│   └── outbound/                  ★ 接入点 = 步骤：出站请求装配
 │       ├── OutboundRequestStage       契约：protocol() + resolveBaseUrl + applyProtocolHeaders
 │       ├── OutboundRequestStageRegistry  查表（键 = upstreamProtocol；**未命中即报错**）
 │       ├── OutboundRequestAssembler   主干侧编排：三层头装配 + 支线选列/补协议头 → ctx.applyOutbound
@@ -106,7 +114,7 @@ pipeline/                         ← 主干-支干轴（阶段 5 归拢后的�
 │   │   ├── UpstreamAutoRetry              自动重试②：几次、多久（读配置 + 组装 Retry）
 │   │   ├── EmptyResponseGate              空响应拦截机制（流式扣放 / 非流式一次判 / 耗尽放行）
 │   │   └── EmptyUpstreamResponseException 空响应信号异常（复用重试预算）
-│   │       （`UpstreamCallReporter` 第 7a-1 步已搬 `observability/notify/`：它零主干依赖）
+│   │       （`UpstreamCallReporter` 在 `observability/notify/`：它零主干依赖）
 │   ├── send/                      ★ 接入点：发送（唯一一步）
 │   │   ├── UpstreamExecutor           契约：protocol() + invoke / invokeStream
 │   │   ├── UpstreamExecutorRegistry   查表（键 = 上游协议；**未命中即报错**）
@@ -137,7 +145,7 @@ pipeline/                         ← 主干-支干轴（阶段 5 归拢后的�
         RequestProtocolTranslator · ResponseProtocolTranslator · TranslatorRegistry
 ```
 
-> **两个跨层的值类型已上提到顶层 `protocol/`**（第 7a-1 步），因为它们消费方跨三个顶层包，
+> **两个跨层的值类型已上提到顶层 `protocol/`**，因为它们消费方跨三个顶层包，
 > 留在本层会让那些包反向依赖 `pipeline/`：
 > - `protocol/ChunkLogPayload` —— 生产在块 2，消费在 `observability/record/` 与 `infrastructure/persistence/`；
 > - `protocol/usage/UsageTokens` —— 生产在块 2（三个 `*UsageParser`），消费在 `observability/record/`
@@ -178,9 +186,9 @@ pipeline/                         ← 主干-支干轴（阶段 5 归拢后的�
 > 它曾**只对 `content/` 与 `send/` 成立**：那时 `requestbody/` 与 `chunk/` 两个注册表的
 > **查表键是常量**（`RequestBodyStageRegistry` 只被 Messages 执行器调用、恒查 `MESSAGES`；
 > `ChunkStageRegistry` 只被 Chat 执行器调用、恒查 `CHAT`），于是给别的协议补实现**不会被调用**。
-> 那是 **send 插槽边界画错**的表征（阶段 4）。
+> 那是 **send 插槽边界画错**的表征。
 >
-> **阶段 4 刀 1 / 刀 3 B 已消解这一条**：
+> **现已消解这一条**：
 > - `RequestBodyStageRegistry` 的消费者已上移主干（`before/requestbody/RequestBodyAssembler`），
 >   键是 **`ctx.bodyProtocol()`**（动态）→ 给任一协议补实现都会被调用；
 > - `ChunkStageRegistry` 的键是 **`ctx.upstreamProtocol()`**（动态，跨协议路由下会是上游协议那个值）
@@ -197,15 +205,15 @@ pipeline/                         ← 主干-支干轴（阶段 5 归拢后的�
 > （本项目已有同类教训：plan 里记过的「行号会漂」）。**类注释里写的是步骤的「基名」（如
 > `空响应判定`）而非编号**。引用某一步时，请写**基名**或**类名**。
 
-> ⚠️ **协议无关步骤的归位进度（2026-09-25，块化与归拢后）**：曾经这批步骤**全在 send
-> 插槽内部**执行（三执行器各持私有管道、控制流方向反了）。**阶段 4 刀 1/2/3（含 B）已矫正**：
-> - **刀 1 ✅** 请求体装配上移主干（现为发送前块步骤 6 `assembleStep`）；
-> - **刀 2 ✅** 内层 gate 编排 / 帧处理 / 落库 / `retryWhen`（步骤 10–14）收归
+> ⚠️ **协议无关步骤的归位（已矫正）**：曾经这批步骤**全在 send 插槽内部**执行
+> （三执行器各持私有管道、控制流方向反了）。现已矫正：
+> - 请求体装配上移主干（现为发送前块步骤 6 `assembleStep`）；
+> - 内层 gate 编排 / 帧处理 / 落库 / `retryWhen`（步骤 10–14）收归
 >   `after/send/UpstreamCallRunner`（**无状态静态编排件**），流级状态入 `after/send/AttemptContext`；
-> - **刀 3 ✅** 块化：`RequestPipeline.execute` 按「真正发出 HTTP」拆成发送前块 `BeforeSend`
+> - 块化：`RequestPipeline.execute` 按「真正发出 HTTP」拆成发送前块 `BeforeSend`
 >   （同步 `void step(ctx)`，步骤 4–7）与发送后块 `AfterSend`（返回 Flux 的异步状态机，步骤 8 起）；
 >   翻译对经 ctx 跨块传递（回程翻译器在发送前块选、发送后块用）。
-> - **刀 3 B ✅** 出站头与地址装配上移发送前块（现为步骤 7 `assembleOutboundStep` →
+> - 出站头与地址装配上移发送前块（现为步骤 7 `assembleOutboundStep` →
 >   `before/outbound/OutboundRequestAssembler`）：协议无关三层头在主干、协议特定的选列 + 补版本头走
 >   `before/outbound/` 支线（按 `upstreamProtocol` 查表，未命中报错）。执行器 `buildWebClient` 只剩
 >   「铺 ctx 的头和地址 + 抓传输层快照 + 发送」，那些要等真正发请求那一刻，故留发送后块。
@@ -214,9 +222,9 @@ pipeline/                         ← 主干-支干轴（阶段 5 归拢后的�
 > 步骤树里唯一标着「执行器」的那一步（上游往返）是执行器交出的**传输闭包** ——
 > 由 runner 在每轮 `defer` 内调起，既不是主干持有的步骤、也不属于某个抽象「支线」包，
 > 因此**不再带「主干：」前缀**。其余步骤都已归主干或具名支线。
-> 契约收缩（`UpstreamExecutor` → transport）**已降级为可选清理**（见 §4.1），
+> 契约收缩（`UpstreamExecutor` → transport）**是可选清理**（见 §4.1），
 > 故执行器仍持有这些闭包 —— 那不是偏差，是「协议特有的传输细节」的正当归属。
-> `EmptyResponseGate` / `UpstreamAutoRetry` 等机制一直是主干件；刀 2 把**编排**也搬回了主干侧。
+> `EmptyResponseGate` / `UpstreamAutoRetry` 等机制一直是主干件。
 
 ```
 下游请求（三条端点之一）
@@ -235,7 +243,7 @@ pipeline/                         ← 主干-支干轴（阶段 5 归拢后的�
 
 步骤 3  主干：管道入口（唯一）        RequestPipeline.execute(ctx)
         主干唯一入口，只有两行：beforeSend.process(ctx) → return afterSend.process(ctx)
-        以「真正发出 HTTP」为界拆成两个功能块（阶段 4 刀 3 块化）：
+        以「真正发出 HTTP」为界拆成两个块：
           ├─ 发送前块 BeforeSend —— 同步 void step(ctx) 序列（步骤 4~7）
           └─ 发送后块 AfterSend  —— 返回 Flux 的异步状态机（步骤 8 起）
 
@@ -347,7 +355,7 @@ pipeline/                         ← 主干-支干轴（阶段 5 归拢后的�
                 fallback/   ReasoningFallbackStage → ChatReasoningFallbackStage → ReasoningFallback
 
 步骤 14 主干：落库（每次上游往返各一条）  ApiCallLogService / ApiCallUsageService
-        ★ 刀 2 起收归 UpstreamCallRunner 的 2 份静态方法（saveNonStreamLog / saveStreamLog[WithError]）
+        ★ 收归 UpstreamCallRunner 的 2 份静态方法（saveNonStreamLog / saveStreamLog[WithError]）
           上游协议统一从 ctx.upstreamProtocol() 取 —— 曾经的 9 份（两态 × 三协议）已塌成一份
 
 步骤 15 插槽：响应翻译                ResponseProtocolTranslator（键 = downstream + upstream）
@@ -372,8 +380,8 @@ pipeline/                         ← 主干-支干轴（阶段 5 归拢后的�
 
 ## 3. 与主干正交的轴
 
-> 四轴总表见 §0。本层（主干-支干）之外的三个轴各在一处：
-> **出口**在 `api/`（§3.3）· **控制面**在 `control/`（§3.1）· **观测**尚未归拢（§3.2）。
+> 四轴总表见 §0。本层（主干-支干）之外的**三条轴**各在一处：
+> **出口**在 `api/`（§3.3）· **控制面**在 `control/`（§3.1）· **观测**在 `observability/`（§3.2）。
 
 ### 3.1 控制面（`control/`，不在本层）
 
@@ -390,12 +398,11 @@ pipeline/                         ← 主干-支干轴（阶段 5 归拢后的�
 > 是**自动重试**的两件事；人工重发**不在请求流里**、**不消耗预算**、**只服务流式** ——
 > 它只是碰巧也叫「重试」。
 
-### 3.2 观测轴（**已收拢** —— 顶层包 `observability/`，第 7a-1 步）
+### 3.2 观测轴（顶层包 `observability/`）
 
 「让**人**看见发生了什么」是**第四条轴**。其判据是**删掉它下游收到的不变，但后台瞎了** ——
 `UpstreamCallReporter` / `CallLifecyclePublisher` / `ApiUsageCollector` / `LogEventPublisher`
-全都满足它。此前它散在三处（`application/` · `infrastructure/web/` · 主干内两个薄适配器），
-现已按**延迟**分四组归到顶层 `observability/`：
+全都满足它。它按**延迟**分四组住在顶层 `observability/`：
 
 ```
 observability/
@@ -405,38 +412,37 @@ observability/
 └─ notify/     UpstreamCallReporter（零主干依赖，可搬）
 ```
 
-| 归拢后住哪 | 是什么 | 延迟 |
+| 住哪 | 是什么 | 延迟 |
 |---|---|---|
 | `publisher/` 三个 | 实时推送（Toast 相位 / 统计卡 / 日志列表） | **实时** |
 | `record/ApiCallLogService` · `ApiCallUsageService` | 明细落库（`api_call_log` / `api_call_usage`），每次往返一行 | **明细** |
-| `record/ApiUsageDailyService`（**新抽的端口**） | 日聚合（`api_usage_daily`，统计卡数据源） | **聚合** |
+| `record/ApiUsageDailyService` | 日聚合（`api_usage_daily`，统计卡数据源） | **聚合** |
 | `notify/UpstreamCallReporter` | 生命周期事件 / 调用记录信号的 best-effort 通知 | 实时 |
 | `port/CallLifecycleNotifier` | 生命周期通知**端口**（DIP） | — |
 
-> **`ProtocolNotifier` 留 `before/notify/`**（未搬）：它的归属有两条依据，
+> **`ProtocolNotifier` 留 `before/notify/`**：它的归属有两条依据，
 > **依赖方向那条是决定性的** —— 它 import `ProtocolDispatchDecision`（主干数据），
 > 搬进 `observability/` 会让 `observability → pipeline`，**与既定方向（主干 → 观测）相反**。
 > 对照：`UpstreamCallReporter` 零主干依赖（只 import 端口与事件类型），故可搬。
 > 两者的差别正在于「有没有反向依赖主干的数据」。
 >
-> **实测兑现**：收拢后 `observability/` 对外只 import `protocol/` 与自身，
+> **实测兑现**：`observability/` 对外只 import `protocol/` 与自身，
 > 对 `application/` / `infrastructure/` / `api/` / `control/` **零反向依赖**。
 
 > **落库的触发点仍在块 2**（`UpstreamCallRunner` 在 `doFinally` 里调 `saveStreamLog`，
 > 三个执行器调 `apiCallUsage.save`）—— 观测轴只提供**能力**（端口），
 > 因为只有块 2 知道「一次上游往返结束了、拿到了什么字节」。这是
 > `主干 → 观测` 单向依赖的正常形态（同 `UpstreamCallReporter` 的「主干内薄适配器」）。
-> **不要在归拢时把触发点也搬走** —— 观测轴无法得知那一刻。
+> **不要把触发点也搬进观测轴** —— 观测轴无法得知那一刻。
 
-> **待决策点已作废**（2026-09-26 实测）：`plan_.md` §4.8.8 第 8 节曾记
-> 「`ApiCallLogService` / `ApiCallUsageService` 的搬迁要拆读写接口」，但两者 javadoc
-> 已明写「仅暴露 provider 需要的写入能力；查询能力保留在 infrastructure 的 Repository 上」，
-> 且读侧独立在 `CallLogQueryService` —— **读写早已分离**，故为纯写端口，直接搬。
+> **读写已分离，故可直接搬**：`ApiCallLogService` / `ApiCallUsageService` 的 javadoc
+> 明写「仅暴露 provider 需要的写入能力；查询能力保留在 infrastructure 的 Repository 上」，
+> 且读侧独立在 `CallLogQueryService` —— 它们是纯写端口。
 
 ### 3.3 出口轴（`api/`）
 
 > **它不是第五轴 —— 它一直是第二轴**（§0 四轴表的第 2 行），判据是
-> 「删掉它下游**收不到**东西」。本小节描述的是它的**内部拓扑**（阶段 6，2026-09-26）。
+> 「删掉它下游**收不到**东西」。本小节描述的是它的**内部拓扑**。
 
 ```
 api/
@@ -474,7 +480,7 @@ $$\text{删掉 } \texttt{api/shared/} \;\Rightarrow\; \text{下游}\textbf{什�
 | `UsageAccounting` | `observability.record`（端口）· `pipeline.protocol` · `protocol.usage` | **出口**的共享件 |
 | `StreamLifecycle` | **`control`**（取消注册表）· `observability.publisher` · `protocol.lifecycle` | **出口**的共享件 |
 
-> 与 7a-1 同源：**轴 = 代码住在哪，≠ 这段代码在跟谁说话**。
+> 同一条判据：**轴 = 代码住在哪，≠ 这段代码在跟谁说话**。
 > 观测轴的实现全在 `observability/`；`api/shared/` 只是**在调用它**。
 
 #### 3.3.2 什么该共用、什么必须各备
@@ -530,29 +536,26 @@ StreamLifecycle.stream(upstream, ctx,
 | `after/content/` `before/outbound/` `after/send/` **不套步骤层子包** | 接入点只有一步时，接入点即步骤。加一层求「深度整齐」会重复一次含义（三个的**协议实现**分组方式不同，见 §1 读法 4） |
 | `EmptyResponseGate` 住在 `after/attempt/` 而非 `after/content/` | 它协议无关（三条线路共用同一套扣放机制），只有**检测器**因协议而异。`attempt/` 持机制 + 契约、`content/` 供各协议检测器实现，是「主干持契约、支线供实现」的直接体现 |
 | 两个执行器**不继承** `AbstractUpstreamChatService` | 强行抽公共父类会退化成一堆钩子（子类看不见自己依赖什么）。**抽特征，不抽骨架** |
-| 落库 **9→2 已合并**（阶段 4 刀 2） | 曾按「两态 × 三协议」写 9 份；刀 2 收归 `UpstreamCallRunner` 两份静态方法，上游协议从 `ctx.upstreamProtocol()` 取。`api_call_log` 两列各自两型不变（未压平），两列取值回归全绿 |
+| 落库由 `UpstreamCallRunner` 两份静态方法承担 | 上游协议从 `ctx.upstreamProtocol()` 取，不写死常量。`api_call_log` 两列各自两型不变（**未压平**）—— 压平会让「上游到底返回了什么」这一列失去区分力 |
 
 ---
 
 ## 4.1 已知的**结构偏离**（待修，不是「刻意保留」）
 
 上表是*刻意*的不对称；本节是*待修*的偏离 —— 区别在于前者不该动，后者该动。
-**2026-09-25：阶段 4 三刀（含 B）与阶段 5 包结构归拢（前 5 步）均已落地** ——
-主干后半段归位、请求体与出站装配上移、编排块化、`upstream/` 顶层包消失。
-下表仅剩两条：一条是**已降级的可选清理**，一条是**归拢带出的新发现**。
+两条都不影响正确性，是「随时可做的纯清理」。
 
 | 偏离 | 表征 | 矫正 |
 |---|---|---|
-| **send 插槽吞掉主干后半段** ✅刀1/2/3 | 步骤（协议无关的 body 装配 / 头与地址装配 / 兜底 / 重试 / 落库）曾在三执行器各写一份 | 刀 1 上移 body；刀 2 内层+重试+落库收归 `UpstreamCallRunner`、流级态入 `AttemptContext`；刀 3 B 上移出站头/地址。**编排与装配已全回主干侧** |
-| **思考注入只插槽化了 1/3** ✅刀1 | `thinking/` 曾只有 `MessagesThinkingStage`；CHAT / RESPONSES 的注入在各自 `applyReasoningEffort` 里 | 刀 1 已把 thinking 步骤对齐（详见刀 1 落地记录） |
-| **步骤有第三种扩展机制** ✅刀1 | Chat 曾走 `customizeRequestBody` 虚方法钩子、Messages 走查表、Responses 不接 | 刀 1 统一到主干显式阶段序列 |
-| **ctx 统一原则在插槽内没执行** ✅刀1/2 | 曾 `prepareRequestBody` 参数穿线、Chat/Responses 读不到 `ctx.bodyProtocol()` | 刀 1/2 随步骤上移消解；runner 与 `AttemptContext` 均以 ctx 为准 |
-| **回程中段仍在执行器闭包** ⏳可选 | 帧归一 / reasoning fallback / usage 解析（协议特有）留在执行器 `postLoop` 闭包 —— 这是**协议特有**的正当归属，不是偏差；仅其「消费者只有 Chat 执行器」一点与主干化取向不一致 | 契约收缩（`UpstreamExecutor` → transport）可分离协议特有中段与传输，**已降级为可选清理**（块化已拿走主要收益） |
-| **`buildWebClient` 三份** ✅刀3 B | 三执行器各一份，曾差异为 baseUrl 来源 + `anthropic-version` 头 | 刀 3 B 把那些差异归进 `before/outbound/` 支线，三份现**逐字同形**（只差方法名/可见性）；合并是随时可做的纯清理 |
-| **观测轴散在三处** ✅步7a-1 | `application/lifecycle` · `infrastructure/web/` · 主干内两个薄适配器 | 已收拢到顶层 `observability/{port,publisher,record,notify}/`；依赖方向实测单向（见 §3.2） |
-| **usage 被解析两遍** ✅步7b-1 | 发送块解析一次（写 `api_call_usage`）；`api/` 三个 Controller 又解析一次（写 `api_usage_daily` + 推前端）。且 `ResponsesController.recordStreamUsage` 里复制了一份协议语义（「最后一份非 null 胜出，与 Anthropic 需跨事件 merge 不同」） | **不是「搬位置」而是「消重复」**：解析收到生产者，结果挂在 `UpstreamEvent.usage()` 上；出口只做一条**与协议无关**的「取最后一份非 null」。详见下方 §4.2 |
+| **回程中段仍在执行器闭包** | 帧归一 / reasoning fallback / usage 解析（协议特有）留在执行器 `postLoop` 闭包 —— 这是**协议特有**的正当归属，不是偏差；仅其「消费者只有 Chat 执行器」一点与主干化取向不一致 | 契约收缩（`UpstreamExecutor` → transport）可分离协议特有中段与传输。收益低：编排与装配已在主干侧，只差协议中段 |
+| **`buildWebClient` 三份** | 三执行器各一份，差异为 baseUrl 来源 + `anthropic-version` 头 | 那些差异已归进 `before/outbound/` 支线，三份现**逐字同形**（只差方法名/可见性）；合并是随时可做的纯清理 |
 
-### 4.2 usage 槽：跨块交出协议解析结果（步 7b-1，✅ 已完成）
+> **不要为了消掉这两条而动这块**：改 `UpstreamExecutor` 契约会同时触及三个执行器与
+> `UpstreamExecutorRegistry` 的查表语义，而收益只是「少三份同形方法」。
+> 若将来真的要做，判据是「协议特有中段能否独立于传输」—— 那时 `send/` 的
+> chat/messages/responses 三组各自交出 transport 闭包，中段留在原包。
+
+### 4.2 usage 槽：跨块交出协议解析结果
 
 **问题**：同一份上游字节被解析两遍，后一遍在**出口** —— 而出口本该只知道
 「这些字节要包成什么 HTTP 形状」，不该知道「这些字节在协议上是什么意思」（§3.3）。
@@ -577,13 +580,13 @@ StreamLifecycle.stream(upstream, ctx,
 **有意的行为变更**（仅一处）：C2M 且下游未请求 `include_usage` 时，
 翻译器不发 usage 帧 → 旧出口解析不到 → 记 `0,0`；现在记真实值。
 这是**修正**：`api_call_usage`（明细）本就记真实值，两张表口径因此统一。
-调用**次数**不变（那是出口「恰记一次」的不变式，本步不动）。
+调用**次数**不变（那是出口「恰记一次」的不变式）。
 
 **未动的东西**：出口的 `completed` CAS + `canceled` 守卫 + Layer 1/Layer 2 两层判定
-全部原地保留 —— 那是出口独有状态。若改为主干直接记账（曾评估的「甲案」），
+全部原地保留 —— 那是出口独有状态。若改为主干直接记账，
 就要把这四个条件复制到主干，**那是换个地方重复，不是消重复**。
 
-**7b-2 的收尾**（✅ 2026-09-26）：出口剩下的「读槽 → 记账」三份逐字相同，
+**出口侧的收尾**：出口剩下的「读槽 → 记账」三份逐字相同，
 已收归 `api/shared/UsageAccounting`（与 `StreamLifecycle` / `UpstreamFailureClassifier` 同址）。
 两档记账语义**刻意不同**，不要统一：
 
@@ -607,22 +610,19 @@ StreamLifecycle.stream(upstream, ctx,
 ## 5. 改动本层时的纪律
 
 1. **纯移动 / 纯改名**要单独提交 —— 混入行为变更就没法验证「零行为变更」。
-   阶段 5 包结构归拢（七步）就是照这条走的：每步一个提交、每步 `1309` 全绿。
+   包结构归拢就是这么走的：每步一个提交、每步全绿。
 2. **改了包名必须删 `target\classes` / `target\test-classes` 再编译**（增量编译会**假绿**）。
    **不要删整个 `target/`** —— VS Code 的 Java 语言服务同时在里面写，会争抢、
    导致 `could not create parent directories`；真坏了就**重载 VS Code 窗口**。
 3. **移动包后必须检查 `.github/instructions/*.md` 的 `applyTo` glob** ——
    它们是「路径即契约」的配置，移动是它们失效的**唯一原因**，而失效时**完全静默**。
-   **已实例印证**（阶段 5 第 5 步）：`ollama-api.instructions.md` 的 `**/upstream/discovery/**`
+   **已实例印证**：`ollama-api.instructions.md` 的 `**/upstream/discovery/**`
    随 `discovery/` 搬走而失效，已改 `**/application/discovery/**`。
 4. **注意「测试数变少」** —— 那是文件丢失的可靠信号（比任何断言都早），
    常见原因是 `git mv` 的目标目录不存在而**静默失败**。
-5. **全量验证**：`.\mvnw.cmd compiler:compile compiler:testCompile surefire:test`，基线 **1335**
-   （阶段 5 步 7a-1 前为 1309；步 7b-1 +6 `OpenAiControllerUsageSlotTests`，
-   步 7b-2 +9 `UsageAccountingTests`，阶段 6 步 1 +9 `UpstreamErrorRendererTests`，
-   步 3 +2 `StreamLifecycleTests` 新增用例）。
+5. **全量验证**：`.\mvnw.cmd compiler:compile compiler:testCompile surefire:test`，基线 **1335**。
 
-### 5.1 搬包实操的三条细则（阶段 5 实测，后续搬包直接复用）
+### 5.1 搬包实操的细则（实测，后续搬包直接复用）
 
 1. **拆包会新增「同包 → 跨包」引用**：把同一个包里的类分散到多个子包后，
    原本**无 import 的同包引用要补 import**（整包搬移不会触发，自包含子树也不会）。
@@ -631,7 +631,7 @@ StreamLifecycle.stream(upstream, ctx,
    替换串**必须带 `.` 前缀**（仓库里有 `ProtocolDispatchManagerTests` 这类同名前缀测试类）；
    先处理具体子包（`send.*` / `chunk.*` / `content.*`），层根类**按类名逐个锚定**，
    最后**不要留下无差别的 `upstream.` → 兜底规则** —— 它会把已搬进公共层的文件的
-   `package` 声明误改（阶段 5 第 4 步踩过，第 5 步去掉兜底后残留直接为 0）。
+   `package` 声明误改（踩过一次：去掉兜底后残留直接为 0）。
 3. **`test-compile` 报 SUCCESS 之后仍可能假绿**：VS Code 的 Java 语言服务用 ecj
    编译出带 error marker 的 `.class`，Maven 见时间戳较新就跳过重编 ——
    症状是「编译成功但测试报 `Unresolved compilation problem`」。
@@ -639,16 +639,16 @@ StreamLifecycle.stream(upstream, ctx,
 
    > ⚠️ **`clean test` 可能偶发失败，那不是回归**：`clean` 删掉 `target/test-admin.db` 后，
    > 首次启动的 schema 迁移与并发测试存在竞态（报 `no such table: app_config` / `api_call_log`）。
-   > **复跑即绿**（阶段 5 第 4 步实测：第一次失败、后两次连续 1309 全绿）。
-4. **`package` 声明与 import 要分两步改，别指望一次替换全覆盖**（第 7a-1 步实测）：
+   > **复跑即绿**（实测：第一次失败、后两次连续全绿）。
+4. **`package` 声明与 import 要分两步改，别指望一次替换全覆盖**（实测）：
    「按 FQN 精确锚定」的替换**不包含**搬移文件自己的 `package` 行（那里只有包名、无类名）。
    搬完必须**单独扫一遍搬移文件的首行**确认。本次 9 个 main + 4 个 test 共 13 处都是这样补的。
-5. **先建目标目录再 `git mv`**（第 7a-1 步实测）：`git mv` 对**不存在的目标目录**直接报
+5. **先建目标目录再 `git mv`**（实测）：`git mv` 对**不存在的目标目录**直接报
    `fatal: renaming ... failed: No such file or directory`，**且不会自动建目录**。
    本次 `src/test/.../protocol/` 未预先创建，四个文件里三个成功、一个失败 ——
    而**文件数守恒检查会立即暴露它**（test 110 ≠ 111）。
    > 这正是「测试数变少 = 文件丢失的可靠信号」那条纪律的又一次印证。
-6. **拆包后要扫的不是「报错文件」而是「所有引用方」**（第 7a-1 步实测）：
+6. **拆包后要扫的不是「报错文件」而是「所有引用方」**（实测）：
    本次 `ApiUsageCollector`（`infrastructure/web/`）引用同包的 `UsageEventPublisher`、
    `UpstreamAutoRetry`（`pipeline/after/attempt/`）引用同包的 `UpstreamCallReporter` ——
    两者都**原本无 import**，拆包后必须补。编译报错能找出来，但**第一轮只会报第一批**

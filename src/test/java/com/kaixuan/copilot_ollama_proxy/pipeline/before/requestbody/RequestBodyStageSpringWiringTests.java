@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>故这里断言的是「收集到了、查得到、能调用」，而不是「行为正确」——
  * 后者由 {@code RequestBodyAssemblerTests} 与 {@code GenericAnthropicChatServiceTests} 覆盖。
  *
- * <h2>阶段 4 刀 1 起：查表入口在装配器（主干），不在执行器</h2>
+ * <h2>查表入口在装配器（主干），不在执行器</h2>
  * 请求体装配收归主干的 {@code RequestBodyAssembler}，它持有本注册表。执行器不再持有 ——
  * 因此本类断言的「谁拿到查表入口」从执行器改为装配器（见
  * {@link #assemblerHoldsTheRegistry}）。同时 {@code thinking/} 从 1 个实现（仅 MESSAGES）
@@ -66,7 +66,7 @@ class RequestBodyStageSpringWiringTests {
                 .as("system 抬升支线应被收集（@Component 在扫描范围内）")
                 .hasSize(1);
         assertThat(maxTokensStages).hasSize(1);
-        // thinking 三协议各一（阶段 4 刀 1）：Chat 写 reasoning_effort、Responses 写 reasoning.effort、
+        // thinking 三协议各一：Chat 写 reasoning_effort、Responses 写 reasoning.effort、
         // Messages 写 output_config.effort + thinking 方式。
         assertThat(thinkingStages).hasSize(3);
 
@@ -87,7 +87,7 @@ class RequestBodyStageSpringWiringTests {
                 .containsInstanceOf(MessagesMaxTokensStage.class);
         assertThat(registry.findThinkingStage(WireProtocol.MESSAGES))
                 .containsInstanceOf(MessagesThinkingStage.class);
-        // 阶段 4 刀 1：Chat / Responses 的思考注入也支线化了，故三协议都能查到 thinking。
+        // Chat / Responses 的思考注入也支线化了，故三协议都能查到 thinking。
         assertThat(registry.findThinkingStage(WireProtocol.CHAT)).isPresent();
         assertThat(registry.findThinkingStage(WireProtocol.RESPONSES)).isPresent();
     }
@@ -100,7 +100,7 @@ class RequestBodyStageSpringWiringTests {
      * 若某天有人给这两条协议补了实现，本用例会失败 —— 那是提醒他确认
      * 「确实该在这个协议上跑这一步」，而不是顺手加上。
      *
-     * <p>思考注入<strong>不在此列</strong>：阶段 4 刀 1 已把它对三协议都支线化
+     * <p>思考注入<strong>不在此列</strong>：已把它对三协议都支线化
      * （见 {@link #allThreeStagesAreFoundByMessagesKey}），因为思考深度是三条线路都有、
      * 只是出站字段不同的步骤。
      */
@@ -213,7 +213,7 @@ class RequestBodyStageSpringWiringTests {
      * 若构造器参数被换成一个空注册表、或将来有人为了「省事」改回直接调工具，
      * 行为一切正常，而协议特定步骤可查表扩展的成果<strong>静默归零</strong>。
      *
-     * <p>阶段 4 刀 1 起查表入口在装配器（主干）而非执行器，故这里断言的是装配器持有它。
+     * <p>查表入口在装配器（主干）而非执行器，故这里断言的是装配器持有它。
      * 代价是绑定了字段名，改名即红，那正是应有的提醒。
      */
     @Test

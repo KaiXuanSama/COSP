@@ -173,7 +173,7 @@ public class OpenAiController {
      * <p>相比旧的 SseEmitter 手动订阅模型，这里直接返回 Flux，由 WebFlux 框架托管
      * 背压、取消和超时，无需手动管理 Disposable 与回调。
      *
-     * <h2>职责分界（阶段 6 步 3 后）</h2>
+     * <h2>职责分界</h2>
      * 本方法只交待<strong>三件事</strong>：拉哪条链、每帧长什么样、错误长什么样。
      * 逐帧副作用（累积 usage、判终止、数 CHUNK）与收尾协议（取消 / 终止 / 心跳 / 清理）
      * 都在 {@link StreamLifecycle#stream} 里 —— 三条端点共用那一份。

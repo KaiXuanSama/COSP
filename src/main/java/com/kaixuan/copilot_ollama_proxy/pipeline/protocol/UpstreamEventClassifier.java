@@ -7,9 +7,9 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.responses.ResponsesS
  * 把一帧原始报文的字符串<strong>归类</strong>为载荷或终止标记。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：主干 · 位置：{@code upstream/}（层根）
+ * 形态：主干 · 位置：{@code pipeline/protocol/}（层根）
  * 步骤「回程帧处理」—— 把一帧分成「载荷」与「终止标记」两态
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为什么需要它</h2>
  * 「这一帧是不是说完了」此前是<strong>三处字符串模式匹配</strong>，且散在控制器里：

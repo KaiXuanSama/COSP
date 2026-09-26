@@ -21,9 +21,9 @@ package com.kaixuan.copilot_ollama_proxy.pipeline;
  * <h2>为何暂时只有两个值</h2>
  * 只有一个消费者（空响应拦截），它只读这两个。
  *
- * <p><strong>3.1 把上游响应归一（{@code UpstreamChunkNormalizer}）与 reasoning fallback
- * 接成查表支线之后，这里并没有补上对应枚举值</strong> —— 而那个预测是错的，
- * 原因值得记下：那些步骤的「跳过」由<strong>查表未命中</strong>直接表达
+ * <p><strong>上游响应归一（{@code UpstreamChunkNormalizer}）与 reasoning fallback
+ * 接成查表支线之后，这里并没有补上对应枚举值</strong>，原因值得记下：
+ * 那些步骤的「跳过」由<strong>查表未命中</strong>直接表达
  * （{@code ChunkStageRegistry} 返回空即跳过），不需要额外登记一位状态。
  * 登记是用来回答「这个步骤执行过了吗」的，而支线只需要回答「该不该执行」——
  * 后者查表就有答案，多记一位反而会让人以为它在参与决策。

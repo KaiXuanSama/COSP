@@ -6,15 +6,15 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 一次上游<strong>往返尝试</strong>的流级状态 —— 主干后半段（阶段 4 刀 2）的落点。
+ * 一次上游<strong>往返尝试</strong>的流级状态 —— 主干后半段的落点。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：主干<strong>流级状态容器</strong> · 位置：{@code upstream/send/}
+ * 形态：主干<strong>流级状态容器</strong> · 位置：{@code pipeline/after/send/}
  * 步骤「发送」的内层 —— 每次 {@code Flux.defer} 重订阅新建一个，承载「这一轮读到哪了」
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  *
- * <h2>它为什么存在（方向文档 §2.4 的「流级状态」有了家）</h2>
+ * <h2>它为什么存在</h2>
  * {@link com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipelineContext} 装的是
  * <strong>请求级</strong>事实（route、两协议、headers），整条主干共用、重试<strong>不</strong>重置。
  * 而计时、chunk 收集、首字延迟、耗尽放行标记这些是<strong>流级</strong>累积量：
@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * 锁死在执行器里（{@code Flux.defer} / {@code retryWhen} 必须与它们写在同一个方法体）。
  *
  * <p>给它们一个显式的家之后，主干（{@code UpstreamCallRunner}）才能在自己的方法里组装内层链，
- * 执行器退化成把协议特定闭包交出去的薄适配器。这是阶段 4 §4.2 认定的刀 2 前置。
+ * 执行器退化成把协议特定闭包交出去的薄适配器。
  *
  * <h2>三条线路的字段集相同（故可通用）</h2>
  * 三个执行器的流级状态<strong>逐字段一致</strong>（都有这六项）—— 它们本就是协议无关的骨架，

@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@link UpstreamEventClassifier} 的终止识别，以及 {@link UpstreamEvent} 两态的基本契约。
  *
  * <h2>为何这些用例值得存在</h2>
- * 本步把「这一帧是不是说完了」从三处<strong>字符串模式匹配</strong>收成一个类型，
+ * 把「这一帧是不是说完了」从三处<strong>字符串模式匹配</strong>收成一个类型，
  * 判据此前散在三个控制器里、没有任何直接单测 —— 它们只被流式端到端用例间接覆盖，
  * 而那类用例喂的是 happy path，认不出「某个协议漏了一条终止形态」。
  *

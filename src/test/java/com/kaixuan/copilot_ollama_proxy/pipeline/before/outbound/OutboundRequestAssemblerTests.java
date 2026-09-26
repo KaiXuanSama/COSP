@@ -21,8 +21,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * {@link OutboundRequestAssembler} 的装配契约 —— 出站头与地址的产出、顺序、协议差异。
  *
- * <h2>它守什么（阶段 4 刀 3 B 起）</h2>
- * 出站头装配自刀 3 B 从三个执行器的 {@code buildWebClient} 收归发送前块。本类钉住那次搬迁的
+ * <h2>它守什么</h2>
+ * 出站头装配从三个执行器的 {@code buildWebClient} 收归发送前块。本类钉住那次搬迁的
  * 三条不变式，它们都是从旧 {@code buildWebClient} 逐字保留下来的：
  * <ul>
  *   <li><strong>地址按协议选列</strong>：Chat 读 base_url、Messages 读 anthropic_base_url、

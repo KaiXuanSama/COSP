@@ -6,10 +6,10 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequest
 import org.springframework.stereotype.Component;
 
 /**
- * RESPONSES 线路的出站装配支线实现（阶段 4 刀 3 B）。
+ * RESPONSES 线路的出站装配支线实现。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>实现</strong>（RESPONSES） · 位置：{@code upstream/outbound/responses/}
+ * 形态：支线<strong>实现</strong>（RESPONSES） · 位置：{@code pipeline/before/outbound/responses/}
  * 步骤「出站请求装配」—— 只回答「地址读哪一列」。
  *
  * <h2>它只做地址解析，没有协议必需头</h2>

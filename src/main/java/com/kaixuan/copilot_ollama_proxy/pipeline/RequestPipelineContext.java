@@ -29,17 +29,17 @@ import java.util.Set;
  *   <li><strong>可变</strong>：{@link #body} 会随阶段被改写（翻译把它换成上游形态、
  *       各注入步骤往里补字段）。做成不可变只会得到「外表不可变、内里可变」的假象 ——
  *       {@code body} 是 {@code Map}，原地改它本来就是主干的正常动作。
- *       3.4c-1 起 {@code model} / {@code upstreamProtocol} / {@code provider} /
+ *       另有 {@code model} / {@code upstreamProtocol} / {@code provider} /
  *       {@code translationContext} <strong>也可变</strong>：端点建 ctx 时它们还未知，
  *       由主干分步回填（{@link #applyRouting} / {@link #applyTranslation}）。</li>
  *   <li><strong>允许冗余</strong>：可以携带<em>当前无人读取</em>的字段。
  *       冗余字段是给后续步骤与后续功能预留的座位，读取方出现时不必再改本类的形状。
- *       例如 {@code translationContext} 在 3.4c-2 之前一直无人读 ——
- *       它作为「响应侧的座位」存在了几个版本，直到回程翻译接进主干才被用上。</li>
+ *       例如 {@code translationContext} 曾长期无人读 ——
+ *       它作为「响应侧的座位」先存在，直到回程翻译接进主干才被用上。</li>
  * </ul>
  *
- * <h2>它装「数据」，也装「本次选中的策略」（阶段 4 刀 3 起）</h2>
- * 原则上本类装的是<strong>数据</strong>（协议、body、头）。阶段 4 块化后，它另装两个
+ * <h2>它装「数据」，也装「本次选中的策略」</h2>
+ * 原则上本类装的是<strong>数据</strong>（协议、body、头）。它另装两个
  * <strong>策略对象</strong>：{@link #requestTranslator} / {@link #responseTranslator} ——
  * 本次请求按协议对选中的去程 / 回程翻译器。这不违反「装数据」的初衷：
  * 翻译器是<strong>无状态单例</strong>（{@code @Component}），把它的引用放进 per-request 的 ctx
@@ -52,7 +52,7 @@ import java.util.Set;
  * 去程翻译器在发送前块当场选、当场用，严格说不必进 ctx；一并存入是为了让二者作为
  * 「本次请求的翻译对」成为一个对称的单一概念（代价仅一个引用字段）。
  *
- * <p><strong>出站头与地址同理跨块（阶段 4 刀 3 B）</strong>：{@link #outboundHeaders} /
+ * <p><strong>出站头与地址同理跨块</strong>：{@link #outboundHeaders} /
  * {@link #outboundBaseUrl} 由发送前块的出站装配步骤算好，发送后块 {@code buildWebClient}
  * 直接铺进 WebClient。它们是<strong>数据</strong>（装配的产物）而非策略，与 body 同类 ——
  * 「这次请求实际发什么头、发去哪」是本次请求特有的事实，故进 ctx。
@@ -76,23 +76,23 @@ import java.util.Set;
  *       且是<strong>阶段查表的键</strong>。翻译是让两者分道扬镳的唯一动作。</li>
  * </ul>
  *
- * <p><strong>{@code bodyProtocol} 的初值 = {@code downstreamProtocol}</strong>（3.4c-1 起）：
+ * <p><strong>{@code bodyProtocol} 的初值 = {@code downstreamProtocol}</strong>：
  * 端点创建 ctx 时 body 还是下游形态，要等主干上的 translate 把它换成上游形态
  * （{@code replaceBody} 成对更新）。写错会很安静：查表用错的键，
  * 症状是「某个阶段没执行」而没有任何报错。
  *
- * <p>3.4c-1 之前它初值取 {@code upstreamProtocol} —— 那时翻译在应用服务层完成，
- * 执行器拿到的 body 已是上游形态。改用下游作初值是「翻译进主干」的必然结果，
- * 不是口味变化。
+ * <p>它<strong>不能</strong>取 {@code upstreamProtocol} 作初值 —— 那样在「翻译进主干」的
+ * 设计下必然错位：执行器拿到的 body 要到 translate 之后才是上游形态，
+ * 而 translate 之前的阶段（如请求体装配）读它时拿到的是错的值。
  *
  * <h2>与流级状态的分界（不要混）</h2>
  * 本类装的是<strong>请求级</strong>事实 —— 整条主干共用，重试<strong>不</strong>重置。
  * 而 {@code contentEmitted} / {@code reasoningBuffer} / {@code chunkId} 是<strong>流级</strong>
  * 累积量（重试一次就得重置），它们<strong>不属于本类</strong>，由流算子的闭包持有、
- * 以方法参数穿线传递（见方向文档 §2.4「两级状态要分清」）。
+ * 以方法参数穿线传递。判据是「<strong>重试时该不该归零</strong>」。
  *
- * <h2>它并入了原本的 {@code PipelineExecution}（3.3b-1）</h2>
- * 本类引入时，那个类已经存在（2.1a 引入，用于承载「哪些步骤执行了」）。
+ * <h2>它并入了原本的 {@code PipelineExecution}</h2>
+ * 本类引入时，那个类已经存在（用于承载「哪些步骤执行了」）。
  * 那次合并要解决的是<strong>同一份事实有两个家</strong>：两个类<strong>都持有两侧协议</strong>，
  * 而 {@link #translationNeeded()} 与 {@link #shouldApplyEmptyResponseGate()}
  * 都是<strong>从协议派生</strong>的判据 —— 它们挂在前者身上只是因为当时还没有本类。
@@ -119,7 +119,7 @@ public final class RequestPipelineContext {
      * 本次调用用于上游请求的模型名。
      *
      * <p>它是执行器入口需要的那个值（{@code route.model()}，已剥供应商前缀）。
-     * <strong>写入分两步</strong>（3.4c-1 起）：端点创建时先放**请求模型名**
+     * <strong>写入分两步</strong>：端点创建时先放**请求模型名**
      * （可带 {@code [provider-key]} 前缀），主干解析后回填**目标模型名**。
      * 两步值在生产路径上通常相同，但不能合并 —— 解析结果只有主干才有。
      */
@@ -135,14 +135,10 @@ public final class RequestPipelineContext {
      * 且整条主干与执行器都要用（{@code RequestBodyAssembler} 写 {@code stream} 字段、
      * {@code OutboundRequestAssembler} 选 {@code Accept} 头、{@code saveUsage} 选 ttfb 口径……）。
      *
-     * <p><strong>为何是一个显式字段，而不是去 body 里读 {@code stream}</strong>：
-     * 读 body 会把「怎么执行」编码进「数据」—— 而那个字段是装配步骤
-     * （{@code writeProtocolFields}）写的，两者一旦不一致就会静默走错路。
+     * <p>它不进 body 而是作为显式字段：读 body 会把「怎么执行」编码进「数据」——
+     * 而那个字段是装配步骤（{@code writeProtocolFields}）写的，
+     * 两者一旦不一致就会静默走错路。
      * 与 {@link #downstreamProtocol} 同一性质：都是「这次请求是什么」而非「报文长什么样」。
-     *
-     * <p>3.5a 之前它以 {@code boolean stream} <strong>参数</strong>在三处穿线
-     * （各执行器的 {@code prepareRequestBody} / {@code buildWebClient} / {@code saveUsage}）——
-     * 提进本类就是把已经在传的东西从参数搬进状态池。
      */
     private final boolean stream;
 
@@ -150,7 +146,7 @@ public final class RequestPipelineContext {
      * 实际对上游使用的协议（由供应商配置与调度决定）。
      *
      * <p><strong>可变</strong>：端点创建 ctx 时还不知道它（要先 resolve + dispatch），
-     * 由主干解析步骤回填（3.4c-1）。回填前它的值只是**临时占位**（取 downstream），
+     * 由主干解析步骤回填。回填前它的值只是**临时占位**（取 downstream），
      * 因此回填前不得据此判断是否需翻译 —— 那时还没有结论可言。
      */
     private WireProtocol upstreamProtocol;
@@ -172,7 +168,7 @@ public final class RequestPipelineContext {
     /**
      * 响应侧需要知道的请求侧事实。直连时为 null（没有去程翻译就没有它）。
      *
-     * <p><strong>可变</strong>：翻译槽执行后回填（3.4c-1）。
+     * <p><strong>可变</strong>：翻译槽执行后回填。
      */
     private TranslationContext translationContext;
 
@@ -243,15 +239,15 @@ public final class RequestPipelineContext {
     }
 
     /**
-     * <strong>端点侧</strong>创建一个上下文（3.4c-1 起的唯一生产入口）。
+     * <strong>端点侧</strong>创建一个上下文 —— 唯一的生产入口。
      *
      * <p>创建点是端点服务 —— 它只知道「下游打的是哪个端点、请求的模型名是什么」，
      * 而 <strong>不知道供应商与上游协议</strong>（那要等主干 resolve + dispatch）。
      * 因此这两个字段先留空（{@code upstreamProtocol} 暂取 downstream 占位、
      * {@code provider} 为 null），由主干解析步骤回填 —— 见 {@link #applyRouting}。
      *
-     * <p>这与方向文档 §2.4 的「ctx 是本次调用的小型状态池」一致：
-     * 它不是一次填满的常量包，而是随步骤逐步被填的状态。
+     * <p>它不是一次填满的常量包，而是<strong>随步骤逐步被填</strong>的状态池 ——
+     * 这也是本类需要可变字段的原因（见类注释）。
      *
      * @param body               原始请求体（下游形态，尚未经过任何阶段改写）
      * @param requestedModel     客户端请求的模型名（可带 {@code [provider-key]} 前缀）
@@ -341,7 +337,7 @@ public final class RequestPipelineContext {
     /**
      * 出站装配步骤的<strong>回填</strong>：把发往上游的最终请求头与基础地址写进 ctx。
      *
-     * <p>由发送前块的出站装配步骤调用（阶段 4 刀 3 B）。二者一起写，因为它们同源 ——
+     * <p>由发送前块的出站装配步骤调用。二者一起写，因为它们同源 ——
      * 都是「这次请求实际怎么发给上游」的产物。发送后块 {@code buildWebClient} 随后直接消费，
      * 不再自己装配头或解析地址。
      *
@@ -463,7 +459,7 @@ public final class RequestPipelineContext {
      * 响应侧需要知道的请求侧事实；直连时为 null。
      *
      * <p>由翻译槽的 {@link #applyTranslation} 写入，由主干在调回程翻译时读取
-     * （{@code includeUsage} 等）。3.4c-2 之前主干无人读它，故那时它只是「预留的座位」。
+     * （{@code includeUsage} 等）。直连时无人写它，故为 null。
      */
     public TranslationContext translationContext() {
         return translationContext;
@@ -474,9 +470,8 @@ public final class RequestPipelineContext {
     /**
      * 登记一个<strong>已执行</strong>的步骤。
      *
-     * <p>这是 3.3b-1 从 {@code PipelineExecution} 搬来的入口 ——
-     * 那个类原本用不可变的 {@code withCompleted()} 返回新实例，
-     * 但它的持有者（本类）已经是可变的，再套一层不可变只是多一次拷贝。
+     * <p>用可变集合而非「返回新实例」：持有者（本类）本来就是可变的，
+     * 再套一层不可变只是多一次拷贝。
      */
     public void markCompleted(PipelineStep step) {
         completedSteps.add(step);

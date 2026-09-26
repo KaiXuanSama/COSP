@@ -8,9 +8,9 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.responses.ResponsesS
  * 判定 OpenAI <strong>Responses</strong> 响应是否带实质载荷。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>实现体</strong>（静态工具） · 位置：{@code upstream/content/}
+ * 形态：支线<strong>实现体</strong>（静态工具） · 位置：{@code pipeline/after/content/}
  * 步骤「空响应判定」-RESPONSES 的取值路径
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>与另两侧共享的是「类别定义」，不是取值路径</h2>
  * 三类实质载荷的划分与 {@code OpenAiContentDetector} / {@code AnthropicContentDetector}

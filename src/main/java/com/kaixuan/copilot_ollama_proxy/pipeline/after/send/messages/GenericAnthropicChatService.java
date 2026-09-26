@@ -53,9 +53,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * 通用 Anthropic 上游服务 —— 对接 Anthropic Messages API 协议的供应商。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>实现</strong>（MESSAGES） · 位置：{@code upstream/send/messages/}
+ * 形态：支线<strong>实现</strong>（MESSAGES） · 位置：{@code pipeline/after/send/messages/}
  * 步骤「发送」—— 独立类，<strong>不继承</strong> {@link AbstractUpstreamChatService}
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为何与 {@code AbstractUpstreamChatService} 平级而非继承它</h2>
  * 两种协议的 Reactor 链体<strong>结构不同</strong>：Chat 的事件形态是
@@ -65,7 +65,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 看不见自己正在依赖什么。
  *
  * <p><strong>空响应 gate 的语义两条线一致（都扣住）</strong>，机制本身已收归
- * {@link EmptyResponseGate}（阶段 3.6b）—— 扣住-释放的完整理由见那个类的类注释。
+ * {@link EmptyResponseGate}—— 扣住-释放的完整理由见那个类的类注释。
  * 曾经这里不扣帧、只记「是否见过实质载荷」，
  * 理由是「客户端是事件状态机，扣住 {@code message_start} 会让它无法初始化」——
  * 该理由不成立：扣住是暂时的，开闸时整批释放，下游看到的是完整合法前缀。
@@ -89,9 +89,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * </ul>
  *
  * <h2>请求体的协议差异</h2>
- * Anthropic 与 OpenAI 的请求体有三处硬差异，现由请求体支线承担（阶段 4 刀 1 起装配收归
- * 主干 {@link com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler}，
- * 协议特定三步走 {@code RequestBodyStageRegistry}）：
+ * Anthropic 与 OpenAI 的请求体有三处硬差异，现由请求体支线承担：
  * {@code system} 是顶层字段而非 {@code messages} 里的一条、{@code max_tokens} 必填、
  * 思考用 {@code thinking} 对象（方式）加顶层 {@code output_config.effort}（深度）
  * 而非单个 {@code reasoning_effort} 字符串。
@@ -110,7 +108,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
     private final ProviderRequestHeaderService providerRequestHeaderService;
 
     /**
-     * 内容检测器的查表 —— 空响应拦截的判据来源（阶段 3.6b）。
+     * 内容检测器的查表 —— 空响应拦截的判据来源。
      *
      * <p>放构造器而非可选 setter：本表未命中是<strong>报错</strong>而非跳过，
      * 漏注入会让整条线路的空响应兼底直接失效。与另两个执行器同一取舍。
@@ -185,7 +183,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
      * 主干 send 插槽（非流式）。
      *
      * <p>参数全部来自 ctx。{@code chunkRewriter} 是本路线<strong>真正会用</strong>的那个 ——
-     * 它由主干按回程翻译器构造，故留在签名上（3.3d-3 的 D2）。
+     * 它由主干按回程翻译器构造，故留在签名上。
      */
     @Override
     public Mono<UpstreamEvent> invoke(RequestPipelineContext ctx,
@@ -224,16 +222,15 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                                            ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                            String requestId, Function<List<String>, ChunkLogPayload> chunkRewriter,
                                            RequestPipelineContext ctx) {
-        // stream 取自 ctx（3.5a）：主干按 ctx.stream() 选了本方法，故这里二者必定一致。
+        // stream 取自 ctx：主干按 ctx.stream() 选了本方法，故这里二者必定一致。
         // ⚠️ 这条一致性依赖调用方守规矩：直接调本方法而 ctx 里 stream=false 会走错路且不响。
-        //    该不变式在 3.5b（两态合链）后自然消失（与 executeStream 同属搁置项）。
         boolean stream = ctx.stream();
-        // 请求体已由主干的 RequestBodyAssembler 装配好（阶段 4 刀 1），直接取用。
+        // 请求体已由主干的 RequestBodyAssembler 装配好，直接取用。
         Map<String, Object> requestBody = ctx.body();
         log.info("{} Anthropic 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
-        // 判定机制收归 EmptyResponseGate（阶段 3.6b），检测器按上游协议查表。
+        // 判定机制收归 EmptyResponseGate，检测器按上游协议查表。
         EmptyResponseGate<String> gate = new EmptyResponseGate<>(ctx.shouldApplyEmptyResponseGate());
         EmptyResponseGate.CallContext callCtx = new EmptyResponseGate.CallContext(provider.providerKey(), model, requestId);
         ContentDetectorStage detector = contentDetectorRegistry.require(ctx.upstreamProtocol());
@@ -241,7 +238,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
         Map<String, String> reqHeaders = new LinkedHashMap<>();
-        // 流级状态收归 AttemptContext（阶段 4 刀 2）：非流式只用到 attemptStart。
+        // 流级状态收归 AttemptContext：非流式只用到 attemptStart。
         AttemptContext attempt = new AttemptContext();
 
         // 外层骨架（defer → 落库 → 判空 → retryWhen → 取 body → 耗尽放行 → 包装）收归主干 runner；
@@ -287,7 +284,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                         // 包装成统一形态：非流式在本形态下就是「恰有一个元素的流」。
                         // 直接用 body 而不走分类器：非流式的响应体里不存在协议级终止标记，
                         // 「说完了」由流的 onComplete 表达 —— 这是已确定的事实，不必运行时再判一次。
-                        // usage 挂槽：与上面写 api_call_usage 用的是同一份解析结果（阶段 5 步 7b-1）。
+                        // usage 挂槽：与上面写 api_call_usage 用的是同一份解析结果。
                         body -> UpstreamEvent.body(body, parseUsageForExit(body))));
     }
 
@@ -297,7 +294,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
      * 发送一次流式 Messages 请求。
      *
      * <h2>空响应 gate 与 OpenAI 侧同构（扣住-释放）</h2>
-     * 机制已收归 {@link EmptyResponseGate}（阶段 3.6b），三条线路共用一份实现 ——
+     * 机制已收归 {@link EmptyResponseGate}，三条线路共用一份实现 ——
      * 本方法只提供<strong>扣住的元素类型</strong>与<strong>检测器</strong>。
      *
      * <p>曾经这里<strong>不扣帧</strong>、只记「是否见过实质载荷」，理由是
@@ -324,16 +321,16 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                                                  ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                  String requestId, Function<List<String>, ChunkLogPayload> chunkRewriter,
                                                  RequestPipelineContext ctx) {
-        // stream 取自 ctx（3.5a）—— 它是请求级事实，与「哪条链被调了」同源，不留字面量。
-        // （3.5b 两态合链已搁置，故此处不再以后续步骤为由。）
+        // stream 取自 ctx—— 它是请求级事实，与「哪条链被调了」同源，不留字面量。
+        // 
         boolean stream = ctx.stream();
-        // 请求体已由主干的 RequestBodyAssembler 装配好（阶段 4 刀 1），直接取用。
+        // 请求体已由主干的 RequestBodyAssembler 装配好，直接取用。
         Map<String, Object> requestBody = ctx.body();
         log.info("{} Anthropic 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
         // 见 RequestPipelineContext 的「生命周期」注释：写进 defer 里会让半实现态在第二轮又走回判空重试。
-        // 机制收归 EmptyResponseGate（阶段 3.6b）：闸门状态与缓存帧都在它那里，
+        // 机制收归 EmptyResponseGate：闸门状态与缓存帧都在它那里，
         // 本类只负责每轮 defer 内调 reset()。
         EmptyResponseGate<String> gate = new EmptyResponseGate<>(ctx.shouldApplyEmptyResponseGate());
         EmptyResponseGate.CallContext callCtx = new EmptyResponseGate.CallContext(provider.providerKey(), model, requestId);
@@ -342,7 +339,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
         Map<String, String> reqHeaders = new LinkedHashMap<>();
-        // 流级状态收归 AttemptContext（阶段 4 刀 2）：计时 / chunk 收集 / 首字 / 耗尽标记。
+        // 流级状态收归 AttemptContext：计时 / chunk 收集 / 首字 / 耗尽标记。
         AttemptContext attempt = new AttemptContext();
         // 本轮累积的 usage：input_tokens 来自 message_start、output_tokens 来自 message_delta，
         // 必须跨事件合并才完整。它是<strong>协议特有</strong>的流级态（Anthropic 独有的跨事件合并），
@@ -456,8 +453,8 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
      * 因而实际请求为 {@code .../v1/messages}。这与 Anthropic 官方及 tokenrhythm
      * 的实测端点一致。
      *
-     * <p>地址解析（读 {@code anthropic_base_url} 回退 base_url）自阶段 4 刀 3 B 移至
-     * {@code MessagesOutboundStage.resolveBaseUrl}，随出站装配一起上移发送前块。
+     * <p>地址解析（读 {@code anthropic_base_url} 回退 base_url）由
+     * {@code MessagesOutboundStage.resolveBaseUrl} 承担，随出站装配一起在发送前块完成。
      */
     private String messagesUri() {
         return "/messages";
@@ -466,7 +463,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
     /**
      * 构建 WebClient 并抓取出站请求头快照。
      *
-     * <p><strong>出站头与地址已由发送前块装配好（阶段 4 刀 3 B）</strong>：本方法直接铺
+     * <p><strong>出站头与地址已由发送前块装配好</strong>：本方法直接铺
      * {@code ctx.outboundHeaders()} 与 {@code ctx.outboundBaseUrl()}。三层头装配、地址解析
      * （{@code anthropic_base_url} 回退 base_url）与 {@code anthropic-version} 头现由
      * {@code OutboundRequestAssembler} + {@code MessagesOutboundStage} 在发送前完成。
@@ -504,7 +501,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
      * 方式管「预算怎么算」（adaptive / enabled+budget），深度管「想多深」（档位字符串）。
      * 两者都已接入持久化并生效 —— 方式自 V10、深度走 ReasoningEffortSetting.applyToAnthropic。
      * 实现现由 requestbody/thinking 支线（MessagesThinkingStage → AnthropicThinkingNormalizer）
-     * 承载；本执行器不再持有请求体装配（阶段 4 刀 1，装配收归主干 RequestBodyAssembler）。
+     * 承载；本执行器不再持有请求体装配。
      *
      * ## 出站形态：output_config.effort
      *
@@ -546,7 +543,7 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
      *
      * <h2>它只做三件事：取时长、报标识、委托</h2>
      * 规格本身（读配置 + {@code Retry.backoff} + {@code filter} + {@code doBeforeRetry}
-     * 里的 RETRYING 事件与日志）已收归 {@link UpstreamAutoRetry}（阶段 3.6c-2），
+     * 里的 RETRYING 事件与日志）已收归 {@link UpstreamAutoRetry}，
      * 三条线路共用一份。本方法保留为<strong>适配器</strong>：把本类的注入字段、
      * 自己的 logger、自己那两个<strong>退避覆盖点</strong>绑给那个类。
      *
@@ -584,10 +581,10 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
     }
 
     /**
-     * 解析非流式响应体的 usage 供出口读槽（阶段 5 步 7b-1「usage 消重复」）。
+     * 解析非流式响应体的 usage 供出口读槽。
      *
      * <p>与 {@link #saveUsage} 的重载共用同一个解析器，确保两条消费路径（落 {@code api_call_usage}
-     * 与出口写 {@code api_usage_daily}）拿到同口径的值 —— 这正是 7b-1 要消除的那份重复。
+     * 与出口写 {@code api_usage_daily}）拿到同口径的值 —— 这正是解析只做一次要消除的那份重复。
      *
      * @param body 上游响应体
      * @return token 指标；无 usage 时返回 null（出口据此不记账）

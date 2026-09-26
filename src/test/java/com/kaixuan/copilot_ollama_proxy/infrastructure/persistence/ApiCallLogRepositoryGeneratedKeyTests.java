@@ -15,7 +15,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 阶段一验证与锁定：三个 save 方法通过 KeyHolder 返回新行自增 id。
+ * 三个 save 方法通过 KeyHolder 返回新行自增 id。
  *
  * 覆盖点：
  * - 返回值为正、且等于数据库中实际写入行的 id；

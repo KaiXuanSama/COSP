@@ -11,9 +11,9 @@ import java.util.Map;
  * 内容检测器的查表 —— 按 {@link WireProtocol} 查 {@link ContentDetectorStage} 实现。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：<strong>注册表</strong>（接入点即步骤） · 位置：{@code upstream/content/}
+ * 形态：<strong>注册表</strong>（接入点即步骤） · 位置：{@code pipeline/after/content/}
  * 步骤「空响应判定」—— 未命中即<strong>报错</strong>（每协议都必须能判空）
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它与另两个 registry 的区别：未命中 = <strong>报错</strong></h2>
  * 项目里已有两个同型注册表，但三者的未命中语义<strong>刻意不同</strong>：

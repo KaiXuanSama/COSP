@@ -44,7 +44,7 @@ import static org.mockito.Mockito.mock;
 
 /**
  * <strong>半轮实现态</strong>：去程翻译已接、回程翻译未接时，编排层原样透传上游响应 ——
- * 但<strong>不静默</strong>（方向文档 §2.3.2）。
+ * 但<strong>不静默</strong>。
  *
  * <h2>这组用例守护的是「去程/回程独立缺省」在 {@code ChatCompletionService} 里的落地</h2>
  * {@link TranslatorRegistry} 那组用例验的是查表本身（命中/未命中/冲突）；本类验的是编排层
@@ -60,7 +60,7 @@ import static org.mockito.Mockito.mock;
  *
  * <h2>为何用「只装去程」的注册表</h2>
  * 生产环境里 C2M 两半都带 {@code @Component}，回程恒命中，透传路径是死代码。要触发它只能
- * 构造一个<strong>半装配</strong>的注册表（去程有、回程空）—— 这与 Stage 3.1 用 MESSAGES
+ * 构造一个<strong>半装配</strong>的注册表（去程有、回程空）—— 即用 MESSAGES
  * 替身测「未来的多实现」同一手法：测的是结构允许的中间态，而非当前恰好存在的状态。
  *
  * <h2>为何用 {@link ListAppender} 而非 {@code OutputCaptureExtension}</h2>
@@ -205,7 +205,7 @@ class ChatCompletionHalfRoundTranslationTests {
         halfRoundService.chatCompletion(CHAT_REQUEST, "m", HttpHeaders.EMPTY, "req-half-3").block();
 
         assertThat(logAppender.list)
-                .as("透传本身可接受，静默不可接受 —— 必须留痕（§2.3.2）")
+                .as("透传本身可接受，静默不可接受 —— 必须留痕")
                 .anyMatch(event -> event.getLevel() == Level.WARN
                         && event.getFormattedMessage().contains("回程翻译未实现")
                         && event.getFormattedMessage().contains("req-half-3"));
@@ -278,7 +278,7 @@ class ChatCompletionHalfRoundTranslationTests {
     }
 
     /**
-     * 主干需要的请求体装配器（阶段 4 刀 1）。
+     * 主干需要的请求体装配器。
      *
      * <p>本类的执行器是 mock，装配后的 body 不会真正出站；但主干在调执行器前必调装配器，
      * 因此这里给一个真实实例，避免 NPE。装配序列对本类的断言（透传 / WARN / 登记）无影响。
@@ -289,7 +289,7 @@ class ChatCompletionHalfRoundTranslationTests {
     }
 
     /**
-     * 用发送前块 + 发送后块拼出 {@link RequestPipeline}（阶段 4 刀 3 块化后的构造形态）。
+     * 用发送前块 + 发送后块拼出 {@link RequestPipeline}。
      *
      * <p>路由/调度/翻译/装配/出站装配归 {@link BeforeSend}，执行器与回程翻译归 {@link AfterSend}；
      * 门面只按序转交。本类执行器是 mock，出站装配跑真实实例（避免 ctx.outboundHeaders 为 null），

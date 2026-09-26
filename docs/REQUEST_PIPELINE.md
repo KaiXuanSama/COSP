@@ -4,9 +4,8 @@
 > **应用服务层**（决定发给谁、用什么协议）与**上游执行层**（决定请求长什么样、怎么发）
 > 的分工与顺序。
 >
-> 本文描述的是**现状**。**§0 的「三个平行主干」已经过时**：阶段 3.4 已把三个应用服务收成
-> 「建 ctx + 交主干」，主干（`RequestPipeline`）唯一。下文 §1/§3 已同步为现状；
-> 形态名与判据见 §0（那是术语的最小留存，与实现状态无关）。
+> §0 里「三个平行主干」的说法是**早期形态**，已不适用：三个应用服务早已收成
+> 「建 ctx + 交主干」，主干（`RequestPipeline`）唯一。形态名与判据（§0）与实现状态无关，仍然有效。
 
 ## 0. 形态名：SESE Pipeline with Joining Branches
 
@@ -43,12 +42,9 @@
 > **Chain of Responsibility** 允许处理者终结请求；**Intercepting Filter** 靠 `@Order` 约定、
 > 无类型保证（本项目被这个弱点打中过）。三者都缺「分叉必须汇回」这条约束，因此不要套用。
 
-**现状**：**主干已经唯一**（阶段 3.4 全部完成后，三个应用服务退化为「建 ctx + 交主干」，
-`RequestPipeline.execute(ctx)` 是唯一入口）。形态名「SESE Pipeline with Joining Branches」已成立，
-尚未做的只是**包结构重排**（见 `plan_.md` 阶段 3.7：
-**① 控制面出列 ✅ · ② `provider`→`upstream`+解散 `generic` ✅ · ③ 支线按接入点·步骤分包 ✅**，仅剩收尾）。
-目标形态与迁移依据见根目录的 `请求处理链路重构方向.md`
-（**该文件未入库**，根目录 `*.md` 被 `.gitignore` 忽略 —— 若它已不存在，本节即为该术语的最小留存）。
+**现状**：**主干唯一**（三个应用服务退化为「建 ctx + 交主干」，
+`RequestPipeline.execute(ctx)` 是唯一入口）。形态名「SESE Pipeline with Joining Branches」已成立。
+包结构按「接入点 · 步骤」分好了（见 `pipeline/README.md`）。
 
 ## 1. 全景
 
@@ -71,7 +67,7 @@
 │   ├─ ChatCompletionService / MessagesService / ResponsesService（**三者同形**）
 │   └─ RequestPipeline.execute(ctx) —— **主干唯一入口**（流式与非流式共用）
 │       只有两行：beforeSend.process(ctx) → return afterSend.process(ctx)
-│       以「真正发出 HTTP」为界拆成两个功能块（阶段 4 刀 3 块化）：
+│      以「真正发出 HTTP」为界拆成两个块：
 │       ├─ 发送前块 BeforeSend（同步 void step(ctx)）
 │       │   ├─ routeStep           ProviderRouteResolver.resolve → ProtocolDispatchManager.dispatch
 │       │   │                      → ProtocolNotifier.notifyProtocols → ctx.applyRouting（就地回填）
@@ -86,7 +82,7 @@
 └─ 四、上游执行层（有 I/O 的发送）
     ├─ GenericOpenAiChatService / GenericAnthropicChatService /
     │  GenericResponsesChatService（父类 AbstractUpstreamChatService）
-    │  ⑤–⑧ 请求体装配、⑧a–⑧b+地址 出站装配 均已上移发送前块（刀 1 / 刀 3 B）
+    │  ⑤–⑧ 请求体装配、⑧a–⑧b+地址 出站装配 均已上移发送前块
     └─ ⑨ 发送         buildWebClient 铺 ctx.outboundHeaders/outboundBaseUrl → post().bodyValue()（在 retryWhen 内）
         │
         ▼
@@ -119,7 +115,7 @@ SPA 路由回退（`SpaRoutingConfig.spaRoutes()`）**不在这个链上** —�
 
 ## 3. 应用服务层
 
-三个应用服务自 3.4c-2 起**同形**：只做「建 `RequestPipelineContext`（`forEndpoint`）
+三个应用服务**同形**：只做「建 `RequestPipelineContext`（`forEndpoint`）
 + 交主干」，**零回填、零协议分支**。方法体裹在 `Mono.defer` / `Flux.defer` 里 ——
 主干内的路由解析、调度、翻译都是**同步**调用且会抛异常，不包 defer 时异常会在
 **Mono 组装期**逃出控制器方法，`onErrorResume` 根本不在链上。
@@ -189,8 +185,8 @@ ChatCompletionService.chatCompletion(...)          ← 三个服务同形，只�
 
 ### 4.1 请求体装配 —— 三条线路的阶段序列
 
-装配由主干 `RequestBodyAssembler.assemble` 驱动，是**一根显式阶段序列**（Step 3.3c 起，
-阶段 4 刀 1 收归主干），不再是若干散行 —— 因此本节与代码可以逐行对照。
+装配由主干 `RequestBodyAssembler.assemble` 驱动，是**一根显式阶段序列**（
+收归主干），不再是若干散行 —— 因此本节与代码可以逐行对照。
 协议**无关**的公共序列在装配器里逐阶段调用，协议**特定**的中间三步走
 `RequestBodyStageRegistry` 支线（按 `ctx.bodyProtocol()` 查表，未命中即跳过）。
 
@@ -221,7 +217,7 @@ Responses（ResponsesThinkingStage + RequestBodyRuleEngine）
     4 思考注入      ResponsesThinkingStage → applyToResponses → reasoning.effort
     5 请求体规则    RequestBodyRuleEngine.transform（按 RESPONSES 筛组）
     末 清 null
-    · 与 Chat 形状一致，只有阶段 4 的出站形态不同
+    · 与 Chat 形状一致，只有思考注入的出站形态不同
 
 Anthropic（Messages*Stage 三步 + RequestBodyRuleEngine）—— 中间步骤最多
     1 复制 → 2 解析模型名 → 3 写协议字段
@@ -231,8 +227,8 @@ Anthropic（Messages*Stage 三步 + RequestBodyRuleEngine）—— 中间步骤�
                     深度先、方式后，off 档跳过方式；末了剥 reasoning_effort 兼容副本
     6 请求体规则    transform（按 MESSAGES 筛组）
     末 清 null
-    · 阶段 4/5 都是「下游说 Chat、上游说 Anthropic」留下的债
-    · 阶段 5 里「剥兼容副本」必须在深度+方式之后（见 §6 顺序陷阱）
+    · 阶段 4 与 5 都是「下游说 Chat、上游说 Anthropic」留下的债
+    · 「剥兼容副本」必须在深度+方式之后（见 §6 顺序陷阱）
 ```
 
 **每个阶段的位置都有理由，两类位置约束最容易被破坏**：
@@ -240,7 +236,7 @@ Anthropic（Messages*Stage 三步 + RequestBodyRuleEngine）—— 中间步骤�
 - **`removeNullFields` 必须在最后。** 规则可能把字段显式设为 null 表达「删掉它」
   （「设置字段值」留空即置 null），先清洗后执行规则会让那个 null 原样出站；
   且预览不做 null 剥离，运行时先清洗会让同一条 `exists` 条件「预览命中、线上不命中」。
-- **Anthropic 的阶段 5/6 顺序不可交换。** 见 §6 顺序陷阱。
+- **Anthropic 侧的思考两维顺序不可交换。** 见 §6 顺序陷阱。
 
 **Responses 侧刻意不做的两个注入**（字段名看起来天造地设，容易顺手接上）：
 不注入 `max_output_tokens`（该字段在 Responses 里是**可选**的，接上会给所有
@@ -250,7 +246,7 @@ Anthropic（Messages*Stage 三步 + RequestBodyRuleEngine）—— 中间步骤�
 ### 4.2 请求头装配
 
 在**发送前块**的 `BeforeSend.assembleOutboundStep` → `OutboundRequestAssembler.assemble` 中执行
-（阶段 4 刀 3 B 前，它在 `buildWebClient` 的 `defaultHeaders(...)` 里、每轮重试跑一遍）。
+（它曾在 `buildWebClient` 的 `defaultHeaders(...)` 里，因此每轮重试跑一遍 —— 上移后只跑一次）。
 三层，后者覆盖前者；协议无关的三层在主干，协议特定的选列 + 补版本头走 `outbound/` 支线。
 
 ```
@@ -321,8 +317,8 @@ buildWebClient(...)
 | ⑩ | 主干·发送后块 | `AfterSend` 读 `ctx.responseTranslator()`（发送前块步骤 5 已选好） | 命中则回程翻译；未命中透传 + WARN |
 
 > 序 ①–⑧b / ⑩ 是**主干自己的步骤**：①–⑧b 全在发送前块（`BeforeSend`）、⑩ 在发送后块（`AfterSend`）；
-> ⑤–⑧ 请求体装配自刀 1 上移主干（`assembleStep` → `RequestBodyAssembler`），
-> ⑧a–⑧b 出站头装配自刀 3 B 上移主干（`assembleOutboundStep` → `OutboundRequestAssembler` + `outbound/` 支线）。
+> ⑤–⑧ 请求体装配在主干（`assembleStep` → `RequestBodyAssembler`），
+> ⑧a–⑧b 出站头装配在主干（`assembleOutboundStep` → `OutboundRequestAssembler` + `outbound/` 支线）。
 > 只剩 ⑨「真正发出请求」在上游执行层（发送后块）。
 > ⑤–⑧ 是 `RequestBodyAssembler` 那根阶段序列的一部分，逐阶段名与位置见 §4.1 ——
 > 那里列的是 <strong>8 个阶段的完整形态</strong>（Anthropic 侧），本表只列跨线路共同的骨架。
@@ -342,7 +338,7 @@ buildWebClient(...)
 C2M 翻译器把 `reasoning_effort` 映射到 `output_config.effort` 后**刻意保留一份兼容副本**，
 供思考深度与思考方式两层判定「下游是否已表态」。提前剥会让兜底档把一个已表态的请求
 当成未表态，静默退化成覆写档。
-（阶段 4 刀 1 前它曾是独立的一步，现将这个「剥副本」收在
+（它曾是独立的一步，现将这个「剥副本」收在
 `AnthropicThinkingNormalizer.applyThinkingDimensions` 的第三步 —— 条件不变，只是同属一个阶段了。）
 
 **思考深度与思考方式在 Anthropic 侧不可交换（同属「思考注入」阶段）。** 深度先、方式后，且深度写了
@@ -350,7 +346,7 @@ C2M 翻译器把 `reasoning_effort` 映射到 `output_config.effort` 后**刻意
 字段误认为「下游已表态」；不跳过方式则会把 `disabled` 改写成 `adaptive`，
 把用户配的「关闭思考」静默丢弃。
 
-**协议归一化（Anthropic 阶段 4）排在请求体规则之前。** 规则的字段路径是照
+**协议归一化排在请求体规则之前。** 规则的字段路径是照
 最终发往上游的形态写的（`system` 已提顶层、`max_tokens` 已补齐），若在归一化前执行，
 用户看到的预览与实际请求体结构不一致。
 
@@ -360,7 +356,7 @@ C2M 翻译器把 `reasoning_effort` 映射到 `output_config.effort` 后**刻意
 **空响应判定用各线路自己的 Detector。** 三份实现（`OpenAiContentDetector`、
 `AnthropicContentDetector`、`ResponsesContentDetector`）的判据互不通用，
 把 OpenAI 的 JSON/SSE 判定套到 Anthropic 上会把正常响应的头两个事件判成空。
-三个阶段 3.6 起由 `ContentDetectorRegistry` 按 `ctx.upstreamProtocol()` **查表**取得
+三份实现由 `ContentDetectorRegistry` 按 `ctx.upstreamProtocol()` **查表**取得
 （未命中即报错；三个实现分别是 `ChatContentDetectorStage` / `MessagesContentDetectorStage`
 / `ResponsesContentDetectorStage`）。
 

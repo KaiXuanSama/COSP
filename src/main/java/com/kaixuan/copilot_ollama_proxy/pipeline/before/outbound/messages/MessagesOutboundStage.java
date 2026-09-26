@@ -7,10 +7,10 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
 
 /**
- * MESSAGES（Anthropic）线路的出站装配支线实现（阶段 4 刀 3 B）。
+ * MESSAGES（Anthropic）线路的出站装配支线实现。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>实现</strong>（MESSAGES） · 位置：{@code upstream/outbound/messages/}
+ * 形态：支线<strong>实现</strong>（MESSAGES） · 位置：{@code pipeline/before/outbound/messages/}
  * 步骤「出站请求装配」—— 回答「地址读哪一列」+「补 anthropic-version」。
  *
  * <h2>两件 Anthropic 特有的事</h2>
@@ -33,8 +33,8 @@ public class MessagesOutboundStage implements OutboundRequestStage {
      * <p>值固定而非可配：它标识的是「本代理按哪一版协议构造请求」，属于代码事实而非用户偏好。
      * 升级协议版本必然伴随代码改动，那时一并改这里。
      *
-     * <p>阶段 4 刀 3 B 从 {@code GenericAnthropicChatService} 移来 —— 出站头装配上移发送前块后，
-     * 补版本头这件事随之归位到出站支线。
+     * <p>出站头装配上移到发送前块后，补版本头这件事归位到出站支线 ——
+     * 它与地址解析同属「构造请求的固定部分」。
      */
     private static final String ANTHROPIC_VERSION_HEADER = "anthropic-version";
     private static final String ANTHROPIC_VERSION_VALUE = "2023-06-01";

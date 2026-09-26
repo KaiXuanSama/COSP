@@ -15,11 +15,11 @@ import java.util.Optional;
  * 请求体支线的查表 —— 按 {@link WireProtocol} 查三个协议特定步骤的实现。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：<strong>注册表</strong>（接入点级） · 位置：{@code upstream/requestbody/}
+ * 形态：<strong>注册表</strong>（接入点级） · 位置：{@code pipeline/before/requestbody/}
  * 步骤「请求体协议特定步骤」—— 三步聚合；未命中即<strong>跳过</strong>（「该协议没这一步」是领域事实）
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
- * <h2>它就是方向文档说的「缺的只是那个 Map」</h2>
+ * <h2>它把「协议差异」收成一张表</h2>
  * 三个接口各自声明 {@code protocol()} 键、实现带 {@code @Component}，
  * 本类靠 Spring 集合注入把它们收成三张表。
  * <strong>「加一个协议的实现 = 加一个 {@code @Component}」，主干一个字不动</strong> ——

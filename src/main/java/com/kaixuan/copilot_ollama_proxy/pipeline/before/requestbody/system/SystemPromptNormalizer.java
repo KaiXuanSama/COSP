@@ -10,18 +10,18 @@ import java.util.Map;
  * MESSAGES 实现与 Anthropic 执行器共同调用。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>实现体</strong>（静态工具） · 位置：{@code upstream/requestbody/system/}
+ * 形态：支线<strong>实现体</strong>（静态工具） · 位置：{@code pipeline/before/requestbody/system/}
  * 步骤「system 抬升」的纯逻辑
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为何是静态工具而不是把逻辑放进实现类</h2>
  * 与 {@code UpstreamChunkNormalizer} / {@code ReasoningFallback} 同一取向：
- * 支线化（Step 3.3d）**先让组件长成可查表的形状**，而调用点的切换是下一步的事。
+ * 支线化**先让组件长成可查表的形状**，而调用点的切换是下一步的事。
  * 若把逻辑直接搬进实现类，执行器在切换前就得留下一份自己的副本 ——
  * **两份等价逻辑就是「静默分叉」的温床**：改一处忘另一处，两条路径行为不同而无人察觉
  * （本项目最警惕的失效形态）。
  *
- * <p>因此逻辑留在静态工具里、两个调用点都转调它。等支线接线完成（3.3d-2），
+ * <p>因此逻辑留在静态工具里、两个调用点都转调它。等支线接线完成，
  * 执行器那份调用自然消失，工具类仍然只此一份。
  *
  * <h2>为何不是实例方法</h2>

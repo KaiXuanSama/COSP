@@ -13,9 +13,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * <h2>它在管道中的位置</h2>
  * 形态：控制面（<strong>不是主干/支线</strong>） · 位置：{@code control/}
  * 人工重发循环—— 外部信号驱动、只服务流式、不消耗自动重试预算
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
- * <h2>它为什么住在 {@code control} 包（阶段 3.7 第①批）</h2>
+ * <h2>它为什么住在 {@code control} 包</h2>
  * 它此前叫 {@code UpstreamSilentRetry} 且住在 {@code provider/} 顶层，与
  * {@code UpstreamRetryPolicy} / {@code UpstreamAutoRetry} 并列 —— 那个摆法把它摆成了
  * 「自动重试的第三件」，而<strong>它根本不是</strong>。三条实测依据：
@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *       {@link CallCanceledException}），同样由外部信号驱动。</li>
  * </ul>
  * 因此它与那两个「自动重试」不属于同一条轴，而与取消同族 —— 都归入本包。
- * 于是 {@code upstream/} 只回答一个问题「一次请求的数据怎么流」，
+ * 于是 {@code pipeline/} 只回答一个问题「一次请求的数据怎么流」，
  * 而「人可能在中途插手」是另一条轴、集中在这里。
  *
  * <p>改名的理由：它不再与「重试」那两个共处一类，「Retry」字样会继续误导

@@ -16,7 +16,7 @@ import java.util.Map;
 /**
  * 聊天补全应用服务 —— 服务下游的 OpenAI 协议端点。
  *
- * <h2>它已经退化成「端点声明 + 建 ctx + 交主干」（3.4c-2）</h2>
+ * <h2>它已经退化成「端点声明 + 建 ctx + 交主干」</h2>
  * 本类此前的全部编排（路由解析、协议调度、协议分派、翻译两插槽的接线）
  * 都已收进 {@link RequestPipeline}。现在它与 {@code MessagesService} /
  * {@code ResponsesService} <strong>同形</strong>，唯一差别是

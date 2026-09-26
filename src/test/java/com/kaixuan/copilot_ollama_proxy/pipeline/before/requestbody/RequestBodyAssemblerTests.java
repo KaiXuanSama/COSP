@@ -17,12 +17,12 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * {@link RequestBodyAssembler} 的行为验证 —— 阶段 4 刀 1 把请求体装配从三个执行器收归主干。
+ * {@link RequestBodyAssembler} 的行为验证 —— 请求体装配已从三个执行器收归主干。
  *
  * <h2>这些用例的来历</h2>
  * 它们此前分散在 {@code AbstractUpstreamChatServiceTests}（走 {@code exposePrepareRequestBody}）
  * 与 {@code GenericOpenAiChatServiceRequestBodyRulesTests}（走 {@code customizeRequestBody} 钩子）。
- * 刀 1 之后请求体装配不再在执行器里，钩子也拆除了，因此这些验证随之搬到装配器 ——
+ * 请求体装配不再在执行器里，钩子也拆除了，因此这些验证随之搬到装配器 ——
  * 断言的<strong>意图</strong>一字未改：模型名解析、协议字段写入、思考深度四档、
  * 请求体规则、null 清洗顺序。只是被测的入口从执行器的私有方法变成了主干的装配器。
  *

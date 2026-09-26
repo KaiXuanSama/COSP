@@ -9,20 +9,19 @@ import java.util.Map;
  * 思考注入的<strong>支线</strong> —— 把模型配置里的思考档位与方式写成出站字段。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：<strong>契约</strong>（支线） · 位置：{@code upstream/requestbody/thinking/}
+ * 形态：<strong>契约</strong>（支线） · 位置：{@code pipeline/before/requestbody/thinking/}
  * 步骤「思考注入」—— 深度与方式两维，作为一个整体施加
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为什么它是支线而不是主干</h2>
- * 按方向文档 §2.1 的判据：<strong>协议差异是代码 → 支线</strong>。
+ * 判据是：<strong>协议差异是代码 → 支线</strong>。
  * 三种协议的出站字段<strong>各不相同</strong>：
  * <ul>
  *   <li>Chat —— 顶层 {@code reasoning_effort}，{@code off} 档另写 {@code thinking}；</li>
  *   <li>Responses —— 嵌套 {@code reasoning.effort}；</li>
  *   <li>MESSAGES —— 顶层 {@code output_config.effort}，另有独立的 {@code thinking} 对象维度。</li>
  * </ul>
- * 三者无法用同一份数据表达，因此是协议强关联步骤。
- * 方向文档把这条列为**「协议差异表达成代码」的现成样本**。
+ * 三者无法用同一份数据表达，因此是协议强关联步骤，而不是主干上的一串 {@code if}。
  *
  * <h2>它是「一个支线」而非「两个」</h2>
  * Anthropic 侧有<strong>两个正交维度</strong>（深度与方式），但它们必须作为一个整体施加：
@@ -34,7 +33,7 @@ import java.util.Map;
  * <strong>完全由本步骤支配</strong>（供其判定「下游已表态」），因此它是本步骤的
  * <strong>内部临时产物</strong>：独立成阶段反而让「谁该删它」变成跨阶段的隐式契约。
  *
- * <h2>三协议各一个实现（刀 1 起）</h2>
+ * <h2>三协议各一个实现</h2>
  * MESSAGES = {@code MessagesThinkingStage}（两维 + 剥兼容副本）、
  * CHAT = {@code ChatThinkingStage}（写 {@code reasoning_effort}；off 档写 {@code thinking:"disabled"}）、
  * RESPONSES = {@code ResponsesThinkingStage}（写 {@code reasoning.effort}）。

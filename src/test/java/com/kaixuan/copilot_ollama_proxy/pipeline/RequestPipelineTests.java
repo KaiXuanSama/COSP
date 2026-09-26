@@ -29,9 +29,9 @@ import static org.mockito.Mockito.verify;
 /**
  * {@link BeforeSend} 的<strong>路由步骤</strong>（{@code routeStep}）直接单测。
  *
- * <h2>这里在测什么（阶段 4 刀 3 块化后）</h2>
- * 块化前，路由 + 调度 + 通知这段是 {@code RequestPipeline.run}，本类测的是它。
- * 块化把它搬进 {@link BeforeSend#routeStep}（发送前块的第一步），故本类改测那个方法。
+ * <h2>这里在测什么</h2>
+ * 路由 + 调度 + 通知这段原本在 {@code RequestPipeline.run}，
+ * 现在归 {@link BeforeSend#routeStep}（发送前块的第一步），故本类测那个方法。
  * 逻辑逐字未搬动，只换了家 —— 因此「行为正确」由既有集成用例覆盖，本类钉的是
  * <strong>「路由步骤作为独立单元自己的契约」</strong>：
  * <ul>
@@ -39,7 +39,7 @@ import static org.mockito.Mockito.verify;
  *   <li>供应商一个协议都不支持 → 把 {@link NoSupportedProtocolException} 透出；</li>
  *   <li>生命周期通知器缺省（未注入）时<strong>不崩</strong>；</li>
  *   <li>结论<strong>回填进 ctx</strong>（上游协议 / 供应商 / 目标模型名）——
- *       这是块化后的形态：不再返回 {@code PipelinePreamble}，而是就地改 ctx。</li>
+ *       这是现在的形态：不再返回 {@code PipelinePreamble}，而是就地改 ctx。</li>
  * </ul>
  *
  * <p>{@code routeStep} 同步执行、同步抛异常 —— 这正是「等在 {@code defer} 内调用」的前提另一半。

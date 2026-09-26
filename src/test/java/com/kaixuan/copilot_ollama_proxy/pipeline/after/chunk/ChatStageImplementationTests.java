@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 两个 Chat 支线实现的<strong>委托等价性</strong>与协议键。
  *
  * <h2>为何「等价」要单独测</h2>
- * Stage 3.1 把静态工具包成了支线实现。包一层本身不会出错，但<strong>参数顺序、副作用时机</strong>
+ * 静态工具被包成支线实现。包一层本身不会出错，但<strong>参数顺序、副作用时机</strong>
  * 这类东西抄错时不会报错 —— 例如把 {@code contentEmitted} 与 {@code reasoningBuffer}
  * 传给对方，编译照样通过，而症状是「某类响应不再触发 fallback」，很难从集成测试定位。
  * 因此这里逐个断言：输出一致<strong>且</strong>三个流级状态的最终值一致。

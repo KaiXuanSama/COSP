@@ -12,10 +12,10 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 单次调用的<strong>静默重试</strong>协调器。
  *
- * <p>所属包为 {@code control}（阶段 3.7 第①批）：与 {@link CallCancellationRegistry}、
+ * <p>所属包为 {@code control}：与 {@link CallCancellationRegistry}、
  * {@link CallCanceledException}、{@code CallResendLoop} 同族 —— 这四者都是
  * 「<strong>外部信号作用于在途请求</strong>」（人在管理后台操作），与「一次请求的数据怎么流」
- * 是两条轴，故不放在 {@code upstream/}（原 {@code provider/}）里。
+ * 是两条轴，故不放在 {@code pipeline/} 里。
  *
  * <p>与 {@link CallCancellationRegistry} 同构：管理后台右键 Toast 点「静默重试」时，
  * 通过 retry 端点触发对应 requestId 的信号，让上游执行层中断当前上游请求并重新发起。
@@ -36,7 +36,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <h2>它在管道中的位置</h2>
  * 形态：控制面（<strong>不是主干/支线</strong>） · 位置：{@code control/}
  * 重发信号注册表—— 入口是 HTTP 端点（{@code CallLifecycleController}）
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  */
 @Component

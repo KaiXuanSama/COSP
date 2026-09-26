@@ -10,15 +10,15 @@ import org.springframework.boot.test.context.SpringBootTest;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Stage 3.2 的<strong>装配验证</strong>：真实容器是否把两个翻译器收进了 {@link TranslatorRegistry}。
+ * 翻译器查表的<strong>装配验证</strong>：真实容器是否把两个翻译器收进了 {@link TranslatorRegistry}。
  *
  * <h2>为何单有纯单测不够</h2>
  * {@code TranslatorRegistryTests} 手工 {@code new} 注册表，验的是<strong>查表逻辑</strong>；
  * 它无法回答「容器里的两张表到底有没有东西」。而查表基建的前提是
- * 「{@code @Component} 必须在组件扫描范围内」—— 那是方向文档 §2.3.1 实测出来的第一条前提
+ * 「{@code @Component} 必须在组件扫描范围内」—— 这是实测出来的第一条前提
  * （第一版探针把实现写成测试类嵌套类，拿到了空 List）。
  *
- * <p>这个失效模式在本步<strong>不响</strong>：注册表以空表正常启动，容器启动成功、
+ * <p>这个失效模式<strong>不响</strong>：注册表以空表正常启动，容器启动成功、
  * 既有测试全绿，直到第一个跨协议请求才暴露为
  * {@code ProtocolTranslationNotSupportedException}（去程未命中）——
  * 症状与「供应商没勾协议」几乎一样，排查会先怀疑数据库配置。

@@ -936,7 +936,7 @@ class GenericResponsesChatServiceTests {
     private static final class TestService extends GenericResponsesChatService {
 
         /**
-         * 请求体装配器 —— 阶段 4 刀 1 起装配收归主干，执行器只读 {@code ctx.body()}。
+         * 请求体装配器 —— 请求体装配归主干后，执行器只读 {@code ctx.body()}。
          * 本类的请求体用例（stream 覆盖 / 前缀剥离 / reasoning.effort / bodyRules）验的是装配结果，
          * 因此在调 {@code responses} 前先跑一遍装配。
          */
@@ -957,8 +957,8 @@ class GenericResponsesChatServiceTests {
         private Mono<String> exposeResponses(Map<String, Object> request, ResolvedProviderRoute route,
                                              HttpHeaders downstreamHeaders) {
             // 同流式那个辅助方法：统一形态在此收口为字符串，使既有断言一行未改。
-            // 3.4e 起执行器只留 invoke/invokeStream 两个入口，此处直调 protected 重载。
-            // 出站头与地址由 direct/directWithHeaders 跑出站装配写好（刀 3 B）。
+            // 执行器只留 invoke/invokeStream 两个入口，此处直调 protected 重载。
+            // 出站头与地址由 direct/directWithHeaders 跑出站装配写好。
             RequestPipelineContext ctx = PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES,
                     false, downstreamHeaders);
             assembler.assemble(ctx);

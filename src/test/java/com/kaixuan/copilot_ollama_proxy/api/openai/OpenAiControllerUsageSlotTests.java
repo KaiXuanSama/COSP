@@ -33,14 +33,14 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 /**
- * 阶段 5 步 7b-1「usage 消重复」的出口侧不变式。
+ * usage 消重复的出口侧不变式。
  *
- * <h2>本步修的是什么</h2>
+ * <h2>这里修的是什么</h2>
  * 同一份上游字节此前被解析<strong>两遍</strong>：块 2 解析一次写 {@code api_call_usage}（明细），
  * 出口又解析一次写 {@code api_usage_daily}（聚合）。后一遍把协议语义
  * （Chat 后到覆盖 / Anthropic 跨事件 merge / Responses 最后非空胜出）复制到了出口。
  *
- * <p>7b-1 把解析收到生产者（各协议执行器 / 翻译器），结果挂在
+ * <p>现在解析收到生产者（各协议执行器 / 翻译器），结果挂在
  * {@link UpstreamEvent#usage()} 上；出口只做一条<strong>与协议无关</strong>的
  * 「取最后一份非 null」。
  *
@@ -49,7 +49,7 @@ import static org.mockito.Mockito.verify;
  *   <li><strong>槽被消费</strong>：事件挂 usage → 出口按它记账（值与挂上的完全一致）；</li>
  *   <li><strong>不再解析字节</strong>：事件<strong>不挂</strong> usage 但 data 里<strong>含</strong>
  *       合法 usage JSON 时，出口<strong>不</strong>记真实值 —— 若它仍在解析，这里会记出 999。
- *       这是本步的核心判据，也是唯一能抓住「偷偷回退到解析」的断言；</li>
+ *       这是核心判据，也是唯一能抓住「偷偷回退到解析」的断言；</li>
  *   <li><strong>恒记不变式</strong>：流式无 usage 时仍记 <code>0,0</code>（调用次数不能少算）。</li>
  * </ol>
  *

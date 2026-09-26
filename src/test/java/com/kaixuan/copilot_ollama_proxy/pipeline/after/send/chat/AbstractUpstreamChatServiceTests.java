@@ -1029,7 +1029,7 @@ class AbstractUpstreamChatServiceTests {
      *
      * <p>断言两件事缺一不可：
      * <ol>
-     *   <li>上游调用次数为 1 —— 证明没有走重试（这是本步要消除的 62 秒白等）；</li>
+     *   <li>上游调用次数为 1 —— 证明没有走重试（空响应判定本会带来 62 秒白等）；</li>
      *   <li>下游收到了那批帧 —— 证明是「放行」而不是「吞掉」，
      *       开发者要的正是这批帧本身。</li>
      * </ol>
@@ -1213,7 +1213,7 @@ class AbstractUpstreamChatServiceTests {
     /**
      * 主干<strong>真的查了表</strong> —— 把判据换成一个恒判空的检测器，同一请求必须开始重试。
      *
-     * <h2>为何「注册表字段非空」不够（3.6b 新增）</h2>
+     * <h2>为何「注册表字段非空」不够</h2>
      * {@code ContentDetectorSpringWiringTests} 能证明执行器<strong>持有</strong>注册表，
      * 但证明不了主干<strong>用了</strong>它：字段挂在那里、判定却仍走静态工具，
      * 那样装配类测试照样全绿。本条从行为侧把这个方向钉死 ——
@@ -1354,7 +1354,7 @@ class AbstractUpstreamChatServiceTests {
         /**
          * 带下游请求头的重载，用于验证鉴权头装配的「取下游」探测。
          *
-         * <p>阶段 4 刀 3 B 起出站头由发送前块的 {@code OutboundRequestAssembler} 装配、写进 ctx，
+         * <p>出站头由发送前块的 {@code OutboundRequestAssembler} 装配、写进 ctx，
          * {@code buildWebClientWithHeaders} 只铺 ctx 的头。故这里先跑一遍真实的出站装配
          * （与生产同一条 {@code ProviderRequestHeaderService.applyHeaders} + ChatOutboundStage），
          * 再把装好的 ctx 交给 buildWebClient —— 这三条头用例仍在验「装配 → 发送」的端到端结果。
@@ -1427,9 +1427,9 @@ class AbstractUpstreamChatServiceTests {
         /**
          * 直接调清洗类，不再走反射。
          *
-         * <p>清洗与 fallback 已搬到 {@code upstream.chunk.normalize.UpstreamChunkNormalizer}
-         * （Stage 1.4 纯搬运；阶段 3.7 第③批起该包在 {@code upstream/chunk/normalize/}，
-         * 更早为 {@code provider.stage}）。
+         * <p>清洗与 fallback 在 {@code UpstreamChunkNormalizer}
+         * 与 {@code ReasoningFallback}（{@code pipeline/after/chunk/normalize/} 与
+         * {@code pipeline/after/chunk/fallback/}）。
          * 此前本方法是反射调 {@code AbstractUpstreamChatService}
          * 的私有 {@code normalizeUpstreamChunk}，搬走后那个方法名不复存在 ——
          * 反射的失败形态是运行时 {@code NoSuchMethodException}，不是编译错误，

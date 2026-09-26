@@ -638,7 +638,7 @@ class SchemaMigrationRunnerTests {
     /**
      * V12 库升到 V13：新列到位、回填 {@code base_url}，且协议集合追加 {@code RESPONSES}。
      *
-     * <p>这是 V13 的主用例，覆盖 §3.3 划定的三类值 —— 它们的失败形态各不相同：
+     * <p>这是 V13 的主用例，覆盖三类值 —— 它们的失败形态各不相同：
      * <ul>
      *   <li>非空数组漏追加 → Responses 线路默认不可用，用户要自己想到去勾（本次要避免的正是这个）；</li>
      *   <li><strong>空数组被追加</strong> → 一个被用户主动禁用的供应商变成部分可用，

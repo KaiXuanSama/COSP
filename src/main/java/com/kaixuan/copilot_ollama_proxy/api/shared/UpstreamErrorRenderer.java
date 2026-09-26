@@ -218,7 +218,7 @@ public final class UpstreamErrorRenderer {
      *
      * <p>它描述的是<strong>「我们没能得到可用响应」</strong>，而不是断言的网络故障 ——
      * 走到这里的原因可能是连接、DNS、TLS、超时、响应被截断，或空响应重试耗尽
-     * （那些都不是「连不上」）。措辞保持与既有一致，不在本步改文案。
+     * （那些都不是「连不上」）。措辞刻意保持与既有一致，不在这里改文案。
      */
     private static final String CONNECT_FAILED_MESSAGE = "无法连接到上游服务";
 
@@ -237,7 +237,7 @@ public final class UpstreamErrorRenderer {
      *
      * <p>例如 DNS 解析失败会提取 {@code "Failed to resolve 'api.kimi.com'"}。
      *
-     * <h2>为何从 Chat 搬到此处（阶段 6 步 1）</h2>
+     * <h2>为何从 Chat 搬到此处</h2>
      * 它此前<strong>只有 OpenAI 端点有</strong>，另两条的兜底分支打印
      * {@code ex.getMessage()} —— 那是 Reactor 包装后的消息。后果是同一个网络故障，
      * Chat 的日志能看出目标主机，另两条看不出。<strong>只影响排查体验</strong>

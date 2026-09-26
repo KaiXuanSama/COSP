@@ -6,9 +6,9 @@ import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
  * 上游响应在管道里的<strong>统一形态</strong>。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：主干<strong>值类型</strong> · 位置：{@code upstream/}（层根）
+ * 形态：主干<strong>值类型</strong> · 位置：{@code pipeline/protocol/}（层根）
  * 步骤「统一形态出口」—— 主干与执行器之间传递的唯一形态；非流式 = 恰有一个元素的流
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它统一的是什么</h2>
  * 管道此前有两种传输形态：非流式是 {@code Mono<String>}（一个完整响应体），
@@ -25,7 +25,7 @@ import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
  * {@code retryWhen} 只认信号，不认流内元素 —— 把失败做成 in-band 事件会让
  * 重试判定、每轮落库、耗尽放行、控制器分类这四处全部需要改写成
  * 「在流里找错误事件」，而它们此刻都正确工作。失败继续走信号，
- * 本步才是纯粹的形态统一。
+ * 两态才是纯粹的形态统一。
  *
  * <h2>Terminal 为什么不只是个标记</h2>
  * 它<strong>携带原文</strong>，因为三种协议都要求终止标记本身下发给客户端：
@@ -83,7 +83,7 @@ public sealed interface UpstreamEvent {
     /**
      * 本帧携带的 token 用量 —— <strong>生产者在流内填，出口只读</strong>。
      *
-     * <h2>为何挂在这个值类型上（阶段 5 步 7b-1「usage 消重复」）</h2>
+     * <h2>为何挂在这个值类型上</h2>
      * 同一份上游字节此前被<strong>解析两遍</strong>：块 2 解析一次写 {@code api_call_usage}（明细），
      * 出口又解析一次写 {@code api_usage_daily}（聚合）。
      * 后一遍把协议语义搬到了出口 —— 而出口本该只知道「这些字节要包成什么 HTTP 形状」，

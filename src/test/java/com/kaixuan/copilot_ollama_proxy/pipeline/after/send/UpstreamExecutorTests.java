@@ -36,9 +36,9 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 /**
  * 三个上游执行器经 {@link UpstreamExecutor} 接口调用时<strong>确实发出了正确的请求</strong>。
  *
- * <h2>这里在测什么（3.4e 起）</h2>
- * 3.4d-1 时本类测的是「新接口方法委托旧方法，两者出站请求逐字相同」。
- * 3.4e 删掉旧方法之后，对比对象没了 —— 于是改为直接断言**接口调用本身的行为**：
+ * <h2>这里在测什么</h2>
+ * 早期本类测的是「新接口方法委托旧方法，两者出站请求逐字相同」。
+ * 旧方法删掉之后，对比对象没了 —— 于是改为直接断言**接口调用本身的行为**：
  * 请求打到了正确的路径、请求体带上了 ctx 里的模型名与 body。
  *
  * <p>这样更强：原先的等价性只证明「新方法没抄错旧方法」，而旧方法对不对它管不着；
@@ -193,7 +193,7 @@ class UpstreamExecutorTests {
     /**
      * 造一个「已就绪」的 ctx：body 已经过主干装配（写好 model / stream / 思考深度等）。
      *
-     * <p>阶段 4 刀 1 起请求体装配在主干的 {@code RequestBodyAssembler}，执行器只读 {@code ctx.body()}。
+     * <p>请求体装配在主干的 {@code RequestBodyAssembler}，执行器只读 {@code ctx.body()}。
      * 本类直接调执行器（不走完整主干），因此在这里补跑一遍装配 —— 与生产路径一致，
      * 否则 {@code stream} 等字段不会出现在出站 body 里。
      */

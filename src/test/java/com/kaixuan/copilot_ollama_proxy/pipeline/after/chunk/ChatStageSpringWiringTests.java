@@ -19,14 +19,14 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Stage 3.1 的<strong>装配验证</strong>：两个 Chat 支线真的被 Spring 收集并注入到 Chat 执行器了吗。
+ * 两个 Chat 支线的<strong>装配验证</strong>：它们真的被 Spring 收集并注入到 Chat 执行器了吗。
  *
  * <h2>为何这个「等价替换」必须单独验</h2>
- * 3.1 把调用点从「直接调静态工具」改成「优先调注入的支线、未注入则回退静态工具」。
+ * 调用点从「直接调静态工具」改成了「优先调注入的支线、未注入则回退静态工具」。
  * 两条路<strong>按设计逐字等价</strong>（Chat 实现只转调那个静态工具），
  * 因此<strong>行为上完全观察不到差别</strong> —— 若 Spring 装配失败（漏了 {@code @Component}、
  * 扫描不到、{@code @Autowired} 写错、按单类型注入撞多候选），生产会静默退回静态工具：
- * 功能一切正常，而 3.1 的成果（具备被查表的资格）<strong>归零且无人察觉</strong>。
+ * 功能一切正常，而「具备被查表的资格」这个成果<strong>归零且无人察觉</strong>。
  *
  * <p>这正是本项目反复出现的形态：<em>两条路等价时，只有结构断言能验出装配断了</em>。
  * 故这里断言的是「注入确实发生」，而不是「行为正确」—— 后者由
@@ -68,7 +68,7 @@ class ChatStageSpringWiringTests {
     /**
      * Chat 执行器确实拿到了查表入口 —— 不是绕开查表直接调静态工具。
      *
-     * <p>这条是本类存在的理由（3.3d-2 后改写）：装配失败或接线被改回直调时行为不变，
+     * <p>这条是本类存在的理由（现在）：装配失败或接线被改回直调时行为不变，
      * 只有这个断言会红。
      */
     @Test
@@ -116,9 +116,9 @@ class ChatStageSpringWiringTests {
      * 用测试里的 {@code MESSAGES} 替身 + 空注册表提前把契约钉住，
      * 比等第二个实现出现时再补便宜得多。
      *
-     * <h2>本组与 3.1 时期的差别</h2>
-     * 3.1 时这里测的是「`setChunkNormalizeStages` 的硬编码 {@code filter(CHAT)} 是否写错」——
-     * 那时筛在**注入时**做、键写死在基类里。3.3d-2 收掉了那个 setter 与硬编码筛选，
+     * <h2>为何不再测「注入时硬编码筛选」</h2>
+     * 早期形态是「`setChunkNormalizeStages` 里 {@code filter(CHAT)}」——
+     * 那时筛在**注入时**做、键写死在基类里。后来收掉了那个 setter 与硬编码筛选，
      * 改由 {@link ChunkStageRegistry} 按<strong>运行时键</strong>查表，
      * 于是这组用例改为直接验注册表本身。
      */

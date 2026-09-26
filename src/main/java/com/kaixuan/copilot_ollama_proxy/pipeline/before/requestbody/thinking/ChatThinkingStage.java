@@ -12,9 +12,9 @@ import java.util.Map;
  * {@link ThinkingInjectStage} 的 <strong>CHAT</strong> 实现。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>包装</strong>（CHAT） · 位置：{@code upstream/requestbody/thinking/}
+ * 形态：支线<strong>包装</strong>（CHAT） · 位置：{@code pipeline/before/requestbody/thinking/}
  * 步骤「思考注入」—— Chat 侧写 {@code reasoning_effort}（{@code off} 档另写 {@code thinking}）
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  *
  * <h2>它与 MESSAGES 侧「一个支线 vs 两维」的区别</h2>
@@ -25,7 +25,7 @@ import java.util.Map;
  * 因此这里不需要 {@code AnthropicThinkingNormalizer} 的「深度先方式后、off 档跳过方式」编排。
  *
  * <h2>逻辑与搬移前逐字等价</h2>
- * 本类是刀 1 从 {@code AbstractUpstreamChatService.applyReasoningEffort} 搬来的 ——
+ * 本类是从 {@code AbstractUpstreamChatService.applyReasoningEffort} 搬来的 ——
  * 那一行就是 {@code resolveReasoningEffort(...).applyTo(body)}，配置解析统一走
  * {@link ReasoningEffortSetting#forModel}（三条线路同一份）。
  */

@@ -23,9 +23,9 @@ import java.util.function.Function;
  * 请求头和请求体规则均从 provider_request_transform 读取。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>实现</strong>（CHAT） · 位置：{@code upstream/send/chat/}
+ * 形态：支线<strong>实现</strong>（CHAT） · 位置：{@code pipeline/after/send/chat/}
  * 步骤「发送」—— 薄壳，继承 {@link AbstractUpstreamChatService}
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  */
 @Service

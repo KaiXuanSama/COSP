@@ -11,9 +11,9 @@ import java.util.Map;
  * 上游执行器的查表 —— 按 {@link WireProtocol} 查 {@link UpstreamExecutor} 实现。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：<strong>注册表</strong>（接入点级） · 位置：{@code upstream/send/}
+ * 形态：<strong>注册表</strong>（接入点级） · 位置：{@code pipeline/after/send/}
  * 步骤「选执行器」—— 未命中即<strong>报错</strong>（装配坏了，不是领域事实）
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它就是主干 {@code send} 插槽的落点</h2>
  * 主干上只有一行：
@@ -21,7 +21,7 @@ import java.util.Map;
  * executorRegistry.require(ctx.upstreamProtocol()).invoke(ctx, chunkRewriter)
  * </pre>
  * 主干因此<strong>不认识任何具体执行器</strong>，也不需要在三个实现里做协议分派
- * —— 那正是「主干上不该有协议分叉」这条本意的要求（方向文档 §2.2）。
+ * —— 那正是「主干上不该有协议分叉」这条本意的要求。
  * 「加一个上游协议 = 加一个 {@code @Component}」，主干与三个应用服务一个字不动。
  *
  * <h2>键由实现<strong>声明</strong>，不靠类名猜</h2>
@@ -33,7 +33,6 @@ import java.util.Map;
  * 协议已被供应商声明支持、却没有对应执行器 —— 那是<strong>装配坏了</strong>，
  * 不是「这种协议没有这一步」。别的插槽（chunk 归一、system 抬升……）未命中是跳过，
  * 因为它们表达领域事实（「这种协议确实没这一步」）；本表未命中没有合法的领域解释。
- * 见 plan_ Step 3.4「未命中语义通则」。
  *
  * <p>用 {@link IllegalStateException} 而非某个业务异常：它不该被控制器译成 400，
  * 而应作为「程序接线错误」暴露出来。

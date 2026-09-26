@@ -14,10 +14,10 @@ import java.util.List;
 import java.util.function.Function;
 
 /**
- * <strong>发送后块</strong> —— 主干「真正发出 HTTP 之后」那一段（阶段 4 刀 3 块化）。
+ * <strong>发送后块</strong> —— 主干「真正发出 HTTP 之后」那一段。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：主干<strong>功能块</strong>（发送后） · 位置：{@code pipeline/}（阶段 5 归拢后将进 {@code pipeline/after/}）
+ * 形态：主干<strong>功能块</strong>（发送后） · 位置：{@code pipeline/after/}
  * <p>{@link RequestPipeline#execute} 的第二行 {@code return afterSend.process(ctx)} 就是它。
  *
  * <h2>为什么它<strong>不能</strong>是「一步步改 ctx」的形态</h2>
@@ -30,15 +30,14 @@ import java.util.function.Function;
  * 真正的状态机（{@code defer → gate → retryWhen → 耗尽放行 → 静默重发 → doFinally}）
  * 由执行器 + {@code UpstreamCallRunner} 承载。本块只做三件<strong>编排</strong>：
  * 选执行器（查表）→ 调 send 插槽 → 回程翻译插槽。
- * <strong>绝不把 {@code retryWhen}/gate 拆成 {@code void step(ctx)}</strong> —— 那会破坏流式与重试
- * （plan_ §4.8 的纪律）。
+ * <strong>绝不把 {@code retryWhen}/gate 拆成 {@code void step(ctx)}</strong> —— 那会破坏流式与重试。
  *
  * <h2>两态分歧只在这里读一次 {@code ctx.stream()}</h2>
  * send 阶段选 {@code invoke}（非流式，一次取全）/ {@code invokeStream}（流式，逐事件）；
  * 回程阶段选 {@code translateResponse}（收 Mono）/ {@code translateStream}（Flux→Flux 状态机）。
- * 这是 3.5.2 认定的两处真本质。除此之外主干对两态无感。
+ * 这是两态在主干上仅剩的两处真本质。除此之外主干对两态无感。
  *
- * <h2>回程翻译器从 ctx 读（阶段 4 刀 3）</h2>
+ * <h2>回程翻译器从 ctx 读</h2>
  * 它由发送前块按协议对查表选好、记进 ctx（{@code ctx.responseTranslator()}）。本块不再
  * 自己查表 —— 「选策略」是发送前块的职责，本块只「用策略」。直连或回程未实现时它为 null，
  * 本块透传上游原生响应并留痕（见 {@link #warnIfHalfRound}）。
@@ -103,11 +102,11 @@ public class AfterSend {
     }
 
     /**
-     * 半轮实现态留痕 —— 透传本身可接受，但<strong>不能静默</strong>（方向文档 §2.3.2）。
+     * 半轮实现态留痕 —— 透传本身可接受，但<strong>不能静默</strong>。
      *
      * <h2>为何是 warn 而非 debug</h2>
      * 它标记的是<strong>下游正在收到未翻译的上游响应</strong>，是一个「有人应该看见」的事实。
-     * 同一个坑（流挂住、界面转圈而无报错）已踩过一次（方向文档 §3.3），因此这里必须响 ——
+     * 同一个坑（流挂住、界面转圈而无报错）已踩过一次，因此这里必须响 ——
      * warn 平时不淹没日志、出现时一眼可见。前端侧的可见性由 {@code notifyProtocols} 承载
      * （Toast 显示 {@code C→M} 标记）。
      *

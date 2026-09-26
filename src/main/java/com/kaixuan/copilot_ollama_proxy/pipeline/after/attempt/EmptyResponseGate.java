@@ -17,17 +17,17 @@ import java.util.function.Function;
  * 空响应拦截的<strong>机制</strong> —— 三个上游协议共用一份实现。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：主干<strong>机制</strong> · 位置：{@code upstream/}（层根）
+ * 形态：主干<strong>机制</strong> · 位置：{@code pipeline/after/}（层根）
  * 步骤「空响应拦截」—— 检测器（支线）作参数传入，故机制本身留在主干、不进 {@code content/}
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它替代了什么</h2>
- * 阶段 3.6 的实测结论：这个机制原先在三个执行器里<strong>各有一份</strong>
+ * 这个机制原先在三个执行器里<strong>各有一份</strong>
  * （9 份 = 流式 gate / 非流式一次判 / 耗尽放行，每协议三份），
  * 而其中<strong>唯一的协议关联点只有检测器</strong> ——
  * 检测器已做成支线（{@link ContentDetectorStage}），于是机制本身可以收归一处。
  *
- * <h2>两种形态共用一个类，但机制确实不同（3.5.2 的「真本质」）</h2>
+ * <h2>两种形态共用一个类，但机制确实不同</h2>
  * <ul>
  *   <li><strong>流式</strong>（{@link #gate}）：逐事件判，且必须<strong>先扣住</strong>再决定放行。
  *       扣住才保证「未见载荷」等价于「下游什么都没收到」，否则重试时下游会收到重复的
@@ -70,11 +70,11 @@ import java.util.function.Function;
  * {@code retryWhen} 会重订阅，不重置会让第二轮带着第一轮的闸门状态与缓存帧，
  * 症状是「重试之后判定再也不会触发」。见 {@code RequestPipelineContext} 的「生命周期」注释。
  *
- * <h2>日志文案统一了（本步唯一可观测的差异）</h2>
+ * <h2>日志文案统一了（这里唯一可观测的差异）</h2>
  * 三条线路原本各有措辞略有差异的同义日志（「拦截帧数」vs「事件数」、
  * 「放行最后一轮的 N 帧」vs「N 个事件」）。收归后统一为一套 ——
- * 按交接文档 §4.2 的判据，<strong>日志文案属于「会静默分叉的东西」，应当收归</strong>。
- * 这是本步唯一可观测的差异，只影响日志文本、不影响功能（与 3.4 收归前奏时的情形相同）。
+ * <strong>日志文案属于「会静默分叉的东西」，应当收归</strong>。
+ * 这是本类唯一可观测的差异，只影响日志文本、不影响功能。
  */
 public final class EmptyResponseGate<T> {
 

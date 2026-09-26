@@ -23,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 排查会同时失去「翻译为什么坏」与「上游到底发了什么」两条线索。
  *
  * <p>本组用例原本属于 {@code DownstreamLogViewTests}（那 7 条里的一半）。
- * 3.3d-3 删除了 {@code DownstreamLogView} 类型 —— 它重复持有下游协议，
+ * 后来删除了 {@code DownstreamLogView} 类型 —— 它重复持有下游协议，
  * 而那个协议的家是 {@code RequestPipelineContext}。剩下的「改写器 + 退回语义」
  * 正是本类现在承载的东西，用例因此随之迁移而非删除。
  */

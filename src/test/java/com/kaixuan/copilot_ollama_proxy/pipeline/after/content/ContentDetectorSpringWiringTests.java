@@ -18,14 +18,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 内容检测器支线的<strong>装配验证</strong>（阶段 3.6a）与<strong>接线验证</strong>（阶段 3.6b）。
+ * 内容检测器支线的<strong>装配验证</strong>（）与<strong>接线验证</strong>（）。
  *
  * <h2>为何必须单独验</h2>
  * 与 {@code RequestBodyStageSpringWiringTests} / {@code ChatStageSpringWiringTests} 同一处境：
  * 支线断了<strong>不会响</strong> —— 查不到检测器时「空响应判定失效」而功能看起来正常。
  *
- * <p>3.6a 只让支线成形（调用点仍在直调静态工具），那时能验的只有「新类型存在且被 Spring 收集」。
- * 3.6b 把判定机制收归 {@code EmptyResponseGate} 之后接上了线，于是本类又多了两件可验的事：
+ * <p>早期只让支线成形（调用点仍在直调静态工具），那时能验的只有「新类型存在且被 Spring 收集」。
+ * 把判定机制收归 {@code EmptyResponseGate} 之后接上了线，于是本类又多了两件可验的事：
  * 「三个执行器都持有查表入口」与「主干确实用了它」（见类尾那两条）。
  *
  * <p>而它与另两个注册表有一处<strong>关键不同</strong>：本表的未命中是
@@ -219,11 +219,11 @@ class ContentDetectorSpringWiringTests {
     }
 
     /**
-     * 三个执行器<strong>都拿到了查表入口</strong> —— 不是绕开查表直接调静态工具（阶段 3.6b 新增）。
+     * 三个执行器<strong>都拿到了查表入口</strong> —— 不是绕开查表直接调静态工具（ 新增）。
      *
-     * <h2>为何 3.6a 时测不了、现在才测</h2>
-     * 3.6a 只让支线成形，调用点仍在直调静态工具，那时「执行器持有注册表」这件事
-     * <strong>根本不存在</strong>。3.6b 把判定机制收归 {@code EmptyResponseGate} 之后，
+     * <h2>为何早期测不了、现在才测</h2>
+     * 早期只让支线成形，调用点仍在直调静态工具，那时「执行器持有注册表」这件事
+     * <strong>根本不存在</strong>。把判定机制收归 {@code EmptyResponseGate} 之后，
      * 检测器改为<strong>按上游协议查表取得</strong>，这条接线才有了可断之处。
      *
      * <h2>这条断言防什么</h2>

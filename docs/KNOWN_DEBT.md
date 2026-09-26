@@ -79,18 +79,18 @@
 
 **现状**：`GenericResponsesChatService` 与 `GenericAnthropicChatService` 仍有一段同构的
 调用骨架 —— setter 注入块、非流式的 `defer → doOnNext 落库 → doOnError 落库 → … → retryWhen`、
-流式的 `exchangeToFlux` 错误分支。（落库那一族两态 × 三协议共 9 份**已由阶段 4 刀 2 收归
+流式的 `exchangeToFlux` 错误分支。（落库那一族两态 × 三协议共 9 份**已收归
 `UpstreamCallRunner`**，见第十条。）
 
-> **阶段 3.6 已把原先列举的六类同构全部收归**（本节此前列的五类 + 落库）：
-> `isRetryableFailure` / `hasNetworkCause` / `hasSslHandshakeFailure` → `UpstreamRetryPolicy`（阶段 1.1）；
+> **原先列举的六类同构已全部收归**（本节此前列的五类 + 落库）：
+> `isRetryableFailure` / `hasNetworkCause` / `hasSslHandshakeFailure` → `UpstreamRetryPolicy`；
 > 两个 `find*` 解包 → 同类的 `findEmptyUpstreamException` / `findWebResponseException`；
 > 静默重试 loop → `control/CallResendLoop`；`retryWhen` 规格 → `UpstreamAutoRetry`；
 > 非流式判空与耗尽放行、流式 gate → `EmptyResponseGate`；
 > 空响应判定 → `ContentDetectorStage` 支线（按 `upstreamProtocol` 查表）。
-> **落库那一族已在阶段 4 刀 2 一并收归**（`UpstreamCallRunner` 的 2 份静态方法，见第十条）。
-> 本节因此只剩「调用骨架的外层编排」这一层 —— 亦已由刀 2 的 runner 收归，抽公共基类的
-> 论点至此**不再有具体依据**（三条线路的执行器都已是「建 AttemptContext + 闭包 → 委托 runner」
+> **落库那一族**已一并收归（`UpstreamCallRunner` 的静态方法，见第十条）。
+> 本节因此只剩「调用骨架的外层编排」这一层 —— 亦已由 runner 收归，抽公共基类的
+> 论点至此**不再有具体依据**（三条线路的执行器都已是「建 `AttemptContext` + 闭包 → 委托 runner」
 > 的薄适配器，没有值得抽的骨架了）。
 
 **这是决策，不是待办**（`GenericResponsesChatService` 类注释已写明）。抽取的触发条件是
@@ -99,7 +99,7 @@
 判空口径，模板方法就会变成需要开洞的约束。在那之前，模板方法带来的间接层只会让
 「这条线路到底怎么处理错误」变得更难读。
 
-> **3.6 印证了这条判据**：真正该抽的那几类（判定、算子序列、日志文案）都是**会静默分叉**的，
+> **已印证这条判据**：真正该抽的那几类（判定、算子序列、日志文案）都是**会静默分叉**的，
 > 它们被抽成了独立的小工具类（`UpstreamAutoRetry` / `control/CallResendLoop` / `EmptyResponseGate`），
 > 而不是一个「上游服务基类」。三个执行器仍平级、各自拥有自己的 Reactor 链 ——
 > **抽特征而不是抽骨架。**
@@ -107,12 +107,12 @@
 > 附带的口径是：执行器保留的那几行**适配器**（`buildRetrySpec`、`publishLifecycle`）
 > 与签名绑定，不符即编译失败，属「安全的重复」；被抽走的都是不会编译失败的东西。
 
-> **本条与阶段 4（第十二条）不矛盾 —— 两者说的是不同的事**：
+> **本条与第十二条不矛盾 —— 两者说的是不同的事**：
 > 本条反对的是**抽一个「上游服务基类」让三个执行器继承**（模板方法 + 钩子，子类看不见依赖）。
-> 阶段 4 要做的是把协议无关的**编排**上移到**主干**（`RequestPipeline` 持有的 runner），
+> 第十二条要做的是把协议无关的**编排**上移到**主干**（`RequestPipeline` 持有的 runner），
 > 执行器退化成把协议特定闭包交出去的**薄适配器** —— 那是**组合**不是继承，主干不是执行器的父类。
 > 判据一致：会静默分叉的编排该由一处持有（主干），协议特定的部分（transport / usage 解析）
-> 仍是各协议一份。**「抽骨架」（本条反对）与「主干持编排」（阶段 4）的差别，就在控制流归谁**。
+> 仍是各协议一份。**「抽骨架」（本条反对）与「主干持编排」（第十二条）的差别，就在控制流归谁**。
 
 ## 五、后端协议白名单四处硬编码
 
@@ -225,17 +225,15 @@ return `${path}.protocols[${index}] 必须是以下之一：${
 判定依据：自动改写属于「替用户猜意图」，而这里的猜错代价是**静默改变规则行为**，
 比让用户自己发现并修改更危险。
 
-## 十、落库那一族的跨协议合并（阶段 3.6 的收尾余项）—— **✅ 已解决（阶段 4 刀 2，2026-09-24）**
+## 十、落库那一族的跨协议合并 —— **已解决**
 
 > **已落地**：9 份 `saveXxxLog` 收归 `pipeline/after/send/UpstreamCallRunner` 的三个静态方法
 > （`saveNonStreamLog` / `saveStreamLog` / `saveStreamLogWithError`），上游协议统一从
-> `ctx.upstreamProtocol()` 取。三个执行器不再各留一份，`DEFAULT_PROTOCOL` 脆弱性随之消失
-> （见下）。验收：`AbstractUpstreamChatServiceUsagePersistenceTests` /
-> `GenericResponsesChatServiceUsagePersistenceTests` 的两列取值断言全绿（1297）。
+> `ctx.upstreamProtocol()` 取。三个执行器不再各留一份，`DEFAULT_PROTOCOL` 脆弱性随之消失（见下）。
 > 下文保留原始分析作为「为什么这样合」的依据。
 
-**现状**：`saveNonStreamLog` / `saveStreamLog` / `saveUsage` 在三个执行器里共 **9 份**
-（两态 × 三协议），是 3.6 收归完六类同构后**唯一剩下的协议轴重复**。
+**当时的现状**：`saveNonStreamLog` / `saveStreamLog` / `saveUsage` 在三个执行器里共 **9 份**
+（两态 × 三协议），是收归完六类同构后**唯一剩下的协议轴重复**。
 
 **已核实可合并**，差异只有两处：
 
@@ -251,37 +249,30 @@ return `${path}.protocols[${index}] 必须是以下之一：${
 收归后 Chat 也走协议感知重载、上游协议从 `ctx.upstreamProtocol()` 取，
 将来 C2R 等跳协议方向落地时不会再静默记错。
 
-> **落地副作用（已在 2c 处理）**：Chat 从 `ApiCallLogService` 的 8 参短重载（内部填
+> **落地副作用**：Chat 从 `ApiCallLogService` 的 8 参短重载（内部填
 > `DEFAULT_PROTOCOL`）切到 10 参协议感知重载。落库结果对直连**完全等价**（CHAT/CHAT），
 > 但 Mockito mock 接口**不执行 default 方法**，故 stub 短重载的测试要改 stub 到长重载 ——
 > 改的是 mock 配置不是断言。`ApiCallLogRepository` 里的 `DEFAULT_PROTOCOL` 短重载**保留**
 > （仓储层的向后兼容入口，非主路径；主路径已全部走协议感知重载）。
 
-**原「为什么现在不做」（已不适用，留档）**：它当时不在 3.6 的轴上、且牵动 `api_call_log`
-两列语义。阶段 4 刀 2 把主干后半段归位后，落库自然塌成一处，两列各自两型仍保持不变
+**原「为什么当时不做」**：它当时不在收归轴上、且牵动 `api_call_log`
+两列语义。主干后半段归位后，落库自然塌成一处，两列各自两型仍保持不变
 （`response_body`：正常体 / 错误体；`chunks`：裸数组 / 翻译前后对象 —— 合并没有压平它们）。
 
-## 十二、send 插槽边界画错，吞掉了主干后半段（阶段 4）—— **✅ 已还（刀 1/2/3 全部落地）**
+## 十二、send 插槽边界画错，吞掉了主干后半段 —— **已还**
 
-> **进度（2026-09-25）**：**刀 1 ✅**（请求体装配上移主干）· **刀 2 ✅**（内层 gate 编排 /
-> 帧处理 / 落库 / `retryWhen` 收归 `UpstreamCallRunner`，流级状态入 `AttemptContext`，
-> 2a/2b/2c 三线全绿）· **刀 3 ✅**（**块化**：`RequestPipeline.execute` 按「真正发出 HTTP」
-> 拆成发送前块 `BeforeSend`（同步 `void step(ctx)` 序列）/ 发送后块 `AfterSend`（异步状态机），
-> 翻译对经 ctx 跨块传递）+ **刀 3 B ✅**（出站头与地址装配上移发送前块，协议特定部分走
-> `outbound/` 支线）。全量 **1309 全绿**。
+> **最终形态**：`RequestPipeline.execute` 按「真正发出 HTTP」拆成发送前块 `BeforeSend`
+> （同步 `void step(ctx)` 序列）与发送后块 `AfterSend`（异步状态机）；协议无关的装配与编排
+> 全回主干侧（`RequestBodyAssembler` · `OutboundRequestAssembler` · `UpstreamCallRunner`），
+> 协议特定部分走各接入点的查表支线。三个执行器退化成「建 `AttemptContext` + 交协议闭包」。
 >
-> **契约收缩（`UpstreamExecutor` → transport、删三个旧壳）已降级为可选清理** —— 2026-09-24 与用户
-> 对齐心智模型后，刀 3 的形态从「抽象契约收缩」改为「块化」（见 `plan_` §4.8）；块化已拿走它大部分
-> 收益：发送后块现在只剩「铺 ctx 装好的头/地址 + 抓传输层快照 + 发送」。
+> **契约收缩（`UpstreamExecutor` → transport）是可选清理**：块化已拿走它大部分收益 ——
+> 发送后块现在只剩「铺 ctx 装好的头/地址 + 抓传输层快照 + 发送」。
+> 控制流方向已完全矫正：主干持流程，插槽只填传输 + 协议特有中段。
 >
-> 控制流方向已完全矫正 —— 主干持流程，插槽只填传输 + 协议特有中段。
-> **阶段 5 包结构归拢（2026-09-25）随后落地前 5 步**：`upstream/` 顶层包**消失**，
-> 其内容按块归属分入 `pipeline/before/`（`requestbody` · `outbound`）与 `pipeline/after/`
-> （`send` · `chunk` · `content` · `attempt`）；`discovery/` 回 `application/`。
-> 详见 `plan_.md` §4.8.8 与 [`pipeline/README.md`](../src/main/java/com/kaixuan/copilot_ollama_proxy/pipeline/README.md)。
-> 下文分析基于「三刀全未做」时写就，作为背景保留；「怎么还」一节的完成状态见其内标注。
+> 下文分析基于「尚未动手」时写就，作为**为什么边界要这么画**的背景保留。
 
-**这是当前最严重的结构债，也是第十条、第四条的共同根因。** 单列一条是因为它牵动的不是
+**这是最严重的结构债，也是第十条、第四条的共同根因。** 单列一条是因为它牵动的不是
 某一族函数，而是整条主干的控制流方向。
 
 **现状**：`RequestPipeline.execute` 全文只有 5 步（前奏 → 回填 → translate 插槽 → **send 插槽**
@@ -298,38 +289,36 @@ writeProtocolFields / 请求体规则 / removeNullFields / 出站头 / 空响应
 **全留在插槽内部各写一份**；协议相关的 5 项只有 2 项（system 抬升、max_tokens）真插槽化了。
 即：抽出来的是较小的那一半。
 
-**根因**：3.4 Q2 定「三执行器实现共同接口」时，接口形状直接继承了既有的
+**根因**：早先定「三执行器实现共同接口」时，接口形状直接继承了既有的
 `chatCompletion` / `chatCompletionStream`，于是 `invoke(ctx, chunkRewriter) → UpstreamEvent`
 描述的是「整个上游交互」而非「发送一次」。粒度一旦固定，主干后半段就物理上没有落点。
 
-**放大历史**：这不是某个功能分支引入的，而是主干化重构 3.4 的**设计取舍遗留** ——
-当时为降风险选了「执行器实现共同接口」（3b），把边界画在了现成方法上。3.6 收响应侧重复时
-只抽得动「机制」（gate / retry policy），抽不动「编排」（那些机制怎么串），正是因为编排与
-`Flux.defer` / `retryWhen` 绑在同一个方法体里、没有 AttemptContext 可以承载流级状态。
+**放大历史**：这不是某个功能分支引入的，而是主干化重构的**设计取舍遗留** ——
+当时为降风险选了「执行器实现共同接口」，把边界画在了现成方法上。后来收响应侧重复时
+只抽得动「机制」（gate / retry policy），抽不动「编排」（那些机制怎么串），
+正是因为编排与 `Flux.defer` / `retryWhen` 绑在同一个方法体里、没有 `AttemptContext`
+可以承载流级状态。
 
-**为什么现在才记**：3.7 结构重排完成后复盘才看清 —— 包分好了，但 send 内部的控制流方向问题
-**包重排改不动**（它是运行时结构，不是目录结构）。plan_ §3.7.6 第 4 条（两套扩展机制）
-是它的表层症状。
+**为什么曾经看不出来**：包分好了，但 send 内部的控制流方向问题
+**包重排改不动**（它是运行时结构，不是目录结构）。「两套扩展机制并存」是它的表层症状。
 
-**要还的话怎么还**：`plan_.md` 阶段 4 的三刀 ——
-1. **发送前上移 ✅**：body 装配 + 头装配进主干（`prepareRequestBody` 在 `Flux.defer` **之前**调用，
-   不碰 Reactor 结构，独立成一刀）；
-2. **内层 + 重试上移 ✅**：引入 **`AttemptContext`**（给流级状态一个显式的家），主干经
+**修法（三步，全部已落地）**：
+1. **发送前上移**：body 装配 + 头装配进主干（`prepareRequestBody` 在 `Flux.defer` **之前**调用，
+   不碰 Reactor 结构）；
+2. **内层 + 重试上移**：引入 **`AttemptContext`**（给流级状态一个显式的家），主干经
    `UpstreamCallRunner`（**无状态静态编排件**）组装 gate 编排 / 帧处理 / 落库 / `retryWhen`；
-   三个执行器退化成「建 `AttemptContext` + 闭包 → 委托 runner」，落库随之 9→2；
-3. **编排块化 ✅ + 出站装配上移 ✅**：`RequestPipeline.execute` 拆成发送前块 / 发送后块，
+   三个执行器退化成「建 `AttemptContext` + 闭包 → 委托 runner」；
+3. **编排块化 + 出站装配上移**：`RequestPipeline.execute` 拆成发送前块 / 发送后块，
    出站头与地址装配进发送前块（协议特定部分走 `outbound/` 支线）。
-   ~~契约收缩（`UpstreamExecutor` → transport，删三个旧壳）~~ —— **降级为可选清理**：
-   刀 2 曾把两处协议特有传输细节标记待收：`buildWebClient` 三份（baseUrl 来源 + `anthropic-version`
-   头差异）、usage 解析留闭包 —— **前者已随刀 3 B 消解**（三份差异已归并到出站支线，剩下的
-   三个方法逐字同形，去重是随时可做的纯清理）；**后者刻意不做成插槽**（三 `UsageParser` 各异、
-   Anthropic 要跨事件 merge —— 协议特有，留闭包反而依赖可见）。
 
-刀 2/3 不能各做一半指的是 `retryWhen` 归属（刀 2 已把它放进 runner，故安全）：若主干持内层而
-插槽持 `retryWhen`，控制流又反过来。迁移接缝见 plan_ §4.4（执行器退化成薄适配器，外部签名不变，
-现有测试继续跑 —— 刀 2 已兑现：**执行器 setter 零改动、测试子类零额外注入**，得益于 runner 无状态）。
+> **不要各做一半**：`retryWhen` 必须与内层编排同侧。若主干持内层而插槽持 `retryWhen`，
+> 控制流又反过来。当前两者都在 runner 内，故安全。
 
-**不还的代价**：加第四个协议（如 Ollama）= 再写一个 ~900 行执行器，正是当初启动重构要消除的痛点。
+> **执行器退化成薄适配器后，外部签名不变** —— 执行器 setter 零改动、测试子类零额外注入，
+> 得益于 runner 无状态。
+
+**不还的代价**：加第四个协议（如 Ollama）= 再写一个 ~900 行执行器，
+正是当初启动重构要消除的痛点。
 
 ## 十三、其余轻微项
 
@@ -344,7 +333,7 @@ writeProtocolFields / 请求体规则 / removeNullFields / 出站头 / 空响应
 | 三行地址标签无 `for` | `Settings.vue:1361`、`:1390` | 点标签不聚焦到输入框。`n-input` 内部 id 拿不到，实践中用 `aria-labelledby` 或让 label 包住输入更合适 |
 | diff 配对允许交叉 | `diff.ts` 的 `alignRange` | 贪心配对保证一对一但不保证顺序单调，两个元素在两侧顺序互换时渲染顺序会与原文相反。当前不可见（`DiffJsonNode` 不显示下标），且现有规则都不重排数组。若要收口，在 `candidates.sort` 后加一道「丢弃与已确定配对交叉的候选」 |
 
-> **3.6d 已核实、不需修的边界（留档以免重复调研）**：provider 层的 CONNECTED 事件
+> **已核实、不需修的边界（留档以免重复调研）**：provider 层的 CONNECTED 事件
 > 非流式传剥前缀的 `modelName`、流式传下游原始 `model`，两条线路的**重试规格同样如此**。
 > 观感上「Toast 显示两个名字」**不会发生** —— `CallLifecyclePublisher.withDisplayModel`
 > 在唯一出口按该调用的**首个事件**统一模型名（`RECEIVED` 由控制器同步发出，持有客户端原文），

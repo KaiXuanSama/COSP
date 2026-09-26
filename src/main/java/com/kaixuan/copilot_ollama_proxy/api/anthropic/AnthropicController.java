@@ -121,7 +121,7 @@ public class AnthropicController {
      *
      * <h2>职责分界</h2>
      * 本方法只负责<strong>把上游事件映射成带 event 名的 SSE 帧</strong>。
-     * <h2>职责分界（阶段 6 步 3 后）</h2>
+     * <h2>职责分界</h2>
      * 本方法只交待<strong>三件事</strong>：拉哪条链、每帧长什么样、错误长什么样。
      * 逐帧副作用与收尾协议都在 {@link StreamLifecycle#stream} 里 —— 三条端点共用那一份。
      */

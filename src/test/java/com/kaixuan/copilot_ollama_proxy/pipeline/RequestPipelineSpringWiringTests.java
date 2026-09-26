@@ -23,14 +23,14 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * 主干装配的结构断言 —— 三个应用服务真的把前奏托付给 {@link RequestPipeline} 了吗。
  *
  * <h2>为何这个替换必须单独验（本项目最反复的失效形态）</h2>
- * 3.4a/b 把三个应用服务<strong>逐字相同</strong>的前奏段
- * （{@code resolve → dispatch → notifyProtocols}）搬进主干。搬完之后，
+ * 三个应用服务<strong>逐字相同</strong>的前奏段
+ * （{@code resolve → dispatch → notifyProtocols}）已搬进主干。搬完之后，
  * 「服务仍自己跑前奏」与「服务委托主干」在<strong>行为上完全等价</strong> ——
  * 于是若某个服务漏改（仍持有旧的 routeResolver / dispatchManager 字段，
  * 或 Spring 装配到了别的东西），功能一切正常，而「6 份骨架 → 1 份」的成果
  * <strong>静默归零</strong>。
  *
- * <p>这正是 3.1/3.2/3.3 反复遇到的那条规律：<em>两条路等价时，只有结构断言能验出接线断了</em>。
+ * <p>这是结构改造反复遇到的那条规律：<em>两条路等价时，只有结构断言能验出接线断了</em>。
  * 故这里断言的是「注入确实发生、字段已被清空」，而不是「行为正确」——
  * 后者由 {@code ChatDispatchErrorSignalTests}（异常与登记）与三条目的既有用例覆盖。
  *
@@ -71,7 +71,7 @@ class RequestPipelineSpringWiringTests {
     @DisplayName("主干是 Spring Bean，且由两个功能块组成（发送前 / 发送后）")
     void requestPipelineIsWiredAsBean() {
         assertThat(requestPipeline).as("主干必须由容器提供").isNotNull();
-        // 块化（阶段 4 刀 3）后主干只组合两个块 —— 门面持有的就是这两个块。
+        // 主干只组合两个块 —— 门面持有的就是这两个块。
         assertThat(ReflectionTestUtils.getField(requestPipeline, "beforeSend"))
                 .as("主干必须持有发送前块 —— 路由 / 调度 / 翻译 / 装配都归它")
                 .isSameAs(beforeSend);
@@ -102,7 +102,7 @@ class RequestPipelineSpringWiringTests {
     }
 
     @Test
-    @DisplayName("两张表各归其块：翻译器表在发送前块、执行器表在发送后块（刀 3 块化）")
+    @DisplayName("两张表各归其块：翻译器表在发送前块、执行器表在发送后块")
     void trunkHoldsBothRegistries() {
         assertThat(ReflectionTestUtils.getField(beforeSend, "translatorRegistry"))
                 .as("翻译器表归发送前块 —— 「选翻译策略」是发送前的事")
@@ -147,7 +147,7 @@ class RequestPipelineSpringWiringTests {
             assertThat(ReflectionUtils.findField(service.getClass(), "lifecycleNotifier"))
                     .as("%s 不该再有生命周期通知器字段：它随前奏一起上移了", name)
                     .isNull();
-            // 3.4c-2：执行器与翻译器也不再由 Service 持有 —— 它们只在主干上。
+            // 执行器与翻译器也不再由 Service 持有 —— 它们只在主干上。
             assertThat(ReflectionUtils.findField(service.getClass(), "anthropicChatService"))
                     .as("%s 不该再持有执行器：选执行器是主干 send 插槽的事", name)
                     .isNull();

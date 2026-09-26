@@ -118,9 +118,9 @@ public class MessagesToChatResponseTranslator implements ResponseProtocolTransla
                     placeholderId(), upstreamModel, context.includeUsage());
             WireProtocol outputProtocol = downstreamProtocol();
             // 上游事件携带的 usage 指标（由上游执行器填）—— 本翻译器<strong>只传递不重算</strong>：
-            // 换算只依赖上游协议，执行器已经做过；此处再算一遍就是 7b-1 要消除的那种重复。
+            // 换算只依赖上游协议，执行器已经做过；此处再算一遍就是 usage 消重复要消除的那种重复。
             // 出站那份 OpenAI 形态的 usage 帧仍由 M2CStreamState 自算 —— 那是「给下游看什么」，
-            // 与「记账用什么」是两件事，不在本步的重复范围内。
+            // 与「记账用什么」是两件事，不在这里的重复范围内。
             AtomicReference<UsageTokens> carriedUsage = new AtomicReference<>(null);
             return upstreamEvents
                     .doOnNext(event -> {

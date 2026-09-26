@@ -14,15 +14,15 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
  * 上游执行器的<strong>共同入口</strong> —— 主干上 {@code send} 那个插槽的实现契约。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：<strong>契约</strong>（send 插槽） · 位置：{@code upstream/send/}
+ * 形态：<strong>契约</strong>（send 插槽） · 位置：{@code pipeline/after/send/}
  * 步骤「发送」—— 主干按 {@code ctx.upstreamProtocol()} 查表选中实现
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为什么需要它</h2>
  * 三个执行器（Chat / Anthropic / Responses）此前各有一套公开方法名
  * （{@code chatCompletion} / {@code messages} / {@code responses}），
  * 主干若按协议「三选一」就会在主干上留一个分叉 —— 与本重构的本意相反
- * （方向文档 §2.2：主干上不该有协议分叉）。接口化之后，主干只写一行查表：
+ * 。接口化之后，主干只写一行查表：
  *
  * <pre>
  * executors.get(ctx.upstreamProtocol()).invoke(ctx, chunkRewriter)
@@ -41,20 +41,20 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
  * <h2>参数为什么这么少</h2>
  * 旧签名有 5–6 个参数，其中 {@code request} / {@code provider} / {@code downstreamHeaders} /
  * {@code requestId} / {@code model} <strong>全都已经是 ctx 的字段</strong>，
- * 故不再重复传递（判据同 3.3d-3 收编 {@code DownstreamLogView}：同一个事实只有一个家）。
+ * 故不再重复传递（判据同收编 {@code DownstreamLogView} 那次：同一个事实只有一个家）。
  * 剩下的 {@code chunkRewriter} 是<strong>闭包不是状态</strong> ——
  * 它由编排层按回程翻译器构造，只对 Anthropic 路线有意义，因此<strong>留在签名上</strong>、
- * 不进 ctx（3.3d-3 的 D2 决定）。
+ * 不进 ctx。
  *
  * <h2>未命中语义是「报错」，与其它插槽不同</h2>
  * 协议已被声明支持、却没有对应执行器 —— 那是<strong>装配坏了</strong>，
  * 不是「这种协议没有这一步」。因此主干查不到执行器时**必须报错**，
- * 不能像 chunk 归一那样静默跳过。见 plan_ Step 3.4「未命中语义通则」。
+ * 不能像 chunk 归一那样静默跳过。通则见 {@link UpstreamExecutorRegistry} 的类注释。
  *
- * <h2>执行器只留这三个方法（3.4e 起）</h2>
+ * <h2>执行器只留这三个方法</h2>
  * 三个执行器旧有的公开方法（{@code chatCompletion} / {@code messages} / {@code responses}
- * 及其 Stream 版）已在 3.4e 删除 —— 生产调用点在 3.4c-2 后已归零。
- * 本接口的 {@code invoke} / {@code invokeStream} 是它们<b>唯一</b>的入口。
+ * 及其 Stream 版）已删除 —— 它们让主干按协议三选一，而那正是「主干上不该有协议分叉」
+ * 要消除的东西。本接口的 {@code invoke} / {@code invokeStream} 是唯一的入口。
  */
 public interface UpstreamExecutor {
 

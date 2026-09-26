@@ -9,13 +9,13 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
 
 /**
- * 出站请求装配 —— 主干上「发往哪、带什么头」那一段的编排（阶段 4 刀 3 B）。
+ * 出站请求装配 —— 主干上「发往哪、带什么头」那一段的编排。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：主干 · 位置：{@code upstream/outbound/}
+ * 形态：主干 · 位置：{@code pipeline/before/outbound/}
  * 步骤「出站请求装配」—— 发送前块在<strong>请求体装配之后</strong>调它，把出站请求头与
  * 基础地址算好写进 {@code ctx.outboundHeaders/outboundBaseUrl}，供发送后块的 {@code buildWebClient} 直接铺用。
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  *
  * <h2>它取代了什么</h2>

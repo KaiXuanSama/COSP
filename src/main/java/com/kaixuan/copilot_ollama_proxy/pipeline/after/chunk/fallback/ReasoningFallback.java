@@ -12,9 +12,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 只有思考链、没有正文时的<strong>兜底回退</strong> —— 把累积的思考内容当作正文补发。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>实现体</strong>（静态工具） · 位置：{@code upstream/chunk/fallback/}
+ * 形态：支线<strong>实现体</strong>（静态工具） · 位置：{@code pipeline/after/chunk/fallback/}
  * 步骤「reasoning fallback」的纯逻辑
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它解决的问题</h2>
  * 早期部分模型会把思考链<strong>当作正文输出</strong>，即「只吐 reasoning_content、
@@ -46,12 +46,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 与 {@link UpstreamChunkNormalizer} 同一取向：本类读写的是 OpenAI 专属形态
  * （{@code choices[].delta.content} 与 {@code reasoning_content}），
  * 这是 Chat 特有的兼容措施。Anthropic 与 Responses 两条线路没有它是预期的协议差异，
- * 不是遗漏 —— 它在 Stage 3.1 成形、3.3d-2 完成查表接线（按
- * {@code ctx.upstreamProtocol()}），另两条<strong>未命中即跳过</strong>。
+ * 不是遗漏 —— 它由 {@link ChatReasoningFallbackStage} 按
+ * {@code ctx.upstreamProtocol()} 查表接入，另两条<strong>未命中即跳过</strong>。
  *
  * <h2>流级状态由调用方持有</h2>
- * 三个状态参数都是<strong>跨帧累积</strong>的流级状态（重试一次就要重置），
- * 见方向文档 §2.4「两级状态要分清」。它们不属于本类，也不该被塞进请求级 context。
+ * 三个状态参数都是<strong>跨帧累积</strong>的流级状态（重试一次就要重置）。
+ * 它们不属于本类，也不该被塞进请求级 context —— 判据是「<strong>重试时该不该归零</strong>」。
  */
 public final class ReasoningFallback {
 

@@ -15,7 +15,7 @@ import reactor.core.publisher.Mono;
  * 桩数据从 {@code Flux.just("{...}")} 变成 {@code Flux.just(UpstreamEvent.body("{...}"))} ——
  * 而写桩的人必须自己判断<strong>哪一帧是终止标记</strong>。
  *
- * <p>那个判断恰恰是本步要<strong>从调用方拿走</strong>的东西：它依赖协议知识，
+ * <p>那个判断恰恰是要<strong>从调用方拿走</strong>的东西：它依赖协议知识，
  * 而写成字面量后，一旦某帧被错标成 {@code body}，控制器就不会触发收尾 ——
  * 症状是「流结束了但 Toast 不消失」，而测试桩本身看不出问题。
  *
@@ -68,7 +68,7 @@ public final class UpstreamStreams {
      * 非流式响应体：包成统一形态的<strong>单元素</strong>流。
      *
      * <p>它与上面三个流式入口的区别<strong>只在元素个数</strong> ——
-     * 那正是本步要统一的东西：非流式在本形态下就是「恰有一个元素的流」。
+     * 非流式在本形态下就是「恰有一个元素的流」。
      *
      * <p>恒为 {@link UpstreamEvent.Body}，不走分类器：非流式的响应体里
      * 不存在协议级终止标记（三个协议都是），因此不需要、也不可能判出 Terminal。

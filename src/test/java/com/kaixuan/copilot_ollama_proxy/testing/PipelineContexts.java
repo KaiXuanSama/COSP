@@ -106,10 +106,10 @@ public final class PipelineContexts {
     }
 
     /**
-     * 跑一遍出站装配（阶段 4 刀 3 B）—— 把出站头与地址写进 ctx。
+     * 跑一遍出站装配 —— 把出站头与地址写进 ctx。
      *
      * <h2>为何这里也要装配</h2>
-     * 出站头与地址自刀 3 B 起由发送前块的 {@code OutboundRequestAssembler} 装配、写进 ctx，
+     * 出站头与地址由发送前块的 {@code OutboundRequestAssembler} 装配、写进 ctx，
      * 执行器 {@code buildWebClient} 只读 {@code ctx.outboundHeaders/outboundBaseUrl}。
      * 本类的三个工厂<strong>直接喂执行器、绕过发送前块</strong>，故必须补上这一步 ——
      * 否则执行器拿到 {@code null} 头会 NPE。与生产同一条 {@code OutboundRequestAssembler}、

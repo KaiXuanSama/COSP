@@ -9,12 +9,12 @@ import java.util.Map;
  * 补齐 {@code max_tokens} 的<strong>支线</strong>。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：<strong>契约</strong>（支线） · 位置：{@code upstream/requestbody/maxtokens/}
+ * 形态：<strong>契约</strong>（支线） · 位置：{@code pipeline/before/requestbody/maxtokens/}
  * 步骤「max_tokens 补齐」—— Anthropic 侧缺失即上游 400
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为什么它是支线而不是主干</h2>
- * 按方向文档 §2.1 的判据：<strong>协议差异是代码 → 支线</strong>。
+ * 判据是：<strong>协议差异是代码 → 支线</strong>。
  * {@code max_tokens} 在 Anthropic 是<strong>必填</strong>（缺失直接 400），
  * 而在 Chat 与 Responses 里都是<strong>可选</strong>的 ——
  * 「缺失时要不要补一个」这个决定本身就是协议差异，且它落在<strong>代码</strong>上

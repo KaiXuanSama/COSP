@@ -14,9 +14,9 @@ import java.time.Duration;
  * 自动重试的<strong>规格构造</strong> —— 三个上游执行器共用一份实现。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：主干 · 位置：{@code upstream/}（层根）
+ * 形态：主干 · 位置：{@code pipeline/after/}（层根）
  * 步骤「自动重试②」—— <strong>几次、多久</strong>（读配置 + 组装 {@code Retry}）
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它管的是「重试几次、等多久」，不是「要不要重试」</h2>
  * 那两件事刻意分居两类，因为回答它们所需的信息不同。
@@ -31,7 +31,7 @@ import java.time.Duration;
  *       <td>组装，读配置</td></tr>
  * </table>
  *
- * <h2>第三件曾与此二者并列，现已出列（阶段 3.7 第①批）</h2>
+ * <h2>第三件曾与此二者并列，现已出列</h2>
  * 人工触发的重新发起（原 {@code UpstreamSilentRetry}，现 {@code control/CallResendLoop}）
  * 曾与本二者同住 {@code provider/} 顶层，
  * 排出一副「重试三件套」的样子 —— 但那只是<strong>按词聚的</strong>，不是按功能聚的。

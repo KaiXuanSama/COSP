@@ -131,7 +131,7 @@ class ProviderRequestBodyTransformationIntegrationTests {
         AtomicReference<Map<String, String>> loggedRequestHeaders = new AtomicReference<>();
         ApiCallLogService callLogService = mock(ApiCallLogService.class);
         doAnswer(invocation -> {
-            // 落库 9→2 后（阶段 4 刀 2）主干 runner 调协议感知重载：
+            // 主干 runner 调协议感知重载：
             // 参数序为 (pk, model, downProto, upProto, reqHeaders, ...)，故请求头在 arg 4。
             Map<String, String> headers = invocation.getArgument(4);
             loggedRequestHeaders.set(new LinkedHashMap<>(headers));
@@ -146,7 +146,7 @@ class ProviderRequestBodyTransformationIntegrationTests {
         // 主干按协议查表选执行器，故注册表必须收本测试用的那个真实执行器。
         // 翻译器表给空（两个方向都查不到）—— 本测试只走直连，压根不查表。
         // 出站装配器收 ChatOutboundStage（本测试下游/上游都是 CHAT）：真实发请求到 HttpServer，
-        // 出站头与地址必须由发送前块装好（刀 3 B），否则执行器读到 null 头会 NPE。
+        // 出站头与地址必须由发送前块装好，否则执行器读到 null 头会 NPE。
         ChatCompletionService chatCompletionService = new ChatCompletionService(
                 new RequestPipeline(
                         new BeforeSend(new ProviderRouteResolver(catalog), new ProtocolDispatchManager(),

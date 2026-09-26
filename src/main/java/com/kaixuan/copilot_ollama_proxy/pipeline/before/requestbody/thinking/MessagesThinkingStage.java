@@ -11,9 +11,9 @@ import java.util.Map;
  * {@link ThinkingInjectStage} 的 <strong>MESSAGES</strong> 实现 —— 当前唯一的实现。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>包装</strong>（MESSAGES） · 位置：{@code upstream/requestbody/thinking/}
+ * 形态：支线<strong>包装</strong>（MESSAGES） · 位置：{@code pipeline/before/requestbody/thinking/}
  * 步骤「思考注入」—— 当前唯一实现
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为何是一个支线而不是两个</h2>
  * Anthropic 侧有两个正交维度（深度 = {@code output_config.effort}、
@@ -22,7 +22,7 @@ import java.util.Map;
  * 最后还要剥掉 {@code reasoning_effort} 兼容副本。
  * 拆成两个支线会让这套顺序约束变成跨支线的隐式契约，而它们本就是同一条协议里的同一件事。
  *
- * <h2>另两条协议也有实现（阶段 4 刀 1 补齐）</h2>
+ * <h2>另两条协议也有实现</h2>
  * Chat 与 Responses 的思考注入分别写 {@code reasoning_effort} 与 {@code reasoning.effort}，
  * 现各自有 {@link ChatThinkingStage} / {@code ResponsesThinkingStage}（三协议在
  * {@code RequestBodyStageRegistry} 的 thinking 表里各占一席）。

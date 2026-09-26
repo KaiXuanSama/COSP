@@ -11,12 +11,12 @@ import java.util.Map;
  * MESSAGES 实现与 Anthropic 执行器共同调用。
  *
  * <p>为何是静态工具（而不是直接把逻辑放进实现类）见 {@link SystemPromptNormalizer} 的类注释：
- * 支线接线（3.3d-2）之前执行器仍需工作，两份等价逻辑必然静默分叉。
+ * 支线接线之前执行器仍需工作，两份等价逻辑必然静默分叉。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>实现体</strong>（静态工具） · 位置：{@code upstream/requestbody/maxtokens/}
+ * 形态：支线<strong>实现体</strong>（静态工具） · 位置：{@code pipeline/before/requestbody/maxtokens/}
  * 步骤「max_tokens 补齐」的纯逻辑
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  */
 public final class MaxTokensNormalizer {

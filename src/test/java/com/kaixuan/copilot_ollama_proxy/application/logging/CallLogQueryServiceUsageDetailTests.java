@@ -19,7 +19,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 阶段四（链路部分）验证与锁定：日志详情端点回传结构中附带 usage 字段。
+ * 日志详情端点回传结构中附带 usage 字段的行为锁定。
  *
  * <p>覆盖：
  * <ul>

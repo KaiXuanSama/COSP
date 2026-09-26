@@ -9,9 +9,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 只有思考链、没有正文时的<strong>兜底回退支线</strong> —— 主干上一个按协议查表的接入点。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：<strong>契约</strong>（支线） · 位置：{@code upstream/chunk/fallback/}
+ * 形态：<strong>契约</strong>（支线） · 位置：{@code pipeline/after/chunk/fallback/}
  * 步骤「reasoning fallback」—— 只有思考链没有正文时补一对伪 chunk
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>它做什么</h2>
  * 早期部分模型会把思考链<strong>当作正文输出</strong>（只吐 {@code reasoning_content}、
@@ -24,17 +24,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 而 stop chunk 的到达<strong>就是它的「流末信号」</strong> —— 回看「历史流过的是不是只有思考」，
  * 是则整合成正文发下去。这与空响应 gate 同构（累积 + 轮末判定），
  * 因此不必真的挪到 {@code doFinally}，随 stop chunk 就地触发即可。
- * 见方向文档 §5.1.1「步骤的生命周期位置」。
  *
  * <h2>为何是接口 / 为何只有 Chat 实现 / 查表键是上游协议</h2>
- * 与 {@link ChunkNormalizeStage} 同一套理由：接口在 3.1 成形、
- * 3.3d-2 由 {@link ChunkStageRegistry} 按 {@code ctx.upstreamProtocol()} 接线。
+ * 与 {@link ChunkNormalizeStage} 同一套理由：本接口由
+ * {@link ChunkStageRegistry} 按 {@code ctx.upstreamProtocol()} 查表并接线。
  * Chat 专属（读写 {@code choices[].delta.content} 与
  * {@code reasoning_content} 这些 OpenAI 形态），另两条协议查不到实现即跳过，是预期行为。
  *
  * <h2>流级状态作参数传入</h2>
  * {@code contentEmitted} / {@code reasoningBuffer} / {@code chunkId} 是流算子内部闭包状态
- * （§2.4），作方法参数穿线传递，不塞进请求级 context。
+ * ，作方法参数穿线传递，不塞进请求级 context。
  */
 public interface ReasoningFallbackStage {
 

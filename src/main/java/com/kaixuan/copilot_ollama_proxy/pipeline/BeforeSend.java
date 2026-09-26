@@ -21,10 +21,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
- * <strong>发送前块</strong> —— 主干「真正发出 HTTP 之前」那一段（阶段 4 刀 3 块化）。
+ * <strong>发送前块</strong> —— 主干「真正发出 HTTP 之前」那一段。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：主干<strong>功能块</strong>（发送前） · 位置：{@code pipeline/}（阶段 5 归拢后将进 {@code pipeline/before/}）
+ * 形态：主干<strong>功能块</strong>（发送前） · 位置：{@code pipeline/before/}
  * <p>{@link RequestPipeline#execute} 现在只有两行：{@code beforeSend.process(ctx)} 与
  * {@code return afterSend.process(ctx)}。本类是前者。
  *
@@ -138,13 +138,13 @@ public class BeforeSend {
      * <h2>两半的未命中语义不同（这是刻意的）</h2>
      * <ul>
      *   <li><strong>去程未命中 → 报错</strong>：没有请求翻译就发不出上游能理解的请求，
-     *       跳过只会让上游回 400 —— 与「配置写错」现象相同、不承载信息（方向文档 §2.3.2）。</li>
+     *       跳过只会让上游回 400 —— 与「配置写错」现象相同、不承载信息。</li>
      *   <li><strong>回程未命中 → 记 null</strong>，由发送后块透传上游原生响应并留痕。
      *       那是开发者写新方向时的<strong>正常中间态</strong>：去程已接，正要拿真实上游
      *       验证请求是否被接受，此时帧本来就在手里，不该被压住。</li>
      * </ul>
      *
-     * <h2>翻译对记进 ctx（阶段 4 刀 3）</h2>
+     * <h2>翻译对记进 ctx</h2>
      * 去程翻译器在本步当场用掉（改 body）；回程翻译器要到<strong>发送后块</strong>才用，
      * 跨了块边界，故经 {@code ctx.applyTranslators(...)} 传递。去程也一并记入只为对称
      * （见 {@link RequestPipelineContext} 类注释「装策略」段）。

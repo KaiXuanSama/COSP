@@ -14,7 +14,7 @@ import java.util.Map;
 /**
  * Messages 应用服务 —— 服务下游的 Anthropic 协议端点。
  *
- * <h2>它已经退化成「端点声明 + 建 ctx + 交主干」（3.4c-2）</h2>
+ * <h2>它已经退化成「端点声明 + 建 ctx + 交主干」</h2>
  * 与 {@code ChatCompletionService} / {@code ResponsesService} <strong>三者同形</strong>：
  * 各自只声明自己的 {@link WireProtocol}，建一个只含下游侧事实的 ctx，交给
  * {@code RequestPipeline} 跑完整条主干。本类不再持有执行器、翻译器表或调度器。

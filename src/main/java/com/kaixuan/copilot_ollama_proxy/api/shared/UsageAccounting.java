@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 出口消费 {@link UpstreamEvent#usage()} 槽并记入日聚合 —— 三条端点共用一份。
  *
  * <h2>它在分层里的位置</h2>
- * 阶段 5 步 7b-1 把 usage 的<strong>解析</strong>收归了生产者（三个执行器 / C2M 翻译器），
+ * usage 的<strong>解析</strong>由生产者承担（三个执行器 / C2M 翻译器），
  * 结果挂在事件上；出口只剩「<strong>读槽 + 记账</strong>」这一件事。本类就是那件事。
  *
  * <p>它是 {@code api/shared/} 的第三个成员，与 {@link StreamLifecycle} /
@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 与之相对，各端点的错误 JSON 骨架、SSE 事件名回填策略都<strong>不</strong>在此 —— 那些由下游协议决定。
  *
  * <h2>为何要收归一处</h2>
- * 7b-1 之后，三条出口各剩一份「读槽 + 记账」，三份<strong>逐字相同</strong>。
+ * 出口只做「读槽 + 记账」之后，三条出口各剩一份，三份<strong>逐字相同</strong>。
  * 重复本身不是问题，问题是它会<strong>静默分叉</strong>：某天有人把流式的「恒记」改成「有才记」，
  * 只改一条线路 —— 症状是「同一个上游故障，这条线的统计卡少算一次调用」，
  * 而三条线路的代码看起来都合理。

@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 阶段二验证与锁定：usage 解析器覆盖 8+1 个真实供应商样本。
+ * usage 解析器覆盖 8+1 个真实供应商样本。
  *
  * <p>核心断言 null vs 0 语义与 cached_tokens fallback 链：
  * <ul>

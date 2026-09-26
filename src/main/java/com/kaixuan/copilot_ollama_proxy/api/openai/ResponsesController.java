@@ -138,7 +138,7 @@ public class ResponsesController {
      * 本方法只负责<strong>把上游事件映射成带 event 名的 SSE 帧</strong>。
      * 其后的收尾协议在 {@link StreamLifecycle#stream} 里；
      * 本端点提供两个回调，且两者都比另两条多一层信息：
-     * <h2>职责分界（阶段 6 步 3 后）</h2>
+     * <h2>职责分界</h2>
      * 本方法只交待<strong>三件事</strong>：拉哪条链、每帧长什么样、错误长什么样。
      * 逐帧副作用与收尾协议都在 {@link StreamLifecycle#stream} 里。
      *

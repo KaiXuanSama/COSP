@@ -14,18 +14,18 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 请求体装配 —— 主干上「发什么」那一段的编排（阶段 4 刀 1）。
+ * 请求体装配 —— 主干上「发什么」那一段的编排。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：主干 · 位置：{@code upstream/requestbody/}
+ * 形态：主干 · 位置：{@code pipeline/before/requestbody/}
  * 步骤「请求体装配」—— 主干在调执行器<strong>之前</strong>调它，把 {@code ctx.body()}
  * 从下游/翻译后形态装配成最终发往上游的形态。
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  *
  * <h2>它取代了什么</h2>
  * 三个执行器此前各有一份 {@code prepareRequestBody}（阶段序列逐字同构，只有协议特定的
- * 中间几步不同）。那几份是 send 插槽「吞掉主干后半段」的一部分（阶段 4 §4.0）：
+ * 中间几步不同）。那几份是 send 插槽「吞掉主干后半段」的一部分：
  * 协议<strong>无关</strong>的 copy / resolveModel / writeProtocolFields / bodyRules / removeNull
  * 本应是主干步骤，却在三个执行器里各写一份。本类把公共序列收归主干，协议<strong>相关</strong>的
  * 三步（system 抬升 / max_tokens / thinking）交给 {@link RequestBodyStageRegistry} 的支线
@@ -117,7 +117,7 @@ public class RequestBodyAssembler {
      *
      * <p>两个来源不是「回退关系」，是同一个值的两条路：{@code requestModel} 来自请求体、
      * {@code routedModel} 来自路由解析（{@code ctx.model()}），生产路径上二者同值，
-     * 测试常只给其中一个。可枚举默认模型名那一层已在 3.3a 剔除。
+     * 测试常只给其中一个。可枚举默认模型名那一层已剔除。
      */
     private static String resolveModel(Object requestModel, String routedModel) {
         String model;

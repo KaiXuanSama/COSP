@@ -25,7 +25,7 @@ import static org.mockito.Mockito.when;
  * 供应商级出站鉴权头装配方式的落库契约。
  *
  * <p>覆盖三条保存路径（编辑抽屉 / 新建 / 改名）与回传形态。真正的头部装配行为
- * 不在这里验 —— 本阶段落库后还没有任何运行时代码读取该列。
+ * 不在这里验 —— 本测试只锁落库，装配由 {@code ProviderRequestHeaderService} 的用例覆盖。
  */
 class ProviderAdminServiceAuthHeaderTests {
 

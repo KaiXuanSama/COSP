@@ -46,11 +46,11 @@ import com.kaixuan.copilot_ollama_proxy.protocol.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 
 /**
- * 阶段三验证与锁定：{@code AbstractUpstreamChatService} 的 usage 落库联动语义。
+ * {@code AbstractUpstreamChatService} 的 usage 落库联动语义。
  *
  * <p>覆盖（写入时序 A，方案 a）：
  * <ul>
- *   <li>流式成功且有 usage → 写一行，log_id 关联阶段一自增 id，token 按存在性解析，ttfb 有值；</li>
+ *   <li>流式成功且有 usage → 写一行，log_id 关联 {@code api_call_log} 自增 id，token 按存在性解析，ttfb 有值；</li>
  *   <li>非流式成功且有 usage → 写一行，ttfb 为 null（非流式无首字概念）；</li>
  *   <li>成功但无 usage → 不写（方案 a）；</li>
  *   <li>失败往返 → 不写；</li>
@@ -74,7 +74,7 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
 
     @Test
     void streamSuccessWithUsageWritesRowLinkedToLogIdWithTtfb() {
-        // 落库 9→2（阶段 4 刀 2）：Chat 现经协议感知重载落库（直连 CHAT/CHAT，落库效果与旧 DEFAULT_PROTOCOL 一致）。
+        // 经协议感知重载落库（直连 CHAT/CHAT，效果与旧 DEFAULT_PROTOCOL 一致）。
         when(logService.saveStream(anyString(), anyString(), anyString(), anyString(), any(), any(), any(), anyInt(), any(ChunkLogPayload.class), anyLong()))
                 .thenReturn(4242L);
 
@@ -180,7 +180,7 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
 
     @Test
     void nonStreamSuccessWithUsageWritesRowWithNullTtfb() {
-        // 落库 9→2（阶段 4 刀 2）：非流式经协议感知重载落库（10 参，含 downProto/upProto）。
+        // 非流式经协议感知重载落库（10 参，含 downProto/upProto）。
         when(logService.saveNonStream(anyString(), anyString(), anyString(), anyString(), any(), any(), any(), anyInt(), any(), anyLong()))
                 .thenReturn(7L);
 
@@ -246,7 +246,7 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
     @Test
     void streamSuccessWritesOrphanRowWhenLogIdIsNull() {
         // 日志写入失败返回 null → usage 仍写孤儿行（log_id=null，软链接容错）。
-        // 落库 9→2（阶段 4 刀 2）：经协议感知重载。
+        // 经协议感知重载。
         when(logService.saveStream(anyString(), anyString(), anyString(), anyString(), any(), any(), any(), anyInt(), any(ChunkLogPayload.class), anyLong()))
                 .thenReturn(null);
 

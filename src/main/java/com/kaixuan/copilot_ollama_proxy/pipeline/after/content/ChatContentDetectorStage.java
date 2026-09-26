@@ -8,9 +8,9 @@ import org.springframework.stereotype.Component;
  * {@link ContentDetectorStage} 的 <strong>CHAT</strong> 实现 —— 转调 {@link OpenAiContentDetector}。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>包装</strong>（CHAT） · 位置：{@code upstream/content/}
+ * 形态：支线<strong>包装</strong>（CHAT） · 位置：{@code pipeline/after/content/}
  * 步骤「空响应判定」—— 转调 {@link OpenAiContentDetector}，映射方向是「反」的（见类注释）
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>⚠️ 这里的方法映射是「反的」，不要按名字接</h2>
  * 被转调的那个类是静态工具，它的两个方法名<strong>与语义对不上</strong>：
@@ -33,7 +33,7 @@ import org.springframework.stereotype.Component;
  * <h2>为何委托给静态工具而非把逻辑搬进来</h2>
  * 与本项目其它支线同一取向（见 {@code ChatChunkNormalizeStage}）：纯逻辑留在原工具类
  * （含它的一整套既有单测），本类只承担支线的三件事 —— 声明协议键、带 {@code @Component}
- * 让 Spring 收集、把调用转过去。这样本步是纯粹的「形状改造」，逻辑一行未动。
+ * 让 Spring 收集、把调用转过去。这样本类是纯粹的「形状改造」，逻辑一行未动。
  */
 @Component
 public class ChatContentDetectorStage implements ContentDetectorStage {

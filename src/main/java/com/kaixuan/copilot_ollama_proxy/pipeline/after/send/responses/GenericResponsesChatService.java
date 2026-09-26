@@ -53,9 +53,9 @@ import java.util.function.Function;
  * 通用 <strong>Responses</strong> 上游服务 —— 对接 OpenAI Responses API 协议的供应商。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>实现</strong>（RESPONSES） · 位置：{@code upstream/send/responses/}
+ * 形态：支线<strong>实现</strong>（RESPONSES） · 位置：{@code pipeline/after/send/responses/}
  * 步骤「发送」—— 独立类，<strong>不继承</strong> {@link AbstractUpstreamChatService}
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为何与另两个上游服务平级，而不复用它们</h2>
  * 三条线路的 Reactor 链体<strong>结构不同</strong>：
@@ -70,7 +70,7 @@ import java.util.function.Function;
  * 三者的空响应取值路径、usage 提取、终态判定全部不同。
  *
  * <p><strong>空响应 gate 的语义三条线一致（都扣住）</strong>，机制本身已收归
- * {@link EmptyResponseGate}（阶段 3.6b）—— 扣住-释放的完整理由见那个类的类注释。
+ * {@link EmptyResponseGate}—— 扣住-释放的完整理由见那个类的类注释。
  * 曾经这里不扣帧、只记「是否见过载荷」，
  * 理由是「客户端是事件状态机，扣住 {@code response.created} 会让它无法初始化」——
  * 该理由不成立：扣住是暂时的，开闸时整批按序释放，下游看到的是完整合法前缀。
@@ -104,7 +104,7 @@ import java.util.function.Function;
  * 注入思考深度、执行规则），而 Anthropic 那条还要提取 system、补 {@code max_tokens}、
  * 协调两个思考维度。原因是<strong>下游与上游说的是同一种协议</strong>——
  * 直连不需要任何形态转换。
- * <p>装配自阶段 4 刀 1 收归主干 {@link com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler}
+ * <p>装配收归主干 {@link com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler}
  * （协议特定步骤走 {@code RequestBodyStageRegistry}），本类只读 {@code ctx.body()}。
  *
  * <p>两个刻意<strong>不做</strong>的注入（见 {@code ResponsesThinkingStage} 与
@@ -125,7 +125,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
     private final ProviderRequestHeaderService providerRequestHeaderService;
 
     /**
-     * 内容检测器的查表 —— 空响应拦截的判据来源（阶段 3.6b）。
+     * 内容检测器的查表 —— 空响应拦截的判据来源。
      *
      * <p>放构造器而非可选 setter：本表未命中是<strong>报错</strong>而非跳过，
      * 漏注入会让整条线路的空响应兼底直接失效。与另两个执行器同一取舍。
@@ -238,16 +238,15 @@ public class GenericResponsesChatService implements UpstreamExecutor {
     protected Mono<UpstreamEvent> responses(Map<String, Object> request, String model,
                                             ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                             String requestId, RequestPipelineContext ctx) {
-        // stream 取自 ctx（3.5a）：主干按 ctx.stream() 选了本方法，故这里二者必定一致。
+        // stream 取自 ctx：主干按 ctx.stream() 选了本方法，故这里二者必定一致。
         // ⚠️ 这条一致性依赖调用方守规矩：直接调本方法而 ctx 里 stream=false 会走错路且不响。
-        //    该不变式在 3.5b（两态合链）后自然消失（与 executeStream 同属搁置项）。
         boolean stream = ctx.stream();
-        // 请求体已由主干的 RequestBodyAssembler 装配好（阶段 4 刀 1），直接取用。
+        // 请求体已由主干的 RequestBodyAssembler 装配好，直接取用。
         Map<String, Object> requestBody = ctx.body();
         log.info("{} Responses 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
-        // 判定机制收归 EmptyResponseGate（阶段 3.6b），检测器按上游协议查表。
+        // 判定机制收归 EmptyResponseGate，检测器按上游协议查表。
         EmptyResponseGate<String> gate = new EmptyResponseGate<>(ctx.shouldApplyEmptyResponseGate());
         EmptyResponseGate.CallContext callCtx = new EmptyResponseGate.CallContext(provider.providerKey(), model, requestId);
         ContentDetectorStage detector = contentDetectorRegistry.require(ctx.upstreamProtocol());
@@ -255,7 +254,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
         Map<String, String> reqHeaders = new LinkedHashMap<>();
-        // 流级状态收归 AttemptContext（阶段 4 刀 2）：非流式只用到 attemptStart。
+        // 流级状态收归 AttemptContext：非流式只用到 attemptStart。
         AttemptContext attempt = new AttemptContext();
 
         // 外层骨架（defer → 落库 → 判空 → retryWhen → 取 body → 耗尽放行 → 包装）收归主干 runner；
@@ -300,7 +299,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                         // 包装成统一形态：非流式在本形态下就是「恰有一个元素的流」。
                         // 直接用 body 而不走分类器：非流式的响应体里不存在协议级终止标记，
                         // 「说完了」由流的 onComplete 表达 —— 这是已确定的事实，不必运行时再判一次。
-                        // usage 挂槽：与上面写 api_call_usage 用的是同一份解析结果（阶段 5 步 7b-1）。
+                        // usage 挂槽：与上面写 api_call_usage 用的是同一份解析结果。
                         body -> UpstreamEvent.body(body, parseUsageForExit(body))));
     }
 
@@ -310,7 +309,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
      * 发送一次流式 Responses 请求。
      *
      * <h2>空响应 gate 与另两条线同构（扣住-释放）</h2>
-     * 机制已收归 {@link EmptyResponseGate}（阶段 3.6b），三条线路共用一份实现 ——
+     * 机制已收归 {@link EmptyResponseGate}，三条线路共用一份实现 ——
      * 本方法只提供扣住的元素类型与检测器（查表得来）。
      *
      * <p>曾经这里<strong>不扣帧</strong>、只记「是否见过实质载荷」，理由是
@@ -331,15 +330,15 @@ public class GenericResponsesChatService implements UpstreamExecutor {
     protected Flux<UpstreamEvent> responsesStream(Map<String, Object> request, String model,
                                                    ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                    String requestId, RequestPipelineContext ctx) {
-        // stream 取自 ctx（3.5a）—— 它是请求级事实，与「哪条链被调了」同源，不留字面量。
-        // （3.5b 两态合链已搁置，故此处不再以后续步骤为由。）
+        // stream 取自 ctx—— 它是请求级事实，与「哪条链被调了」同源，不留字面量。
+        // 
         boolean stream = ctx.stream();
-        // 请求体已由主干的 RequestBodyAssembler 装配好（阶段 4 刀 1），直接取用。
+        // 请求体已由主干的 RequestBodyAssembler 装配好，直接取用。
         Map<String, Object> requestBody = ctx.body();
         log.info("{} Responses 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
-        // 机制收归 EmptyResponseGate（阶段 3.6b）：闸门状态与缓存帧都在它那里，
+        // 机制收归 EmptyResponseGate：闸门状态与缓存帧都在它那里，
         // 本类只负责每轮 defer 内调 reset()。
         EmptyResponseGate<String> gate = new EmptyResponseGate<>(ctx.shouldApplyEmptyResponseGate());
         EmptyResponseGate.CallContext callCtx = new EmptyResponseGate.CallContext(provider.providerKey(), model, requestId);
@@ -348,14 +347,14 @@ public class GenericResponsesChatService implements UpstreamExecutor {
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
         Map<String, String> reqHeaders = new LinkedHashMap<>();
-        // 流级状态收归 AttemptContext（阶段 4 刀 2）：计时 / chunk 收集 / 首字 / 耗尽标记。
+        // 流级状态收归 AttemptContext：计时 / chunk 收集 / 首字 / 耗尽标记。
         AttemptContext attempt = new AttemptContext();
         // 本轮的 usage 原文。与 Anthropic 侧不同，这里不需要跨事件合并也不需要挑选：
         // Responses 的 usage 只在终态事件里出现一次、一次给全。仍用「最后一份非 null」
         // 而非「第一份」—— 若某个上游在中途也带 usage，终态那份才是结算值。
         // 它是<strong>协议特有</strong>的流级态，故留本方法闭包、不进 AttemptContext。
         AtomicReference<String> usageRaw = new AtomicReference<>(null);
-        // 与 usageRaw 同源：解析只做一次，两者一起更新（阶段 5 步 7b-1「usage 消重复」）。
+        // 与 usageRaw 同源：解析只做一次，两者一起更新。
         AtomicReference<UsageTokens> usageTokens = new AtomicReference<>(null);
 
         // transport：defer 内每轮重置 usageRaw（AttemptContext 由 runner 重置），
@@ -459,8 +458,8 @@ public class GenericResponsesChatService implements UpstreamExecutor {
      * 再接 {@code /responses}。已有供应商的 Base URL 通常是 {@code .../v1}，
      * 因而实际请求为 {@code .../v1/responses} —— 与官方端点一致。
      *
-     * <p>地址解析（读 {@code responses_base_url} 回退 base_url）自阶段 4 刀 3 B 移至
-     * {@code ResponsesOutboundStage.resolveBaseUrl}，随出站装配一起上移发送前块。
+     * <p>地址解析（读 {@code responses_base_url} 回退 base_url）由
+     * {@code ResponsesOutboundStage.resolveBaseUrl} 承担，随出站装配一起在发送前块完成。
      */
     private String responsesUri() {
         return "/responses";
@@ -469,7 +468,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
     /**
      * 构建 WebClient 并抓取出站请求头快照。
      *
-     * <p><strong>出站头与地址已由发送前块装配好（阶段 4 刀 3 B）</strong>：本方法直接铺
+     * <p><strong>出站头与地址已由发送前块装配好</strong>：本方法直接铺
      * {@code ctx.outboundHeaders()} 与 {@code ctx.outboundBaseUrl()}。三层头装配与地址解析
      * （{@code responses_base_url} 回退 base_url）现由 {@code OutboundRequestAssembler} +
      * {@code ResponsesOutboundStage} 在发送前完成。
@@ -505,7 +504,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
      *
      * <h2>它只做三件事：取时长、报标识、委托</h2>
      * 规格本身（读配置 + {@code Retry.backoff} + {@code filter} + {@code doBeforeRetry}
-     * 里的 RETRYING 事件与日志）已收归 {@link UpstreamAutoRetry}（阶段 3.6c-2），
+     * 里的 RETRYING 事件与日志）已收归 {@link UpstreamAutoRetry}，
      * 三条线路共用一份。本方法保留为<strong>适配器</strong>：把本类的注入字段、
      * 自己的 logger、自己那两个<strong>退避覆盖点</strong>绑给那个类。
      *
@@ -559,7 +558,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
     }
 
     /**
-     * 解析非流式响应体的 usage 供出口读槽（阶段 5 步 7b-1「usage 消重复」）。
+     * 解析非流式响应体的 usage 供出口读槽。
      *
      * <p>与 {@link #saveUsage} 共用同一个解析器，确保两条消费路径（落 {@code api_call_usage}
      * 与出口写 {@code api_usage_daily}）拿到同口径的值。

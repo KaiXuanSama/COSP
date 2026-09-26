@@ -16,7 +16,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 出站装配支线的<strong>装配验证</strong>：三条线路的 {@link OutboundRequestStage} 真的被
- * Spring 收集并进了查表吗（阶段 4 刀 3 B）。
+ * Spring 收集并进了查表吗。
  *
  * <h2>为何必须单独验（与 {@code RequestBodyStageSpringWiringTests} 同一理由，但语义相反）</h2>
  * 出站支线的未命中语义是<strong>报错</strong>而非跳过：每条上游线路都必须能解析出地址才能发请求。

@@ -11,9 +11,9 @@ import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
  * fallback 链只维护一份。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>协作类</strong> · 位置：{@code upstream/send/chat/}
+ * 形态：支线<strong>协作类</strong> · 位置：{@code pipeline/after/send/chat/}
  * 步骤「回程帧处理」—— 提取 Chat 的 usage 原始 JSON
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>null vs 0 语义（核心约束）</h2>
  * 所有字段一律按"存在性"取值：字段存在则取其值（哪怕是 0），字段缺失则为 {@code null}。

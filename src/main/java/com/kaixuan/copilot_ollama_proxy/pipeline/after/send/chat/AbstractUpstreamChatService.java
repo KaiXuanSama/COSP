@@ -67,9 +67,9 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.UpstreamCallRunner;
  * 运行时配置（API Key、Base URL、模型列表）由调用方显式传入。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：<strong>执行器实现</strong>（CHAT 线路） · 位置：{@code upstream/send/chat/}
+ * 形态：<strong>执行器实现</strong>（CHAT 线路） · 位置：{@code pipeline/after/send/chat/}
  * 步骤「发送」—— 并 own 请求体装配 / 出站头 / 上游往返 / 回程帧 / 落库整条 Chat 线路
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>两条重试通道</h2>
  * 「静默」指重试发生在 COSP 内部、下游连接保持打开、Copilot 全程无感知。两条通道都是静默的，
@@ -128,8 +128,8 @@ public abstract class AbstractUpstreamChatService {
     /**
      * 流式 chunk 支线的查表 —— 按 {@code ctx.upstreamProtocol()} 查归一与 fallback 实现。
      *
-     * <h2>3.1 的双路形态已收成单路</h2>
-     * 3.1 时本类持有两个「注入的实现」字段并硬编码筛 {@code CHAT}，调用点写成
+     * <h2>它曾经是「双路形态」，现已收成单路</h2>
+     * 本类曾持有两个「注入的实现」字段并硬编码筛 {@code CHAT}，调用点写成
      * 「有注入就走它、没注入回退静态工具」——那是主干还没成形时的权宜之计：
      * 两条路按设计逐字等价，于是<strong>装配断了行为完全不变</strong>。
      *
@@ -144,7 +144,7 @@ public abstract class AbstractUpstreamChatService {
     private final ChunkStageRegistry chunkStageRegistry;
 
     /**
-     * 内容检测器的查表 —— 空响应拦截的判据来源（阶段 3.6b）。
+     * 内容检测器的查表 —— 空响应拦截的判据来源。
      *
      * <p>与 {@link #chunkStageRegistry} 同一取舍（放构造器而非可选 setter），
      * 但后果更重：本表未命中是<strong>报错</strong>而非跳过 ——
@@ -218,7 +218,7 @@ public abstract class AbstractUpstreamChatService {
     /**
      * 发送一次非流式 Chat Completions 请求。
      *
-     * 请求体已由主干的 {@code RequestBodyAssembler} 装配好（阶段 4 刀 1），本方法直接用
+     * 请求体已由主干的 {@code RequestBodyAssembler} 装配好，本方法直接用
      * {@code ctx.body()}，包括模型名称解析、stream 标志设置和请求体规则。
      *
      * <h2>空响应兜底</h2>
@@ -243,18 +243,17 @@ public abstract class AbstractUpstreamChatService {
     protected Mono<UpstreamEvent> chatCompletion(Map<String, Object> openAiRequest, String model,
                                                  ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                  String requestId, RequestPipelineContext ctx) {
-        // stream 取自 ctx（3.5a）：主干按 ctx.stream() 选了本方法，故这里二者必定一致。
+        // stream 取自 ctx：主干按 ctx.stream() 选了本方法，故这里二者必定一致。
         // 写成字面量会让「哪条链被调了」与「body 里的 stream」两处各自为政。
         // ⚠️ 这条一致性依赖调用方守规矩：直接调本方法而 ctx 里 stream=false 会走错路且不响。
-        //    该不变式在 3.5b（两态合链）后自然消失（与 executeStream 同属搁置项）。
         boolean stream = ctx.stream();
-        // 请求体已由主干的 RequestBodyAssembler 装配好（阶段 4 刀 1），直接取用。
+        // 请求体已由主干的 RequestBodyAssembler 装配好，直接取用。
         Map<String, Object> requestBody = ctx.body();
         log.info("{} OpenAI 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
         // 见 RequestPipelineContext 的「生命周期」注释：写进 defer 里会让半实现态在第二轮又走回判空重试。
-        // 判定机制收归 EmptyResponseGate（阶段 3.6b），检测器按上游协议查表。
+        // 判定机制收归 EmptyResponseGate，检测器按上游协议查表。
         EmptyResponseGate<String> gate = new EmptyResponseGate<>(ctx.shouldApplyEmptyResponseGate());
         EmptyResponseGate.CallContext callCtx = new EmptyResponseGate.CallContext(
                 provider.providerKey(), model, requestId);
@@ -263,10 +262,9 @@ public abstract class AbstractUpstreamChatService {
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
         Map<String, String> reqHeaders = new LinkedHashMap<>();
-        // 流级状态收归 AttemptContext（阶段 4 刀 2）：非流式只用到 attemptStart。
+        // 流级状态收归 AttemptContext：非流式只用到 attemptStart。
         AttemptContext attempt = new AttemptContext();
         // 本轮 usage 指标 —— <strong>单次解析、两处消费</strong>（本类写 api_call_usage，出口读槽写 api_usage_daily）。
-        // 阶段 5 步 7b-1「usage 消重复」：此前出口会用同一份字节再解析一遍。
         AtomicReference<UsageTokens> usageTokens = new AtomicReference<>(null);
 
         // 外层骨架（defer → 落库 → 判空 → retryWhen → 取 body → 耗尽放行 → 包装）收归主干 runner；
@@ -408,16 +406,16 @@ public abstract class AbstractUpstreamChatService {
     protected Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, String model,
                                                        ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
                                                        String requestId, RequestPipelineContext ctx) {
-        // stream 取自 ctx（3.5a）—— 它是请求级事实，与「哪条链被调了」同源，不留字面量。
-        // （3.5b 两态合链已搁置，故此处不再以后续步骤为由。）
+        // stream 取自 ctx—— 它是请求级事实，与「哪条链被调了」同源，不留字面量。
+        // 
         boolean stream = ctx.stream();
-        // 请求体已由主干的 RequestBodyAssembler 装配好（阶段 4 刀 1），直接取用。
+        // 请求体已由主干的 RequestBodyAssembler 装配好，直接取用。
         Map<String, Object> requestBody = ctx.body();
         log.info("{} OpenAI 上游，模型: {}, 流式: {}", provider.providerKey(), requestBody.get("model"), stream);
 
         // 拦截是否介入：请求级事实，故在 defer 之外算一次 —— 重试不改变它的值。
         // 见 RequestPipelineContext 的「生命周期」注释：写进 defer 里会让半实现态在第二轮又走回判空重试。
-        // 机制收归 EmptyResponseGate（阶段 3.6b）：闸门状态与缓存帧都在它那里，
+        // 机制收归 EmptyResponseGate：闸门状态与缓存帧都在它那里，
         // 本类只负责每轮 defer 内调 reset()。
         //
         // ⚠️ 本线路的闸门元素是 {@code ServerSentEvent<String>} 而非裸 data ——
@@ -433,7 +431,7 @@ public abstract class AbstractUpstreamChatService {
         String providerKey = provider.providerKey();
         String modelName = (String) requestBody.get("model");
         Map<String, String> reqHeaders = new LinkedHashMap<>();
-        // 流级状态收归 AttemptContext（阶段 4 刀 2）：计时 / chunk 收集 / 响应头 / 状态码 / 首字 / 耗尽标记。
+        // 流级状态收归 AttemptContext：计时 / chunk 收集 / 响应头 / 状态码 / 首字 / 耗尽标记。
         AttemptContext attempt = new AttemptContext();
 
         // 协议特有的流级态仍留本方法闭包（不进 AttemptContext）：
@@ -443,7 +441,7 @@ public abstract class AbstractUpstreamChatService {
         StringBuilder reasoningBuffer = new StringBuilder();
         AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
         AtomicReference<String> usageRaw = new AtomicReference<>(null);
-        // 与 usageRaw 同源：解析只做一次，两者一起更新（阶段 5 步 7b-1「usage 消重复」）。
+        // 与 usageRaw 同源：解析只做一次，两者一起更新。
         AtomicReference<UsageTokens> usageTokens = new AtomicReference<>(null);
 
         // transport：defer 内每轮重置协议特有累积（AttemptContext 由 runner 重置），
@@ -582,7 +580,7 @@ public abstract class AbstractUpstreamChatService {
     /**
      * 构建 WebClient，并在 WebClient 与 Reactor Netty 两个层级记录出站请求头。
      *
-     * <p><strong>出站头与地址已由发送前块装配好（阶段 4 刀 3 B）</strong>：本方法直接铺
+     * <p><strong>出站头与地址已由发送前块装配好</strong>：本方法直接铺
      * {@code ctx.outboundHeaders()} 与 {@code ctx.outboundBaseUrl()}，不再自己调 {@code applyHeaders}
      * 或解析地址。三层头装配（下游头透传 / 鉴权头再分配 / 请求头规则）与协议必需头
      * （{@code anthropic-version}）现由 {@code OutboundRequestAssembler} + 出站支线在发送前完成。
@@ -681,7 +679,7 @@ public abstract class AbstractUpstreamChatService {
      *
      * <h2>它只做三件事：取时长、报标识、委托</h2>
      * 规格本身（读配置 + {@code Retry.backoff} + {@code filter} + {@code doBeforeRetry}
-     * 里的 RETRYING 事件与日志）已收归 {@link UpstreamAutoRetry}（阶段 3.6c-2），
+     * 里的 RETRYING 事件与日志）已收归 {@link UpstreamAutoRetry}，
      * 三条线路共用一份。本方法保留为<strong>适配器</strong>：
      * 把本类的注入字段（策略服务、通知器）、自己的 logger、自己那两个
      * <strong>退避覆盖点</strong>绑给那个类 —— 于是两个调用点（非流式 / 流式）一行未改。

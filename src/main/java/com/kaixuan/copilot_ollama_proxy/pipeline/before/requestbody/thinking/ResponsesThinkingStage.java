@@ -12,9 +12,9 @@ import java.util.Map;
  * {@link ThinkingInjectStage} 的 <strong>RESPONSES</strong> 实现。
  *
  * <h2>它在管道中的位置</h2>
- * 形态：支线<strong>包装</strong>（RESPONSES） · 位置：{@code upstream/requestbody/thinking/}
+ * 形态：支线<strong>包装</strong>（RESPONSES） · 位置：{@code pipeline/before/requestbody/thinking/}
  * 步骤「思考注入」—— Responses 侧写嵌套的 {@code reasoning.effort}
- * <p>完整步骤树见 {@code upstream/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
+ * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  *
  * <h2>与另两条协议的出站字段差异</h2>
@@ -28,7 +28,7 @@ import java.util.Map;
  * 「深度先方式后」的编排；由 {@link ReasoningEffortSetting#applyToResponses} 负责。
  *
  * <h2>逻辑与搬移前逐字等价</h2>
- * 本类是刀 1 从 {@code GenericResponsesChatService.applyReasoningEffort} 搬来的 ——
+ * 本类是从 {@code GenericResponsesChatService.applyReasoningEffort} 搬来的 ——
  * 那一行就是 {@code resolveReasoningEffort(...).applyToResponses(body)}，配置解析统一走
  * {@link ReasoningEffortSetting#forModel}（三条线路同一份）。
  */

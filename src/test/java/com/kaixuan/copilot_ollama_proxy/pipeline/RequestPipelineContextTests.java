@@ -65,7 +65,7 @@ class RequestPipelineContextTests {
          * <p>它描述的是 {@code of(...)} 这个<strong>完整形态工厂</strong>的语义：
          * body 已是最终形态，故查表键取 upstream。
          * <strong>端点建 ctx 时初值是 downstream</strong>（生产路径走 {@code forEndpoint}）——
-         * 两者差别只在「翻译是否已发生」，均由 3.4c-1 的两段式表达。
+         * 两者差别只在「翻译是否已发生」，均由两段式表达。
          */
         @Test
         void bodyProtocolStartsAsUpstreamProtocolBecauseTranslationHappensAbove() {
@@ -76,7 +76,7 @@ class RequestPipelineContextTests {
         }
 
         /**
-         * {@code stream} 是<strong>请求级事实</strong>，由端点建 ctx 时声明（3.5a）。
+         * {@code stream} 是<strong>请求级事实</strong>，由端点建 ctx 时声明（）。
          *
          * <p>主干与执行器都靠它选机制（send 调 invoke 还是 invokeStream、
          * 回程走 translateResponse 还是 translateStream）。
@@ -129,7 +129,7 @@ class RequestPipelineContextTests {
             RequestPipelineContext ctx = chatToMessages();
 
             assertThat(ctx.completedSteps()).isEmpty();
-            // 协议已知 → 跨协议被正确识别。这是 3.3b-1 合并的关键收益：
+            // 协议已知 → 跨协议被正确识别。这是 两态合并的关键收益：
             // 协议与判据现在同处一个对象，不存在「协议未登记」这个中间态。
             assertThat(ctx.translationNeeded()).isTrue();
         }
@@ -227,7 +227,7 @@ class RequestPipelineContextTests {
          *
          * <p>登记入口只有 {@link RequestPipelineContext#markCompleted} 一个 ——
          * 拿到集合的人改不动它，因此「谁登记了什么」始终可追溯。
-         * 这是 3.3b-1 从 {@code PipelineExecution} 继承下来的约束。
+         * 这是 从 {@code PipelineExecution} 继承下来的约束。
          */
         @Test
         void completedStepsIsUnmodifiable() {
@@ -469,7 +469,7 @@ class RequestPipelineContextTests {
          * 这意味着实现层真正读的只有 {@code RESPONSE_TRANSLATION}。
          *
          * <p>若有人把判据改成「去程已接就拦截」，他会在开发半轮实现时
-         * 重新撞上 2.1a 要消除的体验：帧明明在手里，却被压着等完整轮重试预算
+         * 重新撞上 要消除的体验：帧明明在手里，却被压着等完整轮重试预算
          * （生产值约 62 秒、6 次上游调用）。这条用例让那个回归在校时就失败。
          */
         @Test
@@ -481,7 +481,7 @@ class RequestPipelineContextTests {
         }
     }
     @Nested
-    @DisplayName("端点创建 + 主干分步回填（3.4c-1 的两段式）")
+    @DisplayName("端点创建 + 主干分步回填（两段式）")
     class EndpointThenRouting {
 
         /** 端点刚建出的 ctx：只知道下游侧事实，路由与上游协议都还没填。 */
