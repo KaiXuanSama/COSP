@@ -442,13 +442,17 @@ observability/
 api/
 ├─ openai/  anthropic/     三个协议端点
 ├─ shared/                 出口自己的共享件（≠ 观测轴，≠ 控制面）
-│     UpstreamFailureClassifier · UpstreamErrorRenderer · StreamLifecycle · UsageAccounting
+│     UpstreamFailureClassifier   分类：这是什么失败
+│     UpstreamErrorRenderer       状态码 + 日志骨架（七档 FailureKind 全覆盖）
+│     StreamLifecycle             流式完整出口链（进：主干产物；出：SSE 流）
+│     NonStreamLifecycle          非流式收尾协议
+│     UsageAccounting             usage 读槽 + 记账（两档语义）
 ├─ ollama/                 模型发现（不是出口）
 └─ CallLifecycle / CallLog / UsageQuery / ProviderAdmin …  后台 API（不是出口）
 ```
 
 **三个 Controller 按下游协议分岔**：三套错误 JSON 骨架、SSE 事件名回填策略、
-`sse` 收尾协议均**刻意不同**。详见 `docs/REQUEST_PIPELINE.md`。
+`sse` 收尾协议均**刻意不同**。详见 `docs/REQUEST_PIPELINE.md`。
 
 **一条判据**（归拢讨论的产物）：**出口可以知道「这些字节要包成什么 HTTP 形状」，
 不该知道「这些字节在协议上是什么意思」**。
@@ -481,12 +485,30 @@ $$\text{删掉 } \texttt{api/shared/} \;\Rightarrow\; \text{下游}\textbf{什�
 | **状态码 + 日志** | `UpstreamErrorRenderer` | 三条共用；状态码表达「用户该去改什么」，与下游协议无关 |
 | **body 形状** | 各端点的 `ErrorBodies` | **协议决定**：Chat 分两档 `type`，Anthropic 多一层，Responses 流式扁平 |
 | **usage 记账** | `UsageAccounting` | 三条共用；两档语义**刻意不同**（见 §4.2） |
-| **SSE 收尾协议** | `StreamLifecycle` | 三条共用；协议差异由回调表达 |
-| **非流式收尾** | `NonStreamLifecycle`（步 2 新增） | 三条共用；**回调只有一个**（错误响应），因为非流式没有 Layer 1 —— 终态恒为 `COMPLETED` |
+| **流式出口链** | `StreamLifecycle.stream` | 三条共用；协议差异由**三个回调**表达 |
+| **非流式收尾** | `NonStreamLifecycle.attach` | 三条共用；**回调只有一个**（错误响应）| 
 
 **两个 Lifecycle 的差异是两态本质差异，不要抹平**：取消检测（`takeUntilOther`+标志 vs
-`firstWithSignal`+异常）、产物类型（`Flux<SSE>` vs `Mono<ResponseEntity<?>>`）、
-状态码能否改、有无心跳。六合一会把这些压成标志位，读的人看不出走的是哪一支。
+`firstWithSignal`+异常）、完成判定（两层 vs 一层）、产物类型、状态码能否改、有无心跳。
+六合一会把这些压成标志位，读的人看不出走的是哪一支。
+
+### 3.3.3 三个回调就是三条流式端点的全部差异
+
+```java
+StreamLifecycle.stream(upstream, ctx,
+        terminalPhase,   // Layer 1 发哪个相位：两条恒 COMPLETED，Responses 按结局
+        frameMapper,     // event 名回填：Chat 不回填，另两条回填
+        errorBody);      // 错误体形状：三条两两不同
+```
+
+> **Layer 2 不需要回调**：三条的兜底相位**都是 `COMPLETED`**（Responses 的
+> `SUCCESS` 也映射到它），所以 CAS + 记账 + 发相位全部内建。
+>
+> **`errorBody` 只出 body 不包信封**：三个端点的 `event: error` 包装逐字相同，
+> 包装由共享件统一负责。
+
+**非流式那边只有一个回调**（`errorResponse`）—— 它没有 Layer 1：
+「上游说完了」由 `Mono.onComplete` 表达，是唯一信号，终态相恒为 `COMPLETED`。
 
 **必须保留的差异**（不得抹平）：Responses 流式错误体**不能**复用非流式骨架 ——
 顶层无 `type` 时事件状态机无法分派，症状是**流挂住、界面转圈**而非报错。
@@ -595,9 +617,10 @@ $$\text{删掉 } \texttt{api/shared/} \;\Rightarrow\; \text{下游}\textbf{什�
    随 `discovery/` 搬走而失效，已改 `**/application/discovery/**`。
 4. **注意「测试数变少」** —— 那是文件丢失的可靠信号（比任何断言都早），
    常见原因是 `git mv` 的目标目录不存在而**静默失败**。
-5. **全量验证**：`.\mvnw.cmd compiler:compile compiler:testCompile surefire:test`，基线 **1333**
+5. **全量验证**：`.\mvnw.cmd compiler:compile compiler:testCompile surefire:test`，基线 **1335**
    （阶段 5 步 7a-1 前为 1309；步 7b-1 +6 `OpenAiControllerUsageSlotTests`，
-   步 7b-2 +9 `UsageAccountingTests`，阶段 6 步 1 +9 `UpstreamErrorRendererTests`）。
+   步 7b-2 +9 `UsageAccountingTests`，阶段 6 步 1 +9 `UpstreamErrorRendererTests`，
+   步 3 +2 `StreamLifecycleTests` 新增用例）。
 
 ### 5.1 搬包实操的三条细则（阶段 5 实测，后续搬包直接复用）
 

@@ -6,16 +6,13 @@ import com.kaixuan.copilot_ollama_proxy.api.shared.NonStreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamErrorRenderer;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
-import com.kaixuan.copilot_ollama_proxy.api.shared.UsageAccounting;
 import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ResponsesService;
-import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.ResponsesRequest;
-import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEventClassifier;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.responses.ResponsesStreamEvents;
 import org.slf4j.Logger;
@@ -31,7 +28,6 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.Sinks;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -140,93 +136,38 @@ public class ResponsesController {
      *
      * <h2>职责分界</h2>
      * 本方法只负责<strong>把上游事件映射成带 event 名的 SSE 帧</strong>。
-     * 其后的收尾协议在 {@link StreamLifecycle#attach} 里；
+     * 其后的收尾协议在 {@link StreamLifecycle#stream} 里；
      * 本端点提供两个回调，且两者都比另两条多一层信息：
-     * Layer 2 要传 {@code SUCCESS} 结局，error 帧用 Responses 的<strong>扁平</strong>事件体。
+     * <h2>职责分界（阶段 6 步 3 后）</h2>
+     * 本方法只交待<strong>三件事</strong>：拉哪条链、每帧长什么样、错误长什么样。
+     * 逐帧副作用与收尾协议都在 {@link StreamLifecycle#stream} 里。
+     *
+     * <p>本端点多一层：<strong>缩局要进 Layer 1 的相位</strong> —— {@code response.failed}
+     * 不能显示成「完成」，所以 {@code terminalPhase} 回调在这里不是常量。
+     * Layer 2 的兜底相位仍是 {@code COMPLETED}（连接正常关闭、已有内容，无失败证据），
+     * 那一条已内建在共享件里，不需要回调。
      */
     private Flux<ServerSentEvent<String>> streamResponse(Map<String, Object> requestBody, String model,
                                                           HttpHeaders requestHeaders, String requestId) {
-        AtomicInteger eventCount = new AtomicInteger(0);
-        AtomicBoolean canceled = new AtomicBoolean(false);
-        AtomicBoolean completed = new AtomicBoolean(false);
-        // 流式 usage 的消费规则是「取最后一份非 null」——
-        // 协议侧的「只在终态事件出现一次」由生产者保证，出口不必知道。
-        AtomicReference<UsageTokens> usage = new AtomicReference<>(null);
-
-        Mono<Void> cancelSignal = callCancellationRegistry.register(requestId)
-                .doOnSuccess(v -> canceled.set(true));
-
-        // 数据流终止信号，心跳据此停止 —— 否则 interval 永不完成，merge 永不完成。
-        Sinks.Empty<Void> streamEnd = Sinks.empty();
-
-        Flux<ServerSentEvent<String>> mappedBody =
-                responsesService.responsesStream(requestBody, model, requestHeaders, requestId)
-                // 分类已由上游执行器完成：本层只读 isTerminal()。
-                .doOnNext(upstreamEvent -> {
-                    String event = upstreamEvent.data();
-                    recordStreamUsage(upstreamEvent, usage);
-                    // Layer 1：终态事件是协议终止标记，不计入事件数。
-                    if (upstreamEvent.isTerminal()) {
-                        // 结局取自事件名 —— response.failed 不能显示成「完成」。
-                        finalizeStream(requestId, model, eventCount.get(), completed, usage,
-                                ResponsesStreamEvents.outcomeOf(extractEventType(event)));
-                        return;
-                    }
-                    callLifecyclePublisher.publish(CallLifecycleEvent.of(
-                            requestId, CallPhase.CHUNK, model, true, eventCount.incrementAndGet()));
-                })
+        return StreamLifecycle.stream(
+                responsesService.responsesStream(requestBody, model, requestHeaders, requestId),
+                new StreamLifecycle.CallContext(requestId, model,
+                        new AtomicInteger(0), new AtomicBoolean(false), new AtomicBoolean(false),
+                        new AtomicReference<>(null),
+                        callLifecyclePublisher, callCancellationRegistry, apiUsageCollector, log),
+                // Layer 1 相位：结局取自事件名 —— response.failed 不能显示成「完成」。
+                event -> phaseOf(ResponsesStreamEvents.outcomeOf(extractEventType(event.data()))),
                 // event 类型必须回填：Responses 客户端靠它驱动状态机，只发 data 无法解析。
-                .map(upstreamEvent -> {
-                    String event = upstreamEvent.data();
-                    String type = extractEventType(event);
-                    ServerSentEvent.Builder<String> builder = ServerSentEvent.builder(event);
+                event -> {
+                    String type = extractEventType(event.data());
+                    ServerSentEvent.Builder<String> builder = ServerSentEvent.builder(event.data());
                     if (type != null) {
                         builder.event(type);
                     }
                     return builder.build();
-                });
-
-        return StreamLifecycle.attach(mappedBody, cancelSignal, streamEnd,
-                new StreamLifecycle.CallContext(requestId, model, eventCount, canceled, completed,
-                        callLifecyclePublisher, callCancellationRegistry, log),
-                // Layer 2：上游未发任何终态事件就关连接时靠这里兜底。
-                // 拿不到事件类型，只能按成功处理 —— 连接正常关闭且已有内容，
-                // 没有任何证据表明它失败了（与 Chat / Anthropic 的兜底层同口径）。
-                () -> finalizeStream(requestId, model, eventCount.get(), completed, usage,
-                        ResponsesStreamEvents.Outcome.SUCCESS),
-                // 错误以 Responses 的 error 事件形态下发，客户端才能识别。
-                error -> ServerSentEvent.<String>builder(errorEventBody(error, model))
-                        .event("error").build());
-    }
-
-    /**
-     * 流式收尾：记录 usage 并按结局发终态相位。
-     *
-     * <p>CAS 去重，保证 Layer 1 与 Layer 2 只有先到的那个生效。
-     *
-     * <h2>相位由结局决定，不是恒为 COMPLETED</h2>
-     * 早先本方法无条件发 {@code COMPLETED}，而 {@code isTerminalEvent} 对
-     * {@code response.failed} / {@code error} / {@code response.cancelled} 也返回 true ——
-     * 于是上游明确说「我失败了」，Toast 上显示的是「完成」。用户只能靠「回答是空的」
-     * 间接察觉，而 {@code FAILED} 当时只在<strong>抛异常</strong>时才发（即只有网络层
-     * 的错误会正确标红，上游侧的执行失败不会）。
-     *
-     * <p>「流结束了」与「结局是什么」是两个事实，混在一处就会丢掉后者。
-     *
-     * <h2>usage 无论结局都记</h2>
-     * 失败与取消同样已经消耗了 token（上游已经算过钱），跳过记账会让统计与账单对不上。
-     * 这与 {@code api_call_log} 保留失败调用是同一个取向。
-     */
-    private void finalizeStream(String requestId, String model, int finalEvents,
-                               AtomicBoolean completed, AtomicReference<UsageTokens> usage,
-                               ResponsesStreamEvents.Outcome outcome) {
-        if (!completed.compareAndSet(false, true)) {
-            return;
-        }
-        // 流式恒记（无 usage 记 0,0）—— 两档语义与理由见 UsageAccounting 的类注释。
-        UsageAccounting.recordStream(apiUsageCollector, usage);
-        callLifecyclePublisher.publish(
-                CallLifecycleEvent.of(requestId, phaseOf(outcome), model, true, finalEvents));
+                },
+                // 错误以 Responses 的扁平 error 事件形态下发 —— 与非流式刻意不同形（见 STREAM_BODIES）。
+                error -> UpstreamErrorRenderer.streamBody(error, model, log, STREAM_BODIES));
     }
 
     /**
@@ -286,17 +227,6 @@ public class ResponsesController {
     }
 
     /**
-     * 从流式事件取 usage —— 实现见 {@link UsageAccounting#accumulate}。
-     *
-     * <p>此前本方法自己判定「最后一份非 null 胜出，与 Anthropic 需要跨事件 merge 不同」——
-     * 那是把<strong>协议判据</strong>写在了出口。阶段 5 步 7b-1 后该判定由生产者吸收，
-     * 出口只做一条与协议无关的消费规则。
-     */
-    private void recordStreamUsage(UpstreamEvent event, AtomicReference<UsageTokens> usage) {
-        UsageAccounting.accumulate(event, usage);
-    }
-
-    /**
      * 把调用失败渲染成<strong>非流式</strong>响应。
      *
      * <h2>分工</h2>
@@ -328,8 +258,9 @@ public class ResponsesController {
      * 只认 JSON 的客户端会把这帧当成无法分派的脏数据 ——
      * 症状不是 400/502，而是<strong>流挂住、界面转圈不动</strong>。
      *
-     * <p>因此本类的 {@code ErrorBodies} 只能服务非流式；流式那条走
-     * {@link #errorEventBody}，它自己调 {@link #streamErrorBody}。
+     * <p>因此本类有<strong>两个</strong> {@code ErrorBodies}：{@link #BODIES} 服务非流式，
+     * {@link #STREAM_BODIES} 服务流式。两者都接在 {@link UpstreamErrorRenderer} 上 ——
+     * 分类骨架与状态码仍三条共用，只有 body 形状分开。
      */
     private final UpstreamErrorRenderer.ErrorBodies BODIES =
             new UpstreamErrorRenderer.ErrorBodies() {
@@ -343,19 +274,6 @@ public class ResponsesController {
                     return errorBody(message);
                 }
             };
-
-    /**
-     * 构造流式错误<strong>事件</strong>的 body。
-     *
-     * <p>与非流式<strong>不能共用</strong>同一个 JSON 骨架（理由见 {@link #BODIES} 的注释）。
-     * 但<strong>分类骨架仍然共用</strong> —— 这里复用 {@link UpstreamErrorRenderer#streamBody}，
-     * 只把{@code ErrorBodies} 换成一个流式专用的实例：两者都是
-     * {@link #streamErrorBody}，即流式的 400 与 502 <strong>同形</strong>
-     * （区别于非流式的 {@code errorBody}）。
-     */
-    private String errorEventBody(Throwable error, String model) {
-        return UpstreamErrorRenderer.streamBody(error, model, log, STREAM_BODIES);
-    }
 
     /**
      * 流式专用的 body 形状：两档都是扁平的 {@link #streamErrorBody}。

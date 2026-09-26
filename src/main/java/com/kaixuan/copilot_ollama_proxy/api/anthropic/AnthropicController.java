@@ -5,16 +5,13 @@ import com.kaixuan.copilot_ollama_proxy.api.shared.NonStreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamErrorRenderer;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
-import com.kaixuan.copilot_ollama_proxy.api.shared.UsageAccounting;
 import com.kaixuan.copilot_ollama_proxy.pipeline.entry.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.anthropic.AnthropicMessagesRequest;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
-import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEventClassifier;
-import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,7 +25,6 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.Sinks;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -125,70 +121,31 @@ public class AnthropicController {
      *
      * <h2>职责分界</h2>
      * 本方法只负责<strong>把上游事件映射成带 event 名的 SSE 帧</strong>。
-     * 其后的收尾协议在 {@link StreamLifecycle#attach} 里；
-     * 本端点提供两个回调：Layer 2 的 finalize，以及 Anthropic 形态的 error 帧。
+     * <h2>职责分界（阶段 6 步 3 后）</h2>
+     * 本方法只交待<strong>三件事</strong>：拉哪条链、每帧长什么样、错误长什么样。
+     * 逐帧副作用与收尾协议都在 {@link StreamLifecycle#stream} 里 —— 三条端点共用那一份。
      */
     private Flux<ServerSentEvent<String>> streamResponse(Map<String, Object> requestBody, String model,
                                                           HttpHeaders requestHeaders, String requestId) {
-        AtomicInteger eventCount = new AtomicInteger(0);
-        AtomicBoolean canceled = new AtomicBoolean(false);
-        AtomicBoolean completed = new AtomicBoolean(false);
-        AtomicReference<UsageTokens> usage = new AtomicReference<>(null);
-
-        Mono<Void> cancelSignal = callCancellationRegistry.register(requestId)
-                .doOnSuccess(v -> canceled.set(true));
-
-        // 数据流终止信号，心跳据此停止 —— 否则 interval 永不完成，merge 永不完成。
-        Sinks.Empty<Void> streamEnd = Sinks.empty();
-
-        Flux<ServerSentEvent<String>> mappedBody =
-                messagesService.messagesStream(requestBody, model, requestHeaders, requestId)
-                // 分类已由上游执行器完成：本层只读 isTerminal()。
-                .doOnNext(upstreamEvent -> {
-                    accumulateUsage(upstreamEvent, usage);
-                    // Layer 1：message_stop 是协议终止标记，不计入事件数。
-                    if (upstreamEvent.isTerminal()) {
-                        finalizeCompletion(requestId, model, eventCount.get(), completed, usage);
-                        return;
-                    }
-                    callLifecyclePublisher.publish(CallLifecycleEvent.of(
-                            requestId, CallPhase.CHUNK, model, true, eventCount.incrementAndGet()));
-                })
+        return StreamLifecycle.stream(
+                messagesService.messagesStream(requestBody, model, requestHeaders, requestId),
+                new StreamLifecycle.CallContext(requestId, model,
+                        new AtomicInteger(0), new AtomicBoolean(false), new AtomicBoolean(false),
+                        new AtomicReference<>(null),
+                        callLifecyclePublisher, callCancellationRegistry, apiUsageCollector, log),
+                // Layer 1 相位：恒为 COMPLETED —— Anthropic 的 message_stop 不携带结局信息。
+                event -> CallPhase.COMPLETED,
                 // event 类型必须回填：Anthropic 客户端靠它驱动状态机，只发 data 无法解析。
-                .map(upstreamEvent -> {
-                    String event = upstreamEvent.data();
-                    String type = extractEventType(event);
-                    ServerSentEvent.Builder<String> builder = ServerSentEvent.builder(event);
+                event -> {
+                    String type = extractEventType(event.data());
+                    ServerSentEvent.Builder<String> builder = ServerSentEvent.builder(event.data());
                     if (type != null) {
                         builder.event(type);
                     }
                     return builder.build();
-                });
-
-        return StreamLifecycle.attach(mappedBody, cancelSignal, streamEnd,
-                new StreamLifecycle.CallContext(requestId, model, eventCount, canceled, completed,
-                        callLifecyclePublisher, callCancellationRegistry, log),
-                // Layer 2：上游未发 message_stop 就关连接时靠这里兜底。
-                () -> finalizeCompletion(requestId, model, eventCount.get(), completed, usage),
-                // 错误以 Anthropic 的 error 事件形态下发，客户端才能识别。
-                error -> ServerSentEvent.<String>builder(errorEventBody(error, model))
-                        .event("error").build());
-    }
-
-    /**
-     * 流式完成收尾：记录 usage 并发 COMPLETED。
-     *
-     * <p>CAS 去重，保证 Layer 1 与 Layer 2 只有先到的那个生效。
-     */
-    private void finalizeCompletion(String requestId, String model, int finalEvents,
-                                    AtomicBoolean completed, AtomicReference<UsageTokens> usage) {
-        if (!completed.compareAndSet(false, true)) {
-            return;
-        }
-        // 流式恒记（无 usage 记 0,0）—— 两档语义与理由见 UsageAccounting 的类注释。
-        UsageAccounting.recordStream(apiUsageCollector, usage);
-        callLifecyclePublisher.publish(
-                CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, true, finalEvents));
+                },
+                // Anthropic 的非流式与流式错误体同形，故共用同一套 BODIES。
+                error -> UpstreamErrorRenderer.streamBody(error, model, log, BODIES));
     }
 
     /**
@@ -239,17 +196,6 @@ public class AnthropicController {
     }
 
     /**
-     * 从流式事件取 usage —— 实现见 {@link UsageAccounting#accumulate}。
-     *
-     * <p>跨事件合并（input 来自 {@code message_start}、output 来自 {@code message_delta}，
-     * 且只有正数才覆盖）已由上游执行器的 {@code AnthropicUsageParser#merge} 完成并挂在事件上。
-     * 出口不必知道这条协议规则 —— 那是 7b-1 消除的那份重复。
-     */
-    private void accumulateUsage(UpstreamEvent event, AtomicReference<UsageTokens> usage) {
-        UsageAccounting.accumulate(event, usage);
-    }
-
-    /**
      * 把调用失败渲染成<strong>非流式</strong>响应。
      *
      * <h2>分工</h2>
@@ -283,15 +229,6 @@ public class AnthropicController {
                     return anthropicErrorBody(message);
                 }
             };
-
-    /**
-     * 构造流式错误事件的 body，透传上游错误体。
-     *
-     * <p>与非流式共用同一份分类，仅送出口不同（流式状态码已定，只能靠事件体表达）。
-     */
-    private String errorEventBody(Throwable error, String model) {
-        return UpstreamErrorRenderer.streamBody(error, model, log, BODIES);
-    }
 
     /**
      * Anthropic 风格的错误体。

@@ -2,8 +2,11 @@ package com.kaixuan.copilot_ollama_proxy.api.shared;
 
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
 import org.slf4j.Logger;
 import org.springframework.http.codec.ServerSentEvent;
 import reactor.core.publisher.Flux;
@@ -13,39 +16,70 @@ import reactor.core.publisher.Sinks;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 /**
- * 三条端点共用的<strong>收尾协议</strong>：把已成形的事件流包上取消 / 终止 / 心跳。
+ * 三条流式端点共用的<strong>完整出口链</strong>：从主干产物一路到可下发的 SSE 流。
  *
- * <h2>它包住的是什么</h2>
- * 调用方负责把上游流转成 {@code ServerSentEvent}（三步：拉上游、{@code doOnNext} 记
- * 首个载荷同时数 CHUNK、{@code map} 回填 {@code event:} 类型），本类接手之后的全部算子：
- * <ol>
- *   <li>{@code takeUntilOther(cancelSignal)} —— 管理后台主动取消时中止上游流；</li>
- *   <li>{@code concatWith} 发 {@link CallPhase#ABORTED}；</li>
- *   <li>{@code doOnComplete} 兜底 finalize（不改变帧序列，只发终态与记用量）；</li>
- *   <li>{@code onErrorResume} 把失败转成一帧协议原生 error；</li>
- *   <li>{@code doOnCancel} 感知下游断连；</li>
- *   <li>{@code doFinally} 清理注册表并让心跳停下；</li>
- *   <li>心跳与 {@code merge}。</li>
- * </ol>
+ * <h2>它现在是一个入口，不是半个</h2>
+ * 阶段 6 步 3 之前，本类只包住<strong>收尾</strong>（取消 / 终止 / 心跳 / 清理），
+ * 而「逐帧判终止、累积 usage、数 CHUNK」那半段仍由三个 Controller 各写一遍
+ * （约 35 行 × 3，逐字同构）。现在前半段也进来了 —— 调用点从「两段拼起来」
+ * 变成<strong>一行</strong>，本类名副其实。
  *
- * <h2>两个回调就是三条端点的全部差异</h2>
- * {@code layer2Finalize} 与 {@code errorFrame} —— 前者是「终态相位怎么发」，
- * 后者是「错误报文长什么样」。后者是<strong>由协议决定</strong>的
- * （Chat 出嵌套 error 体、Anthropic 多一层 {@code "type"}、Responses 流式用扁平事件体），
- * 因此留下而不抽取。
+ * <pre>
+ *   主干产物 Flux&lt;UpstreamEvent&gt;
+ *        ↓ 逐帧副作用：累积 usage → 判终止（Layer 1）→ 数 CHUNK
+ *        ↓ 形状映射：本协议的事件名回填策略          ← 回调 2
+ *        ↓ 收尾协议：取消 / Layer 2 兜底 / 错误帧 / 清理
+ *        ↓ 心跳合流
+ *   Flux&lt;ServerSentEvent&lt;String&gt;&gt;   ← 直接作为 ResponseEntity 的 body
+ * </pre>
  *
- * <p><strong>usage 记账已不再落在此处</strong>（阶段 5 步 7b-1 / 7b-2）：
- * 三条端点的 usage 累积器与记账表达式曾各不相同（Chat 是两个 {@code AtomicInteger} 计数器、
- * 另两条是一个 {@code UsageTokens}），现已统一为 {@code AtomicReference<UsageTokens>}，
- * 且「读槽 → 记账」收归 {@link UsageAccounting}。{@code layer2Finalize} 因此只负责
- * 「发终态相位」，各端点的差异只剩 Responses 多一个 {@code Outcome} 维度。
+ * <h2>三条端点的差异只剩三个回调</h2>
+ * <table border="1">
+ *   <caption>差异清单（都是「两条相同、一条不同」）</caption>
+ *   <tr><th>回调</th><th>Chat</th><th>Anthropic</th><th>Responses</th></tr>
+ *   <tr><td>{@code terminalPhase}</td><td>{@code COMPLETED}</td><td>{@code COMPLETED}</td>
+ *       <td>按 {@code Outcome} —— {@code response.failed} 不能显示成「完成」</td></tr>
+ *   <tr><td>{@code frameMapper}</td><td><strong>不回填</strong> event 名</td>
+ *       <td>回填</td><td>回填</td></tr>
+ *   <tr><td>{@code errorBody}</td><td>嵌套体</td><td>多一层 {@code type}</td>
+ *       <td>扁平事件体</td></tr>
+ * </table>
  *
- * <p>这正是本步没有做成「抽公共父类 + 钩子」的原因：那会把上面这些差异变成
- * <em>子类需要知道自己在覆盖什么</em> 的隐式契约。以参数传入则相反 ——
- * 回调为 null 会编译不过，读的人也一眼看出「这两处是端点自己的事」。
+ * <p><strong>Layer 2 不需要回调</strong>：实测三条线路的兜底相位<strong>都是
+ * {@code COMPLETED}</strong>（Responses 的 {@code Outcome.SUCCESS} 也映射到它）。
+ * 所以「上游没发终止标记就断连」这条路径完全共用 —— CAS、记账、发相位都在本类内。
+ *
+ * <h2>与 {@link NonStreamLifecycle} 的差异是<strong>两态本质差异</strong></h2>
+ * <table border="1">
+ *   <caption>两态在收尾上的真实分歧</caption>
+ *   <tr><th></th><th>流式（本类）</th><th>非流式</th></tr>
+ *   <tr><td>取消怎么被检测到</td>
+ *       <td>{@code takeUntilOther(cancelSignal)} —— 流<strong>正常完成</strong>，
+ *           靠 {@code canceled} 标志区分</td>
+ *       <td>{@code firstWithSignal} —— 取消信号<strong>抛
+ *           {@code CallCanceledException}</strong>，靠 {@code instanceof} 识别</td></tr>
+ *   <tr><td>完成判定</td><td><strong>两层</strong>：Layer 1 见终止标记即时收尾，
+ *       Layer 2 靠 {@code onComplete} 兜底，用 CAS 去重</td>
+ *       <td>一层：{@code Mono.onComplete} 是唯一信号</td></tr>
+ *   <tr><td>产物</td><td>{@code Flux<ServerSentEvent<String>>}</td>
+ *       <td>{@code Mono<ResponseEntity<?>>}（状态码还能设）</td></tr>
+ *   <tr><td>心跳 / 逐帧计数</td><td>要</td><td>不要</td></tr>
+ *   <tr><td>错误怎么送出去</td><td>error 帧（状态码在第一帧就提交了）</td>
+ *       <td>错误响应体 + 状态码</td></tr>
+ * </table>
+ *
+ * <p>因此两者<strong>不</strong>合并成一个六合一入口 —— 那会把上面这些压成标志位，
+ * 读的人将看不出某条线走的是哪一支。「取消检测」尤其不能抽：
+ * 它由 {@code Flux} / {@code Mono} 的形态决定。
+ *
+ * <h2>Layer 1 为何是必需的</h2>
+ * 部分上游发完终止标记后<strong>不主动关闭 TCP 连接</strong>（HTTP keep-alive），
+ * 于是 {@code bodyToFlux} 永不 complete、Layer 2 永不触发、Toast 永远悬挂在 CHUNK。
+ * Layer 1 在 {@code doOnNext} 里见到终止标记就立刻 finalize，不依赖连接关闭。
  *
  * <h2>三个终止信号的区别（最容易写错的一处）</h2>
  * <table>
@@ -104,23 +138,24 @@ public final class StreamLifecycle {
      * 收尾协议需要的全部上下文。
      *
      * <h2>为何是一个参数包而不是散开的形参</h2>
-     * 方法本体只接受五样东西（流、取消信号、结束信号、上下文、两个回调）。
+     * 方法本体只接受四样东西（流、上下文、三个回调）。
      * 把上下文收拢后，调用点读起来是「用这些状态包住这条流」，
      * 而不是在十个裸参数里找哪个是哪个。
      *
      * <h2>它不是一个值对象</h2>
-     * 三个 {@code Atomic*} 分量<strong>刻意是可变引用</strong> ——
+     * 四个 {@code Atomic*} 分量<strong>刻意是可变引用</strong> ——
      * 它们承载的是「本轮流的进度」，要在算子之间共享同一份实例。
-     * 调用方在 {@code doOnNext} 里读写它们，本类在收尾算子里读写它们，
-     * 因而不能是快照式的值语义。
+     * 本类在逐帧算子里与收尾算子里读写它们，因而不能是快照式的值语义。
      *
      * @param requestId       本次调用唯一标识，用于事件分组与注册表清理
      * @param model           模型名（含前缀），仅用于日志与事件展示
      * @param eventCount      已下发的载荷帧数，终态事件要带上它给前端兜底
      * @param canceled        管理后台取消置位 —— 用于区分「ABORTED」与「正常完成」
-     * @param completed       Layer 1 / Layer 2 去重标志（CAS），由各端点的 finalize 负责置位
+     * @param completed       Layer 1 / Layer 2 去重标志（CAS），由本类内部的 finalize 置位
+     * @param usage           流内累积到的 token 用量（读事件上的 usage 槽）
      * @param lifecyclePublisher 生命周期事件发布器
      * @param cancellationRegistry 取消注册表，收尾时必须清理以免内存泄漏
+     * @param usageCollector  日聚合写入端口
      * @param log             端点自己的 logger，保持日志归属
      */
     public record CallContext(
@@ -129,40 +164,73 @@ public final class StreamLifecycle {
             AtomicInteger eventCount,
             AtomicBoolean canceled,
             AtomicBoolean completed,
+            AtomicReference<UsageTokens> usage,
             CallLifecyclePublisher lifecyclePublisher,
             CallCancellationRegistry cancellationRegistry,
+            ApiUsageDailyService usageCollector,
             Logger log) {
     }
 
     /**
-     * 把收尾协议挂到已成形的事件流上。
+     * 跑完流式出口链 —— 主干产物进，可下发的 SSE 流出。
      *
-     * @param mappedBody     已映射为 {@code ServerSentEvent} 的上游流（不含任何收尾算子）
-     * @param cancelSignal   管理后台取消信号；正常完成时 {@code takeUntilOther} 中止本流
-     * @param streamEnd      数据流终止信号，用于停掉心跳
-     * @param ctx            收尾上下文，见 {@link CallContext}
-     * @param layer2Finalize 上游未给语义终止标记就关连接时的兜底动作。
-     *                       传入的是<strong>一个会自行 CAS 去重</strong>的 Runnable ——
-     *                       去重标志在各端点的 finalize 内部，因为 Layer 1 走的是另一条路
-     *                       （{@code doOnNext} 里判终止事件），两处必须共用同一个标志。
-     * @param errorFrame     把失败渲染成<strong>本协议</strong>的 error 帧。
-     *                       由各端点提供：Chat 出嵌套体，Anthropic 多一层
-     *                       {@code "type":"error"}，Responses 流式用扁平事件体。
+     * @param upstream      主干交出的上游事件流（<strong>未拆包</strong>，形态为统一事件）
+     * @param ctx           收尾上下文，见 {@link CallContext}
+     * @param terminalPhase Layer 1 该发哪个终态相位。三条中有两条恒为 {@code COMPLETED}，
+     *                      Responses 要按事件名解出结局 —— 上游明确说「我失败了」时
+     *                      不能显示成「完成」。<strong>只在 Layer 1 用到</strong>：
+     *                      Layer 2 的兜底相位恒为 {@code COMPLETED}，不需要回调。
+     * @param frameMapper   把一帧上游事件映射成要下发的 SSE 帧。
+     *                      Chat <strong>不回填</strong> {@code event:} 名（OpenAI 客户端只认 data），
+     *                      其余两条要回填（客户端靠它驱动状态机）。作用于<strong>所有</strong>帧，
+     *                      含终止标记 —— 它是协议要求下发的。
+     * @param errorBody     把失败渲染成<strong>本协议</strong>的 error 帧体。
+     *                      三条形态两两不同（见 {@link UpstreamErrorRenderer}）。
+     *                      包装成 {@code event: error} 的 SSE 帧由本类统一负责。
      * @return 与心跳合并后的流，可直接作为 {@code ResponseEntity} 的 body
      */
-    public static Flux<ServerSentEvent<String>> attach(Flux<ServerSentEvent<String>> mappedBody,
-                                                      Mono<Void> cancelSignal,
-                                                      Sinks.Empty<Void> streamEnd,
-                                                      CallContext ctx,
-                                                      Runnable layer2Finalize,
-                                                      Function<Throwable, ServerSentEvent<String>> errorFrame) {
+    public static Flux<ServerSentEvent<String>> stream(
+            Flux<UpstreamEvent> upstream,
+            CallContext ctx,
+            Function<UpstreamEvent, CallPhase> terminalPhase,
+            Function<UpstreamEvent, ServerSentEvent<String>> frameMapper,
+            Function<Throwable, String> errorBody) {
+
+        // 注册取消信号：管理后台点击取消时它正常 complete，takeUntilOther 中止本流、
+        // 并使 canceled 置位（下面据此发 ABORTED 而非 COMPLETED）。
+        Mono<Void> cancelSignal = ctx.cancellationRegistry().register(ctx.requestId())
+                .doOnSuccess(v -> ctx.canceled().set(true));
+
+        // 数据流终止信号：数据流无论以何种方式终止（完成 / 错误 / 取消）都会 emit，
+        // 心跳据此停止 —— 否则 Flux.interval 永不完成，merge 永不完成，兜底失效。
+        Sinks.Empty<Void> streamEnd = Sinks.empty();
+
+        // 逐帧副作用：先累积 usage（终止帧上的那份也要收，故在判终止之前），
+        // 再判终止（Layer 1），否则计入 CHUNK 数。
+        Flux<ServerSentEvent<String>> mappedBody = upstream
+                .doOnNext(event -> {
+                    UsageAccounting.accumulate(event, ctx.usage());
+                    if (event.isTerminal()) {
+                        // Layer 1：语义信号优先。见类注释「Layer 1 为何是必需的」。
+                        // 终止标记不计入帧数。
+                        finalizeStream(ctx, terminalPhase.apply(event));
+                        return;
+                    }
+                    // 每帧都推一次 CHUNK（不节流）。单次响应帧数通常不过数百，SSE 开销可接受。
+                    ctx.lifecyclePublisher().publish(CallLifecycleEvent.of(
+                            ctx.requestId(), CallPhase.CHUNK, ctx.model(), true,
+                            ctx.eventCount().incrementAndGet()));
+                })
+                .map(frameMapper);
+
         Flux<ServerSentEvent<String>> streamBody = mappedBody
                 .takeUntilOther(cancelSignal)
                 // 取消时静默断连：只发 ABORTED 终态，不向下游注入任何错误帧。
                 .concatWith(Flux.defer(() -> {
                     if (ctx.canceled().get()) {
                         ctx.lifecyclePublisher().publish(CallLifecycleEvent.of(
-                                ctx.requestId(), CallPhase.ABORTED, ctx.model(), true, ctx.eventCount().get()));
+                                ctx.requestId(), CallPhase.ABORTED, ctx.model(), true,
+                                ctx.eventCount().get()));
                         ctx.log().info("流式调用被主动取消，静默断连 [{}] {}", ctx.model(), ctx.requestId());
                     }
                     return Flux.<ServerSentEvent<String>>empty();
@@ -174,19 +242,22 @@ public final class StreamLifecycle {
                     }
                     // Layer 2（TCP/SSE 连接关闭兜底）：上游未发语义终止标记就直接关连接时靠这里。
                     // 若 Layer 1 已在收到终止标记时 finalize，去重标志会让这里成为 no-op。
-                    layer2Finalize.run();
+                    // 兜底相位恒为 COMPLETED —— 连接正常关闭且已有内容，没有任何证据表明它失败了。
+                    finalizeStream(ctx, CallPhase.COMPLETED);
                 })
                 .onErrorResume(error -> {
                     if (UpstreamFailureClassifier.isClientDisconnect(error)) {
                         // CANCELED：客户端主动断连，发出终态让 Toast 收尾淡出，避免僵尸 Toast。
                         ctx.lifecyclePublisher().publish(CallLifecycleEvent.of(
-                                ctx.requestId(), CallPhase.CANCELED, ctx.model(), true, ctx.eventCount().get()));
+                                ctx.requestId(), CallPhase.CANCELED, ctx.model(), true,
+                                ctx.eventCount().get()));
                         return Flux.empty();
                     }
                     // FAILED：上游错误或连接失败（客户端主动断连已在上面 return，不计入）。
                     ctx.lifecyclePublisher().publish(CallLifecycleEvent.of(
                             ctx.requestId(), CallPhase.FAILED, ctx.model(), true));
-                    return Flux.just(errorFrame.apply(error));
+                    return Flux.just(ServerSentEvent.<String>builder(errorBody.apply(error))
+                            .event("error").build());
                 })
                 // CANCELED：下游主动断连是 Reactor 的 cancel 信号，onErrorResume 捕获不到，
                 // 必须用 doOnCancel 感知 —— 否则不发终态事件，前端那条 Toast 永远停在 CHUNK。
@@ -198,7 +269,8 @@ public final class StreamLifecycle {
                         return;
                     }
                     ctx.lifecyclePublisher().publish(CallLifecycleEvent.of(
-                            ctx.requestId(), CallPhase.CANCELED, ctx.model(), true, ctx.eventCount().get()));
+                            ctx.requestId(), CallPhase.CANCELED, ctx.model(), true,
+                            ctx.eventCount().get()));
                     ctx.log().info("下游主动断连，静默收尾 [{}] {}", ctx.model(), ctx.requestId());
                 })
                 // 无论正常结束、失败还是取消，都清理注册表，避免内存泄漏；
@@ -215,5 +287,25 @@ public final class StreamLifecycle {
                 .takeUntilOther(streamEnd.asMono());
 
         return Flux.merge(streamBody, heartbeat);
+    }
+
+    /**
+     * 收尾：记账 + 发终态相位。<strong>CAS 去重</strong>，Layer 1 与 Layer 2 只有先到的生效。
+     *
+     * <p>去重必须在这里（而不是各调用点）：Layer 1 走 {@code doOnNext}、
+     * Layer 2 走 {@code doOnComplete}，两处必须共用同一个标志。
+     *
+     * <p>记账用 {@link UsageAccounting#recordStream}（<strong>恒记</strong>，
+     * 无 usage 时记 {@code 0,0}）—— 它同时承担「本次调用发生过」的计数职责。
+     *
+     * @param phase 终态相位：Layer 1 由 {@code terminalPhase} 给出，Layer 2 恒为 {@code COMPLETED}
+     */
+    private static void finalizeStream(CallContext ctx, CallPhase phase) {
+        if (!ctx.completed().compareAndSet(false, true)) {
+            return;
+        }
+        UsageAccounting.recordStream(ctx.usageCollector(), ctx.usage());
+        ctx.lifecyclePublisher().publish(CallLifecycleEvent.of(
+                ctx.requestId(), phase, ctx.model(), true, ctx.eventCount().get()));
     }
 }

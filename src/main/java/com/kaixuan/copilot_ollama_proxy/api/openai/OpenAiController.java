@@ -4,17 +4,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.kaixuan.copilot_ollama_proxy.api.shared.NonStreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
-import com.kaixuan.copilot_ollama_proxy.api.shared.UsageAccounting;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamErrorRenderer;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
 import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
-import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
-import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiChatRequest;
@@ -30,7 +27,6 @@ import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.*;
@@ -177,10 +173,10 @@ public class OpenAiController {
      * <p>相比旧的 SseEmitter 手动订阅模型，这里直接返回 Flux，由 WebFlux 框架托管
      * 背压、取消和超时，无需手动管理 Disposable 与回调。
      *
-     * <h2>职责分界</h2>
-     * 本方法只负责<strong>把上游 chunk 映射成 SSE 帧</strong>（#1 记载荷与计数、#2 包装）。
-     * 其后的收尾协议（取消 / 终止 / 心跳）在 {@link StreamLifecycle#attach} 里 ——
-     * 三条端点逐字相同，差异只有两个回调。
+     * <h2>职责分界（阶段 6 步 3 后）</h2>
+     * 本方法只交待<strong>三件事</strong>：拉哪条链、每帧长什么样、错误长什么样。
+     * 逐帧副作用（累积 usage、判终止、数 CHUNK）与收尾协议（取消 / 终止 / 心跳 / 清理）
+     * 都在 {@link StreamLifecycle#stream} 里 —— 三条端点共用那一份。
      *
      * @param requestBody 请求体内容，已转换为 Map 格式
      * @param model 模型名称
@@ -188,83 +184,19 @@ public class OpenAiController {
      */
     private Flux<ServerSentEvent<String>> streamResponse(Map<String, Object> requestBody, String model,
                                                           HttpHeaders requestHeaders, String requestId) {
-        // 流内累积到的 usage（读事件上的槽，见 accumulateStreamUsage）。
-        // 它替代了此前的两个 AtomicInteger 计数器 —— 解析已收归主干，出口只搬运。
-        AtomicReference<UsageTokens> streamUsage = new AtomicReference<>(null);
-        // chunkCount 记录累计 chunk 数，每个 chunk 到达即推一次 CHUNK 事件，让 Toast 计数逐个跟手更新。
-        AtomicInteger chunkCount = new AtomicInteger(0);
-        // canceled 标志：外部主动取消时置位，用于在流结束后区分 ABORTED 与正常 COMPLETED。
-        AtomicBoolean canceled = new AtomicBoolean(false);
-        // completed 标志：Layer 1（[DONE] 语义信号）与 Layer 2（doOnComplete TCP 关闭）去重，谁先到谁发 COMPLETED。
-        AtomicBoolean completed = new AtomicBoolean(false);
-
-        // 注册取消信号：外部点击取消时 cancelSignal 正常 complete，takeUntilOther 会中止上游流。
-        // 取消行为对下游一律静默断连（不注入错误帧），下游 Copilot 自行处理断连。
-        Mono<Void> cancelSignal = callCancellationRegistry.register(requestId)
-                .doOnSuccess(v -> canceled.set(true));
-
-        // 数据流结束信号：数据流无论以何种方式终止（完成 / 错误 / 取消）都会 emit，
-        // 心跳据此停止 —— 否则 Flux.interval 永不完成，merge 永不完成，doOnComplete 兜底失效。
-        Sinks.Empty<Void> streamEnd = Sinks.empty();
-
-        Flux<ServerSentEvent<String>> mappedBody =
-                chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders, requestId)
-                // 分类已由上游执行器完成：本层只读 isTerminal()，不再按字符串认魔数。
-                // 那个判断在翻译路线下会拿下游协议去比对上游报文，而分类跟着
-                // 「帧是哪个协议」走 —— 只有生产它的那一层知道答案。
-                .doOnNext(event -> {
-                    accumulateStreamUsage(event, streamUsage);
-                    // Layer 1（语义信号优先）：收到终止标记即认定上游内容已发完，立即 finalize，
-                    // 不必等上游关闭 TCP 连接。修复「上游发完 [DONE] 却不断连，Toast 永远悬挂在 CHUNK」的偶发 bug。
-                    // 终止标记不计入 chunk 数。
-                    if (event.isTerminal()) {
-                        finalizeStreamCompletion(requestId, model, chunkCount.get(), completed,
-                                streamUsage);
-                        return;
-                    }
-                    // 每个 chunk 都推一次 CHUNK 事件（不节流）。单次响应 chunk 数通常不过数百，SSE 开销可接受。
-                    callLifecyclePublisher.publish(
-                            CallLifecycleEvent.of(requestId, CallPhase.CHUNK, model, true, chunkCount.incrementAndGet()));
-                })
+        return StreamLifecycle.stream(
+                chatCompletionService.chatCompletionStream(requestBody, model, requestHeaders, requestId),
+                new StreamLifecycle.CallContext(requestId, model,
+                        new AtomicInteger(0), new AtomicBoolean(false), new AtomicBoolean(false),
+                        new AtomicReference<>(null),
+                        callLifecyclePublisher, callCancellationRegistry, apiUsageCollector, log),
+                // Layer 1 相位：恒为 COMPLETED —— Chat 的终止标记 [DONE] 不携带结局信息。
+                event -> CallPhase.COMPLETED,
                 // Chat 不回填 SSE 的 event 名：OpenAI 客户端只认 data，这是本端点与另两条的差异之一。
-                .map(event -> ServerSentEvent.builder(event.data()).build());
-
-        return StreamLifecycle.attach(mappedBody, cancelSignal, streamEnd,
-                new StreamLifecycle.CallContext(requestId, model, chunkCount, canceled, completed,
-                        callLifecyclePublisher, callCancellationRegistry, log),
-                // Layer 2：上游未发 [DONE] 就直接关连接时靠这里兜底。
-                // 若 Layer 1 已在收到 [DONE] 时 finalize，completed 标志会让这里成为 no-op。
-                () -> finalizeStreamCompletion(requestId, model, chunkCount.get(), completed,
-                        streamUsage),
-                error -> openAiErrorFrame(error, model));
-    }
-
-    /**
-     * 流式完成收尾：记录 usage 并发出 COMPLETED 事件。
-     *
-     * <p>由三层完成判定的前两层共用（Layer 1 收到 {@code [DONE]}、Layer 2 上游关闭连接），
-     * 用 {@code completed} 标志 CAS 去重，保证只 finalize 一次——谁先到谁发，另一层成为 no-op。
-     * 这样既能在「上游发完 [DONE] 却不断连」时立即收尾（修复 Toast 悬挂），
-     * 也能在「上游不发 [DONE] 直接断连」时靠 Layer 2 兜底。
-     *
-     * @param requestId    调用唯一标识
-     * @param model        模型名称
-     * @param finalChunks  最终 chunk 总数（[DONE] 不计入）
-     * @param completed    完成去重标志（CAS）
-     * @param usage        流内累积到的 token 用量（读事件上的槽）
-     */
-    private void finalizeStreamCompletion(String requestId, String model, int finalChunks,
-                                          AtomicBoolean completed,
-                                          AtomicReference<UsageTokens> usage) {
-        // CAS 去重：只有第一个到达的层能 finalize，另一层直接返回。
-        if (!completed.compareAndSet(false, true)) {
-            return;
-        }
-        // 流式恒记（无 usage 记 0,0）—— 两档语义与理由见 UsageAccounting 的类注释。
-        UsageAccounting.recordStream(apiUsageCollector, usage);
-        // COMPLETED：带最终精确 chunk 总数作为兜底，确保前端计数与实际一致。
-        callLifecyclePublisher.publish(
-                CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, true, finalChunks));
+                event -> ServerSentEvent.builder(event.data()).build(),
+                // 流式与非流式共用同一套 body 形状 —— Chat 的错误体两条路径同形
+                // （Anthropic 同理；只有 Responses 刻意不同，见那边的注释）。
+                error -> UpstreamErrorRenderer.streamBody(error, model, log, BODIES));
     }
 
     /**
@@ -439,16 +371,6 @@ public class OpenAiController {
     }
 
     /**
-     * 从流式事件累积 usage —— 实现见 {@link UsageAccounting#accumulate}。
-     *
-     * <p>这条规则与协议无关：生产者已把「跨事件合并 / 后到覆盖 / 只有正数才覆盖」等
-     * 协议差异吸收干净（见 {@link UpstreamEvent#usage()} 的说明）。
-     */
-    private void accumulateStreamUsage(UpstreamEvent event, AtomicReference<UsageTokens> usage) {
-        UsageAccounting.accumulate(event, usage);
-    }
-
-    /**
      * 把调用失败渲染成<strong>非流式</strong>响应。
      *
      * <h2>分工</h2>
@@ -483,23 +405,6 @@ public class OpenAiController {
                     return openAiErrorBody(message, "upstream_error");
                 }
             };
-
-    /**
-     * 把调用失败渲染成<strong>流式</strong> error 帧。
-     *
-     * <p>与非流式<strong>不能共用</strong> {@link #openAiErrorResponse}：流式的状态码在第一帧
-     * 就提交了，之后改它没有意义 —— 客户端只能靠 SSE 的 {@code event: error} 识别失败。
-     * 两者的<strong>类别判定完全相同</strong>（那是分类器的职责），
-     * 只有「怎么送出去」不同 —— 所以共享件给两个入口，本方法负责包信封。
-     *
-     * <p>上游 HTTP 错误在流式下也<strong>原样透传错误体</strong>（不带状态码，那已无处可放），
-     * 与非流式同一取向：上游那句话最准确。
-     */
-    private ServerSentEvent<String> openAiErrorFrame(Throwable error, String model) {
-        return ServerSentEvent.<String>builder(UpstreamErrorRenderer.streamBody(error, model, log, BODIES))
-                .event("error")
-                .build();
-    }
 
     /**
      * OpenAI 风格错误体。

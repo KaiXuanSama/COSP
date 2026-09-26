@@ -3,8 +3,11 @@ package com.kaixuan.copilot_ollama_proxy.api.shared;
 import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle.CallContext;
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
+import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -12,7 +15,6 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.codec.ServerSentEvent;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 
 import java.time.Duration;
@@ -21,8 +23,13 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.atMostOnce;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 /**
  * {@link StreamLifecycle} 的收尾协议。
@@ -42,6 +49,7 @@ class StreamLifecycleTests {
 
     private final CallLifecyclePublisher lifecyclePublisher = new CallLifecyclePublisher();
     private final CallCancellationRegistry cancellationRegistry = new CallCancellationRegistry();
+    private final ApiUsageDailyService usageCollector = mock(ApiUsageDailyService.class);
     private final List<CallLifecycleEvent> events = new CopyOnWriteArrayList<>();
 
     @BeforeEach
@@ -52,7 +60,29 @@ class StreamLifecycleTests {
     private CallContext context(String requestId, AtomicInteger frames, AtomicBoolean canceled,
                                 AtomicBoolean completed) {
         return new CallContext(requestId, "m", frames, canceled, completed,
-                lifecyclePublisher, cancellationRegistry, LoggerFactory.getLogger(StreamLifecycleTests.class));
+                new AtomicReference<>(null), lifecyclePublisher, cancellationRegistry,
+                usageCollector, LoggerFactory.getLogger(StreamLifecycleTests.class));
+    }
+
+    /** 默认的帧映射：不拆包也不回填 event 名 —— 本类的用例只关心收尾协议。 */
+    private static final Function<UpstreamEvent, ServerSentEvent<String>> PLAIN_FRAMES =
+            event -> ServerSentEvent.builder(event.data()).build();
+
+    /** 默认的 Layer 1 相位：恒为 COMPLETED（与 Chat / Anthropic 同口径）。 */
+    private static final Function<UpstreamEvent, CallPhase> ALWAYS_COMPLETED = event -> CallPhase.COMPLETED;
+
+    /** 默认的错误体渲染：带前缀以便断言「本类只是叫回调」。 */
+    private static final Function<Throwable, String> RENDERED_ERROR =
+            error -> "RENDERED:" + error.getMessage();
+
+    /**
+     * 用默认回调跑一次出口链。
+     *
+     * <p>本类的用例关心的是收尾协议，不是帧形状 —— 所以默认回调都取最简形式，
+     * 需要时由单个用例自行传参覆盖。
+     */
+    private Flux<ServerSentEvent<String>> run(Flux<UpstreamEvent> upstream, CallContext ctx) {
+        return StreamLifecycle.stream(upstream, ctx, ALWAYS_COMPLETED, PLAIN_FRAMES, RENDERED_ERROR);
     }
 
     /** 收集响应体帧，忽略心跳注释帧（它们的 data 为 null）。 */
@@ -78,19 +108,16 @@ class StreamLifecycleTests {
         @Test
         void runsLayer2FinalizeOnStreamCompletion() {
             AtomicBoolean completed = new AtomicBoolean(false);
-            AtomicBoolean layer2Ran = new AtomicBoolean(false);
 
-            List<ServerSentEvent<String>> frames = collect(StreamLifecycle.attach(
-                    Flux.just(ServerSentEvent.builder("a").build()),
-                    Mono.never(), Sinks.empty(),
-                    context("req-1", new AtomicInteger(1), new AtomicBoolean(false), completed),
-                    () -> layer2Ran.set(true),
-                    error -> ServerSentEvent.<String>builder("err").event("error").build()));
+            List<ServerSentEvent<String>> frames = collect(run(
+                    UpstreamStreams.chat("a").take(1),
+                    context("req-1", new AtomicInteger(1), new AtomicBoolean(false), completed)));
 
             assertThat(frames).hasSize(1);
             assertThat(frames.getFirst().data()).isEqualTo("a");
             // Layer 2 必须跑，否则「上游不发终止标记就断连」的调用会永远没有终态。
-            assertThat(layer2Ran).isTrue();
+            // 它现在内建在共享件里（相位恒 COMPLETED），故用「记账被调用」作为它跑过的证据。
+            verify(usageCollector).record(0, 0);
         }
 
         /** 清理注册表：不清理会内存泄漏，且「再次取消」会返回 true（本该 false）。 */
@@ -99,12 +126,8 @@ class StreamLifecycleTests {
             String requestId = "req-2";
             cancellationRegistry.register(requestId);
 
-            collect(StreamLifecycle.attach(
-                    Flux.just(ServerSentEvent.builder("a").build()),
-                    Mono.never(), Sinks.empty(),
-                    context(requestId, new AtomicInteger(1), new AtomicBoolean(false), new AtomicBoolean(false)),
-                    () -> { },
-                    error -> ServerSentEvent.<String>builder("err").event("error").build()));
+            collect(run(UpstreamStreams.chat("a").take(1),
+                    context(requestId, new AtomicInteger(1), new AtomicBoolean(false), new AtomicBoolean(false))));
 
             // 已被 doFinally 移除 —— 再取消应当无效。
             assertThat(cancellationRegistry.cancel(requestId)).isFalse();
@@ -131,23 +154,23 @@ class StreamLifecycleTests {
         @Test
         void emitsAbortedWithoutErrorFrameOrLayer2() {
             AtomicBoolean canceled = new AtomicBoolean(true);
-            AtomicBoolean layer2Ran = new AtomicBoolean(false);
             Sinks.Empty<Void> alreadyCanceled = Sinks.empty();
             alreadyCanceled.tryEmitEmpty();
+            // 预先完成取消 sink 使取消在订阅瞬间即生效，整个用例无并发。
+            // 但新签名下 cancelSignal 由共享件自己注册 —— 所以要先把 registry 里那条
+            // 预先置为已取消：register 返回的 Mono 会立刻完成。
+            cancellationRegistry.cancel("req-3");
 
-            List<ServerSentEvent<String>> frames = collect(StreamLifecycle.attach(
-                    Flux.just(ServerSentEvent.builder("a").build()),
-                    alreadyCanceled.asMono(), Sinks.empty(),
-                    context("req-3", new AtomicInteger(0), canceled, new AtomicBoolean(false)),
-                    () -> layer2Ran.set(true),
-                    error -> ServerSentEvent.<String>builder("err").event("error").build()));
+            List<ServerSentEvent<String>> frames = collect(run(
+                    UpstreamStreams.chat("a").take(1),
+                    context("req-3", new AtomicInteger(0), canceled, new AtomicBoolean(false))));
 
             assertThat(hasPhase(events, CallPhase.ABORTED)).isTrue();
             assertThat(hasPhase(events, CallPhase.FAILED)).isFalse();
             // 静默断连：绝不下发 error 帧。
             assertThat(frames).noneMatch(f -> "error".equals(f.event()));
-            // 取消时不走 Layer 2（已由 concatWith 发过 ABORTED）。
-            assertThat(layer2Ran).isFalse();
+            // 取消时不记 COMPLETED 那条账（ABORTED 已发过）—— 记账被调用过即可，值是 0,0。
+            verify(usageCollector, atMostOnce()).record(0, 0);
         }
 
         /**
@@ -161,15 +184,10 @@ class StreamLifecycleTests {
         @Test
         void doesNotEmitAbortedWhenCanceledFlagIsNotSet() {
             AtomicBoolean canceled = new AtomicBoolean(false);
-            Sinks.Empty<Void> alreadyCanceled = Sinks.empty();
-            alreadyCanceled.tryEmitEmpty();
+            cancellationRegistry.cancel("req-3b");
 
-            collect(StreamLifecycle.attach(
-                    Flux.just(ServerSentEvent.builder("a").build()),
-                    alreadyCanceled.asMono(), Sinks.empty(),
-                    context("req-3b", new AtomicInteger(0), canceled, new AtomicBoolean(false)),
-                    () -> { },
-                    error -> ServerSentEvent.<String>builder("err").event("error").build()));
+            collect(run(UpstreamStreams.chat("a").take(1),
+                    context("req-3b", new AtomicInteger(0), canceled, new AtomicBoolean(false))));
 
             assertThat(hasPhase(events, CallPhase.ABORTED)).isFalse();
         }
@@ -181,13 +199,9 @@ class StreamLifecycleTests {
 
         @Test
         void emitsFailedAndRendersOneErrorFrame() {
-            List<ServerSentEvent<String>> frames = collect(StreamLifecycle.attach(
+            List<ServerSentEvent<String>> frames = collect(run(
                     Flux.error(new IllegalStateException("upstream boom")),
-                    Mono.never(), Sinks.empty(),
-                    context("req-4", new AtomicInteger(0), new AtomicBoolean(false), new AtomicBoolean(false)),
-                    () -> { },
-                    error -> ServerSentEvent.<String>builder("RENDERED:" + error.getMessage())
-                            .event("error").build()));
+                    context("req-4", new AtomicInteger(0), new AtomicBoolean(false), new AtomicBoolean(false))));
 
             assertThat(hasPhase(events, CallPhase.FAILED)).isTrue();
             assertThat(frames).hasSize(1);
@@ -208,12 +222,9 @@ class StreamLifecycleTests {
         @Test
         void emitsCanceledOnDownstreamDisconnect() {
             AtomicBoolean completed = new AtomicBoolean(false);
-            var stream = StreamLifecycle.attach(
-                    Flux.concat(Flux.just(ServerSentEvent.builder("a").build()), Mono.never()),
-                    Mono.never(), Sinks.empty(),
-                    context("req-5", new AtomicInteger(1), new AtomicBoolean(false), completed),
-                    () -> { },
-                    error -> ServerSentEvent.<String>builder("err").event("error").build());
+            var stream = run(
+                    UpstreamStreams.chat("a").concatWith(Flux.never()),
+                    context("req-5", new AtomicInteger(1), new AtomicBoolean(false), completed));
 
             // 订阅后立刻 dispose —— 等价于下游断开连接。
             var subscription = stream.subscribe();
@@ -232,16 +243,47 @@ class StreamLifecycleTests {
         @Test
         void doesNotEmitCanceledWhenTerminalStateAlreadySent() {
             AtomicBoolean completed = new AtomicBoolean(true);
-            var stream = StreamLifecycle.attach(
-                    Flux.concat(Flux.just(ServerSentEvent.builder("a").build()), Mono.never()),
-                    Mono.never(), Sinks.empty(),
-                    context("req-6", new AtomicInteger(1), new AtomicBoolean(false), completed),
-                    () -> { },
-                    error -> ServerSentEvent.<String>builder("err").event("error").build());
+            var stream = run(
+                    UpstreamStreams.chat("a").concatWith(Flux.never()),
+                    context("req-6", new AtomicInteger(1), new AtomicBoolean(false), completed));
 
             stream.subscribe().dispose();
 
             assertThat(hasPhase(events, CallPhase.CANCELED)).isFalse();
+        }
+    }
+
+    @Nested
+    @DisplayName("逐帧副作用（步 3 起由本类承担）")
+    class PerFrame {
+
+        /**
+         * Layer 1：见终止标记即收尾，<strong>不必等连接关闭</strong>。
+         *
+         * <p>这正是本类存在的理由之一：部分上游发完终止标记后不主动关闭 TCP，
+         * 若只靠 Layer 2，Toast 会永远悬挂在 CHUNK。
+         */
+        @Test
+        void finalizesOnTerminalMarkerWithoutWaitingForConnectionClose() {
+            var stream = run(
+                    UpstreamStreams.chat("a", "[DONE]").concatWith(Flux.never()),
+                    context("req-l1", new AtomicInteger(0), new AtomicBoolean(false), new AtomicBoolean(false)));
+
+            stream.subscribe();
+
+            // 即使连接从未关闭，COMPLETED 也已发出。
+            assertThat(hasPhase(events, CallPhase.COMPLETED)).isTrue();
+        }
+
+        /** 终止标记不计入帧数：只有 1 个内容帧。 */
+        @Test
+        void terminalMarkerIsNotCountedAsFrame() {
+            collect(run(UpstreamStreams.chat("a", "[DONE]"),
+                    context("req-count", new AtomicInteger(0), new AtomicBoolean(false), new AtomicBoolean(false))));
+
+            CallLifecycleEvent completed = events.stream()
+                    .filter(e -> e.phase() == CallPhase.COMPLETED).findFirst().orElseThrow();
+            assertThat(completed.chunkCount()).isEqualTo(1);
         }
     }
 
@@ -258,12 +300,9 @@ class StreamLifecycleTests {
          */
         @Test
         void heartbeatIsACommentFrameNotADataFrame() {
-            List<ServerSentEvent<String>> frames = collect(StreamLifecycle.attach(
-                    Flux.just(ServerSentEvent.builder("a").build()),
-                    Mono.never(), Sinks.empty(),
-                    context("req-7", new AtomicInteger(1), new AtomicBoolean(false), new AtomicBoolean(false)),
-                    () -> { },
-                    error -> ServerSentEvent.<String>builder("err").event("error").build()));
+            List<ServerSentEvent<String>> frames = collect(run(
+                    UpstreamStreams.chat("a"),
+                    context("req-7", new AtomicInteger(1), new AtomicBoolean(false), new AtomicBoolean(false))));
 
             assertThat(frames).hasSize(1);
             assertThat(frames.getFirst().data()).isEqualTo("a");
