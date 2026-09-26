@@ -100,10 +100,14 @@ public sealed interface UpstreamEvent {
      * 因为上游不发终止标记就直接断连时要靠出口的 Layer 2 兜底，
      * 那条路径需要从<strong>流内已见过的值</strong>记账；只在尾帧挂会让它退回 {@code 0,0}。
      *
-     * <p>消费规则因此可以极简：<strong>取最后一份非 null 即结算值</strong>。
+     * <p>消费规则因此可以极简：<strong>取最后一份「有数据的」（非 null 且非空）即结算值</strong>。
      * 这条规则<strong>与协议无关</strong> —— 三种协议的累积差异（Chat / Responses 后到覆盖、
      * Anthropic 跨事件只有正数才覆盖、C2M 由上游侧算好）已被生产者吸收干净。
      * 出口一行协议分支都不剩，这正是「消重复」的判据。
+     *
+     * <p>「非空」那一档不省略：上游可能给出本服务不认识的 usage 字段名（解析为
+     * {@link UsageTokens#EMPTY}），收下它会把先前的真实值刷成 {@code 0}。
+     * 实现在 {@code api/shared/UsageAccounting.accumulate}。
      *
      * <h2>null 的含义</h2>
      * {@code null} = 生产者至今未见过 usage（或本帧不经过生产者）。

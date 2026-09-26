@@ -32,11 +32,16 @@ import java.util.function.Function;
  * </ol>
  *
  * <h2>两个回调就是三条端点的全部差异</h2>
- * {@code layer2Finalize} 与 {@code errorFrame} —— 前者是「这一轮的 usage 记在哪、
- * 终态怎么发」，后者是「错误报文长什么样」。两者恰好都是<strong>由协议决定</strong>的东西
- * （Chat 的 usage 是两个计数器、另两条是一个 {@code UsageTokens}；
- * Chat 出嵌套 error 体、Anthropic 多一层 {@code "type"}、Responses 流式用扁平事件体），
+ * {@code layer2Finalize} 与 {@code errorFrame} —— 前者是「终态相位怎么发」，
+ * 后者是「错误报文长什么样」。后者是<strong>由协议决定</strong>的
+ * （Chat 出嵌套 error 体、Anthropic 多一层 {@code "type"}、Responses 流式用扁平事件体），
  * 因此留下而不抽取。
+ *
+ * <p><strong>usage 记账已不再落在此处</strong>（阶段 5 步 7b-1 / 7b-2）：
+ * 三条端点的 usage 累积器与记账表达式曾各不相同（Chat 是两个 {@code AtomicInteger} 计数器、
+ * 另两条是一个 {@code UsageTokens}），现已统一为 {@code AtomicReference<UsageTokens>}，
+ * 且「读槽 → 记账」收归 {@link UsageAccounting}。{@code layer2Finalize} 因此只负责
+ * 「发终态相位」，各端点的差异只剩 Responses 多一个 {@code Outcome} 维度。
  *
  * <p>这正是本步没有做成「抽公共父类 + 钩子」的原因：那会把上面这些差异变成
  * <em>子类需要知道自己在覆盖什么</em> 的隐式契约。以参数传入则相反 ——

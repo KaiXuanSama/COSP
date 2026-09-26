@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
+import com.kaixuan.copilot_ollama_proxy.api.shared.UsageAccounting;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
 import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
@@ -297,11 +298,8 @@ public class OpenAiController {
         if (!completed.compareAndSet(false, true)) {
             return;
         }
-        UsageTokens tokens = usage.get();
-        // 流式<strong>恒记</strong>：无 usage 时记 0,0（与 7b-1 之前逐字一致）——
-        // 因为它同时是「本次调用发生过」的计数，跳过会让统计卡的调用次数少算。
-        apiUsageCollector.record(tokens == null ? 0 : tokens.promptOrZero(),
-                tokens == null ? 0 : tokens.completionOrZero());
+        // 流式恒记（无 usage 记 0,0）—— 两档语义与理由见 UsageAccounting 的类注释。
+        UsageAccounting.recordStream(apiUsageCollector, usage);
         // COMPLETED：带最终精确 chunk 总数作为兜底，确保前端计数与实际一致。
         callLifecyclePublisher.publish(
                 CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, true, finalChunks));
@@ -479,34 +477,22 @@ public class OpenAiController {
     }
 
     /**
-     * 从非流式响应提取 usage 并记入日聚合。
+     * 从非流式响应记账 —— 读事件上由主干填好的槽，不自行解析。
      *
-     * <p>读的是<strong>事件上由主干填好的槽</strong>（{@link UpstreamEvent#usage()}），
-     * 不再自行解析协议字节 —— 阶段 5 步 7b-1「usage 消重复」把解析收归了生产者。
-     * 三条线路的累积差异（Chat / Responses 后到覆盖、Anthropic 跨事件合并、C2M 由上游算好）
-     * 全部由生产者吸收，故本层一行协议分支都不需要。
-     *
-     * <p>非流式<strong>无 usage 时不记</strong>（与 7b-1 之前一致）—— 与流式路径的「恒记」
-     * 不同，那是历史行为，本步不改。
+     * <p>读的是 {@link UpstreamEvent#usage()}，两档语义见 {@link UsageAccounting}。
      */
     private void recordUsage(UpstreamEvent event) {
-        UsageTokens tokens = event.usage();
-        if (tokens != null && !tokens.isEmpty()) {
-            apiUsageCollector.record(tokens.promptOrZero(), tokens.completionOrZero());
-        }
+        UsageAccounting.recordNonStream(apiUsageCollector, event);
     }
 
     /**
-     * 从流式事件累积 usage —— 此处仅<strong>取最后一份非 null</strong>。
+     * 从流式事件累积 usage —— 实现见 {@link UsageAccounting#accumulate}。
      *
      * <p>这条规则与协议无关：生产者已把「跨事件合并 / 后到覆盖 / 只有正数才覆盖」等
-     * 协议差异吸收干净（见 {@link UpstreamEvent#usage()} 的说明），故出口不必知道
-     * 上游说的是哪个协议。
+     * 协议差异吸收干净（见 {@link UpstreamEvent#usage()} 的说明）。
      */
     private void accumulateStreamUsage(UpstreamEvent event, AtomicReference<UsageTokens> usage) {
-        if (event.usage() != null) {
-            usage.set(event.usage());
-        }
+        UsageAccounting.accumulate(event, usage);
     }
 
     /**

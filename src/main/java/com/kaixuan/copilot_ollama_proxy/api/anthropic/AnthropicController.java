@@ -3,6 +3,7 @@ package com.kaixuan.copilot_ollama_proxy.api.anthropic;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
 import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
+import com.kaixuan.copilot_ollama_proxy.api.shared.UsageAccounting;
 import com.kaixuan.copilot_ollama_proxy.pipeline.entry.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
@@ -216,11 +217,8 @@ public class AnthropicController {
         if (!completed.compareAndSet(false, true)) {
             return;
         }
-        UsageTokens tokens = usage.get();
-        // 流式<strong>恒记</strong>：无 usage 时记 0,0（与 7b-1 之前逐字一致）——
-        // 它同时是「本次调用发生过」的计数，跳过会让统计卡的调用次数少算。
-        apiUsageCollector.record(tokens == null ? 0 : tokens.promptOrZero(),
-                tokens == null ? 0 : tokens.completionOrZero());
+        // 流式恒记（无 usage 记 0,0）—— 两档语义与理由见 UsageAccounting 的类注释。
+        UsageAccounting.recordStream(apiUsageCollector, usage);
         callLifecyclePublisher.publish(
                 CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, true, finalEvents));
     }
@@ -273,31 +271,23 @@ public class AnthropicController {
     }
 
     /**
-     * 从流式事件取 usage —— 此处仅<strong>取最后一份非 null</strong>。
+     * 从流式事件取 usage —— 实现见 {@link UsageAccounting#accumulate}。
      *
      * <p>跨事件合并（input 来自 {@code message_start}、output 来自 {@code message_delta}，
-     * 且只有正数才覆盖）已由上游执行器的 {@link AnthropicUsageParser#merge} 完成并挂在事件上。
+     * 且只有正数才覆盖）已由上游执行器的 {@code AnthropicUsageParser#merge} 完成并挂在事件上。
      * 出口不必知道这条协议规则 —— 那是 7b-1 消除的那份重复。
      */
     private void accumulateUsage(UpstreamEvent event, AtomicReference<UsageTokens> usage) {
-        if (event.usage() != null) {
-            usage.set(event.usage());
-        }
+        UsageAccounting.accumulate(event, usage);
     }
 
     /**
      * 从非流式响应记账 —— 读事件上由主干填好的槽，不自行解析。
      *
-     * <p>阶段 5 步 7b-1「usage 消重复」：此前本方法用 {@code AnthropicUsageParser} 重新解析
-     * 同一份字节，把「Anthropic 的 usage 怎么读」这条协议语义复制到了出口。
-     *
-     * <p>非流式<strong>无 usage 时不记</strong>（与 7b-1 之前一致）—— 与流式路径的「恒记」不同。
+     * <p>读的是 {@link UpstreamEvent#usage()}，两档语义见 {@link UsageAccounting}。
      */
     private void recordUsage(UpstreamEvent event) {
-        UsageTokens tokens = event.usage();
-        if (tokens != null && !tokens.isEmpty()) {
-            apiUsageCollector.record(tokens.promptOrZero(), tokens.completionOrZero());
-        }
+        UsageAccounting.recordNonStream(apiUsageCollector, event);
     }
 
     /**

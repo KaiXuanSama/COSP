@@ -513,8 +513,22 @@ observability/
 全部原地保留 —— 那是出口独有状态。若改为主干直接记账（曾评估的「甲案」），
 就要把这四个条件复制到主干，**那是换个地方重复，不是消重复**。
 
-**钉住它的测试**：`api/openai/OpenAiControllerUsageSlotTests`。
-其中 `doesNotParseDataWhenSlotAbsent` 是**反直觉**的关键断言 ——
+**7b-2 的收尾**（✅ 2026-09-26）：出口剩下的「读槽 → 记账」三份逐字相同，
+已收归 `api/shared/UsageAccounting`（与 `StreamLifecycle` / `UpstreamFailureClassifier` 同址）。
+两档记账语义**刻意不同**，不要统一：
+
+| 路径 | 无 usage 时 | 为何如此 |
+|---|---|---|
+| **流式** `recordStream` | **记 `0,0`** | 它同时是「本次调用发生过」的计数，跳过会让统计卡的**调用次数**少算 |
+| **非流式** `recordNonStream` | **不记** | 响应体里真的没有 usage 就没有可记的量 |
+
+> 累积规则还有第三档容易漏：**`EMPTY` 也不覆盖**。上游可能给出本服务不认识的
+> usage 字段名（解析为 `EMPTY`），收下它会把先前的真实值刷成 `0` ——
+> 这与重构前三条线路的 `if (!tokens.isEmpty())` 逐字一致。
+
+**钉住它的测试**：`api/openai/OpenAiControllerUsageSlotTests`（6 条，出口侧）
+与 `api/shared/UsageAccountingTests`（9 条，两档边界）。
+前者的 `doesNotParseDataWhenSlotAbsent` 是**反直觉**的关键断言 ——
 让 data 里带着合法 usage（999/888）却不挂槽，期望出口**忽略**它：
 若有人偷偷把解析搬回出口，这条会失败。
 
@@ -533,8 +547,9 @@ observability/
    随 `discovery/` 搬走而失效，已改 `**/application/discovery/**`。
 4. **注意「测试数变少」** —— 那是文件丢失的可靠信号（比任何断言都早），
    常见原因是 `git mv` 的目标目录不存在而**静默失败**。
-5. **全量验证**：`.\mvnw.cmd compiler:compile compiler:testCompile surefire:test`，基线 **1315**
-   （阶段 5 步 7a-1 前为 1309；步 7b-1 新增 `OpenAiControllerUsageSlotTests` 的 6 条）。
+5. **全量验证**：`.\mvnw.cmd compiler:compile compiler:testCompile surefire:test`，基线 **1324**
+   （阶段 5 步 7a-1 前为 1309；步 7b-1 新增 `OpenAiControllerUsageSlotTests` 6 条，
+   步 7b-2 新增 `UsageAccountingTests` 9 条）。
 
 ### 5.1 搬包实操的三条细则（阶段 5 实测，后续搬包直接复用）
 
