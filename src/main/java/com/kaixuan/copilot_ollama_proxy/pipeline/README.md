@@ -480,7 +480,43 @@ observability/
 | **回程中段仍在执行器闭包** ⏳可选 | 帧归一 / reasoning fallback / usage 解析（协议特有）留在执行器 `postLoop` 闭包 —— 这是**协议特有**的正当归属，不是偏差；仅其「消费者只有 Chat 执行器」一点与主干化取向不一致 | 契约收缩（`UpstreamExecutor` → transport）可分离协议特有中段与传输，**已降级为可选清理**（块化已拿走主要收益） |
 | **`buildWebClient` 三份** ✅刀3 B | 三执行器各一份，曾差异为 baseUrl 来源 + `anthropic-version` 头 | 刀 3 B 把那些差异归进 `before/outbound/` 支线，三份现**逐字同形**（只差方法名/可见性）；合并是随时可做的纯清理 |
 | **观测轴散在三处** ✅步7a-1 | `application/lifecycle` · `infrastructure/web/` · 主干内两个薄适配器 | 已收拢到顶层 `observability/{port,publisher,record,notify}/`；依赖方向实测单向（见 §3.2） |
-| **usage 被解析两遍** ⏳步7b | 发送块解析一次（写 `api_call_usage`）；`api/` 三个 Controller 又解析一次（写 `api_usage_daily` + 推前端）。且 `ResponsesController.recordStreamUsage` 里复制了一份协议语义（「最后一份非 null 胜出，与 Anthropic 需跨事件 merge 不同」） | **不是「搬位置」而是「消重复」**：发送块解析一次 → 把结果交出（照 `ctx.applyTranslators` / `ctx.applyOutbound` 的跨块手法），观测在边上消费、不重新解析。见 §3.3 的出口判据与 `plan_.md` §4.8.8 第 9/10 步 7 |
+| **usage 被解析两遍** ✅步7b-1 | 发送块解析一次（写 `api_call_usage`）；`api/` 三个 Controller 又解析一次（写 `api_usage_daily` + 推前端）。且 `ResponsesController.recordStreamUsage` 里复制了一份协议语义（「最后一份非 null 胜出，与 Anthropic 需跨事件 merge 不同」） | **不是「搬位置」而是「消重复」**：解析收到生产者，结果挂在 `UpstreamEvent.usage()` 上；出口只做一条**与协议无关**的「取最后一份非 null」。详见下方 §4.2 |
+
+### 4.2 usage 槽：跨块交出协议解析结果（步 7b-1，✅ 已完成）
+
+**问题**：同一份上游字节被解析两遍，后一遍在**出口** —— 而出口本该只知道
+「这些字节要包成什么 HTTP 形状」，不该知道「这些字节在协议上是什么意思」（§3.3）。
+
+**修法**：槽开在 `UpstreamEvent` 上，而不是 `ctx` 上 ——
+
+| 为何不是 `ctx` | 说明 |
+|---|---|
+| `ctx` 从不返回给出口 | 它由 `entry/` 的三个 Service 在 `defer` 内创建，出口只拿到 `Flux<UpstreamEvent>` |
+| 出口记账发生在**流内** | Layer 1 见到终止标记**那一刻**就 finalize（不等 TCP 关闭）——那时出口手里只有那一帧 |
+
+> `ctx` 的跨块手法（`applyTranslators` / `applyOutbound`）只适用于**发送前块内部**：
+> 那时 ctx 还在调用栈上、尚未发出 I/O。**数据开始流动之后，唯一能承载跨层信息的就是流里的元素。**
+
+**语义**：生产者（三执行器 / 翻译器）挂「**到目前为止的累积值**」到每帧上；
+出口的消费规则是「**取最后一份非 null**」—— 这条规则**与协议无关**。
+
+- 只在尾帧挂会退步：上游不发终止标记就断连时靠 Layer 2 兜底，那需要**流内已见过的值**；
+- 三种协议的累积差异（Chat / Responses 后到覆盖、Anthropic 只有正数才覆盖、
+  C2M 由上游侧算好）**全被生产者吸收**，出口一行协议分支都不剩 —— 这正是消重复的判据。
+
+**有意的行为变更**（仅一处）：C2M 且下游未请求 `include_usage` 时，
+翻译器不发 usage 帧 → 旧出口解析不到 → 记 `0,0`；现在记真实值。
+这是**修正**：`api_call_usage`（明细）本就记真实值，两张表口径因此统一。
+调用**次数**不变（那是出口「恰记一次」的不变式，本步不动）。
+
+**未动的东西**：出口的 `completed` CAS + `canceled` 守卫 + Layer 1/Layer 2 两层判定
+全部原地保留 —— 那是出口独有状态。若改为主干直接记账（曾评估的「甲案」），
+就要把这四个条件复制到主干，**那是换个地方重复，不是消重复**。
+
+**钉住它的测试**：`api/openai/OpenAiControllerUsageSlotTests`。
+其中 `doesNotParseDataWhenSlotAbsent` 是**反直觉**的关键断言 ——
+让 data 里带着合法 usage（999/888）却不挂槽，期望出口**忽略**它：
+若有人偷偷把解析搬回出口，这条会失败。
 
 ---
 
@@ -497,7 +533,8 @@ observability/
    随 `discovery/` 搬走而失效，已改 `**/application/discovery/**`。
 4. **注意「测试数变少」** —— 那是文件丢失的可靠信号（比任何断言都早），
    常见原因是 `git mv` 的目标目录不存在而**静默失败**。
-5. **全量验证**：`.\.mvnw.cmd compiler:compile compiler:testCompile surefire:test`，基线 **1309**。
+5. **全量验证**：`.\mvnw.cmd compiler:compile compiler:testCompile surefire:test`，基线 **1315**
+   （阶段 5 步 7a-1 前为 1309；步 7b-1 新增 `OpenAiControllerUsageSlotTests` 的 6 条）。
 
 ### 5.1 搬包实操的三条细则（阶段 5 实测，后续搬包直接复用）
 

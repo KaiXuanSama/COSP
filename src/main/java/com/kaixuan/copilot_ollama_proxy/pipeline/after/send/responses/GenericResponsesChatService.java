@@ -300,7 +300,8 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                         // 包装成统一形态：非流式在本形态下就是「恰有一个元素的流」。
                         // 直接用 body 而不走分类器：非流式的响应体里不存在协议级终止标记，
                         // 「说完了」由流的 onComplete 表达 —— 这是已确定的事实，不必运行时再判一次。
-                        UpstreamEvent::body));
+                        // usage 挂槽：与上面写 api_call_usage 用的是同一份解析结果（阶段 5 步 7b-1）。
+                        body -> UpstreamEvent.body(body, parseUsageForExit(body))));
     }
 
     // ==================== 流式 ====================
@@ -354,12 +355,15 @@ public class GenericResponsesChatService implements UpstreamExecutor {
         // 而非「第一份」—— 若某个上游在中途也带 usage，终态那份才是结算值。
         // 它是<strong>协议特有</strong>的流级态，故留本方法闭包、不进 AttemptContext。
         AtomicReference<String> usageRaw = new AtomicReference<>(null);
+        // 与 usageRaw 同源：解析只做一次，两者一起更新（阶段 5 步 7b-1「usage 消重复」）。
+        AtomicReference<UsageTokens> usageTokens = new AtomicReference<>(null);
 
         // transport：defer 内每轮重置 usageRaw（AttemptContext 由 runner 重置），
         // 建 WebClient + 发送 + preGate 处理（mapNotNull/filter/首字打点/usage 提取/chunk 记录）。
         UpstreamCallRunner.StreamPipeline<String> pipeline = new UpstreamCallRunner.StreamPipeline<>(
                 () -> {
                     usageRaw.set(null);
+                    usageTokens.set(null);
                     return buildWebClient(reqHeaders, ctx)
                             .post().uri(responsesUri()).bodyValue(requestBody)
                             .exchangeToFlux(response -> {
@@ -392,9 +396,11 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                                 log.debug("{} 上游事件: {}", providerKey, data);
                                 // usage 只在终态事件出现，但仍无条件尝试提取：某些上游中途也带一份，
                                 // 后到的覆盖先到的，终态那份最终胜出。
+                                // 同一份字节顺手解析成指标挂到事件上 —— 出口因此不必再解析一遍。
                                 String extracted = ResponsesUsageParser.extractUsageRawJson(objectMapper, data);
                                 if (extracted != null) {
                                     usageRaw.set(extracted);
+                                    usageTokens.set(ResponsesUsageParser.parseUsageObject(objectMapper, extracted));
                                 }
                                 attempt.addChunk(data);
                             });
@@ -422,8 +428,10 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                 // 耗尽放行：Responses 扣的是裸 data，还原恒等（Chat 才要重建 SSE 信封）。
                 Flux::fromIterable,
                 // postLoop：静默重发循环之后按上游协议分类 —— 本类发的就是 Responses 的事件。
+                // usage 在分类之后挂上（withUsage）：classify 只负责分两态，
+                // 「累积 usage」是本线路的流级态，两者职责不同。
                 loop -> loop.map(data -> UpstreamEventClassifier.classify(
-                        objectMapper, WireProtocol.RESPONSES, data)),
+                        objectMapper, WireProtocol.RESPONSES, data).withUsage(usageTokens.get())),
                 // 成功收尾落库 + 用量写入。
                 () -> {
                     int statusCode = attempt.statusCode();
@@ -548,6 +556,20 @@ public class GenericResponsesChatService implements UpstreamExecutor {
         } finally {
             publishCallRecorded();
         }
+    }
+
+    /**
+     * 解析非流式响应体的 usage 供出口读槽（阶段 5 步 7b-1「usage 消重复」）。
+     *
+     * <p>与 {@link #saveUsage} 共用同一个解析器，确保两条消费路径（落 {@code api_call_usage}
+     * 与出口写 {@code api_usage_daily}）拿到同口径的值。
+     *
+     * @param body 上游响应体
+     * @return token 指标；无 usage 时返回 null（出口据此不记账）
+     */
+    private UsageTokens parseUsageForExit(String body) {
+        String raw = ResponsesUsageParser.extractUsageRawJson(objectMapper, body);
+        return raw == null ? null : ResponsesUsageParser.parseUsageObject(objectMapper, raw);
     }
 
     /**

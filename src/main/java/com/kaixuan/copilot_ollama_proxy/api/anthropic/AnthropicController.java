@@ -112,10 +112,11 @@ public class AnthropicController {
                 .then(Mono.error(new CallCanceledException()));
         return Mono.firstWithSignal(
                         // 出口处拆包：主干是统一形态（UpstreamEvent），本端点下游要的是裸 JSON。
+                        // usage 从事件上的槽读取 —— 解析已收归主干（阶段 5 步 7b-1）。
                         messagesService.messages(requestBody, model, requestHeaders, requestId)
+                                .doOnNext(this::recordUsage)
                                 .map(UpstreamEvent::data),
                         cancelSignal)
-                .doOnNext(this::recordUsage)
                 // COMPLETED：非流式无事件计数，最终计数为 0（前端已按 stream 分支处理文案）。
                 .doOnNext(json -> callLifecyclePublisher.publish(
                         CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, stream, 0)))
@@ -163,8 +164,7 @@ public class AnthropicController {
         AtomicInteger eventCount = new AtomicInteger(0);
         AtomicBoolean canceled = new AtomicBoolean(false);
         AtomicBoolean completed = new AtomicBoolean(false);
-        // 流式 usage 跨事件累积：input 来自 message_start、output 来自 message_delta。
-        AtomicReference<UsageTokens> usage = new AtomicReference<>(UsageTokens.EMPTY);
+        AtomicReference<UsageTokens> usage = new AtomicReference<>(null);
 
         Mono<Void> cancelSignal = callCancellationRegistry.register(requestId)
                 .doOnSuccess(v -> canceled.set(true));
@@ -177,7 +177,7 @@ public class AnthropicController {
                 // 分类已由上游执行器完成：本层只读 isTerminal()。
                 .doOnNext(upstreamEvent -> {
                     String event = upstreamEvent.data();
-                    accumulateUsage(event, usage);
+                    accumulateUsage(upstreamEvent, usage);
                     // Layer 1：message_stop 是协议终止标记，不计入事件数。
                     if (upstreamEvent.isTerminal()) {
                         finalizeCompletion(requestId, model, eventCount.get(), completed, usage);
@@ -185,8 +185,7 @@ public class AnthropicController {
                     }
                     callLifecyclePublisher.publish(CallLifecycleEvent.of(
                             requestId, CallPhase.CHUNK, model, true, eventCount.incrementAndGet()));
-                })
-                // event 类型必须回填：Anthropic 客户端靠它驱动状态机，只发 data 无法解析。
+                })                // event 类型必须回填：Anthropic 客户端靠它驱动状态机，只发 data 无法解析。
                 .map(upstreamEvent -> {
                     String event = upstreamEvent.data();
                     String type = extractEventType(event);
@@ -218,7 +217,10 @@ public class AnthropicController {
             return;
         }
         UsageTokens tokens = usage.get();
-        apiUsageCollector.record(tokens.promptOrZero(), tokens.completionOrZero());
+        // 流式<strong>恒记</strong>：无 usage 时记 0,0（与 7b-1 之前逐字一致）——
+        // 它同时是「本次调用发生过」的计数，跳过会让统计卡的调用次数少算。
+        apiUsageCollector.record(tokens == null ? 0 : tokens.promptOrZero(),
+                tokens == null ? 0 : tokens.completionOrZero());
         callLifecyclePublisher.publish(
                 CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, true, finalEvents));
     }
@@ -270,24 +272,30 @@ public class AnthropicController {
         return UpstreamEventClassifier.extractEventType(objectMapper, event);
     }
 
-    /** 从流式事件累积 usage（跨事件合并，见 {@link AnthropicUsageParser#merge}）。 */
-    private void accumulateUsage(String event, AtomicReference<UsageTokens> usage) {
-        String raw = AnthropicUsageParser.extractUsageRawJson(objectMapper, event);
-        if (raw == null) {
-            return;
+    /**
+     * 从流式事件取 usage —— 此处仅<strong>取最后一份非 null</strong>。
+     *
+     * <p>跨事件合并（input 来自 {@code message_start}、output 来自 {@code message_delta}，
+     * 且只有正数才覆盖）已由上游执行器的 {@link AnthropicUsageParser#merge} 完成并挂在事件上。
+     * 出口不必知道这条协议规则 —— 那是 7b-1 消除的那份重复。
+     */
+    private void accumulateUsage(UpstreamEvent event, AtomicReference<UsageTokens> usage) {
+        if (event.usage() != null) {
+            usage.set(event.usage());
         }
-        usage.set(AnthropicUsageParser.merge(usage.get(),
-                AnthropicUsageParser.parseUsageObject(objectMapper, raw)));
     }
 
-    /** 从非流式响应提取 usage 并记入日聚合。 */
-    private void recordUsage(String json) {
-        String raw = AnthropicUsageParser.extractUsageRawJson(objectMapper, json);
-        if (raw == null) {
-            return;
-        }
-        UsageTokens tokens = AnthropicUsageParser.parseUsageObject(objectMapper, raw);
-        if (!tokens.isEmpty()) {
+    /**
+     * 从非流式响应记账 —— 读事件上由主干填好的槽，不自行解析。
+     *
+     * <p>阶段 5 步 7b-1「usage 消重复」：此前本方法用 {@code AnthropicUsageParser} 重新解析
+     * 同一份字节，把「Anthropic 的 usage 怎么读」这条协议语义复制到了出口。
+     *
+     * <p>非流式<strong>无 usage 时不记</strong>（与 7b-1 之前一致）—— 与流式路径的「恒记」不同。
+     */
+    private void recordUsage(UpstreamEvent event) {
+        UsageTokens tokens = event.usage();
+        if (tokens != null && !tokens.isEmpty()) {
             apiUsageCollector.record(tokens.promptOrZero(), tokens.completionOrZero());
         }
     }

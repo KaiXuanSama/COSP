@@ -1,5 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline.protocol;
 
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
+
 /**
  * 上游响应在管道里的<strong>统一形态</strong>。
  *
@@ -79,13 +81,66 @@ public sealed interface UpstreamEvent {
     }
 
     /**
+     * 本帧携带的 token 用量 —— <strong>生产者在流内填，出口只读</strong>。
+     *
+     * <h2>为何挂在这个值类型上（阶段 5 步 7b-1「usage 消重复」）</h2>
+     * 同一份上游字节此前被<strong>解析两遍</strong>：块 2 解析一次写 {@code api_call_usage}（明细），
+     * 出口又解析一次写 {@code api_usage_daily}（聚合）。
+     * 后一遍把协议语义搬到了出口 —— 而出口本该只知道「这些字节要包成什么 HTTP 形状」，
+     * 不该知道「这些字节在协议上是什么意思」（本层 README §3.3）。
+     *
+     * <p>消重复的载体<strong>不是</strong> {@code RequestPipelineContext}：那个 ctx 由
+     * {@code entry/} 的三个 Service 在 {@code defer} 内创建、从不返回给出口，
+     * 而且出口的记账发生在 Layer 1（收到终止标记<strong>那一刻</strong>就 finalize，
+     * 不等 TCP 关闭）。<strong>数据已经开始流动之后，唯一能承载跨层信息的就是流里的元素</strong> ——
+     * 故槽开在此处，与「主干交给出口的形态」是同一个东西。
+     *
+     * <h2>语义：生产者挂「到目前为止的累积值」</h2>
+     * 不是「这一帧新增的量」，也不是「只有尾帧才挂」—— 而是<strong>每帧都挂当前累积值</strong>。
+     * 因为上游不发终止标记就直接断连时要靠出口的 Layer 2 兜底，
+     * 那条路径需要从<strong>流内已见过的值</strong>记账；只在尾帧挂会让它退回 {@code 0,0}。
+     *
+     * <p>消费规则因此可以极简：<strong>取最后一份非 null 即结算值</strong>。
+     * 这条规则<strong>与协议无关</strong> —— 三种协议的累积差异（Chat / Responses 后到覆盖、
+     * Anthropic 跨事件只有正数才覆盖、C2M 由上游侧算好）已被生产者吸收干净。
+     * 出口一行协议分支都不剩，这正是「消重复」的判据。
+     *
+     * <h2>null 的含义</h2>
+     * {@code null} = 生产者至今未见过 usage（或本帧不经过生产者）。
+     * 它与 {@link UsageTokens#EMPTY}（上游报了但三个字段都缺）不同，两者不可归一：
+     * 出口的「最后一份非 null」靠这个区分「没有」与「有但是空」。
+     *
+     * @return 累积到本帧为止的 token 用量；未见任何 usage 时为 {@code null}
+     */
+    UsageTokens usage();
+
+    /**
+     * 复制本帧并换上一个 usage（{@code data} 与两态保持不变）。
+     *
+     * <p>供生产者在分类之后追加 usage 用：{@code classify(...)} 的职责只是分两态，
+     * 不该由它承担「累积 usage」这件事（那是各协议执行器的流级态）。
+     * 用不可变复制而非可变字段：事件可能在多处被引用，改原对象会让「那一帧当时携带什么」
+     * 随之后的事件漂移 —— 而出口要的恰恰是「帧到达时看到了什么」。
+     */
+    default UpstreamEvent withUsage(UsageTokens usage) {
+        return switch (this) {
+            case Body body -> new Body(body.data(), usage);
+            case Terminal terminal -> new Terminal(terminal.data(), usage);
+        };
+    }
+
+    /**
      * 一帧上游载荷。
      *
      * <p>可能是正文、思考链、工具调用参数，也可能是协议的控制帧
      * （{@code content_block_start} 之类）—— 本类不区分它们：
      * 「有没有内容」是判定器的事，形态层只负责搬运。
      */
-    record Body(String data) implements UpstreamEvent {
+    record Body(String data, UsageTokens usage) implements UpstreamEvent {
+
+        Body(String data) {
+            this(data, null);
+        }
 
         public Body {
             java.util.Objects.requireNonNull(data, "data");
@@ -97,20 +152,34 @@ public sealed interface UpstreamEvent {
      *
      * <p>只有流式会产生它：非流式的响应体里没有协议级终止标记（见接口注释）。
      */
-    record Terminal(String data) implements UpstreamEvent {
+    record Terminal(String data, UsageTokens usage) implements UpstreamEvent {
+
+        Terminal(String data) {
+            this(data, null);
+        }
 
         public Terminal {
             java.util.Objects.requireNonNull(data, "data");
         }
     }
 
-    /** 构造一帧载荷。 */
+    /** 构造一帧载荷（不带 usage）。 */
     static Body body(String data) {
-        return new Body(data);
+        return new Body(data, null);
     }
 
-    /** 构造一个终止标记。 */
+    /** 构造一帧载荷并挂上 usage。 */
+    static Body body(String data, UsageTokens usage) {
+        return new Body(data, usage);
+    }
+
+    /** 构造一个终止标记（不带 usage）。 */
     static Terminal terminal(String data) {
-        return new Terminal(data);
+        return new Terminal(data, null);
+    }
+
+    /** 构造一个终止标记并挂上 usage。 */
+    static Terminal terminal(String data, UsageTokens usage) {
+        return new Terminal(data, usage);
     }
 }

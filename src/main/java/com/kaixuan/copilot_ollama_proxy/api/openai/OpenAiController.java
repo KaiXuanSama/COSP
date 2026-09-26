@@ -8,7 +8,6 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.AvailableModel;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
-import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.chat.OpenAiUsageParser;
 import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
 import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
 import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
@@ -36,6 +35,7 @@ import reactor.core.scheduler.Schedulers;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * OpenAI 兼容 API 控制器 —— 处理 Copilot 发出的 OpenAI 格式请求。
@@ -169,10 +169,11 @@ public class OpenAiController {
                         // 出口处拆包：主干是统一形态（UpstreamEvent），本端点下游要的是裸 JSON ——
                         // 形态在这里变回 String。流式侧读 isTerminal()、非流式侧取 data()，
                         // 两者都是「出口按下游需要适配」，主干本身不感知。
+                        // usage 记账必须发生在取 data() 之前 —— 它读的是事件上的槽。
                         chatCompletionService.chatCompletion(requestBody, model, requestHeaders, requestId)
+                                .doOnNext(this::recordUsage)
                                 .map(UpstreamEvent::data),
                         cancelSignal)
-                .doOnNext(this::recordUsage)
                 // COMPLETED：非流式无 chunk 计数，最终计数为 0。
                 .doOnNext(json -> callLifecyclePublisher.publish(
                         CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, stream, 0)))
@@ -223,8 +224,9 @@ public class OpenAiController {
      */
     private Flux<ServerSentEvent<String>> streamResponse(Map<String, Object> requestBody, String model,
                                                           HttpHeaders requestHeaders, String requestId) {
-        AtomicInteger streamInputTokens = new AtomicInteger(0);
-        AtomicInteger streamOutputTokens = new AtomicInteger(0);
+        // 流内累积到的 usage（读事件上的槽，见 accumulateStreamUsage）。
+        // 它替代了此前的两个 AtomicInteger 计数器 —— 解析已收归主干，出口只搬运。
+        AtomicReference<UsageTokens> streamUsage = new AtomicReference<>(null);
         // chunkCount 记录累计 chunk 数，每个 chunk 到达即推一次 CHUNK 事件，让 Toast 计数逐个跟手更新。
         AtomicInteger chunkCount = new AtomicInteger(0);
         // canceled 标志：外部主动取消时置位，用于在流结束后区分 ABORTED 与正常 COMPLETED。
@@ -248,13 +250,13 @@ public class OpenAiController {
                 // 「帧是哪个协议」走 —— 只有生产它的那一层知道答案。
                 .doOnNext(event -> {
                     String chunk = event.data();
-                    accumulateStreamUsage(chunk, streamInputTokens, streamOutputTokens);
+                    accumulateStreamUsage(event, streamUsage);
                     // Layer 1（语义信号优先）：收到终止标记即认定上游内容已发完，立即 finalize，
                     // 不必等上游关闭 TCP 连接。修复「上游发完 [DONE] 却不断连，Toast 永远悬挂在 CHUNK」的偶发 bug。
                     // 终止标记不计入 chunk 数。
                     if (event.isTerminal()) {
                         finalizeStreamCompletion(requestId, model, chunkCount.get(), completed,
-                                streamInputTokens, streamOutputTokens);
+                                streamUsage);
                         return;
                     }
                     // 每个 chunk 都推一次 CHUNK 事件（不节流）。单次响应 chunk 数通常不过数百，SSE 开销可接受。
@@ -270,7 +272,7 @@ public class OpenAiController {
                 // Layer 2：上游未发 [DONE] 就直接关连接时靠这里兜底。
                 // 若 Layer 1 已在收到 [DONE] 时 finalize，completed 标志会让这里成为 no-op。
                 () -> finalizeStreamCompletion(requestId, model, chunkCount.get(), completed,
-                        streamInputTokens, streamOutputTokens),
+                        streamUsage),
                 error -> openAiErrorFrame(error, model));
     }
 
@@ -286,17 +288,20 @@ public class OpenAiController {
      * @param model        模型名称
      * @param finalChunks  最终 chunk 总数（[DONE] 不计入）
      * @param completed    完成去重标志（CAS）
-     * @param inputTokens  累计输入 token
-     * @param outputTokens 累计输出 token
+     * @param usage        流内累积到的 token 用量（读事件上的槽）
      */
     private void finalizeStreamCompletion(String requestId, String model, int finalChunks,
                                           AtomicBoolean completed,
-                                          AtomicInteger inputTokens, AtomicInteger outputTokens) {
+                                          AtomicReference<UsageTokens> usage) {
         // CAS 去重：只有第一个到达的层能 finalize，另一层直接返回。
         if (!completed.compareAndSet(false, true)) {
             return;
         }
-        apiUsageCollector.record(inputTokens.get(), outputTokens.get());
+        UsageTokens tokens = usage.get();
+        // 流式<strong>恒记</strong>：无 usage 时记 0,0（与 7b-1 之前逐字一致）——
+        // 因为它同时是「本次调用发生过」的计数，跳过会让统计卡的调用次数少算。
+        apiUsageCollector.record(tokens == null ? 0 : tokens.promptOrZero(),
+                tokens == null ? 0 : tokens.completionOrZero());
         // COMPLETED：带最终精确 chunk 总数作为兜底，确保前端计数与实际一致。
         callLifecyclePublisher.publish(
                 CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, true, finalChunks));
@@ -474,29 +479,33 @@ public class OpenAiController {
     }
 
     /**
-     * 从非流式响应 JSON 中提取 usage 并记录。
-     * @param openAiJson 非流式响应的 JSON 字符串，包含 usage 字段
+     * 从非流式响应提取 usage 并记入日聚合。
+     *
+     * <p>读的是<strong>事件上由主干填好的槽</strong>（{@link UpstreamEvent#usage()}），
+     * 不再自行解析协议字节 —— 阶段 5 步 7b-1「usage 消重复」把解析收归了生产者。
+     * 三条线路的累积差异（Chat / Responses 后到覆盖、Anthropic 跨事件合并、C2M 由上游算好）
+     * 全部由生产者吸收，故本层一行协议分支都不需要。
+     *
+     * <p>非流式<strong>无 usage 时不记</strong>（与 7b-1 之前一致）—— 与流式路径的「恒记」
+     * 不同，那是历史行为，本步不改。
      */
-    private void recordUsage(String openAiJson) {
-        UsageTokens tokens = OpenAiUsageParser.parseFromJson(objectMapper, openAiJson);
-        if (!tokens.isEmpty()) {
+    private void recordUsage(UpstreamEvent event) {
+        UsageTokens tokens = event.usage();
+        if (tokens != null && !tokens.isEmpty()) {
             apiUsageCollector.record(tokens.promptOrZero(), tokens.completionOrZero());
         }
     }
 
     /**
-     * 从流式 SSE chunk 中累加 token 数。
-     * 流式响应中 usage 可能出现在最后一个 content chunk 或单独的 usage chunk 中。
-     * @param chunk SSE chunk 字符串
-     * @param inputTokens 输入 token 累加器
-     * @param outputTokens 输出 token 累加器
+     * 从流式事件累积 usage —— 此处仅<strong>取最后一份非 null</strong>。
+     *
+     * <p>这条规则与协议无关：生产者已把「跨事件合并 / 后到覆盖 / 只有正数才覆盖」等
+     * 协议差异吸收干净（见 {@link UpstreamEvent#usage()} 的说明），故出口不必知道
+     * 上游说的是哪个协议。
      */
-    private void accumulateStreamUsage(String chunk, AtomicInteger inputTokens, AtomicInteger outputTokens) {
-        UsageTokens tokens = OpenAiUsageParser.parseFromJson(objectMapper, chunk);
-        // 流式 usage 通常只出现在尾 chunk；有则覆盖累加器（缺失记 0，保持既有日聚合行为）。
-        if (!tokens.isEmpty()) {
-            inputTokens.set(tokens.promptOrZero());
-            outputTokens.set(tokens.completionOrZero());
+    private void accumulateStreamUsage(UpstreamEvent event, AtomicReference<UsageTokens> usage) {
+        if (event.usage() != null) {
+            usage.set(event.usage());
         }
     }
 

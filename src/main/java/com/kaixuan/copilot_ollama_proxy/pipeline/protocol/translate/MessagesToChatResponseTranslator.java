@@ -5,13 +5,13 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.TranslationContext;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEventClassifier;
-import org.springframework.stereotype.Component;
-import reactor.core.publisher.Flux;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;import org.springframework.stereotype.Component;import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Anthropic Messages 响应 → OpenAI Chat Completions 响应的翻译器。
@@ -81,9 +81,8 @@ public class MessagesToChatResponseTranslator implements ResponseProtocolTransla
     @Override
     public Mono<UpstreamEvent> translateResponse(Mono<UpstreamEvent> upstreamBody) {
         return upstreamBody
-                .map(UpstreamEvent::data)
-                .map(nonStreamTranslator::translate)
-                .map(UpstreamEvent::body);
+                .map(upstream -> UpstreamEvent.body(
+                        nonStreamTranslator.translate(upstream.data()), upstream.usage()));
     }
 
     /**
@@ -118,14 +117,25 @@ public class MessagesToChatResponseTranslator implements ResponseProtocolTransla
             M2CStreamState state = new M2CStreamState(
                     placeholderId(), upstreamModel, context.includeUsage());
             WireProtocol outputProtocol = downstreamProtocol();
+            // 上游事件携带的 usage 指标（由上游执行器填）—— 本翻译器<strong>只传递不重算</strong>：
+            // 换算只依赖上游协议，执行器已经做过；此处再算一遍就是 7b-1 要消除的那种重复。
+            // 出站那份 OpenAI 形态的 usage 帧仍由 M2CStreamState 自算 —— 那是「给下游看什么」，
+            // 与「记账用什么」是两件事，不在本步的重复范围内。
+            AtomicReference<UsageTokens> carriedUsage = new AtomicReference<>(null);
             return upstreamEvents
+                    .doOnNext(event -> {
+                        if (event.usage() != null) {
+                            carriedUsage.set(event.usage());
+                        }
+                    })
                     .map(UpstreamEvent::data)
                     .concatMapIterable(event -> streamTranslator.translateEvent(event, state))
                     // 收尾必须在流正常结束后追加，而不是放在 doFinally ——
                     // 后者无法把新元素注入流中。
                     .concatWith(Flux.defer(() -> Flux.fromIterable(
                             streamTranslator.finalizeStream(state))))
-                    .map(frame -> UpstreamEventClassifier.classify(objectMapper, outputProtocol, frame));
+                    .map(frame -> UpstreamEventClassifier.classify(objectMapper, outputProtocol, frame)
+                            .withUsage(carriedUsage.get()));
         });
     }
 

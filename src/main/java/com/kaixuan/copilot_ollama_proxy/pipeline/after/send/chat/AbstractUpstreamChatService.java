@@ -265,6 +265,9 @@ public abstract class AbstractUpstreamChatService {
         Map<String, String> reqHeaders = new LinkedHashMap<>();
         // 流级状态收归 AttemptContext（阶段 4 刀 2）：非流式只用到 attemptStart。
         AttemptContext attempt = new AttemptContext();
+        // 本轮 usage 指标 —— <strong>单次解析、两处消费</strong>（本类写 api_call_usage，出口读槽写 api_usage_daily）。
+        // 阶段 5 步 7b-1「usage 消重复」：此前出口会用同一份字节再解析一遍。
+        AtomicReference<UsageTokens> usageTokens = new AtomicReference<>(null);
 
         // 外层骨架（defer → 落库 → 判空 → retryWhen → 取 body → 耗尽放行 → 包装）收归主干 runner；
         // 本方法只提供协议特定的 transport（含 URI）、成功/失败落库、以及「body 转统一形态」这三段闭包。
@@ -285,7 +288,9 @@ public abstract class AbstractUpstreamChatService {
                             Long logId = UpstreamCallRunner.saveNonStreamLog(apiCallLog, ctx, reqHeaders, requestBody,
                                     respHeaders, entity.getStatusCode().value(), entity.getBody(), attempt.attemptStart());
                             // 成功往返：从响应体提取 usage 写入独立用量表（非流式无首字概念，ttfb 传 null）。
-                            saveUsageIfPresent(logId, providerKey, modelName, stream, entity.getBody(), null);
+                            // 同一份 tokens 挂到出口读的槽上 —— 出口不再自行解析协议字节。
+                            usageTokens.set(saveUsageIfPresent(logId, providerKey, modelName, stream,
+                                    entity.getBody(), null));
                         },
                         // 失败往返：每次失败（含被 retry 吞掉的中间失败）都各自落一条（在 retry 上游）。
                         e -> {
@@ -312,7 +317,7 @@ public abstract class AbstractUpstreamChatService {
                         //
                         // 直接用 body 而不走分类器：非流式的响应体里不存在协议级终止标记，
                         // 「说完了」由流的 onComplete 表达 —— 这是已确定的事实，不必运行时再判一次。
-                        body -> UpstreamEvent.body(normalizeNonStreamResponse(body, model))));
+                        body -> UpstreamEvent.body(normalizeNonStreamResponse(body, model), usageTokens.get())));
     }
 
     /**
@@ -433,11 +438,13 @@ public abstract class AbstractUpstreamChatService {
 
         // 协议特有的流级态仍留本方法闭包（不进 AttemptContext）：
         //  - contentEmitted / reasoningBuffer / chunkId 供 chunk 归一与 reasoning fallback 跨帧累积；
-        //  - usageRaw 供成功收尾写用量表。
+        //  - usageRaw 供成功收尾写用量表；usageTokens 是同源解析结果，挂到出口读的槽上。
         AtomicBoolean contentEmitted = new AtomicBoolean(false);
         StringBuilder reasoningBuffer = new StringBuilder();
         AtomicReference<String> chunkId = new AtomicReference<>("chatcmpl-unknown");
         AtomicReference<String> usageRaw = new AtomicReference<>(null);
+        // 与 usageRaw 同源：解析只做一次，两者一起更新（阶段 5 步 7b-1「usage 消重复」）。
+        AtomicReference<UsageTokens> usageTokens = new AtomicReference<>(null);
 
         // transport：defer 内每轮重置协议特有累积（AttemptContext 由 runner 重置），
         // 建 WebClient + 发送 + preGate 首字打点。本线路的闸门元素是 ServerSentEvent<String>
@@ -450,6 +457,7 @@ public abstract class AbstractUpstreamChatService {
                     reasoningBuffer.setLength(0);
                     chunkId.set("chatcmpl-unknown");
                     usageRaw.set(null);
+                    usageTokens.set(null);
                     return buildWebClientWithHeaders(reqHeaders, ctx)
                             .post().uri(chatCompletionsUri()).bodyValue(requestBody)
                             .exchangeToFlux(response -> {
@@ -511,9 +519,11 @@ public abstract class AbstractUpstreamChatService {
                         .doOnNext(raw -> {
                             log.debug("{} 上游原始: {}", provider.providerKey(), raw);
                             // 从上游原始 chunk 提取 usage 原始 JSON（通常在尾 chunk）；有则记录供成功收尾落库。
+                            // 同一份字节顺手解析成指标挂到事件上 —— 出口因此不必再解析一遍。
                             String rawUsage = OpenAiUsageParser.extractUsageRawJson(objectMapper, raw);
                             if (rawUsage != null) {
                                 usageRaw.set(rawUsage);
+                                usageTokens.set(OpenAiUsageParser.parseUsageObject(objectMapper, rawUsage));
                             }
                         }).concatMap(chunk -> {
                             // 上游形态归一：统一 reasoning 字段名 / finish_reason / 剪空。
@@ -545,7 +555,10 @@ public abstract class AbstractUpstreamChatService {
                         // 形态归一：把清洗后的字符串分成「载荷」与「终止标记」两态。
                         // 放在清洗<strong>之后</strong>：清洗会改写 chunk（含它内部的 [DONE] 直通分支），
                         // 分类必须看最终要下发的那份内容。
-                        .map(chunk -> UpstreamEventClassifier.classify(objectMapper, WireProtocol.CHAT, chunk)),
+                        // usage 在分类之后挂上（withUsage）：classify 只负责分两态，
+                        // 「累积 usage」是本线路的流级态，两者职责不同。
+                        .map(chunk -> UpstreamEventClassifier.classify(objectMapper, WireProtocol.CHAT, chunk)
+                                .withUsage(usageTokens.get())),
                 // 成功收尾落库 + 用量写入。
                 () -> {
                     int statusCode = attempt.statusCode();
@@ -555,9 +568,10 @@ public abstract class AbstractUpstreamChatService {
                     Long logId = UpstreamCallRunner.saveStreamLog(apiCallLog, ctx, reqHeaders, requestBody,
                             attempt.respHeaders(), statusCode, attempt.chunks(), attempt.attemptStart(), null);
                     // 写入时序 A（串联）：仅成功且有 usage 时写用量表；log_id 拿不到则降级为孤儿行。
+                    // tokens 复用流内已解析的那份（不再重复解析 usageRaw）。
                     long ttfb = attempt.ttfb();
                     saveUsage(logId, providerKey, modelName, stream, usageRaw.get(),
-                            ttfb < 0 ? null : (int) ttfb);
+                            ttfb < 0 ? null : (int) ttfb, usageTokens.get());
                 });
 
         return UpstreamCallRunner.runStream(attempt, gate, detector, callCtx,
@@ -620,15 +634,19 @@ public abstract class AbstractUpstreamChatService {
      * @param stream   是否流式
      * @param fullBody 完整响应体 JSON
      * @param ttfbMs   首字响应时长；非流式传 null
+     * @return 解析出的 token 指标；响应体无合法 usage 时返回 null（调用方据此不挂槽）
      */
-    private void saveUsageIfPresent(Long logId, String providerKey, String modelName, boolean stream,
-                                    String fullBody, Integer ttfbMs) {
+    private UsageTokens saveUsageIfPresent(Long logId, String providerKey, String modelName, boolean stream,
+                                           String fullBody, Integer ttfbMs) {
         try {
-            if (apiCallUsage == null) return;
             String usageRaw = OpenAiUsageParser.extractUsageRawJson(objectMapper, fullBody);
-            if (usageRaw == null) return; // 无 usage：不写（方案 a）
+            if (usageRaw == null) return null; // 无 usage：不写（方案 a）
             UsageTokens tokens = OpenAiUsageParser.parseUsageObject(objectMapper, usageRaw);
-            apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw, tokens, ttfbMs);
+            // 落库可缺省（未注入写入服务），但解析照做 —— 出口的日聚合不因日志服务关闭而失灵。
+            if (apiCallUsage != null) {
+                apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw, tokens, ttfbMs);
+            }
+            return tokens;
         } finally {
             // finally 语义：无论用量是否实际写入，用量流程走完即宣告该次调用的记录就绪。
             publishCallRecorded();
@@ -644,13 +662,13 @@ public abstract class AbstractUpstreamChatService {
      * @param logId    api_call_log 自增 id；可为 null（软链接，拿不到写孤儿行）
      * @param usageRaw 已提取的 usage 对象原始 JSON；null 表示本次往返无 usage
      * @param ttfbMs   首字响应时长；未测得传 null
+     * @param tokens   与 {@code usageRaw} 同源解析出的指标（解析只做一次，见 saveUsageIfPresent）
      */
     private void saveUsage(Long logId, String providerKey, String modelName, boolean stream,
-                           String usageRaw, Integer ttfbMs) {
+                           String usageRaw, Integer ttfbMs, UsageTokens tokens) {
         try {
             if (apiCallUsage == null) return;
             if (usageRaw == null) return; // 无 usage：不写（方案 a）
-            UsageTokens tokens = OpenAiUsageParser.parseUsageObject(objectMapper, usageRaw);
             apiCallUsage.save(logId, providerKey, modelName, stream, usageRaw, tokens, ttfbMs);
         } finally {
             // finally 语义：无论用量是否实际写入，用量流程走完即宣告该次调用的记录就绪。

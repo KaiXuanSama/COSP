@@ -287,7 +287,8 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                         // 包装成统一形态：非流式在本形态下就是「恰有一个元素的流」。
                         // 直接用 body 而不走分类器：非流式的响应体里不存在协议级终止标记，
                         // 「说完了」由流的 onComplete 表达 —— 这是已确定的事实，不必运行时再判一次。
-                        UpstreamEvent::body));
+                        // usage 挂槽：与上面写 api_call_usage 用的是同一份解析结果（阶段 5 步 7b-1）。
+                        body -> UpstreamEvent.body(body, parseUsageForExit(body))));
     }
 
     // ==================== 流式 ====================
@@ -423,8 +424,10 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                 // 耗尽放行：Anthropic 扣的是裸 data，还原恒等（Chat 才要重建 SSE 信封）。
                 Flux::fromIterable,
                 // postLoop：静默重发循环之后按上游协议分类 —— 本类发的就是 Anthropic 的事件。
+                // usage 在分类之后挂上（withUsage）：classify 只负责分两态，
+                // 「跨事件合并 usage」是本线路的流级态，两者职责不同。
                 loop -> loop.map(data -> UpstreamEventClassifier.classify(
-                        objectMapper, WireProtocol.MESSAGES, data)),
+                        objectMapper, WireProtocol.MESSAGES, data).withUsage(usageAccumulator.get())),
                 // 成功收尾落库 + 用量写入（流式传已跨事件合并好的 tokens）。
                 () -> {
                     int statusCode = attempt.statusCode();
@@ -578,6 +581,20 @@ public class GenericAnthropicChatService implements UpstreamExecutor {
                            String usageRaw, Integer ttfbMs) {
         saveUsage(logId, providerKey, modelName, stream, usageRaw, ttfbMs,
                 AnthropicUsageParser.parseUsageObject(objectMapper, usageRaw));
+    }
+
+    /**
+     * 解析非流式响应体的 usage 供出口读槽（阶段 5 步 7b-1「usage 消重复」）。
+     *
+     * <p>与 {@link #saveUsage} 的重载共用同一个解析器，确保两条消费路径（落 {@code api_call_usage}
+     * 与出口写 {@code api_usage_daily}）拿到同口径的值 —— 这正是 7b-1 要消除的那份重复。
+     *
+     * @param body 上游响应体
+     * @return token 指标；无 usage 时返回 null（出口据此不记账）
+     */
+    private UsageTokens parseUsageForExit(String body) {
+        String raw = AnthropicUsageParser.extractUsageRawJson(objectMapper, body);
+        return raw == null ? null : AnthropicUsageParser.parseUsageObject(objectMapper, raw);
     }
 
     /**

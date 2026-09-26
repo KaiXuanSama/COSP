@@ -16,7 +16,6 @@ import com.kaixuan.copilot_ollama_proxy.control.CallCanceledException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEventClassifier;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.responses.ResponsesStreamEvents;
-import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.responses.ResponsesUsageParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -126,10 +125,11 @@ public class ResponsesController {
                 .then(Mono.error(new CallCanceledException()));
         return Mono.firstWithSignal(
                         // 出口处拆包：主干是统一形态（UpstreamEvent），本端点下游要的是裸 JSON。
+                        // usage 从事件上的槽读取 —— 解析已收归主干（阶段 5 步 7b-1）。
                         responsesService.responses(requestBody, model, requestHeaders, requestId)
+                                .doOnNext(this::recordUsage)
                                 .map(UpstreamEvent::data),
                         cancelSignal)
-                .doOnNext(this::recordUsage)
                 // COMPLETED：非流式无事件计数，最终计数为 0（前端已按 stream 分支处理文案）。
                 .doOnNext(json -> callLifecyclePublisher.publish(
                         CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, stream, 0)))
@@ -185,9 +185,9 @@ public class ResponsesController {
         AtomicInteger eventCount = new AtomicInteger(0);
         AtomicBoolean canceled = new AtomicBoolean(false);
         AtomicBoolean completed = new AtomicBoolean(false);
-        // 流式 usage 只在终态事件出现一次，因此这里是「最后一份非 null 胜出」而非累积 ——
-        // 与 Anthropic 端点需要跨事件 merge 的形态不同。
-        AtomicReference<UsageTokens> usage = new AtomicReference<>(UsageTokens.EMPTY);
+        // 流式 usage 的消费规则是「取最后一份非 null」——
+        // 协议侧的「只在终态事件出现一次」由生产者保证，出口不必知道。
+        AtomicReference<UsageTokens> usage = new AtomicReference<>(null);
 
         Mono<Void> cancelSignal = callCancellationRegistry.register(requestId)
                 .doOnSuccess(v -> canceled.set(true));
@@ -200,7 +200,7 @@ public class ResponsesController {
                 // 分类已由上游执行器完成：本层只读 isTerminal()。
                 .doOnNext(upstreamEvent -> {
                     String event = upstreamEvent.data();
-                    recordStreamUsage(event, usage);
+                    recordStreamUsage(upstreamEvent, usage);
                     // Layer 1：终态事件是协议终止标记，不计入事件数。
                     if (upstreamEvent.isTerminal()) {
                         // 结局取自事件名 —— response.failed 不能显示成「完成」。
@@ -260,7 +260,10 @@ public class ResponsesController {
             return;
         }
         UsageTokens tokens = usage.get();
-        apiUsageCollector.record(tokens.promptOrZero(), tokens.completionOrZero());
+        // 流式<strong>恒记</strong>：无 usage 时记 0,0（与 7b-1 之前逐字一致）——
+        // 它同时是「本次调用发生过」的计数，跳过会让统计卡的调用次数少算。
+        apiUsageCollector.record(tokens == null ? 0 : tokens.promptOrZero(),
+                tokens == null ? 0 : tokens.completionOrZero());
         callLifecyclePublisher.publish(
                 CallLifecycleEvent.of(requestId, phaseOf(outcome), model, true, finalEvents));
     }
@@ -322,31 +325,26 @@ public class ResponsesController {
     }
 
     /**
-     * 从流式事件提取 usage。
+     * 从流式事件取 usage —— 此处仅<strong>取最后一份非 null</strong>。
      *
-     * <p>「最后一份非 null 胜出」而非跨事件合并：Responses 的 usage 挂在终态事件的
-     * {@code response.usage} 下、一次给全。若某个上游中途也带一份，终态那份才是结算值。
-     * 这与 Anthropic 端点必须 {@code merge}（输入与输出分散在两个事件）形成对比。
+     * <p>此前本方法自己判定「最后一份非 null 胜出，与 Anthropic 需要跨事件 merge 不同」——
+     * 那是把<strong>协议判据</strong>写在了出口。阶段 5 步 7b-1 后该判定由生产者吸收，
+     * 出口只做一条与协议无关的消费规则。
      */
-    private void recordStreamUsage(String event, AtomicReference<UsageTokens> usage) {
-        String raw = ResponsesUsageParser.extractUsageRawJson(objectMapper, event);
-        if (raw == null) {
-            return;
-        }
-        UsageTokens tokens = ResponsesUsageParser.parseUsageObject(objectMapper, raw);
-        if (!tokens.isEmpty()) {
-            usage.set(tokens);
+    private void recordStreamUsage(UpstreamEvent event, AtomicReference<UsageTokens> usage) {
+        if (event.usage() != null) {
+            usage.set(event.usage());
         }
     }
 
-    /** 从非流式响应提取 usage 并记入日聚合。 */
-    private void recordUsage(String json) {
-        String raw = ResponsesUsageParser.extractUsageRawJson(objectMapper, json);
-        if (raw == null) {
-            return;
-        }
-        UsageTokens tokens = ResponsesUsageParser.parseUsageObject(objectMapper, raw);
-        if (!tokens.isEmpty()) {
+    /**
+     * 从非流式响应记账 —— 读事件上由主干填好的槽，不自行解析。
+     *
+     * <p>非流式<strong>无 usage 时不记</strong>（与 7b-1 之前一致）—— 与流式路径的「恒记」不同。
+     */
+    private void recordUsage(UpstreamEvent event) {
+        UsageTokens tokens = event.usage();
+        if (tokens != null && !tokens.isEmpty()) {
             apiUsageCollector.record(tokens.promptOrZero(), tokens.completionOrZero());
         }
     }
