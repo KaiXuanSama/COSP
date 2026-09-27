@@ -187,7 +187,13 @@ const TOOL_ARG_PIECES = [
 /** 顺序场景的帧间隔：调大可在客户端 UI 上肉眼看清顺序。 */
 const ORDER_FRAME_INTERVAL_MS = Number(process.env.MOCK_UPSTREAM_INTERVAL_MS || 120);
 
-/** 工具调用首帧给全 id / type / name，后续帧只带 arguments 增量（OpenAI 标准分片）。 */
+/**
+ * 工具调用首帧给全 id / type / name，后续帧只带 arguments 增量（OpenAI 标准分片）。
+ *
+ * @param label 日志用的场景名。`baseline-tool-call` 与 `pass-tool-call` 复用同一实现，
+ *              若日志写死其中一个名字，另一个场景在日志里就找不到自己的痕迹 ——
+ *              而排障时正是靠日志确认「请求进来了几次」。
+ */
 function toolCallFrames(id, model, includeRole) {
   const firstDelta = {
     tool_calls: [{
@@ -272,8 +278,8 @@ function sendOrderedNonStream(res, model, toolFirst) {
   sendJson(res, 200, body, `${label} 已返回（非流式 content 顺序即场景顺序）`, model);
 }
 
-/** baseline-tool-call：纯工具调用，无正文。 */
-function sendToolCallNonStream(res, model) {
+/** 纯工具调用，无正文。`baseline-tool-call` 与 `pass-tool-call` 共用（两者形状相同、期望不同）。 */
+function sendToolCallNonStream(res, model, label) {
   const body = completionBody(
     newId(), model,
     {
@@ -288,10 +294,10 @@ function sendToolCallNonStream(res, model) {
     'tool_calls',
     { prompt_tokens: 31, completion_tokens: 18, total_tokens: 49 },
   );
-  sendJson(res, 200, body, 'baseline-tool-call 已返回纯工具调用', model);
+  sendJson(res, 200, body, `${label} 已返回纯工具调用`, model);
 }
 
-function writeToolCallStream(res, model) {
+function writeToolCallStream(res, model, label) {
   const id = newId();
   writeSseHead(res);
   writeDataFrame(res, chunkEnvelope(id, model, {
@@ -306,7 +312,7 @@ function writeToolCallStream(res, model) {
   writeDataFrame(res, finishFrame(id, model, 'tool_calls'));
   writeDataFrame(res, '[DONE]');
   res.end();
-  log(`✓ baseline-tool-call 已返回纯工具调用流  model=${model}`);
+  log(`✓ ${label} 已返回纯工具调用流  model=${model}`);
 }
 
 /* ── blank：期望判空并兜底重试 ────────────────────────── */
@@ -620,8 +626,8 @@ function scenarios() {
     },
     'baseline-tool-call': {
       desc: '纯工具调用、无正文（后端应原样透传，下游能执行工具）',
-      stream: (res, model) => writeToolCallStream(res, model),
-      nonstream: (res, model) => sendToolCallNonStream(res, model),
+      stream: (res, model) => writeToolCallStream(res, model, 'baseline-tool-call'),
+      nonstream: (res, model) => sendToolCallNonStream(res, model, 'baseline-tool-call'),
     },
     'baseline-content-first': {
       desc: '正文在前、工具调用在后（顺序基准：已知下游可正常执行工具）',
@@ -663,8 +669,8 @@ function scenarios() {
     /* ── pass：期望放行（对照组） ── */
     'pass-tool-call': {
       desc: '纯工具调用、无正文（工具调用是实质载荷，不该判空）',
-      stream: (res, model) => writeToolCallStream(res, model),
-      nonstream: (res, model) => sendToolCallNonStream(res, model),
+      stream: (res, model) => writeToolCallStream(res, model, 'pass-tool-call'),
+      nonstream: (res, model) => sendToolCallNonStream(res, model, 'pass-tool-call'),
     },
     'pass-reasoning-only': {
       desc: '只有思考链、无正文（思考链是实质载荷；非流式应触发 fallback 填入正文）',
