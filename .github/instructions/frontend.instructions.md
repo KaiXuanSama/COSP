@@ -88,11 +88,13 @@ barrel 导出时同步更新文档：
 
 ## 手动验证
 
-四个零依赖 Node 脚本，用法见各自 README：
+两套零依赖 Node 脚本，用法见各自 README：
 
 | npm script | 模拟谁 | 端口 |
 |---|---|---|
-| `mock:stream` | OpenAI 流式上游 | 8081 |
-| `mock:nonstream` | OpenAI 非流式上游 | 8082 |
-| `mock:anthropic` | Anthropic 上游（流式与非流式共用端点） | 8083 |
+| `mock` | 上游供应商（三协议合一：Chat / Messages / Responses） | 8081 |
+| `mock:selfcheck` | 不是 mock —— 遍历「场景 × 协议 × 模式」组合的自检脚本 | — |
 | `mock:cosp` | COSP 自己，供 Copilot 直连以嗅探入站请求头 | 11333 |
+
+改 mock 后跑 `mock:selfcheck`（约 1 分钟）。场景名自带期望（`blank-*` 应判空、`pass-*` 应放行、
+`retry-*` 应重试），模式/协议不适用的组合回 **422 + 说明**而不是静默照做。
