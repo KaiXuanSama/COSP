@@ -18,9 +18,15 @@
 
 const fs = require('fs');
 const path = require('path');
-const { MOCK_PROVIDER, httpRequest, request, h, ok, bad, info } = require('./lib');
+const lib = require('./lib');
+const { MOCK_PROVIDER, httpRequest, request, h, ok, bad, info } = lib;
 
-/** mock 的运行日志 —— 请求次数的权威来源（COSP 侧每轮只落一条，看不出重启）。 */
+/**
+ * mock 的运行日志路径。
+ *
+ * 计数一律走 `lib.mockMark()` / `lib.requestCount()`（它们用同一份路径与同一套
+ * 过滤条件）；这里只用于**打印**本次运行命中的行，便于人眼核对。
+ */
 const MOCK_LOG = path.join(__dirname, 'mock.log');
 
 function openLifecycleStream() {
@@ -64,6 +70,11 @@ async function main() {
   // 用 cancel-stall-resume：吐 5 个 chunk → 停滞 35s → 恢复。
   // 在停滞期打重试，便于观察「上游被重新请求」。
   const model = 'cancel-stall-resume';
+
+  // 必须在发请求**之前**取 mark：否则会把 mock.log 里上一次运行的记录当成本次的。
+  // （曾用「文件里最近两次」判定 → mock.log 有历史记录时恒为真 → 假通过。）
+  const mark = lib.mockMark();
+  const countBefore = lib.requestCount(model, mark, { protocols: 'CHAT', stream: true });
 
   /** 下游收到的帧（持续累积，用于判断 SSE 是否中断）。 */
   const frames = [];
@@ -118,13 +129,13 @@ async function main() {
   info(`重试后下游连接是否已结束：${downstreamEndedDuringTest}`);
 
   // 核对 mock 侧是否出现第二次请求 —— 这才是「上游真被重新请求」的直接证据。
-  const mockLines = fs.readFileSync(MOCK_LOG, 'utf8').split('\n')
+  // 按 mark 只数**本次运行**产生的请求（不能数「文件里最近两次」：mock.log 里
+  // 常留有历史记录，那个条件会恒为真）。
+  const countAfter = lib.requestCount(model, mark, { protocols: 'CHAT', stream: true });
+  const mockLines = fs.readFileSync(MOCK_LOG, 'utf8').split('\n').slice(mark)
     .filter((l) => l.includes('\u25b6') && l.includes(`model=${model}`));
-  // 只数本次运行产生的（文件里可能有上次运行的记录）—— 用最近的两次判定。
-  const recent = mockLines.slice(-2);
-  const secondRequest = recent.length >= 2;
-  info(`mock 侧历史上共 ${mockLines.length} 次请求，最近两次：`);
-  for (const l of recent) info(`    ${l.trim()}`);
+  info(`mock 侧本次运行共 ${countAfter} 次请求（发请求前已有 ${countBefore} 次）：`);
+  for (const l of mockLines) info(`    ${l.trim()}`);
 
   stream.stop();
   req.destroy();
@@ -136,8 +147,8 @@ async function main() {
     '  重试期间下游 SSE 被关闭了 —— 静默重试不应影响下游连接');
   check(framesAfter > framesBeforeRetry, `  下游在重试后继续收到帧（+${framesAfter - framesBeforeRetry}）✓`,
     '  重试后下游未再收到帧');
-  check(secondRequest, '  **mock 侧出现第二次请求** ✓（上游真被重新请求）',
-    `  mock 侧最近只有 ${recent.length} 次请求 —— 上游未被重新请求`);
+  check(countAfter >= 2, `  **mock 侧出现第二次请求**（本次共 ${countAfter} 次）✓（上游真被重新请求）`,
+    `  mock 侧本次只收到 ${countAfter} 次请求 —— 上游未被重新请求`);
 
   console.log(`\n${fail === 0 ? '✓ 静默重试验证通过' : `✗ 有 ${fail} 项失败`}`);
   process.exit(fail === 0 ? 0 : 1);

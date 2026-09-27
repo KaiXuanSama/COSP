@@ -10,8 +10,10 @@
  *   <li><b>PowerShell 5.1 的 curl 传 JSON 不可靠</b> —— 内联 body 的引号会被吃掉，
  *       表现为「模型名丢失、落到默认场景」，看起来像 COSP 有 bug。
  *       本脚本用 Node 的 http 模块直接打，body 精确可控。</li>
- *   <li><b>重试从 COSP 侧看不出来</b> —— `api_call_log` 每轮只落一条，
- *       `duration_ms` 只记一轮。真实的重试次数只在**上游 mock 的日志**里。</li>
+ *   <li><b>重试从 COSP 侧看不出来</b> —— `api_call_log` 是**每轮上游往返一条**，
+ *       一次下游请求会落 8 行（`retry_max_attempts=7`），但没有列能把它们归到
+ *       同一次下游请求（无 request_id 列），且该表的保留任务会**清空载荷列**。
+ *       真实的重试次数只在**上游 mock 的日志**里：`▶` 与 `■` 各一行、两者 1:1。</li>
  *   <li><b>流式与流式的错误传递方式不同</b> —— 流式恒 HTTP 200（错误在
  *       `event: error` 帧里），非流式才原样透传状态码。见 {@link ./README.md}。</li>
  * </ol>
@@ -135,9 +137,16 @@ const TRANSLATE_PROVIDER = process.env.COSP_TRANSLATE_PROVIDER || 'translatemock
 const TOKEN_FILE = path.join(__dirname, 'token.txt');
 const MOCK_LOG = path.join(__dirname, 'mock.log');
 
-/** mock 侧日志的标记字符。 */
-const MARK_CLOSE = '\u25a0';   // ■ 连接关闭（每请求恰好一条 → 请求次数的精确计数）
-const MARK_ENTER = '\u25b6';   // ▶ 请求进入
+/**
+ * mock 侧日志的标记字符。
+ *
+ * <p>计数用 `▶ 请求进入`（{@link MARK_ENTER}）而非 `■ 连接关闭`：
+ * `■` 行只带 `model=`，无法区分协议与传输模式；而 `▶` 行带
+ * `chat|messages` 与 `stream=true|false` —— 这正是 {@link requestCount}
+ * 去重所需的两个维度（实测两者在 mock.log 中 1:1，各 109 行）。
+ */
+const MARK_CLOSE = '\u25a0';   // ■ 连接关闭（无协议/流式维度，仅用于观察断连）
+const MARK_ENTER = '\u25b6';   // ▶ 请求进入（带 protocolId 与 stream= → 计数用这个）
 
 /** 打印当前配置，便于排查「为什么打到别的地址去了」。 */
 function printConfig() {
@@ -237,8 +246,15 @@ function request(opts) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      // 超时必须销毁连接：否则客户端已放弃，服务端却继续跑完重试预算，
+      // 那些「孤儿轮次」会在下一次 probe 的计数窗口里落盘 → 污染计数（实测多算 2 轮）。
+      // finish 会被 end/error/timeout 任一先到者触发，destroy 对已结束的请求是空操作。
+      if (note === '超时' && !resp) req.destroy();
       resolve({
+        // status=0 表示**未收到响应头**（连接失败，或客户端先放弃了）。
+        // 超时导致的 0 由 statusNote 标明 —— 不要把它读成服务端返回了 0。
         status: resp ? resp.statusCode : 0,
+        statusNote: resp ? '' : '未收到响应头',
         headers: resp ? resp.headers : {},
         raw,
         frames,
@@ -329,22 +345,66 @@ function mockMark() {
 }
 
 /**
- * 数 mark 之后该场景的请求次数。
+ * 从 `▶` 行判定该请求属于哪个协议与传输模式。
  *
- * <p>按 `■ 连接关闭` 行计（每请求恰好一条）。不用 `▶ 请求进入` 行：
- * 部分场景复用同一实现函数，日志里的场景名可能与请求的 model 名不同。
- *
- * <p>**用无前缀场景名** —— COSP 发往上游时已剥掉前缀。
+ * <p>行形如 `[ts] ▶ chat  model=xxx  stream=true`：协议是 `▶` 后的裸词，
+ * 模式是行尾的 `stream=` 值。
  */
-function requestCount(model, mark) {
-  return fs.readFileSync(MOCK_LOG, 'utf8').split('\n').slice(mark)
-    .filter((l) => l.includes(MARK_CLOSE) && l.includes(`model=${model}`)).length;
+function enterKey(line) {
+  const proto = (line.match(/\u25b6\s+(chat|messages|responses)\s/) || [])[1];
+  const stream = /stream=true/.test(line);
+  return proto ? { proto, stream } : null;
 }
 
-/** 抽 mark 之后的请求进入时间戳（秒），用于观察退避节奏。 */
-function enterSecs(model, mark) {
+/**
+ * 数 mark 之后该场景的请求次数。
+ *
+ * <p>按 `▶ 请求进入` 行计 —— 它是**路由层**发的，每请求恰好一条且带
+ * `协议 + stream` 两个维度（`■ 连接关闭` 只带 model，无法区分）。
+ *
+ * <p><b>为何必须带上这两个维度</b>：`model=` 过滤对同名场景是跨协议/跨模式通用的，
+ * 而 mock 的同一个场景名在 chat 与 messages 上都能打。若只按 model 过滤，
+ * 相邻 probe 会互相计数 —— 实测 `messages 非流式` 被上游段 `messages 流式`
+ * 的迟到轮次多算 10 次（真值 8 → 读成 18）。对断言 `count === 1` 的对照组，
+ * 这会直接造成**假失败**。
+ *
+ * <p>{@code protocols}/{@code stream} 省略时不加该维度（向后兼容）。
+ *
+ * <p>**用无前缀场景名** —— COSP 发往上游时已剥掉前缀。
+ *
+ * @param model     无前缀场景名
+ * @param mark      {@link mockMark} 取到的起始行号
+ * @param filters   `{ protocols: 'CHAT'|'MESSAGES'|'RESPONSES', stream: boolean }`，可选
+ */
+function requestCount(model, mark, filters = {}) {
+  const wantProto = filters.protocols ? filters.protocols.toLowerCase() : null;
+  return fs.readFileSync(MOCK_LOG, 'utf8').split('\n').slice(mark)
+    .filter((l) => {
+      if (!l.includes(MARK_ENTER) || !l.includes(`model=${model}`)) return false;
+      const k = enterKey(l);
+      if (!k) return false;
+      if (wantProto && k.proto !== wantProto) return false;
+      if (filters.stream !== undefined && k.stream !== filters.stream) return false;
+      return true;
+    }).length;
+}
+
+/**
+ * 抽 mark 之后的请求进入时间戳（秒），用于观察退避节奏。
+ *
+ * <p>过滤条件与 {@link requestCount} 保持一致，否则退避序列的条数会与计数对不上。
+ */
+function enterSecs(model, mark, filters = {}) {
+  const wantProto = filters.protocols ? filters.protocols.toLowerCase() : null;
   return fs.readFileSync(MOCK_LOG, 'utf8').split('\n').slice(mark)
     .filter((l) => l.includes(MARK_ENTER) && l.includes(`model=${model}`))
+    .filter((l) => {
+      const k = enterKey(l);
+      if (!k) return false;
+      if (wantProto && k.proto !== wantProto) return false;
+      if (filters.stream !== undefined && k.stream !== filters.stream) return false;
+      return true;
+    })
     .map((l) => {
       const m = l.match(/\[(\d\d):(\d\d):(\d\d)\./);
       return m ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) : null;
@@ -358,14 +418,15 @@ function enterSecs(model, mark) {
  * <p>必须轮询：mock 的 stdout 经 `Tee-Object` 落盘有缓冲，
  * 请求刚结束时日志可能还没写进去 —— 直接读一次会得到 0。
  */
-async function settledCount(model, mark, { minWaitMs = 500, quietMs = 700, maxWaitMs = 5000 } = {}) {
+async function settledCount(model, mark, filters = {}) {
+  const { minWaitMs = 500, quietMs = 700, maxWaitMs = 5000 } = filters;
   await new Promise((r) => setTimeout(r, minWaitMs));
-  let last = requestCount(model, mark);
+  let last = requestCount(model, mark, filters);
   let lastChange = Date.now();
   const t0 = Date.now();
   while (Date.now() - t0 < maxWaitMs) {
     await new Promise((r) => setTimeout(r, 200));
-    const now = requestCount(model, mark);
+    const now = requestCount(model, mark, filters);
     if (now !== last) { last = now; lastChange = Date.now(); }
     else if (Date.now() - lastChange >= quietMs) break;
   }
@@ -388,8 +449,25 @@ async function probe(model, { stream = true, timeoutMs = 60000, providerKey = MO
     : { model: qualified, stream, messages: [{ role: 'user', content: 'hi' }] };
   const t0 = Date.now();
   const resp = await request({ path: apiPath, body, timeoutMs });
-  const count = await settledCount(model, mark);
-  return { resp, count, secs: enterSecs(model, mark), wallMs: Date.now() - t0 };
+  // 计数带上本次请求的协议与模式 —— 否则同名场景的相邻 probe 会互相计数。
+  const filters = { protocols: protocolOfPath(apiPath), stream };
+  const count = await settledCount(model, mark, filters);
+  return { resp, count, secs: enterSecs(model, mark, filters), wallMs: Date.now() - t0 };
+}
+
+/**
+ * 由请求路径推出 mock 侧的协议标签。
+ *
+ * <p>与 `mock-upstream.js` 的路由一一对应（`/chat/completions` → chat，
+ * `/messages` → messages，`/responses` → responses）。
+ * 用查表而非 `includes` 兜底：写错路径应当在计数时**报错**，
+ * 而不是悄悄落到 `CHAT` 上、把别的协议的轮次数进来。
+ */
+function protocolOfPath(apiPath) {
+  if (apiPath === '/v1/chat/completions') return 'CHAT';
+  if (apiPath === '/v1/messages') return 'MESSAGES';
+  if (apiPath === '/v1/responses') return 'RESPONSES';
+  throw new Error(`未知的聊天端点路径: ${apiPath}（请在 protocolOfPath 中登记）`);
 }
 
 /** 相邻时间戳的间隔（秒）。 */
@@ -461,6 +539,7 @@ module.exports = {
   DOTENV_LOADED,
   MARK_CLOSE,
   MARK_ENTER,
+  enterKey,
   printConfig,
   readToken,
   httpRequest,
@@ -473,6 +552,7 @@ module.exports = {
   enterSecs,
   settledCount,
   probe,
+  protocolOfPath,
   gaps,
   h,
   ok,

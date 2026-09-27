@@ -82,16 +82,18 @@ async function main() {
   /* ── B3 · retry-429 ───────────────────────────────────── */
   console.log('\n【B3 · retry-429：429 在白名单内，应重试】');
   {
-    const r = await probe('retry-429', { timeoutMs: 90000 });
-    info(`上游被调 ${r.count} 次  下游 HTTP=${r.resp.status} / ${r.wallMs}ms`);
+    // 预算跑满的用例：mock 侧实测跨度 ~102s，必须给足。
+    const r = await probe('retry-429', { timeoutMs: 150000 });
+    info(`上游被调 ${r.count} 次  下游 HTTP=${r.resp.status} / ${(r.wallMs / 1000).toFixed(1)}s`);
     check(r.count > 1, `  重试生效（${r.count} 次）✓`, `  被调 ${r.count} 次 —— 429 未触发重试！`);
   }
 
   /* ── B7 · retry-truncated ─────────────────────────────── */
   console.log('\n【B7 · retry-truncated：传输截断应视为可重试的网络失败】');
   {
-    const r = await probe('retry-truncated', { timeoutMs: 90000 });
-    info(`上游被调 ${r.count} 次  下游 HTTP=${r.resp.status} / ${r.wallMs}ms  ${r.resp.note}`);
+    // 同样是跑满预算的用例（实测 ~85s）。
+    const r = await probe('retry-truncated', { timeoutMs: 150000 });
+    info(`上游被调 ${r.count} 次  下游 HTTP=${r.resp.status} / ${(r.wallMs / 1000).toFixed(1)}s  ${r.resp.note}`);
     check(r.count > 1, `  重试生效（${r.count} 次）✓`, `  被调 ${r.count} 次 —— 截断未触发重试！`);
   }
 
