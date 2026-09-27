@@ -340,9 +340,12 @@ pipeline/protocol/translate/
 
 ### 2.3 mock 工具
 
-`tools/` 下已有五个 mock 脚本。阶段二需要新增一个 `mock:responses`（建议端口 8085，
-**别用 9090**，那是 Clash / mihomo 控制面默认端口）。参照 `mock:anthropic` 的形态，
-它已经覆盖了「只能用 mock 触发的工具参数分片」这类边界。
+`tools/mock-upstream` 是**三协议合一**的上游 mock（Chat / Messages 已实现，
+Responses 是空槽位）。阶段二要做的就是把 `protocols/responses.js` 补上 ——
+路由与 422 兜底已在入口就位，无需新建脚本、无需新端口。
+
+可参照 `protocols/messages.js` 的形态：它已覆盖「只能用 mock 触发的工具参数分片」这类边界，
+与 Responses 需要的形状高度同构。
 
 `AGENTS.md` 里记着一条教训值得重读：**mock 的载荷要照下游 schema 查证**。当初 mock
 `read_file` 工具时只发了个相对路径的 `filePath`，工具必然以参数校验失败告终，

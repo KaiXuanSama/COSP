@@ -82,7 +82,7 @@ Windows PowerShell 使用 `mvnw.cmd` 的等价命令（当前目录执行时加 
 `-Dtest=...` 参数整体加引号，避免
 PowerShell 把逗号表达式拆成参数。需要跳过前端时沿用 `pom.xml` 已支持的 Maven 属性，不自行删插件执行。
 
-先用编辑器诊断检查改动文件，再跑命令。`tools/mock-upstream`（OpenAI 流式）、`tools/mock-nonstream`（OpenAI 非流式）、`tools/mock-anthropic`（Anthropic 两种模式）、`tools/mock-cosp` 是手动验证工具，不参与自动化测试。
+先用编辑器诊断检查改动文件，再跑命令。`tools/mock-upstream`（三协议合一的上游 mock）与 `tools/mock-cosp`（下游嗅探）是手动验证工具，不参与自动化测试。改了 mock 后跑 `cd frontend; .\node\npm.cmd run mock:selfcheck`（纯 Node，逐场景遍历「协议 × 模式」组合）。
 
 上游 stub 的响应体**必须带实质载荷**（`content` / 思考链 / `tool_calls` 之一），否则会被空响应兜底判空并卷入重试循环，用例表现为超时而非断言失败。`"choices":[]` 这类占位响应已不再安全 —— `ProviderRequestBodyTransformationIntegrationTests` 曾因此踩坑。
 

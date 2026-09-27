@@ -659,7 +659,7 @@ class AbstractUpstreamChatServiceTests {
     /**
      * 空流（仅 role / finish / [DONE]，无任何实质载荷）触发自动重试，第二轮有内容即放行。
      *
-     * <p>对应 mock 的 {@code empty-stream}。断言两件事：
+     * <p>对应 mock 的 {@code blank-empty-content}。断言两件事：
      * 上游被重发（次数 2），且下游<strong>只看到第二轮</strong>的内容 ——
      * 第一轮的空帧被 gate 拦下，不该泄漏给下游。
      */
