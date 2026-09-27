@@ -1,12 +1,15 @@
 package com.kaixuan.copilot_ollama_proxy.api.anthropic;
 
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
-import com.kaixuan.copilot_ollama_proxy.application.anthropic.MessagesService;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.MessagesService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import org.junit.jupiter.api.BeforeEach;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -69,7 +72,7 @@ class AnthropicControllerTests {
     @Test
     void nonStreamReturnsJsonBody() {
         given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                .willReturn(Mono.just("""
+                .willReturn(UpstreamStreams.single("""
                         {"id":"msg_1","type":"message","role":"assistant",\
                         "content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn",\
                         "usage":{"input_tokens":10,"output_tokens":2}}"""));
@@ -99,7 +102,7 @@ class AnthropicControllerTests {
     @Test
     void unmodeledFieldsArePassedThrough() {
         given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                .willReturn(Mono.just("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
+                .willReturn(UpstreamStreams.single("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
 
         webTestClient.post().uri("/v1/messages")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -126,7 +129,7 @@ class AnthropicControllerTests {
     @Test
     void topLevelSystemStringIsPassedThrough() {
         given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                .willReturn(Mono.just("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
+                .willReturn(UpstreamStreams.single("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
 
         webTestClient.post().uri("/v1/messages")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -152,7 +155,7 @@ class AnthropicControllerTests {
     @Test
     void topLevelSystemArrayDoesNotFailDeserialization() {
         given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                .willReturn(Mono.just("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
+                .willReturn(UpstreamStreams.single("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
 
         webTestClient.post().uri("/v1/messages")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -168,7 +171,7 @@ class AnthropicControllerTests {
     @Test
     void missingMaxTokensIsNotRejectedByProxy() {
         given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                .willReturn(Mono.just("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
+                .willReturn(UpstreamStreams.single("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
 
         webTestClient.post().uri("/v1/messages")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -271,6 +274,30 @@ class AnthropicControllerTests {
                         org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接"))));
     }
 
+    /**
+     * 模型名没解析到供应商时给 400，而不是伪装成上游连接失败。
+     *
+     * <p>与上面两条同一族的第三个成员。这条路径上<strong>上游一次都没被连接过</strong> ——
+     * 路由失败发生在本地供应商目录里，「无法连接到上游服务」会把排查方向指向网络。
+     */
+    @Test
+    void unresolvedModelRouteReturnsBadRequestInsteadOfGatewayError() {
+        given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                .willReturn(Mono.error(new UnresolvedModelRouteException("ghost-model")));
+
+        webTestClient.post().uri("/v1/messages")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"model\":\"ghost-model\",\"max_tokens\":100,\"messages\":[]}")
+                .exchange()
+                .expectStatus().isEqualTo(400)
+                .expectBody()
+                // 外层 type=error 是 Anthropic 的错误帧标识。
+                .jsonPath("$.type").isEqualTo("error")
+                .jsonPath("$.error.message").value(org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("ghost-model"),
+                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接"))));
+    }
+
     // ==================== 流式 ====================
 
     /**
@@ -283,10 +310,11 @@ class AnthropicControllerTests {
     void streamReturnsSseWithEventTypes() {
         given(messagesService.messagesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
                 .willReturn(Flux.just(
-                        "{\"type\":\"message_start\",\"message\":{\"id\":\"m1\"}}",
-                        "{\"type\":\"content_block_delta\",\"index\":0,"
-                                + "\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}",
-                        "{\"type\":\"message_stop\"}"));
+                        UpstreamEvent.body("{\"type\":\"message_start\",\"message\":{\"id\":\"m1\"}}"),
+                        UpstreamEvent.body("{\"type\":\"content_block_delta\",\"index\":0,"
+                                + "\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}"),
+                        // 终止标记必须是 Terminal 态：控制器靠它触发 Layer 1 收尾。
+                        UpstreamEvent.terminal("{\"type\":\"message_stop\"}")));
 
         FluxExchangeResult<ServerSentEvent<String>> result = webTestClient.post().uri("/v1/messages")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -316,7 +344,7 @@ class AnthropicControllerTests {
     @Test
     void streamRequestUsesStreamingEntryPoint() {
         given(messagesService.messagesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                .willReturn(Flux.just("{\"type\":\"message_stop\"}"));
+                .willReturn(Flux.just(UpstreamEvent.terminal("{\"type\":\"message_stop\"}")));
 
         webTestClient.post().uri("/v1/messages")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -332,11 +360,42 @@ class AnthropicControllerTests {
         verify(messagesService).messagesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString());
     }
 
+    /**
+     * 流式下模型名没解析到供应商：发 {@code error} 事件，而不是报成上游连接失败。
+     *
+     * <p>与非流式那条配对存在 —— 「非流式有分类、流式没有」正是本轮缺陷的形态，
+     * 两条路径必须各自有用例守着。流式响应码在第一帧就提交，
+     * 分类结果只能体现在事件体上。
+     */
+    @Test
+    void unresolvedModelRouteIsSentAsErrorEvent() {
+        given(messagesService.messagesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                .willReturn(Flux.error(new UnresolvedModelRouteException("ghost-model")));
+
+        FluxExchangeResult<ServerSentEvent<String>> result = webTestClient.post().uri("/v1/messages")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"model\":\"ghost-model\",\"max_tokens\":100,\"stream\":true,\"messages\":[]}")
+                .exchange()
+                .expectStatus().isOk()
+                .returnResult(new ParameterizedTypeReference<ServerSentEvent<String>>() {
+                });
+
+        // 心跳是注释帧（data 为 null），不属于协议事件，过滤掉。
+        List<ServerSentEvent<String>> events = result.getResponseBody()
+                .filter(event -> event.data() != null)
+                .collectList().block(Duration.ofSeconds(10));
+
+        assertThat(events).isNotNull().hasSize(1);
+        assertThat(events.get(0).event()).isEqualTo("error");
+        assertThat(events.get(0).data()).contains("ghost-model");
+        assertThat(events.get(0).data()).doesNotContain("无法连接");
+    }
+
     /** 缺省 {@code stream} 视为非流式，与 OpenAI 侧同一约定。 */
     @Test
     void missingStreamFlagIsTreatedAsNonStream() {
         given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                .willReturn(Mono.just("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
+                .willReturn(UpstreamStreams.single("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}"));
 
         webTestClient.post().uri("/v1/messages")
                 .contentType(MediaType.APPLICATION_JSON)

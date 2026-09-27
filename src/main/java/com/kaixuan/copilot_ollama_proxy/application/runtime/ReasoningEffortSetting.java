@@ -180,6 +180,37 @@ public record ReasoningEffortSetting(String effort, Mode mode) {
         return new ReasoningEffortSetting(DEFAULT_EFFORT, DEFAULT_MODE);
     }
 
+    /**
+     * 从某供应商的模型清单里取指定模型的思考深度配置。
+     *
+     * <p>三条上游线路（Chat / Responses / Anthropic）此前各有一份<strong>逐字相同</strong>的
+     * {@code resolveReasoningEffort} —— 都是「按模型名查配置，查不到给默认值」。收归此处，
+     * 避免补两个 Thinking 支线时再造第 4 份副本（{@code AnthropicThinkingNormalizer}
+     * 的注释早记了这个债）。
+     *
+     * <p>读的是<strong>同一列</strong>（{@code provider_model.reasoning_effort}）、同一份解析、
+     * 同一套四档语义 —— 三条线路只有<strong>出站字段</strong>不同（{@link #applyTo} /
+     * {@link #applyToResponses} / {@link #applyToAnthropic}），配置来源无差别。因此用户在界面上
+     * 看到的就是一个模型一个档位，无论它走哪条线路。
+     *
+     * <p>模型名查不到时返回 {@link #defaults()}（中等档位 + 兜底），与三份旧实现一致。
+     *
+     * @param resolvedModel 已剥供应商前缀的真实模型名
+     * @param provider      本次调用的供应商运行时配置
+     * @param objectMapper  用于解析配置 JSON；为 null 时只处理旧的非 JSON 形态
+     * @return 该模型的思考深度设置；模型名查不到时为默认值
+     */
+    public static ReasoningEffortSetting forModel(String resolvedModel,
+                                                  ProviderRuntimeConfiguration provider,
+                                                  ObjectMapper objectMapper) {
+        for (var model : provider.models()) {
+            if (resolvedModel.equals(model.modelName())) {
+                return parse(model.reasoningEffort(), objectMapper);
+            }
+        }
+        return defaults();
+    }
+
     public ReasoningEffortSetting {
         effort = effort == null || effort.isBlank()
                 ? DEFAULT_EFFORT : effort.trim().toLowerCase(Locale.ROOT);
@@ -288,8 +319,8 @@ public record ReasoningEffortSetting(String effort, Mode mode) {
      * 那个 null 随后由调用方的 {@code removeIf(Objects::isNull)} 清掉，等效于不发送。
      *
      * <p>原地修改传入的 Map 而非返回新 Map：调用方
-     * （{@code AbstractUpstreamChatService.prepareRequestBody}）已经持有一份可变副本，
-     * 再造一个只会让「哪一份才是最终请求体」变得不明确。
+     * （{@code RequestBodyAssembler} 经 {@code ThinkingInjectStage} 调用本方法）
+     * 已经持有一份可变副本，再造一个只会让「哪一份才是最终请求体」变得不明确。
      */
     public void applyTo(Map<String, Object> body) {
         switch (mode) {

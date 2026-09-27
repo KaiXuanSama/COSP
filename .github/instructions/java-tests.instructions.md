@@ -17,7 +17,7 @@ Surefire 的其它默认命名模式，也不要新增 `*IT` 而不显式接入�
 1. **Web 集成**：`@SpringBootTest(webEnvironment = RANDOM_PORT)` + `WebTestClient.bindToServer().baseUrl("http://localhost:" + port)`，用 `@MockBean` 替换服务层。流式断言用 `FluxExchangeResult<ServerSentEvent<String>>`。参考 `api/openai/OpenAiControllerStreamingTests`。
    - 控制器只依赖一两个可直接 new 的 Bean 时，用 `WebTestClient.bindToController(...)` 而非整个上下文 —— 拉起完整应用对「请求体进、响应出」没有额外价值，却要付启动代价。参考 `api/RequestBodyRulePreviewControllerTests`。
 2. **JDBC / 迁移**：用 `@TempDir` 建临时 SQLite 文件，**绝不使用根目录 `admin.db`**。参考 `infrastructure/persistence/RepositoryUpsertTests`、`infrastructure/config/SchemaMigrationRunnerTests`。
-3. **上游调用**：给 `WebClient` 注入自定义 `ExchangeFunction`，需要 SSE 时用 `DefaultDataBufferFactory` 手工造 `DataBuffer`。参考 `provider/AbstractUpstreamChatServiceTests`（OpenAI）、`provider/generic/anthropic/GenericAnthropicChatServiceTests`（Anthropic，请求构造那批走真实 `HttpServer` 因为 `ClientRequest.body()` 读不出已序列化内容）。
+3. **上游调用**：给 `WebClient` 注入自定义 `ExchangeFunction`，需要 SSE 时用 `DefaultDataBufferFactory` 手工造 `DataBuffer`。参考 `upstream/send/chat/AbstractUpstreamChatServiceTests`（OpenAI）、`upstream/send/messages/GenericAnthropicChatServiceTests`（Anthropic，请求构造那批走真实 `HttpServer` 因为 `ClientRequest.body()` 读不出已序列化内容）。
 4. **纯单元**：JUnit 5 + AssertJ + Mockito，无 Spring 上下文。逻辑密集的类用 `@Nested` 分组（如 `ModelNameUtilTests`）。
 
 断言统一 `org.assertj.core.api.Assertions.assertThat`。
@@ -32,6 +32,24 @@ Surefire 的其它默认命名模式，也不要新增 `*IT` 而不显式接入�
 ./mvnw test -Dtest=XxxTests    # 单类
 ./mvnw test                    # 全量，含前端构建
 ```
+
+## 批量改文件 / 跑脚本的坑（实测踩过）
+
+1. **源码文件写入必须是无 BOM 的 UTF-8**：`[System.IO.File]::WriteAllText($p, $c, (New-Object System.Text.UTF8Encoding($false)))`。
+   PowerShell 的 `Set-Content` / `Out-File` 默认会带 BOM，会让 javac 报「非法字符 `\ufeff`」。
+2. **`.ps1` 脚本文件恰恰相反 —— 必须有 BOM**（或纯 ASCII）：`created` 出来的无 BOM UTF-8 `.ps1`
+   会被 **PowerShell 5.1 按 ANSI 读**，中文全变乱码、语法解析直接失败。
+   即：**给 `.java` 写内容时不带 BOM，写 `.ps1` 脚本文件时带 BOM** —— 两条相反的规则，别记混。
+3. **不要删整个 `target/`**：VS Code 的 Java 语言服务**同时在写** `target`，整目录删除会与它争抢，
+   编译时报 `could not create parent directories`。**只删 `target\classes` / `target\test-classes`**；
+   真坏了就**重载 VS Code 窗口**。
+4. **移动/改名包后必须删 `target\classes` / `target\test-classes` 再编译** —— 增量编译会**假绿**
+   （本项目已发生多次）。
+5. **「测试数变少」是文件丢失的可靠信号**：`git mv` 的目标目录不存在时会**静默失败**，
+   症状就是总数下降（比任何断言都早发现）。
+6. **元编程式补 import 不可靠**：文本扫描会把 Javadoc 里的类名当成引用、且可能把 import
+   插到 `static import` 之后破坏语法。**编译器是唯一可信的「缺失依赖」清单来源** ——
+   先做原子替换，再按编译报错逐个补。
 
 ## Tag 分层：迁移测试默认不跑
 
@@ -64,7 +82,7 @@ Windows PowerShell 使用 `mvnw.cmd` 的等价命令（当前目录执行时加 
 `-Dtest=...` 参数整体加引号，避免
 PowerShell 把逗号表达式拆成参数。需要跳过前端时沿用 `pom.xml` 已支持的 Maven 属性，不自行删插件执行。
 
-先用编辑器诊断检查改动文件，再跑命令。`tools/mock-upstream`（OpenAI 流式）、`tools/mock-nonstream`（OpenAI 非流式）、`tools/mock-anthropic`（Anthropic 两种模式）、`tools/mock-cosp` 是手动验证工具，不参与自动化测试。
+先用编辑器诊断检查改动文件，再跑命令。`tools/mock-upstream`（三协议合一的上游 mock）与 `tools/mock-cosp`（下游嗅探）是手动验证工具，不参与自动化测试。改了 mock 后跑 `cd frontend; .\node\npm.cmd run mock:selfcheck`（纯 Node，逐场景遍历「协议 × 模式」组合）。
 
 上游 stub 的响应体**必须带实质载荷**（`content` / 思考链 / `tool_calls` 之一），否则会被空响应兜底判空并卷入重试循环，用例表现为超时而非断言失败。`"choices":[]` 这类占位响应已不再安全 —— `ProviderRequestBodyTransformationIntegrationTests` 曾因此踩坑。
 

@@ -2,7 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.application.logging;
 
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallUsageRepository;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.LogEventPublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.LogEventPublisher;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;

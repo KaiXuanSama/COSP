@@ -2,10 +2,10 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.application.catalog.ModelCatalogService;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
+import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.OpenAiChatRequest;
@@ -43,7 +43,7 @@ import static org.mockito.Mockito.mock;
 class OpenAiControllerCancellationTests {
 
     private final ChatCompletionService chatCompletionService = mock(ChatCompletionService.class);
-    private final ApiUsageCollector apiUsageCollector = mock(ApiUsageCollector.class);
+    private final ApiUsageDailyService apiUsageCollector = mock(ApiUsageDailyService.class);
     private final ModelCatalogService modelCatalogService = mock(ModelCatalogService.class);
     private final CallLifecyclePublisher lifecyclePublisher = new CallLifecyclePublisher();
     private final CallCancellationRegistry cancellationRegistry = new CallCancellationRegistry();

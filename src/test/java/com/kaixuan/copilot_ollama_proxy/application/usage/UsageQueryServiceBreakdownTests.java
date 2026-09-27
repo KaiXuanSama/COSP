@@ -2,7 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.application.usage;
 
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallUsageRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.UsageEventPublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,7 +17,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 阶段一验证与锁定：下钻用量明细用例层的天数钳制与结果透传。
+ * 下钻用量明细用例层的天数钳制与结果透传。
  *
  * <p>覆盖：
  * <ul>

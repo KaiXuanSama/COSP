@@ -3,7 +3,7 @@ package com.kaixuan.copilot_ollama_proxy;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.kaixuan.copilot_ollama_proxy.application.ollama.ModelDiscoveryService;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;

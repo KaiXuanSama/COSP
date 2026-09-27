@@ -1,6 +1,8 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.web;
 
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiUsageRepository;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.UsageEventPublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -10,9 +12,13 @@ import org.springframework.stereotype.Component;
  * <p>
  * 调用方只需传入 token 数，无需关心数据库细节。
  * 所有异常均被捕获并记录日志，不影响主业务流程。
+ *
+ * <p>本类实现观测轴的 {@link ApiUsageDailyService} 端口（日聚合这一种延迟）：
+ * 写一张按天累加的表 {@code api_usage_daily}，并发出一次「统计已更新」信号。
+ * 调用方因此只依赖端口，不必看见 JDBC 仓储。
  */
 @Component
-public class ApiUsageCollector {
+public class ApiUsageCollector implements ApiUsageDailyService {
 
     private static final Logger log = LoggerFactory.getLogger(ApiUsageCollector.class);
 
@@ -39,6 +45,7 @@ public class ApiUsageCollector {
      * @param inputTokens  输入 token 数
      * @param outputTokens 输出 token 数
      */
+    @Override
     public void record(int inputTokens, int outputTokens) {
         try {
             repository.insert(inputTokens, outputTokens);

@@ -8,7 +8,8 @@
 >
 > 请求侧见 [PROTOCOL_TRANSLATION_CONTRACT.md](./PROTOCOL_TRANSLATION_CONTRACT.md)（本文沿用其编号与术语）。
 > 相关：[AGENTS.md](../AGENTS.md)、[思考链回放调查](COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)、
-> [mock-anthropic](../tools/mock-anthropic/README.md)（参数分片等只能用 mock 触发的场景）
+> [mock-upstream](../tools/mock-upstream/README.md)（参数分片等只能用 mock 触发的场景；
+> 场景名 `translate-tool-*` / `translate-finish-reason*`，只在 `/messages` 端点有实现）
 
 M2C = Anthropic Messages 响应 → OpenAI Chat Completions 响应。
 本文档覆盖**非流式 JSON** 与**流式 SSE** 两侧。
@@ -146,14 +147,14 @@ input_json_delta 时按 Anthropic index 查表复用
 
 因此**光靠真实流量压不到多片路径** —— 近期全部带工具调用的 A→O 日志里
 `maxDeltasPerBlock` 恒为 1，提示词写得再长也没用（参数体越大只是那一片越长）。
-本地唯一手段是 `tools/mock-anthropic` 的四个场景：
+本地唯一手段是 `tools/mock-upstream` 在 `/messages` 端点上的四个场景：
 
-| 模型名 | 形状 | 压什么 |
+| 场景名 | 形状 | 压什么 |
 |---|---|---|
-| `at-tool-split-args` | 单工具，参数按 12 字符切成 23 片 | 拼接正确性；转义序列跨片边界 |
-| `at-tool-multi-split` | 三工具，block index **1/2/3**（0 给 thinking） | 双索引域重映射为稠密 0/1/2 |
-| `at-tool-interleaved` | 两工具的分片交错发送 | index 映射是否依赖隐式「当前活跃块」 |
-| `at-tool-no-args` | 零个 `input_json_delta` | 不凭空补 `{}`，也不丢掉整个工具调用 |
+| `translate-tool-split-args` | 单工具，参数按 12 字符切成 30+ 片 | 拼接正确性；转义序列跨片边界 |
+| `translate-tool-multi-split` | 三工具，block index **1/2/3**（0 给 thinking） | 双索引域重映射为稠密 0/1/2 |
+| `translate-tool-interleaved` | 两工具的分片交错发送 | index 映射是否依赖隐式「当前活跃块」 |
+| `translate-tool-no-args` | 零个 `input_json_delta` | 不凭空补 `{}`，也不丢掉整个工具调用 |
 
 切片刻意**不避开**转义序列：那是最容易暴露「谁在中途解析单片」的形状。
 交错场景是**实现健壮性探针而非协议合规性测试** —— 官方是块顺序完成的，交错在
@@ -164,17 +165,17 @@ input_json_delta 时按 Anthropic index 查表复用
 
 | 场景 | 上游片数 | 下游 tool index | 拼接结果 |
 |---|---|---|---|
-| `at-tool-split-args` | 23（block 0） | `[0]` | 合法 JSON，与上游**逐字节相等** |
-| `at-tool-multi-split` | 4 / 30 / 8（block 1/2/3） | `[0,1,2]` | 三段各自合法，均逐字节相等 |
-| `at-tool-interleaved` | 5 / 7 交错（block 0/1） | `[0,1]` | 两段互不污染，逐字节相等 |
-| `at-tool-no-args` | 0 | `[0]` | `arguments` 为空串（**正确**，非缺陷） |
+| `translate-tool-split-args` | 30+（block 0） | `[0]` | 合法 JSON，与上游**逐字节相等** |
+| `translate-tool-multi-split` | 4 / 30 / 8（block 1/2/3） | `[0,1,2]` | 三段各自合法，均逐字节相等 |
+| `translate-tool-interleaved` | 5 / 7 交错（block 0/1） | `[0,1]` | 两段互不污染，逐字节相等 |
+| `translate-tool-no-args` | 0 | `[0]` | `arguments` 为空串（**正确**，非缺陷） |
 
 四条 `frameCounts.length === upstream.length`，日志页两栏对齐可用。
 每个工具的帧位置 `monotonic` 为真。
 
 两个容易误读的输出，写在这里免得下次重新怀疑：
 
-- **`at-tool-no-args` 的 `arguments` 是空串，`JSON.parse` 会失败** —— 这是期望行为。
+- **`translate-tool-no-args` 的 `arguments` 是空串，`JSON.parse` 会失败** —— 这是期望行为。
   OpenAI 协议里无参工具就该发空串，下游按 `{}` 处理。校验脚本若无条件对
   `arguments` 做 `JSON.parse`，这一条会假报失败。
 - **顺序性不要用「上游 delta 的 index 序列 == 下游帧的 index 序列」来判**。
@@ -660,8 +661,8 @@ COSP 必须自己补齐：
 单测能构造任意事件序列，但**构造不出真实上游的取舍**。两条只有实流量才能暴露的事：
 
 - **参数分片**：MiMo 不切分，所以真实流量永远走不到多片路径。单测覆盖了两片，
-  但「23 片 + 转义跨界」这种形状要靠 `tools/mock-anthropic` 的
-  `at-tool-split-args` 等四个场景（第 4.1 / 4.2 节）。
+  但「23 片 + 转义跨界」这种形状要靠 `tools/mock-upstream` 的
+  `translate-tool-split-args` 等四个场景（第 4.1 / 4.2 节）。
 - **单个 SSE 事件的载荷上限**：实测 6269 字符的 `data` 正常通过，
   这是单测无从验证的传输层事实。
 
@@ -766,7 +767,7 @@ Copilot BYOK 会回传上一轮思考内容，因此翻译路线上开启 extend
 | 流式纯文本 + thinking | DeepSeek / MiMo | 帧形态正确，裸模型名，`reasoning_content` 正常，无 signature 泄漏 |
 | 非流式 | DeepSeek | usage 与 `reasoning_content` 均正确 |
 | 多轮工具调用链（10 轮） | MiMo | 9 轮 `tool_calls` + 1 轮 `stop`，tool_use/tool_result 9 对全配平，无相邻同角色 |
-| 参数分片四场景 | mock-anthropic | 见第 4.2 节，全部逐字节相等 |
+| 参数分片四场景 | mock-upstream（`/messages`） | 见第 4.2 节，全部逐字节相等 |
 | 跨供应商一致性 | DeepSeek + MiMo | 无按供应商分支 |
 
 ### 15.3 未验证 / 待决

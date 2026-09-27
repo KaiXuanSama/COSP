@@ -2,15 +2,26 @@ package com.kaixuan.copilot_ollama_proxy.application.provider;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallLogService;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolDispatchManager;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiCallLogService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.AfterSend;
+import com.kaixuan.copilot_ollama_proxy.pipeline.BeforeSend;
+import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipeline;
+import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.UpstreamExecutorRegistry;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.dispatch.ProtocolDispatchManager;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.TranslatorRegistry;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.DatabaseRuntimeProviderCatalog;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderApiKeyRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderRequestTransformRepository;
-import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.GenericOpenAiChatService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestAssembler;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestStageRegistry;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.chat.ChatOutboundStage;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler;
+import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.chat.GenericOpenAiChatService;
+import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -114,25 +125,39 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 providerConfigRepository, apiKeyRepository, transformRepository);
         GenericOpenAiChatService genericChatService = new GenericOpenAiChatService(
                 objectMapper, new ProviderRequestHeaderService(objectMapper),
-                new RequestBodyRuleEngine(objectMapper));
+                PipelineContexts.registryWithChatChunkStages(objectMapper),
+                PipelineContexts.contentDetectorRegistry(objectMapper));
         genericChatService.setWebClientBuilder(WebClient.builder());
         AtomicReference<Map<String, String>> loggedRequestHeaders = new AtomicReference<>();
         ApiCallLogService callLogService = mock(ApiCallLogService.class);
         doAnswer(invocation -> {
-            Map<String, String> headers = invocation.getArgument(2);
+            // 主干 runner 调协议感知重载：
+            // 参数序为 (pk, model, downProto, upProto, reqHeaders, ...)，故请求头在 arg 4。
+            Map<String, String> headers = invocation.getArgument(4);
             loggedRequestHeaders.set(new LinkedHashMap<>(headers));
             return null;
         }).when(callLogService).saveNonStream(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyMap(), org.mockito.ArgumentMatchers.anyMap(),
                 org.mockito.ArgumentMatchers.anyMap(), org.mockito.ArgumentMatchers.anyInt(),
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyLong());
         genericChatService.setApiCallLog(callLogService);
-        // 翻译落地后，ChatCompletionService 需要两个上游服务与两个翻译器。
-        // 本测试只关注 OpenAI 直连路径，不走翻译，用 null 占位。
+        // 主干按协议查表选执行器，故注册表必须收本测试用的那个真实执行器。
+        // 翻译器表给空（两个方向都查不到）—— 本测试只走直连，压根不查表。
+        // 出站装配器收 ChatOutboundStage（本测试下游/上游都是 CHAT）：真实发请求到 HttpServer，
+        // 出站头与地址必须由发送前块装好，否则执行器读到 null 头会 NPE。
         ChatCompletionService chatCompletionService = new ChatCompletionService(
-                new ProviderRouteResolver(catalog), new ProtocolDispatchManager(),
-                genericChatService, null, null, null);
+                new RequestPipeline(
+                        new BeforeSend(new ProviderRouteResolver(catalog), new ProtocolDispatchManager(),
+                                new TranslatorRegistry(List.of(), List.of()),
+                                new RequestBodyAssembler(PipelineContexts.registryWithAllBodyStages(objectMapper),
+                                        new RequestBodyRuleEngine(objectMapper)),
+                                new OutboundRequestAssembler(
+                                        new ProviderRequestHeaderService(objectMapper),
+                                        new OutboundRequestStageRegistry(List.of(new ChatOutboundStage())),
+                                        objectMapper)),
+                        new AfterSend(new UpstreamExecutorRegistry(List.of(genericChatService)))));
 
         HttpHeaders downstreamHeaders = new HttpHeaders();
         downstreamHeaders.set(HttpHeaders.AUTHORIZATION, "Bearer downstream-token");
@@ -147,7 +172,9 @@ class ProviderRequestBodyTransformationIntegrationTests {
                 "model", "[alpha] model-a",
                 "messages", List.of(Map.of("role", "user", "content", "hello")),
                 "temperature", 0.8,
-                "reasoning_effort", "high"), "[alpha] model-a", downstreamHeaders, null).block(Duration.ofSeconds(3));
+                "reasoning_effort", "high"), "[alpha] model-a", downstreamHeaders, null)
+                .map(UpstreamEvent::data)
+                .block(Duration.ofSeconds(3));
 
         assertThat(response).contains("chatcmpl-test");
         JsonNode upstreamBody = objectMapper.readTree(capturedRequest.get());

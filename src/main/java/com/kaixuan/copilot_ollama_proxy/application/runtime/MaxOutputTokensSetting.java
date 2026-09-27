@@ -29,7 +29,7 @@ import java.util.Map;
  *
  * <h2>接线范围</h2>
  * 目前只有 <strong>Anthropic</strong> 线路消费本设置
- * （{@code GenericAnthropicChatService.ensureMaxTokens}）—— 那条线路上
+ * （{@code MaxTokensNormalizer.ensureMaxTokens}，由 {@code MessagesMaxTokensStage} 调起）—— 那条线路上
  * {@code max_tokens} 必填，不补就发不出去。
  *
  * <p>OpenAI 线路<strong>刻意不接</strong>：那边该字段可选，接上去会改变所有现存

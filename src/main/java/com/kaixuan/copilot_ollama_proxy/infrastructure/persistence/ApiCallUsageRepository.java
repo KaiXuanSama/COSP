@@ -1,9 +1,9 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
-import com.kaixuan.copilot_ollama_proxy.application.logging.ApiCallUsageService;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiCallUsageService;
 import com.kaixuan.copilot_ollama_proxy.application.usage.UsageDateBounds;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.UsageEventPublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageBreakdownRow;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageDailyPoint;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageHourlyPoint;

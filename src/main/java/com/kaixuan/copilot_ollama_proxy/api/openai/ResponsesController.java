@@ -2,19 +2,19 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
+import com.kaixuan.copilot_ollama_proxy.api.shared.NonStreamLifecycle;
+import com.kaixuan.copilot_ollama_proxy.api.shared.StreamLifecycle;
+import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamErrorRenderer;
+import com.kaixuan.copilot_ollama_proxy.api.shared.UpstreamFailureClassifier;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ResponsesService;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
+import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.ResponsesRequest;
-import com.kaixuan.copilot_ollama_proxy.provider.CallCanceledException;
-import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.ResponsesStreamEvents;
-import com.kaixuan.copilot_ollama_proxy.provider.generic.openai.ResponsesUsageParser;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEventClassifier;
+import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.responses.ResponsesStreamEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -28,9 +28,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.Sinks;
 
-import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -76,23 +74,14 @@ public class ResponsesController {
 
     private static final Logger log = LoggerFactory.getLogger(ResponsesController.class);
 
-    /**
-     * SSE 心跳周期，与另两个端点同值。
-     *
-     * <p>理由相同：空闲连接上 {@code channelInactive} 检测不可靠，上游等待首字或退避期间
-     * 服务端一个字节都不写，下游断开可能要等到上游产生响应才被发现。周期写注释帧使
-     * 写失败路径能及时兜底。
-     */
-    private static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(5);
-
     private final ResponsesService responsesService;
     private final ObjectMapper objectMapper;
-    private final ApiUsageCollector apiUsageCollector;
+    private final ApiUsageDailyService apiUsageCollector;
     private final CallLifecyclePublisher callLifecyclePublisher;
     private final CallCancellationRegistry callCancellationRegistry;
 
     public ResponsesController(ResponsesService responsesService, ObjectMapper objectMapper,
-                               ApiUsageCollector apiUsageCollector,
+                               ApiUsageDailyService apiUsageCollector,
                                CallLifecyclePublisher callLifecyclePublisher,
                                CallCancellationRegistry callCancellationRegistry) {
         this.responsesService = responsesService;
@@ -129,41 +118,13 @@ public class ResponsesController {
                     .body(streamBody));
         }
 
-        // 非流式：注册取消信号，外部点击取消时抛 CallCanceledException 中止链。
-        Mono<String> cancelSignal = callCancellationRegistry.register(requestId)
-                .then(Mono.error(new CallCanceledException()));
-        return Mono.firstWithSignal(
-                        responsesService.responses(requestBody, model, requestHeaders, requestId),
-                        cancelSignal)
-                .doOnNext(this::recordUsage)
-                // COMPLETED：非流式无事件计数，最终计数为 0（前端已按 stream 分支处理文案）。
-                .doOnNext(json -> callLifecyclePublisher.publish(
-                        CallLifecycleEvent.of(requestId, CallPhase.COMPLETED, model, stream, 0)))
-                .<ResponseEntity<?>>map(json -> ResponseEntity.ok()
-                        .contentType(MediaType.APPLICATION_JSON).body(json))
-                .onErrorResume(ex -> {
-                    if (ex instanceof CallCanceledException) {
-                        callLifecyclePublisher.publish(
-                                CallLifecycleEvent.of(requestId, CallPhase.ABORTED, model, stream));
-                        log.info("调用被主动取消 [{}] {}", model, requestId);
-                        return Mono.empty();
-                    }
-                    if (isClientDisconnect(ex)) {
-                        callLifecyclePublisher.publish(
-                                CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, stream));
-                        return Mono.empty();
-                    }
-                    callLifecyclePublisher.publish(
-                            CallLifecycleEvent.of(requestId, CallPhase.FAILED, model, stream));
-                    return Mono.just(errorResponse(ex, model));
-                })
-                // CANCELED：下游断连是 Reactor 的 cancel 信号，onErrorResume 捕获不到。
-                .doOnCancel(() -> {
-                    callLifecyclePublisher.publish(
-                            CallLifecycleEvent.of(requestId, CallPhase.CANCELED, model, stream));
-                    log.info("下游主动断连 [{}] {}", model, requestId);
-                })
-                .doFinally(signal -> callCancellationRegistry.remove(requestId));
+        // 非流式：收尾协议收归 NonStreamLifecycle —— 三条端点此前各写一份逐字相同的实现。
+        // 本处只交代「哪条链」与「错误长什么样」。
+        return NonStreamLifecycle.attach(
+                responsesService.responses(requestBody, model, requestHeaders, requestId),
+                new NonStreamLifecycle.CallContext(requestId, model, stream,
+                        callLifecyclePublisher, callCancellationRegistry, apiUsageCollector, log),
+                ex -> errorResponse(ex, model));
     }
 
     /**
@@ -172,124 +133,41 @@ public class ResponsesController {
      * <p>完成判定沿用另两个端点的两层结构：
      * Layer 1 收到终态事件即 finalize（不必等 TCP 关闭），
      * Layer 2 上游关闭连接时兜底，用 CAS 去重保证只 finalize 一次。
+     *
+     * <h2>职责分界</h2>
+     * 本方法只负责<strong>把上游事件映射成带 event 名的 SSE 帧</strong>。
+     * 其后的收尾协议在 {@link StreamLifecycle#stream} 里；
+     * 本端点提供两个回调，且两者都比另两条多一层信息：
+     * <h2>职责分界</h2>
+     * 本方法只交待<strong>三件事</strong>：拉哪条链、每帧长什么样、错误长什么样。
+     * 逐帧副作用与收尾协议都在 {@link StreamLifecycle#stream} 里。
+     *
+     * <p>本端点多一层：<strong>缩局要进 Layer 1 的相位</strong> —— {@code response.failed}
+     * 不能显示成「完成」，所以 {@code terminalPhase} 回调在这里不是常量。
+     * Layer 2 的兜底相位仍是 {@code COMPLETED}（连接正常关闭、已有内容，无失败证据），
+     * 那一条已内建在共享件里，不需要回调。
      */
     private Flux<ServerSentEvent<String>> streamResponse(Map<String, Object> requestBody, String model,
                                                           HttpHeaders requestHeaders, String requestId) {
-        AtomicInteger eventCount = new AtomicInteger(0);
-        AtomicBoolean canceled = new AtomicBoolean(false);
-        AtomicBoolean completed = new AtomicBoolean(false);
-        // 流式 usage 只在终态事件出现一次，因此这里是「最后一份非 null 胜出」而非累积 ——
-        // 与 Anthropic 端点需要跨事件 merge 的形态不同。
-        AtomicReference<UsageTokens> usage = new AtomicReference<>(UsageTokens.EMPTY);
-
-        Mono<Void> cancelSignal = callCancellationRegistry.register(requestId)
-                .doOnSuccess(v -> canceled.set(true));
-
-        // 数据流终止信号，心跳据此停止 —— 否则 interval 永不完成，merge 永不完成。
-        Sinks.Empty<Void> streamEnd = Sinks.empty();
-
-        Flux<ServerSentEvent<String>> streamBody =
-                responsesService.responsesStream(requestBody, model, requestHeaders, requestId)
-                .doOnNext(event -> {
-                    recordStreamUsage(event, usage);
-                    // Layer 1：终态事件是协议终止标记，不计入事件数。
-                    if (isTerminalEvent(event)) {
-                        // 结局取自事件名 —— response.failed 不能显示成「完成」。
-                        finalizeStream(requestId, model, eventCount.get(), completed, usage,
-                                ResponsesStreamEvents.outcomeOf(extractEventType(event)));
-                        return;
-                    }
-                    callLifecyclePublisher.publish(CallLifecycleEvent.of(
-                            requestId, CallPhase.CHUNK, model, true, eventCount.incrementAndGet()));
-                })
+        return StreamLifecycle.stream(
+                responsesService.responsesStream(requestBody, model, requestHeaders, requestId),
+                new StreamLifecycle.CallContext(requestId, model,
+                        new AtomicInteger(0), new AtomicBoolean(false), new AtomicBoolean(false),
+                        new AtomicReference<>(null),
+                        callLifecyclePublisher, callCancellationRegistry, apiUsageCollector, log),
+                // Layer 1 相位：结局取自事件名 —— response.failed 不能显示成「完成」。
+                event -> phaseOf(ResponsesStreamEvents.outcomeOf(extractEventType(event.data()))),
                 // event 类型必须回填：Responses 客户端靠它驱动状态机，只发 data 无法解析。
-                .map(event -> {
-                    String type = extractEventType(event);
-                    ServerSentEvent.Builder<String> builder = ServerSentEvent.builder(event);
+                event -> {
+                    String type = extractEventType(event.data());
+                    ServerSentEvent.Builder<String> builder = ServerSentEvent.builder(event.data());
                     if (type != null) {
                         builder.event(type);
                     }
                     return builder.build();
-                })
-                .takeUntilOther(cancelSignal)
-                .concatWith(Flux.defer(() -> {
-                    if (canceled.get()) {
-                        callLifecyclePublisher.publish(CallLifecycleEvent.of(
-                                requestId, CallPhase.ABORTED, model, true, eventCount.get()));
-                        log.info("流式调用被主动取消，静默断连 [{}] {}", model, requestId);
-                    }
-                    return Flux.<ServerSentEvent<String>>empty();
-                }))
-                .doOnComplete(() -> {
-                    if (canceled.get()) {
-                        return;
-                    }
-                    // Layer 2：上游未发任何终态事件就关连接时靠这里兜底。
-                    // 拿不到事件类型，只能按成功处理 —— 连接正常关闭且已有内容，
-                    // 没有任何证据表明它失败了（与 Chat / Anthropic 的兜底层同口径）。
-                    finalizeStream(requestId, model, eventCount.get(), completed, usage,
-                            ResponsesStreamEvents.Outcome.SUCCESS);
-                })
-                .onErrorResume(error -> {
-                    if (isClientDisconnect(error)) {
-                        callLifecyclePublisher.publish(CallLifecycleEvent.of(
-                                requestId, CallPhase.CANCELED, model, true, eventCount.get()));
-                        return Flux.empty();
-                    }
-                    callLifecyclePublisher.publish(
-                            CallLifecycleEvent.of(requestId, CallPhase.FAILED, model, true));
-                    // 错误以 Responses 的 error 事件形态下发，客户端才能识别。
-                    return Flux.just(ServerSentEvent.<String>builder(errorEventBody(error, model))
-                            .event("error").build());
-                })
-                .doOnCancel(() -> {
-                    if (canceled.get() || completed.get()) {
-                        return;
-                    }
-                    callLifecyclePublisher.publish(CallLifecycleEvent.of(
-                            requestId, CallPhase.CANCELED, model, true, eventCount.get()));
-                    log.info("下游主动断连，静默收尾 [{}] {}", model, requestId);
-                })
-                .doFinally(signal -> {
-                    callCancellationRegistry.remove(requestId);
-                    streamEnd.tryEmitEmpty();
-                });
-
-        Flux<ServerSentEvent<String>> heartbeat = Flux.interval(HEARTBEAT_INTERVAL)
-                .map(tick -> ServerSentEvent.<String>builder().comment("keep-alive").build())
-                .takeUntilOther(streamEnd.asMono());
-
-        return Flux.merge(streamBody, heartbeat);
-    }
-
-    /**
-     * 流式收尾：记录 usage 并按结局发终态相位。
-     *
-     * <p>CAS 去重，保证 Layer 1 与 Layer 2 只有先到的那个生效。
-     *
-     * <h2>相位由结局决定，不是恒为 COMPLETED</h2>
-     * 早先本方法无条件发 {@code COMPLETED}，而 {@code isTerminalEvent} 对
-     * {@code response.failed} / {@code error} / {@code response.cancelled} 也返回 true ——
-     * 于是上游明确说「我失败了」，Toast 上显示的是「完成」。用户只能靠「回答是空的」
-     * 间接察觉，而 {@code FAILED} 当时只在<strong>抛异常</strong>时才发（即只有网络层
-     * 的错误会正确标红，上游侧的执行失败不会）。
-     *
-     * <p>「流结束了」与「结局是什么」是两个事实，混在一处就会丢掉后者。
-     *
-     * <h2>usage 无论结局都记</h2>
-     * 失败与取消同样已经消耗了 token（上游已经算过钱），跳过记账会让统计与账单对不上。
-     * 这与 {@code api_call_log} 保留失败调用是同一个取向。
-     */
-    private void finalizeStream(String requestId, String model, int finalEvents,
-                               AtomicBoolean completed, AtomicReference<UsageTokens> usage,
-                               ResponsesStreamEvents.Outcome outcome) {
-        if (!completed.compareAndSet(false, true)) {
-            return;
-        }
-        UsageTokens tokens = usage.get();
-        apiUsageCollector.record(tokens.promptOrZero(), tokens.completionOrZero());
-        callLifecyclePublisher.publish(
-                CallLifecycleEvent.of(requestId, phaseOf(outcome), model, true, finalEvents));
+                },
+                // 错误以 Responses 的扁平 error 事件形态下发 —— 与非流式刻意不同形（见 STREAM_BODIES）。
+                error -> UpstreamErrorRenderer.streamBody(error, model, log, STREAM_BODIES));
     }
 
     /**
@@ -297,7 +175,7 @@ public class ResponsesController {
      *
      * <p>取消映射到 {@link CallPhase#ABORTED} 而非 {@link CallPhase#CANCELED}：
      * 后者的语义是「下游 Copilot 主动断连」（本控制器在 {@code doOnCancel} /
-     * {@code isClientDisconnect} 分支用它），而这里是<strong>上游侧</strong>取消了响应。
+     * {@link UpstreamFailureClassifier#isClientDisconnect} 分支用它），而这里是<strong>上游侧</strong>取消了响应。
      * 两者都不是错误，但成因相反 —— 混用会让「谁取消的」这个信息在 Toast 上消失。
      *
      * <p>{@code ABORTED} 原本描述的是「管理员在后台主动取消」，同属「非下游发起的中止」，
@@ -319,7 +197,7 @@ public class ResponsesController {
      * 这样无需逐个建模即可透传。
      *
      * <p>{@code stream} 不在此处设置：由上游服务按调用入口决定
-     * （{@code prepareRequestBody} 会覆写），避免下游误传导致模式不符。
+     * （主干装配的 {@code writeProtocolFields} 会覆写），避免下游误传导致模式不符。
      */
     private Map<String, Object> buildRequestBody(ResponsesRequest request) {
         Map<String, Object> body = new LinkedHashMap<>();
@@ -333,125 +211,98 @@ public class ResponsesController {
         return body;
     }
 
-    /** 从事件 JSON 取出 {@code type} 作为 SSE 的 event 名。 */
+    /**
+     * 从事件 JSON 取出 {@code type} 作为 SSE 的 event 名。
+     *
+     * <p>这里曾有一个 {@code isTerminalEvent}，用于判「是不是终态事件」。
+     * 它已删除：那个判断上移到了上游执行器的 {@code UpstreamEvent} 分类
+     * （清单仍与判定器共用 {@link ResponsesStreamEvents#isTerminal}）。
+     * 而本方法只服务「把 event 名回填给客户端」，与协议判定无关，故保留。
+     *
+     * <p>实现委托给 {@link UpstreamEventClassifier#extractEventType}，
+     * 理由见 AnthropicController 的同名方法：三份逐字相同的解析逻辑会静默分叉。
+     */
     private String extractEventType(String event) {
-        try {
-            var node = objectMapper.readTree(event);
-            var type = node.get("type");
-            return type != null && type.isTextual() ? type.asText() : null;
-        } catch (Exception exception) {
-            return null;
-        }
-    }
-
-    /** 是否流的终态事件。清单与空响应判定共用 {@link ResponsesStreamEvents}。 */
-    private boolean isTerminalEvent(String event) {
-        return ResponsesStreamEvents.isTerminal(extractEventType(event));
+        return UpstreamEventClassifier.extractEventType(objectMapper, event);
     }
 
     /**
-     * 从流式事件提取 usage。
+     * 把调用失败渲染成<strong>非流式</strong>响应。
      *
-     * <p>「最后一份非 null 胜出」而非跨事件合并：Responses 的 usage 挂在终态事件的
-     * {@code response.usage} 下、一次给全。若某个上游中途也带一份，终态那份才是结算值。
-     * 这与 Anthropic 端点必须 {@code merge}（输入与输出分散在两个事件）形成对比。
+     * <h2>分工</h2>
+     * 分类交给 {@link UpstreamFailureClassifier}；状态码与日志交给
+     * {@link UpstreamErrorRenderer}；<strong>body 骨架留在本类</strong> ——
+     * 非流式与 Chat 同形（同为 OpenAI 系，客户端错误解析代码通常共用）。
+     *
+     * <p>状态码分层的理由（400 vs 502、上游 HTTP 原样透传）见渲染器的 Javadoc。
      */
-    private void recordStreamUsage(String event, AtomicReference<UsageTokens> usage) {
-        String raw = ResponsesUsageParser.extractUsageRawJson(objectMapper, event);
-        if (raw == null) {
-            return;
-        }
-        UsageTokens tokens = ResponsesUsageParser.parseUsageObject(objectMapper, raw);
-        if (!tokens.isEmpty()) {
-            usage.set(tokens);
-        }
-    }
-
-    /** 从非流式响应提取 usage 并记入日聚合。 */
-    private void recordUsage(String json) {
-        String raw = ResponsesUsageParser.extractUsageRawJson(objectMapper, json);
-        if (raw == null) {
-            return;
-        }
-        UsageTokens tokens = ResponsesUsageParser.parseUsageObject(objectMapper, raw);
-        if (!tokens.isEmpty()) {
-            apiUsageCollector.record(tokens.promptOrZero(), tokens.completionOrZero());
-        }
-    }
-
-    /** 构造非流式错误响应，透传上游状态码与错误体。 */
     private ResponseEntity<?> errorResponse(Throwable ex, String model) {
-        ProtocolTranslationNotSupportedException protocolException = findProtocolException(ex);
-        if (protocolException != null) {
-            log.warn("协议不可用 [{}]: {}", model, protocolException.getMessage());
-            return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
-                    .body(errorBody(protocolException.getMessage()));
-        }
-        // 协议一个都没勾：同样是本地配置问题，不能落进 502 兜底。
-        NoSupportedProtocolException noProtocol = findNoSupportedProtocolException(ex);
-        if (noProtocol != null) {
-            log.warn("供应商未配置任何协议 [{}]: {}", model, noProtocol.getMessage());
-            return ResponseEntity.status(400).contentType(MediaType.APPLICATION_JSON)
-                    .body(errorBody(noProtocol.getMessage()));
-        }
-        WebClientResponseException responseException = findWebResponseException(ex);
-        if (responseException != null) {
-            log.warn("上游 API 返回错误 [{}] {}: {}", model,
-                    responseException.getStatusCode().value(), responseException.getResponseBodyAsString());
-            return ResponseEntity.status(responseException.getStatusCode().value())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(responseException.getResponseBodyAsString());
-        }
-        log.warn("上游 API 调用失败 [{}]: {}", model, ex.getMessage());
-        return ResponseEntity.status(502).contentType(MediaType.APPLICATION_JSON)
-                .body(errorBody("无法连接到上游服务"));
+        return UpstreamErrorRenderer.response(ex, model, log, BODIES);
     }
 
     /**
-     * 构造流式错误<strong>事件</strong>的 body。
+     * Responses 形态的错误体 —— 本端点自备，且<strong>两条路径刻意不同形</strong>。
      *
-     * <h2>与非流式刻意不共用同一个 JSON 骨架</h2>
-     * 非流式的错误是一个普通 HTTP 响应体，用 Chat 形态
-     * （{@code {"error":{...}}}）合理 —— 两者同为 OpenAI 系，客户端错误解析代码通常共用。
-     * 但流式的错误是一个<strong>协议事件</strong>，得守事件的契约：Responses 客户端是
-     * 事件状态机，靠 {@code type} 分派。本方法上方那段 {@code map} 正是在把 JSON 的
-     * {@code type} 回填到 SSE 的 {@code event:} 行 —— 而 Chat 形态的错误体<strong>顶层
-     * 没有 {@code type}</strong>，只认 JSON 的客户端会把这帧当成无法分派的脏数据。
+     * <table border="1">
+     *   <caption>为何 400 与 502 是两个实现</caption>
+     *   <tr><th>档位</th><th>非流式</th><th>流式</th></tr>
+     *   <tr><td>400 类</td><td rowspan="2">{@code {"error":{...}}}（与 Chat 同形）</td>
+     *       <td>{@link #streamErrorBody}（扁平，顶层带 {@code type}）</td></tr>
+     *   <tr><td>502 类</td><td>{@link #streamErrorBody}</td></tr>
+     * </table>
      *
-     * <p>症状因此不是 400/502，而是<strong>流挂住、界面转圈不动</strong> ——
-     * 错误信息其实已经送到，只是客户端不认。排查时极易误判成超时或网络问题。
+     * <h2>为何本类的流式与非流式不能共用骨架</h2>
+     * 非流式的错误是一个普通 HTTP 响应体，用 Chat 形态合理 —— 两者同为 OpenAI 系。
+     * 但流式的错误是一个<strong>协议事件</strong>，得守事件契约：Responses 客户端是
+     * 事件状态机，靠 {@code type} 分派。Chat 形态的错误体<strong>顶层没有 {@code type}</strong>，
+     * 只认 JSON 的客户端会把这帧当成无法分派的脏数据 ——
+     * 症状不是 400/502，而是<strong>流挂住、界面转圈不动</strong>。
      *
-     * <p>此前这里直接调 {@code errorBody}，就是踩在「一个方法服务两条契约不同的路」上。
-     *
-     * @see #streamErrorBody(String) 官方 {@code ResponseErrorEvent} 的形态
+     * <p>因此本类有<strong>两个</strong> {@code ErrorBodies}：{@link #BODIES} 服务非流式，
+     * {@link #STREAM_BODIES} 服务流式。两者都接在 {@link UpstreamErrorRenderer} 上 ——
+     * 分类骨架与状态码仍三条共用，只有 body 形状分开。
      */
-    private String errorEventBody(Throwable error, String model) {
-        ProtocolTranslationNotSupportedException protocolException = findProtocolException(error);
-        if (protocolException != null) {
-            log.warn("协议不可用 [{}]: {}", model, protocolException.getMessage());
-            return streamErrorBody(protocolException.getMessage());
-        }
-        NoSupportedProtocolException noProtocol = findNoSupportedProtocolException(error);
-        if (noProtocol != null) {
-            log.warn("供应商未配置任何协议 [{}]: {}", model, noProtocol.getMessage());
-            return streamErrorBody(noProtocol.getMessage());
-        }
-        WebClientResponseException responseException = findWebResponseException(error);
-        if (responseException != null) {
-            String upstreamBody = responseException.getResponseBodyAsString();
-            log.warn("上游 API 返回错误 [{}] {}: {}", model,
-                    responseException.getStatusCode().value(), upstreamBody);
-            // 上游原文优先，但必须能被状态机分派 —— 直连 Responses 上游的 4xx 通常是
-            // REST 错误体（Chat 形态、顶层无 type），原样下发等于制造一帧脏数据。
-            // 已是合法 error 事件的（少数上游把 SSE 错误帧当响应体返回）则原样透传，
-            // 那才是最准确的信息。
-            return isResponsesErrorEvent(upstreamBody)
-                    ? upstreamBody
-                    : streamErrorBody(upstreamMessageOf(upstreamBody, responseException));
-        }
-        log.warn("上游 API 调用失败 [{}]: {}", model, error.getMessage());
-        return streamErrorBody("无法连接到上游服务");
-    }
+    private final UpstreamErrorRenderer.ErrorBodies BODIES =
+            new UpstreamErrorRenderer.ErrorBodies() {
+                @Override
+                public String badRequest(String message) {
+                    return errorBody(message);
+                }
+
+                @Override
+                public String upstreamError(String message) {
+                    return errorBody(message);
+                }
+            };
+
+    /**
+     * 流式专用的 body 形状：两档都是扁平的 {@link #streamErrorBody}。
+     *
+     * <p>{@link #adaptUpstreamBody} 是本类独有的覆写 —— 上游原文可能是 REST 错误体
+     * （顶层无 {@code type}），原样下发等于制造一帧脏数据；只有能 {@link #isResponsesErrorEvent}
+     * 识别的才原样透传。
+     */
+    private final UpstreamErrorRenderer.ErrorBodies STREAM_BODIES =
+            new UpstreamErrorRenderer.ErrorBodies() {
+                @Override
+                public String badRequest(String message) {
+                    return streamErrorBody(message);
+                }
+
+                @Override
+                public String upstreamError(String message) {
+                    return streamErrorBody(message);
+                }
+
+                @Override
+                public String adaptUpstreamBody(String raw, WebClientResponseException exception) {
+                    // 已是合法 error 事件的（少数上游把 SSE 错误帧当响应体返回）则原样透传，
+                    // 那才是最准确的信息。
+                    return isResponsesErrorEvent(raw)
+                            ? raw
+                            : streamErrorBody(upstreamMessageOf(raw, exception));
+                }
+            };
 
     /**
      * 官方 {@code ResponseErrorEvent} 形态的错误事件体。
@@ -559,70 +410,5 @@ public class ResponsesController {
         } catch (Exception exception) {
             return "{\"error\":{\"message\":\"上游调用失败\",\"type\":\"api_error\"}}";
         }
-    }
-
-    /** 判断异常是否由客户端断连引起。 */
-    private boolean isClientDisconnect(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            String simpleName = current.getClass().getSimpleName();
-            if ("AbortedException".equals(simpleName) || "ClientAbortException".equals(simpleName)
-                    || "EOFException".equals(simpleName) || "AsyncRequestNotUsableException".equals(simpleName)) {
-                return true;
-            }
-            current = current.getCause();
-        }
-        return false;
-    }
-
-    /** 递归解包 WebClientResponseException（重试耗尽时被包进 RetryExhaustedException）。 */
-    private WebClientResponseException findWebResponseException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof WebClientResponseException responseException) {
-                return responseException;
-            }
-            current = current.getCause();
-        }
-        return null;
-    }
-
-    /**
-     * 递归解包协议不可用异常。
-     *
-     * <p>必须在解包 {@link WebClientResponseException} <strong>之前</strong>判定：
-     * 本异常代表「请求根本没发出去」，若落入兜底分支会被译成「无法连接到上游服务」，
-     * 而上游并未被尝试连接 —— 这会把排查方向指往网络与上游可用性，
-     * 而真正要改的是供应商的协议勾选。
-     *
-     * <p>用 400 而非 502：失败源于本地配置与请求的组合，不是网关上游故障，
-     * 且重试多少次结果都一样 —— 5xx 会诱导客户端重试。
-     */
-    private ProtocolTranslationNotSupportedException findProtocolException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof ProtocolTranslationNotSupportedException protocolException) {
-                return protocolException;
-            }
-            current = current.getCause();
-        }
-        return null;
-    }
-
-    /**
-     * 递归解包「供应商未声明任何协议」异常。
-     *
-     * <p>与协议不可用同一处境：本地配置问题、重试无用、必须与上游故障区分开。
-     * 单独一个类型是为了给出不同的可操作消息（那条指向「去勾选协议」）。
-     */
-    private NoSupportedProtocolException findNoSupportedProtocolException(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof NoSupportedProtocolException noProtocol) {
-                return noProtocol;
-            }
-            current = current.getCause();
-        }
-        return null;
     }
 }

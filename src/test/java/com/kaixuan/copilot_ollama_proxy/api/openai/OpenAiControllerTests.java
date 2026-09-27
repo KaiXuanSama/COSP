@@ -18,14 +18,16 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ChatCompletionService;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.RequestTranslationException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.RequestTranslationException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderConfigRow;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ProviderModelRow;
+import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 
 import reactor.core.publisher.Mono;
 
@@ -51,7 +53,7 @@ class OpenAiControllerTests {
 
   @Test
   void returnsNonStreamingOpenAiChatCompletionsWithoutBlockingTheControllerPath() {
-    given(chatCompletionService.chatCompletion(anyMap(), anyString(), org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString())).willReturn(Mono.just("""
+    given(chatCompletionService.chatCompletion(anyMap(), anyString(), org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString())).willReturn(UpstreamStreams.single("""
         {
           "id": "chatcmpl-msg_123",
           "object": "chat.completion",
@@ -173,6 +175,34 @@ class OpenAiControllerTests {
             // 字段路径是这个异常存在的意义，丢了它下游只能去猜改哪里。
             org.hamcrest.Matchers.containsString("messages[2].role"),
             org.hamcrest.Matchers.containsString("narrator"),
+            org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接"))));
+  }
+
+  /**
+   * 模型名没解析到供应商时给 400，而不是伪装成上游连接失败。
+   *
+   * <p>与上面三条同一族的第四个成员：{@code UnresolvedModelRouteException}
+   * 不是 {@code WebClientResponseException}，不单独判定就落进 502 兜底。
+   * 但这条路径上<strong>上游一次都没被连接过</strong> ——
+   * 路由失败发生在本地供应商目录里，而「无法连接到上游服务」会把排查方向指向网络。
+   *
+   * <p>三种成因（模型名空白 / 前缀不存在或未声明该模型 / 无前缀但命中多个供应商）
+   * 都是下游请求的问题：改请求即可解决，重试同一个名字结果不会变，故回 400。
+   */
+  @Test
+  void unresolvedModelRouteReturnsBadRequestInsteadOfGatewayError() {
+    given(chatCompletionService.chatCompletion(anyMap(), anyString(),
+        org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString()))
+        .willReturn(Mono.error(new UnresolvedModelRouteException("ghost-model")));
+
+    webTestClient.post().uri("/v1/chat/completions").contentType(MediaType.APPLICATION_JSON)
+        .accept(MediaType.APPLICATION_JSON)
+        .bodyValue("{\"model\":\"ghost-model\",\"stream\":false,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
+        .exchange().expectStatus().isEqualTo(400).expectBody()
+        .jsonPath("$.error.type").isEqualTo("invalid_request_error")
+        .jsonPath("$.error.message").value(org.hamcrest.Matchers.allOf(
+            // 模型名要保留：下游据此知道自己发的是哪个名字。
+            org.hamcrest.Matchers.containsString("ghost-model"),
             org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接"))));
   }
 

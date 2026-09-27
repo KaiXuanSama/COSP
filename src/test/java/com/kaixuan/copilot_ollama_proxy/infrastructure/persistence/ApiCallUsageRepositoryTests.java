@@ -1,7 +1,7 @@
 package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.UsageEventPublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageRecordDelta;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 阶段三验证与锁定：api_call_usage 落库层。
+ * {@code api_call_usage} 落库层的行为锁定。
  *
  * <p>核心断言：
  * <ul>

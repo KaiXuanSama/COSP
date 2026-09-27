@@ -51,7 +51,8 @@ import java.util.Map;
  *
  * <h2>接线范围</h2>
  * 只有 <strong>Anthropic</strong> 线路消费本设置
- * （{@code GenericAnthropicChatService.prepareRequestBody}）。OpenAI 侧不接 ——
+ * （{@code MessagesThinkingStage} → {@code AnthropicThinkingNormalizer}，
+ * 由主干 {@code RequestBodyAssembler} 按协议查表调起）。OpenAI 侧不接 ——
  * {@code thinking} 在那边虽然也存在（小米 MiMo 把 {@code thinking.type} 列为必选），
  * 但接上去会改变所有现存 OpenAI 供应商的出站请求体，需要单独评估影响面。
  */

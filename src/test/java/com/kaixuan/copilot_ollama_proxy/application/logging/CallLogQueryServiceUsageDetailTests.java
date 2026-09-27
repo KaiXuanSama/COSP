@@ -1,11 +1,11 @@
 package com.kaixuan.copilot_ollama_proxy.application.logging;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallLogRepository;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.persistence.ApiCallUsageRepository;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.UsageEventPublisher;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.LogEventPublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.UsageEventPublisher;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.LogEventPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -19,7 +19,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 阶段四（链路部分）验证与锁定：日志详情端点回传结构中附带 usage 字段。
+ * 日志详情端点回传结构中附带 usage 字段的行为锁定。
  *
  * <p>覆盖：
  * <ul>

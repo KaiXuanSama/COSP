@@ -2,17 +2,19 @@ package com.kaixuan.copilot_ollama_proxy.api.openai;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.kaixuan.copilot_ollama_proxy.application.openai.ResponsesService;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.NoSupportedProtocolException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.ProtocolTranslationNotSupportedException;
-import com.kaixuan.copilot_ollama_proxy.application.protocol.WireProtocol;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.ApiUsageCollector;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallCancellationRegistry;
-import com.kaixuan.copilot_ollama_proxy.infrastructure.web.CallLifecyclePublisher;
+import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ResponsesService;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
+import com.kaixuan.copilot_ollama_proxy.observability.record.ApiUsageDailyService;
+import com.kaixuan.copilot_ollama_proxy.control.CallCancellationRegistry;
+import com.kaixuan.copilot_ollama_proxy.observability.publisher.CallLifecyclePublisher;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallPhase;
 import com.kaixuan.copilot_ollama_proxy.protocol.openai.ResponsesRequest;
 import org.junit.jupiter.api.Nested;
+import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
@@ -56,7 +58,7 @@ import static org.mockito.Mockito.mock;
 class ResponsesControllerTests {
 
     private final ResponsesService responsesService = mock(ResponsesService.class);
-    private final ApiUsageCollector apiUsageCollector = mock(ApiUsageCollector.class);
+    private final ApiUsageDailyService apiUsageCollector = mock(ApiUsageDailyService.class);
     private final CallLifecyclePublisher lifecyclePublisher = new CallLifecyclePublisher();
     private final CallCancellationRegistry cancellationRegistry = new CallCancellationRegistry();
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -85,7 +87,7 @@ class ResponsesControllerTests {
                      "tools":[{"type":"web_search"}],"include":["reasoning.encrypted_content"],
                      "truncation":"auto"}""", ResponsesRequest.class);
             given(responsesService.responses(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Mono.just("{\"id\":\"resp_1\"}"));
+                    .willReturn(UpstreamStreams.single("{\"id\":\"resp_1\"}"));
 
             newController().responses(request, HttpHeaders.EMPTY).block(Duration.ofSeconds(5));
 
@@ -104,7 +106,7 @@ class ResponsesControllerTests {
         @Test
         void inputAcceptsBothStringAndArrayForms() throws Exception {
             given(responsesService.responses(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Mono.just("{\"id\":\"resp_1\"}"));
+                    .willReturn(UpstreamStreams.single("{\"id\":\"resp_1\"}"));
 
             ResponsesRequest stringForm = objectMapper.readValue(
                     "{\"model\":\"gpt-5\",\"input\":\"hi\"}", ResponsesRequest.class);
@@ -129,7 +131,7 @@ class ResponsesControllerTests {
             ResponsesRequest request = objectMapper.readValue(
                     "{\"model\":\"gpt-5\",\"input\":\"hi\",\"stream\":false}", ResponsesRequest.class);
             given(responsesService.responses(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Mono.just("{\"id\":\"resp_1\"}"));
+                    .willReturn(UpstreamStreams.single("{\"id\":\"resp_1\"}"));
 
             newController().responses(request, HttpHeaders.EMPTY).block(Duration.ofSeconds(5));
 
@@ -169,7 +171,7 @@ class ResponsesControllerTests {
         @Test
         void eventNameIsBackfilledFromTypeField() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(
+                    .willReturn(UpstreamStreams.responses(
                             "{\"type\":\"response.created\",\"response\":{\"id\":\"r\"}}",
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}",
                             "{\"type\":\"response.completed\",\"response\":{\"id\":\"r\"}}"));
@@ -186,7 +188,7 @@ class ResponsesControllerTests {
         void eventDataIsForwardedVerbatim() {
             String raw = "{\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}";
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(raw));
+                    .willReturn(UpstreamStreams.responses(raw));
 
             assertThat(streamEvents(streamRequest()).get(0).data()).isEqualTo(raw);
         }
@@ -195,7 +197,7 @@ class ResponsesControllerTests {
         @Test
         void nonJsonEventIsStillForwardedWithoutEventName() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just("not-json"));
+                    .willReturn(UpstreamStreams.responses("not-json"));
 
             List<ServerSentEvent<String>> events = streamEvents(streamRequest());
 
@@ -213,7 +215,7 @@ class ResponsesControllerTests {
         @Test
         void terminalEventIsNotCountedAsChunk() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(
+                    .willReturn(UpstreamStreams.responses(
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"b\"}",
                             "{\"type\":\"response.completed\",\"response\":{\"id\":\"r\"}}"));
@@ -235,7 +237,7 @@ class ResponsesControllerTests {
         @Test
         void completionFallsBackToStreamCloseWhenTerminalEventMissing() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just("{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}"));
+                    .willReturn(UpstreamStreams.responses("{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}"));
 
             List<CallLifecycleEvent> lifecycle = collectLifecycle(() -> streamEvents(streamRequest()));
 
@@ -246,7 +248,7 @@ class ResponsesControllerTests {
         @Test
         void completedIsEmittedOnceEvenWhenBothLayersWouldFire() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(
+                    .willReturn(UpstreamStreams.responses(
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
                             "{\"type\":\"response.completed\",\"response\":{\"id\":\"r\"}}"));
 
@@ -270,7 +272,7 @@ class ResponsesControllerTests {
         @Test
         void failedEventFinalizesAsFailed() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(
+                    .willReturn(UpstreamStreams.responses(
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
                             "{\"type\":\"response.failed\",\"response\":{\"id\":\"r\"}}"));
 
@@ -287,7 +289,7 @@ class ResponsesControllerTests {
         @Test
         void bareErrorEventFinalizesAsFailed() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(
+                    .willReturn(UpstreamStreams.responses(
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
                             "{\"type\":\"error\",\"message\":\"upstream blew up\"}"));
 
@@ -306,7 +308,7 @@ class ResponsesControllerTests {
         @Test
         void cancelledEventFinalizesAsAborted() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(
+                    .willReturn(UpstreamStreams.responses(
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
                             "{\"type\":\"response.cancelled\",\"response\":{\"id\":\"r\"}}"));
 
@@ -325,7 +327,7 @@ class ResponsesControllerTests {
         @Test
         void alternateCanceledSpellingFinalizesAsAborted() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just("{\"type\":\"response.canceled\",\"response\":{\"id\":\"r\"}}"));
+                    .willReturn(UpstreamStreams.responses("{\"type\":\"response.canceled\",\"response\":{\"id\":\"r\"}}"));
 
             List<CallLifecycleEvent> lifecycle = collectLifecycle(() -> streamEvents(streamRequest()));
 
@@ -342,7 +344,7 @@ class ResponsesControllerTests {
         @Test
         void incompleteEventFinalizesAsCompleted() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just(
+                    .willReturn(UpstreamStreams.responses(
                             "{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}",
                             "{\"type\":\"response.incomplete\",\"response\":{\"id\":\"r\"}}"));
 
@@ -362,7 +364,7 @@ class ResponsesControllerTests {
         @Test
         void streamWithoutTerminalEventFallsBackToCompleted() {
             given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
-                    .willReturn(Flux.just("{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}"));
+                    .willReturn(UpstreamStreams.responses("{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}"));
 
             List<CallLifecycleEvent> lifecycle = collectLifecycle(() -> streamEvents(streamRequest()));
 
@@ -401,6 +403,46 @@ class ResponsesControllerTests {
 
             assertThat(response).isNotNull();
             assertThat(response.getStatusCode().value()).isEqualTo(400);
+        }
+
+        /**
+         * 模型名没解析到供应商时给 400，而不是伪装成上游连接失败。
+         *
+         * <p>与上面两条同一族的第三个成员。这条路径上<strong>上游一次都没被连接过</strong> ——
+         * 路由失败发生在本地供应商目录里，「无法连接到上游服务」会把排查方向指向网络。
+         * 非流式用嵌套骨架（与 Chat 同形），故断言 {@code error.message}。
+         */
+        @Test
+        void unresolvedModelRouteBecomes400() {
+            given(responsesService.responses(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                    .willReturn(Mono.error(new UnresolvedModelRouteException("ghost-model")));
+
+            ResponseEntity<?> response = newController()
+                    .responses(nonStreamRequest(), HttpHeaders.EMPTY).block(Duration.ofSeconds(5));
+
+            assertThat(response).isNotNull();
+            assertThat(response.getStatusCode().value()).isEqualTo(400);
+            assertThat(errorMessageOf(response)).contains("ghost-model");
+            assertThat(errorMessageOf(response)).doesNotContain("无法连接");
+        }
+
+        /**
+         * 流式同样要能识别，且用 Responses 的<strong>扁平</strong> error 事件骨架。
+         *
+         * <p>不能复用非流式那个嵌套体：Responses 客户端是事件状态机，靠 JSON 顶层的
+         * {@code type} 分派，嵌套体没有那个字段 → 流挂住而非报错。
+         */
+        @Test
+        void streamUnresolvedModelRouteBecomesErrorEvent() {
+            given(responsesService.responsesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                    .willReturn(Flux.error(new UnresolvedModelRouteException("ghost-model")));
+
+            List<ServerSentEvent<String>> events = streamEvents(streamRequest());
+
+            assertThat(events).hasSize(1);
+            assertThat(events.get(0).event()).isEqualTo("error");
+            assertThat(events.get(0).data()).contains("ghost-model");
+            assertThat(events.get(0).data()).doesNotContain("无法连接");
         }
 
         /** 上游状态码与错误体原样透传，不包一层自己的解释。 */
