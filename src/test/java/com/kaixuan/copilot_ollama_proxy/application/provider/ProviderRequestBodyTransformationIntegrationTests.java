@@ -149,7 +149,8 @@ class ProviderRequestBodyTransformationIntegrationTests {
         // 出站头与地址必须由发送前块装好，否则执行器读到 null 头会 NPE。
         ChatCompletionService chatCompletionService = new ChatCompletionService(
                 new RequestPipeline(
-                        new BeforeSend(new ProviderRouteResolver(catalog), new ProtocolDispatchManager(),
+                        // 本测试只走直连（CHAT→CHAT），调度器不读已实现方向集，故空 List 即可。
+                        new BeforeSend(new ProviderRouteResolver(catalog), new ProtocolDispatchManager(List.of()),
                                 new TranslatorRegistry(List.of(), List.of()),
                                 new RequestBodyAssembler(PipelineContexts.registryWithAllBodyStages(objectMapper),
                                         new RequestBodyRuleEngine(objectMapper)),

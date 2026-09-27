@@ -3,7 +3,9 @@ package com.kaixuan.copilot_ollama_proxy.pipeline;
 import com.kaixuan.copilot_ollama_proxy.observability.port.CallLifecycleNotifier;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.dispatch.ProtocolDispatchManager;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.TranslatedRequest;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.RequestProtocolTranslator;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.TranslatorRegistry;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
@@ -55,7 +57,11 @@ class RequestPipelineTests {
     @BeforeEach
     void setUp() {
         routeResolver = mock(ProviderRouteResolver.class);
-        dispatchManager = new ProtocolDispatchManager();
+        // 调度器需要知道「哪些去程翻译已实现」才能判优先级：这里声明 C2M 已实现，
+        // 使 backfillsTranslationDecisionForCrossProtocolRoute（下游 CHAT + 供应商只有
+        // MESSAGES）能命中翻译而非抛未实现。只声明方向、不实际翻译（本类只测路由步骤）。
+        dispatchManager = new ProtocolDispatchManager(
+                List.of(stubRequestTranslator(WireProtocol.CHAT, WireProtocol.MESSAGES)));
         // 本类只测路由步骤，不触及翻译 / 装配 / 出站 —— 故后三个协作者给占位即可。
         beforeSend = new BeforeSend(routeResolver, dispatchManager,
                 new TranslatorRegistry(List.of(), List.of()),
@@ -142,10 +148,14 @@ class RequestPipelineTests {
         beforeSend.setLifecycleNotifier(notifier);
         givenRouteWithProtocols("[\"MESSAGES\"]");
 
-        beforeSend.routeStep(ctxFor("m", WireProtocol.RESPONSES, "req-notify"));
+        // 用下游 CHAT（C2M 已由本类的 stub 声明为已实现）：调度成功、通知得以触发，
+        // 从而验证「下游取自调用方、上游取自调度结论」这条接线。
+        // 刻意不用下游 RESPONSES —— R2M 去程翻译未实现，调度会在通知前就抛错，
+        // 那验的是「未实现即报错」（另见 ProtocolDispatchManagerTests），不是通知接线。
+        beforeSend.routeStep(ctxFor("m", WireProtocol.CHAT, "req-notify"));
 
         // 下游协议必须来自调用方（各端点服务的身份），上游协议来自调度结论。
-        verify(notifier).recordProtocols("req-notify", "RESPONSES", "MESSAGES");
+        verify(notifier).recordProtocols("req-notify", "CHAT", "MESSAGES");
     }
 
     @Test
@@ -166,5 +176,28 @@ class RequestPipelineTests {
                 "relay-x", "https://example.invalid/v1", "key", List.of(),
                 "[]", "{\"version\":2,\"groups\":[]}", supportedProtocolsJson, "");
         given(routeResolver.resolve(any())).willReturn(new ResolvedProviderRoute(provider, "m", "m"));
+    }
+
+    /**
+     * 只声明方向的去程翻译器替身 —— 调度器构造期只读方向建集合，从不调 translateRequest。
+     * 本类测的是路由步骤，翻译器只需让 (CHAT, MESSAGES) 这条方向「看起来已实现」。
+     */
+    private static RequestProtocolTranslator stubRequestTranslator(WireProtocol downstream, WireProtocol upstream) {
+        return new RequestProtocolTranslator() {
+            @Override
+            public WireProtocol downstreamProtocol() {
+                return downstream;
+            }
+
+            @Override
+            public WireProtocol upstreamProtocol() {
+                return upstream;
+            }
+
+            @Override
+            public TranslatedRequest translateRequest(Map<String, Object> downstreamBody) {
+                throw new UnsupportedOperationException("方向声明替身，不实际翻译");
+            }
+        };
     }
 }

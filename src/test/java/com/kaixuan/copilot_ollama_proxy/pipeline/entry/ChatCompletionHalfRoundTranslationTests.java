@@ -111,7 +111,11 @@ class ChatCompletionHalfRoundTranslationTests {
         routeResolver = mock(ProviderRouteResolver.class);
         openAiChatService = mock(GenericOpenAiChatService.class);
         anthropicChatService = mock(GenericAnthropicChatService.class);
-        dispatchManager = new ProtocolDispatchManager();
+        // 调度器需知道「C2M 去程已实现」，下游 CHAT + 供应商 MESSAGES 才会被判为可翻译
+        // 而进入本类要测的半轮实现态（去程命中、回程未命中的透传）。与下面半装配注册表同源：
+        // 两者都只认这一个真实去程翻译器。
+        dispatchManager = new ProtocolDispatchManager(
+                List.of(new ChatToMessagesRequestTranslator(objectMapper)));
 
         // 主干按协议查表选执行器，故 mock 必须声明自己的键 —— 否则注册表查到 null。
         given(anthropicChatService.protocol()).willReturn(WireProtocol.MESSAGES);
