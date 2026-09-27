@@ -5,11 +5,14 @@
 
 这个结论直接决定「下游 API Key」能不能走标准 Bearer 认证方案。
 
-> 与其它 mock 的区别：
-> - `mock-upstream` 模拟**上游供应商（流式）**，供 COSP 转发请求过去（抓 COSP → 供应商的出站行为，SSE 帧序列）。
-> - `mock-nonstream` 模拟**上游供应商（非流式）**，供 COSP 转发请求过去（抓 COSP → 供应商的出站行为，单个 JSON 响应）。
-> - `mock-anthropic` 模拟**上游 Anthropic 供应商**，供 COSP 的 Messages 线路转发过去。
-> - `mock-cosp` 模拟 **COSP 自己**，供 Copilot / Claude 系客户端直接连接（抓下游 → COSP 的入站请求头）。
+> **与 `mock-upstream` 的分工**（本项目只有这两套 mock）：
+> - [`mock-upstream`](../mock-upstream/README.md) 模拟**上游供应商**（三协议合一，端口 8081），
+>   供 COSP 转发请求过去 —— 抓的是 **COSP → 供应商**的出站行为与返回帧。
+> - `mock-cosp`（本文件）模拟 **COSP 自己**（端口 11333），供 Copilot / Claude 系客户端
+>   直接连接 —— 抓的是 **下游 → COSP** 的入站请求头与请求体。
+>
+> 两者的观察方向相反，因此不能合并：本 mock **刻意不做任何协议翻译**，
+> 那是它要观察的对象本身。
 
 ## 启动
 

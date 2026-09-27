@@ -2,588 +2,256 @@
 'use strict';
 
 /**
- * COSP 测试用模拟上游供应商。
+ * COSP 测试用模拟上游供应商 —— **三协议合一**。
  *
- * 提供 OpenAI 兼容的 /v1/models 与 /v1/chat/completions 端点，
- * 通过“模型名”触发各种上游行为（正常 / 卡首字 / 停滞 / 不关连接 / 错误码等），
- * 从而在真实 HTTP + SSE 连接下物理复现 COSP 的各种 Toast 生命周期状态，
- * 而不依赖真实上游 API。
+ * <h2>它替掉了什么</h2>
+ * 合并前有四个独立脚本，各占一个端口，按四种互不相同的轴切分：
+ * <ul>
+ *   <li>`mock-upstream`（8081）—— 按**传输形态**切：只做 Chat 流式</li>
+ *   <li>`mock-nonstream`（8082）—— 同样按形态切：只做 Chat 非流式</li>
+ *   <li>`mock-anthropic`（8083）—— 按**协议**切：Messages 两种形态合并</li>
+ *   <li>`mock-toolorder`（8084）—— 按**场景维度**切：工具调用与正文的先后顺序</li>
+ * </ul>
+ * 四种轴混用必然看起来乱，而且同一场景在多处各写一份（`error-500` / `error-401` /
+ * `retry-then-succeed` / `hang-response` / `slow-response` 各三份，共 15 处等价代码）。
  *
- * 特性：
- *  - 纯 Node 内置 http 模块，零依赖，无需 npm install。
- *  - 每个连接的定时行为用 setTimeout 异步驱动，挂起连接几乎零成本。
- *  - 详细日志：每个请求的模型、阶段（连接/首字/chunk/结束）都打印，状态易感。
+ * <h2>现在的切分</h2>
+ * <pre>
+ * mock-upstream.js          入口：HTTP server · 路由 · /v1/models · 422 兜底
+ * lib/http.js               机制：SSE 写帧 · 读 body · 日志
+ * lib/transport.js          协议无关场景：错误码 / 重试 / 截断 / 挂起 / 延迟
+ * protocols/chat.js         OpenAI Chat 形态的场景
+ * protocols/messages.js     Anthropic Messages 形态的场景
+ * protocols/responses.js    OpenAI Responses 形态的场景（待实现）
+ * </pre>
  *
- * 启动：node mock-upstream.js  （或经 npm run mock）
+ * <h2>协议由端点路径决定，不由模型名决定</h2>
+ * 同一个场景名在多个端点上都能打，行为按该协议的形态呈现：
+ * <pre>
+ * POST /chat/completions  + model=baseline-normal  → chat.js 的 baseline-normal
+ * POST /messages          + model=baseline-normal  → messages.js 的 baseline-normal
+ * </pre>
+ * 因此 `/v1/models` 只列**一份去重清单**，且模型名不再需要 `ns-` / `at-` / `to-`
+ * 这类跨进程避重前缀 —— 那类前缀的唯一用途是绕开「无前缀模型名要求唯一匹配」的
+ * 路由约束，合到一个服务后那个约束自然消失。
+ *
+ * <h2>场景命名口径</h2>
+ * **名字描述「被测的 COSP 判定点」，不描述 mock 自己的动作。**
+ * 域前缀即期望：`baseline-*` 常规形态 · `blank-*` 应判空兜底 · `pass-*` 应放行 ·
+ * `retry-*` 应重试 · `fail-*` 应快速失败 · `phase-*` 相位正确 · `cancel-*` 应可中断 ·
+ * `translate-*` 翻译后形态正确。
+ *
+ * <p>合并前是另一套口径（`stall-forever` / `hang-first-byte` / `ns-sse-despite-nonstream`
+ * 都在描述 mock 喂了什么），两种口径并存会让人每次重新猜「这名字是在说我喂了什么，
+ * 还是在说 COSP 该做什么」。改名的依据是：选模型的人想知道的正是后者。
+ *
+ * <h2>传输模式的差异体现在响应码，不体现在命名</h2>
+ * 有些场景只在一种模式下有意义（`cancel-stall` 对非流式无意义，`pass-sse-body`
+ * 对流式无意义）。这类组合不通过改名字来区分，而是**回 422 并说明原因** ——
+ * 详见 `lib/http.js` 的 `sendUnsupported`。
+ *
+ * 启动：node mock-upstream.js  （或 npm run mock:upstream）
  */
 
 const http = require('http');
 
-// ── 可调参数（直接改这里）─────────────────────────────
-const PORT = Number(process.env.MOCK_PORT || 8081);
-/** hang-first-byte 卡住首字的时长（毫秒）。默认 10 分钟。 */
-const HANG_FIRST_BYTE_MS = 10 * 60 * 1000;
-/** stall-recover 中途停滞时长（毫秒）。 */
-const STALL_RECOVER_MS = 35 * 1000;
-/** stall-recover / stall-forever 停滞前先吐的 chunk 数。 */
-const STALL_AFTER_CHUNKS = 5;
-/** delayed-stall-forever 首字之前的延迟（毫秒）。 */
-const DELAYED_STALL_LEAD_MS = 5 * 1000;
-/** normal 等正常流的 chunk 间隔（毫秒）。 */
-const NORMAL_CHUNK_INTERVAL_MS = 80;
-/** normal 流的 chunk 数。 */
-const NORMAL_CHUNK_COUNT = 30;
-/** slow-steady 的 chunk 间隔（毫秒）。 */
-const SLOW_STEADY_INTERVAL_MS = 3 * 1000;
-/** slow-steady 的 chunk 数。 */
-const SLOW_STEADY_CHUNK_COUNT = 8;
-/** retry-then-succeed 在第几次请求时成功（前 N-1 次返回 500）。 */
-const RETRY_SUCCESS_ATTEMPT = 3;
-/** retry-then-succeed 计数器空闲清零时长（毫秒）：最后一次请求后超过此时长无新请求则清零。 */
-const RETRY_RESET_MS = 30 * 1000;
-// ────────────────────────────────────────────────────
+const {
+  REQUIRED_ANTHROPIC_VERSION,
+  attachLifecycleLogs,
+  log,
+  readJsonBody,
+  requireAnthropicVersion,
+  sendJson,
+  sendUnsupported,
+} = require('./lib/http');
 
-/** 模型清单：name -> 行为描述（供 /v1/models 输出与文档参考）。 */
-const MODELS = [
-  { id: 'normal', desc: '正常流式，完整 chunk + [DONE] + 关连接' },
-  { id: 'hang-first-byte', desc: 'CONNECTED 后卡住不吐首字（默认 10 分钟）' },
-  { id: 'stall-recover', desc: '吐若干 chunk 后停滞 35s，再继续到结束' },
-  { id: 'stall-forever', desc: '吐若干 chunk 后永久停滞（等待用户右键断连）' },
-  { id: 'delayed-stall-forever', desc: '延迟 5s 才吐首字，随后永久停滞（等待用户右键断连）' },
-  { id: 'done-no-close', desc: '发完内容 + [DONE]，但保持 TCP 不关闭' },
-  { id: 'no-done-close', desc: '发完内容后直接关连接，不发 [DONE]' },
-  { id: 'error-500', desc: '返回 500（COSP 应重试）' },
-  { id: 'error-401', desc: '返回 401（COSP 应快速失败不重试）' },
-  { id: 'slow-steady', desc: '每 3s 一个 chunk，持续较久' },
-  { id: 'retry-then-succeed', desc: '前 2 次请求返回 500，第 3 次正常回复 chunk + [DONE]（验证 COSP 重试中成功）' },
-  { id: 'empty-stream', desc: '200 + 仅 role/finish/[DONE]，无任何内容（COSP 应空响应兜底重发）' },
-  { id: 'empty-usage-zero', desc: '空流但带全 0 usage（COSP 应空响应兜底重发）' },
-  { id: 'empty-tool-call', desc: '纯工具调用流（COSP 不应判定为空）' },
-  { id: 'empty-body', desc: '200 但响应体完全为空、0 个 SSE 帧（COSP 应空响应兜底重发）' },
+const chat = require('./protocols/chat');
+const messages = require('./protocols/messages');
+
+/* ── 可调参数 ─────────────────────────────────────────── */
+
+/** 沿用旧 `mock-upstream` 的 8081；`MOCK_UPSTREAM_PORT` 优先，`MOCK_PORT` 兼容旧用法。 */
+const PORT = Number(process.env.MOCK_UPSTREAM_PORT || process.env.MOCK_PORT || 8081);
+
+/** 三协议共用的场景注册表：`协议 id -> (场景名 -> 场景)`。 */
+const REGISTRY = {
+  chat: chat.scenarios(),
+  messages: messages.scenarios(),
+};
+
+const PROTOCOL_MODULES = { chat, messages };
+
+/**
+ * 端点路径 → 协议 id。
+ *
+ * <p>路径刻意与真实上游**完全一致**（不带 `/v1`）：COSP 往 Base URL 上拼接的正是
+ * `chat/completions` / `messages` / `responses`（见各上游执行器的 `endpointPath`），
+ * 因此 Base URL 可以直接填 `http://localhost:8081`，不需要为 mock 特殊处理。
+ *
+ * <p>同时容忍带 `/v1` 的写法：那只是让人手打 curl 时少一个疑惑。
+ */
+const ROUTES = [
+  { path: '/chat/completions', protocol: 'chat' },
+  { path: '/v1/chat/completions', protocol: 'chat' },
+  { path: '/messages', protocol: 'messages' },
+  { path: '/v1/messages', protocol: 'messages' },
+  { path: '/responses', protocol: 'responses' },
+  { path: '/v1/responses', protocol: 'responses' },
 ];
 
-const MODEL_IDS = new Set(MODELS.map((m) => m.id));
+/** Responses 协议尚未实现（下一轮补 `protocols/responses.js`）。 */
+const UNIMPLEMENTED_PROTOCOLS = new Set(['responses']);
 
-/** 简单时间戳日志。 */
-function log(...args) {
-  const ts = new Date().toISOString().slice(11, 23);
-  console.log(`[${ts}]`, ...args);
-}
+/** 默认场景名（请求不带 model、或带了未登记的名字时用）。 */
+const DEFAULT_SCENARIO = 'baseline-normal';
 
-/** 构造一个 OpenAI 风格的流式 content chunk 的 SSE 帧字符串。 */
-function contentFrame(id, model, content) {
-  const payload = {
-    id,
-    object: 'chat.completion.chunk',
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{ index: 0, delta: { content }, finish_reason: null }],
-  };
-  return `data: ${JSON.stringify(payload)}\n\n`;
-}
-
-/** 构造首个带 role 的 chunk（OpenAI 流首帧惯例）。 */
-function roleFrame(id, model) {
-  const payload = {
-    id,
-    object: 'chat.completion.chunk',
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
-  };
-  return `data: ${JSON.stringify(payload)}\n\n`;
-}
-
-/** 构造收尾 chunk（finish_reason: stop）。 */
-function finishFrame(id, model) {
-  const payload = {
-    id,
-    object: 'chat.completion.chunk',
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-  };
-  return `data: ${JSON.stringify(payload)}\n\n`;
-}
-
-/** 写 SSE 响应头。 */
-function writeSseHead(res) {
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream; charset=utf-8',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
-}
-
-/** 生成本次响应的 chunk 内容片段（简单可读文本）。 */
-function makeChunkText(i) {
-  return `token${i} `;
-}
+/* ── 模型清单 ─────────────────────────────────────────── */
 
 /**
- * 处理 /v1/chat/completions，按模型名分派行为。
- */
-function handleChat(req, res, model) {
-  const id = `chatcmpl-mock-${Date.now()}`;
-  log(`▶ chat 开始  model=${model}`);
-
-  // 客户端断开时打印，便于观察 COSP 取消 / 断连行为。
-  req.on('aborted', () => log(`⨯ 客户端断开  model=${model}`));
-  res.on('close', () => log(`■ 连接关闭  model=${model}`));
-
-  switch (model) {
-    case 'normal':
-      return streamNormal(res, id, model);
-    case 'hang-first-byte':
-      return hangFirstByte(res, id, model);
-    case 'stall-recover':
-      return stallRecover(res, id, model);
-    case 'stall-forever':
-      return stallForever(res, id, model);
-    case 'delayed-stall-forever':
-      return delayedStallForever(res, id, model);
-    case 'done-no-close':
-      return doneNoClose(res, id, model);
-    case 'no-done-close':
-      return noDoneClose(res, id, model);
-    case 'error-500':
-      return errorResponse(res, 500, 'mock upstream error (500)', model);
-    case 'error-401':
-      return errorResponse(res, 401, 'mock upstream unauthorized (401)', model);
-    case 'slow-steady':
-      return slowSteady(res, id, model);
-    case 'retry-then-succeed':
-      return retryThenSucceed(res, id, model);
-    case 'empty-stream':
-      return emptyStream(res, id, model);
-    case 'empty-usage-zero':
-      return emptyUsageZero(res, id, model);
-    case 'empty-tool-call':
-      return emptyToolCall(res, id, model);
-    case 'empty-body':
-      return emptyBody(res, id, model);
-    default:
-      // 未知模型：当作 normal 处理，方便随手测试。
-      log(`? 未知模型 ${model}，按 normal 处理`);
-      return streamNormal(res, id, model);
-  }
-}
-
-/** normal：正常流式，role → N 个 content → finish → [DONE] → 关闭。 */
-function streamNormal(res, id, model) {
-  writeSseHead(res);
-  res.write(roleFrame(id, model));
-  let i = 0;
-  const timer = setInterval(() => {
-    if (res.writableEnded) {
-      clearInterval(timer);
-      return;
-    }
-    if (i < NORMAL_CHUNK_COUNT) {
-      res.write(contentFrame(id, model, makeChunkText(i)));
-      i += 1;
-      return;
-    }
-    clearInterval(timer);
-    res.write(finishFrame(id, model));
-    res.write('data: [DONE]\n\n');
-    res.end();
-    log(`✓ normal 完成  model=${model}  chunks=${NORMAL_CHUNK_COUNT}`);
-  }, NORMAL_CHUNK_INTERVAL_MS);
-}
-
-/** hang-first-byte：写 SSE 头（连接建立），但长时间不吐任何 chunk。 */
-function hangFirstByte(res, id, model) {
-  writeSseHead(res);
-  // 立即 flush 响应头，让 COSP 进入 CONNECTED（等待首字）。
-  res.write(':\n\n'); // SSE 注释帧，不算数据 chunk，仅确保头被 flush
-  log(`… hang-first-byte 已建立连接，卡首字 ${HANG_FIRST_BYTE_MS / 1000}s  model=${model}`);
-  const timer = setTimeout(() => {
-    if (!res.writableEnded) {
-      res.write(contentFrame(id, model, '（终于来了）'));
-      res.write(finishFrame(id, model));
-      res.write('data: [DONE]\n\n');
-      res.end();
-      log(`✓ hang-first-byte 卡满后完成  model=${model}`);
-    }
-  }, HANG_FIRST_BYTE_MS);
-  res.on('close', () => clearTimeout(timer));
-}
-
-/** stall-recover：吐 K 个 chunk → 停滞 35s → 再吐到结束。 */
-function stallRecover(res, id, model) {
-  writeSseHead(res);
-  res.write(roleFrame(id, model));
-  let i = 0;
-  function pump() {
-    if (res.writableEnded) return;
-    res.write(contentFrame(id, model, makeChunkText(i)));
-    i += 1;
-    if (i === STALL_AFTER_CHUNKS) {
-      log(`… stall-recover 停滞 ${STALL_RECOVER_MS / 1000}s  model=${model}`);
-      const t = setTimeout(() => {
-        log(`↻ stall-recover 恢复  model=${model}`);
-        resume();
-      }, STALL_RECOVER_MS);
-      res.on('close', () => clearTimeout(t));
-      return;
-    }
-    setTimeout(pump, NORMAL_CHUNK_INTERVAL_MS);
-  }
-  function resume() {
-    if (res.writableEnded) return;
-    if (i < STALL_AFTER_CHUNKS + NORMAL_CHUNK_COUNT) {
-      res.write(contentFrame(id, model, makeChunkText(i)));
-      i += 1;
-      setTimeout(resume, NORMAL_CHUNK_INTERVAL_MS);
-      return;
-    }
-    res.write(finishFrame(id, model));
-    res.write('data: [DONE]\n\n');
-    res.end();
-    log(`✓ stall-recover 完成  model=${model}`);
-  }
-  pump();
-}
-
-/** stall-forever：吐 K 个 chunk 后永久停滞，且不关连接。 */
-function stallForever(res, id, model) {
-  writeSseHead(res);
-  res.write(roleFrame(id, model));
-  let i = 0;
-  function pump() {
-    if (res.writableEnded) return;
-    if (i < STALL_AFTER_CHUNKS) {
-      res.write(contentFrame(id, model, makeChunkText(i)));
-      i += 1;
-      setTimeout(pump, NORMAL_CHUNK_INTERVAL_MS);
-      return;
-    }
-    log(`… stall-forever 永久停滞（不关连接）  model=${model}`);
-    // 什么都不做：连接保持打开，永不再吐 chunk，也不 end。
-  }
-  pump();
-}
-
-/**
- * delayed-stall-forever：连接建立后先静默 5s，再吐 K 个 chunk，然后永久停滞。
+ * 生成去重后的场景清单。
  *
- * <p>与 stall-forever 的区别只在前半段：stall-forever 立刻吐首字，本场景刻意把
- * 「等待首字」和「产出后停滞」两个阶段都拉长到可观察。用于验证 Toast 在
- * CONNECTED（等待首字）→ CHUNK（产出中）之间的状态流转，以及两个阶段下右键断连都可用。
- * 与 hang-first-byte 的区别是：那个卡满 10 分钟后会正常收尾，本场景吐完就再也不动。
+ * <p>`protocols` 与 `modes` 字段列出该场景在哪些组合下可用 ——
+ * 下游据此判断 422 是否会出现，管理后台里也能一眼看出「这个场景该配哪个协议」。
  */
-function delayedStallForever(res, id, model) {
-  writeSseHead(res);
-  // 先 flush 响应头让 COSP 进入 CONNECTED，但不带任何数据 chunk。
-  res.write(':\n\n'); // SSE 注释帧，不算数据 chunk
-  log(`… delayed-stall-forever 已建立连接，${DELAYED_STALL_LEAD_MS / 1000}s 后才吐首字  model=${model}`);
-
-  let i = 0;
-  function pump() {
-    if (res.writableEnded) return;
-    if (i < STALL_AFTER_CHUNKS) {
-      res.write(contentFrame(id, model, makeChunkText(i)));
-      i += 1;
-      const t = setTimeout(pump, NORMAL_CHUNK_INTERVAL_MS);
-      res.on('close', () => clearTimeout(t));
-      return;
+function modelList() {
+  const merged = new Map();
+  for (const [protocolId, table] of Object.entries(REGISTRY)) {
+    for (const [name, scenario] of Object.entries(table)) {
+      if (!merged.has(name)) {
+        merged.set(name, { id: name, desc: scenario.desc, protocols: new Set(), modes: new Set() });
+      }
+      const entry = merged.get(name);
+      entry.protocols.add(protocolId);
+      if (scenario.stream) entry.modes.add('stream');
+      if (scenario.nonstream) entry.modes.add('nonstream');
     }
-    log(`… delayed-stall-forever 永久停滞（不关连接）  model=${model}`);
-    // 什么都不做：连接保持打开，永不再吐 chunk，也不 end。
   }
-
-  const lead = setTimeout(() => {
-    if (res.writableEnded) return;
-    res.write(roleFrame(id, model));
-    pump();
-  }, DELAYED_STALL_LEAD_MS);
-  res.on('close', () => clearTimeout(lead));
+  return [...merged.values()]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((entry) => ({
+      id: entry.id,
+      desc: entry.desc,
+      protocols: [...entry.protocols].sort(),
+      modes: [...entry.modes].sort(),
+    }));
 }
 
-/** done-no-close：发完内容 + [DONE]，但保持 TCP 不关闭。 */
-function doneNoClose(res, id, model) {
-  writeSseHead(res);
-  res.write(roleFrame(id, model));
-  let i = 0;
-  const timer = setInterval(() => {
-    if (res.writableEnded) {
-      clearInterval(timer);
-      return;
-    }
-    if (i < NORMAL_CHUNK_COUNT) {
-      res.write(contentFrame(id, model, makeChunkText(i)));
-      i += 1;
-      return;
-    }
-    clearInterval(timer);
-    res.write(finishFrame(id, model));
-    res.write('data: [DONE]\n\n');
-    // 关键：发完 [DONE] 后不调用 res.end()，模拟 keep-alive 不关连接。
-    log(`… done-no-close 已发 [DONE]，保持连接不关  model=${model}`);
-  }, NORMAL_CHUNK_INTERVAL_MS);
-}
-
-/** no-done-close：发完内容后直接关连接，不发 [DONE]。 */
-function noDoneClose(res, id, model) {
-  writeSseHead(res);
-  res.write(roleFrame(id, model));
-  let i = 0;
-  const timer = setInterval(() => {
-    if (res.writableEnded) {
-      clearInterval(timer);
-      return;
-    }
-    if (i < NORMAL_CHUNK_COUNT) {
-      res.write(contentFrame(id, model, makeChunkText(i)));
-      i += 1;
-      return;
-    }
-    clearInterval(timer);
-    res.write(finishFrame(id, model));
-    // 关键：不发 [DONE]，直接关连接。COSP 应靠 Layer 2（TCP 关闭）兜底完成。
-    res.end();
-    log(`✓ no-done-close 已关连接（无 [DONE]）  model=${model}`);
-  }, NORMAL_CHUNK_INTERVAL_MS);
-}
-
-/** slow-steady：稳定每 3s 一个 chunk，持续较久。 */
-function slowSteady(res, id, model) {
-  writeSseHead(res);
-  res.write(roleFrame(id, model));
-  let i = 0;
-  function pump() {
-    if (res.writableEnded) return;
-    if (i < SLOW_STEADY_CHUNK_COUNT) {
-      res.write(contentFrame(id, model, makeChunkText(i)));
-      i += 1;
-      setTimeout(pump, SLOW_STEADY_INTERVAL_MS);
-      return;
-    }
-    res.write(finishFrame(id, model));
-    res.write('data: [DONE]\n\n');
-    res.end();
-    log(`✓ slow-steady 完成  model=${model}`);
-  }
-  pump();
-}
-
-// ── retry-then-succeed 状态 ──────────────────────────────────────────────
-/**
- * retry-then-succeed 的请求计数器。
- *
- * <p>模块级共享（跨请求持久），记录该端点已收到多少次 /v1/chat/completions 请求：
- * 第 1、2 次返回 500，第 3 次正常流式回复。计数器由定时器管理：
- * 每次请求都会重置一个 RETRY_RESET_MS 的清零定时器——若该端点最后一次请求后
- * 超过此时长仍无新请求，则计数器归零，下一轮测试重新从第 1 次开始；
- * 第 3 次成功回复时也立即清零，保证下一轮从头计数。
- */
-let retryCounter = 0;
-/** 计数器清零定时器句柄，供刷新与取消使用。 */
-let retryResetTimer = null;
-
-/** 刷新计数器清零定时器：在最后一次请求后 RETRY_RESET_MS 归零。 */
-function scheduleRetryReset(model) {
-  if (retryResetTimer) {
-    clearTimeout(retryResetTimer);
-  }
-  retryResetTimer = setTimeout(() => {
-    retryCounter = 0;
-    retryResetTimer = null;
-    log(`↺ retry-then-succeed 计数器超时清零  model=${model}`);
-  }, RETRY_RESET_MS);
-}
-
-/** 立即清零计数器并取消清零定时器（第 3 次成功后调用）。 */
-function clearRetryCounter() {
-  retryCounter = 0;
-  if (retryResetTimer) {
-    clearTimeout(retryResetTimer);
-    retryResetTimer = null;
-  }
-}
-
-/**
- * retry-then-succeed：前 2 次请求返回 500，第 3 次正常流式回复到 [DONE]。
- *
- * <p>用于验证 COSP 对 500 的内部重试（backoff 最多 5 次）在中途某次成功产生 chunk 的行为。
- * 计数器跨请求持久，由 30s 定时器兜底清零；第 3 次成功后立即清零，便于连续测试。
- */
-function retryThenSucceed(res, id, model) {
-  retryCounter += 1;
-  const attempt = retryCounter;
-  // 每次请求都刷新清零定时器：最后一次请求后 RETRY_RESET_MS 无新请求则归零。
-  scheduleRetryReset(model);
-
-  if (attempt < RETRY_SUCCESS_ATTEMPT) {
-    log(`✗ retry-then-succeed 第 ${attempt} 次请求 -> 返回 500  model=${model}`);
-    return errorResponse(res, 500, `mock retry attempt ${attempt} failed (500)`, model);
-  }
-
-  // 第 3 次：正常流式回复，并立即清零计数器（下一轮从头计数）。
-  clearRetryCounter();
-  log(`✓ retry-then-succeed 第 ${attempt} 次请求 -> 正常流式回复  model=${model}`);
-  return streamNormal(res, id, model);
-}
-
-/** 错误响应：返回指定状态码 + OpenAI 风格错误体。 */
-function errorResponse(res, status, message, model) {
-  const body = JSON.stringify({ error: { message, type: 'mock_error', code: status } });
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(body);
-  log(`✗ 返回错误 ${status}  model=${model}`);
-}
-
-// ── 空响应场景（验证 COSP 空响应兜底）─────────────────────────────────────
-/**
- * empty-stream：200 + 仅 role → finish → [DONE]，无 content / reasoning / tool_calls。
- *
- * <p>对应「上游返回 200 但响应没有思考链也没有正文」的场景。
- * COSP 拦截 gate 应判定为空响应，触发自动兜底重发。
- */
-function emptyStream(res, id, model) {
-  writeSseHead(res);
-  res.write(roleFrame(id, model));
-  res.write(finishFrame(id, model));
-  res.write('data: [DONE]\n\n');
-  res.end();
-  log(`✓ empty-stream 已返回空流（role+finish+[DONE]，无内容）  model=${model}`);
-}
-
-/**
- * empty-usage-zero：与 empty-stream 相同，但收尾 chunk 带<strong>全 0 usage</strong>。
- *
- * <p>对应「连结算 usage 都是 0」的场景 —— 按判定口径，全 0 usage 仍算空响应，
- * COSP 应触发自动兜底重发。
- */
-function emptyUsageZero(res, id, model) {
-  writeSseHead(res);
-  res.write(roleFrame(id, model));
-  const payload = {
-    id,
-    object: 'chat.completion.chunk',
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-  };
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
-  res.write('data: [DONE]\n\n');
-  res.end();
-  log(`✓ empty-usage-zero 已返回空流 + 全 0 usage  model=${model}`);
-}
-
-/**
- * empty-tool-call：纯工具调用流 —— 有 tool_calls、无 content / reasoning。
- *
- * <p>这是<strong>对照</strong>场景：工具调用不算空响应，COSP 不应触发兜底。
- * 若兜底被触发，说明判定逻辑误把纯工具调用当成了空（错误）。
- */
-function emptyToolCall(res, id, model) {
-  writeSseHead(res);
-  const first = {
-    id,
-    object: 'chat.completion.chunk',
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{
-      index: 0,
-      delta: {
-        role: 'assistant',
-        tool_calls: [{
-          index: 0,
-          id: 'call_mock_1',
-          type: 'function',
-          function: { name: 'get_weather', arguments: '{}' },
-        }],
-      },
-      finish_reason: null,
-    }],
-  };
-  res.write(`data: ${JSON.stringify(first)}\n\n`);
-  const finish = {
-    id,
-    object: 'chat.completion.chunk',
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
-  };
-  res.write(`data: ${JSON.stringify(finish)}\n\n`);
-  res.write('data: [DONE]\n\n');
-  res.end();
-  log(`✓ empty-tool-call 已返回纯工具调用流  model=${model}`);
-}
-
-/**
- * empty-body：200 但响应体<strong>完全为空</strong>（0 个 SSE 帧）。
- *
- * <p>只写 SSE 头立即 end，不吐任何帧。对应「上游返回 200 但响应体根本没有数据」
- * 的场景 —— COSP 空响应判定已下沉到轮末综合判定，此场景应同样触发兜底重发。
- */
-function emptyBody(res, id, model) {
-  writeSseHead(res);
-  // 关键：写头后立即 end，0 个 SSE data 帧。
-  res.end();
-  log(`✓ empty-body 已返回 200 空 body（0 帧）  model=${model}`);
-}
-
-/** /v1/models：列出所有场景模型。 */
 function handleModels(res) {
-  const data = MODELS.map((m) => ({
+  const list = modelList();
+  const data = list.map((m) => ({
     id: m.id,
     object: 'model',
     created: Math.floor(Date.now() / 1000),
     owned_by: 'mock-upstream',
   }));
-  res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify({ object: 'list', data }));
-  log(`↳ /v1/models 返回 ${data.length} 个模型`);
+  sendJson(res, 200, { object: 'list', data }, null, null);
+  log(`↳ /v1/models 返回 ${data.length} 个场景`);
 }
 
-/** 读取并解析请求体 JSON。 */
-function readJsonBody(req) {
-  return new Promise((resolve) => {
-    let raw = '';
-    req.on('data', (chunk) => {
-      raw += chunk;
-    });
-    req.on('end', () => {
-      try {
-        resolve(raw ? JSON.parse(raw) : {});
-      } catch {
-        resolve({});
-      }
-    });
-    req.on('error', () => resolve({}));
-  });
+/* ── 请求分派 ─────────────────────────────────────────── */
+
+/**
+ * 决定「该走哪个场景的哪个模式」，或该回 422。
+ *
+ * @return 命中时 `{ scenario, model, mode }`；不适用时 `{ unsupported: { reason } }`
+ */
+function resolveScenario(protocolId, body) {
+  const table = REGISTRY[protocolId];
+  const model = typeof body.model === 'string' && body.model ? body.model : DEFAULT_SCENARIO;
+  const mode = body.stream === true ? 'stream' : 'nonstream';
+  const scenario = table[model];
+
+  if (!scenario) {
+    // 场景名在本协议没有：可能是打错了，也可能是别的协议专属的场景名。
+    const elsewhere = Object.entries(REGISTRY)
+      .filter(([id, t]) => id !== protocolId && t[model])
+      .map(([id]) => id);
+    if (elsewhere.length > 0) {
+      return {
+        unsupported: {
+          reason: `该场景只在 ${elsewhere.join(' / ')} 端点可用，请改用对应端点或换一个场景名。`,
+        },
+      };
+    }
+    // 完全未知的名字：回落到默认场景（便于随手用一个未登记的名字试探连通性）。
+    log(`? 未知场景 ${model}，按 ${DEFAULT_SCENARIO} 处理`);
+    return { scenario: table[DEFAULT_SCENARIO], model: DEFAULT_SCENARIO, mode };
+  }
+
+  if (!scenario[mode]) {
+    const other = mode === 'stream' ? '非流式' : '流式';
+    const hint = mode === 'stream' ? '把 stream 设为 false' : '把 stream 设为 true';
+    return {
+      unsupported: {
+        reason: `该场景只有${other}实现 —— ${hint}，`
+          + `或换用两态都支持的场景（如 baseline-normal / blank-empty-content）。`,
+      },
+    };
+  }
+  return { scenario, model, mode };
 }
+
+/** 处理一次聊天请求。 */
+async function handleChatRequest(req, res, protocolId, protocol) {
+  if (protocolId === 'messages' && !requireAnthropicVersion(req, res, protocol.renderErrorBody)) {
+    return;
+  }
+
+  const body = await readJsonBody(req);
+  const mode = body.stream === true ? 'stream' : 'nonstream';
+  const model = typeof body.model === 'string' && body.model ? body.model : DEFAULT_SCENARIO;
+  const streamLabel = body.stream === undefined ? '(缺省→false)' : String(body.stream);
+
+  attachLifecycleLogs(req, res, model);
+  log(`▶ ${protocolId}  model=${model}  stream=${streamLabel}`);
+
+  const resolved = resolveScenario(protocolId, body);
+  if (resolved.unsupported) {
+    return sendUnsupported(res, model, resolved.unsupported.reason, protocol.renderErrorBody);
+  }
+  const handler = resolved.scenario[mode];
+  return handler(res, resolved.model);
+}
+
+/* ── server ───────────────────────────────────────────── */
 
 const server = http.createServer(async (req, res) => {
-  const url = req.url || '';
+  const rawUrl = req.url || '';
+  const pathname = rawUrl.split('?')[0];
 
-  if (req.method === 'GET' && (url === '/v1/models' || url.startsWith('/v1/models?'))) {
+  if (req.method === 'GET' && (pathname === '/v1/models' || pathname === '/models')) {
     return handleModels(res);
   }
 
-  if (req.method === 'POST' && (url === '/v1/chat/completions' || url.startsWith('/v1/chat/completions?'))) {
-    const body = await readJsonBody(req);
-    const model = typeof body.model === 'string' ? body.model : 'normal';
-    return handleChat(req, res, model);
+  const route = ROUTES.find((r) => r.path === pathname);
+  if (req.method === 'POST' && route) {
+    if (UNIMPLEMENTED_PROTOCOLS.has(route.protocol)) {
+      log(`✗ 422 Responses 协议尚未实现  ${req.method} ${pathname}`);
+      return sendJson(res, 422, chat.renderErrorBody(422,
+        '打的是 /responses 端点，但本 mock 的 Responses 协议实现尚未落地。'
+        + '请改用 /chat/completions（OpenAI Chat）或 /messages（Anthropic），'
+        + '或在 COSP 里把该供应商的协议配置切到 CHAT / MESSAGES。'), null, null);
+    }
+    return handleChatRequest(req, res, route.protocol, PROTOCOL_MODULES[route.protocol]);
   }
 
-  // 其它路径：404
-  res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify({ error: { message: `not found: ${req.method} ${url}`, type: 'mock_error' } }));
-  log(`404  ${req.method} ${url}`);
+  const raw = JSON.stringify(chat.renderErrorBody(404, `not found: ${req.method} ${rawUrl}`));
+  res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(raw) });
+  res.end(raw);
+  log(`404  ${req.method} ${rawUrl}`);
 });
 
 server.listen(PORT, () => {
-  log(`COSP 模拟上游已启动: http://localhost:${PORT}`);
-  log(`  GET  /v1/models`);
-  log(`  POST /v1/chat/completions`);
-  log('可用模型：');
-  for (const m of MODELS) {
-    log(`  - ${m.id.padEnd(16)} ${m.desc}`);
+  log(`COSP 模拟上游（三协议合一）已启动: http://localhost:${PORT}`);
+  log('  GET  /v1/models');
+  log('  POST /chat/completions     OpenAI Chat（流式与非流式）');
+  log(`  POST /messages             Anthropic Messages（流式与非流式，要求 anthropic-version: ${REQUIRED_ANTHROPIC_VERSION}）`);
+  log('  POST /responses            ⚠ 尚未实现，当前返回 422');
+  const list = modelList();
+  log(`可用场景 ${list.length} 个（带 scope 标注；打不支持的组合会回 422）：`);
+  for (const m of list) {
+    log(`  - ${m.id.padEnd(34)} [${m.protocols.join(',')} · ${m.modes.join('+')}]`);
   }
-  log('在 COSP 管理后台新增供应商，Base URL 指向 http://localhost:' + PORT + ' 即可。');
+  log(`Base URL 填 http://localhost:${PORT}（不带 /v1）`);
+  log('供应商的协议集合至少勾一个：CHAT → /chat/completions，MESSAGES → /messages。');
 });
