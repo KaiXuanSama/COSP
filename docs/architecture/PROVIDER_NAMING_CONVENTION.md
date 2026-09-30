@@ -94,5 +94,5 @@ String prefixedName = ModelNameUtil.buildPrefixedName(providerKey, modelName);
 
 ## 相关文档
 
-- [模型兼容性](MODEL_COMPATIBILITY.md)
-- [供应商适配](PROVIDER_ADAPTATIONS.md)
+- [模型兼容性](../reference/MODEL_COMPATIBILITY.md)
+- [供应商适配](../features/provider-integration/ADAPTATIONS.md)

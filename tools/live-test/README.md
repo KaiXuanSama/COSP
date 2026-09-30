@@ -215,7 +215,7 @@ F 组有两件事只能人看：**Toast 的相位文案**与**右键菜单项的
 
 ## 已跑出的结论
 
-见 [`docs/LIVE_TEST_REPORT_2026-09-27.md`](../../docs/LIVE_TEST_REPORT_2026-09-27.md)：
+见 [`docs/LIVE_TEST_REPORT_2026-09-27.md`](../../docs/reference/reports/LIVE_TEST_REPORT_2026-09-27.md)：
 
 - **A 组**：空白组被调 5–8 次（重试生效）、对照组恒 1 次（零重试）、耗尽放行 107s 后正常收尾
 - **B 组**：401 零重试、`retry-recover` 恰 3 次、`retry-5xx` 共 8 次、429 / 截断均可重试

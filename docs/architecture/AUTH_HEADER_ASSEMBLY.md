@@ -273,7 +273,7 @@ public void applyHeaders(HttpHeaders headers, String apiKey, String headerRulesJ
 
 | 主题 | 文件 |
 | --- | --- |
-| 供应商适配史与请求转换取舍 | [PROVIDER_ADAPTATIONS.md](./PROVIDER_ADAPTATIONS.md) |
+| 供应商适配史与请求转换取舍 | [ADAPTATIONS.md](../features/provider-integration/ADAPTATIONS.md) |
 | anyrouter 的供应商行为调查 | *`ANYROUTER_INVESTIGATION.md`（本机不存在，见下）* |
 
 > ⚠️ `PROVIDER_ADAPTATIONS.md` 与本文曾引用的 `KNOWN_DEBT.md`、`ANYROUTER_INVESTIGATION.md`

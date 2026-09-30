@@ -50,7 +50,7 @@ import java.util.Set;
  * <strong>{@code fallback} 静默退化成 {@code override}</strong>。
  * 现象只在下游带了字段时出现，很难被发现。契约第 2 节，已有单测钉住。
  *
- * @see <a href="file:../../../../../../../../../docs/PROTOCOL_TRANSLATION_CONTRACT.md">
+ * @see <a href="file:../../../../../../../../../docs/features/protocol-translation/chat-messages/request-contract.md">
  *      协议翻译契约</a>
  */
 @Component

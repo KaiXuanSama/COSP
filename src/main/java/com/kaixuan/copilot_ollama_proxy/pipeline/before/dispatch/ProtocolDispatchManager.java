@@ -192,8 +192,8 @@ public class ProtocolDispatchManager {
         // 候选顺序取 TRANSLATION_FALLBACK_ORDER 而非 values()，理由见那个常量的注释。
         // 翻译器一律套在上游服务外侧（装饰器），因而在 retryWhen 之外 ——
         // 空响应判定与落库看到的必须是上游原生形态。
-        // 契约见 docs/PROTOCOL_TRANSLATION_CONTRACT.md（请求侧）与
-        // docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md（响应侧）。
+        // 契约见 docs/features/protocol-translation/chat-messages/request-contract.md（请求侧）与
+        // docs/features/protocol-translation/chat-messages/response-contract.md（响应侧）。
         for (WireProtocol candidate : TRANSLATION_FALLBACK_ORDER) {
             if (supported.contains(candidate)
                     && implementedRequestRoutes.contains(new TranslationRoute(downstreamProtocol, candidate))) {

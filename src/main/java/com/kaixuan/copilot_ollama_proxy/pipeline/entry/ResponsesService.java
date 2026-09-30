@@ -43,8 +43,8 @@ import java.util.Map;
  * 流式还多一层难点：帧数不对等，且 Responses 的事件序列比 Anthropic 更长
  * （{@code response.created} → {@code output_item.added} → 多种 {@code *.delta}
  * → {@code output_item.done} → {@code response.completed}），合成时顺序必须合法。
- * 契约见 {@code docs/PROTOCOL_TRANSLATION_CONTRACT.md}（请求侧）与
- * {@code docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md}（响应侧）。
+ * 契约见 {@code docs/features/protocol-translation/chat-messages/request-contract.md}（请求侧）与
+ * {@code docs/features/protocol-translation/chat-messages/response-contract.md}（响应侧）。
  *
  * <h2>为何两个方法体都裹在 defer 里</h2>
  * 主干的准备与调度都是<strong>同步</strong>调用，且会抛

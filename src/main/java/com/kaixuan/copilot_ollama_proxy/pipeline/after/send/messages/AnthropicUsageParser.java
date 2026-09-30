@@ -71,7 +71,7 @@ import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
  * （{@code input + read + creation}），因此经本服务 M2C 翻译落库的数字，与直接打上游
  * OpenAI 兼容端点拿到的数字同源。出站报文侧（{@code AnthropicUsageAccumulator}）
  * 从一开始就是三项相加，两侧现已同口径。详见
- * {@code docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md} 第 9.4 节。
+ * {@code docs/features/protocol-translation/chat-messages/response-contract.md} 第 9.4 节。
  *
  * <h2>null 与 0 的区分必须保留</h2>
  * 与 OpenAI 侧同一约束：{@code null} 表示上游未提供该字段，{@code 0} 表示上游
