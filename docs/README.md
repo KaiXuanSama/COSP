@@ -13,8 +13,8 @@
 | 答案 | 去处 |
 |---|---|
 | 属于某个具体功能 | `features/<功能名>/` |
-| 被所有功能共享的地基 | `architecture/` |
-| 跨功能的参考数据或报告 | `reference/` |
+| 从已完成的实现里沉淀下来的经验（机制说明、约定、刻意不做的取舍） | `architecture/` |
+| 实测出来的数据与结论（模型表现、验证矩阵、调查记录、报告） | `reference/` |
 
 **为什么功能优先**：一个功能的文档天然是散在多个阶段的（调研 → 契约 → 计划 → 测试），
 按功能聚拢让「我在做 X 功能」时所有相关文档在一个文件夹里。代码按块组织，文档跟着块走。
@@ -23,14 +23,18 @@
 
 功能文件夹内部用**固定文件名**表达生命周期，不用随意命名：
 
+文件名统一全大写（与 `architecture/`、`reference/` 既有文档一致）：
+
 | 文件名 | 含义 | 何时清理 |
 |---|---|---|
 | `README.md` | 该功能的状态与导航 | 随功能长期存在 |
-| `research.md` | 调研：为决策服务，决策定了就冻结 | **留档**（回答「当初为什么这么选」） |
-| `*-contract.md` | 契约/规范：跟着代码长期维护 | **不删** |
-| `plan.md` | 实施计划（顶部复述需求，含决策理由） | 留档；功能稳定后可精简 |
-| `summary.md` | 实施总结（`plan.md` 的精简版） | **长期留档**（最常被回查的入口） |
+| `RESEARCH.md` | 调研：为决策服务，决策定了就冻结 | **留档**（回答「当初为什么这么选」） |
+| `*-CONTRACT.md` | 契约/规范：跟着代码长期维护 | **不删** |
+| `PLAN.md` | 实施计划（顶部复述需求，含决策理由） | 留档；功能稳定后可精简 |
+| `SUMMARY.md` | 实施总结（`PLAN.md` 的精简版） | **长期留档**（最常被回查的入口） |
 | `samples/` | 抓包、样本等原始证据 | **留档**（无法重新获得） |
+
+描述性专题文档（如 `PROTOCOL-RENAME-PLAN.md`）同样全大写，不在固定名之列时可自由命名。
 
 **判据是「这份文档什么时候会被删」**：
 
@@ -53,14 +57,13 @@
 ```text
 docs/
 ├── README.md                    本文
-├── architecture/                跨功能的地基（被所有功能依赖）
-├── features/                    按功能聚拢
+├── architecture/                经验层：沉淀下来的机制说明与约定
+├── features/                    按功能聚拢（一次有始有终的开发工作）
 │   ├── protocol-translation/        协议翻译（一对协议一个子目录）
 │   │   ├── chat-messages/               C2M / M2C
 │   │   └── chat-responses/              C2R / R2C
-│   ├── responses-direct/            Responses 直连（已完成）
-│   └── provider-integration/        供应商接入与适配
-├── reference/                   跨功能的参考数据
+│   └── responses-direct/            Responses 直连（已完成）
+├── reference/                   实测层：实测出来的数据与结论
 │   └── reports/                       实机测试报告
 ├── diagrams/                    图示（.drawio）
 └── images/                      图片
@@ -74,9 +77,9 @@ docs/
 
 ## 3. 各目录索引
 
-### architecture/ —— 跨功能地基
+### architecture/ —— 经验层
 
-被所有功能依赖的机制说明。判据：**它描述的东西不属于任何单一功能**。
+从已完成的实现里沉淀下来的经验：机制说明、约定、刻意不做的取舍。判据：**它描述的东西不属于任何单一功能，且在动手改代码之前值得读一遍**。
 
 | 文件 | 内容 |
 |---|---|
@@ -84,6 +87,7 @@ docs/
 | [AUTH_HEADER_ASSEMBLY.md](./architecture/AUTH_HEADER_ASSEMBLY.md) | 出站与入站鉴权头的设计（含实测与边界） |
 | [PROVIDER_NAMING_CONVENTION.md](./architecture/PROVIDER_NAMING_CONVENTION.md) | 供应商命名与模型名转换 |
 | [KNOWN_DEBT.md](./architecture/KNOWN_DEBT.md) | 已知技术债与刻意不做的取舍 |
+| [ADAPTATIONS.md](./architecture/ADAPTATIONS.md) | 供应商适配史与请求转换系统的能力边界 |
 
 > 主干-支干的**结构**说明在代码里 ——
 > [`src/main/java/.../pipeline/README.md`](../src/main/java/com/kaixuan/copilot_ollama_proxy/pipeline/README.md)
@@ -91,50 +95,28 @@ docs/
 
 ### features/protocol-translation/
 
-一对协议一个子目录。当前四个方向的状态：
+一对协议一个子目录。方向状态表与文档索引见该功能自己的
+[README.md](./features/protocol-translation/README.md)。
 
-| 方向 | 含义 | 状态 |
-|---|---|---|
-| **C2M** | 下游 Chat → 上游 Messages | ✅ 已实现并实测 |
-| **M2C** | 下游 Messages → 上游 Chat | 请求侧待做；响应侧已实现并实测 |
-| **C2R** | 下游 Chat → 上游 Responses | ❌ 未实现（[调研](./features/protocol-translation/chat-responses/research.md)已完成） |
-| **R2C** | 下游 Responses → 上游 Chat | ❌ 未实现 |
-
-| 文件 | 内容 |
-|---|---|
-| [chat-messages/request-contract.md](./features/protocol-translation/chat-messages/request-contract.md) | C2M/M2C 请求侧契约 |
-| [chat-messages/response-contract.md](./features/protocol-translation/chat-messages/response-contract.md) | M2C/C2M 响应侧契约（第 16 节含 C2R 实测序列） |
-| [chat-responses/research.md](./features/protocol-translation/chat-responses/research.md) | C2R 请求翻译调研（四项目对比 + 真实抓包） |
-| [chat-responses/samples/](./features/protocol-translation/chat-responses/samples/) | 7 份真实 Codex 抓包（请求 + 响应事件流） |
-
-### features/responses-direct/ —— Responses 直连
+### features/responses-direct/ —— Responses 直连（已完成）
 
 | 文件 | 性质 | 内容 |
 |---|---|---|
-| [plan.md](./features/responses-direct/plan.md) | 计划 | 实施计划（含各阶段实施记录） |
-| [implementation.md](./features/responses-direct/implementation.md) | 计划 | 协议语义改名 + Responses 适配的实施说明（写作于 V11，给「另一台机器上的自己」） |
-| [protocol-rename-plan.md](./features/responses-direct/protocol-rename-plan.md) | 计划 | 协议命名重构规划（三协议改名第一步） |
+| [PLAN.md](./features/responses-direct/PLAN.md) | 计划 | 实施计划（含各阶段实施记录） |
+| [SUMMARY.md](./features/responses-direct/SUMMARY.md) | 总结 | 精简实施总结（最常被回查的入口） |
 
-> **本功能暂无 `summary.md`。** 三份都是计划类文档；也就是说这个功能缺一份
-> 精简的实施总结（见 [功能文档 skill](../.github/skills/cosp-feature-docs-skill/SKILL.md) §3）。
-> 补写的素材已齐备：`plan.md` 的各阶段实施记录 + 下文 `provider-integration/` 中的
-> 思考链回放调查（那是实施过程中暴露的独立问题）。
+### reference/ —— 实测层
 
-### features/provider-integration/ —— 供应商接入
-
-| 文件 | 内容 |
-|---|---|
-| [ADAPTATIONS.md](./features/provider-integration/ADAPTATIONS.md) | 供应商适配史与请求转换取舍 |
-| [ANYROUTER_INVESTIGATION.md](./features/provider-integration/ANYROUTER_INVESTIGATION.md) | anyrouter 供应商行为记录 |
-| [COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md](./features/provider-integration/COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md) | Copilot BYOK 思考链回放调查 |
-
-### reference/ —— 参考数据
+实测出来的数据与结论：想知道某个东西**实际表现如何**时打开。单点调查（`*_INVESTIGATION.md`）
+的结论全部来自对照实验或行为嗅探，归这里。
 
 | 文件 | 内容 |
 |---|---|
 | [LIVE_TEST_MATRIX.md](./reference/LIVE_TEST_MATRIX.md) | 实机验证矩阵（测什么、用哪个 mock、看什么） |
 | [MODEL_COMPATIBILITY.md](./reference/MODEL_COMPATIBILITY.md) | 模型适配问题报告 |
 | [MODEL_SUPPORT.md](./reference/MODEL_SUPPORT.md) | 各模型对 Copilot 的适配度 |
+| [ANYROUTER_INVESTIGATION.md](./reference/ANYROUTER_INVESTIGATION.md) | 供应商行为记录 |
+| [COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md](./reference/COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md) | Copilot BYOK 思考链回放调查 |
 | [reports/LIVE_TEST_REPORT_2026-09-27.md](./reference/reports/LIVE_TEST_REPORT_2026-09-27.md) | COSP 实机功能测试报告 |
 
 ---
@@ -143,7 +125,7 @@ docs/
 
 1. **先问第 1 节的两问**，确定目录与文件名
 2. **写内容前，按功能所处的阶段对照** —— 三阶段的骨架
-   （`plan.md` 顶部复述需求、`summary.md` 是 `plan.md` 的精简版）见
+   （`PLAN.md` 顶部复述需求、`SUMMARY.md` 是 `PLAN.md` 的精简版）见
    [功能文档 skill](../.github/skills/cosp-feature-docs-skill/SKILL.md)
 3. **在本文第 3 节对应位置加一行索引** —— 否则新文档无人能找到
 4. 若新增的是顶层目录，同步更新 [AGENTS.md](../AGENTS.md) 的参考表

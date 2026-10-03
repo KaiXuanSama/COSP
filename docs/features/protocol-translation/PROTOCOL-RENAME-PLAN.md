@@ -1,9 +1,9 @@
-# 协议命名重构规划（第一步：纯重命名）
+﻿# 协议命名重构规划（第一步：纯重命名）
 
 > **状态**：规划中，尚未动手。本文件是「三协议命名重构」第一步的实现契约。
 >
 > 相关：[AGENTS.md](../../../AGENTS.md)、[数据库迁移 Skill](../../../.github/skills/cosp-schema-migration-skill/SKILL.md)、
-> [请求侧翻译契约](../protocol-translation/chat-messages/request-contract.md)、[响应侧翻译契约](../protocol-translation/chat-messages/response-contract.md)
+> [请求侧翻译契约](./chat-messages/REQUEST-CONTRACT.md)、[响应侧翻译契约](./chat-messages/RESPONSE-CONTRACT.md)
 
 ## 0. 这一步为什么必须单独做
 
@@ -137,8 +137,8 @@ diff 从「术语替换」膨胀成「目录重排」，评审时看不出哪些
 
 ### 2.5 文档
 
-- `docs/PROTOCOL_TRANSLATION_CONTRACT.md`（请求侧）：O2A/A2O 术语贯穿全文
-- `docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md`（响应侧）：同上
+- [REQUEST-CONTRACT.md](./chat-messages/REQUEST-CONTRACT.md)（请求侧）：O2A/A2O 术语贯穿全文
+- [RESPONSE-CONTRACT.md](./chat-messages/RESPONSE-CONTRACT.md)（响应侧）：同上
 - `AGENTS.md`：架构图、协议支持说明、思考深度两侧字段说明中的协议名
 
 ---

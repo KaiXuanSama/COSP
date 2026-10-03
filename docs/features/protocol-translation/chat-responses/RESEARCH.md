@@ -2,14 +2,14 @@
 
 > **状态**：调研完成，**尚未实现**。本文只固定调研事实与候选方案，不含已落地的约束。
 > 落地时应把确定的部分并入
-> [request-contract.md](../chat-messages/request-contract.md)（请求侧契约）
+> [REQUEST-CONTRACT.md](../chat-messages/REQUEST-CONTRACT.md)（请求侧契约）
 > 或另立 C2R 章节。
 >
 > 调研于 2026-09-29。四个项目均在工作区内（`new-api/` / `sub2api/` / `cc-switch/` / `CLIProxyAPI/`，
 > 都是独立参考项目，只读）。
 >
 > **§0–§9 是读源码得出的，§10 是真实抓包。** 后者修正了前九节的三处判断，
-> 并修正了[请求侧契约](../chat-messages/request-contract.md) §4.8 的一处前提。
+> 并修正了[请求侧契约](../chat-messages/REQUEST-CONTRACT.md) §4.8 的一处前提。
 
 C2R = 下游 OpenAI Chat Completions → 上游 OpenAI Responses。
 请求侧翻译；响应侧（Responses 事件流 → Chat chunk）是另一半，本文不覆盖。

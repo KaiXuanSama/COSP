@@ -345,4 +345,4 @@ writeProtocolFields / 请求体规则 / removeNullFields / 出站头 / 空响应
 
 - 分支审查的完整结论（含已修项）：[AGENTS.md](../../AGENTS.md) 各节不变量
 - 迁移的强制流程：[数据库迁移 Skill](../../.github/skills/cosp-schema-migration-skill/SKILL.md)
-- 请求/响应侧的跨协议契约：[请求侧](../features/protocol-translation/chat-messages/request-contract.md)、[响应侧](../features/protocol-translation/chat-messages/response-contract.md)
+- 请求/响应侧的跨协议契约：[请求侧](../features/protocol-translation/chat-messages/REQUEST-CONTRACT.md)、[响应侧](../features/protocol-translation/chat-messages/RESPONSE-CONTRACT.md)

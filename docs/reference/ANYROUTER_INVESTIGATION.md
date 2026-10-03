@@ -2,7 +2,7 @@
 
 > 本文档记录 **anyrouter 这一个供应商**的实测行为、已排除项与未解问题。
 > 与 COSP 自身的实现说明分开放：COS`P 的实现取舍见
-> [ADAPTATIONS.md](./ADAPTATIONS.md) 与 [KNOWN_DEBT.md](../../architecture/KNOWN_DEBT.md)，
+> [ADAPTATIONS.md](../architecture/ADAPTATIONS.md) 与 [KNOWN_DEBT.md](../architecture/KNOWN_DEBT.md)，
 > 本文只记「这个上游到底怎么表现」。
 >
 > 起始于 2026-09-14。**本文件刻意不入库**（未 `git add`，也未写进 `.gitignore`），
@@ -32,7 +32,7 @@
 **它还证明了代理链路是通的** —— 同一个 `anyrouter.top:443`、同一条 Java 客户端出站路径。
 因此任何「代理/网络层」的猜测都可以先用这条事实排除。
 
-该路径的回传数据里另有三处值得注意的形态（已记入 `PROVIDER_ADAPTATIONS.md`）：
+该路径的回传数据里另有三处值得注意的形态（已记入 [ADAPTATIONS.md](../architecture/ADAPTATIONS.md)）：
 四个非官方字段（`content_filters` / `tool_usage` /
 `internal_chat_message_metadata_passthrough` / `client_metadata`）靠 `@JsonAnySetter` 透传；
 `reasoning` 项只有 `encrypted_content`（`content` 与 `summary` 皆空）；

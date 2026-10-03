@@ -230,7 +230,7 @@ P1 = 主路径回归；P2 = 既有能力，回归时可抽查。
 |---|---|
 | mock 的启动、场景清单、新旧名对照 | [`../tools/mock-upstream/README.md`](../../tools/mock-upstream/README.md) |
 | 下游嗅探 mock | [`../tools/mock-cosp/README.md`](../../tools/mock-cosp/README.md) |
-| 跳协议契约（请求侧） | [request-contract.md](../features/protocol-translation/chat-messages/request-contract.md) |
-| 跳协议契约（响应侧） | [response-contract.md](../features/protocol-translation/chat-messages/response-contract.md) |
-| 上游适配史与取舍 | [ADAPTATIONS.md](../features/provider-integration/ADAPTATIONS.md) |
+| 跳协议契约（请求侧） | [REQUEST-CONTRACT.md](../features/protocol-translation/chat-messages/REQUEST-CONTRACT.md) |
+| 跳协议契约（响应侧） | [RESPONSE-CONTRACT.md](../features/protocol-translation/chat-messages/RESPONSE-CONTRACT.md) |
+| 上游适配史与取舍 | [ADAPTATIONS.md](../architecture/ADAPTATIONS.md) |
 | 已知技术债与刻意不做的取舍 | [KNOWN_DEBT.md](../architecture/KNOWN_DEBT.md) |
