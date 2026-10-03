@@ -58,9 +58,9 @@ package com.kaixuan.copilot_ollama_proxy.pipeline.protocol;
  * 而它的取值路径是照 Anthropic 的 {@code content[]} 结构写的，会把每一轮都判成空
  * 并耗尽预算。响应侧契约第 12 节。
  *
- * @see <a href="file:../../../../../../../../docs/PROTOCOL_TRANSLATION_CONTRACT.md">
+ * @see <a href="file:../../../../../../../../docs/features/protocol-translation/chat-messages/request-contract.md">
  *      协议翻译契约（请求侧）</a>
- * @see <a href="file:../../../../../../../../docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md">
+ * @see <a href="file:../../../../../../../../docs/features/protocol-translation/chat-messages/response-contract.md">
  *      协议翻译契约（响应侧）</a>
  */
 public interface ProtocolTranslator {

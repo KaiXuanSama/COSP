@@ -370,6 +370,6 @@ C2M 翻译器把 `reasoning_effort` 映射到 `output_config.effort` 后**刻意
 | 主题 | 文件 |
 | --- | --- |
 | 出站与入站鉴权头的设计 | [AUTH_HEADER_ASSEMBLY.md](./AUTH_HEADER_ASSEMBLY.md) |
-| 跳协议翻译契约（请求侧） | [PROTOCOL_TRANSLATION_CONTRACT.md](./PROTOCOL_TRANSLATION_CONTRACT.md) |
-| 跳协议翻译契约（响应侧） | [PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md](./PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md) |
-| 供应商适配史与请求转换取舍 | [PROVIDER_ADAPTATIONS.md](./PROVIDER_ADAPTATIONS.md) |
+| 跳协议翻译契约（请求侧） | [REQUEST-CONTRACT.md](../features/protocol-translation/chat-messages/REQUEST-CONTRACT.md) |
+| 跳协议翻译契约（响应侧） | [RESPONSE-CONTRACT.md](../features/protocol-translation/chat-messages/RESPONSE-CONTRACT.md) |
+| 供应商适配史与请求转换取舍 | [ADAPTATIONS.md](./ADAPTATIONS.md) |

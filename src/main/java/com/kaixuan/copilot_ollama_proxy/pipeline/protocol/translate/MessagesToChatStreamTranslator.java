@@ -34,7 +34,7 @@ import java.util.Map;
  * 也可能根本不发 {@code message_stop} 就断开——把 {@code [DONE]} 绑在某个事件上，
  * 后一种情况下游就永远等不到终止信号。见 {@link #finalizeStream}。
  *
- * @see <a href="file:../../../../../../../../../docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md">
+ * @see <a href="file:../../../../../../../../../docs/features/protocol-translation/chat-messages/response-contract.md">
  *      响应侧协议翻译契约</a>
  */
 final class MessagesToChatStreamTranslator {

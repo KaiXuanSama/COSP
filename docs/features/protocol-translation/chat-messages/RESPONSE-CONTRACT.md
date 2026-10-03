@@ -1,18 +1,22 @@
 # 协议翻译契约（响应侧）
 
 > **M2C 响应翻译已落地并经实流量验证**（流式与非流式、多轮工具调用、参数分片）。
-> 实现与验证状态见第 15 节；C2M 响应翻译尚未开始。
+> 实现与验证状态见第 15 节；C2M 与 C2R 响应翻译均尚未开始。
 >
 > 本文档既是设计契约也是实现说明：正文的「必须 / 不要」是约束，
 > 标注了实测日期的段落是已验证的事实。
 >
-> 请求侧见 [PROTOCOL_TRANSLATION_CONTRACT.md](./PROTOCOL_TRANSLATION_CONTRACT.md)（本文沿用其编号与术语）。
-> 相关：[AGENTS.md](../AGENTS.md)、[思考链回放调查](COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)、
-> [mock-upstream](../tools/mock-upstream/README.md)（参数分片等只能用 mock 触发的场景；
+> 请求侧见 [REQUEST-CONTRACT.md](./REQUEST-CONTRACT.md)（本文沿用其编号与术语）。
+> 相关：[AGENTS.md](../../../../AGENTS.md)、[思考链回放调查](../../../reference/COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)、
+> [C2R 请求翻译调研](../chat-responses/RESEARCH.md)、
+> [mock-upstream](../../../../tools/mock-upstream/README.md)（参数分片等只能用 mock 触发的场景；
 > 场景名 `translate-tool-*` / `translate-finish-reason*`，只在 `/messages` 端点有实现）
 
 M2C = Anthropic Messages 响应 → OpenAI Chat Completions 响应。
 本文档覆盖**非流式 JSON** 与**流式 SSE** 两侧。
+
+**第 16 节是例外** —— 那一节覆盖 **C2R 方向**（Responses 事件流 → Chat chunk）的实测序列，
+因为那份抓包在本文档写作时尚无归属。C2R 的契约尚未成文，第 16 节只是事实记录。
 
 ---
 
@@ -371,6 +375,10 @@ prompt_tokens_details.cached_tokens = cache_read_input_tokens
 
 Anthropic 不单独上报思考 token，所以 M2C 产出的响应**永远没有**
 `completion_tokens_details.reasoning_tokens`。不要凭空估算。
+
+> **这只在 Anthropic 侧成立。** Responses 协议**有** `reasoning_tokens`
+> （`usage.output_tokens_details.reasoning_tokens`，且**不进** `output_tokens`）——
+> 实测 129 而 `output_tokens=355`。因此 C2R 响应侧**能**填这个字段，见第 16.5 节。
 
 ### 9.3 usage 尾帧依赖 include_usage
 
@@ -734,7 +742,7 @@ COSP 必须自己补齐：
 
 **丢弃是可接受的起点**，但要清楚这意味着 Anthropic 上游的多轮思考缓存拿不回来。
 Copilot BYOK 会回传上一轮思考内容，因此翻译路线上开启 extended thinking 且带工具时
-可能硬失败——这与 [思考链回放调查](COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)
+可能硬失败——这与 [思考链回放调查](../../../reference/COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)
 的关注点重合，外部项目提供不了答案。
 
 **实测代价**（2026-09-05，MiMo 十轮工具调用链）：去程请求体里
@@ -775,9 +783,252 @@ Copilot BYOK 会回传上一轮思考内容，因此翻译路线上开启 extend
 - **C2M 响应翻译**（phase 4）尚未实现。usage 不需要额外接线 —— 那条线路上游是
   OpenAI，`OpenAiUsageParser` 本就产出归一口径（第 9.4 节）。
 - **M2C 请求翻译**（phase 3，下游 `/v1/messages` + 上游 OpenAI）尚未实现。
+- **C2R 响应翻译**（Responses 事件流 → Chat chunk）尚未实现。已抓到**三份**真实序列
+  作为骨架（见第 16 节）：纯文本、reasoning+文本两种形态，`sequence_number` 严格连续。
+  但三份都**不含 `function_call` item**（模型本轮未调工具），而那才是 C2R 的主要场景。
 - **存量行口径不一致**：口径统一之前落的 Anthropic 行分两批 —— 早期完全不含缓存，
   中期只含 `cache_read`（缺 `cache_creation`）。`api_usage_daily` 的累加值同样。
   已决定**不修**，只保证新数据正确（第 9.4 节）。
 - **思考链回放**见第 14.3 节，受上游约束。
 - **mid-stream error**（第 6.1 节）与 **hosted tool 块**（第 6.3 节）只有单测覆盖，
   没有实流量样本。
+
+---
+
+## 16. C2R 响应侧：实测事件序列（2026-09-29）
+
+本节是本契约里**唯一一段关于 Responses → Chat 方向**的实测内容。
+抓包文件（工作区根目录，保留备查）：
+
+| 文件 | 事件数 | output items | reasoning 事件 |
+|---|---|---|---|
+| `gpt-6-astra-toolcalls-res.json` | 69 | `message` | 0 |
+| `stepfun-5-codex-toolcalls-res.json` | 119 | `reasoning` + `message` | **38** |
+| `stepfun-5-codex-image-res.json` | 112 | `message` | 0 |
+| `stepfun-5-codex-image-midway.json` | **34** | `reasoning` + `message` + **`function_call`** | **13** |
+
+四份的 `sequence_number` **都是 0..n−1 严格连续**（无跳号）。
+
+### 16.1 两种形态：纯文本 与 reasoning+文本
+
+**纯文本（69 条）**
+
+```text
+response.created
+response.in_progress
+response.output_item.added        ← item.type=message, status=in_progress, content=[]
+response.content_part.added       ← part.type=output_text, text=""
+response.output_text.delta        × 61
+response.output_text.done         ← text: 完整文本
+response.content_part.done        ← part: 完整 part
+response.output_item.done         ← item.status=completed
+response.completed                ← response.usage 在此
+```
+
+**reasoning + 文本（119 条）** —— 多出前一半，且**两个 item 用两个 `output_index`**：
+
+```text
+response.created
+response.in_progress
+response.output_item.added        ← output_index=0, item.type=reasoning
+response.reasoning_part.added     ← content_index=0, part.type=reasoning_text
+response.reasoning_text.delta     × 35
+response.reasoning_text.done      ← text: 完整思考文本
+response.reasoning_part.done
+response.output_item.done         ← output_index=0, item.status=completed
+response.output_item.added        ← output_index=1, item.type=message
+response.content_part.added
+response.output_text.delta        × 71
+response.output_text.done
+response.content_part.done
+response.output_item.done         ← output_index=1
+response.completed
+```
+
+**骨架规律**：`created → in_progress → (每个 item 一组: added → part.added → delta×N →
+text.done → part.done → item.done) → completed`。reasoning 与 message 用**递增的
+`output_index`**（0 / 1），各自组内 `content_index` 从 0 起。
+
+### 16.2 reasoning item 的字段形状（实测）
+
+`reasoning` item 的 `added` 与 `done` **字段集完全相同**，差别只在填充：
+
+```json
+// added（status=in_progress）—— content 与 encrypted_content 都是 null
+{ "id": "rs_…", "type": "reasoning", "status": "in_progress",
+  "summary": [], "content": null, "encrypted_content": null }
+
+// done（status=completed）—— content 填入明文
+{ "id": "rs_…", "type": "reasoning", "status": "completed",
+  "summary": [],
+  "content": [ { "type": "reasoning_text", "text": "…494 字符明文…" } ],
+  "encrypted_content": null }
+```
+
+**关键**：`content` **不是空数组而是 `null`**（added 时），`encrypted_content` 也是 `null`
+（该上游不签发密文，第 4.8 节「前置事实」）。`summary` 恒为 `[]`。
+
+事件流的 `reasoning_text.delta` **35 片累加 = 494 字符 = `done.text` 长度**（逐字节相等）。
+**这与 tool 参数分片不同 —— 思考文本的分片是完整可累加的**（对比第 4.1 节：
+工具参数单独一片不是合法 JSON）。
+
+### 16.3 第三种形态：reasoning + 文本 + `function_call`（34 条，关键样本）
+
+```text
+response.created
+response.in_progress
+response.output_item.added        ← output_index=0, item.type=reasoning, content=null
+response.reasoning_part.added     ← content_index=0, part.type=reasoning_text
+response.reasoning_text.delta     × 10
+response.reasoning_text.done
+response.reasoning_part.done
+response.output_item.done         ← output_index=0, status=completed
+response.output_item.added        ← output_index=1, item.type=message, content=[]
+response.content_part.added
+response.output_text.delta        × 4
+response.output_text.done
+response.content_part.done
+response.output_item.done         ← output_index=1
+response.output_item.added        ← output_index=2, item.type=function_call, arguments=""
+response.function_call_arguments.delta × 4   ← 每片单独不是合法 JSON
+response.function_call_arguments.done       ← 完整 arguments + name
+response.output_item.done         ← output_index=2
+response.completed                ← output 含 3 个 item
+```
+
+**三种 item 用递增的 `output_index`（0 / 1 / 2），各自组内 `content_index` 从 0 起。**
+
+**`function_call` 组的事件形状**：
+
+```json
+// output_item.added —— arguments 是空串（不是 null）
+{ "type": "function_call", "id": "a8deb7f72148415f", "call_id": "call_ac5fd85d13aa8b5b",
+  "name": "view_image", "namespace": null, "arguments": "", "status": "in_progress" }
+
+// function_call_arguments.delta —— 字段最少的一组，无 content_index
+{ "type": "response.function_call_arguments.delta", "delta": "{",
+  "item_id": "a8deb7f72148415f", "output_index": 2, "sequence_number": 27 }
+
+// function_call_arguments.done —— 比 delta 多 name 与 arguments，没有 delta
+{ "type": "response.function_call_arguments.done",
+  "arguments": "{\"path\": \"D:…\"}", "name": "view_image",
+  "item_id": "a8deb7f72148415f", "output_index": 2, "sequence_number": 31 }
+```
+
+**三组 delta 的字段差异（合成 Chat chunk 时决定 `tool_calls[].index` 从哪取）**：
+
+| 事件 | 字段 |
+|---|---|
+| `output_text.delta` | `content_index` / `delta` / `item_id` / `logprobs` / `output_index` / `sequence_number` / `type` |
+| `reasoning_text.delta` | 同上但**无 `logprobs`、无 `obfuscation`** |
+| `function_call_arguments.delta` | **只有** `delta` / `item_id` / `output_index` / `sequence_number` / `type` —— **无 `content_index`** |
+
+`function_call_arguments.delta` **没有 `content_index`** —— function_call item 没有 content
+数组，它只有 `arguments` 字符串。
+
+**`response.completed.output` 是三个 item 的完整数组**（reasoning / message /
+function_call），与流式 item 逐一对应 —— 非流式场景可直接用它。
+
+### 16.4 本批样本**仍不含**的东西
+
+| 缺失内容 | 相关事件 |
+|---|---|
+| 错误/取消终态 | `response.failed` / `response.incomplete` 等 |
+| 多个 `function_call` item 并存 | 本批最多一个工具调用（`output_index=2`） |
+| `reasoning_summary_text.*` | 四份样本 `summary` 全为 `[]`，未触发 |
+
+**错误终态与多工具并存**是下一份要抓的目标（§16.8 已记为未决项）。
+
+### 16.5 已确认的字段形状
+
+**`output_text.delta`（61 条 / 71 条）**
+
+```json
+{ "type": "response.output_text.delta", "content_index": 0, "delta": "…",
+  "item_id": "msg_…", "logprobs": [], "obfuscation": "O50Ph48shX8rItw",
+  "output_index": 0, "sequence_number": 4 }
+```
+
+- `item_id` / `content_index` / `output_index` 在组内恒定
+- `logprobs` 恒为空数组
+- **`obfuscation` 是必带字段**（15 字符随机串）—— 官方用于防 prompt 注入，合成时可固定或省略
+
+**`reasoning_text.delta`**
+
+```json
+{ "type": "response.reasoning_text.delta", "content_index": 0, "delta": "…",
+  "item_id": "rs_…", "output_index": 0, "sequence_number": 4 }
+```
+
+**比 `output_text.delta` 少了 `logprobs` 与 `obfuscation`** —— 这是两组的字段差异。
+
+**`output_item.added` / `.done` 的 message item**
+
+```json
+// added
+{ "id": "msg_…", "type": "message", "status": "in_progress", "content": [],
+  "phase": "final_answer", "role": "assistant", "metadata": {…} }
+
+// done
+{ "id": "msg_…", "type": "message", "status": "completed",
+  "content": [{ "type": "output_text", "annotations": [], "logprobs": [], "text": "…" }],
+  "phase": "final_answer", "role": "assistant", "metadata": {…} }
+```
+
+**`response.created` vs `response.completed` 的差异字段**
+
+`status` / `completed_at` / `content_filters` / `output` / `service_tier` / `usage`
+—— 其余字段逐一相同。注意 `response.created` 顶层有 **36 个字段**，
+其中多数是 Chat 里无对应物的（`prompt_cache_retention` / `truncation` / `tool_usage` /
+`safety_identifier` / `content_filters` …）。
+
+### 16.6 usage：三个变体，且与本契约既有口径直接相关
+
+| 样本 | `input_tokens_details` | `output_tokens_details` |
+|---|---|---|
+| astra | `{cache_write_tokens, cached_tokens}` | `{reasoning_tokens}` |
+| stepfun（×2） | `{cached_tokens}` | `{reasoning_tokens, tool_output_tokens}` |
+
+```json
+// stepfun toolcalls
+{ "input_tokens": 14480, "input_tokens_details": { "cached_tokens": 13824 },
+  "output_tokens": 355,
+  "output_tokens_details": { "reasoning_tokens": 129, "tool_output_tokens": 0 },
+  "total_tokens": 14835 }
+```
+
+**三个要点**：
+
+1. **嵌套两层**，与 Chat 的扁平三字段不同。换算到 `api_call_usage` 时
+   `cached_tokens` 取 `input_tokens_details.cached_tokens`（第 9.4 节的分子口径）。
+2. **`cache_write_tokens` 是本节首次见到的字段**，语义与 Anthropic 的
+   `cache_creation_input_tokens` 相同（计入 `prompt_tokens` 分母、**不计入**分子）。
+3. **`reasoning_tokens` 是独立字段，不进 `output_tokens`** ——
+   stepfun 样本 `output_tokens=355` 而 `reasoning_tokens=129`。这补上了第 9.2 节的
+   「`reasoning_tokens` 拿不到」：**Responses 协议里拿得到**（Anthropic 侧才拿不到）。
+
+### 16.7 上游改写了 `reasoning.effort`（因供应商而异）
+
+| 样本 | 请求 `reasoning` | 响应 `reasoning` |
+|---|---|---|
+| astra | `{"effort":"high"}` | `{"effort":"low","context":"all_turns","mode":"standard","summary":null}` |
+| stepfun | `{"effort":"high"}` | `{"effort":"high","summary":null}` |
+
+**astra 把 `high` 降成了 `low`**，stepfun 保持原值。含义：**响应里的 `reasoning` 不可当作
+请求的回显**。若合成 Chat 的 `reasoning_effort` 时读它，会把下游要的 `high` 报成 `low`。
+
+### 16.8 待决
+
+- **`phase` 字段**（`"final_answer"` / `"commentary"`）：Chat 无对应物。
+  C2R 若丢弃，下游失去「中间旁白 vs 最终答复」的区分。
+  **注意它是供应商相关的**：astra 给 `"final_answer"`，stepfun 给 `null`（字段存在但为空）。
+- **`obfuscation`**：合成帧时是否保留 / 如何取值。**也是供应商相关的**：
+  astra 的 61 条 delta 全带，stepfun 三份全无。既然它可缺，**合成时不必强制生成**。
+- **`sequence_number`**：Chat chunk 无此概念，丢弃即可（但它是检测乱序的现成手段）。
+- **`internal_chat_message_metadata_passthrough` 等上游私有字段**：丢弃清单待列。
+- **item `id` 形态**：stepfun 是 16 位十六进制裸串（`94353fb5f5fa5ea7`），
+  astra 是 `msg_` + 长 hex。合成时是否要造、造什么形状待定。
+- **`reasoning_content` 的合成**（C2R 响应侧）：Chat 侧思考挂在
+  `choices[].delta.reasoning_content`，而 Responses 是**独立 item** ——
+  需要 `output_index=0` 的 reasoning 组全部映射到第一条 assistant delta 上。C2M 与 M2C
+  两侧的既有形状可参照第 5 节。

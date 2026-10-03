@@ -25,7 +25,7 @@ import java.util.Map;
      *       与 OpenAI 直连路径一致（那条路径也不改写响应里的 model）。</li>
  * </ul>
  *
- * @see <a href="file:../../../../../../../../../docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md">
+ * @see <a href="file:../../../../../../../../../docs/features/protocol-translation/chat-messages/response-contract.md">
  *      响应侧协议翻译契约</a>
  */
 final class MessagesToChatNonStreamTranslator {

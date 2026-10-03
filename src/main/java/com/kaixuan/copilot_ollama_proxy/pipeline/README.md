@@ -458,7 +458,7 @@ api/
 ```
 
 **三个 Controller 按下游协议分岔**：三套错误 JSON 骨架、SSE 事件名回填策略、
-`sse` 收尾协议均**刻意不同**。详见 `docs/REQUEST_PIPELINE.md`。
+`sse` 收尾协议均**刻意不同**。详见 `docs/architecture/REQUEST_PIPELINE.md`。
 
 **一条判据**（归拢讨论的产物）：**出口可以知道「这些字节要包成什么 HTTP 形状」，
 不该知道「这些字节在协议上是什么意思」**。

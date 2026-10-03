@@ -13,7 +13,7 @@ import java.util.Map;
  * 这些约定不是逻辑，而是<strong>线格式事实</strong>——把它们集中在一处，
  * 改的时候不会漏掉某一侧。
  *
- * <p>形态依据见 {@code docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md} 第 10 节。
+ * <p>形态依据见 {@code docs/features/protocol-translation/chat-messages/response-contract.md} 第 10 节。
  *
  * <h2>为何返回 Map 而不是 DTO</h2>
  * 与项目既有取向一致：响应全程以字符串/Map 透传，不建响应 DTO。
