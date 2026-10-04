@@ -8,7 +8,7 @@
 |---|---|---|
 | **C2M** | 下游 Chat → 上游 Messages | ✅ 已实现并实测 |
 | **M2C** | 下游 Messages → 上游 Chat | 请求侧待做；响应侧已实现并实测 |
-| **C2R** | 下游 Chat → 上游 Responses | 🔶 去程已落地（翻译器 + system 支线，[PLAN.md](./chat-responses/PLAN.md) §7）；实机验证待做；回程未实现 |
+| **C2R** | 下游 Chat → 上游 Responses | 🔶 去程已实测可用（[PLAN.md](./chat-responses/PLAN.md) §7）；回程未实现（响应原样透传） |
 | **R2C** | 下游 Responses → 上游 Chat | ❌ 未实现 |
 | **M2R** / **R2M** | Messages ↔ Responses | ❌ 未实现 |
 

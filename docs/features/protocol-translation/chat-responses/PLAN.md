@@ -1,6 +1,6 @@
 # C2R 去程翻译（请求体）实施计划
 
-> **状态**：阶段一、二已完成（2026-10-04：翻译器主体 + system 支线，全量 1390 绿）；待阶段三实机验证（需重启服务，用户手动）
+> **状态**：三阶段全部完成（2026-10-04：翻译器 + system 支线 + 实机验证，全量 1390 绿，实机判据全部达成）。去程已可用；回程（R2C）未实现——响应原样透传，独立下一步
 >
 > **需求背景**：让下游 Chat Completions 请求（`/v1/chat/completions`）能发往只支持
 > Responses 的上游供应商。这是 protocol-translation 功能 C2R 方向的**前半（去程）**；
@@ -329,3 +329,79 @@ Chat 侧**静默丢弃清单**（Responses 无对应物，进 §5.1 的清单测
   `toleratesImmutableItems` 用例钉住。这正验证了 wiring 测试类注释里「防静默降级」
   之外的第二重价值：**比纯逻辑单测更早暴露实现假设**（纯逻辑单测自己造的
   fixture 全是可变集合，测不出这类问题）
+
+### 7.3 阶段三：实机联测（2026-10-04 完成）
+
+**环境**：COSP 重启后实机（mimo-tokenplan 供应商只勾 RESPONSES、模型
+`[mimo-tokenplan] mimo-v2.6-flash`、网关鉴权关闭）。
+
+**判据全部达成**：
+
+| 判据（§5 阶段三） | 实测 |
+|---|---|
+| 请求被上游接受 | 非流式 / 流式均 **HTTP 200**，~1.8s |
+| 上游收到 Responses 形态 body | 落库的 `request_body` 顶层恰 9 键（`model/stream/max_output_tokens/input/tools/tool_choice/store/include/reasoning`），逐项核对 §2 映射表全部一致：`store:false`、`include:["reasoning.encrypted_content"]`、工具**扁平** + `strict:false` 显式补值、`tool_choice:"auto"`、`max_tokens:512→max_output_tokens:512` |
+| **system 改写生效**（阶段二支线） | 落库 input 为 `message/developer` + `message/user`——`system→developer` 在真实链路上命中 |
+| 响应原样透传（中间态预期） | 非流式回 `object:"response"` 的 Responses JSON（`output[]` 含 reasoning + message item、`output_text` 汇总）；流式回 `response.created → reasoning_text.delta → …` 原生事件流，`sequence_number` 连续 |
+| 落库协议列 | `downstream_protocol=CHAT`、`upstream_protocol=RESPONSES`、`status_code=200` |
+
+**顺带验证的链路事实**：
+
+- `reasoning.effort` 落库为 `max` 而下游发的是 `low` —— 这是该供应商模型级
+  OVERRIDE 注入的结果：翻译层正确搬运了 `low`，设置层随后按配置改写。
+  「翻译在前、设置层在后」的顺序在真实链路上得到确认，两层各司其职
+- 空响应判定未误伤：Responses 原生响应（reasoning item + message item）通过了
+  `ResponsesContentDetector` —— 该判定器读 Responses 自己的结构、与翻译无关，
+  这正是「两侧取值路径独立」设计的收益在实机上的体现
+
+**测试脚手架的坑（实机操作记录）**：
+
+- PowerShell 5.1 里 `curl -d '{...}'` 的引号转义会把 JSON 打坏 → 400，且
+  落库不可见（管道早期被拒）——**用文件传 body**（`--data-binary "@file"`）+
+  `UTF8Encoding($false)` 写文件（ASCII 会把中文变 `?`）
+- 管理端点：登录 `POST /auth/login`、日志列表 `GET /config/api/logs`、
+  详情 `GET /config/api/logs/{id}`（详情里 `request_body` 即上游收到的形态）
+
+**第二家供应商：stepfun / step-5-preview（同日追加）**
+
+供应商本就只勾 RESPONSES（`api.stepfun.com/step_plan/v1`），四项测试全过：
+
+1. **非流式 + 全套字段**：200（4.4s）；reasoning 以明文 `reasoning_text` 下发
+   （与调研 §10.1「stepfun 不签发密文」一致）、message item 正文完整。
+   注意其顶层 `output_text` 便利字段为空——那是上游自己的汇总字段，透传下
+   无关紧要，回程翻译器将自 `output[].content` 取正文
+2. **流式**：200；35 事件，`sequence_number` 连续，骨架与调研形态 B 一致
+3. **流式工具调用（形态 C 复现）**：200；`function_call` 事件组完整
+   （`output_item.added(arguments:"") → arguments.delta ×2（`{`/`}` 逐片非法
+   JSON）→ arguments.done → output_item.done`），`call_id` 带 `call_` 前缀、
+   item id 为 16 位十六进制裸串——**与调研抓包的 stepfun 样本逐项吻合**
+4. **多轮回传（去程翻译的完整闭环）**：把上一轮的 `function_call`（Chat 的
+   `tool_calls[].id`）与工具结果（`role:tool`）回发 → 落库 input 序列为
+   `message/developer → message/user → function_call(call_id=…) →
+   function_call_output(call_id=…, output=…)`——**配对键对齐、工具结果
+   压平为字符串、system 改写、assistant 工具调用展开**四个决策点在一条
+   请求里同时验证；上游正确消化并回答了工具结果
+
+与 mimo 的差异：stepfun 保持 `reasoning_effort` 原值不改写（mimo 的模型级
+OVERRIDE 会改写）——两家行为差异与调研 §10.5 表格「上游是否改写 effort 因供应商而异」
+的记录一致，翻译层不感知。
+
+**第三家供应商：deepseek 官方 / deepseek-flash（同日追加）**
+
+官方端点（`api.deepseek.com/v1`，只勾 RESPONSES）。四项全过，且带来两个**官方实现
+特有**的观察：
+
+1. **响应字段集最全**：非流式响应带 `truncation` / `safety_identifier` /
+   `prompt_cache_retention` / `moderation` 等官方 OpenAI 风格字段——比两家中转
+   丰富得多，透传下无影响；**这批字段是 R2C 回程的「真实字段全集」样本**，
+   回程状态机不应假设字段存在与否
+2. **`function_call` 的 id 风格不同**：item `id` 是 UUID（`b3d0ae33-…`）、
+   `call_id` 是 `call_00_…` 风格——与 stepfun 的 16 位十六进制裸串不同；
+   参数以**单 delta 全量**下发（`{}` 一次性，无分片）。三家对比坐实：
+   **id 形态与分片粒度因供应商而异，R2C 回程状态机不能依赖任何一种具体形态**
+   （只能依赖事件骨架与 `call_id` 配对语义）
+3. 多轮回传闭环同样通过：落库 `message/developer → user → function_call →
+   function_call_output`，上游正确回答工具结果
+4. 附带一个配置观察：deepseek 供应商最初 `enabled:false` 且勾全部三协议——
+   那种状态下要么路由失败、要么（勾了 CHAT 时）规则 1 直连短路、根本到不了
+   C2R。测试 C2R 必须只勾 RESPONSES（规则 1 优先级高于翻译）
