@@ -151,4 +151,58 @@ public final class SystemPromptNormalizer {
         }
         return null;
     }
+
+    /**
+     * 把 {@code input} 数组里 message item 的 {@code system} role 改写为
+     * {@code developer}（Responses 形态的 system 归一化）。
+     *
+     * <p>这是 {@link ResponsesSystemPromptStage} 的纯逻辑，与
+     * {@link #extractSystemPrompt}（MESSAGES 侧把 system 抬到顶层）是同一域的
+     * 两个协议实现：Chat 家族把 system 当消息数组的一员，Anthropic 抬到顶层，
+     * Responses 要求 {@code system} → {@code developer}（官方语义里两者是同一层级的
+     * 东西，而 Responses 的 message item 官方角色集合不含 system）。
+     *
+     * <h2>为何是「就地改写」而非「搬到 instructions」</h2>
+     * 方案 B（对齐 CPA）：{@code instructions} 与 {@code input[].developer} 在真实
+     * Codex 流量里是<strong>双通道并存</strong>的（见 C2R 调研 §10.2），下游 Chat
+     * 请求没有判据做二分拆分，因此不搞启发式 —— 全部留在 input，只改 role。
+     * {@code instructions} 字段由需要它的调用方写入，本方法不碰。
+     *
+     * <h2>只认 message item 的 system</h2>
+     * {@code function_call} / {@code reasoning} 等其它 item 类型没有 role 概念，
+     * 不在改写范围内。C2R 翻译器把 Chat 的 {@code developer} role 归一到
+     * {@code system}（约定中间形态），因此这里只需处理 system 一种。
+     *
+     * <h2>改写用「换元素」而非「原 Map put」</h2>
+     * input 数组的元素可能来自不可变集合（直连线路的 body 若下游用了不可变构造、
+     * 或测试以 {@code Map.of} 造 fixture）。原 Map 上 {@code put} 会抛
+     * {@code UnsupportedOperationException}，且异常点在支线深处、远离数据来源，
+     * 排查成本高。改为「构造一份改好的替换元素」：数组本身是我们新建的（见
+     * {@code mergeSystem} 对块的同一取向），元素新旧不影响外部可见行为。
+     *
+     * @param body Responses 形态的请求体，会被原地修改；没有 system 时保持原样
+     */
+    public static void rewriteSystemToDeveloper(Map<String, Object> body) {
+        if (!(body.get("input") instanceof List<?> items)) {
+            return;
+        }
+        List<Object> rewritten = null;
+        for (int i = 0; i < items.size(); i++) {
+            if (!(items.get(i) instanceof Map<?, ?> raw)
+                    || !"message".equals(raw.get("type"))
+                    || !"system".equals(raw.get("role"))) {
+                continue;
+            }
+            Map<String, Object> replacement = new LinkedHashMap<>();
+            raw.forEach((key, value) -> replacement.put(String.valueOf(key), value));
+            replacement.put("role", "developer");
+            if (rewritten == null) {
+                rewritten = new ArrayList<>(items);
+            }
+            rewritten.set(i, replacement);
+        }
+        if (rewritten != null) {
+            body.put("input", rewritten);
+        }
+    }
 }

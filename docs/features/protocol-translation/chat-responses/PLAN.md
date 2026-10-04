@@ -1,6 +1,6 @@
 # C2R 去程翻译（请求体）实施计划
 
-> **状态**：阶段一已完成（2026-10-04，翻译器主体 + 44 条单测，全量 1384 绿）；阶段二（system 支线）、阶段三（实机）待做
+> **状态**：阶段一、二已完成（2026-10-04：翻译器主体 + system 支线，全量 1390 绿）；待阶段三实机验证（需重启服务，用户手动）
 >
 > **需求背景**：让下游 Chat Completions 请求（`/v1/chat/completions`）能发往只支持
 > Responses 的上游供应商。这是 protocol-translation 功能 C2R 方向的**前半（去程）**；
@@ -304,3 +304,28 @@ Chat 侧**静默丢弃清单**（Responses 无对应物，进 §5.1 的清单测
   无法匹配 String）——用 `containsKey().isFalse()` 或先收窄类型绕过
 - PowerShell 管道 `| Select-String` 会吞 mvn 的退出码语义（显示 BUILD SUCCESS 但
   `$LASTEXITCODE=1`）；干净验证要重定向到文件再读
+
+### 7.2 阶段二：ResponsesSystemPromptStage 支线（2026-10-04 完成）
+
+**落地内容**：
+- `ResponsesSystemPromptStage`（`pipeline/before/requestbody/system/`，声明 RESPONSES，
+  转调静态纯逻辑）
+- 纯逻辑落在 `SystemPromptNormalizer.rewriteSystemToDeveloper`（与该类的抬升/合并/
+  压平同域，符合「system 归一化的静态工具集」职责）
+- `ResponsesSystemPromptStageTests`：6 条纯逻辑单测（改写、多条原位、非 message item
+  不受影响、幂等、no-op、不可变元素容忍）
+- `RequestBodyStageSpringWiringTests` 更新：system 支线 `hasSize(1)→(2)`、
+  `findSystemPromptStage(RESPONSES)` empty→present、`otherProtocolsFindNothingYet`
+  的断言与 Javadoc 理由改写（CHAT 的 system 仍是「不需要」；RESPONSES 的 max_tokens
+  仍空）、`foundStagesAreUsable` 补 Responses 侧冒烟
+- `testing/PipelineContexts.registryWithAllBodyStages` 补装新支线（装配器测试的真实
+  实现清单）
+- 验证：新测试 + wiring 14/14 绿；全量 `./mvnw surefire:test` **1390 条全绿**
+
+**计划外发现（wiring 冒烟测试的价值实证）**：
+- 初版 `rewriteSystemToDeveloper` 用「原 Map put」改写，被 wiring 冒烟的
+  `Map.of` fixture 打出 `UnsupportedOperationException` —— 直连线路的 body 元素
+  是否可变不是支线能假设的。改为「构造替换元素 + 换 List 元素」后修复，并补
+  `toleratesImmutableItems` 用例钉住。这正验证了 wiring 测试类注释里「防静默降级」
+  之外的第二重价值：**比纯逻辑单测更早暴露实现假设**（纯逻辑单测自己造的
+  fixture 全是可变集合，测不出这类问题）

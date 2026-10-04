@@ -6,6 +6,7 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfi
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.maxtokens.MaxTokensNormalizeStage;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.maxtokens.MessagesMaxTokensStage;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.system.MessagesSystemPromptStage;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.system.ResponsesSystemPromptStage;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.system.SystemPromptNormalizeStage;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.thinking.MessagesThinkingStage;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.thinking.ThinkingInjectStage;
@@ -60,28 +61,33 @@ class RequestBodyStageSpringWiringTests {
     private List<ThinkingInjectStage> thinkingStages;
 
     @Test
-    @DisplayName("集合注入收集到各支线：system/max_tokens 各 1（MESSAGES），thinking 3（三协议）")
+    @DisplayName("集合注入收集到各支线：system 2（MESSAGES+RESPONSES）、max_tokens 1（MESSAGES）、thinking 3")
     void collectionInjectionCollectsAllThreeStages() {
         assertThat(systemPromptStages)
-                .as("system 抬升支线应被收集（@Component 在扫描范围内）")
-                .hasSize(1);
+                .as("system 归一化支线应被收集（@Component 在扫描范围内）")
+                .hasSize(2);
         assertThat(maxTokensStages).hasSize(1);
         // thinking 三协议各一：Chat 写 reasoning_effort、Responses 写 reasoning.effort、
         // Messages 写 output_config.effort + thinking 方式。
         assertThat(thinkingStages).hasSize(3);
 
-        assertThat(systemPromptStages.getFirst().protocol()).isEqualTo(WireProtocol.MESSAGES);
+        // system 两协议各一：MESSAGES 抬到顶层、RESPONSES 改写为 developer（C2R 方向）。
+        assertThat(systemPromptStages.stream().map(SystemPromptNormalizeStage::protocol))
+                .containsExactlyInAnyOrder(WireProtocol.MESSAGES, WireProtocol.RESPONSES);
         assertThat(maxTokensStages.getFirst().protocol()).isEqualTo(WireProtocol.MESSAGES);
         assertThat(thinkingStages.stream().map(ThinkingInjectStage::protocol))
                 .containsExactlyInAnyOrder(WireProtocol.CHAT, WireProtocol.MESSAGES, WireProtocol.RESPONSES);
     }
 
     @Test
-    @DisplayName("system/max_tokens 按 MESSAGES 键查到，thinking 三协议都查得到")
+    @DisplayName("system 按 MESSAGES/RESPONSES 两键查到，max_tokens 按 MESSAGES，thinking 三协议")
     void allThreeStagesAreFoundByMessagesKey() {
         assertThat(registry.findSystemPromptStage(WireProtocol.MESSAGES))
                 .as("查不到会让 Anthropic 的 system 抬升静默失效")
                 .containsInstanceOf(MessagesSystemPromptStage.class);
+        assertThat(registry.findSystemPromptStage(WireProtocol.RESPONSES))
+                .as("查不到会让 C2R 线路的 system 角色保持非官方的 system，上游可能拒绝")
+                .containsInstanceOf(ResponsesSystemPromptStage.class);
         assertThat(registry.findMaxTokensStage(WireProtocol.MESSAGES))
                 .as("查不到会让 max_tokens 缺失，上游 400")
                 .containsInstanceOf(MessagesMaxTokensStage.class);
@@ -93,22 +99,21 @@ class RequestBodyStageSpringWiringTests {
     }
 
     /**
-     * system / max_tokens 两条支线在 CHAT / RESPONSES 上查不到 —— <strong>这是预期，不是缺口</strong>。
+     * system 在 CHAT、max_tokens 在 CHAT/RESPONSES 上查不到 —— <strong>这是预期，不是缺口</strong>。
      *
-     * <p>「跳过」比「不存在」更贴合意图：Chat 不需要抬升 system 到顶层
-     * （它本来就是那个形态）、Responses 不需要补 max_tokens（该字段在它那里可选）。
-     * 若某天有人给这两条协议补了实现，本用例会失败 —— 那是提醒他确认
+     * <p>「跳过」比「不存在」更贴合意图：Chat 不需要归一化 system
+     * （它本来就是那个形态）、RESPONSES/CHAT 不补 max_tokens（该字段在两侧都可选，
+     * 补齐是设置层的事，见 C2R 计划 §6.4 的 TODO）。
+     * 若某天有人给这些协议补了实现，本用例会失败 —— 那是提醒他确认
      * 「确实该在这个协议上跑这一步」，而不是顺手加上。
      *
-     * <p>思考注入<strong>不在此列</strong>：已把它对三协议都支线化
-     * （见 {@link #allThreeStagesAreFoundByMessagesKey}），因为思考深度是三条线路都有、
-     * 只是出站字段不同的步骤。
+     * <p>system 的 RESPONSES 实现<strong>不在此列</strong>（C2R 方向需要它，见
+     * {@link #allThreeStagesAreFoundByMessagesKey}）；思考注入同理（三协议都有）。
      */
     @Test
-    @DisplayName("CHAT / RESPONSES 查不到 system/max_tokens（那两步是 MESSAGES 特有）")
+    @DisplayName("CHAT 查不到 system，CHAT/RESPONSES 查不到 max_tokens（那些是无需/待做的）")
     void otherProtocolsFindNothingYet() {
         assertThat(registry.findSystemPromptStage(WireProtocol.CHAT)).isEmpty();
-        assertThat(registry.findSystemPromptStage(WireProtocol.RESPONSES)).isEmpty();
         assertThat(registry.findMaxTokensStage(WireProtocol.CHAT)).isEmpty();
         assertThat(registry.findMaxTokensStage(WireProtocol.RESPONSES)).isEmpty();
     }
@@ -117,8 +122,7 @@ class RequestBodyStageSpringWiringTests {
      * 查到的支线<strong>可直接调用且真的改了 body</strong>。
      *
      * <p>与「查得到」配对：防「查到但转调了一个空方法」。这里只做冒烟级验证
-     * （喂一个必然触发抬升的 body），逐步语义由
-     * {@code GenericAnthropicChatServiceTests} 的既有用例覆盖。
+     * （喂一个必然触发改写的 body），逐步语义由纯逻辑单测覆盖。
      */
     @Test
     @DisplayName("查到的支线可直接调用并生效")
@@ -134,6 +138,17 @@ class RequestBodyStageSpringWiringTests {
         assertThat((List<?>) body.get("messages"))
                 .as("system 消息应已从 messages 里移除")
                 .hasSize(1);
+
+        // Responses 侧同一形态的冒烟：message item 的 system 改写为 developer。
+        Map<String, Object> responsesBody = new LinkedHashMap<>();
+        responsesBody.put("input", List.of(
+                Map.of("type", "message", "role", "system",
+                        "content", List.of(Map.of("type", "input_text", "text", "be brief")))));
+
+        registry.findSystemPromptStage(WireProtocol.RESPONSES).orElseThrow().apply(responsesBody);
+
+        assertThat(((Map<?, ?>) ((List<?>) responsesBody.get("input")).get(0)).get("role"))
+                .isEqualTo("developer");
     }
 
     @Nested
