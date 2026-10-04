@@ -296,6 +296,15 @@ COSP 的流式链路本身已有 keep-alive 机制（实测输出里可见 `:kee
 
 ## 7. 模型名必须回显下游的带前缀名
 
+> ⚠️ **勘误（2026-10-04，R2C 调研中发现）**：本节与实现<strong>不符</strong>。
+> M2C 代码（`M2CStreamState.model` 与 `MessagesToChatNonStreamTranslator`）实际
+> <strong>透传上游裸名</strong>，其 Javadoc 明确写「不用下游带前缀的请求名：OpenAI
+> 直连路径也不改写，两条路必须同口径」；本契约 §16 的实测记录亦以「裸模型名，
+> 帧形态正确」验收。实测三家下游 agent（Copilot / Claude CLI / Codex）多轮会话
+> 对裸名均无问题，本节担心的「下轮路由失败」未实际发生。R2C 跟随代码现状
+> （上游裸名），本节的修正（改代码 or 改本文）留独立一轮 ——
+> 见 [R2C-PLAN.md](../chat-responses/R2C-PLAN.md) §6-1。
+
 sub2api 特意把状态里的 `Model` 预置成下游原始模型名，而不是上游返回的。
 
 COSP 有 `[provider-key] model` 前缀路由。如果把上游返回的裸 `deepseek-v4-flash`

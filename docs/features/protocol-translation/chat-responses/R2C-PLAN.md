@@ -1,6 +1,6 @@
 # R2C 回程翻译（响应体）实施计划
 
-> **状态**：计划中（2026-10-04，深度调研已完成）
+> **状态**：阶段一已完成（2026-10-04：非流式翻译器 + 门面未注册，全量 1419 绿）；阶段二（流式状态机 + 注册）、阶段三（实机）待做
 >
 > **需求背景**：把上游 Responses 响应（非流式 JSON / SSE 事件流）翻译回下游 Chat
 > Completions 形态，让 C2R 线路（下游打 `/v1/chat/completions`、上游只支持 Responses）
@@ -220,3 +220,31 @@ phase/encrypted 丢弃留痕），§6 倾向列即实现口径。本节只记录
 ---
 
 ## 7. 实施记录（各阶段完成后追加）
+
+### 7.1 阶段一：非流式翻译器（2026-10-04 完成）
+
+**落地内容**：
+- `ResponsesToChatNonStreamTranslator`（`pipeline/protocol/translate/`，约 380 行含 Javadoc）
+- `ResponsesToChatResponseTranslator` 门面：`translateResponse` 已实现（usage 槽位
+  只传不重算）；**按计划未注册 `@Component`**——流式/落库方法抛
+  `UnsupportedOperationException`（不可达：Registry 查不到本类），类注释写明
+  阶段二补注解与实现
+- `ResponsesToChatNonStreamTranslatorTests`：29 条，8 组 `@Nested`
+  （message→content 6 / reasoning 4 / tool_calls 5 / finish_reason 5 / usage 3 /
+  头部字段 2 / 丢弃与异常 3，外加分隔不叠加 1）
+- 契约勘误：RESPONSE-CONTRACT §7 头部加勘误注记（指向本文 §6-1）
+- 验证：新测试 29/29 绿；全量 `./mvnw surefire:test` **1419 条全绿**（未注册故
+  对既有链路零影响——与预判一致）
+
+**实现中的口径落点**（与 §0/§6 决策一一对应）：
+- content 多 item/part 空行分隔 + `appendSeparated`（只补足到 2 个换行，不叠加）
+- reasoning content 优先 summary 兜底（两者不拼接——拼接会把同一段思考发两遍）
+- `custom_tool_call` 按 function 翻译、arguments 取 `input`（§6-2）
+- usage **prompt=input 直接映射**（不加缓存——与 Anthropic 侧三项相加相反，
+  Javadoc 里特意标注「绝不能照抄」）；reasoning_tokens 归位
+  `completion_tokens_details`；details 只给非零份
+- id 优先 `call_id` 空回落 item `id`；arguments 缺失补 `"{}"`；空 content 给 `""`
+- 头部 id/model/created_at 全部透传（§6-1 定案）
+
+**计划外发现**：无——本阶段所有坑（null 覆盖、分隔叠加、reasoning 重复）都已在
+调研阶段预判并落进测试。
