@@ -8,7 +8,8 @@
 >
 > 请求侧见 [REQUEST-CONTRACT.md](./REQUEST-CONTRACT.md)（本文沿用其编号与术语）。
 > 相关：[AGENTS.md](../../../../AGENTS.md)、[思考链回放调查](../../../reference/COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)、
-> [C2R 请求翻译调研](../chat-responses/RESEARCH.md)、
+> [C2R 请求翻译调研](../chat-responses/C2R-RESEARCH.md)、
+> [R2C 回程翻译调研](../chat-responses/R2C-RESEARCH.md)、
 > [mock-upstream](../../../../tools/mock-upstream/README.md)（参数分片等只能用 mock 触发的场景；
 > 场景名 `translate-tool-*` / `translate-finish-reason*`，只在 `/messages` 端点有实现）
 

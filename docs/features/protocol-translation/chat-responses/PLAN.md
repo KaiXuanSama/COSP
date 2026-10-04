@@ -6,7 +6,8 @@
 > Responses 的上游供应商。这是 protocol-translation 功能 C2R 方向的**前半（去程）**；
 > 回程（R2C，Responses 事件流 → Chat chunk）是另一半，不在本次范围。
 >
-> 相关：[RESEARCH.md](./RESEARCH.md)（四项目对比 + 真实抓包，本文决策的事实基础）、
+> 相关：[C2R-RESEARCH.md](./C2R-RESEARCH.md)（四项目对比 + 真实抓包，本文决策的事实基础）、
+> [R2C-RESEARCH.md](./R2C-RESEARCH.md)（回程翻译调研与决策，下一步的素材）、
 > [../chat-messages/REQUEST-CONTRACT.md](../chat-messages/REQUEST-CONTRACT.md)
 > （C2M 契约，翻译口径的先例）、
 > [../chat-messages/RESPONSE-CONTRACT.md](../chat-messages/RESPONSE-CONTRACT.md) §16
@@ -16,7 +17,7 @@
 
 ## 0. 决策与理由（六项已定）
 
-RESEARCH §7 列了 14 个决策点、§9 列了 6 个未决项，本节记录已拍板的结论。
+C2R-RESEARCH §7 列了 14 个决策点、§9 列了 6 个未决项，本节记录已拍板的结论。
 「依据强度」高的项直接定案；system 落点含一个分工确认点（§6）。
 
 | # | 决策点 | 结论 | 理由 |
@@ -28,7 +29,7 @@ RESEARCH §7 列了 14 个决策点、§9 列了 6 个未决项，本节记录�
 | 5 | `id` 造不造 | **不造**：`tool_calls[].id` → `function_call.call_id`；`tool` 消息的 `tool_call_id` → `function_call_output.call_id`；item 级 `id` 与 assistant `message.id` 不合成 | 实测一半样本（stepfun 0/6、0/5）不造照样被接受——`id` 在请求侧可选，上游不校验。配对语义靠 `call_id`（`function_call_output` 恒带 `fco_` 前缀 id 的那个是上游自己的事）。只填**有来源**的字段 |
 | 6 | effort / summary | `reasoning_effort` → `reasoning.effort`（改名后**删原字段**，与 C2M 相反，依据见下）；`reasoning.summary` **不写** | `applyToResponses` 的表态判定**只看 `reasoning.effort`**（Javadoc 明写「不像 Anthropic 侧兼看 reasoning_effort，那条线路只有直连」）——改名后设置层自然看到表态，保留反而有害：① `reasoning_effort` 是 Chat 字段，Responses 上游可能拒绝多余字段；② 这条线没有 MESSAGES 侧那个 `body.remove` 收尾方。注入已有专门支线（`ResponsesThinkingStage` + 四模式）。summary 不写采纳 CPA 理由：显式 opt-in，不与 effort 耦合 |
 
-**三条「不应照抄 CPA」同时生效**（RESEARCH §7 末）：不补默认 effort、不剥
+**三条「不应照抄 CPA」同时生效**（C2R-RESEARCH §7 末）：不补默认 effort、不剥
 `temperature`/`top_p`、不跳过 `max_output_tokens` 映射。采样参数（`temperature` /
 `top_p`）原样搬运，由上游用错误码回答。
 
@@ -91,7 +92,7 @@ Chat 侧**静默丢弃清单**（Responses 无对应物，进 §5.1 的清单测
 
 | Chat 块 | Responses 块 | 说明 |
 |---|---|---|
-| `{type:"text", text}` | `{type:"input_text"/"output_text", text}` | user/system → `input_text`，assistant → `output_text`（RESEARCH §4.1 两家一致） |
+| `{type:"text", text}` | `{type:"input_text"/"output_text", text}` | user/system → `input_text`，assistant → `output_text`（C2R-RESEARCH §4.1 两家一致） |
 | `{type:"image_url", image_url:{url}}` | `{type:"input_image", image_url}` | 解包成纯 url 字符串；**丢 `detail`**（三家共识）；仅 user 消息 |
 | `{type:"input_audio", …}` | `{type:"input_audio", …}` | 仅 user 消息 |
 | `{type:"file", file:{…}}` | `{type:"input_file", …}` | `filename`/`file_data` 官方键 |
@@ -176,13 +177,13 @@ Chat 侧**静默丢弃清单**（Responses 无对应物，进 §5.1 的清单测
 
 | 不做 | 理由 |
 |---|---|
-| **R2C 回程翻译** | 独立的下一步；素材已齐（RESPONSE-CONTRACT §16 + 三种事件形态）。去程先行是为用真实上游验证请求可被接受 |
+| **R2C 回程翻译** | 独立下一步；调研与决策已完成（[R2C-RESEARCH.md](./R2C-RESEARCH.md)），关键素材齐备（RESPONSE-CONTRACT §16 三种事件形态 + 三家联测）。去程先行是为用真实上游验证请求可被接受 |
 | **思考缓存** | 实测不需要（§10.1：C2R 输入是 Chat 明文；第三方上游不签发密文）。真正需要它的是「R2C + 上游确实签发密文」，届时再议（CPA 的 TTL/容量参数是现成参照） |
 | **`namespace` / `web_search` 工具合成** | 决策 #4：忠实搬运，Chat 里没有的不造 |
 | **协议流转编排**（`ProtocolDispatchManager` 的 TODO） | 独立事项，有自己的规划；C2R 落地不依赖它（直连走规则 1 不读回退序） |
 | **max tokens 支线化（RESPONSES 侧）** | 本轮在翻译器实现一次映射；`ResponsesMaxTokensStage` 是本方向的**新增件而非重构**——RESPONSES 线路（直连 + C2R 翻译后）目前完全吃不到 `MaxOutputTokensSetting` 的注入。与 `MessagesMaxTokensStage` 对称，独立一轮处理（见 §6.4） |
 | **CHAT 直连的 max tokens 注入缺失** | 历史成因：曾以为 CHAT 路径无该字段；实际 Chat 协议有 `max_tokens`/`max_completion_tokens`，缺失属**语义缺失**而非无字段可注。刻意不在本分支修（独立一轮），见 §6.4 |
-| **补默认 effort / 剥采样参数 / 跳过 max_output_tokens 映射** | RESEARCH §7 三条「不应照抄 CPA」 |
+| **补默认 effort / 剥采样参数 / 跳过 max_output_tokens 映射** | C2R-RESEARCH §7 三条「不应照抄 CPA」 |
 | **`reasoning.summary` 写值** | 决策 #6：显式 opt-in，不与 effort 耦合 |
 
 ---

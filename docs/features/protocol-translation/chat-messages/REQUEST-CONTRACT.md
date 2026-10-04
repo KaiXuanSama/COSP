@@ -13,7 +13,7 @@
 > [供应商适配史](../../../architecture/ADAPTATIONS.md)
 >
 > **C2R（下游 Chat → 上游 Responses）的请求侧调研已另立**：
-> [C2R 请求翻译调研](../chat-responses/RESEARCH.md)（四个参考项目对比，尚未实现）。
+> [C2R 请求翻译调研](../chat-responses/C2R-RESEARCH.md)（四个参考项目对比，尚未实现）。
 > 本文的编号与术语体系对它同样适用。
 
 C2M = OpenAI Chat Completions → Anthropic Messages；M2C = 反向。
@@ -374,7 +374,7 @@ Copilot BYOK 会回传上一轮思考内容，因此**翻译路线上开启 exte
 >
 > 而 Codex 回传时保持同一形态（明文 `content`、`encrypted_content: null`）。
 > 因此本节的三条硬约束**只在「上游确实签发密文」时成立** —— 是否签发完全取决于上游，
-> 不能假定。详见 [C2R 请求翻译调研](../chat-responses/RESEARCH.md) §10.1。
+> 不能假定。详见 [C2R 请求翻译调研](../chat-responses/C2R-RESEARCH.md) §10.1。
 
 #### 载体形态（实流量取证）
 
@@ -481,7 +481,7 @@ Codex 手上是明文 `reasoning_text`（见上方「前置事实」）。
 - 直连 Responses（现状）**不受影响** —— 原样透传，本服务不解释密文。
 - **C2R 请求侧不需要思考缓存** —— 输入是 Chat 形态，下游手上有明文
   （且目标上游未必签发密文）。见
-  [C2R 请求翻译调研](../chat-responses/RESEARCH.md) §10.1。
+  [C2R 请求翻译调研](../chat-responses/C2R-RESEARCH.md) §10.1。
 - 一旦做 **R2C / R2M / M2R**（输入侧是 Responses 的思考），**必须先决定**：
   剥离（接受 400 或降质）还是自己缓存明文
   （接受一个思考缓存的维护成本）。这不是实现细节，是前置设计决策。
@@ -645,7 +645,7 @@ agent 用工具读图的场景暴露出来才修，已于 2026-09-08 实测通�
   剥离会遇到部分上游的 400，缓存明文则要新增一个按 item id 索引的思考缓存，
   而那会推翻「COSP 不缓存思考」这条现有决策。等 R2* 有实际需求时再定。
   **C2R 不在其列** —— 它的输入是 Chat 形态的明文（第 4.8 节「前置事实」与
-  [C2R 调研](../chat-responses/RESEARCH.md) §10.1）。
+  [C2R 调研](../chat-responses/C2R-RESEARCH.md) §10.1）。
 
 ---
 
@@ -655,7 +655,7 @@ agent 用工具读图的场景暴露出来才修，已于 2026-09-08 实测通�
 
 > **本节只覆盖 C2M / M2C。** C2R（下游 Chat → 上游 Responses）的请求侧调研是后来
 > （2026-09-29）单独做的，含第四个参考项目，见
-> [C2R 请求翻译调研](../chat-responses/RESEARCH.md)。
+> [C2R 请求翻译调研](../chat-responses/C2R-RESEARCH.md)。
 
 | 项目 | 形态 | 请求侧入口 |
 |---|---|---|
