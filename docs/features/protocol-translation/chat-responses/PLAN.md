@@ -1,6 +1,6 @@
 # C2R 去程翻译（请求体）实施计划
 
-> **状态**：计划中（2026-10-04）
+> **状态**：阶段一已完成（2026-10-04，翻译器主体 + 44 条单测，全量 1384 绿）；阶段二（system 支线）、阶段三（实机）待做
 >
 > **需求背景**：让下游 Chat Completions 请求（`/v1/chat/completions`）能发往只支持
 > Responses 的上游供应商。这是 protocol-translation 功能 C2R 方向的**前半（去程）**；
@@ -280,3 +280,27 @@ Chat 侧**静默丢弃清单**（Responses 无对应物，进 §5.1 的清单测
    有依赖该行为的断言需核查（深度探索未逐行核实该文件，阶段一全量跑时确认）。
 
 ## 7. 实施记录（各阶段完成后追加）
+
+### 7.1 阶段一：翻译器主体（2026-10-04 完成）
+
+**落地内容**：
+- `ChatToResponsesRequestTranslator`（`pipeline/protocol/translate/`，约 470 行含 Javadoc）
+- `ChatToResponsesRequestTranslatorTests`：44 条，8 组 `@Nested`（顶层标量 7 / 思考 4 /
+  response_format 3 / messages→input 11 / 内容块 3 / 工具 8 / 硬失败 4 / context 3 / 静默丢弃 1）
+- 验证：新测试 44/44 绿；全量 `./mvnw surefire:test` **1384 条全绿**（含既有 dispatch/wiring
+  断言，证明注册表零改动无副作用——`RequestBodyStageSpringWiringTests` 只数 Stage 不数翻译器，
+  预判正确）
+
+**计划内决策的落实现场**：
+- `reasoning_effort` 改名后删原字段（§6.2 定案），`thinking` 不搬运（Responses 的开关在
+  effort 的 `none` 档，与 Chat 的正交双字段结构不同——这条是 PLAN §2.1 未显式写的补充决策，
+  依据 `ReasoningEffortSetting` 的 REASONING_FIELD Javadoc「off 档映射为 none」）
+- `developer` role 归一到 `system`（支线的约定中间形态）；`translateContent` 未知块类型
+  **报错**而非 C2M 的丢弃——PLAN §2.2.1 已定，理由：块类型空间小，静默丢让多模态无声降级
+- 实机验证（阶段三）推迟：需要重启服务，由用户手动操作后进行
+
+**计划外发现**：
+- AssertJ 的 `doesNotContainKey(String)` 在通配符 `Map<?, ?>` 上不可用（键类型 capture
+  无法匹配 String）——用 `containsKey().isFalse()` 或先收窄类型绕过
+- PowerShell 管道 `| Select-String` 会吞 mvn 的退出码语义（显示 BUILD SUCCESS 但
+  `$LASTEXITCODE=1`）；干净验证要重定向到文件再读
