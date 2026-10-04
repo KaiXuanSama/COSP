@@ -8,8 +8,8 @@
 |---|---|---|
 | **C2M** | 下游 Chat → 上游 Messages | ✅ 已实现并实测 |
 | **M2C** | 下游 Messages → 上游 Chat | 请求侧待做；响应侧已实现并实测 |
-| **C2R** | 下游 Chat → 上游 Responses | 🔶 去程已实测可用（[PLAN.md](./chat-responses/PLAN.md) §7）；回程未实现（响应原样透传） |
-| **R2C** | 下游 Responses → 上游 Chat | 📋 调研与计划完成（[R2C-RESEARCH.md](./chat-responses/R2C-RESEARCH.md)、[R2C-PLAN.md](./chat-responses/R2C-PLAN.md)），未实现 |
+| **C2R** | 下游 Chat → 上游 Responses | ✅ 双向可用（去程 [PLAN.md](./chat-responses/PLAN.md) §7 + 回程 [R2C-PLAN.md](./chat-responses/R2C-PLAN.md) §7，三家供应商实机验证） |
+| **R2C** | 下游 Responses → 上游 Chat | ✅ 已实现（作为 C2R 的回程半边，随 [R2C-PLAN.md](./chat-responses/R2C-PLAN.md) 落地并实机验证） |
 | **M2R** / **R2M** | Messages ↔ Responses | ❌ 未实现 |
 
 ## 文档

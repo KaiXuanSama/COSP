@@ -206,6 +206,40 @@ class OpenAiControllerTests {
             org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("无法连接"))));
   }
 
+  /**
+   * 下游回传的 {@code reasoning_content} 必须穿过控制器到达 service 层。
+   *
+   * <p>曾在此处静默丢失：控制器用强类型 {@code OpenAiChatRequest} 反序列化再重建 Map，
+   * DTO 没有该字段时 Copilot BYOK 回传的思考在入口就被剥掉——C2R 的 reasoning item
+   * 修复因此在实机上不生效（翻译器从未收到过字段），且思考模式上游（deepseek 官方）
+   * 会 400 拒绝缺思考的历史（REQUEST-CONTRACT §4.8 硬约束③）。
+   *
+   * <p>本用例钉住<strong>控制器层</strong>的贯通：直调翻译器的单测覆盖不到这里，
+   * 这是 R2C 实机排障（2026-10-04）暴露的测试盲区。
+   */
+  @Test
+  void reasoningContentSurvivesControllerDeserialization() {
+    org.mockito.ArgumentCaptor<java.util.Map<String, Object>> bodyCaptor =
+        org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
+    given(chatCompletionService.chatCompletion(bodyCaptor.capture(), anyString(),
+        org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString()))
+        .willReturn(Mono.error(new UnresolvedModelRouteException("m")));
+
+    webTestClient.post().uri("/v1/chat/completions").contentType(MediaType.APPLICATION_JSON)
+        .accept(MediaType.APPLICATION_JSON)
+        .bodyValue("{\"model\":\"m\",\"stream\":false,\"messages\":[{\"role\":\"assistant\","
+            + "\"content\":\"答\",\"reasoning_content\":\"思考\",\"tool_calls\":[]}]}")
+        .exchange().expectStatus().isEqualTo(400);
+
+    java.util.Map<String, Object> captured = bodyCaptor.getValue();
+    @SuppressWarnings("unchecked")
+    List<java.util.Map<String, Object>> messages =
+        (List<java.util.Map<String, Object>>) captured.get("messages");
+    org.assertj.core.api.Assertions.assertThat(messages.get(0))
+        .as("reasoning_content 必须穿透 DTO 反序列化与 Map 重建两层")
+        .containsEntry("reasoning_content", "思考");
+  }
+
   @Test
   void returnsOpenAiModelsList() {
     // 模拟数据库返回的已启用服务商和模型列表

@@ -1,6 +1,6 @@
 # R2C 回程翻译（响应体）实施计划
 
-> **状态**：阶段一、二已完成（2026-10-04：非流式 + 流式状态机 + 注册，全量 1446 绿，C2R 链路代码层已接通）；待阶段三实机验证（需重启服务，用户手动）
+> **状态**：阶段一、二、三全部完成（2026-10-04：三家供应商实机验证通过 + §7.4 双重修复闭环——C2R 去程 reasoning item 与控制器 DTO 字段，落库证据齐全）。C2R 线路端到端可用
 >
 > **需求背景**：把上游 Responses 响应（非流式 JSON / SSE 事件流）翻译回下游 Chat
 > Completions 形态，让 C2R 线路（下游打 `/v1/chat/completions`、上游只支持 Responses）
@@ -316,5 +316,33 @@ item</strong>（`content[].reasoning_text` + `encrypted_content: null`，契约 
 本线路下游手上本来就有明文）。
 
 **测试**：C2R 翻译器 46 条全绿（新增 reasoning item 翻译 / 空白省略 / 往返闭环
-断言）；全量 <strong>1448 条全绿</strong>。待 deepseek 多轮复测确认修复生效
-（需重启服务加载新代码）。
+断言）；全量 <strong>1448 条全绿</strong>。
+
+**复测与二次排障（同日，找到真正的根因）**：重启复测时 deepseek 第二轮返回 200，
+但落库的上游 input 里<strong>没有 reasoning item</strong>——修复代码在实机上未生效。
+逐层排除（规则组不命中 RESPONSES / 装配浅拷贝与清 null 都不删 item / 磁盘 class
+是新版且服务启动晚于编译）后定位<strong>真凶</strong>：`OpenAiController` 用强类型
+`OpenAiChatRequest` 反序列化再重建 Map，而 `Message` DTO <strong>没有
+`reasoningContent` 字段</strong>——Copilot BYOK 回传的思考在<strong>控制器入口
+被 Jackson 静默剥掉</strong>，翻译器从未收到过该字段。单测直调翻译器覆盖不到这一层
+（R2C 实机排障暴露的测试盲区）。此前「400 → 200」的差异并非修复生效，而是复测构造
+的场景恰好未触发 deepseek 的校验（400 的原始触发来自 Copilot 真实使用路径）。
+
+**二次修复**：`OpenAiChatRequest.Message` 增加
+`@JsonProperty("reasoning_content") private String reasoningContent`（含字段级
+Javadoc 记录这次的坑）；`buildRequestBody` 无需改动（`objectMapper.convertValue`
+序列化 DTO 时自动带上）。
+
+**防漂移测试**：`OpenAiControllerTests.reasoningContentSurvivesControllerDeserialization`
+——用 ArgumentCaptor 捕获 service 层收到的 Map，断言字段穿透「DTO 反序列化 +
+Map 重建」两层。<strong>控制器层的贯通测试</strong>从此有先例可抄。
+
+**最终验证**：C2R 翻译器 46 + 控制器 7（+1 新增）全绿；全量 <strong>1449 条全绿</strong>。
+待再次重启后复测 deepseek 多轮——这次落库 input 应出现 reasoning item。
+
+**复测定案（同日，重启后）**：deepseek 两轮全 200；<strong>落库 input 出现
+reasoning item</strong>（`message/developer → user → reasoning → function_call →
+function_call_output`，`content[].reasoning_text` 明文、位置在 function_call 之前、
+`encrypted_content` 为 null 形态正确），上游正确消化并在回答中带出时区细节。
+§7.4 的修复链至此<strong>全部闭环</strong>：DTO 字段 → 翻译器 reasoning item →
+上游接受 → 落库证据齐全。
