@@ -376,7 +376,7 @@ CPA 在 `output_item.done` 命中 state 后直接 `state.Done = true`，之后�
 | 7 | done 后晚到 arguments | pending 部分处理 | 未处理 | 丢弃（弱面） | **不设 Done 门**（天然鲁棒） |
 | 8 | finish_reason | completed→stop/tool_calls；incomplete→length/content_filter | 同 | 同 | **三家共识，直接采用** |
 | 9 | usage 收尾 chunk | finish 后 usage-only chunk（choices:[]） | 同 | 附在终态 chunk | **独立 usage chunk + 收尾时统一发出**（对齐 C2M 先例，已核对；见 §9-1） |
-| 10 | model 字段 | `resp.Model` | 入参 originalModel | `resp.Model` | **入参下游模型名**（C2M 先例：回显带前缀名） |
+| 10 | model 字段 | `resp.Model` | 入参 originalModel | `resp.Model` | **上游裸名**（2026-10-04 深度调研修正：原倾向「回显下游带前缀名」出自 M2C 契约 §7，但 M2C 代码实际透传上游名且三线路/直连口径一致；契约矛盾见 [R2C-PLAN.md](./R2C-PLAN.md) §6-1） |
 | 11 | id / created | 原样 | id 原样、created 用 now | 原样 | **原样**（信息更真） |
 | 12 | annotations | 转换 | 无 | 无 | **丢弃**（最小实现） |
 | 13 | logprobs/obfuscation/encrypted_content/sequence_number | 都不处理 | 同 | 同 | **都不做**（三家共识） |

@@ -9,7 +9,7 @@
 | **C2M** | 下游 Chat → 上游 Messages | ✅ 已实现并实测 |
 | **M2C** | 下游 Messages → 上游 Chat | 请求侧待做；响应侧已实现并实测 |
 | **C2R** | 下游 Chat → 上游 Responses | 🔶 去程已实测可用（[PLAN.md](./chat-responses/PLAN.md) §7）；回程未实现（响应原样透传） |
-| **R2C** | 下游 Responses → 上游 Chat | 📋 调研与决策完成（[R2C-RESEARCH.md](./chat-responses/R2C-RESEARCH.md)），未实现 |
+| **R2C** | 下游 Responses → 上游 Chat | 📋 调研与计划完成（[R2C-RESEARCH.md](./chat-responses/R2C-RESEARCH.md)、[R2C-PLAN.md](./chat-responses/R2C-PLAN.md)），未实现 |
 | **M2R** / **R2M** | Messages ↔ Responses | ❌ 未实现 |
 
 ## 文档
@@ -20,6 +20,7 @@
 | [chat-messages/RESPONSE-CONTRACT.md](./chat-messages/RESPONSE-CONTRACT.md) | M2C/C2M 响应侧契约（第 16 节含 C2R 实测序列） |
 | [chat-responses/C2R-RESEARCH.md](./chat-responses/C2R-RESEARCH.md) | C2R 请求翻译调研（四项目对比 + 真实抓包） |
 | [chat-responses/R2C-RESEARCH.md](./chat-responses/R2C-RESEARCH.md) | R2C 回程翻译调研与决策（四项目对比 + 三家联测验证） |
+| [chat-responses/R2C-PLAN.md](./chat-responses/R2C-PLAN.md) | R2C 回程翻译实施计划（决策表 + 事件动作规格 + 三阶段） |
 | [chat-responses/samples/](./chat-responses/samples/) | 7 份真实 Codex 抓包（请求 + 响应事件流） |
 | [PROTOCOL-RENAME-PLAN.md](./PROTOCOL-RENAME-PLAN.md) | 协议命名重构规划（`OPENAI→CHAT` 改名第一步，已落地） |
 
