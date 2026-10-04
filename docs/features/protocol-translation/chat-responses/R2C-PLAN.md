@@ -280,3 +280,41 @@ deepseek 官方（单 delta 全量参数）、MiniMax 乱序（done 先到参数
 - Java 文本块里嵌 JSON 字符串的引号转义是 `\\"`（文本块的 `\"` 产出裸引号 →
   JSON 非法 → 解析出空 delta）：probe 式二分（一次性探针测试打印真实帧）比盯
   行号快得多——异常行号指向**旧编译**的 class 曾误导排查方向
+
+### 7.3 阶段三：实机验证（2026-10-04，进行中）
+
+**已完成**：mimo-tokenplan 与 stepfun 各三项（非流式全套 / 流式工具调用 / 多轮回传）
+**全部通过**——响应已是标准 `chat.completion` / `chat.completion.chunk`：
+
+- 非流式：`reasoning_content` 渲染、`finish_reason` 正确、usage 换算正确
+  （`reasoning_tokens` 归位 `completion_tokens_details`、mimo 的 `cached_tokens`
+  归位 `prompt_tokens_details`）
+- 流式：chunk 序列 `role → reasoning ×N → tool[0] name → args → finish=tool_calls →
+  [DONE]`；stepfun 的逐字符参数分片正确透传；name 只发一次
+- 多轮：工具结果回传正确消化
+
+**发现的真问题**（deepseek 官方，§7.4）已修复，待复测。
+
+### 7.4 计划外：deepseek 硬约束③实测触发与修复（2026-10-04）
+
+**现象**：deepseek 多轮回传报 400：
+`The reasoning_text in the thinking mode must be passed back to the API`。
+
+**根因**：C2R 去程的 `translateAssistant` 把下游回传的 `reasoning_content`
+<strong>丢弃</strong>（阶段一依据「Chat 客户端不回放思考」的过时判断），而
+deepseek 官方（思考模式对话式上游）要求历史 assistant 消息必须携带思考——
+这正是 [REQUEST-CONTRACT §4.8](../../chat-messages/REQUEST-CONTRACT.md)
+<strong>硬约束③</strong>（sub2api 记录过同一错误原文），因供应商而异
+（mimo/stepfun 不校验，deepseek 官方校验），不能假定任何一种。
+
+**修复**：`translateAssistant` 把 `reasoning_content` 翻译为<strong>明文 reasoning
+item</strong>（`content[].reasoning_text` + `encrypted_content: null`，契约 §4.8
+记录的「上游不签发密文」填充方式），置于正文 item 之前（与上游产出顺序一致）。
+与 R2C 响应侧构成<strong>往返闭环</strong>：R2C 给下游 `reasoning_content` →
+下游回传 → C2R 还原 reasoning item——思考两侧不断链，且<strong>零缓存</strong>
+（透传明文；§4.8 的「缓存明文」路线仅在「上游签发密文 + 下游只有密文」时需要，
+本线路下游手上本来就有明文）。
+
+**测试**：C2R 翻译器 46 条全绿（新增 reasoning item 翻译 / 空白省略 / 往返闭环
+断言）；全量 <strong>1448 条全绿</strong>。待 deepseek 多轮复测确认修复生效
+（需重启服务加载新代码）。

@@ -290,13 +290,43 @@ public class ChatToResponsesRequestTranslator implements RequestProtocolTranslat
     }
 
     /**
-     * assistant 消息 → message item（正文，若有）+ 每个工具调用一个 function_call item。
+     * assistant 消息 → （若有思考）reasoning item + message item（正文，若有）+
+     * 每个工具调用一个 function_call item。
      *
-     * <p>{@code reasoning_content} 丢弃：Chat 的明文思考无 Responses 请求侧
-     * 对应物（下游 Chat 客户端本就不回放思考，见 BYOK 调查）。
+     * <h2>{@code reasoning_content} 翻译为 reasoning item（明文形态）</h2>
+     *
+     * <p>曾经这里直接丢弃思考——依据是「Chat 客户端本就不回放思考」（BYOK 调查，
+     * Copilot 确实会回放，见该调查的修正）。2026-10-04 deepseek 官方实测推翻了
+     * 丢弃路线：思考模式的对话式上游要求历史里 assistant 消息<strong>必须携带
+     * 思考</strong>，缺失直接 400（REQUEST-CONTRACT §4.8 硬约束③，sub2api 记录的
+     * 同一错误："The reasoning_content in the thinking mode must be passed back"）。
+     * 是否校验因供应商而异（mimo/stepfun 不校验，deepseek 官方校验），
+     * 不能假定任何一种。
+     *
+     * <p>产出的形态是<strong>明文 reasoning item</strong>（{@code content[]} 带
+     * {@code reasoning_text}、{@code encrypted_content: null}）——契约 §4.8 记录的
+     * 「上游不签发密文」填充方式，也是唯一可由 Chat 明文构造的形态。它与 R2C
+     * 响应侧构成<strong>往返闭环</strong>：R2C 把上游 reasoning 转成
+     * {@code reasoning_content} 给下游 → 下轮回传 → 本方法转回 reasoning item。
+     * 思考在两侧都不断链，且<strong>零缓存</strong>（透传的是明文，与 §4.8
+     * sub2api 的「缓存明文」路线不同——那仅在「上游签发密文 + 下游只有密文」
+     * 时才需要，而本线路下游手上本来就有明文）。
+     *
+     * <p>item 顺序：reasoning 在 message 之前——与上游产出顺序一致
+     * （实测形态 B/C 里 reasoning 占 output_index 0、message 在后），回放时保持
+     * 同序最不容易踩上游的顺序校验。
      */
     private void translateAssistant(Map<String, Object> message, String path,
                                     List<Object> sink, Set<Object> emittedCallIds) {
+        Object reasoning = message.get("reasoning_content");
+        if (reasoning instanceof String text && !text.isBlank()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("type", "reasoning");
+            item.put("summary", List.of());
+            item.put("content", List.of(Map.of("type", "reasoning_text", "text", text)));
+            item.put("encrypted_content", null);
+            sink.add(item);
+        }
         List<Object> content = translateContent(message.get("content"), "assistant");
         if (!content.isEmpty()) {
             Map<String, Object> item = new LinkedHashMap<>();

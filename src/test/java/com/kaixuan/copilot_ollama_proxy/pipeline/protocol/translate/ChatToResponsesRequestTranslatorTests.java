@@ -239,7 +239,7 @@ class ChatToResponsesRequestTranslatorTests {
         }
 
         @Test
-        void assistantReasoningContentIsDropped() {
+        void assistantReasoningContentBecomesReasoningItem() {
             Map<String, Object> result = translate(body(
                     "messages", List.of(Map.of(
                             "role", "assistant",
@@ -247,9 +247,50 @@ class ChatToResponsesRequestTranslatorTests {
                             "reasoning_content", "chain of thought"))));
 
             List<?> input = (List<?>) result.get("input");
+            assertThat(input).hasSize(2);
+
+            Map<?, ?> reasoning = (Map<?, ?>) input.get(0);
+            assertThat(reasoning.get("type")).isEqualTo("reasoning");
+            assertThat(reasoning.get("summary")).isEqualTo(List.of());
+            assertThat(reasoning.get("content"))
+                    .isEqualTo(List.of(Map.of("type", "reasoning_text", "text", "chain of thought")));
+            assertThat(reasoning.get("encrypted_content")).isNull();
+
+            Map<?, ?> message = (Map<?, ?>) input.get(1);
+            assertThat(message.get("type")).isEqualTo("message");
+            assertThat(message.get("role")).isEqualTo("assistant");
+        }
+
+        @Test
+        @DisplayName("reasoning_content 缺失/空白时不产 reasoning item（deepseek 硬约束只要求有思考的回传）")
+        void blankReasoningContentOmitsItem() {
+            Map<String, Object> result = translate(body(
+                    "messages", List.of(Map.of(
+                            "role", "assistant",
+                            "content", "answer",
+                            "reasoning_content", "  "))));
+
+            List<?> input = (List<?>) result.get("input");
             assertThat(input).hasSize(1);
-            Map<?, ?> item = (Map<?, ?>) input.get(0);
-            assertThat(item.get("content").toString()).doesNotContain("chain of thought");
+            assertThat(((Map<?, ?>) input.get(0)).get("type")).isEqualTo("message");
+        }
+
+        @Test
+        @DisplayName("往返闭环：R2C 产出的 reasoning_content 回传后还原为 reasoning item（顺序在正文前）")
+        void roundTripReasoningSurvives() {
+            // 模拟下游（Copilot BYOK）把上一轮 R2C 给它的 reasoning_content 原样回传
+            Map<String, Object> result = translate(body(
+                    "messages", List.of(Map.of(
+                            "role", "assistant",
+                            "content", "上一轮答案",
+                            "reasoning_content", "上一轮思考")),
+                    "stream", false));
+
+            List<?> input = (List<?>) result.get("input");
+            assertThat(input.get(0))
+                    .as("reasoning item 在 message 之前——与上游产出顺序一致")
+                    .extracting(i -> ((Map<?, ?>) i).get("type"))
+                    .isEqualTo("reasoning");
         }
 
         @Test
