@@ -346,3 +346,30 @@ function_call_output`，`content[].reasoning_text` 明文、位置在 function_c
 `encrypted_content` 为 null 形态正确），上游正确消化并在回答中带出时区细节。
 §7.4 的修复链至此<strong>全部闭环</strong>：DTO 字段 → 翻译器 reasoning item →
 上游接受 → 落库证据齐全。
+
+### 7.5 计划外：流式 chunk 双份落库接线缺失（2026-10-04，用户发现）
+
+**现象**：C2R 流式调用的落库 chunks 列只记了上游 Responses 事件（裸数组），
+没有「下游实际收到的 Chat chunk」那份——跨协议时的<strong>双份留痕</strong>
+（`ChunkLogPayload` 的「一列两形」设计：直连落裸数组、翻译落
+`{translated, upstream, frameCounts}` 对象）在 R2C 线路未生效。
+
+**根因**：`GenericResponsesChatService` 的三处落库
+（成功收尾 / 每轮失败 / 错误响应头）把 `chunkRewriter` 参数<strong>硬编码成了
+`null`</strong>——`invokeStream` 收到 `AfterSend.chunkRewriterFor` 构造的改写器
+（C2R 回程注册后非 null），但 `responsesStream` 没往下传。Anthropic 侧
+（M2C）同位置传的是参数本身，这是 Responses 执行器在「R2x 未实现」年代写下的
+占位值，回程落地时漏接。
+
+**修复**：`responsesStream` 签名补 `chunkRewriter` 参数，三处落库的 `null` 换成
+参数；两个测试子类的直调 helper 同步补 `null`（直调无翻译，裸数组口径）。
+
+**生效机制**（既有设计，零新逻辑）：`AfterSend.chunkRewriterFor` 在回程命中时
+构造改写器 → 调 `translateChunksForLog`（§7.2 已实现）→ `ChunkLogPayload.from`
+包装成双份对象 → 前端日志页双栏对照。改写失败时 `from` 自动退回上游原文
+（裸数组），日志永不因翻译 bug 丢失。
+
+**验证**：受影响四测试类 97 条全绿；全量 <strong>1449 条全绿</strong>。
+增量编译坑复现一次（testCompile 报 "Nothing to compile" 而签名已变——
+删 `target/test-classes` 强制重编译后真实错误才现形，与 java-tests
+instructions 记录一致）。

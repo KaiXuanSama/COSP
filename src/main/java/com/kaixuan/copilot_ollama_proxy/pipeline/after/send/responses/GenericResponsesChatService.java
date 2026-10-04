@@ -199,8 +199,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
     /**
      * 主干 send 插槽（非流式）。
      *
-     * <p>参数全部来自 ctx。Responses 直连无落库改写（R2x / x2R 未实现），
-     * 故 {@code chunkRewriter} 被忽略。
+     * <p>参数全部来自 ctx。非流式无帧可改写（与另两侧一致），{@code chunkRewriter} 被忽略。
      */
     @Override
     public Mono<UpstreamEvent> invoke(RequestPipelineContext ctx,
@@ -209,12 +208,16 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                 ctx.requestId(), ctx);
     }
 
-    /** 主干 send 插槽（流式），理由同 {@link #invoke}。 */
+    /**
+     * 主干 send 插槽（流式）。{@code chunkRewriter} 透传给三处落库
+     * （成功收尾 / 每轮失败 / 错误响应头）——跨协议（R2C）时把上游事件重译成
+     * 下游 chunk 双份留痕，直连时为 null 落裸数组（见 {@link ChunkLogPayload#from}）。
+     */
     @Override
     public Flux<UpstreamEvent> invokeStream(RequestPipelineContext ctx,
                                             Function<List<String>, ChunkLogPayload> chunkRewriter) {
         return responsesStream(ctx.body(), ctx.model(), ctx.provider(), ctx.downstreamHeaders(),
-                ctx.requestId(), ctx);
+                ctx.requestId(), ctx, chunkRewriter);
     }
 
     // ==================== 非流式 ====================
@@ -329,7 +332,8 @@ public class GenericResponsesChatService implements UpstreamExecutor {
      */
     protected Flux<UpstreamEvent> responsesStream(Map<String, Object> request, String model,
                                                    ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                                   String requestId, RequestPipelineContext ctx) {
+                                                   String requestId, RequestPipelineContext ctx,
+                                                   Function<List<String>, ChunkLogPayload> chunkRewriter) {
         // stream 取自 ctx—— 它是请求级事实，与「哪条链被调了」同源，不留字面量。
         // 
         boolean stream = ctx.stream();
@@ -377,7 +381,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                                         UpstreamCallRunner.saveStreamLogWithError(apiCallLog, ctx, reqHeaders, requestBody,
                                                 respHeaders, response.statusCode().value(), List.of(),
                                                 respHeaders, response.statusCode().value(), errorBody,
-                                                attempt.attemptStart(), null);
+                                                attempt.attemptStart(), chunkRewriter);
                                         publishCallRecorded();
                                         return Flux.error(new WebClientResponseException(
                                                 response.statusCode().value(), "上游错误响应", null,
@@ -412,7 +416,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                     if (exhausted.isPresent()) {
                         UpstreamCallRunner.saveStreamLog(apiCallLog, ctx, reqHeaders, requestBody,
                                 attempt.respHeaders(), attempt.statusCode(),
-                                exhausted.get(), attempt.attemptStart(), null);
+                                exhausted.get(), attempt.attemptStart(), chunkRewriter);
                         publishCallRecorded();
                         return;
                     }
@@ -420,7 +424,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                         int statusCode = attempt.statusCode() == 0 ? -1 : attempt.statusCode();
                         UpstreamCallRunner.saveStreamLog(apiCallLog, ctx, reqHeaders, requestBody,
                                 attempt.respHeaders(), statusCode, attempt.chunksSnapshot(),
-                                attempt.attemptStart(), null);
+                                attempt.attemptStart(), chunkRewriter);
                         publishCallRecorded();
                     }
                 },
@@ -438,7 +442,7 @@ public class GenericResponsesChatService implements UpstreamExecutor {
                         statusCode = -1;
                     }
                     Long logId = UpstreamCallRunner.saveStreamLog(apiCallLog, ctx, reqHeaders, requestBody,
-                            attempt.respHeaders(), statusCode, attempt.chunks(), attempt.attemptStart(), null);
+                            attempt.respHeaders(), statusCode, attempt.chunks(), attempt.attemptStart(), chunkRewriter);
                     long ttfb = attempt.ttfb();
                     saveUsage(logId, providerKey, modelName, stream, usageRaw.get(),
                             ttfb < 0 ? null : (int) ttfb);
