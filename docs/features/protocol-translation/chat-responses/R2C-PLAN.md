@@ -281,19 +281,25 @@ deepseek 官方（单 delta 全量参数）、MiniMax 乱序（done 先到参数
   JSON 非法 → 解析出空 delta）：probe 式二分（一次性探针测试打印真实帧）比盯
   行号快得多——异常行号指向**旧编译**的 class 曾误导排查方向
 
-### 7.3 阶段三：实机验证（2026-10-04，进行中）
+### 7.3 阶段三：实机验证（2026-10-04 完成）
 
-**已完成**：mimo-tokenplan 与 stepfun 各三项（非流式全套 / 流式工具调用 / 多轮回传）
-**全部通过**——响应已是标准 `chat.completion` / `chat.completion.chunk`：
+**三家供应商各三项（非流式全套 / 流式工具调用 / 多轮回传）全部通过**——
+响应已是标准 `chat.completion` / `chat.completion.chunk`：
 
-- 非流式：`reasoning_content` 渲染、`finish_reason` 正确、usage 换算正确
-  （`reasoning_tokens` 归位 `completion_tokens_details`、mimo 的 `cached_tokens`
-  归位 `prompt_tokens_details`）
-- 流式：chunk 序列 `role → reasoning ×N → tool[0] name → args → finish=tool_calls →
-  [DONE]`；stepfun 的逐字符参数分片正确透传；name 只发一次
-- 多轮：工具结果回传正确消化
+- **mimo-tokenplan / stepfun**：非流式 `reasoning_content` 渲染、`finish_reason`
+  正确、usage 换算正确（`reasoning_tokens` 归位 `completion_tokens_details`、
+  cached 归位 `prompt_tokens_details`）；流式 chunk 序列
+  `role → reasoning ×N → tool[0] name → args → finish=tool_calls → [DONE]`、
+  stepfun 逐字符参数分片正确透传、name 只发一次；多轮工具结果正确消化
+- **deepseek 官方**：三项通过（首轮触发 §7.4 的硬约束③，修复后复测闭环），
+  reasoning item 落库证据见 §7.4 复测定案
+- **Copilot 真实使用**（连续工具调用会话）：正常工作——含 reasoning 回传的
+  完整 BYOK 路径
+- **§7.5 的 chunk 双份落库**亦在本阶段实机观测确认（77 上游事件 / 67 下游
+  chunk / frameCounts 对齐）
 
-**发现的真问题**（deepseek 官方，§7.4）已修复，待复测。
+**过程中发现的三个真问题**（§7.4 两个 + §7.5 一个）全部修复并复测闭环——
+实机验证的价值直接兑现：三个都在「单测全绿」的盲区里。
 
 ### 7.4 计划外：deepseek 硬约束③实测触发与修复（2026-10-04）
 
