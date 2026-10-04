@@ -1,6 +1,6 @@
 # R2C 回程翻译（响应体）实施计划
 
-> **状态**：阶段一已完成（2026-10-04：非流式翻译器 + 门面未注册，全量 1419 绿）；阶段二（流式状态机 + 注册）、阶段三（实机）待做
+> **状态**：阶段一、二已完成（2026-10-04：非流式 + 流式状态机 + 注册，全量 1446 绿，C2R 链路代码层已接通）；待阶段三实机验证（需重启服务，用户手动）
 >
 > **需求背景**：把上游 Responses 响应（非流式 JSON / SSE 事件流）翻译回下游 Chat
 > Completions 形态，让 C2R 线路（下游打 `/v1/chat/completions`、上游只支持 Responses）
@@ -248,3 +248,35 @@ phase/encrypted 丢弃留痕），§6 倾向列即实现口径。本节只记录
 
 **计划外发现**：无——本阶段所有坑（null 覆盖、分隔叠加、reasoning 重复）都已在
 调研阶段预判并落进测试。
+
+### 7.2 阶段二：流式状态机 + 注册（2026-10-04 完成）
+
+**落地内容**：
+- `R2CStreamState`（约 300 行）：工具三级映射（output_index/item_id/call_id 共指一条
+  记录）+ 本地重编号 + `argsSentAt` 前缀补齐位 + pending 存留 + reasoning「标记+差额」
+  分隔 + 三档收尾标志
+- `ResponsesToChatStreamTranslator`（约 420 行）：§2.3 事件表全量实现——18 行规格
+  逐行落实（终态吸收、output[] 补发、failed/error 不产帧、usage 收尾统一发）
+- `ResponsesToChatUsageConverter`：usage 换算从非流式私有方法提为共享类（流式收尾
+  与非流式必须同口径——「一份实现、两个消费点」）
+- 门面补 `translateStream`（M2C 同构：defer 内建状态 + carriedUsage + 输出 classify）
+  与 `translateChunksForLog`（独立状态重放）；**补上 `@Component`——C2R 回程位即命中，
+  半轮告警路径失效**
+- `ResponsesToChatStreamTranslatorTests`：27 条，7 组 `@Nested`（骨架 4 / 内容增量 4 /
+  工具 7 / 终态补发 3 / 失败终态 3 / usage 2 / 真实形态回放 2 / 落库 1，外加合计）
+- 验证：新测试 27/27 绿；全量 `./mvnw surefire:test` **1446 条全绿**——注册后
+  `TranslatorRegistry` 自动收集、既有集成测试（含 `ChatCompletionHalfRoundTranslationTests`）
+  无一受影响，与「零接线改动」预判一致
+
+**测试 fixture 的三类真实形态**：samples 形态 C 的 14 事件骨架（stepfun 逐字符分片）、
+deepseek 官方（单 delta 全量参数）、MiniMax 乱序（done 先到参数空、完整参数在随后 delta）。
+
+**计划外发现（实现期 bug，单测抓出）**：
+- `registerTool` 初版只把工具记录存进**主键**（`call:`），而 `keyByItemId` 次级索引
+  指向的 `item:` 键在 `toolsByKey` 里不存在——delta 事件（只带 `item_id`）三级回落
+  查不到记录、参数进 pending 永远拼不上。修复：注册时写入**所有可用键**（三键共指
+  同一记录）。**这正是三级映射设计的本意，初版实现漏了半边**——`nameOnlyOnFirstFrame`
+  与 `doneSupplementsMissingRemainder` 两个用例把它打出来
+- Java 文本块里嵌 JSON 字符串的引号转义是 `\\"`（文本块的 `\"` 产出裸引号 →
+  JSON 非法 → 解析出空 delta）：probe 式二分（一次性探针测试打印真实帧）比盯
+  行号快得多——异常行号指向**旧编译**的 class 曾误导排查方向

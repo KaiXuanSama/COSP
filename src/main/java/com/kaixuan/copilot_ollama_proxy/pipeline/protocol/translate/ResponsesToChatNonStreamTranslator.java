@@ -102,7 +102,7 @@ final class ResponsesToChatNonStreamTranslator {
         response.put("model", text(root, "model"));
         response.put("choices", List.of(choice));
 
-        JsonNode usage = toOpenAiUsage(root.get("usage"));
+        JsonNode usage = ResponsesToChatUsageConverter.toOpenAiUsageNode(objectMapper, root.get("usage"));
         if (usage != null) {
             response.put("usage", usage);
         }
@@ -249,49 +249,10 @@ final class ResponsesToChatNonStreamTranslator {
     }
 
     /**
-     * Responses usage → OpenAI usage（字段换名 + reasoning_tokens 归位）。
-     *
-     * <p>与 {@code AnthropicUsageAccumulator} 的本质差异：Responses 的
-     * {@code input_tokens} <strong>不含缓存</strong>？不 —— 它是「总输入」，
-     * {@code input_tokens_details.cached_tokens} 是「其中命中缓存的」，
-     * 因此 <strong>prompt = input（不需要三项相加）</strong>，直接映射。
-     * 这与 Anthropic 侧「input 不含缓存、必须加回」相反，绝不能照抄那个换算。
-     *
-     * <p>{@code reasoning_tokens} 在 Responses 是
-     * {@code output_tokens_details.reasoning_tokens}（且不进 output_tokens），
-     * 映射到 {@code completion_tokens_details.reasoning_tokens} —— M2C 拿不到
-     * 这个数字，这是 R2C 相对 M2C 多出的一项真实信息。
-     *
-     * @return OpenAI 形态的 usage 节点；上游无 usage 时返回 null（整个键不写）
+     * usage 换算已上提到 {@link ResponsesToChatUsageConverter}（流式收尾与非流式
+     * 共用同一份换算，两条路径必须同口径）。换算规则与「绝不能照抄 Anthropic
+     * 三项相加」的理由见那个类的注释。
      */
-    private JsonNode toOpenAiUsage(JsonNode usage) {
-        if (usage == null || !usage.isObject()) {
-            return null;
-        }
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("prompt_tokens", intOrZero(usage, "input_tokens"));
-        result.put("completion_tokens", intOrZero(usage, "output_tokens"));
-        result.put("total_tokens", intOrZero(usage, "total_tokens"));
-
-        JsonNode inputDetails = usage.get("input_tokens_details");
-        long cached = inputDetails != null && inputDetails.isObject()
-                ? longOrZero(inputDetails, "cached_tokens") : 0;
-        if (cached > 0) {
-            Map<String, Object> promptDetails = new LinkedHashMap<>();
-            promptDetails.put("cached_tokens", cached);
-            result.put("prompt_tokens_details", promptDetails);
-        }
-
-        JsonNode outputDetails = usage.get("output_tokens_details");
-        long reasoning = outputDetails != null && outputDetails.isObject()
-                ? longOrZero(outputDetails, "reasoning_tokens") : 0;
-        if (reasoning > 0) {
-            Map<String, Object> completionDetails = new LinkedHashMap<>();
-            completionDetails.put("reasoning_tokens", reasoning);
-            result.put("completion_tokens_details", completionDetails);
-        }
-        return objectMapper.valueToTree(result);
-    }
 
     /**
      * 空行分隔的追加（new-api {@code appendSeparatedText} 语义）。
