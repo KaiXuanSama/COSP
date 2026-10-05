@@ -42,7 +42,9 @@ class ResponsesToChatStreamTranslatorTests {
     }
 
     private Map<String, Object> parse(String chunk) throws Exception {
-        return objectMapper.readValue(chunk, Map.class);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> parsed = objectMapper.readValue(chunk, Map.class);
+        return parsed;
     }
 
     @SuppressWarnings("unchecked")
@@ -348,14 +350,15 @@ class ResponsesToChatStreamTranslatorTests {
                     """
                     {"type":"response.function_call_arguments.delta","item_id":"fc_9","delta":"{\\"x\":"}
                     """, state);
-            // added 后到
+            // added 后到：仍是 name 声明帧（arguments 空占位），随后 delta 继续时从头拼接正确
             List<String> frames = translator.translateEvent(
                     """
                     {"type":"response.output_item.added","output_index":2,
                      "item":{"type":"function_call","id":"fc_9","call_id":"call_9","name":"t","arguments":""}}
                     """, state);
+            assertThat(frames).as("added 产 name 声明帧").hasSize(1);
+            assertThat(frames.get(0)).contains("\"name\":\"t\"").contains("\"call_9\"");
 
-            // added 帧仍是 name 声明帧；随后 delta 继续时从头拼接正确
             List<String> more = translator.translateEvent(
                     """
                     {"type":"response.function_call_arguments.delta","item_id":"fc_9","delta":"1}"}

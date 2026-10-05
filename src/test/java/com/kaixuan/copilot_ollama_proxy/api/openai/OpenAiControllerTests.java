@@ -219,8 +219,10 @@ class OpenAiControllerTests {
    */
   @Test
   void reasoningContentSurvivesControllerDeserialization() {
+    @SuppressWarnings("unchecked")
     org.mockito.ArgumentCaptor<java.util.Map<String, Object>> bodyCaptor =
-        org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
+        (org.mockito.ArgumentCaptor<java.util.Map<String, Object>>) (org.mockito.ArgumentCaptor<?>)
+            org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
     given(chatCompletionService.chatCompletion(bodyCaptor.capture(), anyString(),
         org.mockito.ArgumentMatchers.any(HttpHeaders.class), anyString()))
         .willReturn(Mono.error(new UnresolvedModelRouteException("m")));

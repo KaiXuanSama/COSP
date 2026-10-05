@@ -30,14 +30,11 @@ class ResponsesToChatNonStreamTranslatorTests {
         translator = new ResponsesToChatNonStreamTranslator(objectMapper);
     }
 
-    /** 便捷构造：文本块。 */
-    private static Map<String, Object> outputText(String text) {
-        return Map.of("type", "output_text", "text", text);
-    }
-
     private Map<String, Object> translate(String responsesJson) throws Exception {
         String chat = translator.translate(responsesJson);
-        return objectMapper.readValue(chat, Map.class);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> parsed = objectMapper.readValue(chat, Map.class);
+        return parsed;
     }
 
     @SuppressWarnings("unchecked")

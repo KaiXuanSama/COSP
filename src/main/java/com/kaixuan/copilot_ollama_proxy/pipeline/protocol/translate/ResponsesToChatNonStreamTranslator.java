@@ -310,16 +310,6 @@ final class ResponsesToChatNonStreamTranslator {
         }
     }
 
-    private static long longOrZero(JsonNode node, String field) {
-        JsonNode value = node.get(field);
-        return value != null && value.isNumber() ? value.asLong() : 0;
-    }
-
-    private static int intOrZero(JsonNode node, String field) {
-        JsonNode value = node.get(field);
-        return value != null && value.isNumber() ? value.asInt() : 0;
-    }
-
     private static String text(JsonNode node, String field) {
         if (node == null) {
             return null;
