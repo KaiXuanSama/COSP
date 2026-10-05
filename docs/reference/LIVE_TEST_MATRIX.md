@@ -14,8 +14,8 @@
 
 | mock | 模拟什么 | 端口 | 何时用 |
 |---|---|---|---|
-| [`mock-upstream`](../tools/mock-upstream/README.md) | 上游供应商（**三协议合一**） | 8081 | 验 Chat / Messages / Responses 三条上游链路 |
-| [`mock-cosp`](../tools/mock-cosp/README.md) | **COSP 自己**（供下游直连） | 11333 | 验下游入站报文（含翻译后的形态） |
+| [`mock-upstream`](../../tools/mock-upstream/README.md) | 上游供应商（**三协议合一**） | 8081 | 验 Chat / Messages / Responses 三条上游链路 |
+| [`mock-cosp`](../../tools/mock-cosp/README.md) | **COSP 自己**（供下游直连） | 11333 | 验下游入站报文（含翻译后的形态） |
 
 ```bash
 cd frontend
@@ -25,7 +25,7 @@ cd frontend
 
 **上游协议由端点路径决定，不由模型名决定** —— 同一个场景名在 `/chat/completions`
 与 `/messages` 上都能打，行为按该协议的形态呈现。完整场景清单见
-[`mock-upstream/README.md`](../tools/mock-upstream/README.md) §5。
+[`mock-upstream/README.md`](../../tools/mock-upstream/README.md) §5。
 
 **场景名自带期望**：`blank-*` 期望判空兜底、`pass-*` 期望放行、`retry-*` 期望重试、
 `fail-*` 期望快速失败、`phase-*` 验相位、`cancel-*` 验中断、`translate-*` 验翻译形态。
@@ -228,9 +228,9 @@ P1 = 主路径回归；P2 = 既有能力，回归时可抽查。
 
 | 主题 | 文件 |
 |---|---|
-| mock 的启动、场景清单、新旧名对照 | [`../tools/mock-upstream/README.md`](../tools/mock-upstream/README.md) |
-| 下游嗅探 mock | [`../tools/mock-cosp/README.md`](../tools/mock-cosp/README.md) |
-| 跳协议契约（请求侧） | [PROTOCOL_TRANSLATION_CONTRACT.md](./PROTOCOL_TRANSLATION_CONTRACT.md) |
-| 跳协议契约（响应侧） | [PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md](./PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md) |
-| 上游适配史与取舍 | [PROVIDER_ADAPTATIONS.md](./PROVIDER_ADAPTATIONS.md) |
-| 已知技术债与刻意不做的取舍 | [KNOWN_DEBT.md](./KNOWN_DEBT.md) |
+| mock 的启动、场景清单、新旧名对照 | [`../tools/mock-upstream/README.md`](../../tools/mock-upstream/README.md) |
+| 下游嗅探 mock | [`../tools/mock-cosp/README.md`](../../tools/mock-cosp/README.md) |
+| 跳协议契约（请求侧） | [REQUEST-CONTRACT.md](../features/protocol-translation/chat-messages/REQUEST-CONTRACT.md) |
+| 跳协议契约（响应侧） | [RESPONSE-CONTRACT.md](../features/protocol-translation/chat-messages/RESPONSE-CONTRACT.md) |
+| 上游适配史与取舍 | [ADAPTATIONS.md](../architecture/ADAPTATIONS.md) |
+| 已知技术债与刻意不做的取舍 | [KNOWN_DEBT.md](../architecture/KNOWN_DEBT.md) |

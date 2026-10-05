@@ -1,0 +1,81 @@
+{
+  "model": "step-5-preview",
+  "input": [
+    {
+      "type": "message",
+      "id": "msg_01a0ed59-5693-7213-b744-97b6c9a927e2",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<permissions instructions>\nFilesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The sandbox only permits reading files. Network access is restricted.\nApproval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.\r\n</permissions instructions>"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_01a0ed59-5693-7213-b744-97c39e3560a0",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<environment_context>\n  <current_date>2026-09-29</current_date>\n  <timezone>Asia/Shanghai</timezone>\n</environment_context>"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_01a0ed59-56aa-7981-9a3f-61c7d93dd67f",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Generate a concise, single-line task title of at most 36 characters and under five words where possible. Start with an imperative verb. Capitalize only the first word unless the user's language, proper nouns, acronyms, or code terms require otherwise. Preserve ticket references exactly. Write in the user's language. Do not use quotes, markdown, or trailing punctuation. Do not answer the request.\n\nUser prompt:\n在当前工作区下有一个png图片（路径D:\\KaiXuan\\Desktop\\copilotDebug\\image.png），直接调用工具去读取这个图片，最后告诉我图片中显示的是什么"
+        }
+      ]
+    }
+  ],
+  "instructions": "You are Codex, a coding agent. You and the user share the same workspace and collaborate to achieve the user's goals.",
+  "tools": [],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "high"
+  },
+  "store": false,
+  "include": [
+    "reasoning.encrypted_content"
+  ],
+  "prompt_cache_key": "01a0ed59-5626-7151-a9ed-bb8a1bf10af2",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "name": "codex_output_schema"
+    }
+  },
+  "client_metadata": {
+    "thread_id": "01a0ed59-5626-7151-a9ed-bb8a1bf10af2",
+    "x-codex-installation-id": "f622f92e-13bc-4846-a283-ef69ea2e4a96",
+    "x-codex-turn-metadata": "{\"installation_id\":\"f622f92e-13bc-4846-a283-ef69ea2e4a96\",\"session_id\":\"01a0ed59-5626-7151-a9ed-bb8a1bf10af2\",\"thread_id\":\"01a0ed59-5626-7151-a9ed-bb8a1bf10af2\",\"agent_name\":\"/root\",\"turn_id\":\"01a0ed59-568b-7e40-a405-c3515c59d34a\",\"window_id\":\"01a0ed59-5626-7151-a9ed-bb8a1bf10af2:0\",\"window_number\":0,\"context_window_id\":\"01a0ed59-5626-7151-a9ed-bb9fdccb5390\",\"request_kind\":\"turn\",\"root_turn_id\":\"01a0ed59-568b-7e40-a405-c3515c59d34a\",\"thread_source\":\"system\",\"sandbox\":\"windows_sandbox\",\"sandbox_mode\":\"read-only\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"turn_started_at_unix_ms\":1790688450193}",
+    "turn_id": "01a0ed59-568b-7e40-a405-c3515c59d34a",
+    "root_turn_id": "01a0ed59-568b-7e40-a405-c3515c59d34a",
+    "x-codex-window-id": "01a0ed59-5626-7151-a9ed-bb8a1bf10af2:0",
+    "session_id": "01a0ed59-5626-7151-a9ed-bb8a1bf10af2"
+  },
+  "stream": true
+}

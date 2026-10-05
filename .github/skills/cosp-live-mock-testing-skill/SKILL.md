@@ -350,5 +350,5 @@ Get-NetTCPConnection -LocalPort 8081 -State Listen -ErrorAction SilentlyContinue
 |---|---|
 | mock 场景清单、新旧名对照、422 语义 | [`tools/mock-upstream/README.md`](../../../tools/mock-upstream/README.md) |
 | 测试脚手架、判据表、实操细节 | [`tools/live-test/README.md`](../../../tools/live-test/README.md) |
-| 全部可验证项（测什么、看什么） | [`docs/LIVE_TEST_MATRIX.md`](../../../docs/LIVE_TEST_MATRIX.md) |
+| 全部可验证项（测什么、看什么） | [`docs/LIVE_TEST_MATRIX.md`](../../../docs/reference/LIVE_TEST_MATRIX.md) |
 | 项目架构与不变量 | [`AGENTS.md`](../../../AGENTS.md) |

@@ -94,7 +94,12 @@ class ChatDispatchErrorSignalTests {
         given(openAiChatService.protocol()).willReturn(WireProtocol.CHAT);
         given(anthropicChatService.protocol()).willReturn(WireProtocol.MESSAGES);
         given(responsesChatService.protocol()).willReturn(WireProtocol.RESPONSES);
-        ProtocolDispatchManager dispatchManager = new ProtocolDispatchManager();
+        // 调度器需知道「C2M 去程已实现」，才会对下游 CHAT + 供应商 MESSAGES 判为可翻译
+        // （否则规则 2 找不到已实现候选，会在调度阶段就抛未实现，RequestTranslationFailure
+        //  组的「派发成功、真实翻译器再抛」路径就走不到）。与下面 TranslatorRegistry 同源：
+        //  两者都只认这一个真实去程翻译器。M2C / R2* 未实现，交由各自用例验证调度阶段报错。
+        ProtocolDispatchManager dispatchManager = new ProtocolDispatchManager(
+                List.of(new ChatToMessagesRequestTranslator(objectMapper)));
 
         // 翻译器用真实实例而非 mock：本测试要验证的正是「真实翻译器抛出的异常
         // 如何抵达下游」，mock 掉它就把被测行为一起 mock 掉了。

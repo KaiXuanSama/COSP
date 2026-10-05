@@ -10,7 +10,7 @@ package com.kaixuan.copilot_ollama_proxy.pipeline.protocol;
  * 消息也因此不能共用一套模板。
  *
  * <h2>什么情况该抛它</h2>
- * 契约（{@code docs/PROTOCOL_TRANSLATION_CONTRACT.md} 第 6.1 节）规定四类：
+ * 契约（{@code docs/features/protocol-translation/chat-messages/request-contract.md} 第 6.1 节）规定四类：
  * <ul>
  *   <li>{@code stop} 数组含非字符串元素</li>
  *   <li>{@code tool_calls[].function.arguments} 不是合法 JSON</li>

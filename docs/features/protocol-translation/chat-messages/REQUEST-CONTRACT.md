@@ -9,8 +9,12 @@
 > 标注了实测日期的段落是已验证的事实，其余是约束。已实测：多轮工具链（见响应侧契约第 1 节）、
 > 工具结果带图的多模态识别（3.4.2）。
 >
-> 相关：[AGENTS.md](../AGENTS.md)、[思考链回放调查](COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)、
-> [供应商适配史](PROVIDER_ADAPTATIONS.md)
+> 相关：[AGENTS.md](../../../../AGENTS.md)、[思考链回放调查](../../../reference/COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)、
+> [供应商适配史](../../../architecture/ADAPTATIONS.md)
+>
+> **C2R（下游 Chat → 上游 Responses）的请求侧调研已另立**：
+> [C2R 请求翻译调研](../chat-responses/C2R-RESEARCH.md)（四个参考项目对比，尚未实现）。
+> 本文的编号与术语体系对它同样适用。
 
 C2M = OpenAI Chat Completions → Anthropic Messages；M2C = 反向。
 本文档只覆盖**请求体**。响应与 SSE 侧留待后续，但第 7 节规定了请求侧必须为它留的出口。
@@ -342,12 +346,35 @@ M2C 丢弃 `thinking` / `redacted_thinking` 块。
 
 Copilot BYOK 会回传上一轮思考内容，因此**翻译路线上开启 extended thinking 且带工具时会硬失败**。
 这不是「翻译得不够漂亮」，是会被上游直接拒绝。落地前先复核
-[思考链回放调查](COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)。
+[思考链回放调查](../../../reference/COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)。
 
 ### 4.8 Responses 的加密思考：R2* / *2R 的硬前提（2026-09-13 实测）
 
 第 4.7 节讨论的是 Chat ↔ Messages 两侧**都没有可搬运的思考载体**，只能丢。Responses 不同 ——
 它有载体，但载体是**不透明密文**，于是问题从「无处可放」变成「放过去也没用、或者必须放」。
+
+> **前置事实：密文是上游的可选行为，不是 Responses 协议的必然产物**（2026-09-29 补测）。
+> 实测一份真实链路（Codex → 第三方供应商），结论与「官方 Responses 一定签发密文」相反：
+>
+> | 响应样本 | reasoning 事件 | `reasoning_tokens` | `encrypted_content` |
+> |---|---|---|---|
+> | stepfun 读图（34 条） | **13 条** | **35** | **null** |
+> | stepfun 工具链（119 条） | **38 条** | **129** | **null** |
+> | stepfun 标题（112 条） | 0 条 | 0 | — |
+> | astra 工具链（69 条） | 0 条 | 0 | — |
+>
+> 即：**该第三方供应商产出思考，但以明文下发，从不签发密文** —— 尽管请求方明确带了
+> `include: ["reasoning.encrypted_content"]`。思考走独立 item + `reasoning_text` 内容块：
+>
+> ```json
+> { "type": "reasoning", "summary": [],
+>   "content": [{ "type": "reasoning_text", "text": "…明文思考…" }],
+>   "encrypted_content": null }
+> ```
+>
+> 而 Codex 回传时保持同一形态（明文 `content`、`encrypted_content: null`）。
+> 因此本节的三条硬约束**只在「上游确实签发密文」时成立** —— 是否签发完全取决于上游，
+> 不能假定。详见 [C2R 请求翻译调研](../chat-responses/C2R-RESEARCH.md) §10.1。
 
 #### 载体形态（实流量取证）
 
@@ -356,7 +383,11 @@ Copilot BYOK 会回传上一轮思考内容，因此**翻译路线上开启 exte
 | 位置 | 字段 |
 |---|---|
 | 响应产出的 item | `{id, type, content, encrypted_content, summary, metadata, …}` |
-| Codex 回传的 item | `{type, id, summary: [], encrypted_content}` —— **没有 `content`** |
+| Codex 回传的 item（上游签发密文） | `{type, id, summary: [], encrypted_content}` —— 没有 `content` |
+| Codex 回传的 item（上游**不签发**密文） | `{type, summary: [], content: [{type: "reasoning_text", …}], encrypted_content: null}` —— 有明文 `content` |
+
+**两行的差别不是协议版本，是上游行为**：`encrypted_content` 与明文 `content` 是
+`reasoning` item 的两种填充方式，取哪种由上游决定（见上方「前置事实」）。
 
 `include: ["reasoning.encrypted_content"]` 是下游主动索要加密思考的信号，且它只在
 `store: false`（或 ZDR）时才有意义 —— 服务端没有状态可回退，密文就是先前思考的**唯一载体**。
@@ -431,17 +462,28 @@ xAI 的真实错误（`sub2api` 记录，并为其写了专门的错误识别）
 即：密文不可读 → 那就在自己还看得见明文的时候存下来。代价是需要一个按 item id
 索引的思考缓存，而这正是本服务当前**刻意没有**的东西。
 
+> 另一参考：`CLIProxyAPI` 的 `codex_reasoning_replay_cache.go` 给了同一思路的完整工程参数
+> （TTL 1h / 10240 条上限 / 单 agent 256 轮与 16MB / 批量淘汰 128 / `homekv` CAS）。
+> 两者都是「缓存明文」路线，但**仅在上游确实签发密文时才需要**。
+
 #### 对本服务的含义
 
-[PROVIDER_ADAPTATIONS.md](./PROVIDER_ADAPTATIONS.md) 里那句
+[ADAPTATIONS.md](../../../architecture/ADAPTATIONS.md) 里那句
 「当前 GitHub Copilot 客户端负责跨请求回放 `reasoning_content`；COSP 不再缓存、注入或定期清理
 思考内容」的前提是 **Chat 线路 + Copilot BYOK** —— 那条路上客户端手上有明文，不需要代理代劳。
 
-但在 **Responses + 加密思考**下这个前提不成立：Codex 手上只有密文，无法回放明文。
+**在「上游不签发密文」时（实测的常见情况），Responses 线路同样满足这个前提** ——
+Codex 手上是明文 `reasoning_text`（见上方「前置事实」）。
+
+只有 **`Responses` + 上游确实签发密文** 时这个前提才不成立：Codex 手上只有密文，无法回放明文。
 所以：
 
 - 直连 Responses（现状）**不受影响** —— 原样透传，本服务不解释密文。
-- 一旦做 R2C / R2M / C2R / M2R，**必须先决定**：剥离（接受 400 或降质）还是自己缓存明文
+- **C2R 请求侧不需要思考缓存** —— 输入是 Chat 形态，下游手上有明文
+  （且目标上游未必签发密文）。见
+  [C2R 请求翻译调研](../chat-responses/C2R-RESEARCH.md) §10.1。
+- 一旦做 **R2C / R2M / M2R**（输入侧是 Responses 的思考），**必须先决定**：
+  剥离（接受 400 或降质）还是自己缓存明文
   （接受一个思考缓存的维护成本）。这不是实现细节，是前置设计决策。
 
 **尚未决定，不在本契约给出结论。** 本节只固定实测事实与约束，避免下次从零调研。
@@ -574,7 +616,7 @@ M2C 丢弃：`metadata`、`mcp_servers`、`container`、`context_management`、`
 5. 其余字段映射与丢弃清单
 6. `translationContext` 出口
 7. 响应与 SSE 侧 —— 已另立契约，见
-   [PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md](./PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md)
+   [RESPONSE-CONTRACT.md](./RESPONSE-CONTRACT.md)
 
 前六项已完成（C2M 请求侧）。实际执行顺序随后调整为先做 **M2C 响应**而非 M2C 请求，
 理由见响应侧契约第 0 节：补上响应翻译才能让 C2M 这条链端到端可用。
@@ -599,15 +641,21 @@ agent 用工具读图的场景暴露出来才修，已于 2026-09-08 实测通�
   `ChatToMessagesRequestTranslatorTests`，Anthropic 侧两个思考维度的四档注入见
   `ReasoningEffortSettingTests.Anthropic注入模式` 与 `GenericAnthropicChatServiceTests`。
 - **Responses 的加密思考在翻译时剥离还是缓存明文** —— 三条硬约束见第 4.8 节。
-  这是 R2* / *2R 落地前必须先做的决策（不是实现细节）：剥离会遇到部分上游的 400，
-  缓存明文则要新增一个按 item id 索引的思考缓存，而那会推翻「COSP 不缓存思考」这条
-  现有决策。等 R2* 有实际需求时再定。
+  这是 **R2C / R2M / M2R**（输入侧是 Responses 的思考）落地前必须先做的决策（不是实现细节）：
+  剥离会遇到部分上游的 400，缓存明文则要新增一个按 item id 索引的思考缓存，
+  而那会推翻「COSP 不缓存思考」这条现有决策。等 R2* 有实际需求时再定。
+  **C2R 不在其列** —— 它的输入是 Chat 形态的明文（第 4.8 节「前置事实」与
+  [C2R 调研](../chat-responses/C2R-RESEARCH.md) §10.1）。
 
 ---
 
 ## 9. 参考实现索引
 
 调研于 2026-09-03，三个项目均在工作区内。
+
+> **本节只覆盖 C2M / M2C。** C2R（下游 Chat → 上游 Responses）的请求侧调研是后来
+> （2026-09-29）单独做的，含第四个参考项目，见
+> [C2R 请求翻译调研](../chat-responses/C2R-RESEARCH.md)。
 
 | 项目 | 形态 | 请求侧入口 |
 |---|---|---|

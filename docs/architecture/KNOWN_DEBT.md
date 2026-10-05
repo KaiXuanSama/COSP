@@ -7,7 +7,7 @@
 一致性、跨分支的改动边界，或需要先做实测才能定方案。散落在代码里只会看到「这里有点问题」，
 看不到「为什么现在不动它」。
 
-按 [AGENTS.md](../AGENTS.md) 的 TODO 约定：已经做出的取舍不留 `TODO`。本文档就是那些取舍的去处。
+按 [AGENTS.md](../../AGENTS.md) 的 TODO 约定：已经做出的取舍不留 `TODO`。本文档就是那些取舍的去处。
 
 ## 判断原则
 
@@ -29,7 +29,7 @@
 都在 `doOnNext` / `doOnError` / `doFinally` 里同步调用 `apiCallLog.save(...)`（底层是
 `jdbcTemplate.update`），即阻塞操作跑在 Reactor 的 event-loop 线程上。
 
-**与约定的关系**：[AGENTS.md](../AGENTS.md) 写的是「**新增或修改**的响应式链中，阻塞 JDBC 必须经
+**与约定的关系**：[AGENTS.md](../../AGENTS.md) 写的是「**新增或修改**的响应式链中，阻塞 JDBC 必须经
 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())` 桥接」。三侧都不合规，
 且这个形状早于 Responses 接入。
 
@@ -48,8 +48,8 @@
 **风险面**：渲染的是**上游返回的文本**。上游可控（用户自己配的中转站，也可能是被入侵的中转站），
 而管理后台的 JWT 存在 localStorage —— 这条链可以从「上游注入一段 HTML」扩大到管理员会话泄露。
 
-**与约定的关系**：[AGENTS.md](../AGENTS.md) 与
-[前端规则](../.github/instructions/frontend.instructions.md) 都明文要求「上游或日志中的不可信文本
+**与约定的关系**：[AGENTS.md](../../AGENTS.md) 与
+[前端规则](../../.github/instructions/frontend.instructions.md) 都明文要求「上游或日志中的不可信文本
 未经净化不得进入 `v-html`」。参考项目 `sub2api` 在同类位置全部配了 DOMPurify。
 
 **为什么不在 Responses 分支修**：该分支未改动这个文件（`git diff --stat master...HEAD` 对该文件为空），
@@ -343,6 +343,6 @@ writeProtocolFields / 请求体规则 / removeNullFields / 出站头 / 空响应
 
 ## 参考
 
-- 分支审查的完整结论（含已修项）：[AGENTS.md](../AGENTS.md) 各节不变量
-- 迁移的强制流程：[数据库迁移 Skill](../.github/skills/cosp-schema-migration-skill/SKILL.md)
-- 请求/响应侧的跨协议契约：[请求侧](PROTOCOL_TRANSLATION_CONTRACT.md)、[响应侧](PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md)
+- 分支审查的完整结论（含已修项）：[AGENTS.md](../../AGENTS.md) 各节不变量
+- 迁移的强制流程：[数据库迁移 Skill](../../.github/skills/cosp-schema-migration-skill/SKILL.md)
+- 请求/响应侧的跨协议契约：[请求侧](../features/protocol-translation/chat-messages/REQUEST-CONTRACT.md)、[响应侧](../features/protocol-translation/chat-messages/RESPONSE-CONTRACT.md)

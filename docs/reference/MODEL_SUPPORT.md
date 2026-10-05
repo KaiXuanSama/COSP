@@ -38,8 +38,8 @@
 | `glm-4.6v-flash` | 完美 |
 | `glm-4.6v-flashx` | 完美 |
 | `glm-4.5-air` | 完美 |
-| `glm-4.1v-thinking-flash` | [缺陷 ⚠️](MODEL_COMPATIBILITY.md#zhipu-glm-41v-thinking-flashx--无工具调用能力) |
-| `glm-4.1v-thinking-flashx` | [缺陷 ⚠️](MODEL_COMPATIBILITY.md#zhipu-glm-41v-thinking-flashx--无工具调用能力) |
+| `glm-4.1v-thinking-flash` | [缺陷 ⚠️](./MODEL_COMPATIBILITY.md#zhipu-glm-41v-thinking-flashx--无工具调用能力) |
+| `glm-4.1v-thinking-flashx` | [缺陷 ⚠️](./MODEL_COMPATIBILITY.md#zhipu-glm-41v-thinking-flashx--无工具调用能力) |
 
 ### LongCat（美团）
 
@@ -59,8 +59,8 @@
 
 | 模型 ID | 适配度 |
 |---------|--------|
-| `agnes-2.0-flash` | [缺陷 ⚠️](MODEL_COMPATIBILITY.md#agnes-agnes-20-flash--工具调用参数流式生成异常) |
-| `agnes-1.5-flash` | [缺陷 ⚠️](MODEL_COMPATIBILITY.md#agnes-15-flash--工具调用能力缺失) |
+| `agnes-2.0-flash` | [缺陷 ⚠️](./MODEL_COMPATIBILITY.md#agnes-agnes-20-flash--工具调用参数流式生成异常) |
+| `agnes-1.5-flash` | [缺陷 ⚠️](./MODEL_COMPATIBILITY.md#agnes-15-flash--工具调用能力缺失) |
 
 ---
 
@@ -71,7 +71,7 @@
 | 模型 ID | 适配度 |
 |---------|--------|
 | `sensenova-6.7-flash-lite` | 完美 |
-| `deepseek-v4-flash`（商汤版） | [缺陷 ⚠️](MODEL_COMPATIBILITY.md#sensenova-商汤deepseek-v4-flash--过度思考) |
+| `deepseek-v4-flash`（商汤版） | [缺陷 ⚠️](./MODEL_COMPATIBILITY.md#sensenova-商汤deepseek-v4-flash--过度思考) |
 
 ### Xunfei（讯飞）
 

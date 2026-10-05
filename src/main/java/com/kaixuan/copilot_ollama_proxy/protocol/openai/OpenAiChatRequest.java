@@ -156,6 +156,18 @@ public class OpenAiChatRequest {
         private String role;
         /** 消息内容，可能是 String 或 List&lt;ContentPart&gt; */
         private Object content;
+        /**
+         * 思考内容（仅 assistant 消息）。
+         *
+         * <p>Copilot BYOK 会把上一轮的思考原样回传（见 BYOK 调查）。这个字段在
+         * Chat 协议是 OpenAI 生态的事实扩展（DeepSeek 推广、各家跟进），上游以
+         * 明文下发、客户端原样回传。缺失此字段时下游的思考在控制器反序列化处
+         * <strong>静默消失</strong>——曾因此让 C2R 的 reasoning item 修复在实机上
+         * 不生效（翻译器从未收到过该字段），且思考模式的对话式上游（deepseek 官方）
+         * 会以 400 拒绝缺思考的历史（REQUEST-CONTRACT §4.8 硬约束③）。
+         */
+        @JsonProperty("reasoning_content")
+        private String reasoningContent;
         /** 工具调用列表（仅 assistant 消息） */
         @JsonProperty("tool_calls")
         private List<ToolCall> toolCalls;
@@ -177,6 +189,14 @@ public class OpenAiChatRequest {
 
         public void setContent(Object content) {
             this.content = content;
+        }
+
+        public String getReasoningContent() {
+            return reasoningContent;
+        }
+
+        public void setReasoningContent(String reasoningContent) {
+            this.reasoningContent = reasoningContent;
         }
 
         public List<ToolCall> getToolCalls() {

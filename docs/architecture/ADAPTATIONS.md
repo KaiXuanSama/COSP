@@ -21,7 +21,7 @@
 	**这个前提的适用范围是 Chat 线路 + Copilot BYOK** —— 那条路上客户端手上有明文。
 	Responses 的加密思考不适用：Codex 只有密文，无法自己回放明文。直连不受影响（原样透传），
 	但翻译线路（R2C / R2M / C2R / M2R）必须先就此做决策，见
-	[请求侧契约](./PROTOCOL_TRANSLATION_CONTRACT.md) 第 4.8 节。
+	[请求侧契约](../features/protocol-translation/chat-messages/REQUEST-CONTRACT.md) 第 4.8 节。
 
 ## MiMo 的 Responses 网关限制（2026-09-13 实测）
 
@@ -84,15 +84,15 @@ cc-switch 对 `web_search` 有同源黑名单（`codex_config.rs` 的
 `reasoning` item 的 `content` 与 `summary` **都是空数组**，只有 `encrypted_content`。
 此前实测的 MiMo 与 DeepSeek 走的是明文（`content[]`），这是两种截然不同的形态 ——
 判定器把「只有加密块」判为无载荷是对的（该轮靠正文或工具 `name` 通过），
-详见[请求侧契约](./PROTOCOL_TRANSLATION_CONTRACT.md) 第 4.8 节。
+详见[请求侧契约](../features/protocol-translation/chat-messages/REQUEST-CONTRACT.md) 第 4.8 节。
 
 ## 历史范围
 
 旧版专有 Provider 曾包含双请求头认证、图片工具消息改写、Coding 端点字段删除和思考链缓存等逻辑。
 这些 Java 分支均已删除。对于仍需适配的 OpenAI 兼容上游，请建立供应商配置并保存相应请求转换规则；
-模型实际兼容性见 [模型兼容性](MODEL_COMPATIBILITY.md)。
+模型实际兼容性见 [模型兼容性](../reference/MODEL_COMPATIBILITY.md)。
 
 规则集本身也有版本历史：V1 是单一扁平规则列表、只服务 OpenAI 一条线路，V8.7 迁移把它升为
 V2 规则组（`{version:2, groups:[...]}`）。存量规则被包进一个仅适用 OpenAI 的组 ——
 那些字段路径是照 OpenAI 请求体写的，作用在 Anthropic 请求体上多数匹配不到，
-静默失效比不执行更难排查。约定细节见 [AGENTS.md](../AGENTS.md#请求转换规则)。
+静默失效比不执行更难排查。约定细节见 [AGENTS.md](../../AGENTS.md#请求转换规则)。

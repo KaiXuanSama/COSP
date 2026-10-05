@@ -55,6 +55,16 @@ DeepSeek 的 `reasoning_content` 可能很长（数千 token），会增加请�
 
 ---
 
+## StepFun — res 端点缓存不稳定
+
+`step_plan/v1` 的 `/responses` 端点存在前缀缓存抖动：同会话连续请求出现
+hit（16K~26K 块状）与 miss（0）交替，间隔仅数秒；重测同一会话有时又正常。
+经隔离实验确认（2026-10-04）：C2R 翻译路径请求前缀逐字节稳定（COSP 侧无偏差）、
+另两家第三方供应商同路径缓存正常、**Codex 直连该端点同样复现** ——
+属上游 res 端点的缓存行为，与本服务无关。chat 端点不受影响。
+
+---
+
 ## SenseNova（商汤）DeepSeek V4 Flash — ⚠️ 过度思考
 
 > **状态：** 模型功能正常，但思考链（reasoning_content）长度不可控，容易过度思考，影响响应速度和 token 消耗。

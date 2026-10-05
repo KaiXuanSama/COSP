@@ -4,10 +4,13 @@ import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfi
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNotSupportedException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.RequestProtocolTranslator;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.TranslationRoute;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -22,16 +25,31 @@ import java.util.Set;
  * <ol>
  *   <li><strong>同名协议优先</strong> —— 供应商支持下游同名协议时一律直连。
  *       两种都支持时也走这条，因为直连不经翻译、无信息损耗。</li>
- *   <li>否则挑供应商支持的其它协议并标记需要翻译。</li>
- *   <li>供应商一种都不支持时抛 {@link NoSupportedProtocolException}。</li>
+ *   <li>否则按 {@link #TRANSLATION_FALLBACK_ORDER} 挑一个<strong>供应商支持
+ *       且去程翻译已实现</strong>的其它协议并标记需要翻译。</li>
+ *   <li>供应商一种都不支持时抛 {@link NoSupportedProtocolException}；
+ *       支持但候选方向的去程翻译都没实现时抛 {@link ProtocolTranslationNotSupportedException}。</li>
  * </ol>
  *
- * <h2>三条规则现在都可达</h2>
- * V8.8 把协议支持落库之后本类不再是纯接缝：规则 2 由「只勾了一种协议、下游打另一个端点」
- * 触发，规则 3 由显式空集合触发。规则 2 的各个方向<strong>处境不同</strong> ——
- * 下游 Chat + 上游 Messages（C2M 去程 + M2C 回程）已实现并实测，
- * 其余方向仍由调用方抛 {@link ProtocolTranslationNotSupportedException}。
- * 本类不区分这个差异：它只回答「要不要翻译」，谁有实现是调用方的事。
+ * <h2>为何本类需要知道「哪些去程翻译已实现」</h2>
+ * 这是规则 2 那句「按优先级往下找已实现的方向」的直接要求 —— 不知道谁实现了，
+ * 就无法「跳过没实现的、降级到下一个」。翻译器<strong>自己声明方向</strong>
+ * （{@link RequestProtocolTranslator#downstreamProtocol()} /
+ * {@link RequestProtocolTranslator#upstreamProtocol()}），本类构造期把全部去程翻译器的
+ * 方向收成一个 {@code Set<TranslationRoute>}，判定时查它。信息来源与
+ * {@code TranslatorRegistry} <strong>同一批 Spring Bean</strong>，因此不会出现
+ * 「本类说有、Registry 查无」的矛盾 —— 两者各取所需（本类只要方向判优先级，
+ * Registry 要实例做翻译），是「各建各的索引」而非「复制逻辑」。
+ *
+ * <p>这与项目其它地方「能力靠声明、不靠猜」一致（{@code caps_tools} 声明能力、
+ * 翻译器声明方向）。本类仍是<strong>无 I/O 的纯决策组件</strong>：构造期读一次声明，
+ * 之后 {@link #dispatch} 不碰任何外部状态，可被纯单元测试穷举。
+ *
+ * <h2>这个「已实现」判定终会失效，但无害、不留 TODO</h2>
+ * 3 个直连方向永不经翻译，真正受本判定管辖的是 <strong>6 个跨协议方向</strong>。
+ * 这 6 个的去程翻译全部实现后，「跳过没实现的」这个分支变永真，判定退化成等价于
+ * 单纯的 {@code supported} 检查 —— 届时它是死代码但无害（除非再引入新协议）。
+ * 因此它是「6 个跨协议去程全实现之前的守卫」，不需要标 TODO 说将来移除。
  *
  * <p>路由与协议是<strong>两个独立维度</strong>：{@code ProviderRouteResolver} 先按模型名
  * 选出供应商（规则不变，无前缀模型仍要求唯一匹配），本类再判断协议怎么走。
@@ -101,12 +119,49 @@ public class ProtocolDispatchManager {
             List.of(WireProtocol.CHAT, WireProtocol.MESSAGES, WireProtocol.RESPONSES);
 
     /**
+     * 已实现的去程翻译方向集合 —— 构造期从所有去程翻译器的声明收集而来。
+     *
+     * <p>只收<strong>去程</strong>（请求翻译）方向，不看回程：回程缺失是「先写去程、
+     * 用真实上游验证请求是否被接受」的正常中间态（见 {@code BeforeSend.translateStep} 与
+     * {@code TranslatorRegistry.findResponseTranslator} 的注释），不该让调度提前拒绝。
+     * 「能不能把请求发成上游能懂的形态」只由去程决定。
+     *
+     * <p>用 {@link TranslationRoute}（{@code (下游, 上游)} 对）作元素：与
+     * {@code TranslatorRegistry} 的键类型一致，判定 {@code (下游, 候选上游)} 有没有去程
+     * 翻译器时直接构造一个 {@code TranslationRoute} 查表即可。
+     */
+    private final Set<TranslationRoute> implementedRequestRoutes;
+
+    /**
+     * 由 Spring 集合注入构造。
+     *
+     * <p>收集容器里全部去程翻译器实现，读它们<strong>自己声明</strong>的方向
+     * （{@link RequestProtocolTranslator#downstreamProtocol()} /
+     * {@link RequestProtocolTranslator#upstreamProtocol()}）建成方向集。空 List 合法
+     * （一个去程翻译器都没有），那样规则 2 会对任何跨协议请求都找不到已实现候选、抛
+     * {@link ProtocolTranslationNotSupportedException} —— 与「翻译能力尚未落地」的事实一致。
+     *
+     * <p>与 {@code TranslatorRegistry} 吃<strong>同一批 Bean</strong>，因此两者的方向视图
+     * 天然一致：本类说「(CHAT, MESSAGES) 有去程」时，Registry 必能查到那个翻译器实例。
+     *
+     * @param requestTranslators 所有去程翻译器实现（Spring 收集）
+     */
+    public ProtocolDispatchManager(List<RequestProtocolTranslator> requestTranslators) {
+        Set<TranslationRoute> routes = new HashSet<>();
+        for (RequestProtocolTranslator translator : requestTranslators) {
+            routes.add(new TranslationRoute(translator.downstreamProtocol(), translator.upstreamProtocol()));
+        }
+        this.implementedRequestRoutes = Set.copyOf(routes);
+    }
+
+    /**
      * 为一次调用决定上游协议与是否需要翻译。
      *
      * @param downstreamProtocol 下游使用的协议（由它打的端点决定）
      * @param provider           已由路由解析器选出的目标供应商
      * @return 调度结论
      * @throws NoSupportedProtocolException 供应商未声明支持任何协议
+     * @throws ProtocolTranslationNotSupportedException 供应商支持跨协议，但候选方向的去程翻译都未实现
      */
     public ProtocolDispatchDecision dispatch(WireProtocol downstreamProtocol,
                                              ProviderRuntimeConfiguration provider) {
@@ -117,29 +172,46 @@ public class ProtocolDispatchManager {
             return ProtocolDispatchDecision.direct(downstreamProtocol);
         }
 
-        // 规则 2：下游协议不被支持，改用供应商支持的其它协议并标记需要翻译。
+        // 规则 3（提前判）：一种协议都没勾。用户把协议全部取消勾选就会走到这里 ——
+        // 与「勾了但翻译没实现」是两回事，可操作动作也不同（前者「至少勾一个」、
+        // 后者「换供应商或等实现」），故先分出来，用各自的异常类型。
+        // 用独立异常类型（而非裸 IllegalStateException）是为了让控制器能精确识别并给
+        // 400 + 可操作消息；直接判 IllegalStateException 会把任何库抛的同类异常
+        // 一并译成「协议没配」。
+        if (supported.isEmpty()) {
+            throw new NoSupportedProtocolException(provider.providerKey());
+        }
+
+        // 规则 2：下游协议不被支持，按优先级挑一个「供应商支持 且 去程翻译已实现」的
+        // 其它协议并标记需要翻译。
         //
-        // 本类只给结论，不判断该组合有没有实现 —— 那是调用方的事，且各方向状态不同：
-        //   下游 CHAT + 上游 MESSAGES：ChatCompletionService 已挂 C2M 去程 + M2C 回程；
-        //   其余方向：各应用服务抛 ProtocolTranslationNotSupportedException。
+        // 判据是「supported ∩ 已实现去程」而非仅 supported：这正是「按优先级往下找已实现
+        // 方向」的落点 —— 勾了但没实现的方向要被跳过，降级到下一个候选。
+        //   下游 CHAT + 上游 MESSAGES：C2M 去程已实现，命中；
+        //   其余方向：去程翻译未实现，跳过（届时若无其它候选则落到下面报错）。
         // 候选顺序取 TRANSLATION_FALLBACK_ORDER 而非 values()，理由见那个常量的注释。
         // 翻译器一律套在上游服务外侧（装饰器），因而在 retryWhen 之外 ——
         // 空响应判定与落库看到的必须是上游原生形态。
-        // 契约见 docs/PROTOCOL_TRANSLATION_CONTRACT.md（请求侧）与
-        // docs/PROTOCOL_TRANSLATION_RESPONSE_CONTRACT.md（响应侧）。
+        // 契约见 docs/features/protocol-translation/chat-messages/request-contract.md（请求侧）与
+        // docs/features/protocol-translation/chat-messages/response-contract.md（响应侧）。
         for (WireProtocol candidate : TRANSLATION_FALLBACK_ORDER) {
-            if (supported.contains(candidate)) {
+            if (supported.contains(candidate)
+                    && implementedRequestRoutes.contains(new TranslationRoute(downstreamProtocol, candidate))) {
                 log.info("供应商 {} 不支持下游协议 {}，改用 {} 并需要翻译",
                         provider.providerKey(), downstreamProtocol, candidate);
                 return ProtocolDispatchDecision.translated(downstreamProtocol, candidate);
             }
         }
 
-        // 规则 3：一种都不支持。用户把协议全部取消勾选就会走到这里 ——
-        // 要能明确报出来而不是让调用方拿到 null。
-        // 用独立异常类型（而非裸 IllegalStateException）是为了让控制器能精确识别并给
-        // 400 + 可操作消息；直接判 IllegalStateException 会把任何库抛的同类异常
-        // 一并译成「协议没配」。
-        throw new NoSupportedProtocolException(provider.providerKey());
+        // 规则 2 的失败态：供应商勾了跨协议，但候选方向的去程翻译一个都没实现。
+        // 报错点从旧的 translateStep 前移到此 —— 因为「跳过没实现的」这个决定就发生在这里，
+        // 由本类报出比让调用方选中一个再撞墙更早、消息也更准（能说「到 X 的翻译均未实现」）。
+        // 抛第一个候选作为代表：优先级最高的那个是用户最可能期待的方向。
+        WireProtocol representative = TRANSLATION_FALLBACK_ORDER.stream()
+                .filter(supported::contains)
+                .findFirst()
+                .orElseThrow(() -> new NoSupportedProtocolException(provider.providerKey()));
+        throw new ProtocolTranslationNotSupportedException(
+                provider.providerKey(), downstreamProtocol, representative);
     }
 }

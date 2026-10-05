@@ -2,10 +2,17 @@ package com.kaixuan.copilot_ollama_proxy.pipeline.before.dispatch;
 
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.TranslatedRequest;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.RequestProtocolTranslator;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.TranslationRoute;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -22,7 +29,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class ProtocolDispatchManagerTests {
 
-    private final ProtocolDispatchManager manager = new ProtocolDispatchManager();
+    /**
+     * 默认调度器<strong>假设全部跨协议去程翻译都已实现</strong>。
+     *
+     * <p>下面绝大多数用例验的是<strong>选择逻辑</strong>（直连、优先级顺序），与「谁实现了」
+     * 无关；用全实现调度器把实现状态这个变量置真、隔离出「选哪个」本身。
+     * 「去程翻译是否已实现」这个新维度由文件末尾一组专门用例覆盖，它们各自构造实现集合。
+     */
+    private final ProtocolDispatchManager manager = managerWithAllRoutesImplemented();
 
     @Test
     void openAiDownstreamGoesDirectWhenProviderSupportsOpenAi() {
@@ -180,11 +194,14 @@ class ProtocolDispatchManagerTests {
     /**
      * 候选有多个时按 {@code TRANSLATION_FALLBACK_ORDER} 挑，而非枚举声明序。
      *
-     * <p>这是三个协议才出现的分支，也是回退序常量存在的唯一理由。两处断言各自独立：
+     * <p>本用例用<strong>全部方向都已实现</strong>的调度器，把实现状态置真、
+     * 隔离出顺序这一个变量 —— 挑哪个纯由回退序决定（「跳过未实现」另见
+     * {@link #skipsUnimplementedCandidateAndFallsToNextImplemented}）。
+     * 这是三个协议才出现的分支，也是回退序常量存在的唯一理由。两处断言各自独立：
      * <ul>
      *   <li>下游 CHAT、候选 {MESSAGES, RESPONSES} → 挑 MESSAGES。
      *       <strong>枚举声明序是 CHAT, RESPONSES, MESSAGES，会挑 RESPONSES</strong> ——
-     *       而 C2M 已实现、C2R 未实现，挑错的代价是一个本能跑的调用抛「未实现」。
+     *       回退序把 MESSAGES 排在 RESPONSES 前，因此即便两者都实现也优先 MESSAGES。
      *       这一条同时证明「用了回退序」与「回退序的排法是对的」。</li>
      *   <li>下游 MESSAGES、候选 {CHAT, RESPONSES} → 挑 CHAT，兼容面最广。</li>
      * </ul>
@@ -213,6 +230,143 @@ class ProtocolDispatchManagerTests {
     void fallbackOrderCoversEveryProtocol() {
         assertThat(ProtocolDispatchManager.TRANSLATION_FALLBACK_ORDER)
                 .containsExactlyInAnyOrder(WireProtocol.values());
+    }
+
+    // ==================== 「去程翻译是否已实现」判据（本次新增维度）====================
+
+    /**
+     * 直连不看实现状态：即使一个翻译器都没有，同名协议仍直连。
+     *
+     * <p>钉住「规则 1 先于实现判据」—— 直连是 {@code supported.contains(downstream)} 的直接结论，
+     * 不读已实现方向集。若有人把实现判据误加到直连分支，这条会红。
+     */
+    @Test
+    void directRouteIgnoresImplementationStatus() {
+        ProtocolDispatchManager manager = managerWith();   // 没有任何翻译器
+        ProtocolDispatchDecision decision = manager.dispatch(WireProtocol.CHAT, provider("[\"CHAT\"]"));
+        assertThat(decision.translationNeeded()).isFalse();
+        assertThat(decision.upstreamProtocol()).isEqualTo(WireProtocol.CHAT);
+    }
+
+    /** 当前生产的真实状态：只有 C2M 去程实现，下游 CHAT + 供应商只有 MESSAGES → 命中翻译。 */
+    @Test
+    void chatToMessagesTranslatesWhenOnlyC2mImplemented() {
+        ProtocolDispatchManager manager = managerWith(
+                new TranslationRoute(WireProtocol.CHAT, WireProtocol.MESSAGES));
+
+        ProtocolDispatchDecision decision = manager.dispatch(WireProtocol.CHAT, provider("[\"MESSAGES\"]"));
+
+        assertThat(decision.translationNeeded()).isTrue();
+        assertThat(decision.upstreamProtocol()).isEqualTo(WireProtocol.MESSAGES);
+    }
+
+    /**
+     * 候选方向的去程翻译未实现时，跳过它、降级到下一个已实现的候选。
+     *
+     * <p>这是「优先级降级」的核心断言：只实现 M2R，下游 MESSAGES、供应商 {CHAT, RESPONSES}。
+     * 回退序里 CHAT 在 RESPONSES 前，但 M2C 未实现 → 跳过 CHAT；降级到 RESPONSES（M2R 已实现）。
+     * 若实现判据缺失（只看 supported），会错误地挑中 CHAT。
+     */
+    @Test
+    void skipsUnimplementedCandidateAndFallsToNextImplemented() {
+        ProtocolDispatchManager manager = managerWith(
+                new TranslationRoute(WireProtocol.MESSAGES, WireProtocol.RESPONSES));
+
+        ProtocolDispatchDecision decision =
+                manager.dispatch(WireProtocol.MESSAGES, provider("[\"CHAT\",\"RESPONSES\"]"));
+
+        assertThat(decision.translationNeeded()).isTrue();
+        assertThat(decision.upstreamProtocol())
+                .as("CHAT 优先级更高但 M2C 未实现，应跳过并降级到已实现的 RESPONSES")
+                .isEqualTo(WireProtocol.RESPONSES);
+    }
+
+    /**
+     * 供应商支持跨协议、但候选方向的去程翻译一个都没实现 → 抛
+     * {@link ProtocolTranslationNotSupportedException}。
+     *
+     * <p>这正是当前生产里「下游 MESSAGES、供应商只有 CHAT」的真实结局（M2C 去程未实现）。
+     * 报错点在调度器而非 translateStep：跳过决定发生在这里，由本类报出更早、消息也更准。
+     * 异常须带下游协议与代表候选，那是用户弄清「该换供应商还是等实现」的依据。
+     */
+    @Test
+    void throwsProtocolTranslationNotSupportedWhenNoCandidateImplemented() {
+        ProtocolDispatchManager manager = managerWith();   // 无任何去程翻译器
+
+        assertThatThrownBy(() -> manager.dispatch(WireProtocol.MESSAGES, provider("[\"CHAT\"]")))
+                .isInstanceOf(ProtocolTranslationNotSupportedException.class)
+                .hasMessageContaining("MESSAGES")
+                .hasMessageContaining("CHAT");
+    }
+
+    /**
+     * 「一个协议都没勾」与「勾了但去程翻译没实现」是两种失败，异常类型不同。
+     *
+     * <p>两者对用户的可操作动作不同（前者「至少勾一个」、后者「换供应商或等实现」），
+     * 因此不能共用异常。用同一个空实现调度器同时触发两者，钉住它们不被混为一类。
+     */
+    @Test
+    void emptyProtocolSetAndUnimplementedTranslationAreDistinctFailures() {
+        ProtocolDispatchManager manager = managerWith();   // 无任何去程翻译器
+
+        assertThatThrownBy(() -> manager.dispatch(WireProtocol.CHAT, provider("[]")))
+                .as("一个都没勾 → NoSupportedProtocolException")
+                .isInstanceOf(NoSupportedProtocolException.class);
+
+        assertThatThrownBy(() -> manager.dispatch(WireProtocol.CHAT, provider("[\"MESSAGES\"]")))
+                .as("勾了 MESSAGES 但 C2M 未实现 → ProtocolTranslationNotSupportedException")
+                .isInstanceOf(ProtocolTranslationNotSupportedException.class);
+    }
+
+    // ==================== 构造 helper ====================
+
+    /**
+     * 「全部跨协议去程都已实现」的调度器 —— 供上面那些验证<strong>选择逻辑</strong>
+     * （直连、优先级顺序）的用例使用：把实现状态这个变量全部置真，隔离出「选哪个」本身。
+     */
+    private static ProtocolDispatchManager managerWithAllRoutesImplemented() {
+        List<RequestProtocolTranslator> all = new ArrayList<>();
+        for (WireProtocol downstream : WireProtocol.values()) {
+            for (WireProtocol upstream : WireProtocol.values()) {
+                if (downstream != upstream) {
+                    all.add(stubTranslator(downstream, upstream));
+                }
+            }
+        }
+        return new ProtocolDispatchManager(all);
+    }
+
+    /** 指定「已实现哪些去程方向」的调度器 —— 供验证实现判据的用例精确控制。 */
+    private static ProtocolDispatchManager managerWith(TranslationRoute... implementedRoutes) {
+        List<RequestProtocolTranslator> translators = Arrays.stream(implementedRoutes)
+                .map(route -> stubTranslator(route.downstream(), route.upstream()))
+                .toList();
+        return new ProtocolDispatchManager(translators);
+    }
+
+    /**
+     * 只声明方向、不实际翻译的去程翻译器替身。
+     *
+     * <p>调度器只读方向（{@code downstreamProtocol()} / {@code upstreamProtocol()}）建集合，
+     * 从不调 {@code translateRequest}，故后者抛异常即可 —— 一旦被调到说明测试走错了路径。
+     */
+    private static RequestProtocolTranslator stubTranslator(WireProtocol downstream, WireProtocol upstream) {
+        return new RequestProtocolTranslator() {
+            @Override
+            public WireProtocol downstreamProtocol() {
+                return downstream;
+            }
+
+            @Override
+            public WireProtocol upstreamProtocol() {
+                return upstream;
+            }
+
+            @Override
+            public TranslatedRequest translateRequest(Map<String, Object> downstreamBody) {
+                throw new UnsupportedOperationException("方向声明替身，不实际翻译");
+            }
+        };
     }
 
     private ProviderRuntimeConfiguration provider(String supportedProtocolsJson) {

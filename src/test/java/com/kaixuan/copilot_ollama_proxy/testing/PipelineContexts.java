@@ -16,6 +16,7 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.after.chunk.fallback.ChatReason
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.content.MessagesContentDetectorStage;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.maxtokens.MessagesMaxTokensStage;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.system.MessagesSystemPromptStage;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.system.ResponsesSystemPromptStage;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.thinking.ChatThinkingStage;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.thinking.MessagesThinkingStage;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.thinking.ResponsesThinkingStage;
@@ -178,14 +179,16 @@ public final class PipelineContexts {
      * 拼一个含<strong>全部</strong>请求体支线的注册表 —— 供 {@code RequestBodyAssembler} 测试使用。
      *
      * <p>与 {@link #registryWithMessagesStages} 的区别：thinking 支线三协议都装
-     * （Chat / Responses / Messages），因为装配器要对三条线路各自查表。
-     * system / max_tokens 仍只有 MESSAGES 实现 —— 那是领域事实（另两条协议不需要这两步）。
+     * （Chat / Responses / Messages），system 支线两协议都装（MESSAGES 抬升 +
+     * RESPONSES 的 C2R role 改写），因为装配器要对各条线路各自查表。
+     * max_tokens 仍只有 MESSAGES 实现 —— 那是领域事实（另两条协议该字段可选，
+     * 补齐见 C2R 计划 §6.4 的 TODO）。
      *
      * @param objectMapper 传给需要它的支线实现
      */
     public static RequestBodyStageRegistry registryWithAllBodyStages(ObjectMapper objectMapper) {
         return new RequestBodyStageRegistry(
-                List.of(new MessagesSystemPromptStage()),
+                List.of(new MessagesSystemPromptStage(), new ResponsesSystemPromptStage()),
                 List.of(new MessagesMaxTokensStage(objectMapper)),
                 List.of(new ChatThinkingStage(objectMapper),
                         new ResponsesThinkingStage(objectMapper),

@@ -410,7 +410,8 @@ class GenericResponsesChatServiceUsagePersistenceTests {
             // 收口为字符串：本类断言的是落库内容，与分类无关。
             RequestPipelineContext ctx = PipelineContexts.direct(request, route.provider(), WireProtocol.RESPONSES, true);
             assembler.assemble(ctx);
-            return responsesStream(ctx.body(), route.model(), route.provider(), HttpHeaders.EMPTY, "req-persist", ctx)
+            // 直调路径无翻译，chunkRewriter 传 null（落库裸数组，与直连口径一致）。
+            return responsesStream(ctx.body(), route.model(), route.provider(), HttpHeaders.EMPTY, "req-persist", ctx, null)
                     .map(com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent::data);
         }
 

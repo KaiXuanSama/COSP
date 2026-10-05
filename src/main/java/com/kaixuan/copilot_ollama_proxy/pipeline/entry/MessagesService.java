@@ -29,7 +29,7 @@ import java.util.Map;
  * <p>翻译器套在上游执行器<strong>外侧</strong>（主干上，因而在 {@code retryWhen} 之外）：
  * 重试、落库、usage 提取都留在被包装那层，翻译绝不能进重试内侧
  * （否则空响应判定看到的是合成形态）。契约见
- * {@code docs/PROTOCOL_TRANSLATION_CONTRACT.md}。
+ * {@code docs/features/protocol-translation/chat-messages/request-contract.md}。
  *
  * <h2>为何两个方法体都裹在 defer 里</h2>
  * 主干的准备与调度都是<strong>同步</strong>调用，且会抛
