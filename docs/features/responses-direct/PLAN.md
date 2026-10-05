@@ -222,8 +222,12 @@ private static final Set<WireProtocol> OPTIMISTIC_ALL = EnumSet.allOf(WireProtoc
 - RESPONSES 排最后：C2R/R2C 均未实现，且它字段最富，往回翻必然丢信息
   （`reasoning.encrypted_content` 在 Chat 里无处安放）
 
+> **后记（2026-10-04）**：本节写就时 C2R/R2C 尚未实现；二者现已双向落地并实机验证
+> （[R2C-PLAN.md](../protocol-translation/chat-responses/R2C-PLAN.md)），上列末条的
+> 「必然丢信息」已被 §7.4 的 reasoning item 明文往返闭环解决。「已实现优先」的排序原则不变。
+
 验证这个顺序合理：供应商勾了 MESSAGES + RESPONSES、下游打 chat 时，会挑 MESSAGES
-（C2M 已实现）而非 RESPONSES（未实现）。**挑一个已实现的方向优于挑未实现的**，
+（当时 C2M 已实现）而非 RESPONSES（当时未实现）。**挑一个已实现的方向优于挑未实现的**，
 顺序在这个场景下有实际差别。
 
 放在 `ProtocolDispatchManager` 还是 `WireProtocol`？倾向前者：它是调度策略而非协议属性，

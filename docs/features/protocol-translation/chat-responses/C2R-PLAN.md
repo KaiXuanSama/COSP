@@ -1,10 +1,13 @@
 # C2R 去程翻译（请求体）实施计划
 
-> **状态**：三阶段全部完成（2026-10-04：翻译器 + system 支线 + 实机验证，全量 1390 绿，实机判据全部达成）。去程已可用；回程（R2C）未实现——响应原样透传，独立下一步
+> **状态**：三阶段全部完成（2026-10-04：翻译器 + system 支线 + 实机验证）。去程可用；
+> 回程（R2C）也已完成（2026-10-04 三家供应商实机验证 + §7.4 修复闭环，见
+> [R2C-PLAN.md](./R2C-PLAN.md)）—— C2R 线路已端到端可用
 >
 > **需求背景**：让下游 Chat Completions 请求（`/v1/chat/completions`）能发往只支持
 > Responses 的上游供应商。这是 protocol-translation 功能 C2R 方向的**前半（去程）**；
-> 回程（R2C，Responses 事件流 → Chat chunk）是另一半，不在本次范围。
+> 回程（R2C，Responses 事件流 → Chat chunk）是另一半，已由
+> [R2C-PLAN.md](./R2C-PLAN.md) 完成。
 >
 > 相关：[C2R-RESEARCH.md](./C2R-RESEARCH.md)（四项目对比 + 真实抓包，本文决策的事实基础）、
 > [R2C-RESEARCH.md](./R2C-RESEARCH.md)（回程翻译调研与决策，下一步的素材）、
@@ -43,6 +46,9 @@ C2R-RESEARCH §7 列了 14 个决策点、§9 列了 6 个未决项，本节记�
   Responses 原生事件流、解析不了 —— 与当年「C2M 先做去程」时完全相同的中间态，
   目的是「先用真实上游验证请求是否被接受」（`TranslatorRegistry` 的 Javadoc 契约）。
   回程落地后这条链才端到端可用。
+
+> **后记**：此中间态是本计划实施期间的真实状态，作为历史记录保留；
+> 回程已于 [R2C-PLAN.md](./R2C-PLAN.md) 落地，该链路现已端到端可用。
 
 ---
 
@@ -253,7 +259,8 @@ Chat 侧**静默丢弃清单**（Responses 无对应物，进 §5.1 的清单测
    - mock 日志收到 Responses 形态请求（`input` 数组、`store:false`、
      `include:["reasoning.encrypted_content"]`、扁平 tools）
    - 上游返回 200（请求被接受，阶段一的核心目标）
-   - COSP 侧响应为 Responses 事件流原样透传（回程未实现的既定中间态）
+   - COSP 侧响应为 Responses 事件流原样透传（回程未实现时的既定中间态，当时实测即此形态；
+     R2C 落地后此判据已成历史，现状参见 R2C-PLAN.md §7.3 的复测记录）
    - 调用日志里 `downstream_protocol=CHAT`、`upstream_protocol=RESPONSES`
 3. 记录进 PLAN 的实施记录节（§7，写完追加）
 

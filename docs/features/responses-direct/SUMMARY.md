@@ -34,9 +34,9 @@
 
 ## 未做 / 遗留
 
-- **C2R / R2C 翻译未实现**：调研已完成（[C2R-RESEARCH.md](../protocol-translation/chat-responses/C2R-RESEARCH.md)、
-  [R2C-RESEARCH.md](../protocol-translation/chat-responses/R2C-RESEARCH.md)），
-  是独立下一步（PLAN.md §7）
+- **~~C2R / R2C 翻译未实现~~ 已完成**（2026-10-04）：去程与回程均落地并三家供应商实机验证通过
+  （[C2R-PLAN.md](../protocol-translation/chat-responses/PLAN.md)、
+  [R2C-PLAN.md](../protocol-translation/chat-responses/R2C-PLAN.md)）
 - **`previous_response_id` / `store` / `conversation` 不解释不缓存**：直连下 `@JsonAnySetter`
   原样透传；跨协议翻译时才需决策（PLAN.md §7）
 - **`response.failed` 的日志措辞与分类**：行为正确（该重试），但归类为空响应导致措辞不准；

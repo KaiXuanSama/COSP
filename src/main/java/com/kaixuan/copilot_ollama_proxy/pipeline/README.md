@@ -135,14 +135,15 @@ pipeline/                         ← 主干-支干轴（主干-支干轴的形�
 │       └── OpenAi / Anthropic / ResponsesContentDetector + 三个 *ContentDetectorStage
 │
 └── protocol/                     跨块 / 跨层词汇与契约（不下沉的唯一理由：跨块）
-    ├── WireProtocol                   三协议枚举（**全项目扇出最高**：56 个 main 文件）
+    ├── WireProtocol                   三协议枚举（**全项目扇出最高**：58 个 main 文件）
     ├── UpstreamEvent                  统一形态（Body / Terminal 两态）；`api/` 也消费
     ├── UpstreamEventClassifier        把一帧分成「载荷」与「终止标记」两态
     ├── NoSupportedProtocolException · ProtocolTranslationNotSupportedException
     │   RequestTranslationException · ResponseTranslationException   ← 出口做状态码映射要用
     ├── ProtocolTranslator · TranslatedRequest · TranslationContext
-    └── translate/                     请求/响应翻译支线（17 个实现 + 契约 + 注册表）
+    └── translate/                     请求/响应翻译支线（19 个实现 + 契约 + 注册表）
         RequestProtocolTranslator · ResponseProtocolTranslator · TranslatorRegistry
+        （C2M / M2C / C2R / R2C 四方向双通；R2C 门面聚合非流式/流式/状态机/usage 换算）
 ```
 
 > **两个跨层的值类型已上提到顶层 `protocol/`**，因为它们消费方跨三个顶层包，
