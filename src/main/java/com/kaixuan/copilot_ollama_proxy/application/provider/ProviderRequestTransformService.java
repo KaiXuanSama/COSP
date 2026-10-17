@@ -33,8 +33,8 @@ public class ProviderRequestTransformService {
     private static final Set<String> TEMPLATE_KEYS = Set.of(
             "base", "message-start", "message-assistant", "message-tool-basic",
             "message-tool-image", "tools", "custom");
-    private static final Set<String> CONDITION_OPERATORS = Set.of("exists", "equals");
-    private static final Set<String> OPERATION_TYPES = Set.of("edit_object", "set_value", "delete");
+    private static final Set<String> CONDITION_OPERATORS = Set.of("exists", "equals", "matches");
+    private static final Set<String> OPERATION_TYPES = Set.of("edit_object", "set_value", "delete", "regex_replace");
     /**
      * 规则组可声明的线路协议。
      *
@@ -272,6 +272,24 @@ public class ProviderRequestTransformService {
                     || !condition.has("value")) {
                 throw new IllegalArgumentException(path + "[" + i + "] 结构无效");
             }
+            if ("matches".equals(condition.path("operator").asText())) {
+                validatePattern(condition.path("value"), path + "[" + i + "].value");
+            }
+        }
+    }
+
+    /**
+     * 正则在保存时编译一次：非法 pattern 在运行时只会让条件静默不匹配 / 替换被跳过，
+     * 「配了规则但没生效」比保存报错难排查得多。
+     */
+    private void validatePattern(JsonNode pattern, String path) {
+        if (!pattern.isTextual() || pattern.asText().isEmpty()) {
+            throw new IllegalArgumentException(path + " 必须是非空正则字符串");
+        }
+        try {
+            java.util.regex.Pattern.compile(pattern.asText());
+        } catch (java.util.regex.PatternSyntaxException e) {
+            throw new IllegalArgumentException(path + " 正则表达式无效: " + e.getDescription());
         }
     }
 
@@ -287,6 +305,12 @@ public class ProviderRequestTransformService {
                     throw new IllegalArgumentException(path + "[" + i + "].rules 必须是数组");
                 }
                 validateRules(operation.path("rules"), path + "[" + i + "].rules");
+            }
+            if ("regex_replace".equals(type)) {
+                validatePattern(operation.path("pattern"), path + "[" + i + "].pattern");
+                if (!operation.path("replacement").isTextual()) {
+                    throw new IllegalArgumentException(path + "[" + i + "].replacement 必须是字符串");
+                }
             }
         }
     }

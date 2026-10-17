@@ -294,6 +294,44 @@ class ProviderRequestTransformServiceTests {
                 .hasMessageContaining("id 重复");
     }
 
+    /** 正则规则可以保存；非法 pattern 在保存时被拦下，而不是运行时静默不生效。 */
+    @Test
+    void regexRulesAreValidatedOnSave() {
+        String valid = regexRuleSet(
+                "{\"type\":\"regex_replace\",\"pattern\":\"\\\\d+\",\"replacement\":\"\"}",
+                "[{\"path\":\"./text\",\"operator\":\"matches\",\"value\":\"tokens\"}]");
+        int providerId = service.createProvider(
+                "regex-ok", "Regex", "https://regex.example/v1", HEADER_RULES, TEMPLATE_KEYS, PREVIEW, valid);
+        assertThat(transformRepository.findByProviderId(providerId).bodyRulesJson()).contains("regex_replace");
+
+        assertThatThrownBy(() -> service.createProvider(
+                "regex-bad-op", "Bad", "https://bad.example/v1", HEADER_RULES, TEMPLATE_KEYS, PREVIEW,
+                regexRuleSet("{\"type\":\"regex_replace\",\"pattern\":\"(\",\"replacement\":\"\"}", "[]")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("正则表达式无效");
+
+        assertThatThrownBy(() -> service.createProvider(
+                "regex-bad-cond", "Bad", "https://bad.example/v1", HEADER_RULES, TEMPLATE_KEYS, PREVIEW,
+                regexRuleSet("{\"type\":\"delete\"}",
+                        "[{\"path\":\"./text\",\"operator\":\"matches\",\"value\":\"\"}]")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("非空正则字符串");
+
+        assertThatThrownBy(() -> service.createProvider(
+                "regex-no-replacement", "Bad", "https://bad.example/v1", HEADER_RULES, TEMPLATE_KEYS, PREVIEW,
+                regexRuleSet("{\"type\":\"regex_replace\",\"pattern\":\"a\"}", "[]")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("replacement");
+    }
+
+    private String regexRuleSet(String operation, String conditions) {
+        return "{\"version\":2,\"groups\":[{\"id\":\"g1\",\"name\":\"g\",\"order\":0,\"enabled\":true,"
+                + "\"protocols\":[\"MESSAGES\"],\"templateKeys\":[\"base\"],\"previewBody\":{},"
+                + "\"rules\":[{\"id\":\"r1\",\"order\":0,\"field\":\"text\",\"array\":false,"
+                + "\"conditional\":true,\"conditionMode\":\"all\",\"conditions\":" + conditions + ","
+                + "\"operations\":[" + operation + "]}]}]}";
+    }
+
     private void createProviderTables() {
         jdbcTemplate.execute("CREATE TABLE provider_config ("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT, provider_key TEXT NOT NULL UNIQUE, "

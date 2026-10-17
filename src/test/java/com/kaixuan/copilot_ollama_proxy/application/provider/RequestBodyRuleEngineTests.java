@@ -337,6 +337,98 @@ class RequestBodyRuleEngineTests {
         }
     }
 
+    // ==================== 正则：regex_replace / matches ====================
+
+    /** 替换全部匹配，并支持 $1 分组引用。 */
+    @Test
+    void regexReplaceReplacesAllMatchesWithGroupReference() {
+        Map<String, Object> input = Map.of("text", "a1 b22 c333");
+
+        RequestBodyRuleEngine.TransformResult result = transform(input, regexReplaceRule(
+                "text", "([a-z])(\\\\d+)", "$1#"));
+
+        assertThat(result.warnings()).isEmpty();
+        assertThat(result.output()).containsEntry("text", "a# b# c#");
+    }
+
+    /** 方案 B 的真实形态：在 system 数组末块里删除每轮变化的 token 计数行。 */
+    @Test
+    void regexReplaceStripsTotalTokensLinesInsideSystemArray() {
+        Map<String, Object> input = Map.of("system", List.of(
+                Map.of("type", "text", "text", "stable", "cache_control", Map.of("type", "ephemeral")),
+                Map.of("type", "text", "text", "# Env\n\n<total_tokens>14999683 tokens left</total_tokens>"
+                        + "\n\n<total_tokens>14991711 tokens left</total_tokens>")));
+
+        RequestBodyRuleEngine.TransformResult result = transform(input, """
+                {"version":1,"rules":[{"id":"sys","order":0,"field":"system","array":true,"conditional":false,
+                  "conditionMode":"all","conditions":[],
+                  "operations":[{"type":"edit_object","rules":[
+                    {"id":"strip","order":0,"field":"text","array":false,"conditional":false,
+                     "conditionMode":"all","conditions":[],
+                     "operations":[{"type":"regex_replace",
+                       "pattern":"\\\\n*<total_tokens>\\\\d+ tokens left</total_tokens>","replacement":""}]}
+                  ]}]}]}
+                """);
+
+        assertThat(result.warnings()).isEmpty();
+        List<?> system = (List<?>) result.output().get("system");
+        assertThat(((Map<?, ?>) system.get(0)).get("text")).isEqualTo("stable");
+        assertThat(((Map<?, ?>) system.get(1)).get("text")).isEqualTo("# Env");
+    }
+
+    /** 字段不存在静默跳过；非字符串产生告警且原值保留。 */
+    @Test
+    void regexReplaceSkipsMissingFieldAndWarnsOnNonString() {
+        assertThat(transform(Map.of("other", 1), regexReplaceRule("text", "x", "y")).warnings()).isEmpty();
+
+        RequestBodyRuleEngine.TransformResult result =
+                transform(Map.of("text", 42), regexReplaceRule("text", "4", "5"));
+        assertThat(result.output()).containsEntry("text", 42);
+        assertThat(result.warnings()).singleElement()
+                .extracting(RequestBodyRuleEngine.TransformWarning::message).asString().contains("不是字符串");
+    }
+
+    /** 非法正则与非法替换文本都只告警、不改值、不抛异常。 */
+    @Test
+    void regexReplaceWarnsOnInvalidPatternOrReplacement() {
+        RequestBodyRuleEngine.TransformResult badPattern =
+                transform(Map.of("text", "abc"), regexReplaceRule("text", "(", ""));
+        assertThat(badPattern.output()).containsEntry("text", "abc");
+        assertThat(badPattern.warnings()).singleElement()
+                .extracting(RequestBodyRuleEngine.TransformWarning::message).asString().contains("正则表达式无效");
+
+        RequestBodyRuleEngine.TransformResult badReplacement =
+                transform(Map.of("text", "abc"), regexReplaceRule("text", "b", "$9"));
+        assertThat(badReplacement.output()).containsEntry("text", "abc");
+        assertThat(badReplacement.warnings()).singleElement()
+                .extracting(RequestBodyRuleEngine.TransformWarning::message).asString().contains("替换文本无效");
+    }
+
+    /** matches 是包含语义（find）；非字符串字段不匹配。 */
+    @Test
+    void matchesConditionUsesFindSemanticsAndRejectsNonString() {
+        String rules = """
+                {"version":1,"rules":[{"id":"m","order":0,"field":"marker","array":false,"conditional":true,
+                  "conditionMode":"all","conditions":[{"path":"./probe","operator":"matches","value":"tokens? left"}],
+                  "operations":[{"type":"set_value","value":"after"}]}]}
+                """;
+
+        assertThat(transform(Map.of("probe", "123 tokens left now", "marker", "before"), rules).output())
+                .containsEntry("marker", "after");
+        assertThat(transform(Map.of("probe", "nothing here", "marker", "before"), rules).output())
+                .containsEntry("marker", "before");
+        assertThat(transform(Map.of("probe", 7, "marker", "before"), rules).output())
+                .containsEntry("marker", "before");
+    }
+
+    private String regexReplaceRule(String field, String pattern, String replacement) {
+        return """
+                {"version":1,"rules":[{"id":"rx","order":0,"field":"%s","array":false,"conditional":false,
+                  "conditionMode":"all","conditions":[],
+                  "operations":[{"type":"regex_replace","pattern":"%s","replacement":"%s"}]}]}
+                """.formatted(field, pattern, replacement);
+    }
+
     @SuppressWarnings("unchecked")
     private List<Map<String, Object>> messages(Map<String, Object> body) {
         return (List<Map<String, Object>>) body.get("messages");
