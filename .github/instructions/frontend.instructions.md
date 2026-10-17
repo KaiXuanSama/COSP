@@ -62,7 +62,7 @@ Naive UI 组件的内联 CSS 变量优先级高于 scoped class 里的同名变�
 
 ## 请求体规则编辑器
 
-`features/request-body-rules/` 与后端 `application/provider/RequestBodyRuleEngine`、`ProviderRequestTransformService` 是一套契约：操作类型只有 `edit_object` / `set_value` / `delete`，条件只有 `exists` / `equals`，模板键有 7 个白名单值。扩展任一侧都要同步另一侧，并补 `*.spec.ts`。
+`features/request-body-rules/` 与后端 `application/provider/RequestBodyRuleEngine`、`ProviderRequestTransformService` 是一套契约：操作类型只有 `edit_object` / `set_value` / `delete` / `regex_replace`，条件只有 `exists` / `equals` / `matches`，模板键有 7 个白名单值。正则是 Java 方言（`matches` 为 `find` 包含语义，`regex_replace` 为 `replaceAll`），前端只校验非空，语法以后端保存校验为准。扩展任一侧都要同步另一侧，并补 `*.spec.ts`。
 
 `delete` 的文案与作用层级随 `rule.array` 变化：字段是数组时它移除匹配到的元素（文案见 `RequestBodyRuleItem.vue` 的 `operationTypeOptions`），否则删掉整个字段。
 
