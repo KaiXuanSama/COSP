@@ -6,7 +6,7 @@
  * 字段下拉选项从当前作用域的原始 JSON 动态生成。
  */
 import { computed } from 'vue'
-import { NSelect, NSwitch, NButton, NIcon } from 'naive-ui'
+import { NSelect, NSwitch, NButton, NIcon, NInput } from 'naive-ui'
 import type { FieldRule, RuleCondition, ConditionOperator } from '@/features/request-body-rules/types'
 import { createEmptyRule, createEmptyCondition } from '@/features/request-body-rules/types'
 import {
@@ -69,11 +69,13 @@ const operationTypeOptions = computed(() => [
   { label: '调整对象内容', value: 'edit_object' },
   { label: '设置字段值', value: 'set_value' },
   { label: props.rule.array ? '删除数组元素' : '删除字段', value: 'delete' },
+  { label: '正则替换', value: 'regex_replace' },
 ])
 
 const conditionOperatorOptions = [
   { label: '存在', value: 'exists' },
   { label: '等于', value: 'equals' },
+  { label: '正则匹配', value: 'matches' },
 ]
 
 // ==================== 当前操作类型 ====================
@@ -93,6 +95,8 @@ const currentOperationType = computed({
       newOp = { type: 'edit_object' as const, rules: [] }
     } else if (val === 'set_value') {
       newOp = { type: 'set_value' as const, value: '' }
+    } else if (val === 'regex_replace') {
+      newOp = { type: 'regex_replace' as const, pattern: '', replacement: '' }
     } else {
       newOp = { type: 'delete' as const }
     }
@@ -115,6 +119,26 @@ const setValue = computed(() => {
 
 function updateSetValue(value: unknown) {
   emit('update:rule', { ...props.rule, operations: [{ type: 'set_value' as const, value }] })
+}
+
+// ==================== regex_replace 编辑 ====================
+
+/** 当前 regex_replace 操作；非该类型时为 null。 */
+const regexOperation = computed(() => {
+  const op = props.rule.operations[0]
+  return op && op.type === 'regex_replace' ? op : null
+})
+
+function updateRegexOperation(patch: { pattern?: string; replacement?: string }) {
+  const current = regexOperation.value
+  emit('update:rule', {
+    ...props.rule,
+    operations: [{
+      type: 'regex_replace' as const,
+      pattern: patch.pattern ?? current?.pattern ?? '',
+      replacement: patch.replacement ?? current?.replacement ?? '',
+    }],
+  })
 }
 
 // ==================== edit_object 嵌套规则 ====================
@@ -299,6 +323,26 @@ function updateField(val: string) {
       />
     </div>
 
+    <!-- regex_replace：正则 + 替换文本（替换全部匹配，$1 引用分组） -->
+    <div v-if="regexOperation" class="rule-value-section">
+      <label class="rule-value-label">正则表达式（Java 语法，内联标志如 (?s) 写在表达式里）</label>
+      <NInput
+        :value="regexOperation.pattern ?? ''"
+        @update:value="updateRegexOperation({ pattern: $event })"
+        placeholder="例如 \n\n&lt;total_tokens&gt;\d+ tokens left&lt;/total_tokens&gt;"
+        size="small"
+        :disabled="readonly"
+      />
+      <label class="rule-value-label rule-value-label--spaced">替换为（留空即删除匹配内容）</label>
+      <NInput
+        :value="regexOperation.replacement ?? ''"
+        @update:value="updateRegexOperation({ replacement: $event })"
+        placeholder="替换文本，$1 引用第 1 个分组"
+        size="small"
+        :disabled="readonly"
+      />
+    </div>
+
     <!-- 条件列表 -->
     <div v-if="rule.conditional" class="rule-conditions">
       <div class="rule-conditions-header">
@@ -332,6 +376,15 @@ function updateField(val: string) {
           :readonly="readonly"
           type-class="cond-value-type"
           class="cond-value"
+        />
+        <NInput
+          v-else-if="cond.operator === 'matches'"
+          :value="typeof cond.value === 'string' ? cond.value : ''"
+          @update:value="updateConditionValue(idx, $event)"
+          placeholder="正则（包含匹配，整串用 ^...$）"
+          size="small"
+          class="cond-value"
+          :disabled="readonly"
         />
         <span v-else class="cond-value-placeholder">—</span>
         <button
@@ -498,6 +551,10 @@ function updateField(val: string) {
   font-size: 11px;
   color: $text-muted;
   margin-bottom: 2px;
+
+  &--spaced {
+    margin-top: 4px;
+  }
 }
 
 .rule-error {

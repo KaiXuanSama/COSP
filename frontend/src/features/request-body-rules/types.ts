@@ -12,8 +12,13 @@
 import type { WireProtocol } from '@/types/protocol'
 import type { RequestBodyTemplateKey } from './requestBodyTemplates'
 
-/** 条件运算符。当前只实现 exists 和 equals。 */
-export type ConditionOperator = 'exists' | 'equals'
+/**
+ * 条件运算符。
+ *
+ * `matches`：字段值为字符串且包含正则匹配（Java `Matcher.find` 语义），
+ * `value` 为正则字符串；需要整串匹配时自行写 `^...$`。
+ */
+export type ConditionOperator = 'exists' | 'equals' | 'matches'
 
 /**
  * 单个条件。
@@ -33,15 +38,20 @@ export interface RuleCondition {
   path: string
   /** 运算符 */
   operator: ConditionOperator
-  /** 比较值，exists 时为 null，equals 时为 JSON 值 */
+  /** 比较值，exists 时为 null，equals 时为 JSON 值，matches 时为正则字符串 */
   value: unknown
 }
 
 /** 多条件组合方式。V1 固定为 AND。 */
 export type ConditionMode = 'all'
 
-/** 字段操作类型。V1 只实现 MiMo 所需的最小集。 */
-export type OperationType = 'edit_object' | 'set_value' | 'delete'
+/**
+ * 字段操作类型。
+ *
+ * `regex_replace`：对字符串字段按正则替换全部匹配（Java `Matcher.replaceAll` 语义，
+ * `replacement` 中 `$1` 为分组引用）。
+ */
+export type OperationType = 'edit_object' | 'set_value' | 'delete' | 'regex_replace'
 
 /** 字段操作。 */
 export interface FieldOperation {
@@ -49,6 +59,10 @@ export interface FieldOperation {
   type: OperationType
   /** set_value 的目标值（JSON 类型安全） */
   value?: unknown
+  /** regex_replace 的正则表达式 */
+  pattern?: string
+  /** regex_replace 的替换文本 */
+  replacement?: string
   /** edit_object 内部的嵌套规则列表 */
   rules?: FieldRule[]
 }

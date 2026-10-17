@@ -71,6 +71,44 @@ describe('规则集 JSON 编辑', () => {
     })
   })
 
+  it('接受 matches 条件与 regex_replace 操作', () => {
+    const ruleSet = migrateRuleSet(MIMO_EXAMPLE_RULESET)
+    ruleSet.groups[0]!.rules = [{
+      id: 'rx', order: 0, field: 'text', array: false, conditional: true, conditionMode: 'all',
+      conditions: [{ path: './text', operator: 'matches', value: 'tokens? left' }],
+      operations: [{ type: 'regex_replace', pattern: '\\d+', replacement: '' }],
+    }]
+
+    expect(parseRuleSetJson(formatRuleSetJson(ruleSet))).toEqual({ valid: true, rules: ruleSet })
+  })
+
+  it('拒绝空正则与缺少 replacement 的 regex_replace', () => {
+    const ruleSet = migrateRuleSet(MIMO_EXAMPLE_RULESET)
+    const base = {
+      id: 'rx', order: 0, field: 'text', array: false, conditional: false,
+      conditionMode: 'all' as const, conditions: [],
+    }
+
+    ruleSet.groups[0]!.rules = [{ ...base, operations: [{ type: 'regex_replace', pattern: '', replacement: '' }] }]
+    const emptyPattern = parseRuleSetJson(formatRuleSetJson(ruleSet))
+    expect(emptyPattern.valid).toBe(false)
+    if (!emptyPattern.valid) expect(emptyPattern.error).toContain('pattern')
+
+    ruleSet.groups[0]!.rules = [{ ...base, operations: [{ type: 'regex_replace', pattern: 'a' }] }]
+    const noReplacement = parseRuleSetJson(formatRuleSetJson(ruleSet))
+    expect(noReplacement.valid).toBe(false)
+    if (!noReplacement.valid) expect(noReplacement.error).toContain('replacement')
+
+    ruleSet.groups[0]!.rules = [{
+      ...base, conditional: true,
+      conditions: [{ path: './text', operator: 'matches', value: '' }],
+      operations: [{ type: 'delete' }],
+    }]
+    const emptyCondition = parseRuleSetJson(formatRuleSetJson(ruleSet))
+    expect(emptyCondition.valid).toBe(false)
+    if (!emptyCondition.valid) expect(emptyCondition.error).toContain('conditions[0].value')
+  })
+
   it('拒绝无效的嵌套操作类型', () => {
     const invalid = JSON.parse(formatRuleSetJson(migrateRuleSet(MIMO_EXAMPLE_RULESET)))
     invalid.groups[0].rules[0].operations[0].rules[0].operations[0].type = 'replace'
