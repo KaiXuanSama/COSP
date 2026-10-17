@@ -62,7 +62,8 @@ docs/
 │   ├── protocol-translation/        协议翻译（一对协议一个子目录）
 │   │   ├── chat-messages/               C2M / M2C
 │   │   └── chat-responses/              C2R / R2C
-│   └── responses-direct/            Responses 直连（已完成）
+│   ├── responses-direct/            Responses 直连（已完成）
+│   └── claude-desktop-prompt-cache/ Claude Desktop 缓存命中率下降的调查与修复
 ├── reference/                   实测层：实测出来的数据与结论
 │   └── reports/                       实机测试报告
 ├── diagrams/                    图示（.drawio）
@@ -104,6 +105,16 @@ docs/
 |---|---|---|
 | [PLAN.md](./features/responses-direct/PLAN.md) | 计划 | 实施计划（含各阶段实施记录） |
 | [SUMMARY.md](./features/responses-direct/SUMMARY.md) | 总结 | 精简实施总结（最常被回查的入口） |
+
+### features/claude-desktop-prompt-cache/ —— 缓存命中率下降（已修复）
+
+| 文件 | 性质 | 内容 |
+|---|---|---|
+| [SUMMARY.md](./features/claude-desktop-prompt-cache/SUMMARY.md) | 总结 | 断点定位过程、实测数据、修复规则与残余限制 |
+| [RULE-EXAMPLE.json](./features/claude-desktop-prompt-cache/RULE-EXAMPLE.json) | 配置样例 | 可直接粘进编辑器 JSON 视图的规则组 |
+
+> 定位结论：COSP 未改写请求体；Claude Desktop 在无 `cache_control` 的 `system` 块里
+> 每轮追加可变内容，使其后所有 `messages` 的前缀缓存失效。命中率 17% → 99%+。
 
 ### reference/ —— 实测层
 
