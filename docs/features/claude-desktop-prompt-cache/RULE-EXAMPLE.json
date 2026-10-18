@@ -17,7 +17,7 @@
           },
           {
             "type": "text",
-            "text": "# Environment\n\n<total_tokens>14999683 tokens left</total_tokens>\n\nThe task tools haven't been used recently. If you're working on tasks that would benefit from tracking progress, consider using TaskCreate to add new tasks. Use TaskUpdate to update an existing task. Hold on, ignore if not applicable.\n\n\n<total_tokens>14991711 tokens left</total_tokens>"
+            "text": "# Environment\n\n<total_tokens>14999683 tokens left</total_tokens>\n\nThe task tools haven't been used recently. If you're working on tasks that would benefit from tracking progress, consider using TaskCreate to add new tasks. Use TaskUpdate to update an existing task. Hold on, ignore if not applicable.\n\n\n<total_tokens>14991711 tokens left</total_tokens>\n\n<system-reminder>\n</system-reminder>\n\n<system-reminder>\n</system-reminder>"
           }
         ]
       },
@@ -33,7 +33,7 @@
             {
               "path": "./text",
               "operator": "matches",
-              "value": "<total_tokens>|The task tools haven't been used recently"
+              "value": "<system-reminder>|<total_tokens>|The task tools haven't been used recently"
             }
           ],
           "operations": [
@@ -68,6 +68,22 @@
                     {
                       "type": "regex_replace",
                       "pattern": "\\n*<total_tokens>\\d+ tokens left</total_tokens>",
+                      "replacement": ""
+                    }
+                  ]
+                },
+                {
+                  "id": "rule-strip-empty-reminder",
+                  "order": 2,
+                  "field": "text",
+                  "array": false,
+                  "conditional": false,
+                  "conditionMode": "all",
+                  "conditions": [],
+                  "operations": [
+                    {
+                      "type": "regex_replace",
+                      "pattern": "\\n*<system-reminder>\\s*</system-reminder>",
                       "replacement": ""
                     }
                   ]
