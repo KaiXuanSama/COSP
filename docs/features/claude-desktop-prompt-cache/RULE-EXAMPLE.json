@@ -1,0 +1,98 @@
+{
+  "version": 2,
+  "groups": [
+    {
+      "id": "group-claude-desktop-cache",
+      "name": "Claude Desktop 缓存稳定化",
+      "order": 0,
+      "enabled": true,
+      "protocols": ["MESSAGES"],
+      "templateKeys": ["custom"],
+      "previewBody": {
+        "system": [
+          {
+            "type": "text",
+            "text": "stable system block",
+            "cache_control": { "type": "ephemeral", "ttl": "1h" }
+          },
+          {
+            "type": "text",
+            "text": "# Environment\n\n<total_tokens>14999683 tokens left</total_tokens>\n\nThe task tools haven't been used recently. If you're working on tasks that would benefit from tracking progress, consider using TaskCreate to add new tasks. Use TaskUpdate to update an existing task. Hold on, ignore if not applicable.\n\n\n<total_tokens>14991711 tokens left</total_tokens>\n\n<system-reminder>\n</system-reminder>\n\n<system-reminder>\n</system-reminder>"
+          }
+        ]
+      },
+      "rules": [
+        {
+          "id": "rule-system-strip",
+          "order": 0,
+          "field": "system",
+          "array": true,
+          "conditional": true,
+          "conditionMode": "all",
+          "conditions": [
+            {
+              "path": "./text",
+              "operator": "matches",
+              "value": "<system-reminder>|<total_tokens>|The task tools haven't been used recently"
+            }
+          ],
+          "operations": [
+            {
+              "type": "edit_object",
+              "rules": [
+                {
+                  "id": "rule-strip-task-reminder",
+                  "order": 0,
+                  "field": "text",
+                  "array": false,
+                  "conditional": false,
+                  "conditionMode": "all",
+                  "conditions": [],
+                  "operations": [
+                    {
+                      "type": "regex_replace",
+                      "pattern": "(?s)\\n*The task tools haven't been used recently.*?ignore if not applicable\\.",
+                      "replacement": ""
+                    }
+                  ]
+                },
+                {
+                  "id": "rule-strip-total-tokens",
+                  "order": 1,
+                  "field": "text",
+                  "array": false,
+                  "conditional": false,
+                  "conditionMode": "all",
+                  "conditions": [],
+                  "operations": [
+                    {
+                      "type": "regex_replace",
+                      "pattern": "\\n*<total_tokens>\\d+ tokens left</total_tokens>",
+                      "replacement": ""
+                    }
+                  ]
+                },
+                {
+                  "id": "rule-strip-empty-reminder",
+                  "order": 2,
+                  "field": "text",
+                  "array": false,
+                  "conditional": false,
+                  "conditionMode": "all",
+                  "conditions": [],
+                  "operations": [
+                    {
+                      "type": "regex_replace",
+                      "pattern": "\\n*<system-reminder>\\s*</system-reminder>",
+                      "replacement": ""
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

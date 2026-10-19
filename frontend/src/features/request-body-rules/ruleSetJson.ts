@@ -12,12 +12,24 @@ export type RuleSetJsonParseResult =
   | { valid: true; rules: RuleSetV2 }
   | { valid: false; error: string }
 
-const CONDITION_OPERATORS = new Set<ConditionOperator>(['exists', 'equals'])
+const CONDITION_OPERATORS = new Set<ConditionOperator>(['exists', 'equals', 'matches'])
 const OPERATION_TYPES = new Set<FieldOperation['type']>([
   'edit_object',
   'set_value',
   'delete',
+  'regex_replace',
 ])
+
+/**
+ * 校验正则字符串。
+ *
+ * 只拦非字符串与空串，不用 JS `RegExp` 编译：引擎是 Java，两种方言不完全一致
+ * （所有格量词 `a*+` 只有 Java 支持），用 JS 编译会误拒合法规则。语法以后端保存校验为准。
+ */
+function validatePatternText(value: unknown, path: string): string {
+  if (typeof value !== 'string' || !value) return `${path} 必须是非空正则字符串`
+  return ''
+}
 
 /** 将规则集格式化为便于编辑和传播的 JSON。 */
 export function formatRuleSetJson(ruleSet: RuleSetV2): string {
@@ -140,18 +152,24 @@ function validateCondition(value: unknown, path: string): string {
   if (!isRecord(value)) return `${path} 必须是对象`
   if (typeof value.path !== 'string') return `${path}.path 必须是字符串`
   if (!CONDITION_OPERATORS.has(value.operator as ConditionOperator)) {
-    return `${path}.operator 必须为 "exists" 或 "equals"`
+    return `${path}.operator 必须为 "exists"、"equals" 或 "matches"`
   }
   if (!Object.prototype.hasOwnProperty.call(value, 'value')) {
     return `${path}.value 不能为空`
   }
+  if (value.operator === 'matches') return validatePatternText(value.value, `${path}.value`)
   return ''
 }
 
 function validateOperation(value: unknown, path: string): string {
   if (!isRecord(value)) return `${path} 必须是对象`
   if (!OPERATION_TYPES.has(value.type as FieldOperation['type'])) {
-    return `${path}.type 必须为 "edit_object"、"set_value" 或 "delete"`
+    return `${path}.type 必须为 "edit_object"、"set_value"、"delete" 或 "regex_replace"`
+  }
+  if (value.type === 'regex_replace') {
+    const error = validatePatternText(value.pattern, `${path}.pattern`)
+    if (error) return error
+    if (typeof value.replacement !== 'string') return `${path}.replacement 必须是字符串`
   }
   if (value.type === 'edit_object') {
     if (!Array.isArray(value.rules)) return `${path}.rules 必须是数组`

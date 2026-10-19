@@ -15,6 +15,12 @@
 	「对象/列表」一档承载全部 JSON 结构体，因此可以整体替换一个对象
 	（如把 `text.format` 换成 `{"type":"json_object"}`，一次性丢掉 `schema` 等多余字段）。
 - 编辑器的转换预览由后端生产引擎计算，因此预览结果与实际发往上游的请求体出自同一份代码。
+- 条件另有 `matches`（字段为字符串且**包含**正则匹配，`Matcher.find` 语义），
+	操作另有 `regex_replace`（`Matcher.replaceAll` 语义，`$1` 引用分组，`replacement` 留空即删除）。
+	正则是 Java 方言，内联标志（`(?s)` / `(?i)`）写在 pattern 里；保存时编译校验，
+	非法正则直接报错而不是运行时静默不生效。典型用途见
+	[Claude Desktop 缓存稳定化](../features/claude-desktop-prompt-cache/SUMMARY.md) ——
+	客户端在 `system` 里每轮追加可变内容，会把其后的前缀缓存全部作废。
 - 上游流式响应中的 `thinking`、`reasoning`、`reasoning_text`、`cot_summary` 等字段会统一为
 	`reasoning_content`。
 - 当前 GitHub Copilot 客户端负责跨请求回放 `reasoning_content`；COSP 不再缓存、注入或定期清理思考内容。

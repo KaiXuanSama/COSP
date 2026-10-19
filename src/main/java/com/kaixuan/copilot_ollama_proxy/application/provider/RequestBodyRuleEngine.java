@@ -12,6 +12,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * 请求体 RuleSet 转换引擎。
@@ -264,8 +266,50 @@ public final class RequestBodyRuleEngine {
                 case "set_value" -> scope.set(field, operation.has("value")
                         ? operation.path("value").deepCopy() : NullNode.getInstance());
                 case "delete" -> scope.remove(field);
+                case "regex_replace" -> regexReplace(scope, field, fieldPath, ruleId, operation, warnings);
                 default -> warnings.add(new TransformWarning(ruleId, fieldPath, "未知操作类型: " + type));
             }
+        }
+    }
+
+    /**
+     * 对字符串字段做正则替换（替换<strong>全部</strong>匹配）。
+     *
+     * <p>语义取 {@link java.util.regex.Matcher#replaceAll}：{@code replacement} 中的
+     * {@code $1} / {@code ${name}} 是分组引用，字面量 {@code $} 与 {@code \} 需转义。
+     * 内联标志（如 {@code (?s)}、{@code (?i)}）由用户写在 pattern 里，不另设开关。
+     *
+     * <h2>三种不执行的情形，只有两种产生告警</h2>
+     * <ul>
+     *   <li>字段不存在 —— 静默跳过，与 {@code edit_object} 一致：防御性规则不该刷噪音；</li>
+     *   <li>字段不是字符串 —— 告警：规则写错了位置，用户需要知道；</li>
+     *   <li>pattern 或 replacement 非法 —— 告警且原值保留。保存时已校验过，
+     *       这里只可能是绕过保存直接进预览的半成品规则。</li>
+     * </ul>
+     */
+    private void regexReplace(ObjectNode scope, String field, String fieldPath, String ruleId,
+                              JsonNode operation, List<TransformWarning> warnings) {
+        JsonNode target = scope.get(field);
+        if (target == null) {
+            return;
+        }
+        if (!target.isTextual()) {
+            warnings.add(new TransformWarning(ruleId, fieldPath, "字段值不是字符串，无法执行\"正则替换\""));
+            return;
+        }
+        String pattern = operation.path("pattern").asText("");
+        if (pattern.isEmpty()) {
+            warnings.add(new TransformWarning(ruleId, fieldPath, "正则替换缺少 pattern，已跳过"));
+            return;
+        }
+        String replacement = operation.path("replacement").asText("");
+        try {
+            scope.put(field, Pattern.compile(pattern).matcher(target.asText()).replaceAll(replacement));
+        } catch (PatternSyntaxException exception) {
+            warnings.add(new TransformWarning(ruleId, fieldPath, "正则表达式无效: " + exception.getDescription()));
+        } catch (IllegalArgumentException | IndexOutOfBoundsException exception) {
+            // replacement 引用了不存在的分组，或以未转义的 $ / \ 结尾。
+            warnings.add(new TransformWarning(ruleId, fieldPath, "替换文本无效: " + exception.getMessage()));
         }
     }
 
@@ -303,6 +347,8 @@ public final class RequestBodyRuleEngine {
             }
             case "set_value" -> warnings.add(new TransformWarning(
                     ruleId, fieldPath, "数组模式下\"设置字段值\"应通过嵌套规则定位字段"));
+            case "regex_replace" -> warnings.add(new TransformWarning(
+                    ruleId, fieldPath, "数组模式下\"正则替换\"应通过嵌套规则定位字段"));
             default -> warnings.add(new TransformWarning(ruleId, fieldPath, "未知操作类型: " + type));
         }
     }
@@ -331,8 +377,29 @@ public final class RequestBodyRuleEngine {
                 JsonNode value = pathValue(scope, parsePath(path), 0);
                 yield value != null && jsonEquals(value, condition.path("value"));
             }
+            case "matches" -> regexMatches(pathValue(scope, parsePath(path), 0), condition.path("value"));
             default -> false;
         };
+    }
+
+    /**
+     * {@code matches} 条件：字段值为字符串且<strong>包含</strong>正则匹配（{@code find} 语义）。
+     *
+     * <p>取 {@code find} 而非整串 {@code matches}：用户要表达「含有某段内容」时不必在两端补
+     * {@code .*}；需要整串匹配时自行写 {@code ^...$}。
+     *
+     * <p>字段非字符串、pattern 非字符串或非法时一律不匹配 —— 条件求值没有告警通道，
+     * 而「不匹配」是保守放行：规则不执行，请求体原样出站。非法 pattern 已由保存校验拦下。
+     */
+    private boolean regexMatches(JsonNode value, JsonNode pattern) {
+        if (value == null || !value.isTextual() || !pattern.isTextual() || pattern.asText().isEmpty()) {
+            return false;
+        }
+        try {
+            return Pattern.compile(pattern.asText()).matcher(value.asText()).find();
+        } catch (PatternSyntaxException exception) {
+            return false;
+        }
     }
 
     /**
