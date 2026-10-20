@@ -71,7 +71,7 @@
 
 | 文件 | 内容 |
 |---|---|
-| [`contracts/`](./reference/contracts/) | C2M 请求/响应契约（长期有效的字段映射规范） |
+| [`contracts/`](./reference/contracts/) | C2M 请求/响应契约（长期有效的字段映射规范；M2C/C2M 方向补齐计划见 [RFC](./working/rfcs/2026-10-20-m2c-c2m-translation.md)） |
 | [`samples/`](./reference/samples/) | 真实抓包（Codex 请求/响应事件流）与配置样例 |
 | [LIVE_TEST_MATRIX.md](./reference/LIVE_TEST_MATRIX.md) | 实机验证矩阵（测什么、用哪个 mock、看什么） |
 | [MODEL_SUPPORT.md](./reference/MODEL_SUPPORT.md) | 各模型对 Copilot 的适配度 |

@@ -38,7 +38,7 @@
 | 方向 | 含义 | 状态 |
 |---|---|---|
 | **C2M** | 下游 Chat → 上游 Messages | ✅ 已实现并实测 |
-| **M2C** | 下游 Messages → 上游 Chat | 请求侧待做；响应侧已实现并实测 |
+| **M2C** | 下游 Messages → 上游 Chat | 请求侧待做；响应侧已实现并实测。**补齐计划见 [M2C/C2M RFC](./2026-10-20-m2c-c2m-translation.md)** |
 | **C2R** | 下游 Chat → 上游 Responses | ✅ 双向可用（去程 [PLAN.md](#c-c2r-去程--计划与实施记录) §7 + 回程 [R2C-PLAN.md](#e-r2c-回程--计划与实施记录) §7，三家供应商实机验证） |
 | **R2C** | 下游 Responses → 上游 Chat | ✅ 已实现（作为 C2R 的回程半边，随 [R2C-PLAN.md](#e-r2c-回程--计划与实施记录) 落地并实机验证） |
 | **M2R** / **R2M** | Messages ↔ Responses | ❌ 未实现 |
