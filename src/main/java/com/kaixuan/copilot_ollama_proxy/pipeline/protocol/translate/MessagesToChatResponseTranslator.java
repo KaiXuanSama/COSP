@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>契约第 12 节。
  *
- * @see <a href="file:../../../../../../../../../docs/features/protocol-translation/chat-messages/response-contract.md">
+ * @see <a href="file:../../../../../../../../../docs/reference/contracts/C2M-RESPONSE-CONTRACT.md">
  *      响应侧协议翻译契约</a>
  */
 @Component

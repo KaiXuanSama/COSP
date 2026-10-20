@@ -313,7 +313,7 @@ retry-429                            E429     3ms  E429     4ms  E429     4ms  E
 |---|---|
 | 下游嗅探 mock | [`../mock-cosp/README.md`](../mock-cosp/README.md) |
 | 实机验证矩阵（测什么、看什么） | [`../../docs/LIVE_TEST_MATRIX.md`](../../docs/reference/LIVE_TEST_MATRIX.md) |
-| 跳协议契约（请求侧） | [REQUEST-CONTRACT.md](../../docs/features/protocol-translation/chat-messages/REQUEST-CONTRACT.md) |
-| 跳协议契约（响应侧） | [RESPONSE-CONTRACT.md](../../docs/features/protocol-translation/chat-messages/RESPONSE-CONTRACT.md) |
+| 跳协议契约（请求侧） | [REQUEST-CONTRACT.md](../../docs/reference/contracts/C2M-REQUEST-CONTRACT.md) |
+| 跳协议契约（响应侧） | [RESPONSE-CONTRACT.md](../../docs/reference/contracts/C2M-RESPONSE-CONTRACT.md) |
 | 上游适配史与取舍 | [`ADAPTATIONS.md`](../../docs/architecture/ADAPTATIONS.md) |
 | 出站与入站鉴权头设计 | [`AUTH_HEADER_ASSEMBLY.md`](../../docs/architecture/AUTH_HEADER_ASSEMBLY.md) |

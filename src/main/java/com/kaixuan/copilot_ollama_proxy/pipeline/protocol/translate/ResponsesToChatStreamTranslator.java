@@ -41,7 +41,7 @@ import java.util.Map;
  * 流（收尾三档）+ warn 留痕，好过转 onError（SSE 头已发出后的二次分类）——
  * R2C-PLAN §0.2-9。
  *
- * @see <a href="file:../../../../../../../../../docs/features/protocol-translation/chat-responses/R2C-PLAN.md">
+ * @see <a href="file:../../../../../../../../../docs/working/rfcs/2026-09-03-protocol-translation.md">
  *      R2C 回程翻译实施计划</a>
  */
 final class ResponsesToChatStreamTranslator {

@@ -19,7 +19,7 @@
 	操作另有 `regex_replace`（`Matcher.replaceAll` 语义，`$1` 引用分组，`replacement` 留空即删除）。
 	正则是 Java 方言，内联标志（`(?s)` / `(?i)`）写在 pattern 里；保存时编译校验，
 	非法正则直接报错而不是运行时静默不生效。典型用途见
-	[Claude Desktop 缓存稳定化](../features/claude-desktop-prompt-cache/SUMMARY.md) ——
+	[Claude Desktop 缓存稳定化](../working/rfcs/2026-10-17-claude-desktop-prompt-cache.md) ——
 	客户端在 `system` 里每轮追加可变内容，会把其后的前缀缓存全部作废。
 - 上游流式响应中的 `thinking`、`reasoning`、`reasoning_text`、`cot_summary` 等字段会统一为
 	`reasoning_content`。
@@ -27,7 +27,7 @@
 	**这个前提的适用范围是 Chat 线路 + Copilot BYOK** —— 那条路上客户端手上有明文。
 	Responses 的加密思考不适用：Codex 只有密文，无法自己回放明文。直连不受影响（原样透传），
 	但翻译线路（R2C / R2M / C2R / M2R）必须先就此做决策，见
-	[请求侧契约](../features/protocol-translation/chat-messages/REQUEST-CONTRACT.md) 第 4.8 节。
+	[请求侧契约](../reference/contracts/C2M-REQUEST-CONTRACT.md) 第 4.8 节。
 
 ## MiMo 的 Responses 网关限制（2026-09-13 实测）
 
@@ -90,7 +90,7 @@ cc-switch 对 `web_search` 有同源黑名单（`codex_config.rs` 的
 `reasoning` item 的 `content` 与 `summary` **都是空数组**，只有 `encrypted_content`。
 此前实测的 MiMo 与 DeepSeek 走的是明文（`content[]`），这是两种截然不同的形态 ——
 判定器把「只有加密块」判为无载荷是对的（该轮靠正文或工具 `name` 通过），
-详见[请求侧契约](../features/protocol-translation/chat-messages/REQUEST-CONTRACT.md) 第 4.8 节。
+详见[请求侧契约](../reference/contracts/C2M-REQUEST-CONTRACT.md) 第 4.8 节。
 
 ## 历史范围
 

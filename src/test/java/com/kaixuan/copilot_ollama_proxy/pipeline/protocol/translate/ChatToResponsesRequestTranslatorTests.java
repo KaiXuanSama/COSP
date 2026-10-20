@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code @Nested}，每组内一个决策点一条用例。静默丢弃清单逐字段钉住 ——
  * 「以为是映射其实是丢弃」的漂移只有逐字段断言能抓住。
  *
- * <p>决策依据见 docs/features/protocol-translation/chat-responses/PLAN.md §0/§2。
+ * <p>决策依据见 docs/working/rfcs/2026-09-03-protocol-translation.md §0/§2。
  */
 class ChatToResponsesRequestTranslatorTests {
 

@@ -45,7 +45,7 @@ import java.util.Map;
  *   <li>{@code web_search_call} 等其余 item：吞掉 + debug 留痕（Chat 无对等物）。</li>
  * </ul>
  *
- * @see <a href="file:../../../../../../../../../docs/features/protocol-translation/chat-responses/R2C-PLAN.md">
+ * @see <a href="file:../../../../../../../../../docs/working/rfcs/2026-09-03-protocol-translation.md">
  *      R2C 回程翻译实施计划</a>
  */
 final class ResponsesToChatNonStreamTranslator {

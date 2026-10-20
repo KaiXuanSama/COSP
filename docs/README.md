@@ -1,145 +1,177 @@
-# docs/ 导航与分类规则
+# 文档索引
 
-本文是 `docs/` 的入口。**新增文档前先读第 1 节** —— 它决定新文档放哪。
+> 本项目文档遵循 `docs-governance` 规范（决策记录 [ADR-0001](./adr/adr-0001-adopt-docs-governance.md)）。
+> **新增文档前先读本节**，它决定新文档放哪。
 
----
+## 目录地图
 
-## 1. 分类规则：功能优先，生命周期下沉
-
-判据问两句，按顺序问：
-
-### 第一问：属于哪个功能？
-
-| 答案 | 去处 |
-|---|---|
-| 属于某个具体功能 | `features/<功能名>/` |
-| 从已完成的实现里沉淀下来的经验（机制说明、约定、刻意不做的取舍） | `architecture/` |
-| 实测出来的数据与结论（模型表现、验证矩阵、调查记录、报告） | `reference/` |
-
-**为什么功能优先**：一个功能的文档天然是散在多个阶段的（调研 → 契约 → 计划 → 测试），
-按功能聚拢让「我在做 X 功能」时所有相关文档在一个文件夹里。代码按块组织，文档跟着块走。
-
-### 第二问：在这个功能里处于什么阶段？（决定文件名）
-
-功能文件夹内部用**固定文件名**表达生命周期，不用随意命名：
-
-文件名统一全大写（与 `architecture/`、`reference/` 既有文档一致）：
-
-| 文件名 | 含义 | 何时清理 |
+| 目录 | 内容 | 典型问题 |
 |---|---|---|
-| `README.md` | 该功能的状态与导航 | 随功能长期存在 |
-| `RESEARCH.md` | 调研：为决策服务，决策定了就冻结 | **留档**（回答「当初为什么这么选」） |
-| `*-CONTRACT.md` | 契约/规范：跟着代码长期维护 | **不删** |
-| `PLAN.md` | 实施计划（顶部复述需求，含决策理由） | 留档；功能稳定后可精简 |
-| `SUMMARY.md` | 实施总结（`PLAN.md` 的精简版） | **长期留档**（最常被回查的入口） |
-| `samples/` | 抓包、样本等原始证据 | **留档**（无法重新获得） |
+| [`adr/`](./adr/) | 架构决策记录（**只增不改**，永不归档） | 「为什么当初选了这个方案？」 |
+| [`architecture/`](./architecture/) | 当前架构（活文档） | 「系统现在长什么样？」 |
+| [`guides/`](./guides/) | 操作指南 | 「怎么做 X？」 |
+| [`reference/`](./reference/) | API / 配置 / schema / 契约 / 实测事实 | 「这个字段的取值是什么？」 |
+| [`explanations/`](./explanations/) | 原理与背景综述 | 「为什么这样设计？」 |
+| [`working/rfcs/`](./working/rfcs/) | 功能提案容器（**带状态**，完成后不删） | 「这个功能做了什么、到哪了？」 |
+| [`working/investigations/`](./working/investigations/) | 进行中的调查 | 「这个技术验证到哪了？」 |
+| [`working/meeting-notes/`](./working/meeting-notes/) | 会议纪要 | 「上次讨论的结论？」 |
+| [`archive/`](./archive/) | 已过时的文档（**禁止作为当前事实引用**） | 「以前那个版本怎么写的？」 |
+| `diagrams/` / `images/` | 图示与图片 | — |
 
-描述性专题文档（如 `PROTOCOL-RENAME-PLAN.md`）同样全大写，不在固定名之列时可自由命名。
+## 分类判据（按顺序问）
 
-**判据是「这份文档什么时候会被删」**：
+1. **是「为什么做这个决定」吗？** → `adr/`
+2. **是「现在是什么样」吗？** → `architecture/`（结构）或 `reference/`（事实/契约）
+3. **是「怎么做」吗？** → `guides/`
+4. **是「一个功能的完整档案」吗？**（需求 → 调研 → 计划 → 实施记录）→ `working/rfcs/`
+5. **是「为什么这样设计的综述」吗？** → `explanations/`
+6. **是「还没定稿的调查」吗？** → `working/investigations/`
+7. **已经过时、不再维护？** → `archive/`（附归档说明）
 
-- 永不删 → 契约
-- 决策定了冻结、但留档 → 调研
-- 功能上线即失效 → 计划
-- 大块功能完成后长期回查 → 总结
+### 几组容易混淆的边界
 
-> **三阶段模型与各文档的骨架**（`plan.md` 顶部复述需求、`summary.md` 是精简版）
-> 见 [功能文档 skill](../.github/skills/cosp-feature-docs-skill/SKILL.md)。
-> 本文只定「放哪个目录」，那个定「叫什么、写什么」。
->
-> **阶段①「需求描述」不产出文档** —— 需求在对话里谈出来，复述进 `plan.md` 顶部
-> 与 `summary.md` 开头。
+| 对比 | 判据 |
+|---|---|
+| `adr/` vs `working/rfcs/` | ADR 是**决策原子**（一个决策族，冻结）；RFC 是**功能容器**（完整生命周期，有状态，可追加实施记录） |
+| `reference/` vs `working/investigations/` | `reference/` 是**已完成、长期可查**的事实；`investigations/` 是**进行中**的调查 |
+| `explanations/` vs `adr/` | ADR 是**当时**的决策记录（冻结）；explanation 是**现在视角**的综述（可随认知更新） |
+| `features/` vs `working/rfcs/` | 本项目**不设** `features/` 目录。原 `features/` 的内容已迁入 `working/rfcs/`（见 ADR-0001 偏离一） |
 
----
+## 常用直达
 
-## 2. 目录结构
+- 决策历史：[`adr/`](./adr/)
+- 请求链路全貌：[`architecture/REQUEST_PIPELINE.md`](./architecture/REQUEST_PIPELINE.md)
+- 已知技术债：[`architecture/KNOWN_DEBT.md`](./architecture/KNOWN_DEBT.md)
+- 协议契约：[`reference/contracts/`](./reference/contracts/)
+- 功能提案索引：[`working/rfcs/README.md`](./working/rfcs/README.md)
 
-```text
-docs/
-├── README.md                    本文
-├── architecture/                经验层：沉淀下来的机制说明与约定
-├── features/                    按功能聚拢（一次有始有终的开发工作）
-│   ├── protocol-translation/        协议翻译（一对协议一个子目录）
-│   │   ├── chat-messages/               C2M / M2C
-│   │   └── chat-responses/              C2R / R2C
-│   ├── responses-direct/            Responses 直连（已完成）
-│   └── claude-desktop-prompt-cache/ Claude Desktop 缓存命中率下降的调查与修复
-├── reference/                   实测层：实测出来的数据与结论
-│   └── reports/                       实机测试报告
-├── diagrams/                    图示（.drawio）
-└── images/                      图片
-```
+## 各目录的索引
 
-**`chat-messages/` 这类子目录的存在理由**：`PROTOCOL_TRANSLATION_CONTRACT.md` 这个旧名
-听起来像「所有协议翻译的总契约」，实际只覆盖 Chat↔Messages。**路径消解了歧义** ——
-放进 `chat-messages/` 后，文件名不必再强调是哪对协议。
+### adr/ —— 架构决策记录
 
----
+| ADR | 主题 |
+|---|---|
+| [ADR-0001](./adr/adr-0001-adopt-docs-governance.md) | 采纳 docs-governance 规范并迁移现有 docs/ |
 
-## 3. 各目录索引
-
-### architecture/ —— 经验层
-
-从已完成的实现里沉淀下来的经验：机制说明、约定、刻意不做的取舍。判据：**它描述的东西不属于任何单一功能，且在动手改代码之前值得读一遍**。
+### architecture/ —— 当前架构
 
 | 文件 | 内容 |
 |---|---|
-| [REQUEST_PIPELINE.md](./architecture/REQUEST_PIPELINE.md) | 下游请求到上游请求的处理层与顺序 |
-| [AUTH_HEADER_ASSEMBLY.md](./architecture/AUTH_HEADER_ASSEMBLY.md) | 出站与入站鉴权头的设计（含实测与边界） |
-| [PROVIDER_NAMING_CONVENTION.md](./architecture/PROVIDER_NAMING_CONVENTION.md) | 供应商命名与模型名转换 |
-| [KNOWN_DEBT.md](./architecture/KNOWN_DEBT.md) | 已知技术债与刻意不做的取舍 |
+| [REQUEST_PIPELINE.md](./architecture/REQUEST_PIPELINE.md) | 下游请求到上游请求的处理层与顺序（改 pipeline 前必读） |
+| [AUTH_HEADER_ASSEMBLY.md](./architecture/AUTH_HEADER_ASSEMBLY.md) | 出站与入站鉴权头的设计（schema.sql / V14 迁移 / 常量三处必须逐字一致） |
+| [PROVIDER_NAMING_CONVENTION.md](./architecture/PROVIDER_NAMING_CONVENTION.md) | 供应商命名与模型名路由前缀规则 |
+| [KNOWN_DEBT.md](./architecture/KNOWN_DEBT.md) | 经审查确认、刻意不在当前分支处理的技术债 |
 | [ADAPTATIONS.md](./architecture/ADAPTATIONS.md) | 供应商适配史与请求转换系统的能力边界 |
 
-> 主干-支干的**结构**说明在代码里 ——
+> 主干-支干的**结构**说明在代码里：
 > [`src/main/java/.../pipeline/README.md`](../src/main/java/com/kaixuan/copilot_ollama_proxy/pipeline/README.md)
 > 是唯一能跟 `git pull` 走的架构说明，因此不放 `docs/`。
 
-### features/protocol-translation/
-
-一对协议一个子目录。方向状态表与文档索引见该功能自己的
-[README.md](./features/protocol-translation/README.md)。
-
-### features/responses-direct/ —— Responses 直连（已完成）
-
-| 文件 | 性质 | 内容 |
-|---|---|---|
-| [PLAN.md](./features/responses-direct/PLAN.md) | 计划 | 实施计划（含各阶段实施记录） |
-| [SUMMARY.md](./features/responses-direct/SUMMARY.md) | 总结 | 精简实施总结（最常被回查的入口） |
-
-### features/claude-desktop-prompt-cache/ —— 缓存命中率下降（已修复）
-
-| 文件 | 性质 | 内容 |
-|---|---|---|
-| [SUMMARY.md](./features/claude-desktop-prompt-cache/SUMMARY.md) | 总结 | 断点定位过程、实测数据、修复规则与残余限制 |
-| [RULE-EXAMPLE.json](./features/claude-desktop-prompt-cache/RULE-EXAMPLE.json) | 配置样例 | 可直接粘进编辑器 JSON 视图的规则组 |
-
-> 定位结论：COSP 未改写请求体；Claude Desktop 在无 `cache_control` 的 `system` 块里
-> 每轮追加可变内容，使其后所有 `messages` 的前缀缓存失效。命中率 17% → 99%+。
-
-### reference/ —— 实测层
-
-实测出来的数据与结论：想知道某个东西**实际表现如何**时打开。单点调查（`*_INVESTIGATION.md`）
-的结论全部来自对照实验或行为嗅探，归这里。
+### reference/ —— 参考事实
 
 | 文件 | 内容 |
 |---|---|
+| [`contracts/`](./reference/contracts/) | C2M 请求/响应契约（长期有效的字段映射规范） |
+| [`samples/`](./reference/samples/) | 真实抓包（Codex 请求/响应事件流）与配置样例 |
 | [LIVE_TEST_MATRIX.md](./reference/LIVE_TEST_MATRIX.md) | 实机验证矩阵（测什么、用哪个 mock、看什么） |
-| [MODEL_COMPATIBILITY.md](./reference/MODEL_COMPATIBILITY.md) | 模型适配问题报告 |
 | [MODEL_SUPPORT.md](./reference/MODEL_SUPPORT.md) | 各模型对 Copilot 的适配度 |
+| [MODEL_COMPATIBILITY.md](./reference/MODEL_COMPATIBILITY.md) | 模型适配问题报告 |
+| [OLLAMA-EXTENSION-REVIEW.md](./reference/OLLAMA-EXTENSION-REVIEW.md) | Ollama 官方 VS Code 扩展支持程度调研 |
 | [ANYROUTER_INVESTIGATION.md](./reference/ANYROUTER_INVESTIGATION.md) | 供应商行为记录 |
 | [COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md](./reference/COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md) | Copilot BYOK 思考链回放调查 |
 | [reports/LIVE_TEST_REPORT_2026-09-27.md](./reference/reports/LIVE_TEST_REPORT_2026-09-27.md) | COSP 实机功能测试报告 |
 
----
+### working/rfcs/ —— 功能提案
 
-## 4. 新增文档的操作
+见 [`working/rfcs/README.md`](./working/rfcs/README.md)（含状态表与候选提案）。
 
-1. **先问第 1 节的两问**，确定目录与文件名
-2. **写内容前，按功能所处的阶段对照** —— 三阶段的骨架
-   （`PLAN.md` 顶部复述需求、`SUMMARY.md` 是 `PLAN.md` 的精简版）见
-   [功能文档 skill](../.github/skills/cosp-feature-docs-skill/SKILL.md)
-3. **在本文第 3 节对应位置加一行索引** —— 否则新文档无人能找到
-4. 若新增的是顶层目录，同步更新 [AGENTS.md](../AGENTS.md) 的参考表
+### guides/ / explanations/
 
-**不要**在 `docs/` 顶层放 `.md` 文件（`docs/README.md` 除外）。顶层只有目录 ——
-顶层直接放文件会让「该放哪个子目录」这个问题在下次又被重新讨论一遍。
+本项目暂无此类内容。目录保留以维持宪法完整性；有内容时再补充索引。
+
+## 更新规则（摘要）
+
+1. **同一事实只维护一处**，其余用链接。复制即漂移的开始。
+2. **新决策 → 新建 ADR**；决策变更 → 新 ADR 取代 + 旧 ADR **仅改状态行**标记 supersede。
+3. **功能实施完毕、合并前必须过文档门禁**（详见下文 §合并前文档门禁）。
+4. **过时文档归档而非删除**，归档文件头部加归档说明（日期 / 原因 / 替代文档链接）。
+5. 任何目录或文档增删后，同步更新本索引。
+
+## RFC 写作要求
+
+RFC 是**一个功能的完整档案**（需求 → 调研 → 计划 → 实施记录），放在
+[`working/rfcs/`](./working/rfcs/)。结论定稿后晋升为 ADR，但 RFC **不删除**——
+它保留字段级细节与实测依据，ADR 只承载决策原子与备选方案对比。
+
+### 结构要求
+
+```markdown
+# RFC：<功能名>
+
+- **日期**：YYYY-MM-DD（**立项日**：该功能最早一份文档在 git 中的首次出现日期）
+- **状态**：草稿 / 讨论中 / 已定稿，实施待开始 / 已定稿且实施完毕 / 已否决
+- **相关 ADR**：（结论已晋升时填写）
+- **分支**：（挂独立分支时填写）
+
+## 背景
+## 1. 目标结构 / 范围
+## 2. 内容映射或字段规格
+## 3. 分阶段计划
+## 4. 风险与对策
+## 5. 实施记录（每阶段完成后追加）
+## 6. 验收清单
+```
+
+### 四条硬要求
+
+1. **需求必须复述在文档内，不单独成文。** 需求从来不是一次写完的——它在讨论中被修正、
+   收窄、推翻。单独一份「需求文档」会立刻过时且无人维护；复述进 RFC 顶部，它会随计划一起演进。
+
+2. **「明确不做的事」一节不可省。** 它是日后最常被回查的部分——反过来问
+   「为什么当初没顺手做 X」时，答案在这里。
+
+3. **实施记录按阶段追加，不改写历史。** 计划与实际不符时，**在实施记录里写清偏差原因**，
+   而不是回头修改计划让它看起来对。例：docs 迁移的「工时预估 8.5 天 → 实际约 1 天」
+   就记录在实施记录里。
+
+4. **大块功能才写 RFC。** 零散小改动、bug 修复、单点调整不写——它们有 commit message 与
+   代码注释就够。误判的代价是文档泛滥，比不写更糟。
+
+### 判据：这份 RFC 什么时候会失效
+
+- 决策被推翻 → **新建 ADR 取代**，RFC 内容不动（历史记录）
+- 功能下线 → 移入 `archive/` 并加归档说明
+- 其他情况 → **长期留档**，它是该功能最常被回查的入口
+
+## 合并前文档门禁
+
+功能实现完毕、准备合并或提交 PR 之前，依次执行：
+
+1. **变更盘点**：列出可观察变化——功能行为、API 端点/格式/错误码、配置项/默认值、
+   依赖、数据模型/schema、架构边界、本次产生的决策或被推翻的旧决策。
+2. **影响映射**：
+
+   | 变化类型 | 必须动作 |
+   |---|---|
+   | 新决策 / 决策变更 | 新建 ADR（变更时另加旧 ADR 状态行标记） |
+   | 架构 / 模块边界 / 数据流 | 更新 `architecture/` |
+   | API / 配置 / schema / 契约 | 更新 `reference/` |
+   | 用户操作流程变化 | 更新或新建 `guides/` |
+   | 需要解释的取舍 | 更新或新建 `explanations/` |
+   | 功能实施进展 | 更新对应 RFC 的状态头与实施记录 |
+   | `working/` 结论已定稿 | 晋升正式目录或归档 |
+   | 新增 / 删除文档 | 更新本 README 索引 |
+   | 被取代的旧内容 | 归档（附归档说明） |
+
+3. **输出报告**：变更依据（对应代码改动）、已更新文档清单 + 原因、无需更新的项 + 理由、
+   阻塞项。**不得以「时间紧」「改动很小」为由跳过**——是否更新取决于**可观察性**，不取决于改动大小。
+
+> 「无需更新」的合法理由：纯内部重构（对外零变化）、bug 修复（行为回归到文档已描述的状态）、
+> 仅测试代码变更、仅日志/注释文案调整。
+
+## 归档规则
+
+- 归档目录：[`archive/`](./archive/)
+- 归档文件**头部必须加归档说明**：日期、原因、替代文档链接
+- 归档后**不再维护**；**禁止引用归档文档作为当前事实来源**
+- ADR **永不归档**（决策链是历史本身）
