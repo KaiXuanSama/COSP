@@ -48,7 +48,7 @@ package com.kaixuan.copilot_ollama_proxy.pipeline.protocol;
  *   <li>M2C 响应（上游 Anthropic → 下游 Chat Completions）：{@code MessagesToChatResponseTranslator}，
  *       已实测（流式 + 非流式 + 多轮工具链）。</li>
  *   <li>M2C 请求（下游 Anthropic → 上游 OpenAI）：未实现，
- *       {@code MessagesService} 抛 {@link ProtocolTranslationNotSupportedException}。</li>
+ *       设计见 {@code docs/working/rfcs/2026-10-20-m2c-c2m-translation.md}。</li>
  *   <li>C2M 响应（上游 OpenAI → 下游 Anthropic）：未实现，同上。</li>
  * </ul>
  *
@@ -70,12 +70,20 @@ public interface ProtocolTranslator {
     //  两者是同一条链的两半，缺一半那条路就不可用，因此不拆开计划 ——
     //  参照已落地那条链的排序原则「让已有的一半变成可用的整体」
     //  （响应侧契约第 0 节）。
-    //  落地方式：新增两个类分别实现 RequestProtocolTranslator / ResponseProtocolTranslator、
-    //  声明方向 (MESSAGES, CHAT)、带 @Component —— 它们会自动进 TranslatorRegistry 的查表。
-    //  但 MessagesService 目前尚未改用查表（它对这两个方向仍无条件抛
-    //  ProtocolTranslationNotSupportedException），要让这条链可用，需先把 MessagesService
-    //  的翻译分支改成查 TranslatorRegistry（与 ChatCompletionService 同一手法）。
-    //  翻译器仍要套在上游服务外侧。
+    //
+    //  设计已完成，实施前先读
+    //  docs/working/rfcs/2026-10-20-m2c-c2m-translation.md —— 它记录了：
+    //  结构调研（哪些组件已就绪、哪些必须新建）、四参考项目实现对比、
+    //  以及六项决策（system 落点、usage 双通道、document 处置、cache_control、
+    //  thinking 回放、include_usage 注入）。
+    //
+    //  落地方式本身很简单：新增两个类分别实现
+    //  RequestProtocolTranslator / ResponseProtocolTranslator、声明方向
+    //  (MESSAGES, CHAT)、带 @Component —— 它们会自动进 TranslatorRegistry 的查表，
+    //  也会自动被 ProtocolDispatchManager 的"已实现去程"集合收录。
+    //  MessagesService 无需改动：它早已退化成「声明协议 + 建 ctx + 交主干」，
+    //  翻译分支在 BeforeSend.translateStep 里按表查，不在它里面。
+    //  翻译器仍要套在上游执行器外侧（因而在 retryWhen 之外）。
 
     /** 本翻译器接受的下游协议。 */
     WireProtocol downstreamProtocol();

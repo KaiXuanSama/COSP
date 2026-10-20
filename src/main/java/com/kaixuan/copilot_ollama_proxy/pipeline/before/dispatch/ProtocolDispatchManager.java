@@ -74,7 +74,7 @@ public class ProtocolDispatchManager {
      * <ol>
      *   <li>{@link WireProtocol#CHAT} —— 兼容面最广，且字段最少，往它翻的信息损耗最小；</li>
      *   <li>{@link WireProtocol#MESSAGES} —— 已有一个方向完整实现（C2M 去程 + M2C 回程）；</li>
-     *   <li>{@link WireProtocol#RESPONSES} —— 排最后：C2R / R2C 均未实现，
+     *   <li>{@link WireProtocol#RESPONSES} —— 排最后：C2R 去程与 M2R / R2M 均未实现，
      *       且它字段最富（{@code reasoning.encrypted_content} 在 Chat 里无处安放），
      *       往回翻必然丢信息。</li>
      * </ol>

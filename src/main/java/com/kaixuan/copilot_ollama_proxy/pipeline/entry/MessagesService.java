@@ -24,7 +24,8 @@ import java.util.Map;
  * （{@code ProtocolTranslationNotSupportedException}，控制器译 400）。
  * M2C 请求翻译至今没有实现，因此本端点跨协议时仍会得到那个 400 ——
  * 但抛出点从「本类的 if」变成了「主干查表未命中」，语义与阈值完全一致。
- * <strong>将来补上 M2C 翻译器（加一个 {@code @Component}），本类一行不用改。</strong>
+ * <strong>补上 M2C 翻译器（加一个 {@code @Component}）时本类一行不用改</strong> ——
+ * 设计已完成，见 {@code docs/working/rfcs/2026-10-20-m2c-c2m-translation.md}。
  *
  * <p>翻译器套在上游执行器<strong>外侧</strong>（主干上，因而在 {@code retryWhen} 之外）：
  * 重试、落库、usage 提取都留在被包装那层，翻译绝不能进重试内侧

@@ -1,10 +1,12 @@
 # 协议翻译契约（请求侧）
 
 > **状态**：C2M（下游 OpenAI → 上游 Anthropic）请求侧**已实现并经实流量验证**，见
-> `ChatToMessagesRequestTranslator` 与 `ChatCompletionService` 两处分支；
-> M2C（下游 `/v1/messages` + 上游 OpenAI）请求侧**尚未实现**，
-> `MessagesService` 的翻译分支仍抛 `ProtocolTranslationNotSupportedException`。
+> `ChatToMessagesRequestTranslator`；
+> M2C（下游 `/v1/messages` + 上游 OpenAI）请求侧**尚未实现**，设计已完成待实施 ——
+> 结构调研、四参考项目对比与全部决策定案见
+> [M2C/C2M RFC](../../working/rfcs/2026-10-20-m2c-c2m-translation.md)。
 > 本文档因此既是已实现说明（C2M）也是设计契约（M2C）。
+> **§4.7 已按四家共识修正**：M2C 方向带 `tool_calls` 时必须回放 thinking 明文。
 >
 > 标注了实测日期的段落是已验证的事实，其余是约束。已实测：多轮工具链（见响应侧契约第 1 节）、
 > 工具结果带图的多模态识别（3.4.2）。
@@ -335,17 +337,32 @@ cc-switch 有个折中值得记录但不采纳：只在**已知枚举**模式下
 第 3 条补上现有 `ensureMaxTokens` 缺的一条约束。对比 new-api 的手动模式会把 `max_tokens`
 抬到 `budget + 1`。
 
-### 4.7 思考链回放：已知无解
+### 4.7 思考链回放：`signature` 无解，但明文必须回放
 
-跨协议时 `signature` **造不出来**——它由 Anthropic 自己签发。三个参考项目全部选择丢弃整个
-reasoning item，sub2api 的注释最清楚：`encrypted_content` 不透明，带 `content` 数组的形态
-也一并丢，否则 `reasoning_text` 塞进去直接 400。
+跨协议时 `signature` **造不出来**——它由 Anthropic 自己签发。C2M 方向因此丢弃 assistant
+消息里的思考内容，不尝试重建 `thinking` 块。
 
-**本契约的处置**：C2M 丢弃 assistant 消息里的思考内容，不尝试重建 `thinking` 块。
-M2C 丢弃 `thinking` / `redacted_thinking` 块。
+**M2C 方向不同（2026-10-20 修正，依据四参考项目调研）**：原来写「M2C 丢弃 `thinking` /
+`redacted_thinking` 块」，那个结论**在工具链场景会导致硬失败**。
 
-Copilot BYOK 会回传上一轮思考内容，因此**翻译路线上开启 extended thinking 且带工具时会硬失败**。
-这不是「翻译得不够漂亮」，是会被上游直接拒绝。落地前先复核
+三家参考实现（sub2api / cc-switch / CLIProxyAPI）一致在 **assistant 消息带 `tool_calls` 时**
+把 thinking 明文折叠进 `reasoning_content`。sub2api 的注释给出硬理由：DeepSeek 的 thinking
+模式**要求**产生该工具调用的 `reasoning_content` 被回放，**否则直接 400**。
+
+| 场景 | `signature` | thinking 明文 | `redacted_thinking` |
+|---|---|---|---|
+| assistant 带 `tool_calls` | 丢弃 | **折叠进 `reasoning_content`**（多块用 `\n` 连接） | 丢弃 + warn |
+| assistant 纯文本轮 | 丢弃 | 丢弃（三家一致：不带 tool_calls 时不回放） | 丢弃 + warn |
+
+**不给占位**（与 cc-switch 的 `"tool call"` 不同）：没有 thinking 明文就不写
+`reasoning_content`。占位是伪造内容，上游报错比「看起来成功」更有价值。
+
+> **这不涉及「思考链缓存」**。V8.2 删掉的 `ReasoningCache` 是「代理存储上一轮内容、下一轮注入」，
+> 是因为当年 Copilot 客户端不自己回传。而 Claude Desktop 等 Anthropic 客户端**本来就会把
+> `thinking` 块放在历史消息里原样回传**，代理只需做格式转换。数据已在请求体中，无需任何跨请求状态。
+
+**C2M 方向的既有风险不变**：Copilot BYOK 回传思考内容时，C2M 丢弃会让开启 extended thinking
+且带工具的调用硬失败。落地前复核
 [思考链回放调查](../COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)。
 
 ### 4.8 Responses 的加密思考：R2* / *2R 的硬前提（2026-09-13 实测）
@@ -502,6 +519,16 @@ C2M 丢弃：`frequency_penalty`、`presence_penalty`、`n`、`logprobs`、`top_
 
 M2C 丢弃：`metadata`、`mcp_servers`、`container`、`context_management`、`service_tier`、
 顶层 `cache_control`。
+
+**M2C 还必须主动写入一个字段**：流式时向上游注入 `stream_options.include_usage: true`。
+Anthropic 下游没有这个字段，不注入则 OpenAI 兼容上游在 SSE 末尾不给 usage，
+导致 `message_delta` 的 token 全为 0、`api_call_usage` 不写行、统计页空白，
+**且不报任何错**。四家参考实现全部做了这件事。见
+[M2C/C2M RFC](../../working/rfcs/2026-10-20-m2c-c2m-translation.md) §4.3.7。
+
+> **注意不对称**：`stream_options` 仍属于 C2M 的丢弃清单（上游是 Anthropic，无此字段），
+> 但 M2C 必须**生成**它（上游是 Chat，需要它才回 usage）。同一个字段名在两条方向上的处置相反，
+> 这是协议差异而非矛盾。
 
 必须显式丢弃而非留着：链条末尾只有 `removeIf(Objects::isNull)`，**非 null 的多余字段会原样
 发给上游然后 400**。
