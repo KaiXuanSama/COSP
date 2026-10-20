@@ -6,11 +6,11 @@
 > 本文档既是设计契约也是实现说明：正文的「必须 / 不要」是约束，
 > 标注了实测日期的段落是已验证的事实。
 >
-> 请求侧见 [REQUEST-CONTRACT.md](./REQUEST-CONTRACT.md)（本文沿用其编号与术语）。
-> 相关：[AGENTS.md](../../../../AGENTS.md)、[思考链回放调查](../../../reference/COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)、
-> [C2R 请求翻译调研](../chat-responses/C2R-RESEARCH.md)、
-> [R2C 回程翻译调研](../chat-responses/R2C-RESEARCH.md)、
-> [mock-upstream](../../../../tools/mock-upstream/README.md)（参数分片等只能用 mock 触发的场景；
+> 请求侧见 [REQUEST-CONTRACT.md](./C2M-REQUEST-CONTRACT.md)（本文沿用其编号与术语）。
+> 相关：[AGENTS.md](../../../AGENTS.md)、[思考链回放调查](../COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)、
+> [C2R 请求翻译调研](../../working/rfcs/2026-09-03-protocol-translation.md)、
+> [R2C 回程翻译调研](../../working/rfcs/2026-09-03-protocol-translation.md)、
+> [mock-upstream](../../../tools/mock-upstream/README.md)（参数分片等只能用 mock 触发的场景；
 > 场景名 `translate-tool-*` / `translate-finish-reason*`，只在 `/messages` 端点有实现）
 
 M2C = Anthropic Messages 响应 → OpenAI Chat Completions 响应。
@@ -303,7 +303,7 @@ COSP 的流式链路本身已有 keep-alive 机制（实测输出里可见 `:kee
 > 帧形态正确」验收。实测三家下游 agent（Copilot / Claude CLI / Codex）多轮会话
 > 对裸名均无问题，本节担心的「下轮路由失败」未实际发生。R2C 跟随代码现状
 > （上游裸名），本节的修正（改代码 or 改本文）留独立一轮 ——
-> 见 [R2C-PLAN.md](../chat-responses/R2C-PLAN.md) §6-1。
+> 见 [R2C-PLAN.md](../../working/rfcs/2026-09-03-protocol-translation.md) §6-1。
 
 sub2api 特意把状态里的 `Model` 预置成下游原始模型名，而不是上游返回的。
 
@@ -752,7 +752,7 @@ COSP 必须自己补齐：
 
 **丢弃是可接受的起点**，但要清楚这意味着 Anthropic 上游的多轮思考缓存拿不回来。
 Copilot BYOK 会回传上一轮思考内容，因此翻译路线上开启 extended thinking 且带工具时
-可能硬失败——这与 [思考链回放调查](../../../reference/COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)
+可能硬失败——这与 [思考链回放调查](../COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md)
 的关注点重合，外部项目提供不了答案。
 
 **实测代价**（2026-09-05，MiMo 十轮工具调用链）：去程请求体里

@@ -1,14 +1,89 @@
-# Responses 协议直连实施计划
+# RFC：Responses 协议直连（`/v1/responses` 端点）
+
+- **日期**：2026-09-17（立项日：原 `RESPONSES_PROTOCOL_IMPLEMENTATION_PLAN.md` 首次入库）
+- **状态**：**已定稿且实施完毕**（决策已晋升 [ADR-0006](../../adr/adr-0006-responses-direct.md)）
+- **相关 ADR**：ADR-0006（Responses 直连实施方案）
+- **契约**：本功能的协议形态见 [C2M 契约](../../reference/contracts/) 与 Responses 执行器代码
+
+> 本 RFC 记录「让 COSP 原生接受 `/v1/responses` 端点」的完整档案，含 V13 迁移、
+> 枚举加值、读写链路改造与四阶段实施记录。
+
+## 导航目录
+
+| 章节 | 内容 |
+|---|---|
+| [§A 结果摘要](#a-结果摘要) | 实施总结（原 `SUMMARY.md`） |
+| [§B 实施计划与记录](#b-实施计划与记录) | 完整计划（原 `PLAN.md`，约 63 KB） |
+
+---
+
+## A. 结果摘要
+
+
+> **需求背景**：为 COSP 增加 OpenAI Responses API 直连能力 —— 下游打 `/v1/responses`，
+> 上游走供应商的 Responses 端点，报文原样透传。让只支持 Responses 的模型（如 GPT-6-Astra）
+> 可被 Copilot 使用。不含 C2R / R2C 翻译。
+>
+> 完整决策与理由见 [PLAN.md](#b-实施计划与记录)。
+
+## 做了什么
+
+- **三阶段落地**（详见 PLAN.md §9–§15 各阶段实施记录）：
+  - V13 迁移：`provider_config` 加 `responses_base_url` 列（空回退 `base_url`）+
+    `supported_protocols` 回填 `RESPONSES` 到默认集合（PLAN.md §3）
+  - `WireProtocol.RESPONSES` 枚举值 + 前后端读写链路：供应商编辑页第三个协议勾选、
+    三处 base URL、规则引擎白名单（PLAN.md §4、§11）
+  - `/v1/responses` 端点 + `GenericResponsesChatService` 直连执行器：与 Anthropic 侧
+    平级、不继承 `AbstractUpstreamChatService`、响应全程 String 透传（PLAN.md §5、§14）
+- **修了实盘暴露的空响应判定缺口**：Responses 判定器漏了 `response.output_text.delta`
+  与落库链一度零覆盖，非流式是薄弱面（PLAN.md §15）
+- **前置的协议改名**（独立第一步，V12）：`OPENAI→CHAT`、`ANTHROPIC→MESSAGES`，
+  行为零变化，见 [PROTOCOL-RENAME-PLAN.md](2026-09-30-protocol-rename.md)
+
+## 关键决策
+
+| 决策 | 一句话理由 | 详见 |
+|---|---|---|
+| 直连执行器平级新建，不复用 Chat 执行器 | 透传路线要求对上游格式差异免疫，继承会拉进 `choices[]` 结构假设 | PLAN.md §5.1 |
+| 响应全程 String 透传，不加响应侧 DTO | 加 DTO 等于加一道上游字段必须符合预期结构的约束 | PLAN.md §5.5、§7 |
+| `responses_base_url` 空时回退 `base_url` | 与 `anthropic_base_url` 同语义，避免逼用户填三遍同一地址 | PLAN.md §3.2 |
+| 翻译回退序独立常量 `TRANSLATION_FALLBACK_ORDER` | 枚举声明序不承载语义，展示序按「已实现优先」另排 | PLAN.md §6 |
+| 不按模型名猜能力（如按 gpt-5 前缀剥 temperature） | 与「不硬编码供应商」原则冲突，中转站改名即失效 | PLAN.md §7 |
+| 请求体规则先于端点支持 RESPONSES | 规则引擎的协议白名单先行，端点上线前规则已可配置 | PLAN.md §13.1 |
+| 空响应判定器安全超集（7 终态事件） | 多认不错（永不匹配），删掉万一兼容端点真发反而危险 | PLAN.md §15.6 |
+
+## 未做 / 遗留
+
+- **~~C2R / R2C 翻译未实现~~ 已完成**（2026-10-04）：去程与回程均落地并三家供应商实机验证通过
+  （[C2R-PLAN.md](2026-09-03-protocol-translation.md#c-c2r-去程--计划与实施记录)、
+  [R2C-PLAN.md](2026-09-03-protocol-translation.md#e-r2c-回程--计划与实施记录)）
+- **`previous_response_id` / `store` / `conversation` 不解释不缓存**：直连下 `@JsonAnySetter`
+  原样透传；跨协议翻译时才需决策（PLAN.md §7）
+- **`response.failed` 的日志措辞与分类**：行为正确（该重试），但归类为空响应导致措辞不准；
+  属设计改动非修补（PLAN.md §15.7）
+- **Chat 侧 `refusal` 字段疑似漏判**：疑似而非已证（手头无 Chat 官方文档），
+  属既有线路，独立一轮（PLAN.md §15.7）
+- **「每加版本手工冻结上一个」的结构性问题**：已踩两次，值得独立重构（PLAN.md §8）
+
+## 相关
+
+- [BYOK 思考链回放调查](../../reference/COPILOT_BYOK_REASONING_REPLAY_INVESTIGATION.md) —
+  实施过程中暴露的独立问题：Responses 加密思考 vs Chat 明文回放的适用范围差异
+
+---
+
+## B. 实施计划与记录
+
 
 > **状态**：已完成（2026-09-25，阶段三落地）
 >
 > **前身文档**：本功能早期写过一份 `implementation.md`（写于 schema V11、
 > 给「另一台机器上的自己」的实施说明），其中协议改名方案（`CHAT_COMPLETIONS` 命名）
-> 后来被 [PROTOCOL-RENAME-PLAN.md](../protocol-translation/PROTOCOL-RENAME-PLAN.md)
+> 后来被 [PROTOCOL-RENAME-PLAN.md](2026-09-30-protocol-rename.md)
 > 的 `CHAT` 方案取代，阶段二/三的内容也已并入本文 §4、§5。该文档已删除，
 > 其有效结论全部沉淀在本文与前述改名计划中。
 
-## 0. 本文档的性质
+### 0. 本文档的性质
 
 **计划文档，写作时曾约定不进仓库**（与当时的 `PROTOCOL_RENAME_PLAN.md` 同一约定）。
 本分支起改为入库留档：决策与其理由必须写清 —— 实现期真正需要回查的是「当初为什么这么定」。
@@ -18,7 +93,7 @@
 上游走供应商的 Responses 端点，报文原样透传）。**不含** C2R 请求翻译与 R2C 响应翻译，
 那是后续独立的一步，调研结论另见对话记录。
 
-## 1. 版本号事实
+### 1. 版本号事实
 
 当前 `SchemaMigrationRunner.CURRENT_SCHEMA_VERSION = 12`。V12 是上一步的「线路协议按 API
 路径全称重命名」（`OPENAI → CHAT`、`ANTHROPIC → MESSAGES`）。**本次要写的是 V13。**
@@ -27,7 +102,7 @@ V12 留下的一笔红利：它重建 `api_call_log` 时已把 `RESPONSES` 写�
 当时的理由是「多一个合法值零成本，而重建这张日志表两次有实际风险」。因此 **V13 不需要碰
 `api_call_log`**。
 
-## 2. 阶段划分与提交边界
+### 2. 阶段划分与提交边界
 
 三个阶段各自可独立提交、独立验证：
 
@@ -44,9 +119,9 @@ MESSAGES，因此不会落到「没有可识别协议 → 回退全集」那条�
 若不接受这段 warn，可把阶段一与阶段二合并提交。但**顺序不能倒** —— 先加枚举值再迁移，
 中间态下前端能勾选一个数据库尚未接受的值。
 
-## 3. 阶段一：V13 迁移
+### 3. 阶段一：V13 迁移
 
-### 3.1 前置：冻结 V12 的版本号常量
+#### 3.1 前置：冻结 V12 的版本号常量
 
 `migrateToV12ProtocolRename` 当前用 `CURRENT_SCHEMA_VERSION` 写版本号。把常量提到 13 之后，
 **V12 会把版本直接跳到 13，V13 静默永不执行**。
@@ -66,7 +141,7 @@ private static final double CURRENT_SCHEMA_VERSION = 13;
 > 值得考虑让 `MigrationStep` 自己持有版本号并由框架统一写库，但那是独立重构，
 > 不在本次范围内 —— 顺手做会让 V13 的 diff 混进一堆与 Responses 无关的改动。
 
-### 3.2 新增列
+#### 3.2 新增列
 
 纯 `ADD COLUMN`，不需重建表（与 V11 同类）：
 
@@ -88,7 +163,7 @@ base_url 拼 /messages，照抄原值才能让行为保持不变」，二是界�
 直接看到当前生效的地址，而不是一个空输入框加一句「留空则复用」。这一条足够支撑回填，
 但把 V8.8 那段说辞抄过来就是写了个假理由。
 
-### 3.3 回填协议集合
+#### 3.3 回填协议集合
 
 **存量供应商一律追加 `RESPONSES`。**
 
@@ -107,7 +182,7 @@ base_url 拼 /messages，照抄原值才能让行为保持不变」，二是界�
 - 下游打 `/v1/messages` → 规则 1 命中 MESSAGES → 直连，不受影响
 - 下游打 `/v1/responses` → 规则 1 命中 RESPONSES → 直连 → 供应商没这个端点就 404（预期）
 
-#### 三类值的处理口径
+##### 三类值的处理口径
 
 | 存量值 | 处理 | 理由 |
 |---|---|---|
@@ -119,7 +194,7 @@ base_url 拼 /messages，照抄原值才能让行为保持不变」，二是界�
 配置，调度器会明确报错而非静默回退」，其全部价值在于**可被发现**。补一个 RESPONSES 会把一个
 用户主动禁用的供应商变成部分可用，而用户不会知道自己的配置被改了。
 
-#### 实现
+##### 实现
 
 SQL 能完整表达，不需要像 V8.9 那样逐行读改：
 
@@ -142,7 +217,7 @@ WHERE json_valid(supported_protocols)
 注释里要点明这一点，否则将来加第四个协议时会有人以为「追加就行」。之所以在意字母序，
 见 §6。
 
-### 3.4 `schema.sql` 的 DDL 默认值
+#### 3.4 `schema.sql` 的 DDL 默认值
 
 ```sql
 supported_protocols TEXT NOT NULL DEFAULT '["CHAT","MESSAGES","RESPONSES"]'
@@ -158,7 +233,7 @@ responses_base_url  TEXT NOT NULL DEFAULT '',
 「中转站的 Anthropic 端点位置不可预测」；Responses 端点同理，且多数中转站**根本没有**
 这个端点，所以留空回退 `base_url` 是常态而非例外。
 
-### 3.5 测试
+#### 3.5 测试
 
 `SchemaMigrationRunnerTests` 按 skill 要求的四条补：
 
@@ -176,7 +251,7 @@ responses_base_url  TEXT NOT NULL DEFAULT '',
 第 6 条要写成断言 `isEqualTo("[]")` 而不是 `doesNotContain("RESPONSES")` —— 后者在
 `[]` 被改成 `["CHAT"]` 这种错误下仍然通过。
 
-### 3.6 阶段一明确不做
+#### 3.6 阶段一明确不做
 
 - 不加 `WireProtocol.RESPONSES` 枚举值（归阶段二）
 - 不碰 `api_call_log`（V12 已预留白名单）
@@ -184,13 +259,13 @@ responses_base_url  TEXT NOT NULL DEFAULT '',
   「缺失视为全协议」，因此存量规则组会自动适用于新协议 —— 这是既有语义的自然结果，
   不是遗漏。往里追加 `RESPONSES` 反而会把「未声明」这个状态破坏掉。
 
-## 4. 阶段二：枚举加值与读写链路
+### 4. 阶段二：枚举加值与读写链路
 
-### 4.1 两处「两个协议」硬假设
+#### 4.1 两处「两个协议」硬假设
 
 加第三个枚举值会让两处代码从「正确」变成「悄悄错」，且都不报错。
 
-#### ① `ProviderProtocolSupport.OPTIMISTIC_ALL` —— 改理由，不改实现
+##### ① `ProviderProtocolSupport.OPTIMISTIC_ALL` —— 改理由，不改实现
 
 ```java
 private static final Set<WireProtocol> OPTIMISTIC_ALL = EnumSet.allOf(WireProtocol.class);
@@ -208,7 +283,7 @@ private static final Set<WireProtocol> OPTIMISTIC_ALL = EnumSet.allOf(WireProtoc
 而非「不做准备」的副产品。这是纯注释改动，但不改会留下一句与代码现状矛盾的话 ——
 过期的理由比没有理由更误导。
 
-#### ② `ProtocolDispatchManager` 规则 2 遍历 `values()`
+##### ② `ProtocolDispatchManager` 规则 2 遍历 `values()`
 
 `WireProtocol` 的 Javadoc 自己预警过：
 
@@ -223,7 +298,7 @@ private static final Set<WireProtocol> OPTIMISTIC_ALL = EnumSet.allOf(WireProtoc
   （`reasoning.encrypted_content` 在 Chat 里无处安放）
 
 > **后记（2026-10-04）**：本节写就时 C2R/R2C 尚未实现；二者现已双向落地并实机验证
-> （[R2C-PLAN.md](../protocol-translation/chat-responses/R2C-PLAN.md)），上列末条的
+> （[R2C-PLAN.md](2026-09-03-protocol-translation.md#e-r2c-回程--计划与实施记录)），上列末条的
 > 「必然丢信息」已被 §7.4 的 reasoning item 明文往返闭环解决。「已实现优先」的排序原则不变。
 
 验证这个顺序合理：供应商勾了 MESSAGES + RESPONSES、下游打 chat 时，会挑 MESSAGES
@@ -233,7 +308,7 @@ private static final Set<WireProtocol> OPTIMISTIC_ALL = EnumSet.allOf(WireProtoc
 放在 `ProtocolDispatchManager` 还是 `WireProtocol`？倾向前者：它是调度策略而非协议属性，
 放在枚举里会让人以为声明顺序又有语义了。
 
-### 4.2 后端逐点清单
+#### 4.2 后端逐点清单
 
 对照 `anthropic_base_url` 的完整落地路径：
 
@@ -255,7 +330,7 @@ private static final Set<WireProtocol> OPTIMISTIC_ALL = EnumSet.allOf(WireProtoc
 换成一个入参 record，但那会波及三条保存路径与它们的测试，**建议本次先加参数**，
 留待将来真有第四个字段时一起改。
 
-### 4.3 恰好正确、需测试钉住
+#### 4.3 恰好正确、需测试钉住
 
 两处不需改动，但依赖「Responses 属于 OpenAI 系」这个隐含事实：
 
@@ -267,7 +342,7 @@ private static final Set<WireProtocol> OPTIMISTIC_ALL = EnumSet.allOf(WireProtoc
 两处都是「恰好对」，所以要补测试。否则将来有人改那个 `if`（比如改成 `switch`）时，
 不会知道第三条线路依赖它现在的形状。
 
-### 4.4 前端
+#### 4.4 前端
 
 `frontend/src/types/protocol.ts`：加 `'RESPONSES'`、`WIRE_PROTOCOL_LABELS` 加
 `'Responses API'`、`WIRE_PROTOCOL_ABBREVIATIONS` 加 `'R'`。
@@ -290,7 +365,7 @@ private static final Set<WireProtocol> OPTIMISTIC_ALL = EnumSet.allOf(WireProtoc
 
 `Settings.vue`：三条保存路径（新建弹窗、改名弹窗、编辑抽屉）各加一个协议开关 + 一个地址框。
 
-### 4.5 测试夹具的手写 DDL
+#### 4.5 测试夹具的手写 DDL
 
 四个测试文件手写了 `CREATE TABLE provider_config`：
 
@@ -302,9 +377,9 @@ private static final Set<WireProtocol> OPTIMISTIC_ALL = EnumSet.allOf(WireProtoc
 rowMapper 读新列后，这些夹具都要加 `responses_base_url`，否则 `no such column`。
 这是加列时必然撞上的一处，先列出来免得当成意外。
 
-## 5. 阶段三：接线
+### 5. 阶段三：接线
 
-### 5.1 结构：与 Anthropic 平级，不继承 `AbstractUpstreamChatService`
+#### 5.1 结构：与 Anthropic 平级，不继承 `AbstractUpstreamChatService`
 
 `GenericAnthropicChatService` 的类注释给了先例：
 
@@ -319,7 +394,7 @@ Anthropic 与 Chat 的差异，而不是 Chat 的一个变体。且空响应判�
 所以 `GenericResponsesChatService` 与另两个平级。代价同 Anthropic：接线顺序第三次写一遍。
 这是有意接受的，理由与那边相同。
 
-### 5.2 新增文件
+#### 5.2 新增文件
 
 | 文件 | 要点 |
 |---|---|
@@ -335,12 +410,12 @@ Anthropic 与 Chat 的差异，而不是 Chat 的一个变体。且空响应判�
 —— 不包 defer 时异常在组装期就逃出控制器方法，`onErrorResume` 不在链上，下游拿到 WebFlux
 默认 500（流式也不是 SSE error 帧）。新端点要有同类测试。
 
-### 5.3 安全：`GatewayAuthFilter.PROTECTED_PATHS` 加 `/v1/responses`
+#### 5.3 安全：`GatewayAuthFilter.PROTECTED_PATHS` 加 `/v1/responses`
 
 **不能漏。** 漏了等于新开一个绕过下游鉴权的聊天入口 —— 真实的安全缺口，且在未开启下游鉴权
 时完全无症状，只有开启后才暴露。该字段的注释已经写了「将来若再有新的聊天端点，加一行即可」。
 
-### 5.4 终止事件不止一个
+#### 5.4 终止事件不止一个
 
 Anthropic 只有 `message_stop`，Responses 有一串。调研中 sub2api 的清单可直接用：
 
@@ -354,9 +429,12 @@ response.failed | response.cancelled | response.canceled | error
 SSE 的 `event:` 类型回填走 `AnthropicController` 那套 `extractEventType`（从事件 JSON 的
 `type` 字段取），Responses 与 Anthropic 同类，与 Chat 不同。
 
-### 5.5 两处必须现在就定的取舍
+#### 5.5 两处必须现在就定的取舍
+> **决策已归档**：[ADR-0006 Responses 直连的端点与执行器设计](../../adr/adr-0006-responses-direct.md)。
+> 本节保留两处取舍的原始论证，ADR 汇总了该功能的全部决策。
 
-#### ① `max_output_tokens` 不接
+
+##### ① `max_output_tokens` 不接
 
 AGENTS.md 已有明确记载：`MaxOutputTokensSetting` 只有 Anthropic 线路消费，因为那条线路
 `max_tokens` 必填，不补就发不出去；OpenAI 线路刻意不接，因为那边该字段可选，接上会给所有
@@ -367,7 +445,7 @@ Responses 的 `max_output_tokens` **同样可选**，所以按同一条原则**�
 这一点很容易顺手接上（名字就叫 `max_output_tokens`，看起来天造地设），
 所以代码里要写清为什么不接，而不是留个空白让人补。
 
-#### ② 思考深度：`Off` 档终于有原生表达
+##### ② 思考深度：`Off` 档终于有原生表达
 
 Responses 用 `reasoning.effort`，而调研已一手核验它**支持 `"none"`**
 （`new-api/relaykit/relayconvert/reasoning/intent.go:15` 的 `EffortNone Effort = "none"`，
@@ -390,12 +468,12 @@ Responses 用 `reasoning.effort`，而调研已一手核验它**支持 `"none"`*
 **不做自动降级**：`reasoning.effort` 的档位清单与 COSP 的七档不完全重合，不认识的档位原样
 发出，由上游用错误码回答。这与现有原则一致。
 
-#### ③ Anthropic 思考方式不接
+##### ③ Anthropic 思考方式不接
 
 `AnthropicThinkingSetting` 只服务 MESSAGES 线路，Responses 侧没有对应概念
 （`thinking` 对象是 Anthropic 的形态）。不接。
 
-### 5.6 usage：新 parser，但换算是「直接搬」
+#### 5.6 usage：新 parser，但换算是「直接搬」
 
 ```
 prompt_tokens     = input_tokens                            ← 本身就是总输入
@@ -414,7 +492,7 @@ OpenAI 系不拆，`input_tokens` 已含缓存部分。照抄会让缓存 token 
 `usage_raw` 存上游原文。跨事件合并规则参照 Anthropic 侧：三个 token 列可跨事件合并
 （只有正数才覆盖），`usage_raw` 永远挑一份完整原文而非拼字段。
 
-## 6. 四种顺序互不相同，不要「统一」
+### 6. 四种顺序互不相同，不要「统一」
 
 加第三个协议后出现四个顺序，其中三个独立：
 
@@ -430,7 +508,7 @@ OpenAI 系不拆，`input_tokens` 已含缓存部分。照抄会让缓存 token 
 
 这一节要写进代码注释（至少在 `TRANSLATION_FALLBACK_ORDER` 旁边），否则将来必有人来「统一」。
 
-## 7. 明确不做的事
+### 7. 明确不做的事
 
 - **不做 C2R 请求翻译与 R2C 响应翻译。** 独立的下一步。
 - **不接 `previous_response_id` / `store` / `conversation`。** 直连路径下这些字段由
@@ -444,7 +522,7 @@ OpenAI 系不拆，`input_tokens` 已含缓存部分。照抄会让缓存 token 
   「对上游格式差异免疫是当前的优势，引入响应 DTO 等于加一道上游字段必须符合预期结构的约束」。
 - **不动 `/api/*` Ollama 发现链。** Responses 不参与模型发现协议。
 
-## 8. 遗留与待确认
+### 8. 遗留与待确认
 
 - `docs/PROTOCOL_RENAME_PLAN.md` 仍未跟踪。按本文档 §0 的约定，它与本文件都不进仓库；
   实施完成后若要留存结论，另写总结文档。
@@ -453,11 +531,11 @@ OpenAI 系不拆，`input_tokens` 已含缓存部分。照抄会让缓存 token 
 - §4.2 提到 `updateProviderProtocols` 的三参签名已开始难读，本次先加参数，留待第四个字段。
 - §3.1 提到「每加版本手工冻结上一个」是结构性问题，已连续踩两次，值得独立重构但不在本次范围。
 
-## 9. 阶段一实施记录
+### 9. 阶段一实施记录
 
 **状态：已完成。** 后端 825 个测试全通过（原 820 + 新增 5），BUILD SUCCESS。
 
-### 9.1 落地内容
+#### 9.1 落地内容
 
 | 文件 | 改动 |
 |---|---|
@@ -465,7 +543,7 @@ OpenAI 系不拆，`input_tokens` 已含缓存部分。照抄会让缓存 token 
 | `schema.sql` | `supported_protocols` DEFAULT 加 `RESPONSES`、新增 `responses_base_url` 列 |
 | `SchemaMigrationRunnerTests` | 新增 5 个用例、新增 `seedDatabaseAtVersion` 与两个读取辅助、修正 3 处受影响的存量断言 |
 
-### 9.2 计划外发现一：回填端点也会被触发器挡住
+#### 9.2 计划外发现一：回填端点也会被触发器挡住
 
 Plan §3.3 只提到「追加协议的 UPDATE 会撞上行级校验触发器」，实现时我照此只在
 `appendResponsesProtocolForV13` 里摘装触发器 —— **漏了回填端点那条 UPDATE 同样是 UPDATE**。
@@ -482,7 +560,7 @@ Plan §3.3 只提到「追加协议的 UPDATE 会撞上行级校验触发器」�
 > 属性」而不是「这张表的属性」。**判断该不该摘触发器的依据是「本次迁移是否 UPDATE
 > `provider_config`」，而不是「哪一条语句」。**
 
-### 9.3 计划外发现二：`seedDatabaseAtPreviousVersion` 会随新版本自动前移
+#### 9.3 计划外发现二：`seedDatabaseAtPreviousVersion` 会随新版本自动前移
 
 测试夹具 `seedDatabaseAtPreviousVersion` 取注册表的**倒数第二项**，这个设计的原意是
 「新增迁移时本方法无需修改」，对「最新那个迁移是唯一该跑的」这个不变量确实成立。
@@ -501,7 +579,7 @@ Plan §3.3 只提到「追加协议的 UPDATE 会撞上行级校验触发器」�
 **这类夹具将来还会再咬一次**：任何「构造某个历史版本的形态」的用例都不能用自动前移的夹具。
 判据是：用例里是否出现只在某个版本区间内合法的字面量或结构。
 
-### 9.4 三处存量断言的修正
+#### 9.4 三处存量断言的修正
 
 都是「跑完整迁移链、断言终态」的用例，V13 追加 RESPONSES 后终态变了：
 
@@ -515,17 +593,17 @@ Plan §3.3 只提到「追加协议的 UPDATE 会撞上行级校验触发器」�
 plan §3.6「不碰 `body_rules_json`」的决定是自洽的 —— 那里的「未声明即全协议」语义让存量
 规则组自动适用于新协议，不需要迁移介入。
 
-### 9.5 已知中间态（符合预期，不修）
+#### 9.5 已知中间态（符合预期，不修）
 
 `ProviderProtocolSupport` 现在会对库里的 `RESPONSES` 刷 warn，因为枚举值还不存在。
 集合里还有 CHAT 与 MESSAGES，所以不会落到「回退全集」那条路，两条现有线路行为不变。
 阶段二加枚举值后这条 warn 自然消失。
 
-## 10. 阶段二（后端部分）实施记录
+### 10. 阶段二（后端部分）实施记录
 
 **状态：后端已完成，前端未动。** 后端 834 个测试全通过（阶段一 825 + 新增 9），BUILD SUCCESS。
 
-### 10.1 落地内容
+#### 10.1 落地内容
 
 | 文件 | 改动 |
 |---|---|
@@ -541,7 +619,7 @@ plan §3.6「不碰 `body_rules_json`」的决定是自洽的 —— 那里的�
 | `ProviderModelDiscoveryService` | 仅 Javadoc：写清「排除式判断」为何让新 OpenAI 系协议自动落对 |
 | `ProviderRequestHeaderService` | 仅 Javadoc：同上 |
 
-### 10.2 计划外发现：既有用例遍历 `values()` 而恰好通过
+#### 10.2 计划外发现：既有用例遍历 `values()` 而恰好通过
 
 `ProtocolDispatchManagerTests.bothProtocolsSupportedStillPrefersSameNameOverTranslation`
 在加枚举值后失败：
@@ -564,7 +642,7 @@ plan §3.6「不碰 `body_rules_json`」的决定是自洽的 —— 那里的�
 > 判据：**测试里出现 `values()` 时要问「这个命题真的对全部枚举值成立吗」。**
 > 若命题实际依赖某个子集（勾选集、已实现集），遍历全集只是当下的巧合。
 
-### 10.3 「恰好正确」的两处：加了测试而非改实现
+#### 10.3 「恰好正确」的两处：加了测试而非改实现
 
 | 位置 | 判断 | Responses 落向 |
 |---|---|---|
@@ -580,7 +658,7 @@ plan §3.6「不碰 `body_rules_json`」的决定是自洽的 —— 那里的�
 我一度写了个用 `values()` 间接断言的用例，但它是同义反复、零断言价值，已删除，
 改为在生产代码 Javadoc 里写清这个依赖。
 
-### 10.4 新增测试（9 个）
+#### 10.4 新增测试（9 个）
 
 - `ProtocolDispatchManagerTests` +4：Responses 直连、三条全勾时每条都直连、
   **回退序优先于枚举声明序**、回退序覆盖全部协议
@@ -593,7 +671,7 @@ plan §3.6「不碰 `body_rules_json`」的决定是自洽的 —— 那里的�
 必须挑 MESSAGES。**枚举声明序是 CHAT, RESPONSES, MESSAGES，会挑 RESPONSES** ——
 而 C2M 已实现、C2R 未实现。这一条同时证明「用了回退序」与「回退序的排法是对的」。
 
-### 10.5 阶段二后端明确不做
+#### 10.5 阶段二后端明确不做
 
 - **不加 `/v1/responses` 端点**（阶段三）。因此现在勾了 RESPONSES 又打那个路径会得到 404，
   但那是「路径不存在」而非「协议不支持」。
@@ -602,11 +680,11 @@ plan §3.6「不碰 `body_rules_json`」的决定是自洽的 —— 那里的�
   换 record 会波及三条保存路径与它们的测试，而本次主题是加一个端点维度。留待第四个字段。
 - ~~**前端未动**~~ 已在阶段二后续完成，见 §11。
 
-## 11. 阶段二（前端部分）实施记录
+### 11. 阶段二（前端部分）实施记录
 
 **状态：已完成。** 前端 939 个测试全通过（原 930 + 新增 9），`vue-tsc -b` 0 错误。
 
-### 11.1 落地内容
+#### 11.1 落地内容
 
 | 文件 | 改动 |
 |---|---|
@@ -617,7 +695,7 @@ plan §3.6「不碰 `body_rules_json`」的决定是自洽的 —— 那里的�
 | `views/Settings.vue` | 弹窗三行改 `v-for`；抽屉折叠区改 `v-for`；镜像状态改为按协议索引的 `Record`；标题改用短名 + 气泡 |
 | `request-body-rules/*` + `RuleGroupCard.vue` | 四处默认全集改用 `RULE_ENGINE_WIRE_PROTOCOLS` |
 
-### 11.2 标题改用接口名（用户提出）
+#### 11.2 标题改用接口名（用户提出）
 
 原先是「OpenAI 请求Url」「Anthropic 请求Url」—— **两行都是厂商名**，而 Responses 同属 OpenAI，
 沿用厂商名会出现两行都叫「OpenAI」。改成 `Chat / Responses / Messages 请求Url` 后三行同维度。
@@ -629,7 +707,7 @@ plan §3.6「不碰 `body_rules_json`」的决定是自洽的 —— 那里的�
 Responses 放第二行（`ALL_WIRE_PROTOCOLS` 取语义序 `CHAT, RESPONSES, MESSAGES`），
 理由即用户所说：它与 Chat 同属 OpenAI。
 
-### 11.3 计划外发现：前端全集会让新建规则组被后端 400
+#### 11.3 计划外发现：前端全集会让新建规则组被后端 400
 
 `ALL_WIRE_PROTOCOLS` 有一类消费者是**请求体规则组**的「适用协议」，四处用它铺默认全集
 （`createRuleGroup`、`emptyGroup`、`normalizeProtocols` 的缺省、帮助页示例 JSON）。
@@ -649,7 +727,7 @@ Responses 放第二行（`ALL_WIRE_PROTOCOLS` 取语义序 `CHAT, RESPONSES, MES
 > 后端拒绝的取值。Responses 请求体改写落地时，两处白名单必须同一批改 ——
 > 先改任一侧都会造成「界面能勾但保存报错」或「保存成功但规则不生效」。
 
-### 11.4 联动状态必须按协议拆开
+#### 11.4 联动状态必须按协议拆开
 
 原先是一个布尔 `mirroringAnthropicBaseUrl`（Chat 地址联动 Anthropic）。加入 Responses 后
 联动从一对一变成一对多，而**两条线路的联动状态互相独立**：
@@ -661,7 +739,7 @@ Responses 放第二行（`ALL_WIRE_PROTOCOLS` 取语义序 `CHAT, RESPONSES, MES
 `mirrorBaseUrl` 只改名不改实现：函数体与目标是哪条线路无关，留着协议专属的名字会让
 调用方以为需要为每条线路再写一份。
 
-### 11.5 抽屉折叠区改用 v-for
+#### 11.5 抽屉折叠区改用 v-for
 
 原先「首行 + 单个次行」都展开写死，注释理由是「Transition 只接受单个子元素，
 而两者内容结构相同但仅此两处，重复的代价小于消重」。加入第三条线路后**次行不再是固定一行**，
@@ -671,7 +749,7 @@ Responses 放第二行（`ALL_WIRE_PROTOCOLS` 取语义序 `CHAT, RESPONSES, MES
 `__collapse` 那一层因此多担了一个职责：把多行收进单个过渡子元素。顺带给它加了
 `display: flex` + `gap` —— 内部行同时出现同时消失，不需要像包装层那样单独过渡间距。
 
-### 11.6 拉取模型的优先级与展示序不同
+#### 11.6 拉取模型的优先级与展示序不同
 
 `resolveModelPullTarget` 用 `CHAT → RESPONSES → MESSAGES`，依据是**请求头相似度**：
 Responses 与 Chat 同为 OpenAI 系（同一个 `Authorization: Bearer`、不需要 `anthropic-version`），
@@ -681,23 +759,23 @@ Responses 与 Chat 同为 OpenAI 系（同一个 `Authorization: Bearer`、不�
 因此用独立常量 `MODEL_PULL_PRIORITY` 写出 —— 将来某个协议的请求头变了，只该改这一处。
 这与后端「四个顺序互不相同」是同一类问题，现在前端也有两个。
 
-### 11.7 spec 里 `RESPONSES` 从兜底路径变成查表路径
+#### 11.7 spec 里 `RESPONSES` 从兜底路径变成查表路径
 
 `protocol.spec.ts` 原先用 `RESPONSES` 举例测「未知协议走首字母兜底」。现在它走查表，
 那条断言会悄悄变成查表的重复测试。改用真正未知的标识（`gemini` / `COMPLETIONS`）——
 **测兜底路径必须用真正未知的值**，否则断言会随协议加入而失效却仍然通过。
 
-### 11.8 前端明确不做
+#### 11.8 前端明确不做
 
 - **「适用协议」不加 Responses**：后端规则引擎不支持，见 §11.3。
 - **未跑 `npm run build`**：那会覆写 `src/main/resources/static`，而服务正在运行
   （本次对话本身经它代理）。界面验证留给用户重启后进行。
 
-## 12. 修正：展示序改为跟随翻译回退优先级
+### 12. 修正：展示序改为跟随翻译回退优先级
 
 **状态：已完成。** 前端 939 通过、`vue-tsc` 0 错误、后端 `ProtocolDispatchManagerTests` 13 通过。
 
-### 12.1 一处事实纠正
+#### 12.1 一处事实纠正
 
 用户提出「按现在的显示顺序，上游同时支持 M 和 R 时 C 请求会优先选 R 翻译」。
 
@@ -705,7 +783,7 @@ Responses 与 Chat 同为 OpenAI 系（同一个 `Authorization: Bearer`、不�
 `CHAT → MESSAGES → RESPONSES`（已实现优先），该场景选的是 MESSAGES。
 `translationTargetFollowsFallbackOrderNotEnumDeclarationOrder` 正是钉这一点的用例。
 
-### 12.2 但核心诉求成立，而且指出了真问题
+#### 12.2 但核心诉求成立，而且指出了真问题
 
 **前端展示序（`C R M`）与后端回退序（`C M R`）不一致，这本身就是误导。**
 协议地址行从上到下排列，用户会把那个排列读成优先级 —— 于是界面在暗示一条
@@ -717,7 +795,7 @@ Responses 与 Chat 同为 OpenAI 系（同一个 `Authorization: Bearer`、不�
 改为 `ALL_WIRE_PROTOCOLS = ['CHAT', 'MESSAGES', 'RESPONSES']`，与后端逐项一致。
 两处 Javadoc 都写明「同一个事实的两个表达，改一处必须改另一处」。
 
-### 12.3 顺序清单更新（现在是 4 个，其中 2 个必须同步）
+#### 12.3 顺序清单更新（现在是 4 个，其中 2 个必须同步）
 
 | 顺序 | 值 | 依据 | 关系 |
 |---|---|---|---|
@@ -730,7 +808,7 @@ Responses 与 Chat 同为 OpenAI 系（同一个 `Authorization: Bearer`、不�
 拉取模型不经任何翻译，只差一个 `anthropic-version` 头，不该受翻译优先级影响。
 它的注释已从「与展示序相同但理由不同」改为「与展示序**不同**，而这个差异即独立的理由」。
 
-### 12.4 计划外发现：`DEFAULT_NEW_PROVIDER_PROTOCOLS` 硬编码导致 4 个用例失败
+#### 12.4 计划外发现：`DEFAULT_NEW_PROVIDER_PROTOCOLS` 硬编码导致 4 个用例失败
 
 改顺序后 4 个测试失败，全指向 `normalizeProtocols` 的脏数据回退与新建默认值 ——
 根因是 `DEFAULT_NEW_PROVIDER_PROTOCOLS` 硬编码了一份 `['CHAT', 'RESPONSES', 'MESSAGES']`。
@@ -739,7 +817,7 @@ Responses 与 Chat 同为 OpenAI 系（同一个 `Authorization: Bearer`、不�
 改顺序时漏，还会连带影响 `normalizeProtocols`（脏数据回退用的正是它）——
 一处硬编码造成两个语义无关的功能同时出错。
 
-### 12.5 两处 TODO（用户要求）
+#### 12.5 两处 TODO（用户要求）
 
 **① 协议流转编排**（`ALL_WIRE_PROTOCOLS` 与 `TRANSLATION_FALLBACK_ORDER` 各一条）
 
@@ -755,11 +833,11 @@ Responses，而它名下模型 1 只支持 Responses、模型 2 只支持 Messag
 
 **② Responses 请求体改写规则**（`RULE_ENGINE_WIRE_PROTOCOLS` 一条）—— **已在 §13 完成**
 
-## 13. 请求体规则支持 RESPONSES（端点之前先行）
+### 13. 请求体规则支持 RESPONSES（端点之前先行）
 
 **状态：已完成。** 后端 837 通过（+3）、前端 949 通过（+10）、`vue-tsc` 0 错误。
 
-### 13.1 为何在端点之前做
+#### 13.1 为何在端点之前做
 
 `POST /v1/responses` 尚未接入，因此声明了该协议的规则组**当前不会被执行** ——
 `RequestBodyRuleEngine.transform` 按上游协议筛组，没有那条线路就没有调用方。
@@ -771,7 +849,7 @@ Responses，而它名下模型 1 只支持 Responses、模型 2 只支持 Messag
 2. **请求体改写是接一个新中转站时最先需要的能力。** 等端点落地才放开，那段时间里用户
    在界面上看不到这个选项，端点上线当天才能开始配规则。
 
-### 13.2 改动只有一处实质
+#### 13.2 改动只有一处实质
 
 | 位置 | 改动 |
 |---|---|
@@ -781,7 +859,7 @@ Responses，而它名下模型 1 只支持 Responses、模型 2 只支持 Messag
 其余全是注释与测试。**预览接口不需要改**：它走 `transformWithRules`，刻意不做协议筛选
 （编辑器里「适用协议」是规则组自己的属性，替用户筛掉正在编辑的组只会让预览变空白）。
 
-### 13.3 `RULE_ENGINE_WIRE_PROTOCOLS` 现在等于全集，但保留
+#### 13.3 `RULE_ENGINE_WIRE_PROTOCOLS` 现在等于全集，但保留
 
 两者语义不同：`ALL_WIRE_PROTOCOLS` 是「系统认识哪些协议」，本常量是「规则引擎能对哪些
 协议生效」，而后者受**后端白名单**约束。
@@ -791,7 +869,7 @@ Responses，而它名下模型 1 只支持 Responses、模型 2 只支持 Messag
 `ALL_WIRE_PROTOCOLS` —— 若写成比对，将来某个新协议加进系统但规则引擎还没支持时，
 断言会自动通过，而那正是需要它失败的时刻。
 
-### 13.4 V1 兼容那条判断不需要改，但理由值得写下
+#### 13.4 V1 兼容那条判断不需要改，但理由值得写下
 
 `parseRules` 里 V1 规则集**只在 CHAT 下执行**。加入 RESPONSES 后这条判断仍然正确，
 而且是**结构上正确**而非恰好正确：
@@ -802,7 +880,7 @@ Responses，而它名下模型 1 只支持 Responses、模型 2 只支持 Messag
 对应测试从 `legacyV1RuleSetIsSkippedOnNonOpenAiProtocol` 改名为
 `legacyV1RuleSetOnlyAppliesToChatProtocol`，非 CHAT 那一侧改为遍历 `values()`。
 
-### 13.5 计划外发现：又一处 `values()` 判据问题
+#### 13.5 计划外发现：又一处 `values()` 判据问题
 
 `RequestBodyRuleEngineTests` 里三条协议无关的用例（缺失 protocols 视为全协议、
 空 protocols 永不适用、V1 仅 CHAT）都只列举了两个协议。它们的命题**确实对全集成立**，
@@ -816,7 +894,7 @@ Responses，而它名下模型 1 只支持 Responses、模型 2 只支持 Messag
 > 前者写死字面量（如 `RULE_ENGINE_WIRE_PROTOCOLS` 与后端白名单同源），
 > 后者比对常量或遍历 `values()`（如「全协议适用」）。写反的症状都是「加协议时静默退化」。
 
-### 13.6 新增测试
+#### 13.6 新增测试
 
 后端 3 条：
 - `preV12ProtocolNamesInRuleGroupAreRejected` —— 旧协议名（`OPENAI` / `ANTHROPIC`）必须被拒。
@@ -828,18 +906,18 @@ Responses，而它名下模型 1 只支持 Responses、模型 2 只支持 Messag
 新建 `editorState.spec.ts` 七条（默认协议集、含 Responses、每项合法、ID 唯一、
 order 与命名、默认启用无规则、默认状态无组）。
 
-### 13.7 本轮明确不做
+#### 13.7 本轮明确不做
 
 - **不接 `/v1/responses` 端点**（下一步）。
 - **不扩请求体模板键**：模板是编辑器的调试样本（`base` / `message-*` / `tools` / `custom`），
   Responses 的请求体形态不同（`input` 而非 `messages`），理论上值得一套专属模板。
   但用户可选 `custom` 自填样本，而模板只影响预览、不影响生产行为 —— 优先级低于端点本身。
 
-## 14. 阶段三实施记录（后端直连场景）
+### 14. 阶段三实施记录（后端直连场景）
 
 **状态：已完成。** 后端 953 通过（+116），`BUILD SUCCESS`。
 
-### 14.1 落地内容
+#### 14.1 落地内容
 
 | 文件 | 状态 | 要点 |
 |---|---|---|
@@ -855,7 +933,7 @@ order 与命名、默认启用无规则、默认状态无组）。
 
 计划（§5）里的每一条取舍都按原样落地，没有中途改主意的地方。
 
-### 14.2 §5 之外的实现细节
+#### 14.2 §5 之外的实现细节
 
 这几处计划里没写，实现时才需要定：
 
@@ -878,7 +956,7 @@ order 与命名、默认启用无规则、默认状态无组）。
 **终态事件也要检查载荷。** 部分上游完全不发增量事件，只在 `response.completed` 里一次性
 给出完整 `output[]`。只看 delta 会把这类上游的每次调用都判成空响应。
 
-### 14.3 计划外发现：重试次数断言的语义
+#### 14.3 计划外发现：重试次数断言的语义
 
 `GenericResponsesChatServiceTests` 里两条重试用例先写成
 `isEqualTo(RetryPolicyService.DEFAULT_MAX_ATTEMPTS)`，实际是 6 而非 5。
@@ -887,7 +965,7 @@ order 与命名、默认启用无规则、默认状态无组）。
 `1 + DEFAULT_MAX_ATTEMPTS` 的表达式并抽成常量 —— 这样「改了默认预算」与「重试语义被写反」
 在失败信息里可区分，写死 `6` 则两者都只显示一个数字。
 
-### 14.4 两处否定式判据得到验证
+#### 14.4 两处否定式判据得到验证
 
 `ProviderRequestHeaderService` 的两个私有方法此前只对两种协议成立，加入 Responses 后
 **自动正确**，因为都写成否定式：
@@ -901,7 +979,7 @@ if (protocol != MESSAGES) return;                    // Responses 跳过 anthrop
 `anthropicVersionHeaderIsNotSent` 把这个「自动」变成断言 —— 否则它只是巧合。
 前者还刻意在下游头里塞了 `x-api-key`，验证它确实被删掉而非恰好没人发。
 
-### 14.5 新增测试（116 条）
+#### 14.5 新增测试（116 条）
 
 | 测试类 | 条数 | 重点 |
 |---|---|---|
@@ -918,7 +996,7 @@ if (protocol != MESSAGES) return;                    // Responses 跳过 anthrop
 且错了不报错、只是输入量虚高）与 `maxOutputTokensIsNeverInjected`（字段名看起来天造地设，
 接上去毫无阻力，用例里给模型配了明确值所以接上就会失败）。
 
-### 14.6 计划外发现：落库链一度是零覆盖
+#### 14.6 计划外发现：落库链一度是零覆盖
 
 第一版测试写完、944 全绿之后回过头核对，发现一个真缺口：
 **`GenericResponsesChatServiceTests` 从未注入 `apiCallLog`**，于是
@@ -940,7 +1018,7 @@ usage 那条我注入了替身、验证了「调用路径通」，但连它也�
 （`doOnError` 里 `findWebResponseException != null` 的排除若失效就会双记），
 以及空响应耗尽后不再补写收尾那条（`emptyResponsePassthrough` 标记的意义）。
 
-### 14.7 本轮明确不做
+#### 14.7 本轮明确不做
 
 - **不做 R2C / R2M 翻译**（两个 `TODO(待实现)` 已落在 `ResponsesService`，并交叉引用了
   `ProtocolDispatchManager` 的协议流转编排 TODO）。
@@ -954,11 +1032,11 @@ usage 那条我注入了替身、验证了「调用路径通」，但连它也�
   历史状态，与本轮新增 Responses 线路无关。要补应作为一次独立的收尾，不要混进来 ——
   混进来会让「本轮改了什么」变得难以判断。
 
-## 15. 空响应判定器的两个缺口（实盘调用暴露，已修）
+### 15. 空响应判定器的两个缺口（实盘调用暴露，已修）
 
 **状态：已修复。** 后端 972 通过（+19），`BUILD SUCCESS`。
 
-### 15.1 怎么发现的
+#### 15.1 怎么发现的
 
 阶段三落地后做了一次真机流式验证（`POST /v1/responses` 打 `[mimo-tokenplan] mimo-v2.5`
 与 `[deepseek] deepseek-flash`）。流式**本身完全正常** —— 208 条事件的 `event:` 名
@@ -971,7 +1049,7 @@ usage 那条我注入了替身、验证了「调用路径通」，但连它也�
 
 `summary` 是**空数组**，思考正文在 `content` 里 —— 而判定器对 reasoning 项只看 `summary`。
 
-### 15.2 两个缺口是同一形状
+#### 15.2 两个缺口是同一形状
 
 | # | 缺口 | 官方原文 | 触发场景 |
 |---|---|---|---|
@@ -987,7 +1065,7 @@ usage 那条我注入了替身、验证了「调用路径通」，但连它也�
 > **看到官方写 `A or B`、或看到字段标 `optional`，先假设两条都存在真实上游。**
 > 只取一支的症状与前几轮完全一样：**静默退化**，不报错、不抛异常。
 
-### 15.3 端到端后果（实测，非推断）
+#### 15.3 端到端后果（实测，非推断）
 
 把探针从判定器推进到服务层，实测**上游调用次数**：
 
@@ -1004,7 +1082,7 @@ nonStreamReasoningOnlyResponseIsNotRetried  expected: 1  but was: 6   ← 缺口
 用户最终仍能拿到内容。症状只是「有时候特别慢、token 用量莫名偏高」，
 极难被归因到判定器。
 
-### 15.4 修复（只改一个文件）
+#### 15.4 修复（只改一个文件）
 
 `ResponsesContentDetector`，三处：
 
@@ -1023,7 +1101,7 @@ nonStreamReasoningOnlyResponseIsNotRetried  expected: 1  but was: 6   ← 缺口
 `carrierHasContent(载体)` 与 `arrayHasContent(数组)`。载体可以是事件本身、`part` 对象或
 `content[]`/`summary[]` 里的元素 —— 它们在「内容存在哪个字段」这件事上结构相同。
 
-### 15.5 为什么流式没出事（也说明非流式是薄弱面）
+#### 15.5 为什么流式没出事（也说明非流式是薄弱面）
 
 两个缺口在流式下都**不会**咬到真实上游：MiMo 61 个 + DeepSeek 135 个
 `response.reasoning_text.delta`、3 + 7 个 `output_text.delta`，`.delta` 后缀匹配全接住。
@@ -1035,7 +1113,7 @@ nonStreamReasoningOnlyResponseIsNotRetried  expected: 1  but was: 6   ← 缺口
 
 这条规律对将来有用：**新增判定分支时，先想「非流式那条单次判定的路径能不能过」。**
 
-### 15.6 顺带查证的两件事
+#### 15.6 顺带查证的两件事
 
 **① `output_text` 是 SDK-only 字段。** 官方原文：
 
@@ -1052,7 +1130,7 @@ nonStreamReasoningOnlyResponseIsNotRetried  expected: 1  but was: 6   ← 缺口
 （永不匹配），但它们是来历不明的猜测项。已保留不动 —— 万一某个兼容端点真的会发，
 删掉反而更危险。
 
-### 15.7 本轮明确不做
+#### 15.7 本轮明确不做
 
 - **不动 `response.failed` 的分类**。它带 `error` 而 `output` 通常为空 → 判定为「无载荷」
   → 归入空响应重试。日志措辞因此不准确（失败 ≠ 空响应），但**行为是对的**：
@@ -1064,4 +1142,3 @@ nonStreamReasoningOnlyResponseIsNotRetried  expected: 1  but was: 6   ← 缺口
   没有 Chat 的**，因此这是「疑似」而非「已证」——不改未经验证的东西。
   要修应先取 Chat 的官方文档核实，且它属于既有线路，应独立一轮。
 - **不删超集的三个终态类型**（理由见 §15.6②）。
-

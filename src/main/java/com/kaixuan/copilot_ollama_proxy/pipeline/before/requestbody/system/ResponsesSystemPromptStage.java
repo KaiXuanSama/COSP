@@ -33,7 +33,7 @@ import java.util.Map;
  * {@link SystemPromptNormalizer#rewriteSystemToDeveloper}，本类只承担
  * <strong>支线的三件事</strong> —— 声明协议键、带 {@code @Component} 让 Spring 收集、
  * 把调用转给静态工具。决策依据与方案选型（CPA 对齐、就地改写不搬 instructions）
- * 见 C2R 计划 docs/features/protocol-translation/chat-responses/PLAN.md §0 决策 #1。
+ * 见 C2R 计划 docs/working/rfcs/2026-09-03-protocol-translation.md §0 决策 #1。
  */
 @Component
 public class ResponsesSystemPromptStage implements SystemPromptNormalizeStage {

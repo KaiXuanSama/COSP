@@ -1,4 +1,16 @@
-# Claude Desktop prompt 缓存命中率持续下降 —— 调查与修复
+# RFC：Claude Desktop prompt 缓存命中率持续下降 —— 调查与修复
+
+- **日期**：2026-10-17（立项日）
+- **状态**：**已定稿且实施完毕**
+- **相关 ADR**：（无独立决策 ADR；本次修复是既有规则引擎能力的应用）
+- **配置样例**：[`claude-desktop-cache-rule.json`](../../reference/samples/claude-desktop-cache-rule.json)
+
+> 命中率 98% → 17% 的断点定位：Claude Desktop 把 `system` 发成 4 个 block，
+> 第 4 块（无 `cache_control`）每轮追加内容，使其后 9.4 MB 的 `messages` 前缀缓存失效。
+> 修复靠新增规则引擎能力（`matches` 条件 + `regex_replace` 操作）。命中率恢复至 99%+。
+
+## 正文
+
 
 > **状态**：已定位并修复（2026-10-17 / 2026-10-18 两次形态），实测命中率 17% → 99%+，
 > 崩塌期 3.2% → 99.0%
@@ -112,7 +124,7 @@ Claude Desktop 把 `system` 发成 4 个 content block，其中**第 4 块（索
 
 ### 3.2 规则内容
 
-完整 JSON 见 [RULE-EXAMPLE.json](./RULE-EXAMPLE.json)。要点：
+完整 JSON 见 [RULE-EXAMPLE.json](../../reference/samples/claude-desktop-cache-rule.json)。要点：
 
 - 外层规则遍历 `system` 数组，`matches` 条件只选中含变化内容的块
   —— 带 `cache_control` 的稳定块不受影响。

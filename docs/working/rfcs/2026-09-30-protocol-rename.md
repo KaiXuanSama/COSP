@@ -1,11 +1,21 @@
-﻿# 协议命名重构规划（第一步：纯重命名）
+# RFC：协议命名重构（`OPENAI` → `CHAT`）
+
+- **日期**：2026-09-30（立项日）
+- **状态**：**已定稿且实施完毕**（决策已晋升 [ADR-0002](../../adr/adr-0002-protocol-naming.md)）
+- **相关 ADR**：ADR-0002（协议翻译命名与缩写体系）
+
+> 本 RFC 记录把三协议枚举的 `OPENAI` 改名为 `CHAT` 的重构规划与实施。
+> 核心约束：枚举名与持久化字面量逐字一致，无映射层。
+
+## 正文
+
 
 > **状态**：规划中，尚未动手。本文件是「三协议命名重构」第一步的实现契约。
 >
 > 相关：[AGENTS.md](../../../AGENTS.md)、[数据库迁移 Skill](../../../.github/skills/cosp-schema-migration-skill/SKILL.md)、
-> [请求侧翻译契约](./chat-messages/REQUEST-CONTRACT.md)、[响应侧翻译契约](./chat-messages/RESPONSE-CONTRACT.md)
+> [请求侧翻译契约](../../reference/contracts/C2M-REQUEST-CONTRACT.md)、[响应侧翻译契约](../../reference/contracts/C2M-RESPONSE-CONTRACT.md)
 
-## 0. 这一步为什么必须单独做
+### 0. 这一步为什么必须单独做
 
 目标是接入 OpenAI **Responses API**，但现有命名容纳不了它。`OPENAI` 这个名字同时承载
 两件事：**「OpenAI 这家公司」**与**「Chat Completions 这个接口」**。两协议时代没有造成
@@ -27,7 +37,7 @@ OpenAI 的，而 `OPENAI` 却指代 Chat。
 
 ---
 
-## 1. 命名定案
+### 1. 命名定案
 
 三个名字都取自各自的 **API 路径全称**，同一维度，不混入厂商名：
 
@@ -48,12 +58,12 @@ OpenAI 的，而 `OPENAI` 却指代 Chat。
 
 ---
 
-## 2. 影响面清单
+### 2. 影响面清单
 
 实测范围：后端主代码 10 文件 22 处枚举引用、测试 15 文件 113 处、前端 45 文件、
 schema 与迁移各 1 处、文档 3 份。以下按「改动性质」而非目录组织，因为验证方式不同。
 
-### 2.1 硬阻塞：`api_call_log` 两列的 CHECK 约束
+#### 2.1 硬阻塞：`api_call_log` 两列的 CHECK 约束
 
 ```sql
 downstream_protocol TEXT NOT NULL DEFAULT 'OPENAI' CHECK (downstream_protocol IN ('OPENAI', 'ANTHROPIC'))
@@ -78,7 +88,7 @@ upstream_protocol   TEXT NOT NULL DEFAULT 'OPENAI' CHECK (upstream_protocol   IN
 同一张表。这不是超前设计：CHECK 白名单多一个暂未使用的合法值零成本，而重建大表两次有
 实际风险。
 
-### 2.2 软约束：`provider_config.supported_protocols`
+#### 2.2 软约束：`provider_config.supported_protocols`
 
 ```sql
 supported_protocols TEXT NOT NULL DEFAULT '["OPENAI","ANTHROPIC"]' CHECK (json_valid(supported_protocols))
@@ -94,7 +104,7 @@ CHECK 只验 JSON 合法性、**不验元素取值**，因此不阻塞。但两�
 「没有任何可识别协议 → 回退全集」。功能表面正常，但配置已经失去意义，且日志里会刷
 warn。必须迁移。
 
-### 2.3 后端 Java：枚举、类名、包名
+#### 2.3 后端 Java：枚举、类名、包名
 
 | 对象 | 现在 | 改为 |
 |---|---|---|
@@ -119,7 +129,7 @@ warn。必须迁移。
 diff 从「术语替换」膨胀成「目录重排」，评审时看不出哪些是机械替换、哪些是真实改动。
 第二步引入 `RESPONSES` 时再评估是否需要按协议重组包结构。
 
-### 2.4 前端：类型、缩写映射、字面量
+#### 2.4 前端：类型、缩写映射、字面量
 
 - `types/protocol.ts`：`WireProtocol` 联合类型、`ALL_WIRE_PROTOCOLS`、
   `WIRE_PROTOCOL_LABELS`、`isWireProtocol` 的字面量判断
@@ -135,19 +145,19 @@ diff 从「术语替换」膨胀成「目录重排」，评审时看不出哪些
 `types/protocol.ts` 或 `features/call-log/` 一处。这是本轮**唯一允许的结构性改动**，
 因为不收敛就要在三个地方各写一遍同样的三值映射，而第二步加 R 时又要再改三处。
 
-### 2.5 文档
+#### 2.5 文档
 
-- [REQUEST-CONTRACT.md](./chat-messages/REQUEST-CONTRACT.md)（请求侧）：O2A/A2O 术语贯穿全文
-- [RESPONSE-CONTRACT.md](./chat-messages/RESPONSE-CONTRACT.md)（响应侧）：同上
+- [REQUEST-CONTRACT.md](../../reference/contracts/C2M-REQUEST-CONTRACT.md)（请求侧）：O2A/A2O 术语贯穿全文
+- [RESPONSE-CONTRACT.md](../../reference/contracts/C2M-RESPONSE-CONTRACT.md)（响应侧）：同上
 - `AGENTS.md`：架构图、协议支持说明、思考深度两侧字段说明中的协议名
 
 ---
 
-## 3. 迁移设计（V12）
+### 3. 迁移设计（V12）
 
 当前 `CURRENT_SCHEMA_VERSION = 11`，本次取 **12**（连续整数，见迁移 Skill）。
 
-### 3.1 迁移内容
+#### 3.1 迁移内容
 
 一个版本内完成三件事，因为它们必须同时生效（协议名的代码侧与库侧不能错开）：
 
@@ -159,7 +169,7 @@ diff 从「术语替换」膨胀成「目录重排」，评审时看不出哪些
 
 第 3 项容易漏：规则组的适用协议存在 JSON 里，不是独立列。
 
-### 3.2 重建 `api_call_log` 的注意事项
+#### 3.2 重建 `api_call_log` 的注意事项
 
 参照 V9 重建 `provider_model` 的流程（建新表 → 搬数据 → 删旧表 → 改名 → 重建索引），
 但本表更简单：
@@ -177,7 +187,7 @@ diff 从「术语替换」膨胀成「目录重排」，评审时看不出哪些
 映射用 `CASE` 而非两条 UPDATE，同时也避开了迁移 Skill 记录的「一次性重映射必须同时
 发生」那个坑（本次两个值互不重叠，但保持同一写法更稳）。
 
-### 3.3 幂等性
+#### 3.3 幂等性
 
 三项都要能重复执行：
 
@@ -186,7 +196,10 @@ diff 从「术语替换」膨胀成「目录重排」，评审时看不出哪些
 
 ---
 
-## 4. 明确不做的事
+### 4. 明确不做的事
+> **决策已归档**：[ADR-0002 协议翻译的方向命名与缩写体系](../../adr/adr-0002-protocol-naming.md)。
+> 本节保留重命名时的不做清单。
+
 
 这一轮的价值全在「行为零变化，因此可被测试完整证明」。以下都是**顺手就能做但绝不能
 在本轮做**的，混进来会毁掉这个性质：
@@ -203,7 +216,7 @@ diff 从「术语替换」膨胀成「目录重排」，评审时看不出哪些
 
 ---
 
-## 5. 验证
+### 5. 验证
 
 改动性质决定验证方式 —— **行为零变化意味着现有测试是完整的证明**：
 
@@ -217,7 +230,7 @@ diff 从「术语替换」膨胀成「目录重排」，评审时看不出哪些
 **测试数量不应因重命名而变化**（除 V12 迁移用例）。若出现用例增减，说明这一轮混进了
 行为改动，应当拆出去。
 
-### 5.1 迁移测试（按 Skill 的三层契约）
+#### 5.1 迁移测试（按 Skill 的三层契约）
 
 1. **前驱版本用例**：构造 V11 结构 → 跑 runner → 断言 `api_call_log` 的 CHECK 已含三值、
    存量协议值已重映射、两个索引存在；**跑两次验证幂等**
@@ -232,7 +245,7 @@ diff 从「术语替换」膨胀成「目录重排」，评审时看不出哪些
 但 V12 之后那些行会被重映射成 `'CHAT'`。因此这些断言要改成 V12 之后的期望值，
 而不是保留旧字面量 —— 它们不是「固定历史 fixture」，而是「跑完全部迁移后的终态」。
 
-### 5.2 全文检索兜底
+#### 5.2 全文检索兜底
 
 改完后应当搜不到残留（参考项目目录除外）：
 
@@ -247,7 +260,7 @@ O2A | A2O | OpenAiToAnthropic | AnthropicToOpenAi
 
 ---
 
-## 6. 留给第二步的两个已知问题
+### 6. 留给第二步的两个已知问题
 
 本轮不修，但记在这里避免第二步重新发现：
 
@@ -279,7 +292,7 @@ for (WireProtocol candidate : WireProtocol.values()) {
 
 ---
 
-## 7. 建议提交粒度
+### 7. 建议提交粒度
 
 一次提交完成，commit message 说明「行为零变化」：
 

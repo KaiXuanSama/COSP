@@ -52,7 +52,7 @@ import java.util.Set;
  * {@code reasoning_effort} 是 Chat 字段，Responses 上游可能拒收多余字段，
  * 且这条线路没有 MESSAGES 侧那个 {@code body.remove} 收尾方。
  *
- * @see <a href="file:../../../../../../../../../docs/features/protocol-translation/chat-responses/PLAN.md">
+ * @see <a href="file:../../../../../../../../../docs/working/rfcs/2026-09-03-protocol-translation.md">
  *      C2R 去程翻译实施计划</a>
  */
 @Component
