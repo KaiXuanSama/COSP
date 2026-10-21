@@ -52,8 +52,8 @@ class RequestBodyStageSpringWiringTests {
     @Autowired
     private RequestBodyAssembler assembler;
 
-        @Autowired
-        private ChatSystemPromptStage chatSystemPromptStage;
+    @Autowired
+    private ChatSystemPromptStage chatSystemPromptStage;
 
     @Autowired
     private List<SystemPromptNormalizeStage> systemPromptStages;
@@ -65,11 +65,11 @@ class RequestBodyStageSpringWiringTests {
     private List<ThinkingInjectStage> thinkingStages;
 
     @Test
-        @DisplayName("集合注入收集到各支线：system 3、max_tokens 1（MESSAGES）、thinking 3")
+    @DisplayName("集合注入收集到各支线：system 3、max_tokens 1（MESSAGES）、thinking 3")
     void collectionInjectionCollectsAllThreeStages() {
         assertThat(systemPromptStages)
                 .as("system 归一化支线应被收集（@Component 在扫描范围内）")
-                                .hasSize(3);
+                .hasSize(3);
         assertThat(maxTokensStages).hasSize(1);
         // thinking 三协议各一：Chat 写 reasoning_effort、Responses 写 reasoning.effort、
         // Messages 写 output_config.effort + thinking 方式。
@@ -84,11 +84,11 @@ class RequestBodyStageSpringWiringTests {
     }
 
     @Test
-        @DisplayName("system/thinking 三协议命中，max_tokens 仅 MESSAGES")
-        void protocolStagesAreFoundByTheirKeys() {
-                assertThat(registry.findSystemPromptStage(WireProtocol.CHAT))
-                                .as("必须命中容器里的真实 Bean，不能在注册表中临时 new 一个来伪装接线")
-                                .containsSame(chatSystemPromptStage);
+    @DisplayName("system/thinking 三协议命中，max_tokens 仅 MESSAGES")
+    void protocolStagesAreFoundByTheirKeys() {
+        assertThat(registry.findSystemPromptStage(WireProtocol.CHAT))
+                .as("必须命中容器里的真实 Bean，不能在注册表中临时 new 一个来伪装接线")
+                .containsSame(chatSystemPromptStage);
         assertThat(registry.findSystemPromptStage(WireProtocol.MESSAGES))
                 .as("查不到会让 Anthropic 的 system 抬升静默失效")
                 .containsInstanceOf(MessagesSystemPromptStage.class);
@@ -106,15 +106,15 @@ class RequestBodyStageSpringWiringTests {
     }
 
     /**
-         * max_tokens 在 CHAT/RESPONSES 上查不到 —— <strong>这是预期，不是缺口</strong>。
+     * max_tokens 在 CHAT/RESPONSES 上查不到 —— <strong>这是预期，不是缺口</strong>。
      *
-         * <p>RESPONSES/CHAT 的输出 token 上限在协议中可选，不因为补 system 支线就顺手补默认值。
+     * <p>RESPONSES/CHAT 的输出 token 上限在协议中可选，不因为补 system 支线就顺手补默认值。
      * 若某天有人给这些协议补了实现，本用例会失败 —— 那是提醒他确认
      * 「确实该在这个协议上跑这一步」，而不是顺手加上。
      */
     @Test
-        @DisplayName("CHAT/RESPONSES 仍不注入 max_tokens 默认值")
-        void chatAndResponsesHaveNoMaxTokensStage() {
+    @DisplayName("CHAT/RESPONSES 仍不注入 max_tokens 默认值")
+    void chatAndResponsesHaveNoMaxTokensStage() {
         assertThat(registry.findMaxTokensStage(WireProtocol.CHAT)).isEmpty();
         assertThat(registry.findMaxTokensStage(WireProtocol.RESPONSES)).isEmpty();
     }

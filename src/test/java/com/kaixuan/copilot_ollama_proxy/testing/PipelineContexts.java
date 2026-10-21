@@ -180,8 +180,8 @@ public final class PipelineContexts {
      * 拼一个含<strong>全部</strong>请求体支线的注册表 —— 供 {@code RequestBodyAssembler} 测试使用。
      *
      * <p>与 {@link #registryWithMessagesStages} 的区别：thinking 支线三协议都装
-    * （Chat / Responses / Messages），system 支线也三协议都装（CHAT 落回消息数组、
-    * MESSAGES 抬升、RESPONSES 的 C2R role 改写），因为装配器要对各条线路各自查表。
+     * （Chat / Responses / Messages），system 支线也三协议都装（CHAT 落回消息数组、
+     * MESSAGES 抬升、RESPONSES 的 C2R role 改写），因为装配器要对各条线路各自查表。
      * max_tokens 仍只有 MESSAGES 实现 —— 那是领域事实（另两条协议该字段可选，
      * 补齐见 C2R 计划 §6.4 的 TODO）。
      *

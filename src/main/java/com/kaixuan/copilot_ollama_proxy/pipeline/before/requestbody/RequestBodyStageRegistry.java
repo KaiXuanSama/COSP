@@ -59,7 +59,7 @@ public class RequestBodyStageRegistry {
      * <p>三个 {@code List} 收集容器里全部对应类型的实现。空 List 是合法的
      * （某个步骤一个实现都没有），只是那个步骤的查表恒未命中。
      *
-    * @param systemPromptStages 所有 system 提示词归一化支线实现
+     * @param systemPromptStages 所有 system 提示词归一化支线实现
      * @param maxTokensStages    所有 max_tokens 落定支线实现
      * @param thinkingStages     所有思考注入支线实现
      */
@@ -94,7 +94,7 @@ public class RequestBodyStageRegistry {
     }
 
     /**
-    * 查 system 提示词归一化支线。
+     * 查 system 提示词归一化支线。
      *
      * @param protocol 当前请求体所属的协议
      * @return 命中则为该协议的实现；未命中为空（表示这种协议不需要本步骤）

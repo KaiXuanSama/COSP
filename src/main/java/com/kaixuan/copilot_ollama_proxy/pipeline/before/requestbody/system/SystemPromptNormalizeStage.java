@@ -32,9 +32,9 @@ public interface SystemPromptNormalizeStage {
     WireProtocol protocol();
 
     /**
-    * 就地归一化 system 的协议形态。
+     * 就地归一化 system 的协议形态。
      *
-    * @param body 当前可变请求体；没有需归一化的内容时保持原样
+     * @param body 当前可变请求体；没有需归一化的内容时保持原样
      */
     void apply(Map<String, Object> body);
 }
