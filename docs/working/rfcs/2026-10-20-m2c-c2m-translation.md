@@ -1,8 +1,9 @@
 # RFC：M2C 去程与 C2M 回程翻译（下游 Anthropic → 上游 Chat 的完整链路）
 
 - **日期**：2026-10-20（立项日）
-- **状态**：**讨论中** —— M2C 去程主要决策已确认、实施未开始；少量边界待确认，C2M 回程待专项复核
-- **最后调研**：2026-10-21（M2C 去程最终核对；未运行实现、编译或联测）
+- **状态**：**实施中** —— 阶段 1（入站 stream 还原与 CHAT system 支线）已完成自动化验证；阶段 2 未开始，M2C 译器与 C2M 回程仍未实现
+- **最后调研**：2026-10-21（实施前的 M2C 去程最终核对）
+- **实施进展**：[阶段 1 实施记录](#m2c-stage-1)；其余字段边界与回程复核见 §12.7
 - **相关 ADR**：[ADR-0012：M2C 去程的忠实映射与显式损失边界](../../adr/adr-0012-m2c-request-translation.md)
 - **分支**：`feat/m2c-request-c2m-response-translation`
 - **前置文档**：
@@ -30,9 +31,10 @@
 | 最终调研证据、纠错与剩余问题 | [本文 §12](#m2c-final-review) |
 | 去程实施步骤、依赖、文件清单 | [本文 §8](#m2c-plan) |
 | 自动化与用户手动验收 | 本文 §10 |
+| 阶段 1 的已实现内容与测试结果 | [本文 §11](#m2c-stage-1) |
 
 不另建第二份 RFC、根目录 PLAN 或独立调查副本；功能尚在推进，也不移入 `archive/`。
-本文仍处于讨论状态，是因为 §12 的待确认项和回程设计尚未闭环，不是已确认决策被重新打开。
+实施按阶段推进；§12 的剩余边界不属于阶段 1，不因完成入口/system 基建就视为全部确认或整链路可用。
 
 ---
 
@@ -83,7 +85,7 @@
 ### 2.2 主干与可复用组件（2026-10-21 复核）
 
 **主干编排与注册表不需要新增协议分支**。但前轮「所有边界与观测也零改动」的判断过宽：
-入站 `stream` 还原需要补齐，Chat 回程日志改写器也存在漏传，证据见 §12。
+入站 `stream` 还原已在阶段 1 补齐，Chat 回程日志改写器仍存在漏传，历史证据见 §12。
 
 | 组件 | 复用范围与例外 |
 |---|---|
@@ -97,7 +99,7 @@
 | `ChatOutboundStage` | 读 `base_url`，无协议必需头（对比 `MessagesOutboundStage` 补 `anthropic-version`） |
 | `ChatContentDetectorStage` | 空响应判定的键是 `upstreamProtocol = CHAT`，命中 |
 | `ChatChunkNormalizeStage` / `ChatReasoningFallbackStage` | 键同为 `upstreamProtocol`，命中 |
-| `AnthropicController` | 正常 SSE 映射可复用；`buildRequestBody` 必须补回 `stream`。跨协议上游错误体是否被客户端接受另需验证 |
+| `AnthropicController` | 正常 SSE 映射可复用；`buildRequestBody` 已补回 `stream`。跨协议上游错误体是否被客户端接受另需验证 |
 | `StreamLifecycle` / `NonStreamLifecycle` | 同上；Anthropic 侧靠 `extractEventType` 回填 SSE 的 `event:` 名 |
 | `UpstreamEventClassifier` | 按传入协议判定终止标记，回程翻译器只要产出 `message_stop` 即可收尾 |
 | `GatewayAuthFilter.PROTECTED_PATHS` | `/v1/messages` 已在列 |
@@ -109,17 +111,17 @@
 ### 2.3 必须同步维护的实现与测试清单
 
 前轮把「新 Bean 会影响生产集合」误推成「所有手工测试集合都会变化」。
-以下以实际构造方式为准；本次只更新文档，**尚未修改下列代码或测试**。
+以下以实际构造方式为准；阶段 1 只处理入口/system 接线，其它条目保持后续阶段范围。
 
 | 位置 | 本次核对 | 实施阶段动作 |
 |---|---|---|
 | `ProtocolTranslator` / `MessagesService` 注释 | 已指向本 RFC；去程与回程仍确实未实现 | 各自落地后分开更新状态，不能提前删掉全部 TODO |
 | `ProtocolDispatchManager.TRANSLATION_FALLBACK_ORDER` 注释 | 仍含「C2R 去程未实现」等旧说明；前轮标为「已修」不实 | 只修注释；固定顺序与选择逻辑不变 |
-| `AnthropicController.buildRequestBody` | 未把已建模的 `stream` 放回 Map | 补回字段并加 HTTP 入站测试 |
+| `AnthropicController.buildRequestBody` | 已把 stream 的 true/false/null/缺省语义还原到 Map | ✅ 阶段 1 完成，HTTP 捕获测试通过 |
 | `ProtocolDispatchManagerTests.skipsUnimplementedCandidateAndFallsToNextImplemented` | 手工只装 M2R stub，新 Bean 不会让它变红 | 保留未实现守卫，另补真实 M2C 集合正例 |
 | `ChatDispatchErrorSignalTests` | 手工只装 C2M 译器，不随 Spring 集合变化 | 说明 fixture 边界；新增真实 M2C 的成功与翻译异常信号用例 |
-| `RequestBodyStageSpringWiringTests` | 当前断言 system 两个实现、CHAT 查不到 | 新增 CHAT system 后确实需要更新数量、协议集合与 `containsSame` |
-| `PipelineContexts.registryWithAllBodyStages` | 手工收集 system 支线，不会自动获得新 Bean | 补 CHAT；MESSAGES-only helper 保持原范围 |
+| `RequestBodyStageSpringWiringTests` | 已断言 system 三实现和 CHAT `containsSame` 真实 Bean | ✅ 阶段 1 完成；CHAT/RESPONSES 不补 max_tokens 的断言保留 |
+| `PipelineContexts.registryWithAllBodyStages` | 已补 CHAT system；MESSAGES-only helper 不变 | ✅ 阶段 1 完成，装配测试验证协议键与规则顺序 |
 | `TranslatorRegistrySpringWiringTests` | 现有断言不会因加 Bean 自动失败，但缺 M2C 覆盖 | 去程阶段补真实 M2C Bean；回程落地时再补另一半 |
 | `pipeline/README.md` / 架构文档 | 部分目录、方向与实现数量说明已过时 | 按实际类路径和已完成阶段更新，不用数量推断支持能力 |
 | Chat 执行器的 `chunkRewriter` | 接口收到参数但父类未接收，日志调用仍传 null | 交给回程阶段修复，见 §3.3 |
@@ -878,6 +880,9 @@ Claude Desktop 已保存的 MESSAGES 缓存规则不能自动迁到 CHAT，处�
 改为「功能分支内受控验证」：去程一注册就可能被调度命中，但没有回程时正常 Chat 响应
 仍无法满足 Anthropic 客户端契约。`AfterSend.warnIfHalfRound` 已明确要求合并主干前补齐回程。
 
+> 上述为 2026-10-21 定稿的阶段计划；实际完成情况逐次追加到 §11。
+> 当前阶段 1 已完成，不能据此把后续译器、include_usage 或回程验收提前勾为完成。
+
 ### 8.1 阶段 0：文档落盘与边界冻结
 
 1. 把最终调研、计划和字段规格归入本文与请求契约，已确认决策晋升 ADR-0012。
@@ -1004,7 +1009,7 @@ HTTP 测试方式参考 `ProviderRequestBodyTransformationIntegrationTests`，�
 ### 10.1 纯转换、system 与设置层
 
 - [ ] 顶层标量保留、白名单丢弃、单/多元素 stop 数组、错误元素路径。
-- [ ] system 字符串/数组/空值、前导 billing 行的 LF/CRLF/CR、同块正文与非前导文本保留、幂等、no-op。
+- [x] system 字符串/数组/空值、前导 billing 行的 LF/CRLF/CR、同块正文与跨块非前导文本保留、幂等、no-op。
 - [ ] user/assistant 单条与相邻语义轮、纯文本/图文顺序；角色及块位置异常不自动改角色。
 - [ ] 单/多工具、多轮、乱序结果、孤儿、未应答、重复 ID、真正空结果、媒体-only、错误+媒体。
 - [ ] 清理后有无工具调用决定 thinking 回放；无明文不补占位、纯文本轮不回放。
@@ -1015,13 +1020,15 @@ HTTP 测试方式参考 `ProviderRequestBodyTransformationIntegrationTests`，�
 - [ ] 同输入转换确定、未变化历史结构不因随机值或排序变化而变动；业务参数中同名 cache_control/signature 不被删除。
 - [ ] thinking disabled/enabled/adaptive/null、effort low/null、output_config null/empty/format-only
    分别覆盖 fallback/override/passthrough/delete；不误删历史 reasoning_content。
-- [ ] CHAT 规则在 system 归一与思考设置之后执行、null 清理最后；MESSAGES 规则不误执行。
+- [x] CHAT 规则在 system 归一与思考设置之后执行、null 清理最后；MESSAGES 规则不误执行（阶段 1 的装配回归）。
 
 ### 10.2 真 Bean、HTTP 入站与最终出站
 
 - [ ] 新译器/system 支线 `containsSame` 实际 Bean；手工 stub 未实现守卫仍在。
+   system 部分已完成，译器部分仍待后续阶段。
 - [ ] §2.4 的路由矩阵不变；不引入枚举声明顺序、模型名或译器内优先级判断。
 - [ ] 入站 JSON 的 stream true/false/缺省经真实 DTO 回到 Map，翻译上下文与最终出站一致。
+   入站还原和 `TranslationContext` 读取已验证；完整 M2C 译器至实际出站仍待阶段 3。
 - [ ] 随机端口 HttpServer 实收 `/v1/chat/completions`、去前缀模型、正确 schema/文件/媒体/请求头。
 - [ ] 条件 usage stub：只有出站 include_usage=true 才给尾帧。样例 prompt=100、completion=7、cached=40，
    去程半轮的记账槽与两处成功写入仍使用 100/7，不被减成 60/7。
@@ -1069,7 +1076,7 @@ HTTP 测试方式参考 `ProviderRequestBodyTransformationIntegrationTests`，�
 - [ ] 接线落地后再更新架构活文档与可选规则/探针说明。
 - [ ] 去程、回程、客户端及日志验收均完成后，追加实施记录并更新整体状态。
 
-本轮只通过文档落盘检查，不构成功能合并/发布放行。
+阶段 1 已通过默认 Java 全量回归与本阶段文档检查；这不构成 M2C/C2M 整体合并/发布放行。
 
 ---
 
@@ -1086,6 +1093,42 @@ HTTP 测试方式参考 `ProviderRequestBodyTransformationIntegrationTests`，�
 - 保留回程草案，但明确其复核/接线任务；把「去程单独上线」纠正为开发中间态。
 - 本次只修改 docs 文档，没有实现新译器、支线、测试、探针或配置样例，未运行构建/实机测试。
 
+<a id="m2c-stage-1"></a>
+
+### 2026-10-21：阶段 1 实现完成（入站还原与 system，自动化验证）
+
+**授权范围**：用户确认阶段 0 基本完成并要求按顺序实现阶段 1。本阶段没有加入 M2C 请求译器，
+不执行阶段 2 的工具/内容转换，也不改变现有调度、主干编排或回程日志钩子。
+
+- `AnthropicController.buildRequestBody` 回填 `request.isStream()`；真实 HTTP JSON→DTO→Map 测试
+   先复现四种标志形态的字段缺失，再验证修复。`ctx.stream` 仍是执行和出站装配权威，入口不注入 stream_options。
+- 新增 `ChatSystemPromptStage` 和 `SystemPromptNormalizer.inlineSystemIntoMessages`：
+   双 LF 拼接、首条字符串 system 合并、只复制被改动容器、标准 Chat no-op、移除顶层字段后幂等。
+- 未知 system 块给源路径错误；归属行过滤只在整体 system 的前导区域生效，正文开始后即停止，
+   保留同块剩余文字及后续块中的同名文本。只消费紧随归属行的一个空行，其余空白不改写。
+- 审查交叉用例补测并修复：空 system 不能掩盖已存在的非数组/null messages；
+   空 system 且 messages 缺失时只删除空字段，不凭空造对话。
+- `RequestBodyStageSpringWiringTests` 验证三协议 system 支线及 CHAT 真 Bean 同一性；
+   `PipelineContexts` 的全支线 helper 同步，Messages-only helper 不动。
+- 装配回归验证 CHAT 规则最后决定、翻译后 `bodyProtocol=CHAT` 命中新支线，
+   原生 M→M 的 billing、system 文本、cache_control 和调用方原始 Map 保持不变。
+
+**验证结果**：
+
+| 验证 | 结果 |
+|---|---|
+| 编辑器定向回归（12 个测试文件） | 219 通过，0 失败 |
+| Maven 默认 Java 全量（排除 schema-migration） | 1517 通过，0 失败，0 错误，BUILD SUCCESS |
+| 新源码编译 | 通过；使用插件已有 skip.installnodenpm/skip.npm 属性跳过无关前端构建 |
+| 真实客户端/外部上游联测 | 未执行；完整 M2C 译器和回程尚未接入，留后续阶段 |
+
+新增类最初触发过编辑器的未解析编译产物/类加载失败，显式 Maven test-compile 后消解；
+后续完整测试结果基于实际编译后的源码，不把中间失败当作最终通过。
+
+**文档影响评估**：请求契约标注入口/system 已实现，架构与 pipeline 结构说明同步当前接线，
+RFC 状态/索引标注本阶段完成。ADR-0012 保持 Accepted 正文不变，无新决策、依赖、schema 或前端改动。
+本阶段可交用户审查与提交；整体译器、回程、实机和发布门禁未完成。
+
 ---
 
 <a id="m2c-final-review"></a>
@@ -1093,6 +1136,9 @@ HTTP 测试方式参考 `ProviderRequestBodyTransformationIntegrationTests`，�
 ## 12. M2C 去程最终调研报告（2026-10-21）
 
 ### 12.1 真实入口丢失 stream：旧注入方案的阻塞点
+
+> 以下保留实施前的调研证据。该入口缺口已在[阶段 1](#m2c-stage-1) 修复，
+> 真实入站与完整 M2C 出站的验证分别属于阶段 1、阶段 3。
 
 | 调用位置 | 核对结果 |
 |---|---|
@@ -1123,6 +1169,9 @@ HTTP 测试方式参考 `ProviderRequestBodyTransformationIntegrationTests`，�
 动态 main 来源均记调研日期；正式兼容性结论仍需实际报文与目标上游验证。
 
 ### 12.3 测试装配：哪些会变，哪些不会
+
+> system 数量/CHAT 缺失断言与全支线 helper 已在阶段 1 同步；下文是实施前的风险说明，
+> 不是说这些断言在当前源码中仍未修改。
 
 - [`ProtocolDispatchManagerTests`](../../../src/test/java/com/kaixuan/copilot_ollama_proxy/pipeline/before/dispatch/ProtocolDispatchManagerTests.java)
    的跳过候选测试自行 `managerWith(MESSAGES, RESPONSES)`，没有 Spring 集合；新 M2C Bean 不影响其命题。

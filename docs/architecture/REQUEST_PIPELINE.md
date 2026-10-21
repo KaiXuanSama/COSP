@@ -115,6 +115,11 @@ SPA 路由回退（`SpaRoutingConfig.spaRoutes()`）**不在这个链上** —�
 
 ## 3. 应用服务层
 
+**入站还原与执行模式是两层事实。** `AnthropicController.buildRequestBody` 现会把已建模的
+`stream` 按 `request.isStream()` 还原到 Map，供翻译前读取（null/缺省都为 false）。
+端点分流后创建的 `ctx.stream` 仍是实际执行与最终装配的权威，`RequestBodyAssembler` 随后再次覆写。
+入口不生成 `stream_options`；本阶段只是补齐译器可读取的数据，未注册 M2C 译器。
+
 三个应用服务**同形**：只做「建 `RequestPipelineContext`（`forEndpoint`）
 + 交主干」，**零回填、零协议分支**。方法体裹在 `Mono.defer` / `Flux.defer` 里 ——
 主干内的路由解析、调度、翻译都是**同步**调用且会抛异常，不包 defer 时异常会在
@@ -200,22 +205,25 @@ ChatCompletionService.chatCompletion(...)          ← 三个服务同形，只�
 | 3 | 写协议字段 | `assemble` 内联 | model（已剥前缀）与 stream 是「主干对上游的陈述」 |
 | 末 | 清 null | `assemble` 内联 | **必须是最后一步**，理由见下 |
 
-**差异全在中间**，且差异的成因只有一个：**下游与上游是否同协议**。
-中间三步（`system` 抬升 / `max_tokens` 落定 / 思考注入）各协议在**自己的支线实现**里表态。
+**差异全在中间**，按当前 body 的协议形态选支线；翻译会先切换 `bodyProtocol`，直连则保持。
+中间三步（`system` 归一化 / `max_tokens` 落定 / 思考注入）各协议在**自己的支线实现**里表态。
 
 ```
-Chat（ChatThinkingStage + RequestBodyRuleEngine）
+Chat（ChatSystemPromptStage + ChatThinkingStage + RequestBodyRuleEngine）
     1 复制 → 2 解析模型名 → 3 写协议字段
-    4 思考注入      ChatThinkingStage → ReasoningEffortSetting.applyTo
+    4 system 归一化 ChatSystemPromptStage → inlineSystemIntoMessages
+                    顶层 system 落回 messages；无顶层字段时完整 no-op
+    5 思考注入      ChatThinkingStage → ReasoningEffortSetting.applyTo
                     → reasoning_effort / thinking（off 档写 thinking:"disabled"）
-    5 请求体规则    RequestBodyRuleEngine.transform（按 CHAT 筛组）
+    6 请求体规则    RequestBodyRuleEngine.transform（按 CHAT 筛组）
     末 清 null
-    · system 抬升 / max_tokens 落定在该协议未命中 → 跳过（那两步是 Anthropic 特有）
+    · max_tokens 在该协议未命中 → 跳过；不因补 system 支线而增加输出上限默认值
 
-Responses（ResponsesThinkingStage + RequestBodyRuleEngine）
+Responses（ResponsesSystemPromptStage + ResponsesThinkingStage + RequestBodyRuleEngine）
     1 复制 → 2 解析模型名 → 3 写协议字段
-    4 思考注入      ResponsesThinkingStage → applyToResponses → reasoning.effort
-    5 请求体规则    RequestBodyRuleEngine.transform（按 RESPONSES 筛组）
+    4 system 归一化 ResponsesSystemPromptStage → system role 按既有约定改写为 developer
+    5 思考注入      ResponsesThinkingStage → applyToResponses → reasoning.effort
+    6 请求体规则    RequestBodyRuleEngine.transform（按 RESPONSES 筛组）
     末 清 null
     · 与 Chat 形状一致，只有思考注入的出站形态不同
 
@@ -230,6 +238,11 @@ Anthropic（Messages*Stage 三步 + RequestBodyRuleEngine）—— 中间步骤�
     · 阶段 4 与 5 都是「下游说 Chat、上游说 Anthropic」留下的债
     · 「剥兼容副本」必须在深度+方式之后（见 §6 顺序陷阱）
 ```
+
+CHAT system 支线已经通过真实 Spring Bean 装配和装配层回归验证；
+[(MESSAGES, CHAT) 的译器仍未实现](../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-stage-1)，
+不能把 system 步骤就绪写成整条翻译线路可用。字段行为统一见
+[请求契约 §10.3](../reference/contracts/C2M-REQUEST-CONTRACT.md#103-system-归一化支线)，这里不复制第二份规格。
 
 **每个阶段的位置都有理由，两类位置约束最容易被破坏**：
 

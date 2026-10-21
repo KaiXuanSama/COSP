@@ -3,6 +3,8 @@
 > **状态**：C2M（下游 OpenAI → 上游 Anthropic）请求侧**已实现并经实流量验证**，见
 > `ChatToMessagesRequestTranslator`；
 > M2C（下游 `/v1/messages` + 上游 Chat）请求侧**尚未实现**。
+> 阶段 1 的入站 stream 还原与 CHAT system 归一化支线已实现并通过自动化验证（2026-10-21）；
+> 这只补齐前置步骤，不代表 M2C 翻译路线已注册，见 [实施记录](../../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-stage-1)。
 > **M2C 的单一目标规格在 [§10](#m2c-request-spec)**；主要取舍见
 > [ADR-0012](../../adr/adr-0012-m2c-request-translation.md)，最终调研、计划和剩余边界见
 > [M2C/C2M RFC](../../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-final-review)。
@@ -726,7 +728,7 @@ agent 用工具读图的场景暴露出来才修，已于 2026-09-08 实测通�
 ## 10. M2C 去程目标规格（2026-10-21，待实现）
 
 **方向：下游 MESSAGES → 上游 CHAT；声明键 `(MESSAGES, CHAT)`。**
-本节是实现目标，不是当前运行能力。策略已确认的部分以
+本节除已标注的入口/system 阶段 1 外仍是实现目标，不是当前完整翻译能力。策略已确认的部分以
 [ADR-0012](../../adr/adr-0012-m2c-request-translation.md) 为依据；
 具体工程建议和未确认的拒绝条件另标注，详见
 [RFC 待确认清单](../../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-open-items)。
@@ -737,7 +739,7 @@ agent 用工具读图的场景暴露出来才修，已于 2026-09-08 实测通�
 | 下游字段 | 目标字段/处置 |
 |---|---|
 | model | 原样交译器；后续主干装配按现有规则剥供应商前缀 |
-| stream | 入口还原值必须进入译器；后续执行和装配仍以 ctx.stream 为准 |
+| stream | 入口还原已实现：true/false/null/缺省与端点分流一致；后续执行和装配仍以 ctx.stream 为准 |
 | max_tokens | 同名原值，不补默认、不抬高、不按模型名换别名 |
 | temperature / top_p | 原值搬运，不因开启思考而自动删除 |
 | top_k | 无通用 Chat 对等字段，省略 |
@@ -780,16 +782,20 @@ Anthropic 回程是否输出 usage 不依赖该 Chat 专用标志。后续 CHAT 
 
 ### 10.3 system 归一化支线
 
-新增 `ChatSystemPromptStage`，只声明 CHAT 并委托 `SystemPromptNormalizer.inlineSystemIntoMessages`。
-目标过程：
+**已实现（阶段 1）**：`ChatSystemPromptStage` 只声明 CHAT，并委托
+`SystemPromptNormalizer.inlineSystemIntoMessages`。现有注册表按 bodyProtocol 自动命中，不修改主干。
+实际过程：
 
 1. 无顶层 system 时完整 no-op，不重排现有消息或改 developer/system 角色。
 2. 字符串保留正文；数组按原序取 text 块，以 `\n\n` 拼接。未知非文本 system 块不应静默丢内容。
-3. 仅剥已知的行首 `x-anthropic-billing-header:` 归属行，处理 LF/CRLF/CR，保留同块后续正文；
-   非前导同名文本、普通身份描述和其它用户内容不被通配过滤。
-4. 删除顶层 system，非空文本放消息首部。**工程方案：**若首条已有纯文本 system，按
+3. 仅在**整体提示词前导区域**剥已知的行首 `x-anthropic-billing-header:` 归属行，处理 LF/CRLF/CR，
+  保留同块后续正文；遇到普通正文后不再过滤后续块，同名引用和普通身份描述不被通配删除。
+4. 删除顶层 system，非空文本放消息首部。若首条已有字符串 system，按
    “顶层文本 + 双换行 + 原首条文本”合并；其它消息的相对顺序不动。
-5. 空 system 不造占位消息，非数组 messages 不被凭空替换为新数组；类型错误提供字段路径。
+  首条数组 content 和 developer 不合并；首条空白字符串由顶层文本替换，不添多余分隔。
+5. 空 system 不造占位消息；已存在的 messages 即使遇空 system 也要求为数组（包括显式 null 的错误）。
+  非空 system 且 messages 缺失时报 messages 路径错误；空 system 且缺 messages 时只删除空字段。
+  错误检查在修改 body 前完成，不将非法消息列表凭空替换成新数组。
 6. 复制要改动的容器，不能修改原始嵌套 Map/List；再次执行应幂等。
 
 注意现有 `stringifyContent` 用单 LF，不能直接当成 system 双 LF 的同义方法。
