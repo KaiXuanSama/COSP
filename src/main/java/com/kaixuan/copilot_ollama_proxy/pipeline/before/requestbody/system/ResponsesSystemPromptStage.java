@@ -16,11 +16,11 @@ import java.util.Map;
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  *
  * <h2>与 MESSAGES 实现的分工差异</h2>
- * 同一接口的两个协议实现做的是<strong>不同的事</strong>：
+ * 同一接口的协议实现做的是<strong>不同的事</strong>：
  * {@link MessagesSystemPromptStage} 把 system 消息<strong>抬到顶层</strong>（Anthropic 的
  * system 是顶层字段）；本类只<strong>改写 role</strong>（Responses 的 message item 官方
- * 角色集合不含 system，等价物是 developer）。两者共同的域是「system 的协议特定归一化」，
- * 这正是它们共享一个步骤接口的理由。
+ * 角色改写为约定的 developer）。{@link ChatSystemPromptStage} 则把顶层中间形态落回 messages。
+ * 三者共同的域是「system 的协议特定归一化」，这正是共享一个步骤接口的理由。
  *
  * <h2>查表键为何自然命中</h2>
  * 键是 {@code bodyProtocol}：C2R 线路上翻译步骤（{@code translateStep}）先把 body 换成

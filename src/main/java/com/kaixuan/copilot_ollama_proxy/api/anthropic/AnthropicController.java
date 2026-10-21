@@ -155,8 +155,10 @@ public class AnthropicController {
      * （{@code temperature} / {@code tools} / {@code thinking} 等），
      * 这样无需逐个建模即可透传。
      *
-     * <p>{@code stream} 不在此处设置：由上游服务按调用入口决定
-     * （主干装配的 {@code writeProtocolFields} 会覆写），避免下游误传导致模式不符。
+    * <p>{@code stream} 必须随已建模字段一起还原：翻译先于请求体装配，
+    * M2C 译器与 {@code TranslationContext} 在此期间只能读取这份 Map。
+    * 不回填会让真实流式请求被译器当成非流式，漏掉向 Chat 上游索取 usage 的选项。
+    * 实际执行模式仍由端点建出的 {@code ctx.stream()} 决定，装配时会再次覆写 body。
      */
     private Map<String, Object> buildRequestBody(AnthropicMessagesRequest request) {
         Map<String, Object> body = new LinkedHashMap<>();
@@ -170,6 +172,7 @@ public class AnthropicController {
         if (request.getMaxTokens() != null) {
             body.put("max_tokens", request.getMaxTokens());
         }
+        body.put("stream", request.isStream());
         // 未建模字段原样透传。放在最后，但不覆盖上面的显式字段 —— 两者本不重叠
         // （重叠的键已被 DTO 的 setter 消费，不会进 additionalProperties）。
         body.putAll(request.getAdditionalProperties());

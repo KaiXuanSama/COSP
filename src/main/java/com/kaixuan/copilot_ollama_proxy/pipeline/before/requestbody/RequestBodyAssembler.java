@@ -28,7 +28,7 @@ import java.util.Objects;
  * 中间几步不同）。那几份是 send 插槽「吞掉主干后半段」的一部分：
  * 协议<strong>无关</strong>的 copy / resolveModel / writeProtocolFields / bodyRules / removeNull
  * 本应是主干步骤，却在三个执行器里各写一份。本类把公共序列收归主干，协议<strong>相关</strong>的
- * 三步（system 抬升 / max_tokens / thinking）交给 {@link RequestBodyStageRegistry} 的支线
+ * 三步（system 归一化 / max_tokens / thinking）交给 {@link RequestBodyStageRegistry} 的支线
  * （按 {@code ctx.bodyProtocol()} 查表，未命中即跳过）。
  *
  * <h2>阶段序列（顺序有语义）</h2>
@@ -36,7 +36,7 @@ import java.util.Objects;
  * 1. 复制             不污染调用方持有的 Map
  * 2. 解析模型名       剥供应商前缀，后续阶段查配置都要用它
  * 3. 写协议字段       主干自己决定的 model 与 stream
- * 4. system 抬升      【支线】按 bodyProtocol 查表，未命中即跳过（Chat/Responses 没有）
+ * 4. system 归一化    【支线】按 bodyProtocol 查表，三协议各自处理落点（CHAT 无顶层字段时 no-op）
  * 5. max_tokens 补齐  【支线】同上（只有 Anthropic 有）
  * 6. 思考注入         【支线】同上（三协议各一实现，出站字段不同）
  * 7. 请求体规则       主干（协议差异在规则数据里，引擎按 bodyProtocol 筛组）
