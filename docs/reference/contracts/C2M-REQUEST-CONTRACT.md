@@ -2,11 +2,11 @@
 
 > **状态**：C2M（下游 OpenAI → 上游 Anthropic）请求侧**已实现并经实流量验证**，见
 > `ChatToMessagesRequestTranslator`；
-> M2C（下游 `/v1/messages` + 上游 OpenAI）请求侧**尚未实现**，设计已完成待实施 ——
-> 结构调研、四参考项目对比与全部决策定案见
-> [M2C/C2M RFC](../../working/rfcs/2026-10-20-m2c-c2m-translation.md)。
-> 本文档因此既是已实现说明（C2M）也是设计契约（M2C）。
-> **§4.7 已按四家共识修正**：M2C 方向带 `tool_calls` 时必须回放 thinking 明文。
+> M2C（下游 `/v1/messages` + 上游 Chat）请求侧**尚未实现**。
+> **M2C 的单一目标规格在 [§10](#m2c-request-spec)**；主要取舍见
+> [ADR-0012](../../adr/adr-0012-m2c-request-translation.md)，最终调研、计划和剩余边界见
+> [M2C/C2M RFC](../../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-final-review)。
+> 本文区分已实现说明（C2M）与待实现目标（M2C），不把文档定案当作代码落地。
 >
 > 标注了实测日期的段落是已验证的事实，其余是约束。已实测：多轮工具链（见响应侧契约第 1 节）、
 > 工具结果带图的多模态识别（3.4.2）。
@@ -15,11 +15,13 @@
 > [供应商适配史](../../architecture/ADAPTATIONS.md)
 >
 > **C2R（下游 Chat → 上游 Responses）的请求侧调研已另立**：
-> [C2R 请求翻译调研](../../working/rfcs/2026-09-03-protocol-translation.md)（四个参考项目对比，尚未实现）。
+> [C2R 请求翻译调研与实施记录](../../working/rfcs/2026-09-03-protocol-translation.md)；
+> 当前实现为 `ChatToResponsesRequestTranslator`，不属于本文的 M2C 待实现方向。
 > 本文的编号与术语体系对它同样适用。
 
 C2M = OpenAI Chat Completions → Anthropic Messages；M2C = 反向。
-本文档只覆盖**请求体**。响应与 SSE 侧留待后续，但第 7 节规定了请求侧必须为它留的出口。
+本文档只覆盖**请求体**。响应与 SSE 见[响应契约](./C2M-RESPONSE-CONTRACT.md)，
+其中已实现的 M2C 响应是 C2M 请求的回程，不是本文待实现的 M2C 请求。
 
 ---
 
@@ -63,8 +65,8 @@ C2M = OpenAI Chat Completions → Anthropic Messages；M2C = 反向。
 
 ### 1.3 规则组按上游协议筛选
 
-翻译路线上生效的是 `MESSAGES` 规则组，**不是**用户下游说的 `CHAT`。规则的字段路径照最终
-出站形态写，这是唯一自洽的选择。但它与用户直觉相反，UI 上必须说清楚。
+C2M 生效的是 `MESSAGES` 规则组，M2C 的目标行为则是 `CHAT` 规则组。
+规则按翻译后的 `bodyProtocol` 筛选，字段路径照最终出站形态写，而不是照下游入口协议写。
 
 ---
 
@@ -228,11 +230,14 @@ Anthropic 的块数组 `Marshal` 成 JSON 字符串塞进 OpenAI tool 消息，�
 
 ### 3.5 tool_use ↔ tool_result 配对修复（必须实现）
 
-逐项直译**必然**违反 Anthropic 的三条不变式：
+逐项直译可能违反工具调用与结果的邻接要求。当前 **C2M 输出归一化**维护三项约定：
 
 1. `tool_result` 必须紧邻前一条 assistant 的 `tool_use`
 2. `tool_use` 必须被紧邻的下一条 user 应答
-3. 角色交替
+3. 归一化输出按语义轮合并相邻同角色消息
+
+第 3 项是本实现的输出约定，**不是 Anthropic 禁止相邻同角色输入**。
+合法 M2C 入站可以包含相邻 user/assistant，目标转换按 §10.4 处理，不能直接拒绝。
 
 算法（借鉴 sub2api `normalizeAnthropicToolPairing`）：
 
@@ -263,11 +268,15 @@ merge → pair → merge
 
 | 协议 | 开关 | 深度 |
 |---|---|---|
-| OpenAI Chat Completions | `thinking: {"type": "enabled"｜"disabled"}` | `reasoning_effort` 字符串（无 `none`） |
+| Chat 兼容生态（COSP 当前设置形态） | 部分上游支持 `thinking: {"type": "enabled"｜"disabled"}` | `reasoning_effort` 字符串，取值支持随上游/模型而异 |
 | OpenAI Responses | — | `reasoning: {effort}`（有 `none`） |
 | Anthropic Messages | `thinking: {"type": "disabled"｜"adaptive"｜"enabled"+budget_tokens}` | `output_config.effort`（顶层，五档 low/medium/high/xhigh/max，无 minimal/none） |
 
 不要互相套用。COSP 的档位清单是 `Off / Minimal / Low / Medium / High / Xhigh / Max`。
+
+`thinking` 开关是部分 Chat 兼容上游的字段，不是所有 OpenAI 官方模型通用的请求字段。
+2026-10-21 核对的官方 SDK 已有 `reasoning_effort=none` 等取值，
+不能再断言 none 只属于 Responses；本次仅纠正文档，不修改现有设置层的 Off 映射。
 
 ### 4.2 C2M 思考映射
 
@@ -281,12 +290,8 @@ merge → pair → merge
 
 ### 4.3 M2C 思考映射
 
-| 下游 Anthropic | OpenAI |
-|---|---|
-| `thinking: {"type": "disabled"}` | `thinking: {"type": "disabled"}` |
-| `output_config.effort` 存在 | `reasoning_effort` 同值 |
-| `thinking: {"type": "adaptive"}` | **只搬运开关语义，不推导深度** |
-| `thinking: {"type": "enabled", budget_tokens: N}` | **只搬运开关语义，不从 N 反推档位** |
+目标映射与显式 null 规则统一见 **§10.2**；历史 thinking 明文见 **§10.4**。
+这里只保留导航，不维护第二张映射表。M2C 仍未实现。
 
 ### 4.4 不做 budget_tokens ↔ 档位换算
 
@@ -311,7 +316,9 @@ new-api 那张表**永不产出 minimal / xhigh / max**，经一次中转 `minim
 往返不一致。两家都把 `output_config.effort` 排优先级 1、budget 反推排 2，自己也知道后者是兜底。
 
 **结论**：M2C 只在 `output_config.effort` 存在时翻译深度，否则不发 `reasoning_effort`。
-用户若需要 `budget_tokens`，用仅适用 MESSAGES 的请求体规则显式表达。
+显式 null 的意见保留另见 §10.2，不代表从预算推导档位。
+用户若需要在**上游 MESSAGES 的直连/C2M 路径**发送 `budget_tokens`，可用 MESSAGES 规则表达；
+M2C 后执行的是 CHAT 规则，不能用前者恢复目标协议没有的预算语义。
 
 ### 4.5 不做自动降级
 
@@ -345,17 +352,9 @@ cc-switch 有个折中值得记录但不采纳：只在**已知枚举**模式下
 **M2C 方向不同（2026-10-20 修正，依据四参考项目调研）**：原来写「M2C 丢弃 `thinking` /
 `redacted_thinking` 块」，那个结论**在工具链场景会导致硬失败**。
 
-三家参考实现（sub2api / cc-switch / CLIProxyAPI）一致在 **assistant 消息带 `tool_calls` 时**
-把 thinking 明文折叠进 `reasoning_content`。sub2api 的注释给出硬理由：DeepSeek 的 thinking
-模式**要求**产生该工具调用的 `reasoning_content` 被回放，**否则直接 400**。
-
-| 场景 | `signature` | thinking 明文 | `redacted_thinking` |
-|---|---|---|---|
-| assistant 带 `tool_calls` | 丢弃 | **折叠进 `reasoning_content`**（多块用 `\n` 连接） | 丢弃 + warn |
-| assistant 纯文本轮 | 丢弃 | 丢弃（三家一致：不带 tool_calls 时不回放） | 丢弃 + warn |
-
-**不给占位**（与 cc-switch 的 `"tool call"` 不同）：没有 thinking 明文就不写
-`reasoning_content`。占位是伪造内容，上游报错比「看起来成功」更有价值。
+sub2api 给出要求回放的上游会拒绝缺失 reasoning_content 的工具续轮的依据。
+cc-switch/CLIProxyAPI 也有回放路径，但带兼容开关或签名条件，**三家条件并非完全相同**。
+COSP 用户选择工具链回放已有明文、不造占位；完整目标只在 §10.4 维护。
 
 > **这不涉及「思考链缓存」**。V8.2 删掉的 `ReasoningCache` 是「代理存储上一轮内容、下一轮注入」，
 > 是因为当年 Copilot 客户端不自己回传。而 Claude Desktop 等 Anthropic 客户端**本来就会把
@@ -367,8 +366,8 @@ cc-switch 有个折中值得记录但不采纳：只在**已知枚举**模式下
 
 ### 4.8 Responses 的加密思考：R2* / *2R 的硬前提（2026-09-13 实测）
 
-第 4.7 节讨论的是 Chat ↔ Messages 两侧**都没有可搬运的思考载体**，只能丢。Responses 不同 ——
-它有载体，但载体是**不透明密文**，于是问题从「无处可放」变成「放过去也没用、或者必须放」。
+第 4.7 节区分已有明文可搬运与 Anthropic 签名不可重建。Responses 还可能携带
+**不透明密文**，那是另一种不能凭空解释或重建的载体，不应与明文混为一谈。
 
 > **前置事实：密文是上游的可选行为，不是 Responses 协议的必然产物**（2026-09-29 补测）。
 > 实测一份真实链路（Codex → 第三方供应商），结论与「官方 Responses 一定签发密文」相反：
@@ -517,14 +516,13 @@ Codex 手上是明文 `reasoning_text`（见上方「前置事实」）。
 C2M 丢弃：`frequency_penalty`、`presence_penalty`、`n`、`logprobs`、`top_logprobs`、`seed`、
 `response_format`、`logit_bias`、`user`、`stream_options`、`parallel_tool_calls`。
 
-M2C 丢弃：`metadata`、`mcp_servers`、`container`、`context_management`、`service_tier`、
-顶层 `cache_control`。
+M2C 的已知非等价字段、显式拒绝边界和流式选项统一见 §10；
+不再把 `mcp_servers/container/context_management` 一概列为可静默删除的普通元数据。
+它们的值级处理仍有待确认项，见 RFC §12.7。
 
-**M2C 还必须主动写入一个字段**：流式时向上游注入 `stream_options.include_usage: true`。
-Anthropic 下游没有这个字段，不注入则 OpenAI 兼容上游在 SSE 末尾不给 usage，
-导致 `message_delta` 的 token 全为 0、`api_call_usage` 不写行、统计页空白，
-**且不报任何错**。四家参考实现全部做了这件事。见
-[M2C/C2M RFC](../../working/rfcs/2026-10-20-m2c-c2m-translation.md) §4.3.7。
+流式不索取 usage 的后果是 token/缓存明细缺失，并非所有统计都不写：
+成功流式的日聚合仍记一次 `0,0`。接线缺口和证据见
+[RFC §12](../../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-final-review)。
 
 > **注意不对称**：`stream_options` 仍属于 C2M 的丢弃清单（上游是 Anthropic，无此字段），
 > 但 M2C 必须**生成**它（上游是 Chat，需要它才回 usage）。同一个字段名在两条方向上的处置相反，
@@ -542,7 +540,9 @@ Anthropic 下游没有这个字段，不注入则 OpenAI 兼容上游在 SSE 末
 参考项目用魔法字符串填空内容：new-api 的 `"..."`、sub2api 的 `"(empty)"`。这些会作为**真实
 内容**进入模型上下文与计费。
 
-本契约：空内容**整条丢弃**。丢一条比发一条被污染的消息更可用。
+C2M 现有实现按 §3.2/§3.5 丢弃空内容，不能把这条直接套到反向。
+**M2C 的空 tool_result 是合法应答，须保留空字符串**；允许编码已有错误状态和媒体来源，
+但不伪造工具输出。目标规格见 §10.4/§10.5，决策见 ADR-0012。
 
 ### 5.3 不替客户端做决定
 
@@ -565,11 +565,17 @@ Anthropic 下游没有这个字段，不注入则 OpenAI 兼容上游在 SSE 末
 | `stop` 数组含非字符串元素 | 400 | new-api 用裸类型断言，`{"stop":[1,2]}` 会 panic 而不是 400 |
 | `tool_calls[].function.arguments` 不是合法 JSON | 400 | 静默留空会让工具收到空参数 |
 | 未知 `role` | 400 | 静默改成 `user` 会改变对话语义 |
-| 目标协议无法表达下游的显式要求 | 400 | 见 6.2 |
+| 已确认必须拒绝的非等价显式要求 | 400 | 各方向的确认范围不同，见 6.2；不是对所有未知字段全量拒绝 |
 
 ### 6.2 显式要求与推导值的区别
 
-借鉴 new-api 的 `BudgetSource`：**用户显式给的值做不到就报错，系统推导出来的值可以静默调整。**
+new-api 的 `BudgetSource` 区分用户显式值与系统推导值，是可参考的来源建模，
+**不是授权 COSP 翻译器推导或自动修正**。本项目生成参数的默认/覆写仍由设置层负责，
+译器不做预算换算和范围钳制。
+
+也不将“有显式值”一概等同于“本地报错”：C2M 已确认的无对应字段仍按 §5.1 省略；
+M2C 按 §10 的目标范围处理，已经确认不能等价表达的文档/执行要求才显式失败，
+尚未确认的值级拒绝条件保留在 RFC §12.7，不由这条总原则替用户决定。
 
 这个区分让两类值有不同的错误策略。同源的推理还有 new-api 的 `MergeExplicitAndSuffix`：
 显式字段与模型名尾缀冲突时**报错**而非静默择一，理由是尾缀可能带独立计费身份，选错会让
@@ -618,7 +624,8 @@ Anthropic 下游没有这个字段，不注入则 OpenAI 兼容上游在 SSE 末
 
 ## 7. 请求翻译必须为响应侧留出口
 
-响应翻译可以后做，但请求翻译**不能做成完全无状态的一次性变换**。响应侧需要知道请求侧发生过什么：
+响应翻译可以后做，请求翻译也可以是**无状态函数**；但其返回值必须携带本次请求上下文，
+不能只返回 Map。响应侧需要知道请求侧发生过什么：
 
 - 下游要的是流式还是非流式
 - 有没有 `stream_options.include_usage`
@@ -690,15 +697,15 @@ agent 用工具读图的场景暴露出来才修，已于 2026-09-08 实测通�
 | sub2api | 以 OpenAI Responses 为中枢 IR，C2M 两段链式；M2C 另有直连 bridge | `backend/internal/pkg/apicompat/`，配对修复在 `responses_to_anthropic_request.go` |
 | cc-switch | 代理层做真实转换；`thinkingLevelMap` 是给 Pi CLI 写配置、自身不执行翻译 | `src-tauri/src/proxy/providers/transform_codex_anthropic.rs`、`transform.rs` |
 
-### 9.1 值得借鉴（已纳入本契约）
+### 9.1 参考价值与适用范围
 
-- sub2api 的 `tool_use` / `tool_result` 配对修复与三步顺序
-- sub2api 的「白名单转换 + 空内容整条丢」及其因果说明
+- sub2api 的 `tool_use` / `tool_result` 配对修复与三步顺序：用于 C2M 输出，不直接反用到 M2C。
+- 「白名单转换 + 空内容整条丢」是现有 C2M 约定；M2C 空工具应答按 §10.4 保留。
 - cc-switch 的 budget 三道保护
 - cc-switch 的「平台判定绝不掺入 model 名」——model 名属模型厂商，掺进去会把托管平台误判成
   模型官方接口
-- cc-switch 的冲突剥离方向：DeepSeek 端点 `thinking: disabled` 与 effort 互斥时，
-  尊重客户端的 `disabled`、剥掉 effort，而非反过来覆盖客户端意图
+- cc-switch 的冲突剥离方向是参考项目的兼容观察：在特定目标上游剥 effort。
+  **M2C 未采纳该供应商特定整流**，其当轮双字段表态按 §10.2 交现有设置层/上游处理。
 - new-api 的 `BudgetSource` 来源区分与 `ClientError` 分类
 - new-api 的 golden 文件回归：整请求体快照，字段级回归一目了然
 
@@ -711,3 +718,200 @@ agent 用工具读图的场景暴露出来才修，已于 2026-09-08 实测通�
 - 把 http 图片 URL 一律下载转 base64
 - 错误驱动的事后整流
 - 按工具名的单点 hack（sub2api 只对 `name == "Read"` 且 `pages == ""` 生效）
+
+---
+
+<a id="m2c-request-spec"></a>
+
+## 10. M2C 去程目标规格（2026-10-21，待实现）
+
+**方向：下游 MESSAGES → 上游 CHAT；声明键 `(MESSAGES, CHAT)`。**
+本节是实现目标，不是当前运行能力。策略已确认的部分以
+[ADR-0012](../../adr/adr-0012-m2c-request-translation.md) 为依据；
+具体工程建议和未确认的拒绝条件另标注，详见
+[RFC 待确认清单](../../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-open-items)。
+调研、代码文件清单、实施依赖和验证矩阵只在 RFC 维护。
+
+### 10.1 顶层字段与流式上下文
+
+| 下游字段 | 目标字段/处置 |
+|---|---|
+| model | 原样交译器；后续主干装配按现有规则剥供应商前缀 |
+| stream | 入口还原值必须进入译器；后续执行和装配仍以 ctx.stream 为准 |
+| max_tokens | 同名原值，不补默认、不抬高、不按模型名换别名 |
+| temperature / top_p | 原值搬运，不因开启思考而自动删除 |
+| top_k | 无通用 Chat 对等字段，省略 |
+| stop_sequences | **目标方案：**非空数组转同序 stop 数组，单元素也不压成字符串；空数组/null 省略；非数组、非字符串元素报路径错误，不排序或静默丢元素 |
+| system | 暂留顶层作为约定中间态，交 §10.3 的 CHAT 支线处理；不能被顶层白名单提前丢掉 |
+| thinking / output_config.effort | 见 §10.2 |
+| output_config.format | 见 §10.7；不能因只处理 effort 而丢失 |
+| tools / tool_choice | 见 §10.6 |
+| metadata / service_tier / 额外追踪信息 | 仅明确无映射的辅助字段省略；不把内容与执行要求当元数据清掉 |
+| cache_control | 仅协议外壳处省略；不递归删除 schema/input 中同名业务字段 |
+| mcp_servers / container / context_management | 非等价服务端执行/隐藏上下文不能假装生效；逐值策略待 RFC §12.7 确认，不以本表授权全量拒绝 |
+
+**流式目标：**只在 M2C 的 stream=true 时新建 `stream_options.include_usage:true`；
+false/缺省不发该选项。额外混入 Messages 请求的 Chat stream_options 不是本方向的透传契约，
+不将其其它成员原封不动搬到上游。
+
+`TranslationContext` 从注入前的源请求提取，不能把“向上游索取统计”写成“Chat 下游要求统计”。
+Anthropic 回程是否输出 usage 不依赖该 Chat 专用标志。后续 CHAT 请求体规则可改 false/删除选项，
+译器/执行器不得在规则之后偷偷补回。
+
+### 10.2 当轮思考配置与显式 null
+
+| 下游表态 | 目标方案 |
+|---|---|
+| thinking.type=disabled | thinking.type=disabled |
+| thinking.type=adaptive 或 enabled | 仅转成 enabled 开关；不搬 budget_tokens、不反推 effort |
+| output_config.effort 为字符串 | reasoning_effort 同值，未知档位不自动降级 |
+| thinking:null | 保留顶层 null 到设置层，避免 fallback 误判未表态 |
+| output_config.effort:null | 写 reasoning_effort:null，同上 |
+| output_config:null | 按现有 Anthropic 表态判据，用 reasoning_effort:null 保留显式空意见 |
+| output_config:{} 或仅 format | 不代表深度意见，不阻止正常 fallback |
+| 未提供 thinking/effort | 译器不推导，现有 ChatThinkingStage 按模型配置处理 |
+
+未知开关类型或非对象的配置不是可擅自修正的值，目标方案是路径化错误；
+有效 effort 与 disabled 同时出现时不加供应商特定整流，仍交现有四模式/目标上游处理。
+装配末阶段才清顶层 null。历史 reasoning_content 与当轮思考设置不是同一个字段，不能联动误删。
+
+`thinking` 是兼容生态字段，不能承诺每家官方/兼容 Chat 上游都接受；保持现有设置层的删除模式
+和请求规则出口，不在本方向加模型名识别表。
+
+### 10.3 system 归一化支线
+
+新增 `ChatSystemPromptStage`，只声明 CHAT 并委托 `SystemPromptNormalizer.inlineSystemIntoMessages`。
+目标过程：
+
+1. 无顶层 system 时完整 no-op，不重排现有消息或改 developer/system 角色。
+2. 字符串保留正文；数组按原序取 text 块，以 `\n\n` 拼接。未知非文本 system 块不应静默丢内容。
+3. 仅剥已知的行首 `x-anthropic-billing-header:` 归属行，处理 LF/CRLF/CR，保留同块后续正文；
+   非前导同名文本、普通身份描述和其它用户内容不被通配过滤。
+4. 删除顶层 system，非空文本放消息首部。**工程方案：**若首条已有纯文本 system，按
+   “顶层文本 + 双换行 + 原首条文本”合并；其它消息的相对顺序不动。
+5. 空 system 不造占位消息，非数组 messages 不被凭空替换为新数组；类型错误提供字段路径。
+6. 复制要改动的容器，不能修改原始嵌套 Map/List；再次执行应幂等。
+
+注意现有 `stringifyContent` 用单 LF，不能直接当成 system 双 LF 的同义方法。
+标准直连 CHAT 无顶层 system 保持 no-op；当前 OpenAiController 不回填顶层 system，
+支线的非标准组合单测不能被当作已存在的 HTTP 契约变更。
+
+### 10.4 消息、工具调用与因果配对
+
+**消息形态的目标方案：**只接受 MESSAGES 的 user/assistant 角色；未知角色和错置工具块
+不自动升格或改为 user。相邻原始同角色消息按 Anthropic 语义归为同一轮，保留源索引用于报错。
+这不是对最终 Chat 消息强制交替，也不调用现有 C2M 的 merge→pair→merge。
+
+字符串正文原样，纯文本块按原序以 LF 拼成字符串；保留非空文本内部空白；含图片/文件才保留 parts。
+assistant 的正文、tool_calls、reasoning_content 保持在同一条消息；工具-only assistant 可用空字符串 content。
+
+| Anthropic 输入 | Chat 目标 |
+|---|---|
+| tool_use.id / name | tool_calls[].id / function.name，原样、不加前缀；缺失/空白/非字符串报错 |
+| tool_use.input 对象 | function.arguments 的 JSON 字符串，不用 Map.toString、不双重编码 |
+| input 缺省/null | **工程建议：**沿用无参兼容映射为 `{}`；冻结前见 RFC §12.7 |
+| input 非对象非空 | 不猜测修正，给出 input 字段路径 |
+| user.tool_result | 独立 role=tool，tool_call_id 原样匹配前置调用 |
+
+**已确认的配对策略：**
+
+- 请求内建索引，结果只能应答先前调用，不能把前置结果拉去应答未来调用。
+- 重复 tool_use ID 或重复 tool_result ID 报错，不使用 first/last-wins 掩盖歧义。
+- 未获应答的调用清理并告警；assistant 有正文则保留，清空才删除。
+- 孤儿结果连同其附属媒体一起丢弃并留痕，不凭空制造对应调用。
+- 真正空结果仍是有效应答，保持 tool 消息的 `content:""`，不会因此清理其调用。
+- 本组有效结果按调用顺序紧邻 assistant 连续发出，媒体和普通正文不得插到结果组中间。
+- Chat 允许连续 tool/user；不能将「无相邻同角色」当反向验收标准。
+
+**历史思考目标：**在配对清理后仍有 tool_calls 的 assistant 轮，把已有 thinking 明文按原序
+用 LF 拼为 reasoning_content；清掉最后一个工具调用后不再回放。signature 不搬、redacted_thinking
+丢弃并告警；没有明文不补任何占位。纯文本轮不回放，也不建跨请求存储。
+
+末尾普通 assistant 的 prefill 处置**尚未确认**，见 RFC §12.7；
+不能把未应答工具清理的确认扩大成“所有 assistant 结尾都拒绝”。
+
+### 10.5 工具结果内容、错误与媒体
+
+Chat tool 消息只发 `role/content/tool_call_id`，**不发 name、is_error 或协议 cache_control**。
+
+| tool_result 内容 | 目标方案 |
+|---|---|
+| 缺省/null/空串/空数组 | 空字符串，仍是已应答；不造 `(empty)` 等结果 |
+| 字符串或纯文本块 | 保留文本，按原序合并；不把块 JSON 当正文 |
+| is_error=true | 用最小固定文本标记表达已有错误状态，正文保留；false/缺省不添加成功文案 |
+| 图片、含媒体文档 | 共用 §10.7 转换，从 tool.content 抽出，所有 tool 结果之后附媒体 user 消息 |
+| 纯文本文档 | 保留在工具文本通道；标题/上下文与文档内容保持关联 |
+
+媒体组按有效工具 ID 标注来源，含媒体文档的标题/上下文随媒体一起放置；
+不同工具的媒体不可混为无来源图片列表。随后再输出普通 user 内容，不能让来源标记提升为 system 指令。
+ID/标题等文本通过 JSON 正确转义，不插入可执行模板。
+
+允许固定的“媒体已移到后续 user 消息”说明，但**标记必须由真实元数据触发**，
+无错误、无媒体的空结果仍是空串。文案和混合内容的 golden 排列属于 RFC §12.7 的工程细节，
+不编造思考或工具返回，不加随机 ID/时间戳。标记会计入 token，是已接受的知情成本。
+
+### 10.6 工具定义、schema 与选择
+
+| 字段 | 目标方案 |
+|---|---|
+| 自定义 tool（type 缺省/null/custom） | type=function，name/description/input_schema 分别进入 function.name/description/parameters |
+| 服务端原生工具 | 无等价执行能力时明确拒绝，不把 server tool 伪装成客户端函数 |
+| input_schema | 保留已有约束；无参最小 object/properties 补齐沿用既有思路，不重写嵌套约束 |
+| strict | 仅搬运显式布尔；缺省不擅自补 true/false |
+| tool_choice auto / any / none | auto / required / none |
+| tool_choice tool+name | `{type:"function",function:{name}}`；目标方案要求工具已声明 |
+| disable_parallel_tool_use 显式 true / false | parallel_tool_calls false / true |
+| 并行开关缺省/null | 不注入，不凭空补 auto 选择策略 |
+
+无声明工具时 auto/none 可省略；显式 required/具名选择无法满足时，目标方案是路径化错误，
+不是悄悄放宽成 auto。无工具时不发无意义并行参数。
+
+保留 `required/additionalProperties/$defs/$ref/format/pattern/examples` 和布尔子 schema。
+不复制参考项目的删约束、bool→object 或按特定工具名修改参数。
+协议字段清理只作用于协议外壳，**schema、tool_use.input 中的 cache_control/signature 等业务键不动**。
+
+`input_examples/allowed_callers/defer_loading/eager_input_streaming` 等值级处置
+尚需单独确认，不能因缺少本表映射就全拒或默认忽略执行限制，见 RFC §12.7。
+
+### 10.7 文档与结构化输出
+
+OpenAI 官方 file part 形态见 [SDK 固定版本](https://github.com/openai/openai-python/blob/v1.109.1/src/openai/types/chat/chat_completion_content_part_param.py)。
+Anthropic document 有多种源形态，不能只实现 base64 后声称支持全部文档。
+
+| 文档源/字段 | 目标行为 |
+|---|---|
+| base64 PDF | Chat file.file_data=`data:application/pdf;base64,...`，原数据搬运；不解码提取正文 |
+| 文件名 | **工程方案：**存在的 filename 扩展优先，否则使用稳定 document.pdf；不从模型名猜 |
+| source.type=text | data 转 text，内容保留 |
+| source.type=content | 展开字符串或其中 text/image parts，保持顺序，不 stringify 成 JSON 正文 |
+| title/context | 作为相邻文本元数据保留；具体包装见 RFC 工程细项 |
+| tool_result 内 document | 共用转换；含媒体时按 §10.5 的来源/顺序规则输出 |
+| URL 文档 | 首版明确报错，不把 URL 塞进 file_data，也不替用户下载 |
+| source.type=file | 首版明确报错：Anthropic file_id 不等于 OpenAI 账号/服务的上传 ID |
+| citations.enabled=true / 需要引用定位 | 首版明确报错，不能承诺 Chat 回程重建引用坐标；false/缺省不造引用 |
+
+格式必需字段缺失/类型错误报告精确 source 路径，不把包含不支持文档的混合文本请求当成功处理。
+其它 MIME/扩展源的支持不凭模型名推断；文件内容有效性与实际模型是否支持由目标上游检验。
+未列出的内容/执行型块不默认透传；需要新增拒绝策略时先按 RFC §12.7 冻结边界。
+
+**结构化输出已纳入首版，以下是包装工程方案：**
+
+- `output_config.format.type=json_schema` → `response_format.type=json_schema`。
+- `format.schema` 原样拷入 `response_format.json_schema.schema`；
+  目标要求 name，建议固定 `cosp_output`，以 strict=true 表达源格式约束。
+- 不为目标上游的 schema 子集偷偷改用户约束；不支持时错误可见。
+- format 缺省/null 不生成 response_format；存在但形态不合法不能静默丢弃。
+- effort 与 format 独立处理；旧 beta `output_format` 的支持/拒绝方式在 RFC 中列为待确认，
+  不在本节借机宣布已支持。
+
+### 10.8 实现不变量与错误边界
+
+- 不改变输入 Map 的深层内容；只用请求内局部状态，复制被改动的容器并保持后续规则可写。
+- 同一输入产生确定性结果，消息/schema/input 不因无依据排序、随机标记或时间戳变化。
+- 不对整份大文档反复 JSON 序列化/解析，不引入下载、上传、OCR 或文件存储。
+- `RequestTranslationException` 带源字段路径；日志只记录方向、路径和必要 ID，
+  不输出文档/base64、工具参数或 thinking 明文作为新诊断内容。
+- 本地错误沿既有 defer 信号到出口：非流式 400，流式 HTTP200 + event:error；
+  不等价于已实现完整的跨协议上游错误体转换。
+- 主干顺序、鉴权设置、路由优先级、重试与空响应预算不在此方向重定义。
+- 纯去程完成仍是半轮开发态；完整回程与客户端验收之前不宣称可生产使用。

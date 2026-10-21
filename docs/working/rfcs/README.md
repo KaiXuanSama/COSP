@@ -36,7 +36,7 @@
 | [`2026-10-17-claude-desktop-prompt-cache.md`](./2026-10-17-claude-desktop-prompt-cache.md) | 已定稿且实施完毕 | Claude Desktop 缓存命中率 17% → 99%：断点定位与正则规则修复 |
 | [`2026-10-19-ollama-downstream.md`](./2026-10-19-ollama-downstream.md) | 已定稿，实施待开始（结论已晋升 ADR-0011） | Ollama 下游协议（O 轴）：O2C/C2O 等 6 方向 + `/api/chat` 端点 |
 | [`2026-10-20-docs-migration.md`](./2026-10-20-docs-migration.md) | 已定稿，实施中（结论已晋升 ADR-0001） | docs/ 迁移至 docs-governance 规范：影子目录 + 最后切换 |
-| [`2026-10-20-m2c-c2m-translation.md`](./2026-10-20-m2c-c2m-translation.md) | 讨论中（结构调研 + 四参考项目对比完成，4 项决策待定） | M2C 去程 + C2M 回程：下游 Anthropic → 上游 Chat 的完整链路 |
+| [`2026-10-20-m2c-c2m-translation.md`](./2026-10-20-m2c-c2m-translation.md) | 讨论中（主要决策已晋升 [ADR-0012](../../adr/adr-0012-m2c-request-translation.md)，实现未开始；细项/回程待确认） | M2C 去程：[最终调研 §12](./2026-10-20-m2c-c2m-translation.md#m2c-final-review) 与 [实施计划 §8](./2026-10-20-m2c-c2m-translation.md#m2c-plan)；C2M 回程补齐后才可完整发布 |
 
 > **日期口径**：文件名日期取功能的**立项日**——即该功能最早一份文档在 git 中的首次出现日期
 > （若经过目录规整搬迁，取搬迁前的原始路径日期）。它标记「这件事从什么时候开始的」，
@@ -53,9 +53,9 @@
 以下内容记录在 ADR 的「后果」与「备选方案」中，若决定推进需先在本目录写 RFC：
 
 - **M2R / R2M 翻译**：Messages ↔ Responses 双向尚未实现（见 ADR-0005 后果节）。
-  **注意**：上游为 Responses 时文档（`input_file`）才能真正透传，因此 M2R 是
-  [M2C/C2M RFC](./2026-10-20-m2c-c2m-translation.md) §6.3「文档块被丢弃」问题的正解方向
+  这是独立方向，**不是文档输入的唯一方案**：Chat 官方也有 file part，支持范围见
+  [M2C 最终调研](./2026-10-20-m2c-c2m-translation.md#m2c-final-review)。
 - **O2M/O2R 等其余 O 轴方向**：Ollama 下游目前只规划 O2C/C2O（见 ADR-0011）
-- **`/v1/messages/count_tokens` 端点**：Claude Desktop 在长上下文/文档场景会调用，当前 404。
-  不属于翻译层（不产生上游调用），见 [M2C/C2M RFC](./2026-10-20-m2c-c2m-translation.md) §6.3
+- **`/v1/messages/count_tokens` 端点**：当前没有实现；是否被具体 Claude Desktop 操作调用需抓包确认。
+  属独立 API 用例，估算/委托上游的方案未定，见 [M2C/C2M RFC](./2026-10-20-m2c-c2m-translation.md) §12.6。
 - **真流式取消**：agent host BYOK 桥的缓冲式流式（[microsoft/vscode#340983](https://github.com/microsoft/vscode/issues/340983)，属上游问题）

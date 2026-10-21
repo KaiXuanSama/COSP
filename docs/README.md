@@ -44,6 +44,9 @@
 - 已知技术债：[`architecture/KNOWN_DEBT.md`](./architecture/KNOWN_DEBT.md)
 - 协议契约：[`reference/contracts/`](./reference/contracts/)
 - 功能提案索引：[`working/rfcs/README.md`](./working/rfcs/README.md)
+- M2C 去程：[最终调研](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-final-review) ·
+   [实施计划](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-plan) ·
+   [目标规格（待实现）](./reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)
 
 ## 各目录的索引
 
@@ -52,6 +55,7 @@
 | ADR | 主题 |
 |---|---|
 | [ADR-0001](./adr/adr-0001-adopt-docs-governance.md) | 采纳 docs-governance 规范并迁移现有 docs/ |
+| [ADR-0012](./adr/adr-0012-m2c-request-translation.md) | M2C 去程的忠实映射、文档/工具损失边界与既有元数据编码（已确认，未实现） |
 
 ### architecture/ —— 当前架构
 
@@ -71,7 +75,7 @@
 
 | 文件 | 内容 |
 |---|---|
-| [`contracts/`](./reference/contracts/) | C2M 请求/响应契约（长期有效的字段映射规范；M2C/C2M 方向补齐计划见 [RFC](./working/rfcs/2026-10-20-m2c-c2m-translation.md)） |
+| [`contracts/`](./reference/contracts/) | C2M 请求/响应契约与 [M2C 待实现目标规格](./reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)；调研/实施计划不在契约重复，见上方 RFC 入口 |
 | [`samples/`](./reference/samples/) | 真实抓包（Codex 请求/响应事件流）与配置样例 |
 | [LIVE_TEST_MATRIX.md](./reference/LIVE_TEST_MATRIX.md) | 实机验证矩阵（测什么、用哪个 mock、看什么） |
 | [MODEL_SUPPORT.md](./reference/MODEL_SUPPORT.md) | 各模型对 Copilot 的适配度 |
