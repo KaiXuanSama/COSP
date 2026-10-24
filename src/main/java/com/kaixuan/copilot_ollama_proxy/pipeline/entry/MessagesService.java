@@ -19,13 +19,12 @@ import java.util.Map;
  * 各自只声明自己的 {@link WireProtocol}，建一个只含下游侧事实的 ctx，交给
  * {@code RequestPipeline} 跑完整条主干。本类不再持有执行器、翻译器表或调度器。
  *
- * <h2>跨协议为何不再抛错</h2>
+ * <h2>跨协议由主干查表，不在端点写分支</h2>
  * 主干在翻译插槽处按 {@code (下游, 上游)} 查表：<strong>去程未命中即报错</strong>
  * （{@code ProtocolTranslationNotSupportedException}，控制器译 400）。
- * M2C 请求翻译至今没有实现，因此本端点跨协议时仍会得到那个 400 ——
- * 但抛出点从「本类的 if」变成了「主干查表未命中」，语义与阈值完全一致。
- * <strong>补上 M2C 翻译器（加一个 {@code @Component}）时本类一行不用改</strong> ——
- * 设计已完成，见 {@code docs/working/rfcs/2026-10-20-m2c-c2m-translation.md}。
+ * M2C 请求译器已声明 (MESSAGES, CHAT)，容器自动接入；本类方法体无需变化。
+ * C2M 回程仍未实现，该方向会原样透传 Chat 响应并 WARN，仅用于功能分支受控验证。
+ * M2R 请求方向仍未实现，不因新增 M2C 而放行；完整状态见 {@code ProtocolTranslator}。
  *
  * <p>翻译器套在上游执行器<strong>外侧</strong>（主干上，因而在 {@code retryWhen} 之外）：
  * 重试、落库、usage 提取都留在被包装那层，翻译绝不能进重试内侧
@@ -56,7 +55,7 @@ public class MessagesService {
      *
      * @param request 已含所有透传字段的 Anthropic 请求体
      * @param model 模型名（可能带供应商前缀）
-     * @return 上游原始响应 JSON
+    * @return 响应事件；回程未接时为上游原生 JSON
      */
     public Mono<UpstreamEvent> messages(Map<String, Object> request, String model,
                                         HttpHeaders downstreamHeaders, String requestId) {

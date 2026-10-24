@@ -70,24 +70,19 @@ public class ProtocolDispatchManager {
      * 常量<strong>书写顺序</strong>摆布的隐式行为 —— 而那个枚举的注释明确声明自己的顺序
      * 不承载语义。因此回退序必须独立声明。
      *
-     * <h2>顺序依据：已实现优先，其次兼容面</h2>
-     * <ol>
-     *   <li>{@link WireProtocol#CHAT} —— 兼容面最广，且字段最少，往它翻的信息损耗最小；</li>
-     *   <li>{@link WireProtocol#MESSAGES} —— 已有一个方向完整实现（C2M 去程 + M2C 回程）；</li>
-     *   <li>{@link WireProtocol#RESPONSES} —— 排最后：C2R 去程与 M2R / R2M 均未实现，
-     *       且它字段最富（{@code reasoning.encrypted_content} 在 Chat 里无处安放），
-     *       往回翻必然丢信息。</li>
-     * </ol>
-     *
-     * <p>这个顺序有实际差别：供应商勾了 MESSAGES + RESPONSES、下游打 chat 时，
-     * 会挑 MESSAGES（已实现）而非 RESPONSES（未实现）。<strong>挑一个已实现的方向
-     * 优于挑未实现的</strong> —— 后者会让一个本来能跑的调用抛「未实现」。
+    * <h2>固定候选序，不随新增实现自动重排</h2>
+    * 当前候选序固定为 CHAT → MESSAGES → RESPONSES；每个候选还须供应商支持且去程已实现。
+    * C2M、C2R 去程与 M2C 去程均已声明，是否实现从 Bean 集合读取，不从注释或字段数量推断。
+    * 「字段更少」不能证明翻译信息损耗更小；本序只是尚无可配置编排时的既定路由政策。
+    *
+    * <p>供应商勾了 MESSAGES + RESPONSES、下游打 chat 时，会挑 MESSAGES；
+    * 下游 MESSAGES、供应商勾了 CHAT + RESPONSES 时会挑 CHAT。直连仍先于候选序。
      *
      * <h2>前端的展示序必须与本顺序保持一致</h2>
      * 前端 {@code ALL_WIRE_PROTOCOLS} 决定协议地址行从上到下的排列，而<strong>用户会把
      * 那个排列读成优先级</strong>。它曾取「语义序」（两个 OpenAI 接口相邻，即
      * {@code CHAT, RESPONSES, MESSAGES}），读起来更顺，但会让人预期上面那个场景会选
-     * RESPONSES —— 一条尚未实现的翻译路径。已改为与本常量同序。
+    * RESPONSES，而实际回退会先挑 MESSAGES。已改为与本常量同序。
      *
      * <p>因此这两处是<strong>同一个事实的两个表达</strong>，改一处必须改另一处。
      * 与下面那些顺序不同，它们本就该分叉。
@@ -103,8 +98,8 @@ public class ProtocolDispatchManager {
      * </ul>
      *
      * <p>落库序与本顺序当前<strong>数值上相同</strong>（都是 CHAT, MESSAGES, RESPONSES），
-     * 但理由完全无关：前者是字母序的巧合，后者是实现状态的排序。一旦某个方向被实现，
-     * 后者就该变而前者不该变。<strong>不要把它们合并成一个常量。</strong>
+    * 但理由完全无关：前者是字母序的巧合，后者是固定的路由政策；新增方向不自动改序。
+    * <strong>不要把它们合并成一个常量。</strong>
      */
     // TODO(待实现) 协议流转编排：让用户自行指定「下游协议 → 上游协议」的映射，
     //  粒度到供应商与模型，取代本常量这个全局固定顺序。
@@ -112,9 +107,8 @@ public class ProtocolDispatchManager {
     //  而它名下模型 1 只支持 RESPONSES、模型 2 只支持 MESSAGES：本常量对这两个模型
     //  只能给出同一个答案（MESSAGES），于是模型 1 必然被送错线路。
     //  当前这个顺序是「在没有编排能力时把错误率压到最低」的过渡方案，不是目标形态。
-    //  编排能力将在 C2R 翻译落地之前规划与实现；在那之前直连场景不受影响 ——
-    //  规则 1（同名协议优先直连）根本不读这个顺序，而三条线路默认全勾时绝大多数
-    //  调用都走规则 1。
+    //  C2R 已落地但编排仍未实现；规则 1（同名协议优先直连）根本不读这个顺序，
+    //  三条线路默认全勾时绝大多数调用都走规则 1。
     static final List<WireProtocol> TRANSLATION_FALLBACK_ORDER =
             List.of(WireProtocol.CHAT, WireProtocol.MESSAGES, WireProtocol.RESPONSES);
 
@@ -187,8 +181,7 @@ public class ProtocolDispatchManager {
         //
         // 判据是「supported ∩ 已实现去程」而非仅 supported：这正是「按优先级往下找已实现
         // 方向」的落点 —— 勾了但没实现的方向要被跳过，降级到下一个候选。
-        //   下游 CHAT + 上游 MESSAGES：C2M 去程已实现，命中；
-        //   其余方向：去程翻译未实现，跳过（届时若无其它候选则落到下面报错）。
+        // 去程是否实现只看译器声明集合；新增方向自动命中，未声明方向仍跳过。
         // 候选顺序取 TRANSLATION_FALLBACK_ORDER 而非 values()，理由见那个常量的注释。
         // 翻译器一律套在上游服务外侧（装饰器），因而在 retryWhen 之外 ——
         // 空响应判定与落库看到的必须是上游原生形态。
