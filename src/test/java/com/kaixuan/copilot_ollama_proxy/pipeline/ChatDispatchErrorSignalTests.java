@@ -11,6 +11,8 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.RequestTranslationExce
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.MessagesToChatResponseTranslator;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.ChatToMessagesRequestTranslator;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.MessagesToChatRequestTranslator;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.RequestProtocolTranslator;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.TranslatorRegistry;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRouteResolver;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
@@ -23,10 +25,14 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyA
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.UpstreamExecutorRegistry;
 import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
+import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
+import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.reactivestreams.Publisher;
 import org.springframework.http.HttpHeaders;
 import reactor.core.publisher.Flux;
@@ -97,7 +103,7 @@ class ChatDispatchErrorSignalTests {
         // 调度器需知道「C2M 去程已实现」，才会对下游 CHAT + 供应商 MESSAGES 判为可翻译
         // （否则规则 2 找不到已实现候选，会在调度阶段就抛未实现，RequestTranslationFailure
         //  组的「派发成功、真实翻译器再抛」路径就走不到）。与下面 TranslatorRegistry 同源：
-        //  两者都只认这一个真实去程翻译器。M2C / R2* 未实现，交由各自用例验证调度阶段报错。
+        //  本 fixture 只装 C2M；未装 M2C / R2* 的守卫不随生产 Bean 集合变化。
         ProtocolDispatchManager dispatchManager = new ProtocolDispatchManager(
                 List.of(new ChatToMessagesRequestTranslator(objectMapper)));
 
@@ -199,13 +205,13 @@ class ChatDispatchErrorSignalTests {
     }
 
     /**
-     * M2C 请求翻译未实现时的那条错误同样必须走信号。
+        * fixture 未装 M2C 请求翻译时的错误同样必须走信号。
      *
      * <p>这条路径在加 defer 之前也是坏的：{@code Mono.error(...)} 本身安全，
      * 但它前面的 {@code dispatch(...)} 不是，所以整个方法体必须一起进 defer。
      */
     @Nested
-    @DisplayName("下游 Anthropic 而供应商只有 OpenAI（M2C 请求翻译未实现）")
+        @DisplayName("下游 Anthropic 而供应商只有 OpenAI（fixture 未装 M2C）")
     class TranslationNotSupported {
 
         @Test
@@ -229,6 +235,90 @@ class ChatDispatchErrorSignalTests {
                     ProtocolTranslationNotSupportedException.class, "relay-x");
         }
     }
+
+        /** 与 C2M-only 守卫分开构造真实 M2C，证明新增去程能走成功与失败信号两条路径。 */
+        @Nested
+        class RealM2cTranslation {
+
+                @BeforeEach
+                void installM2cRequestTranslator() {
+                        ObjectMapper mapper = new ObjectMapper();
+                        List<RequestProtocolTranslator> requests = List.of(new MessagesToChatRequestTranslator(mapper));
+                        var outbound = new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestAssembler(
+                                        new com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService(mapper),
+                                        new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestStageRegistry(List.of(
+                                                        new com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.chat.ChatOutboundStage())), mapper);
+                        var pipeline = new RequestPipeline(new BeforeSend(routeResolver, new ProtocolDispatchManager(requests),
+                                        new TranslatorRegistry(requests, List.of()),
+                                        new RequestBodyAssembler(PipelineContexts.registryWithAllBodyStages(mapper),
+                                                        new com.kaixuan.copilot_ollama_proxy.application.provider.RequestBodyRuleEngine(mapper)), outbound),
+                                        new AfterSend(new UpstreamExecutorRegistry(List.of(openAiChatService, anthropicChatService, responsesChatService))));
+                        messagesService = new MessagesService(pipeline);
+                        givenRoute("[\"CHAT\"]");
+                }
+
+                @ParameterizedTest
+                @ValueSource(booleans = {true, false})
+                void successfulRequestUsesChatAndPreservesNativeResponseAndUsageSlot(boolean stream) {
+                        UsageTokens usage = new UsageTokens(100, 7, 40);
+                        UpstreamEvent nativeEvent = UpstreamEvent.body("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}", usage);
+                        if (stream) {
+                                given(openAiChatService.invokeStream(any(), any())).willAnswer(invocation -> {
+                                        capturedExecution.set(invocation.getArgument(0));
+                                        return Flux.just(nativeEvent, UpstreamEvent.terminal("[DONE]", usage));
+                                });
+                        } else {
+                                given(openAiChatService.invoke(any(), any())).willAnswer(invocation -> {
+                                        capturedExecution.set(invocation.getArgument(0));
+                                        return reactor.core.publisher.Mono.just(nativeEvent);
+                                });
+                        }
+                        Map<String, Object> request = Map.of("model", "m", "stream", stream, "system", "prompt",
+                                        "messages", List.of(Map.of("role", "user", "content", "hi")));
+                        Publisher<UpstreamEvent> response = stream
+                                        ? messagesService.messagesStream(request, "m", HttpHeaders.EMPTY, "m2c-stream")
+                                        : messagesService.messages(request, "m", HttpHeaders.EMPTY, "m2c-single");
+
+                        List<UpstreamEvent> output = Flux.from(response).collectList().block();
+
+                        assertThat(output.getFirst()).isSameAs(nativeEvent);
+                        assertThat(output.getFirst().usage()).isSameAs(usage);
+                        RequestPipelineContext ctx = capturedExecution.get();
+                        assertThat(ctx.bodyProtocol()).isEqualTo(WireProtocol.CHAT);
+                        assertThat(ctx.body()).doesNotContainKey("system").containsEntry("stream", stream);
+                        assertThat(ctx.body().get("messages")).isEqualTo(List.of(Map.of("role", "system", "content", "prompt"),
+                                        Map.of("role", "user", "content", "hi")));
+                        assertThat(ctx.hasCompleted(PipelineStep.REQUEST_TRANSLATION)).isTrue();
+                        assertThat(ctx.hasCompleted(PipelineStep.RESPONSE_TRANSLATION)).isFalse();
+                        assertThat(ctx.shouldApplyEmptyResponseGate()).isFalse();
+                        assertThat(ctx.translationContext().wasStream()).isEqualTo(stream);
+                        assertThat(ctx.translationContext().includeUsage()).isFalse();
+                        if (stream) {
+                                assertThat(ctx.body().get("stream_options")).isEqualTo(Map.of("include_usage", true));
+                        } else {
+                                assertThat(ctx.body()).doesNotContainKey("stream_options");
+                        }
+                }
+
+                @ParameterizedTest
+                @ValueSource(booleans = {true, false})
+                void realTranslationFailureIsDeferredAndNeverInvokesAnUpstream(boolean stream) {
+                        Map<String, Object> request = Map.of("model", "m", "stream", stream,
+                                        "messages", List.of(Map.of("role", "narrator", "content", "hi")));
+                        Throwable error = assertErrorSignal(() -> stream
+                                                        ? messagesService.messagesStream(request, "m", HttpHeaders.EMPTY, "m2c-error")
+                                                        : messagesService.messages(request, "m", HttpHeaders.EMPTY, "m2c-error"),
+                                        RequestTranslationException.class, "messages[0].role");
+
+                        assertThat(((RequestTranslationException) error).fieldPath()).isEqualTo("messages[0].role");
+                        verify(openAiChatService, never()).invoke(any(), any());
+                        verify(openAiChatService, never()).invokeStream(any(), any());
+                        verify(anthropicChatService, never()).invoke(any(), any());
+                        verify(anthropicChatService, never()).invokeStream(any(), any());
+                        verify(responsesChatService, never()).invoke(any(), any());
+                        verify(responsesChatService, never()).invokeStream(any(), any());
+                }
+        }
 
     /**
      * 下游 Responses 而供应商没勾 Responses。

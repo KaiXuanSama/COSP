@@ -1,16 +1,22 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate;
 
 import com.kaixuan.copilot_ollama_proxy.CopilotOllamaProxyApplication;
+import com.kaixuan.copilot_ollama_proxy.application.runtime.ProviderRuntimeConfiguration;
+import com.kaixuan.copilot_ollama_proxy.pipeline.before.dispatch.ProtocolDispatchManager;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNotSupportedException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 翻译器查表的<strong>装配验证</strong>：真实容器是否把两个翻译器收进了 {@link TranslatorRegistry}。
+ * 翻译器查表的<strong>装配验证</strong>：真实容器是否把声明的各方向收进了 {@link TranslatorRegistry}。
  *
  * <h2>为何单有纯单测不够</h2>
  * {@code TranslatorRegistryTests} 手工 {@code new} 注册表，验的是<strong>查表逻辑</strong>；
@@ -42,6 +48,18 @@ class TranslatorRegistrySpringWiringTests {
     @Autowired
     private MessagesToChatResponseTranslator m2cResponseTranslator;
 
+        @Autowired
+        private ChatToResponsesRequestTranslator c2rRequestTranslator;
+
+        @Autowired
+        private ResponsesToChatResponseTranslator r2cResponseTranslator;
+
+        @Autowired
+        private MessagesToChatRequestTranslator m2cRequestTranslator;
+
+        @Autowired
+        private ProtocolDispatchManager dispatchManager;
+
     @Test
     @DisplayName("容器收齐两个翻译器：C2M 去程与回程都按 (CHAT, MESSAGES) 命中真实 Bean")
     void realContainerRegistersBothHalvesOfC2m() {
@@ -69,5 +87,50 @@ class TranslatorRegistrySpringWiringTests {
         // 因此同一方向的两次查表必然拿到不同对象。若哪天合并成一张表，
         // 这里会红 —— 那时「去程有、回程无」这个中间态就表达不出来了。
         assertThat(request).isNotSameAs(response);
+    }
+
+    @Test
+    void realContainerKeepsBothHalvesOfC2rRegistered() {
+        assertThat(translatorRegistry.findRequestTranslator(WireProtocol.CHAT, WireProtocol.RESPONSES))
+                .containsSame(c2rRequestTranslator);
+        assertThat(translatorRegistry.findResponseTranslator(WireProtocol.CHAT, WireProtocol.RESPONSES))
+                .containsSame(r2cResponseTranslator);
+    }
+
+    @Test
+    void realContainerRegistersM2cRequestButDoesNotPretendTheResponseExists() {
+        assertThat(translatorRegistry.findRequestTranslator(WireProtocol.MESSAGES, WireProtocol.CHAT))
+                .containsSame(m2cRequestTranslator);
+        assertThat(translatorRegistry.findResponseTranslator(WireProtocol.MESSAGES, WireProtocol.CHAT)).isEmpty();
+    }
+
+    @Test
+    void realDispatchUsesM2cAndKeepsDirectPriorityAndUnimplementedGuards() {
+        for (String supported : List.of("[\"CHAT\"]", "[\"CHAT\",\"RESPONSES\"]")) {
+            var decision = dispatchManager.dispatch(WireProtocol.MESSAGES, provider(supported));
+            assertThat(decision.translationNeeded()).isTrue();
+            assertThat(decision.upstreamProtocol()).isEqualTo(WireProtocol.CHAT);
+        }
+        var direct = dispatchManager.dispatch(WireProtocol.MESSAGES, provider("[\"MESSAGES\",\"CHAT\"]"));
+        assertThat(direct.translationNeeded()).isFalse();
+        assertThat(direct.upstreamProtocol()).isEqualTo(WireProtocol.MESSAGES);
+        assertThatThrownBy(() -> dispatchManager.dispatch(WireProtocol.MESSAGES, provider("[\"RESPONSES\"]")))
+                .isInstanceOf(ProtocolTranslationNotSupportedException.class);
+        assertThatThrownBy(() -> dispatchManager.dispatch(WireProtocol.RESPONSES, provider("[\"CHAT\"]")))
+                .isInstanceOf(ProtocolTranslationNotSupportedException.class);
+
+        assertThat(dispatchManager.dispatch(WireProtocol.CHAT, provider("[\"MESSAGES\",\"RESPONSES\"]")).upstreamProtocol())
+                .isEqualTo(WireProtocol.MESSAGES);
+        assertThat(dispatchManager.dispatch(WireProtocol.CHAT, provider("[\"RESPONSES\"]")).upstreamProtocol())
+                .isEqualTo(WireProtocol.RESPONSES);
+        for (WireProtocol protocol : WireProtocol.values()) {
+            assertThat(dispatchManager.dispatch(protocol, provider("[\"CHAT\",\"MESSAGES\",\"RESPONSES\"]")).translationNeeded())
+                    .isFalse();
+        }
+    }
+
+    private static ProviderRuntimeConfiguration provider(String supported) {
+        return new ProviderRuntimeConfiguration("fixture", "https://example.invalid/v1", "fixture", List.of(),
+                "[]", "{\"version\":2,\"groups\":[]}", supported, "");
     }
 }

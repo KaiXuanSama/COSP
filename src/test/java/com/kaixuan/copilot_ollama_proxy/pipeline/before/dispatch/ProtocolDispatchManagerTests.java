@@ -248,7 +248,7 @@ class ProtocolDispatchManagerTests {
         assertThat(decision.upstreamProtocol()).isEqualTo(WireProtocol.CHAT);
     }
 
-    /** 当前生产的真实状态：只有 C2M 去程实现，下游 CHAT + 供应商只有 MESSAGES → 命中翻译。 */
+    /** C2M-only fixture：下游 CHAT + 供应商只有 MESSAGES → 命中翻译。 */
     @Test
     void chatToMessagesTranslatesWhenOnlyC2mImplemented() {
         ProtocolDispatchManager manager = managerWith(
@@ -285,7 +285,7 @@ class ProtocolDispatchManagerTests {
      * 供应商支持跨协议、但候选方向的去程翻译一个都没实现 → 抛
      * {@link ProtocolTranslationNotSupportedException}。
      *
-     * <p>这正是当前生产里「下游 MESSAGES、供应商只有 CHAT」的真实结局（M2C 去程未实现）。
+    * <p>本 fixture 没装任何去程，故下游 MESSAGES、供应商只有 CHAT 时仍应报未实现。
      * 报错点在调度器而非 translateStep：跳过决定发生在这里，由本类报出更早、消息也更准。
      * 异常须带下游协议与代表候选，那是用户弄清「该换供应商还是等实现」的依据。
      */
