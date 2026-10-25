@@ -46,7 +46,9 @@
 - 功能提案索引：[`working/rfcs/README.md`](./working/rfcs/README.md)
 - M2C 去程：[最终调研](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-final-review) ·
    [实施计划](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-plan) ·
-   [目标规格（待实现）](./reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)
+   [字段规格](./reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec) ·
+   [阶段 2 实施记录](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-stage-2) ·
+   [三家上游实机存档](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-live-2026-10-24)
 
 ## 各目录的索引
 
@@ -55,7 +57,9 @@
 | ADR | 主题 |
 |---|---|
 | [ADR-0001](./adr/adr-0001-adopt-docs-governance.md) | 采纳 docs-governance 规范并迁移现有 docs/ |
-| [ADR-0012](./adr/adr-0012-m2c-request-translation.md) | M2C 去程的忠实映射、文档/工具损失边界与既有元数据编码（已确认，未实现） |
+| [ADR-0012](./adr/adr-0012-m2c-request-translation.md) | M2C 去程的忠实映射、文档/工具损失边界与既有元数据编码 |
+| [ADR-0013](./adr/adr-0013-m2c-output-format-alias.md) | M2C 兼容旧 output_format，重复格式要求显式报错 |
+| [ADR-0014](./adr/adr-0014-m2c-drop-server-fields.md) | M2C 直接省略三个顶层服务端配置字段，限定收窄 ADR-0012 的拒绝边界 |
 
 ### architecture/ —— 当前架构
 
@@ -75,7 +79,7 @@
 
 | 文件 | 内容 |
 |---|---|
-| [`contracts/`](./reference/contracts/) | C2M 请求/响应契约与 [M2C 待实现目标规格](./reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)；调研/实施计划不在契约重复，见上方 RFC 入口 |
+| [`contracts/`](./reference/contracts/) | C2M 请求/响应契约与 [M2C 字段规格](./reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)；调研/实施进展不在契约重复，见上方 RFC 入口 |
 | [`samples/`](./reference/samples/) | 真实抓包（Codex 请求/响应事件流）与配置样例 |
 | [LIVE_TEST_MATRIX.md](./reference/LIVE_TEST_MATRIX.md) | 实机验证矩阵（测什么、用哪个 mock、看什么） |
 | [MODEL_SUPPORT.md](./reference/MODEL_SUPPORT.md) | 各模型对 Copilot 的适配度 |

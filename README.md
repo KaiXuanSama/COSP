@@ -33,6 +33,10 @@ POST /v1/messages
 - `/v1/messages` 是 Anthropic Messages 协议入口，供 Claude 系客户端直连；Copilot 不走这条。
 - 模型可使用 `[provider-key] model-name` 显式路由；未加前缀的模型只有在全部启用供应商中唯一匹配时才会路由。
 
+> 当前功能分支的 M2C（下游 Messages → 上游 Chat）只完成去程转换并注册，回程尚未实现，
+> 仅供受控开发验证，不能用于 Claude 客户端正常会话或作为完整功能发布。验证进度见
+> [实施记录](docs/working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-stage-2)。
+
 ## 技术栈
 
 - Java 21、Spring Boot 3.5、WebFlux/Reactor

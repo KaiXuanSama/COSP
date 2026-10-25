@@ -326,6 +326,7 @@ writeProtocolFields / 请求体规则 / removeNullFields / 出站头 / 空响应
 
 | 项 | 位置 | 说明 |
 |---|---|---|
+| `OpenAiChatRequest` 缺 `response_format`，直连路径发不出结构化输出 | `protocol/openai/OpenAiChatRequest.java` | 固定字段 DTO，既没有 `response_format` 字段也没有 `@JsonAnySetter`，该字段在反序列化阶段即被丢弃。**CHAT 直连完全无法使用结构化输出**；M2C 翻译路径不受影响（译器自己构造该字段）。2026-10-24 实机验证时因它产生过一次**假成功**：直连请求返回 200 被误读成「上游支持 json_schema」，实际请求体里没有该字段。详见 [M2C 实机存档](../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-live-2026-10-24) |
 | 注释断言「本表没有触发器」 | `SchemaMigrationRunner.java:1114` | 与 `:1908-1909` 矛盾（V3 确实建了两个）。行为无害 —— V12 新表 DDL 的两条 CHECK 与那两个触发器逐条等价，且 `schema.sql` 从未声明它们，升级库因此收敛到新库形态。但错误前提会让下次改这张表的人不去检查触发器，而这是 SKILL.md 记的头号坑 |
 | `ResponsesRequest` 注解冗余 | `ResponsesRequest.java` | 同时有 `@JsonIgnoreProperties(ignoreUnknown = true)` 与 `@JsonAnySetter`，后者已吃掉未知字段。无害 |
 | `intIfPresent` 用 `asInt()` | `ResponsesUsageParser` | 超 `Integer.MAX_VALUE` 的 token 会截断。三侧一致，Responses 近期碰不到 |
@@ -340,6 +341,21 @@ writeProtocolFields / 请求体规则 / removeNullFields / 出站头 / 空响应
 > 因此 provider 层传什么都会被覆盖。`CallLifecyclePublisher` 的 Javadoc 已写明「不在
 > provider 层补前缀是有意为之」。**故「两处统一用 `modelName`」这条旧建议已作废** ——
 > 它改变不了任何可观测结果。
+
+> **验证「上游是否支持某字段」的判据（2026-10-24 踩后立）**：必须核对
+> **实际出站请求体**（`api_call_log.request_body`），不能只看响应状态码。三条容易
+> 假成功的路径：① 入口 DTO 白名单丢字段（见本节 `OpenAiChatRequest` 那条）——
+> 请求根本没发出去，200 只证明「没发」；② 请求体规则把字段删了 —— 同理；
+> ③ 供应商配置的协议集合让请求走了另一条路。要做对照实验时，先确认两条路径的
+> **出站请求体逐字节相同**，再比较响应。
+>
+> **文档可能滞后于实现（同日追加）**：MiMo 官方文档只列出 `response_format` 的
+> `Text` / `JSON object` 两个子类型，但实测**支持 `json_schema`** —— 用「绝对不可能
+> 从提示词猜到」的字段名（`zz_arbitrary_key_7f3a`）可证：响应出现了该字段名，
+> 且 stepfun 的 `reasoning_content` 记录了「原本想输出 `{"planet":"Earth"}` 却被
+> schema 改写」。**文档没写不等于不支持**；反过来文档写了也可能已下线。
+> 唯一可靠判据是「出站请求体 + 响应内容」这对组合，且响应要能区分
+> 「schema 强制生效」与「模型聪明地猜中」。
 
 ## 参考
 

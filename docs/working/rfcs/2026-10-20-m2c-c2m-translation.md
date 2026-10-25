@@ -1,16 +1,18 @@
 # RFC：M2C 去程与 C2M 回程翻译（下游 Anthropic → 上游 Chat 的完整链路）
 
 - **日期**：2026-10-20（立项日）
-- **状态**：**实施中** —— 阶段 1（入站 stream 还原与 CHAT system 支线）已完成自动化验证；阶段 2 未开始，M2C 译器与 C2M 回程仍未实现
+- **状态**：**实施中** —— 阶段 2（纯结构转换）已实现并注册、自动化回归通过；去程另有三家上游实机存档；阶段 3 HTTP 收包未完成，C2M 回程仍未实现
 - **最后调研**：2026-10-21（实施前的 M2C 去程最终核对）
-- **实施进展**：[阶段 1 实施记录](#m2c-stage-1)；其余字段边界与回程复核见 §12.7
-- **相关 ADR**：[ADR-0012：M2C 去程的忠实映射与显式损失边界](../../adr/adr-0012-m2c-request-translation.md)
+- **实施进展**：[阶段 1](#m2c-stage-1) · [阶段 2](#m2c-stage-2) · [三家实机存档](#m2c-live-2026-10-24)；去程边界已冻结，回程复核见 §12.7
+- **相关 ADR**：[ADR-0012：M2C 去程的忠实映射与显式损失边界](../../adr/adr-0012-m2c-request-translation.md)、[ADR-0013：旧格式别名兼容](../../adr/adr-0013-m2c-output-format-alias.md)、[ADR-0014：三个顶层服务端配置字段省略](../../adr/adr-0014-m2c-drop-server-fields.md)
 - **分支**：`feat/m2c-request-c2m-response-translation`
 - **前置文档**：
   [协议翻译四方向 RFC](./2026-09-03-protocol-translation.md) §A 方向总览、
   [C2M 请求契约](../../reference/contracts/C2M-REQUEST-CONTRACT.md) §4.3（M2C 思考映射）、
   [C2M 响应契约](../../reference/contracts/C2M-RESPONSE-CONTRACT.md) §0
 
+> 以下需求背景保留 2026-10-21 实施前基线；当前完成范围以 §11 阶段记录为准。
+>
 > **需求复述**：用户近期开始把 Claude Desktop 作为常用客户端，其**文档处理能力**是主要动机，
 > 因此 `/v1/messages` 这条下游路径从「能用」升级为「常用」。
 > 当前 COSP 在该路径上只支持 **M→M 直连**；已实现的 **C→M** 使用下游 Chat 入口，
@@ -26,12 +28,12 @@
 
 | 要查什么 | 唯一维护位置 |
 |---|---|
-| 已确认的取舍与理由 | [ADR-0012](../../adr/adr-0012-m2c-request-translation.md)；不包含未确认的附加拒绝策略 |
-| M2C 逐字段目标规格 | [请求契约 §10](../../reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)，明确标为待实现 |
+| 已确认的取舍与理由 | [ADR-0012](../../adr/adr-0012-m2c-request-translation.md)、[ADR-0013](../../adr/adr-0013-m2c-output-format-alias.md)、[ADR-0014](../../adr/adr-0014-m2c-drop-server-fields.md)；去程值级细化见 §12.7/请求契约 |
+| M2C 逐字段规格 | [请求契约 §10](../../reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)，区分纯转换实现与实机验证 |
 | 最终调研证据、纠错与剩余问题 | [本文 §12](#m2c-final-review) |
 | 去程实施步骤、依赖、文件清单 | [本文 §8](#m2c-plan) |
 | 自动化与用户手动验收 | 本文 §10 |
-| 阶段 1 的已实现内容与测试结果 | [本文 §11](#m2c-stage-1) |
+| 已实现内容与测试结果 | 本文 §11：[阶段 1](#m2c-stage-1)、[阶段 2](#m2c-stage-2)、[三家实机存档](#m2c-live-2026-10-24) |
 
 不另建第二份 RFC、根目录 PLAN 或独立调查副本；功能尚在推进，也不移入 `archive/`。
 实施按阶段推进；§12 的剩余边界不属于阶段 1，不因完成入口/system 基建就视为全部确认或整链路可用。
@@ -77,6 +79,8 @@
 
 ### 2.1 缺的两块
 
+以下是 2026-10-21 的实施前基线；当前去程已注册，后续实际进展见 §11，不以本表推断运行状态。
+
 | # | 缺什么 | 现状后果 |
 |---|---|---|
 | 1 | `(MESSAGES, CHAT)` 的**去程**翻译器 | `ProtocolDispatchManager.dispatch` 在供应商不勾 MESSAGES、只勾 CHAT 时，规则 2 找不到已实现的候选方向，抛 `ProtocolTranslationNotSupportedException` → 400。**这是本文要解决的主问题。** |
@@ -109,6 +113,8 @@
 | `tools/mock-upstream` | 现有端点可验证请求是否到达；当前不校验翻译字段，也不能验证按 `include_usage` 返回尾部 usage，不能代替收包测试 |
 
 ### 2.3 必须同步维护的实现与测试清单
+
+本清单保留 2026-10-21 的核对基线；各项实际执行结果见 §11，不能据本表反推现状。
 
 前轮把「新 Bean 会影响生产集合」误推成「所有手工测试集合都会变化」。
 以下以实际构造方式为准；阶段 1 只处理入口/system 接线，其它条目保持后续阶段范围。
@@ -185,6 +191,8 @@ static final List<WireProtocol> TRANSLATION_FALLBACK_ORDER =
 
 #### 2.4.4 当前实际已实现的去程方向（脚本核对）
 
+本表固定记录 2026-10-21 基线；2026-10-24 新增 (MESSAGES, CHAT) 去程，见[阶段 2](#m2c-stage-2)。
+
 按类里 `downstreamProtocol()` / `upstreamProtocol()` 的实际返回值：
 
 | 类 | 类型 | 声明方向 | 存在性 |
@@ -204,7 +212,7 @@ static final List<WireProtocol> TRANSLATION_FALLBACK_ORDER =
 这是最容易忽略的连带影响：M2C 去程一注册，`(MESSAGES, CHAT)` 就进入
 `implementedRequestRoutes`，于是**下游 MESSAGES 的请求会改变分流结果**。
 
-| 场景 | 当前行为 | M2C 落地后 |
+| 场景 | 实施前行为（2026-10-21） | M2C 落地后 |
 |---|---|---|
 | 下游 MESSAGES，供应商勾 `[CHAT]` | ❌ 抛 `ProtocolTranslationNotSupportedException` → 400 | ✅ 翻译到 CHAT |
 | 下游 MESSAGES，供应商勾 `[CHAT, RESPONSES]` | ❌ 抛错（候选 CHAT 未实现 → 跳过；RESPONSES 也未实现 → 报错） | ✅ 按回退序挑 **CHAT**（C 在 R 之前） |
@@ -881,7 +889,7 @@ Claude Desktop 已保存的 MESSAGES 缓存规则不能自动迁到 CHAT，处�
 仍无法满足 Anthropic 客户端契约。`AfterSend.warnIfHalfRound` 已明确要求合并主干前补齐回程。
 
 > 上述为 2026-10-21 定稿的阶段计划；实际完成情况逐次追加到 §11。
-> 当前阶段 1 已完成，不能据此把后续译器、include_usage 或回程验收提前勾为完成。
+> 阶段 1、2 实际完成范围见 §11；不能据纯转换完成把 HTTP 收包、受控联测或回程验收提前勾完。
 
 ### 8.1 阶段 0：文档落盘与边界冻结
 
@@ -1008,38 +1016,38 @@ HTTP 测试方式参考 `ProviderRequestBodyTransformationIntegrationTests`，�
 
 ### 10.1 纯转换、system 与设置层
 
-- [ ] 顶层标量保留、白名单丢弃、单/多元素 stop 数组、错误元素路径。
+- [x] 顶层标量保留、白名单丢弃、单/多元素 stop 数组、错误元素路径。
 - [x] system 字符串/数组/空值、前导 billing 行的 LF/CRLF/CR、同块正文与跨块非前导文本保留、幂等、no-op。
-- [ ] user/assistant 单条与相邻语义轮、纯文本/图文顺序；角色及块位置异常不自动改角色。
-- [ ] 单/多工具、多轮、乱序结果、孤儿、未应答、重复 ID、真正空结果、媒体-only、错误+媒体。
-- [ ] 清理后有无工具调用决定 thinking 回放；无明文不补占位、纯文本轮不回放。
-- [ ] tool 消息无 name；schema/strict/choice/parallel 显式布尔、缺省与空值。
-- [ ] 文档 base64/text/content、工具内文档、title/context、URL/文件 ID/引用要求拒绝；不把媒体编码变正文。
-- [ ] JSON Schema 输出与 effort 同时存在，处理一项不抹掉另一项。
-- [ ] 输入深层内容不变，可处理 `Map.of`/`List.of` fixture；输出经后续规则可修改。
-- [ ] 同输入转换确定、未变化历史结构不因随机值或排序变化而变动；业务参数中同名 cache_control/signature 不被删除。
-- [ ] thinking disabled/enabled/adaptive/null、effort low/null、output_config null/empty/format-only
+- [x] user/assistant 单条与相邻语义轮、纯文本/图文顺序；角色及块位置异常不自动改角色。
+- [x] 单/多工具、多轮、乱序结果、孤儿、未应答、重复 ID、真正空结果、媒体-only、错误+媒体。
+- [x] 清理后有无工具调用决定 thinking 回放；无明文不补占位、纯文本轮不回放。
+- [x] tool 消息无 name；schema/strict/choice/parallel 显式布尔、缺省与空值。
+- [x] 文档 base64/text/content、工具内文档、title/context、URL/文件 ID/引用要求拒绝；不把媒体编码变正文。
+- [x] JSON Schema 输出与 effort 同时存在，处理一项不抹掉另一项。
+- [x] 输入深层内容不变，可处理 `Map.of`/`List.of` fixture；输出经后续规则可修改。
+- [x] 同输入转换确定、未变化历史结构不因随机值或排序变化而变动；业务参数中同名 cache_control/signature 不被删除。
+- [x] thinking disabled/enabled/adaptive/null、effort low/null、output_config null/empty/format-only
    分别覆盖 fallback/override/passthrough/delete；不误删历史 reasoning_content。
 - [x] CHAT 规则在 system 归一与思考设置之后执行、null 清理最后；MESSAGES 规则不误执行（阶段 1 的装配回归）。
 
 ### 10.2 真 Bean、HTTP 入站与最终出站
 
-- [ ] 新译器/system 支线 `containsSame` 实际 Bean；手工 stub 未实现守卫仍在。
-   system 部分已完成，译器部分仍待后续阶段。
-- [ ] §2.4 的路由矩阵不变；不引入枚举声明顺序、模型名或译器内优先级判断。
-- [ ] 入站 JSON 的 stream true/false/缺省经真实 DTO 回到 Map，翻译上下文与最终出站一致。
-   入站还原和 `TranslationContext` 读取已验证；完整 M2C 译器至实际出站仍待阶段 3。
+- [x] 新译器/system 支线 `containsSame` 实际 Bean；手工 stub 未实现守卫仍在。
+- [x] §2.4 的路由矩阵不变；不引入枚举声明顺序、模型名或译器内优先级判断。
+  入站还原和 `TranslationContext` 读取已验证；完整 M2C 译器至实际出站仍待阶段 3。
 - [ ] 随机端口 HttpServer 实收 `/v1/chat/completions`、去前缀模型、正确 schema/文件/媒体/请求头。
 - [ ] 条件 usage stub：只有出站 include_usage=true 才给尾帧。样例 prompt=100、completion=7、cached=40，
    去程半轮的记账槽与两处成功写入仍使用 100/7，不被减成 60/7。
 - [ ] CHAT 规则显式关闭 include_usage 后，stub 不发 usage；不写用量明细，成功流式日聚合记 `0,0`。
 - [ ] 本地翻译错误上游调用为零；非流式 400 与字段路径、流式 HTTP200 + event:error；Publisher 组装不抛同步异常。
+   真实 M2C 译器的 defer 信号与执行器未调用已覆盖；HTTP 状态/SSE 错误帧已由三家实机确认，见 §11 实机存档。
 - [ ] 上游 400/401 等错误沿用现有状态/正文路径，不被当正常模型文本。
-- [ ] 回归 C2M/C2R、三协议直连、既有 system 支线与设置层。
+   已由 DeepSeek 的 `response_format` 400 实机确认：上游原文透传、本地不整流，见 §11 实机存档。
+- [x] 回归 C2M/C2R、三协议直连、既有 system 支线与设置层（默认 Java 全量）。
 
 执行时先做编辑器诊断，再运行包含编译的定向测试，例如
 `./mvnw.cmd test "-Dtest=MessagesToChatRequestTranslatorTests,ChatSystemPromptStageTests,M2cRequestPipelineIntegrationTests"`，
-最后 `./mvnw.cmd test` 全量。**以上命令为未来计划，本轮未执行。** 新类未编译前不能只调 surefire:test
+最后 `./mvnw.cmd test` 全量。**该示例包含仍待阶段 3 实施的 HTTP 收包测试；阶段 2 实际回归见 §11。** 新类未编译前不能只调 surefire:test
 而误读旧 target 为通过；本次不动 schema，无需额外迁移 tag。测试依赖以 pom 实际内容为准，
 不为本文示例引入新的测试库。
 
@@ -1070,13 +1078,14 @@ HTTP 测试方式参考 `ProviderRequestBodyTransformationIntegrationTests`，�
 ### 10.5 文档与发布门禁
 
 - [x] 最终研究、计划已落入同一个功能 RFC；已确认决策进入 ADR，索引可达。
-- [x] 请求契约有单一 M2C 目标规格，且明确未实现；未确认建议留在 RFC。
-- [ ] §12.7 的未决项确认完毕后再冻结受影响的规格。
-- [ ] 实施时同步 §2.3 的代码注释与测试，不提前宣称另一半完成。
+- [x] 请求契约有单一 M2C 字段规格，且明确实现/验证边界；后续回程建议留在 RFC。
+- [x] §12.7 的去程细项已确认并冻结受影响的规格；回程未定稿。
+- [x] 实施时同步 §2.3 的代码注释与测试，不提前宣称另一半完成。
 - [ ] 接线落地后再更新架构活文档与可选规则/探针说明。
 - [ ] 去程、回程、客户端及日志验收均完成后，追加实施记录并更新整体状态。
 
-阶段 1 已通过默认 Java 全量回归与本阶段文档检查；这不构成 M2C/C2M 整体合并/发布放行。
+阶段 1、2 已通过各自默认 Java 全量回归与文档检查；去程另有三家上游实机存档（§11）。
+这不构成 M2C/C2M 整体合并/发布放行。
 
 ---
 
@@ -1128,6 +1137,243 @@ HTTP 测试方式参考 `ProviderRequestBodyTransformationIntegrationTests`，�
 **文档影响评估**：请求契约标注入口/system 已实现，架构与 pipeline 结构说明同步当前接线，
 RFC 状态/索引标注本阶段完成。ADR-0012 保持 Accepted 正文不变，无新决策、依赖、schema 或前端改动。
 本阶段可交用户审查与提交；整体译器、回程、实机和发布门禁未完成。
+
+<a id="m2c-stage-2"></a>
+
+### 2026-10-24：阶段 2 实现完成（纯结构转换与最小接线回归）
+
+**授权范围**：用户确认按推荐方案执行阶段 2。去程边界细化见 §12.7；旧格式别名的新增
+取舍独立落为 ADR-0013，ADR-0012 Accepted 正文保持不变。本轮没有实现回程、HTTP 收包探针、
+外部服务联测或数据库变更，也没有提交或合并分支。
+
+- 新增 `MessagesToChatRequestTranslator`，声明 (MESSAGES, CHAT)、带 `@Component`，
+   自动进入既有注册表和调度集合；模型名仍由装配剥前缀，system 留中间态交 CHAT 支线。
+- 新增四个包私有纯协作者：`AnthropicContentBlockTranslator`（含媒体文档整组）、
+   `AnthropicToolTranslator`（schema/strict/选择/并行与扩展边界）、
+   `AnthropicMessageTranslator`（相邻源角色合轮、原索引/出现顺序）、
+   `AnthropicToolResultExpander`（请求内因果、重复检查、孤儿/未答清理及媒体归属）。
+- 真实空结果保留；结果按调用顺序连续输出，再附带来源的媒体 user、普通正文。
+   只有清理后仍有工具调用的 assistant 才回放现有 thinking 明文，不存跨请求状态。
+- 去程流式主动索取 include_usage；TranslationContext 先读原始 source。
+   显式 null 保留到设置层，覆盖 11 种意见 × 四模式 × High/Off；另跑同矩阵证明历史 reasoning 不被误删。
+- 转换仅复制 JSON 容器和序列化工具参数，不反复解析/重编码文档。schema/input 内同名
+   cache_control/signature 和业务 null 保留；新增日志只包含方向/路径，不打印正文或参数。
+- 静态交叉审查补修文本文档 `media_type=text/plain` 校验和 HTTP(S) scheme 大小写判定，
+   补并发相同工具 ID、多轮晚到结果、前置孤儿与重复交叉、文本换行与媒体来源 golden。
+
+**相对计划的执行顺序说明**：阶段 2 注册即改变功能分支调度，因此提前完成阶段 3 中
+最小的真 Bean/路由/defer 回归，防止新方向漏接或破坏旧路线。随机端口 HttpServer 的
+真实入口→最终序列化 body、条件 usage/记账及 HTTP 错误测试没有提前完成。
+半轮透传和上游 usage 槽保持不变，未修改调度顺序、主干编排、重试或 Chat 日志 rewriter。
+
+**验证结果**：
+
+| 验证 | 结果 |
+|---|---|
+| 新五类纯转换/装配用例 | 315 通过，含并发隔离和两组完整思考矩阵 |
+| 16 类聚焦回归（真 Bean、defer、旧 C2M/C2R、system、半轮等） | 573 通过，0 失败/错误，BUILD SUCCESS |
+| Maven 默认 Java 全量（排除 schema-migration） | 1839 通过，0 失败/错误，BUILD SUCCESS |
+| 编辑器诊断 | 改动源码与测试无错误；JUnit loader 环境缺依赖，使用 Maven 含编译生命周期验证 |
+| 前端、schema-migration、真实客户端/外部上游 | 未执行；本轮无前端/schema 改动，实机由用户在后续阶段验证 |
+
+编译与测试使用仓库已有 `skip.installnodenpm` / `skip.npm` 属性跳过无关前端。
+中间出现过 AssertJ 通配泛型断言编译错误，已修复且实际 Maven 回归通过，不将编辑器假绿作为证据。
+
+**文档影响评估**：请求契约记录当前字段与固定标记；pipeline/架构描述已注册去程和回程缺口；
+RFC 状态、检查项与索引同步。对外没有新端点、配置、依赖或 schema；不新增操作指南或宣称
+Claude Desktop 会话可用。阶段 2 可交用户审查提交，整体发布仍受阶段 3/4、C2M 回程与客户端验收阻塞。
+
+<a id="m2c-live-2026-10-24"></a>
+
+### 2026-10-24：三家上游实机验证存档（纯去程，半轮态）
+
+**授权范围**：用户重启服务并关闭目标模型的 MESSAGES 路径后，要求对三家上游复跑同一套
+M2C 去程请求。本轮只验证**请求体翻译是否合适、能否触发上游回复**，不实现回程，
+不改调度、主干、重试或任何供应商配置，也未提交分支。
+
+> **历史版本说明**：以下第 9～11 项的本地拒绝属于三字段策略变更前的实测，保留原结果。
+> 当前策略已改为 [ADR-0014](../../adr/adr-0014-m2c-drop-server-fields.md) 的直接省略，
+> 不能把旧拒绝结果当作当前验收预期或新策略的实机证据；后续变更见[追加记录](#m2c-server-fields-2026-10-24)。
+
+#### 测试方法
+
+- 下游入口：`POST /v1/messages`（Anthropic Messages），下游鉴权已关闭，直接打请求。
+- 触发条件：供应商**只勾 CHAT**（MESSAGES 关闭）→ 调度规则 2 命中 `(MESSAGES, CHAT)` 去程。
+- 请求体一律用**文件内联**（PowerShell 5.1 内联 JSON 会被吃引号），统一英文提问与系统提示，
+  避免编码问题干扰判读。
+- 判据分三层，**不互相替代**：
+  1. **上游是否收到并理解** —— 响应内容必须证明翻译后的语义到达（如复述文档正文、
+      基于 `tool_result` 继续推理、按 schema 返回 JSON）；
+  2. **协议双栏** —— `api_call_log.downstream_protocol = MESSAGES`、
+     `upstream_protocol = CHAT`，证明真的走了翻译而非直连；
+  3. **usage 记账** —— 日志三列与上游响应体逐项一致，且 400 调用仍落日志、token 列留空。
+- 响应体为 **Chat 原生格式是预期**：回程未实现，`AfterSend.warnIfHalfRound` 透传并 WARN。
+  因此本轮**不**把「下游拿到 Anthropic 形状」当判据。
+- 400 响应体读取方式：`Invoke-WebRequest` 的 ErrorRecord 取不到 body，
+  需用 `[Net.HttpWebRequest]` + `catch [Net.WebException]` + UTF-8 `StreamReader`。
+
+#### 测试步骤（每家 11 项，同一套请求体）
+
+| # | 请求要点 | 验证的翻译点 |
+|---|---|---|
+| 1 | 非流式 + system + 单条 user | 顶层白名单、system 中间态、CHAT 支线落回 messages |
+| 2 | `stream: true` | 入口 stream 还原、`stream_options.include_usage` 注入 |
+| 3 | `stop_sequences: ["\n\n"]` | 数组保序转 `stop` |
+| 4 | `thinking: {"type":"disabled"}` + `temperature`/`top_p` | 开关映射、采样参数不被清除 |
+| 5 | `tools` + 要求调用 | 工具定义 → function、`input_schema` 保留 |
+| 6 | `tool_use` + `tool_result` 多轮历史 | `role:tool` + `tool_call_id` 因果配对 |
+| 7 | `document`（text 源 + title） | 文本文档进文本通道、标题/上下文保留 |
+| 8 | `output_config.format`（json_schema） | `response_format` 包装 |
+| 9 | 非空 `container`（非流式） | 本地显式拒绝 → 400 + 字段路径 |
+| 10 | 非空 `container`（流式） | 本地显式拒绝 → HTTP 200 + `event:error` 帧 |
+| 11 | 非空 `mcp_servers` | 本地显式拒绝 → 400 + 字段路径 |
+
+#### 测试结果
+
+环境：`[stepfun] step-5-preview`、`[deepseek] deepseek-flash`、`[mimo-tokenplan] mimo-v2.6-flash`，
+三家供应商均只勾 `CHAT,RESPONSES`。共 33 项请求。
+
+| # | 场景 | step-5-preview | deepseek-flash | mimo-v2.6-flash |
+|---|---|---|---|---|
+| 1 | 非流式基础 | 200 | 200 | 200 |
+| 2 | 流式 + include_usage | 200（尾部 usage-only 帧 + `[DONE]`） | 200（同左） | 200（同左） |
+| 3 | stop_sequences | 200 | 200 | 200 |
+| 4 | thinking disabled + 采样 | 200 | 200（无 `reasoning_content`，disabled 生效） | 200（同左） |
+| 5 | 工具定义与调用 | 200，`tool_calls` + `finish_reason:tool_calls` | 200（同左） | 200（同左） |
+| 6 | 多轮 tool_result 历史 | 200，基于结果继续推理 | 200（同左） | 200（同左） |
+| 7 | 文本文档 | 200，复述正文与标题 | 200（同左） | 200，内容到达但模型按安全策略拒绝复述 |
+| 8 | JSON Schema 输出 | 200，返回合规 JSON | **400，上游不支持**（见下） | 200，返回合规 JSON（后经对称探测确认支持，见下） |
+| 9 | container 拒绝（非流式） | 400 + 字段路径 | 400 + 字段路径 | 400 + 字段路径 |
+| 10 | container 拒绝（流式） | 200 + `event:error` | 200 + `event:error` | 200 + `event:error` |
+| 11 | mcp_servers 拒绝 | 400 + 字段路径 | 400 + 字段路径 | 400 + 字段路径 |
+
+**上游能力差异（不是翻译缺陷）**：DeepSeek 的 `/chat/completions` 不支持
+`response_format.type = "json_schema"`，返回
+`This response_format type is unavailable now`。COSP 发出的请求体本身正确
+（`json_schema.name=cosp_output`、`strict=true`、schema 原样），按 ADR-0012 第 2 条
+**不降级为 `json_object`、不自动换协议**，保留可理解的失败。三家对称探测见下文。
+
+**该结论经过差分复核（2026-10-24 追加）**：初版记录曾据「CHAT 直连同一请求返回 200」
+怀疑过翻译缺陷，复核后确认那是**假成功**，不能用作对照证据：
+
+- `OpenAiChatRequest` 是固定字段 DTO，**没有 `response_format` 字段也没有
+  `@JsonAnySetter`**，因此直连路径下该字段在 Jackson 反序列化阶段就被丢弃，
+  上游从未收到（日志请求体可证）。直连 200 只证明「没发这个字段」。
+- 真正的对照是**两条都经过 M2C 翻译的请求**：stepfun 与 deepseek 收到的
+  `response_format` 结构逐字节相同，前者 200 并返回合规 JSON，后者 400。
+  故差异来自上游能力，不是翻译输出。
+- 教训：判断「上游是否支持某字段」必须核对**实际出站请求体**，不能只看响应状态码；
+  也不能用一条会丢弃该字段的路径做对照。相关 DTO 缺陷已记入
+  [KNOWN_DEBT](../../architecture/KNOWN_DEBT.md)。
+
+**`json_schema` 支持度的三家对称探测（2026-10-24 追加，修正本节早期结论）**：
+
+早期记录曾据 MiMo 官方文档只列出 `Text` / `JSON object` 两个 `response_format` 子类型，
+推断 MiMo 不支持 `json_schema`。**该推断错误** —— 属于用文档不完整替代实证。
+后用「绝对不可能从提示词猜到」的 schema 做对称探测（字段名 `zz_arbitrary_key_7f3a`、
+布尔类型、`additionalProperties: false`），三家结论：
+
+| 上游 | 出站请求体 | 响应 | 判定 |
+|---|---|---|---|
+| stepfun | 完整 `json_schema` | `{"zz_arbitrary_key_7f3a": true}` | **支持** |
+| mimo | 完整 `json_schema` | `{"zz_arbitrary_key_7f3a":`（被 length 截断） | **支持** |
+| deepseek | 完整 `json_schema` | 400 `This response_format type is unavailable now` | **不支持** |
+
+判定依据不是「返回 200」，而是**响应是否出现只可能来自 schema 的字段名**：
+
+- stepfun 的 `reasoning_content` 明确写着原本打算输出 `{"planet":"Earth"}`，
+  最终却改成 schema 字段 —— 模型意图被 schema 强制改写，是约束生效的直接证据。
+- mimo 同样返回了该任意字段名；其输出被 `length` 截断，是因为
+  `reasoning_content` 计入 `max_tokens`（MiMo 文档载明 `max_completion_tokens`
+  含推理 token），与 schema 支持度无关。
+- deepseek 的 400 与官方文档一致：其 `response_format.type` 仅支持
+  `text` / `json_object`。
+
+**结论修正**：DeepSeek 是三家之中**唯一**不支持 `json_schema` 的上游；MiMo 支持但
+官方文档未提及（文档滞后于实现）。忠实映射策略因此无需降级，契约 §10.7 的
+「不自动降级」保持有效，且现有三家对称实证依据。
+
+**`response_format` 的联合类型结构（官方 SDK 定义，2026-10-24 查证）**：
+
+| `type` | 伴随字段 | 说明 |
+|---|---|---|
+| `text` | 无 | 默认 |
+| `json_object` | **无** | 只保证合法 JSON，不携带 schema，约束完全靠 prompt |
+| `json_schema` | `json_schema` | `name` / `description` / `schema` / `strict` |
+
+`json_object` 没有伴随字段是**定义使然**，不是缺陷。Anthropic 侧
+`output_config.format` 当前只有 `json_schema` 一种类型，因此 M2C 译器的
+「只支持 json_schema」分支当前不可达；若 Anthropic 将来新增 format 类型，
+该分支会以路径化错误拒绝，符合忠实映射原则。`json_object` 是未来唯一可选的
+降级目标，但降级需同时解决 schema 约束丢失与 prompt 引导两个问题
+（MiMo 文档明确：`json_object` 模式下必须在 prompt 中完整定义字段结构），
+不是改一个字段名就能完成。
+
+**mimo 场景 7 说明**：模型把文档里的 "secret code" 判定为 prompt injection 并拒绝复述。
+其 reasoning 明确引用了标题与正文，证明**内容确实到达上游**；这是模型自身安全行为，
+与翻译无关。判据应看「内容是否到达」，不是「模型是否愿意复述」。
+
+**日志证据样例**（`api_call_log`）：
+
+```text
+deepseek  down=MESSAGES up=CHAT status=200 p=409 c=113 cached=256   # 多轮工具，缓存命中
+deepseek  down=MESSAGES up=CHAT status=400 p=(空) c=(空)             # 本地翻译拒绝，仍落日志
+mimo      down=MESSAGES up=CHAT status=200 p=193 c=28  cached=128
+```
+
+#### 本轮结论与未覆盖项
+
+**已证实**：请求体翻译在三家上游上行为一致，没有供应商特定缺陷；工具、文档、思考、
+采样、结构化输出、拒绝路径均按契约工作；协议双栏与 usage 记账正确。
+
+**未覆盖**（不因本轮结果提前勾选）：
+
+- 回程翻译、Claude Desktop 真实会话、日志双栏 frameCounts；
+- 随机端口 HttpServer 的最终序列化 body 断言与条件 usage/记账自动化（阶段 3）；
+- PDF base64 → `file` part、`source.type=content` 图文混合、工具结果内媒体归属的实机确认
+  （本轮只覆盖 text 源文档）；
+- `tools/live-test` 的 M2C 专用探针（仍只有 C2M 的 D 组）。
+
+临时请求体与脚本已清理；未修改任何供应商配置、模型能力或根目录数据库。
+
+<a id="m2c-server-fields-2026-10-24"></a>
+
+### 2026-10-24：三个顶层服务端配置字段改为直接省略
+
+**授权范围**：用户在逐项目调研后明确要求 M2C 对这三个字段直接丢弃。
+决策见 [ADR-0014](../../adr/adr-0014-m2c-drop-server-fields.md)，当前字段行为只维护在
+[请求契约 §10.1](../../reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)。
+本记录取代 §12.7 中三字段非空报错的确认，保留阶段 2 与旧实机记录作为历史。
+
+**只读调研证据**（三个参考项目的本地源码；未修改、构建或测试它们）：
+
+| 项目 | 实际 M2C 路径与省略点 |
+|---|---|
+| new-api | `relaykit/dto/claude.go` 的 `ClaudeRequest` 已声明三字段；`relaykit/relayconvert/internal/claude_messages/to_oai_chat_req.go` 的 `ClaudeMessagesRequestToOpenAIChat` 逐字段新建目标请求，未读取或映射三字段 |
+| sub2api | `backend/internal/service/openai_gateway_messages_chat_fallback.go` 先 `json.Unmarshal` 为 `apicompat.AnthropicRequest`；`backend/internal/pkg/apicompat/types.go` 未声明三字段，解码即忽略，随后直连 Chat bridge 重建请求 |
+| cc-switch | `src-tauri/src/proxy/providers/transform.rs` 的 `anthropic_to_openai_with_reasoning_content` 从空 JSON 对象按白名单重建，未读取或映射三字段 |
+
+上述证据只说明三家当前 M2C 的实际行为，不推测作者是否有意遗漏。
+其它方向的原生 `context_management` 清洗或 MCP 本地配置管理，不作为 M2C 能力已实现的证据。
+
+**实现与覆盖**：
+
+- 移除 `MessagesToChatRequestTranslator.validateServerExecution` 及其字段集合；
+   依靠既有目标请求白名单省略，不删除源 Map，不新增校验、告警或服务端模拟。
+- `MessagesToChatRequestTranslatorTests` 覆盖三字段的 null、空值、非空对象/数组、字符串、
+   布尔及数值，在流式/非流式下与不带字段的翻译结果完全一致；
+   三字段同现仍继续翻译，tool input、工具 schema 和输出 schema 内同名业务键保留。
+- `ChatDispatchErrorSignalTests` 在真实 M2C 主干接线上携带三字段，验证仍调用 Chat 执行器，
+   执行器收到的 body 不包含这些字段，原生响应及 usage 槽不受影响。
+- 服务端工具、不可表达文档、重复输出格式等其它拒绝边界保留；
+   Messages 直连、其它翻译方向、鉴权、调度、重试、配置与 schema 没有修改。
+
+**验证结果**：编辑器诊断无错误；聚焦 8 类 Maven 回归 **369 通过，0 失败/错误，BUILD SUCCESS**
+（完成于 2026-10-25 00:22，+08:00）。覆盖五类 M2C 纯转换、真实主干错误/成功信号、
+Spring 注册与协议调度；使用已有 `skip.installnodenpm` / `skip.npm` 属性跳过前端。
+本次没有重跑 Java 全量或 schema-migration；新省略策略未重跑实机，未启动运行服务、
+访问 live endpoint 或操作工作区数据库。
+整体仍为去程半轮，C2M 回程与完整客户端验收不在此次变更范围。
 
 ---
 
@@ -1237,17 +1483,23 @@ RFC 状态/索引标注本阶段完成。ADR-0012 保持 Accepted 正文不变�
 
 ### 12.7 已确认与未确认必须分开
 
-**已确认策略**见 ADR-0012；以下从会话 plan 保留下来的是实施建议或待决细项，
-本次仅要求文档归档，不能借此把它们全部升级为 Accepted：
+**2026-10-21 归档时**，下列细项仍有实施建议与待决边界。
+**2026-10-24** 用户确认按推荐方案实施阶段 2；现按 ADR-0012 的原则细化去程边界，
+旧格式兼容的新增取舍独立记录为 [ADR-0013](../../adr/adr-0013-m2c-output-format-alias.md)。
+回程草案仍未定稿，不能因去程边界确认而扩大本阶段范围。
 
-| 条目 | 当前方案/备选 | 状态与实施门槛 |
+> **阶段 2 确认基线（历史）**：下表保留当时的确认。
+> 三个顶层服务端配置字段随后改按 [ADR-0014](../../adr/adr-0014-m2c-drop-server-fields.md) 直接省略，
+> 该行的「非空报错」不再生效；变更证据与实施见[追加记录](#m2c-server-fields-2026-10-24)。
+
+| 条目 | 当时确认方案/备选 | 状态与实施门槛 |
 |---|---|---|
-| 末尾普通 assistant prefill | Chat 无通用等价续写保证；建议显式拒绝，也可保留输入交目标上游处理 | **待确认**；未答工具的既定清理规则不等于批准拒绝所有 assistant 结尾请求 |
-| input_examples / allowed_callers / defer_loading / eager_input_streaming | 不应悄悄削弱执行限制；建议按值区分默认无操作、可等价表达、不能表达 | **待确认**逐字段策略；不能仅因字段出现就全拒，也不将它们伪装成普通函数属性 |
-| 非空 container/mcp_servers/context_management | 涉及服务端执行/隐藏上下文，建议拒绝非等价要求；空值与无操作配置另分 | **待确认**值级边界；用户已确认的是无法等价时显式失败，不是所有容器对象一律失败 |
-| JSON Schema 输出包装 | 建议固定 name=`cosp_output`，strict=true，schema 不改；旧 beta output_format 不隐式转换 | 包装为**工程建议**；旧别名的拒绝/支持需在冻结规格前确认，不静默丢显式格式意图 |
-| 元数据固定文案与混合内容排序 | 仅编码已有错误、来源、标题/上下文；不添加随机量，分别保持文本与媒体顺序 | 允许最小标记已确认，**具体文案/拼接 golden**在实现时冻结 |
-| 缺省/null 的 tool_use.input | 建议沿用无参兼容映射为空对象；非对象非空值报错 | 工程建议，不能用 String.valueOf 兜底；与空 tool_result 不是同一字段 |
+| 末尾普通 assistant prefill | 保留输入，交目标上游处理，不改写角色 | **已确认**；不承诺通用等价续写，不新增末尾 assistant 拒绝条件 |
+| input_examples / allowed_callers / defer_loading / eager_input_streaming | 按字段含义和值区分默认/无操作与不能等价的执行要求 | **已确认**；具体值级规则见请求契约 §10.6，不能把 caller 提示描述成安全权限墙 |
+| container/mcp_servers/context_management | null、空数组/对象省略；其余值明确报错 | **已确认**；不静默忽略非空服务端执行/隐藏上下文要求 |
+| JSON Schema 输出包装 | 固定 name=`cosp_output`、strict=true，schema 不改；旧字段用同一逻辑转换 | **已确认**；重复格式字段报错，effort-only 不冲突，见 ADR-0013 与请求契约 §10.7 |
+| 元数据固定文案与混合内容排序 | 英文短标记，仅编码已有错误、来源、标题/上下文；不添加随机量 | **实现细节已授权**；文案和排列由契约及 golden 测试固定，不再逐常量发起决策 |
+| 缺省/null 的 tool_use.input | 无参兼容映射为空对象；其它非对象值报错 | **已确认**；与合法空 tool_result 区分，不用 String.valueOf 兜底 |
 | 回程未知值、首帧 usage、finish_reason、signature、EOF/取消/错误与日志 | 保留 §3.2/§4 的调研草案 | **后续回程专项**，此次去程计划不代替其定稿 |
 
 其它机械细节（例如单元素 stop 保持数组）按契约标注为目标方案并用测试固定，

@@ -145,14 +145,17 @@ pipeline/                         ← 主干-支干轴（主干-支干轴的形�
    └── translate/                     请求/响应翻译支线（协作类 + 契约 + 注册表）
         RequestProtocolTranslator · ResponseProtocolTranslator · TranslatorRegistry
       （已实现 (CHAT,MESSAGES) / (CHAT,RESPONSES) 的去程与回程；
-       (MESSAGES,CHAT) 两半仍未注册，CHAT system 基建就绪不等于 M2C 已可用）
+         (MESSAGES,CHAT) 去程已注册、回程未实现，仍是受控半轮开发态）
+          MessagesToChatRequestTranslator → AnthropicMessageTranslator / AnthropicContentBlockTranslator /
+          AnthropicToolTranslator / AnthropicToolResultExpander（请求内语义轮、因果配对与媒体归属）
 ```
 
 **system 当前接线**：`RequestBodyAssembler` 按 `bodyProtocol` 查三协议支线，
 CHAT 把顶层中间态落回消息数组（标准 Chat 无该字段即 no-op），MESSAGES 抬升到顶层，
 RESPONSES 维持既有 role 改写。该阶段先于思考设置和请求体规则，未改变主干调用序列。
 具体输入边界见[请求契约 §10.3](../../../../../../../docs/reference/contracts/C2M-REQUEST-CONTRACT.md#103-system-归一化支线)，
-阶段记录见 [RFC](../../../../../../../docs/working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-stage-1)。
+实现与验证范围见 [RFC](../../../../../../../docs/working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-stage-2)。
+M2C 去程已通过纯转换与最小接线回归，最终 HTTP 收包与回程验收尚未完成，不宣称客户端端到端可用。
 
 > **两个跨层的值类型已上提到顶层 `protocol/`**，因为它们消费方跨三个顶层包，
 > 留在本层会让那些包反向依赖 `pipeline/`：
@@ -271,7 +274,12 @@ RESPONSES 维持既有 role 改写。该阶段先于思考设置和请求体规�
           │    未命中语义：**报错**
           │      ├─ 分支 C2M（下游 CHAT、上游 MESSAGES，已实现）
           │      │    ChatToMessagesRequestTranslator → MessageTranslator / ToolTranslator /
-          │      │    ContentBlockTranslator / ToolPairingNormalizer / StopReasonMapper
+          │      │    ContentBlockTranslator / ToolPairingNormalizer
+          │      ├─ 分支 C2R（下游 CHAT、上游 RESPONSES，已实现）
+          │      │    ChatToResponsesRequestTranslator
+          │      ├─ 分支 M2C（下游 MESSAGES、上游 CHAT，去程已注册、回程未接）
+          │      │    MessagesToChatRequestTranslator → AnthropicMessageTranslator / AnthropicToolTranslator /
+          │      │    AnthropicContentBlockTranslator / AnthropicToolResultExpander
           │      └─ 分支 其余方向 → 未实现，抛 ProtocolTranslationNotSupportedException
           ├─ 回程 ResponseProtocolTranslator（未命中记 null，留给发送后块透传）
           ├─ RequestPipelineContext.applyTranslation(...)   回填翻译后 body + 上游协议
@@ -371,9 +379,12 @@ RESPONSES 维持既有 role 改写。该阶段先于思考设置和请求体规�
         未命中语义：**透传 + WARN**（半轮实现态是正常中间态）
         ★ 从 ctx.responseTranslator() 取（发送前块步骤 5 已选好），套在执行器**外侧**、
           因而在 retryWhen **之外** —— 判定与落库看的是上游原生形态
-          └─ 分支 M2C：MessagesToChatResponseTranslator
-               → MessagesToChatStreamTranslator / MessagesToChatNonStreamTranslator /
-                 M2CStreamState / AnthropicUsageAccumulator / OpenAiResponseShapes / TranslatedChunkLog
+               ├─ 分支 M2C（C2M 请求的回程）：MessagesToChatResponseTranslator
+               │    → MessagesToChatStreamTranslator / MessagesToChatNonStreamTranslator /
+               │      M2CStreamState / AnthropicUsageAccumulator / OpenAiResponseShapes / TranslatedChunkLog
+               ├─ 分支 R2C（C2R 请求的回程）：ResponsesToChatResponseTranslator
+               │    → ResponsesToChatStreamTranslator / ResponsesToChatNonStreamTranslator / R2CStreamState
+               └─ M2C 请求的 C2M 回程未实现：原样 Chat 事件透传 + WARN，usage 槽不改写
 
 步骤 16 主干：统一形态出口            UpstreamEvent（Body / Terminal 两态）
 

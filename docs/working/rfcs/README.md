@@ -36,7 +36,7 @@
 | [`2026-10-17-claude-desktop-prompt-cache.md`](./2026-10-17-claude-desktop-prompt-cache.md) | 已定稿且实施完毕 | Claude Desktop 缓存命中率 17% → 99%：断点定位与正则规则修复 |
 | [`2026-10-19-ollama-downstream.md`](./2026-10-19-ollama-downstream.md) | 已定稿，实施待开始（结论已晋升 ADR-0011） | Ollama 下游协议（O 轴）：O2C/C2O 等 6 方向 + `/api/chat` 端点 |
 | [`2026-10-20-docs-migration.md`](./2026-10-20-docs-migration.md) | 已定稿，实施中（结论已晋升 ADR-0001） | docs/ 迁移至 docs-governance 规范：影子目录 + 最后切换 |
-| [`2026-10-20-m2c-c2m-translation.md`](./2026-10-20-m2c-c2m-translation.md) | 实施中（[阶段 1](./2026-10-20-m2c-c2m-translation.md#m2c-stage-1) 完成，译器/回程未实现；主要决策见 [ADR-0012](../../adr/adr-0012-m2c-request-translation.md)） | [最终调研 §12](./2026-10-20-m2c-c2m-translation.md#m2c-final-review) 与 [实施计划 §8](./2026-10-20-m2c-c2m-translation.md#m2c-plan)；入口 stream 与 CHAT system 已接，完整翻译仍待后续阶段 |
+| [`2026-10-20-m2c-c2m-translation.md`](./2026-10-20-m2c-c2m-translation.md) | 实施中（[阶段 2](./2026-10-20-m2c-c2m-translation.md#m2c-stage-2) 纯转换已实现并注册，[三家实机](./2026-10-20-m2c-c2m-translation.md#m2c-live-2026-10-24)已存档，回程未实现；决策见 ADR-0012/0013/0014） | [字段规格](../../reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec) 与 [实施计划 §8](./2026-10-20-m2c-c2m-translation.md#m2c-plan)；HTTP 收包自动化待做，不发布半轮 |
 
 > **日期口径**：文件名日期取功能的**立项日**——即该功能最早一份文档在 git 中的首次出现日期
 > （若经过目录规整搬迁，取搬迁前的原始路径日期）。它标记「这件事从什么时候开始的」，
