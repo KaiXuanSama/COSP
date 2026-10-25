@@ -6,7 +6,9 @@
 > `MessagesToChatRequestTranslator`；自动化转换/接线回归通过（2026-10-24），
 > 并已在三家真实上游上完成去程实机存档（2026-10-24，见
 > [实施记录](../../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-live-2026-10-24)）。
-> HTTP 最终序列化收包与受控联测仍待后续阶段，C2M 回程未实现，不能作为完整客户端能力发布。
+> HTTP 最终序列化收包与客户端实机仍待后续阶段；C2M 回程阶段 A 已实现并注册、
+> 自动化回归通过，响应规格独立见 [M2C 链路响应契约](./M2C-RESPONSE-CONTRACT.md)。
+> 这不构成完整客户端兼容或可发布结论。
 > 实际验证范围见 [阶段 2 记录](../../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-stage-2)。
 > **M2C 的单一字段规格在 [§10](#m2c-request-spec)**；主要取舍见
 > [ADR-0012](../../adr/adr-0012-m2c-request-translation.md)、[ADR-0013](../../adr/adr-0013-m2c-output-format-alias.md)、

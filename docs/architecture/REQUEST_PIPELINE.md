@@ -119,8 +119,9 @@ SPA 路由回退（`SpaRoutingConfig.spaRoutes()`）**不在这个链上** —�
 `stream` 按 `request.isStream()` 还原到 Map，供翻译前读取（null/缺省都为 false）。
 端点分流后创建的 `ctx.stream` 仍是实际执行与最终装配的权威，`RequestBodyAssembler` 随后再次覆写。
 入口不生成 `stream_options`；M2C 去程译器在流式时独立索取上游 usage，随后 CHAT 规则仍可改写。
-当前去程已注册、回程未实现；字段与验证边界见
-[请求契约 §10](../reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)。
+当前两半已注册、自动化通过，客户端实机待验证；字段与验证边界见
+[请求契约 §10](../reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec) 与
+[M2C 链路响应契约](../reference/contracts/M2C-RESPONSE-CONTRACT.md)。
 
 三个应用服务**同形**：只做「建 `RequestPipelineContext`（`forEndpoint`）
 + 交主干」，**零回填、零协议分支**。方法体裹在 `Mono.defer` / `Flux.defer` 里 ——
@@ -164,7 +165,7 @@ ChatCompletionService.chatCompletion(...)          ← 三个服务同形，只�
         │       → ctx.applyTranslation(body, 上游协议, translationContext)
         ├─ 命中 C2R（下游 CHAT、上游 RESPONSES）
         │     ChatToResponsesRequestTranslator.translateRequest → ctx.applyTranslation(...)
-        ├─ 命中 M2C（下游 MESSAGES、上游 CHAT；仅去程）
+        ├─ 命中 M2C（下游 MESSAGES、上游 CHAT；两半已注册）
         │     MessagesToChatRequestTranslator.translateRequest
         │       · 语义轮/工具因果配对/媒体归属，system 保留顶层中间态
         │       · 原始 source 提取 TranslationContext，再注入流式 include_usage
@@ -187,7 +188,8 @@ ChatCompletionService.chatCompletion(...)          ← 三个服务同形，只�
         从 ctx.responseTranslator() 取（发送前块已选好）
         ├─ (CHAT, MESSAGES) 命中 → MessagesToChatResponseTranslator
         ├─ (CHAT, RESPONSES) 命中 → ResponsesToChatResponseTranslator
-        └─ 未命中（当前 (MESSAGES, CHAT) 半轮态）→ 原样透传 + WARN
+        ├─ (MESSAGES, CHAT) 命中 → ChatToMessagesResponseTranslator
+        └─ 手工缺省回程的开发装配未命中 → 原样透传 + WARN
 ```
 
 **请求翻译插槽套在上游执行层外侧**，因此天然在 `retryWhen` 与空响应判定之外 ——
@@ -250,8 +252,8 @@ Anthropic（Messages*Stage 三步 + RequestBodyRuleEngine）—— 中间步骤�
 ```
 
 CHAT system 支线已经通过真实 Spring Bean 装配和装配层回归验证；
-[(MESSAGES, CHAT) 去程已注册、回程未实现](../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-stage-2)，
-不能把去程纯转换与接线通过写成客户端整条翻译线路可用。字段行为统一见
+[(MESSAGES, CHAT) 两半已注册并通过自动化](../working/rfcs/2026-10-25-c2m-response-translation.md#c2m-stage-a)，
+仍不能把自动化通过写成客户端实机兼容已验证。字段行为统一见
 [请求契约 §10.3](../reference/contracts/C2M-REQUEST-CONTRACT.md#103-system-归一化支线)，这里不复制第二份规格。
 
 **每个阶段的位置都有理由，两类位置约束最容易被破坏**：

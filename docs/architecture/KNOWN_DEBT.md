@@ -326,6 +326,7 @@ writeProtocolFields / 请求体规则 / removeNullFields / 出站头 / 空响应
 
 | 项 | 位置 | 说明 |
 |---|---|---|
+| 失败/取消的日志重译缺结束原因 | `ResponseProtocolTranslator.translateChunksForLog` / `UpstreamCallRunner.saveStreamLog[WithError]` | 批量重译只收帧列表，按正常 EOF 补帧；即使实际流 error/cancel、不下发成功终止，日志 translated 仍可能包含推导的终止帧。正常完整流对照已由 C2M 回程测试覆盖，但失败/取消日志不能当作逐帧实际下发证据。修法是让日志重放显式携带结束原因，而非移动翻译到重试内部；涉及所有回程与落库接口，未随本次新增方向扩大修改。上游视图、状态码与原生 usage 不受影响，见 [阶段 A 接线复核](../working/rfcs/2026-10-25-c2m-response-translation.md#82-接线复核与立项记录纠错) |
 | `OpenAiChatRequest` 缺 `response_format`，直连路径发不出结构化输出 | `protocol/openai/OpenAiChatRequest.java` | 固定字段 DTO，既没有 `response_format` 字段也没有 `@JsonAnySetter`，该字段在反序列化阶段即被丢弃。**CHAT 直连完全无法使用结构化输出**；M2C 翻译路径不受影响（译器自己构造该字段）。2026-10-24 实机验证时因它产生过一次**假成功**：直连请求返回 200 被误读成「上游支持 json_schema」，实际请求体里没有该字段。详见 [M2C 实机存档](../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-live-2026-10-24) |
 | 注释断言「本表没有触发器」 | `SchemaMigrationRunner.java:1114` | 与 `:1908-1909` 矛盾（V3 确实建了两个）。行为无害 —— V12 新表 DDL 的两条 CHECK 与那两个触发器逐条等价，且 `schema.sql` 从未声明它们，升级库因此收敛到新库形态。但错误前提会让下次改这张表的人不去检查触发器，而这是 SKILL.md 记的头号坑 |
 | `ResponsesRequest` 注解冗余 | `ResponsesRequest.java` | 同时有 `@JsonIgnoreProperties(ignoreUnknown = true)` 与 `@JsonAnySetter`，后者已吃掉未知字段。无害 |

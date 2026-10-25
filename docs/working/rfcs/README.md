@@ -36,8 +36,8 @@
 | [`2026-10-17-claude-desktop-prompt-cache.md`](./2026-10-17-claude-desktop-prompt-cache.md) | 已定稿且实施完毕 | Claude Desktop 缓存命中率 17% → 99%：断点定位与正则规则修复 |
 | [`2026-10-19-ollama-downstream.md`](./2026-10-19-ollama-downstream.md) | 已定稿，实施待开始（结论已晋升 ADR-0011） | Ollama 下游协议（O 轴）：O2C/C2O 等 6 方向 + `/api/chat` 端点 |
 | [`2026-10-20-docs-migration.md`](./2026-10-20-docs-migration.md) | 已定稿，实施中（结论已晋升 ADR-0001） | docs/ 迁移至 docs-governance 规范：影子目录 + 最后切换 |
-| [`2026-10-20-m2c-c2m-translation.md`](./2026-10-20-m2c-c2m-translation.md) | 实施中（[阶段 2](./2026-10-20-m2c-c2m-translation.md#m2c-stage-2) 纯转换已实现并注册，[三家实机](./2026-10-20-m2c-c2m-translation.md#m2c-live-2026-10-24)已存档，回程未实现；决策见 ADR-0012/0013/0014） | [字段规格](../../reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec) 与 [实施计划 §8](./2026-10-20-m2c-c2m-translation.md#m2c-plan)；HTTP 收包自动化待做，不发布半轮 |
-| [`2026-10-25-c2m-response-translation.md`](./2026-10-25-c2m-response-translation.md) | 已定稿，实施待开始（结论已晋升 ADR-0015） | C2M 回程（上游 Chat → 下游 Messages）专项：参考项目调研、实现面盘点、阶段 A/B/C 计划、mock 场景扩展 |
+| [`2026-10-20-m2c-c2m-translation.md`](./2026-10-20-m2c-c2m-translation.md) | 实施中（去程[阶段 2](./2026-10-20-m2c-c2m-translation.md#m2c-stage-2)/[三家实机](./2026-10-20-m2c-c2m-translation.md#m2c-live-2026-10-24)与[回程阶段 A](./2026-10-25-c2m-response-translation.md#c2m-stage-a)已记录；决策见 ADR-0012/0013/0014/0015） | [请求字段规格](../../reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec) 与 [去程计划 §8](./2026-10-20-m2c-c2m-translation.md#m2c-plan)；HTTP 收包与完整客户端实机待做 |
+| [`2026-10-25-c2m-response-translation.md`](./2026-10-25-c2m-response-translation.md) | 实施中（[阶段 A](./2026-10-25-c2m-response-translation.md#c2m-stage-a) 已实现并注册、自动化通过；[三家实机](./2026-10-25-c2m-response-translation.md#c2m-live-2026-10-25)已存档；决策见 ADR-0015） | C2M 回程（上游 Chat → 下游 Messages）专项：单块/交错/日志与原生 usage；阶段 B mock/客户端实机未做 |
 
 > **日期口径**：文件名日期取功能的**立项日**——即该功能最早一份文档在 git 中的首次出现日期
 > （若经过目录规整搬迁，取搬迁前的原始路径日期）。它标记「这件事从什么时候开始的」，
