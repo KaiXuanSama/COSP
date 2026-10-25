@@ -58,6 +58,9 @@ class TranslatorRegistrySpringWiringTests {
         private MessagesToChatRequestTranslator m2cRequestTranslator;
 
         @Autowired
+        private ChatToMessagesResponseTranslator c2mResponseTranslator;
+
+        @Autowired
         private ProtocolDispatchManager dispatchManager;
 
     @Test
@@ -98,10 +101,11 @@ class TranslatorRegistrySpringWiringTests {
     }
 
     @Test
-    void realContainerRegistersM2cRequestButDoesNotPretendTheResponseExists() {
+        void realContainerRegistersBothHalvesOfM2c() {
         assertThat(translatorRegistry.findRequestTranslator(WireProtocol.MESSAGES, WireProtocol.CHAT))
                 .containsSame(m2cRequestTranslator);
-        assertThat(translatorRegistry.findResponseTranslator(WireProtocol.MESSAGES, WireProtocol.CHAT)).isEmpty();
+                assertThat(translatorRegistry.findResponseTranslator(WireProtocol.MESSAGES, WireProtocol.CHAT))
+                                .containsSame(c2mResponseTranslator);
     }
 
     @Test

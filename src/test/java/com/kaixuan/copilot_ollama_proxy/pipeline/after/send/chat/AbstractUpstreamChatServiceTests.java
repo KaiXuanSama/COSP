@@ -1388,14 +1388,14 @@ class AbstractUpstreamChatServiceTests {
         private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
                                                         ProviderRuntimeConfiguration provider) {
             return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, null,
-                    PipelineContexts.direct(request, provider, WireProtocol.CHAT, true))
+                    PipelineContexts.direct(request, provider, WireProtocol.CHAT, true), null)
                     .map(UpstreamEvent::data);
         }
 
         private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
                                                         ProviderRuntimeConfiguration provider, String requestId) {
             return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, requestId,
-                    PipelineContexts.direct(request, provider, WireProtocol.CHAT, true))
+                    PipelineContexts.direct(request, provider, WireProtocol.CHAT, true), null)
                     .map(UpstreamEvent::data);
         }
 
@@ -1412,7 +1412,7 @@ class AbstractUpstreamChatServiceTests {
         private Flux<String> exposeChatCompletionStream(Map<String, Object> request, String model,
                                                         ProviderRuntimeConfiguration provider, String requestId,
                                                         RequestPipelineContext ctx) {
-            return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, requestId, ctx)
+                        return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, requestId, ctx, null)
                     .map(UpstreamEvent::data);
         }
 
