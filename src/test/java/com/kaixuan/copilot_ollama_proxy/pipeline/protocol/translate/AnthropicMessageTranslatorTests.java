@@ -12,6 +12,7 @@ import org.junit.jupiter.params.provider.ArgumentsProvider;
 import org.junit.jupiter.params.provider.ArgumentsSource;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 
@@ -58,6 +59,43 @@ class AnthropicMessageTranslatorTests {
             assertThat(translator.translate(List.of(message("user", ""))))
                     .containsExactly(message("user", ""));
         }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"system", "developer", "tool", "function", "narrator", "future_role",
+            "Assistant", " user ", "", "  "})
+        void preservesEveryStringRoleVerbatimForStringsAndTextBlocks(String role) {
+            for (Object content : List.of("  original\ntext  ", List.of(text("first"), text("second")))) {
+            List<Object> source = List.of(message("user", "before"), message(role, content),
+                message("assistant", "after"));
+            Object snapshot = AnthropicContentBlockTranslator.copyJson(source);
+
+            assertThat(translator.translate(source)).containsExactly(message("user", "before"),
+                message(role, content instanceof String ? content : "first\nsecond"),
+                message("assistant", "after"));
+            assertThat(source).isEqualTo(snapshot);
+            }
+        }
+
+        @Test
+        void mergesOnlyAdjacentIdenticalExtensionRolesWithoutChangingTheirNames() {
+            List<Object> source = List.of(message("developer", "first"), message("developer", List.of(text("second"))),
+                    message("system", "third"), message("developer", "last"));
+
+            assertThat(translator.translate(source)).containsExactly(message("developer", "first\nsecond"),
+                    message("system", "third"), message("developer", "last"));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"system", "developer", "tool", "narrator"})
+        void rolePassthroughDoesNotRelaxContentBlockPlacementChecks(String role) {
+            for (Object block : List.of(use("a", "read", Map.of()), result("a", "ok", false),
+                    thinking("reason"), Map.of("type", "redacted_thinking", "data", "opaque"),
+                    image("x"), Map.of("type", "document"))) {
+                assertThatThrownBy(() -> translator.translate(List.of(message(role, List.of(block)))))
+                        .isInstanceOfSatisfying(RequestTranslationException.class,
+                                error -> assertThat(error.fieldPath()).isEqualTo("messages[0].content[0].type"));
+            }
+        }
     }
 
     @Nested
@@ -87,6 +125,17 @@ class AnthropicMessageTranslatorTests {
                     tool("a", "A"), message("user", "intervening"), message("assistant", "acknowledged"),
                     message("user", "after"));
         }
+
+            @Test
+            void keepsExtensionRolesBetweenToolCallAndResultWithoutChangingPairing() {
+                List<Object> source = List.of(message("assistant", List.of(thinking("existing"), use("a", "read", Map.of()))),
+                    message("developer", "operator instruction"), message("narrator", List.of(text("context"))),
+                    message("user", List.of(result("a", "A", false), text("continue"))));
+
+                assertThat(translator.translate(source)).containsExactly(assistant("", "existing", List.of(call("a", "read", "{}"))),
+                    tool("a", "A"), message("developer", "operator instruction"), message("narrator", "context"),
+                    message("user", "continue"));
+            }
 
         @Test
         void neverPairsAnEarlierOrphanToAFutureCallOrLeaksItsMedia() {
@@ -284,9 +333,15 @@ class AnthropicMessageTranslatorTests {
         return Stream.of(
                 Arguments.of("not array", "messages"), Arguments.of(null, "messages"),
                 Arguments.of(List.of("not object"), "messages[0]"),
-                Arguments.of(List.of(message("system", "not Messages role")), "messages[0].role"),
-                Arguments.of(List.of(message("developer", "not Messages role")), "messages[0].role"),
-                Arguments.of(List.of(message("tool", "not Messages role")), "messages[0].role"),
+                Arguments.of(List.of(Map.of("content", "missing role")), "messages[0].role"),
+                Arguments.of(List.of(messageWithRole(null)), "messages[0].role"),
+                Arguments.of(List.of(messageWithRole(12)), "messages[0].role"),
+                Arguments.of(List.of(messageWithRole(false)), "messages[0].role"),
+                Arguments.of(List.of(messageWithRole(List.of("user"))), "messages[0].role"),
+                Arguments.of(List.of(messageWithRole(Map.of("role", "user"))), "messages[0].role"),
+                Arguments.of(List.of(message("user", "first"), message("user", "second"), messageWithRole(12)),
+                    "messages[2].role"),
+                Arguments.of(List.of(Map.of("role", "narrator", "content", 12)), "messages[0].content"),
                 Arguments.of(List.of(message("user", List.of(use("a", "read", Map.of())))), "messages[0].content[0].type"),
                 Arguments.of(List.of(message("assistant", List.of(result("a", "x", false)))), "messages[0].content[0].type"),
                 Arguments.of(List.of(message("user", List.of(thinking("x")))), "messages[0].content[0].type"),
@@ -305,6 +360,13 @@ class AnthropicMessageTranslatorTests {
                 Arguments.of(List.of(message("assistant", List.of(use("a", "read", Map.of()))),
                         message("user", List.of(Map.of("type", "tool_result", "tool_use_id", "a", "is_error", "true")))),
                         "messages[1].content[0].is_error"));
+    }
+
+    private static Map<String, Object> messageWithRole(Object role) {
+        Map<String, Object> message = new LinkedHashMap<>();
+        message.put("role", role);
+        message.put("content", "content");
+        return message;
     }
 
     static Map<String, Object> message(String role, Object content) {

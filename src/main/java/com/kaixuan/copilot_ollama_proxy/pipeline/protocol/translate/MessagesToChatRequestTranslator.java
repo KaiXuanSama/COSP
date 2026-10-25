@@ -27,8 +27,8 @@ import static com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.Anthr
  * 不校验其值、不模拟服务端能力，也不递归删除 schema/input 中的同名业务键。
  *
  * <p>声明键为 (MESSAGES, CHAT)，与现有响应方向相反的 MessagesToChatResponseTranslator
- * 不是一条链。C2M 回程缺失时仍为半轮开发态，不代表完整 Anthropic 客户端兼容。
- * 字段契约见 docs/reference/contracts/C2M-REQUEST-CONTRACT.md §10；取舍见 ADR-0012/0013/0014。
+ * 不是一条链。角色按 ADR-0016 原样透传，结构和错置内容块仍校验；注册状态不代表客户端兼容。
+ * 字段契约见 docs/reference/contracts/M2C-REQUEST-CONTRACT.md；取舍见 ADR-0012/0013/0014/0016。
  */
 @Component
 public class MessagesToChatRequestTranslator implements RequestProtocolTranslator {

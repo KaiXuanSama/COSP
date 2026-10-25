@@ -46,6 +46,30 @@ class MessagesToChatRequestTranslatorTests {
         assertThat(translator.upstreamProtocol()).isEqualTo(WireProtocol.CHAT);
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void extensionRolesSurviveRequestTranslationAndChatAssembly(boolean stream) {
+        List<Object> messages = List.of(Map.of("role", "user", "content", "hi"),
+                Map.of("role", "developer", "content", "operator instruction"),
+                Map.of("role", "narrator", "content", List.of(Map.of("type", "text", "text", "context"))),
+                Map.of("role", " tool ", "content", "keep role whitespace"));
+        Map<String, Object> source = body("stream", stream, "messages", messages);
+        Map<String, Object> original = new LinkedHashMap<>(source);
+        List<Object> expected = List.of(Map.of("role", "user", "content", "hi"),
+                Map.of("role", "developer", "content", "operator instruction"),
+                Map.of("role", "narrator", "content", "context"),
+                Map.of("role", " tool ", "content", "keep role whitespace"));
+
+        var translated = translator.translateRequest(source);
+        Map<String, Object> assembled = assemble(source, "passthrough", "high", "");
+
+        assertThat(translated.body().get("messages")).isEqualTo(expected);
+        assertThat(assembled.get("messages")).isEqualTo(expected);
+        assertThat(translated.context()).isEqualTo(new TranslationContext(stream, false));
+        assertThat(assembled).containsEntry("stream", stream).containsEntry("model", "model-a");
+        assertThat(source).isEqualTo(original);
+    }
+
     @Nested
     class TopLevelAndUsage {
 

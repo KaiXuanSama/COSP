@@ -310,7 +310,7 @@ class ChatDispatchErrorSignalTests {
                 @ValueSource(booleans = {true, false})
                 void realTranslationFailureIsDeferredAndNeverInvokesAnUpstream(boolean stream) {
                         Map<String, Object> request = Map.of("model", "m", "stream", stream,
-                                        "messages", List.of(Map.of("role", "narrator", "content", "hi")));
+                                        "messages", List.of(Map.of("role", 12, "content", "hi")));
                         Throwable error = assertErrorSignal(() -> stream
                                                         ? messagesService.messagesStream(request, "m", HttpHeaders.EMPTY, "m2c-error")
                                                         : messagesService.messages(request, "m", HttpHeaders.EMPTY, "m2c-error"),

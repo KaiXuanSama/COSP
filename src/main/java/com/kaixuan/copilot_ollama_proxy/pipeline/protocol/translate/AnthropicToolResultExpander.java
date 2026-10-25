@@ -66,7 +66,8 @@ final class AnthropicToolResultExpander {
             if ("assistant".equals(round.role)) {
                 appendAssistant(output, round, matched);
             } else if (round.hasOrdinaryContent) {
-                output.add(message("user", AnthropicContentBlockTranslator.messageContent(round.content)));
+                // ADR-0016：非 assistant 不等于 user，原样保留源角色及其普通内容。
+                output.add(message(round.role, AnthropicContentBlockTranslator.messageContent(round.content)));
             }
         }
         return output;

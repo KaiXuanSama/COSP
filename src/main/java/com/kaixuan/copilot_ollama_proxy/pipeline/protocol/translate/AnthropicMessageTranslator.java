@@ -21,6 +21,7 @@ import static com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.Anthr
  *
  * <p>只合并相邻源消息的同角色轮，不强制最终 Chat 角色交替。保留源路径与全局出现顺序，
  * 使配对只能引用先前调用，错误仍指向原始索引。历史 thinking 在配对清理后再决定是否回放。
+ * 角色按 ADR-0016 只检查字符串结构，枚举兼容性由上游判断；内容块的位置约束仍独立校验。
  */
 final class AnthropicMessageTranslator {
 
@@ -70,10 +71,8 @@ final class AnthropicMessageTranslator {
         for (int i = 0; i < messages.size(); i++) {
             String path = "messages[" + i + "]";
             Map<?, ?> message = requireObject(messages.get(i), path);
-            String role = requireString(message.get("role"), path + ".role");
-            if (!"user".equals(role) && !"assistant".equals(role)) {
-                throw new RequestTranslationException(path + ".role", "Messages 仅支持 user/assistant 角色");
-            }
+            // 不校验枚举、不 trim/改写；缺失、null 或非字符串仍报告源 role 路径。
+            String role = textValue(message.get("role"), path + ".role");
             MessageRound round;
             if (!rounds.isEmpty() && role.equals(rounds.getLast().role)) {
                 round = rounds.getLast();

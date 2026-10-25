@@ -16,6 +16,7 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.AfterSend;
 import com.kaixuan.copilot_ollama_proxy.pipeline.BeforeSend;
 import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipeline;
 import com.kaixuan.copilot_ollama_proxy.pipeline.RequestPipelineContext;
+import com.kaixuan.copilot_ollama_proxy.pipeline.after.attempt.UpstreamRetryPolicy;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.chat.GenericOpenAiChatService;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.dispatch.ProtocolDispatchManager;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestAssembler;
@@ -34,13 +35,17 @@ import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
 import com.kaixuan.copilot_ollama_proxy.testing.PipelineContexts;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.mock.http.client.reactive.MockClientHttpRequest;
 import org.springframework.web.reactive.function.client.ClientResponse;
+import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
@@ -122,6 +127,72 @@ class MessagesC2mResponseIntegrationTests {
                 new RequestBodyAssembler(PipelineContexts.registryWithAllBodyStages(mapper), new RequestBodyRuleEngine(mapper)),
                 new OutboundRequestAssembler(headers, new OutboundRequestStageRegistry(List.of(new ChatOutboundStage())), mapper)),
                 new AfterSend(PipelineContexts.executorRegistry(chat))));
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void extensionRolesReachSerializedChatRequestAndReturnMessages(boolean stream) throws Exception {
+        AtomicReference<String> sentBody = new AtomicReference<>();
+        upstreamCapturingBody(index -> stream ? sse(List.of(CONTENT, FINISH, USAGE_EVENT, "[DONE]"))
+                : json("{\"id\":\"chatcmpl_native\",\"model\":\"upstream-returned\",\"choices\":[{\"message\":{\"content\":\"ok\"},"
+                        + "\"finish_reason\":\"stop\"}],\"usage\":" + USAGE_OBJECT + "}"), sentBody);
+        Map<String, Object> source = Map.of("model", REQUESTED_MODEL, "stream", stream,
+                "system", "top-level instruction", "messages", List.of(
+                        Map.of("role", "user", "content", "hi"),
+                        Map.of("role", "system", "content", "embedded instruction"),
+                        Map.of("role", "developer", "content", "operator instruction"),
+                        Map.of("role", "narrator", "content", List.of(Map.of("type", "text", "text", "context")))));
+        JsonNode original = mapper.valueToTree(source);
+
+        Flux<UpstreamEvent> response = stream
+                ? messages.messagesStream(source, REQUESTED_MODEL, HttpHeaders.EMPTY, "req-roles-stream")
+                : messages.messages(source, REQUESTED_MODEL, HttpHeaders.EMPTY, "req-roles-single").flux();
+        List<UpstreamEvent> output = response.collectList().block(Duration.ofSeconds(3));
+
+        assertThat(attempts.get()).isEqualTo(1);
+        assertThat(sentBody.get()).isNotNull();
+        JsonNode sent = mapper.readTree(sentBody.get());
+        assertThat(sent.path("messages")).isEqualTo(mapper.valueToTree(List.of(
+                Map.of("role", "system", "content", "top-level instruction"),
+                Map.of("role", "user", "content", "hi"),
+                Map.of("role", "system", "content", "embedded instruction"),
+                Map.of("role", "developer", "content", "operator instruction"),
+                Map.of("role", "narrator", "content", "context"))));
+        assertThat(sent.path("stream").asBoolean()).isEqualTo(stream);
+        assertThat(sent.has("system")).isFalse();
+        JsonNode currentSource = mapper.valueToTree(source);
+        assertThat(currentSource).isEqualTo(original);
+        assertThat(output).isNotEmpty();
+        assertThat(mapper.readTree(output.getFirst().data()).path("type").asText())
+                .isEqualTo(stream ? "message_start" : "message");
+        assertThat(output.getLast().usage()).isEqualTo(new UsageTokens(100, 7, 40));
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void upstreamRoleRejectionRemainsHttpFailureInsteadOfLocalTranslationFailure(boolean stream) throws Exception {
+        String errorBody = "{\"error\":{\"message\":\"invalid role narrator\",\"type\":\"invalid_request_error\"}}";
+        AtomicReference<String> sentBody = new AtomicReference<>();
+        upstreamCapturingBody(index -> ClientResponse.create(HttpStatus.BAD_REQUEST)
+                .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE).body(errorBody).build(), sentBody);
+        Map<String, Object> source = Map.of("model", REQUESTED_MODEL, "stream", stream,
+                "messages", List.of(Map.of("role", "narrator", "content", "hi")));
+
+        Flux<UpstreamEvent> response = stream
+                ? messages.messagesStream(source, REQUESTED_MODEL, HttpHeaders.EMPTY, "req-role-rejected-stream")
+                : messages.messages(source, REQUESTED_MODEL, HttpHeaders.EMPTY, "req-role-rejected-single").flux();
+        assertThatThrownBy(() -> response.collectList().block(Duration.ofSeconds(3)))
+                .satisfies(error -> {
+                    WebClientResponseException upstreamError = UpstreamRetryPolicy.findWebResponseException(error);
+                    assertThat(upstreamError).isNotNull();
+                    assertThat(upstreamError.getStatusCode().value()).isEqualTo(400);
+                    assertThat(upstreamError.getResponseBodyAsString()).isEqualTo(errorBody);
+                });
+
+        // fixture 重试预算为 0；不改变生产既有的 HTTP 400 重试策略。
+        assertThat(attempts.get()).isEqualTo(1);
+        assertThat(mapper.readTree(sentBody.get()).path("messages").get(0).path("role").asText()).isEqualTo("narrator");
+        verify(usages, never()).save(any(), anyString(), anyString(), anyBoolean(), any(), any(), any());
     }
 
     @Test
@@ -369,6 +440,18 @@ class MessagesC2mResponseIntegrationTests {
         chat.setWebClientBuilder(WebClient.builder().exchangeFunction(request ->
                 Mono.just(response.apply(attempts.incrementAndGet()))));
     }
+
+        /** 用实际 codec 写到内存 HTTP 请求，不启动网络服务即可检查 bodyValue 最终序列化。 */
+        private void upstreamCapturingBody(Function<Integer, ClientResponse> response, AtomicReference<String> sentBody) {
+                attempts = new AtomicInteger();
+                chat.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+                        MockClientHttpRequest outbound = new MockClientHttpRequest(request.method(), request.url());
+                        return request.writeTo(outbound, ExchangeStrategies.withDefaults())
+                                        .then(Mono.defer(outbound::getBodyAsString))
+                                        .doOnNext(sentBody::set)
+                                        .map(body -> response.apply(attempts.incrementAndGet()));
+                }));
+        }
 
     private ClientResponse json(String body) {
         return ClientResponse.create(HttpStatus.OK).header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
