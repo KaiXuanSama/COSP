@@ -49,7 +49,8 @@
    [M2C 请求契约](./reference/contracts/M2C-REQUEST-CONTRACT.md) ·
    [阶段 2 实施记录](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-stage-2) ·
    [三家上游实机存档](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-live-2026-10-24) ·
-   [角色透传实施与自动化验证](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-role-passthrough-implementation-2026-10-25)
+   [角色透传实施与自动化验证](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-role-passthrough-implementation-2026-10-25) ·
+   [defer_loading 实施与语义订正](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-defer-loading-implementation-2026-10-26)
 - M2C 链路的 C2M 回程：[响应契约](./reference/contracts/M2C-RESPONSE-CONTRACT.md) ·
   [阶段 A 实施与自动化验证](./working/rfcs/2026-10-25-c2m-response-translation.md#c2m-stage-a) ·
   [三家真实上游实机存档](./working/rfcs/2026-10-25-c2m-response-translation.md#c2m-live-2026-10-25)；客户端实机尚待验证。

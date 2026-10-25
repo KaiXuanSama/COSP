@@ -13,6 +13,9 @@
 > **ADR-0016 角色透传已实现并通过自动化回归**（2026-10-25，见
 > [角色透传实施记录](../../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-role-passthrough-implementation-2026-10-25)）；
 > 该新策略尚未重跑真实 Claude CLI / 上游验证，不能用上述旧实机记录证明扩展角色兼容。
+> **ADR-0017 defer_loading 省略告警已实现并通过自动化回归**（2026-10-26，见
+> [实施与语义订正](../../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-defer-loading-implementation-2026-10-26)）；
+> 本轮未重跑真实客户端，不据此宣称完整 Tool Search 兼容。
 > 本文档是字段规格与测试矩阵来源；「必须 / 不要」是约束，标注实测日期的段落才是已验证事实。
 
 **决策链**：
@@ -208,8 +211,17 @@ ID/标题等文本通过 JSON 正确转义，不插入可执行模板。
 |---|---|
 | input_examples | 提示信息省略；非空值告警，不重写为 schema 约束 |
 | eager_input_streaming | 显式布尔省略并告警；null/缺省省略，非布尔报类型错误。它描述参数流形态，不是执行权限 |
-| defer_loading | false/null/缺省省略；true 按 ADR-0017 省略并告警——它是客户端延迟加载提示，Chat 无对等字段、上游不消费，且 deferred 工具本就不参与提示缓存；非布尔报类型错误 |
+| defer_loading | false/null/缺省省略且不为此字段告警；true 按 ADR-0017 省略并输出源 tools[i].defer_loading 路径告警，保留完整工具定义；非布尔报类型错误，不把字符串或数值猜成布尔值 |
 | allowed_callers | null/缺省或仅 direct 的数组省略；其它 caller 无法等价表达调用方式，报对应元素路径错误。空数组省略并告警，不承诺与服务端缺省行为等价；非数组/非字符串元素报类型错误 |
+
+`defer_loading` 的原生含义是**工具定义不进入模型初始系统提示，待工具搜索返回
+tool_reference 后才加载到模型上下文**，不是客户端工具进程的初始化开关
+（[官方 SDK 定义](https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/beta/beta_tool_param.py)，2026-10-26 核对）。
+本方向省略标志、保留 function 定义会改为按普通 Chat 工具声明发送，**不保留延迟发现语义**；
+可能增加初始工具定义的 token 开销或改变工具选择，不能以缓存限制推导为无损转换。
+省略只作用于工具协议外壳，schema、输出 schema、tool_use.input 中同名业务键不改。
+不新增工具搜索执行器或 tool_reference 映射；服务端工具、其它不可表达内容仍按原错误边界处理，
+也不扩展到 MESSAGES 直连或其它翻译方向。
 
 caller 是工具调用方式声明，不是代理可用来证明安全权限的边界。
 

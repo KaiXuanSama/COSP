@@ -3,7 +3,7 @@
 - **日期**：2026-10-20（立项日）
 - **状态**：**实施中** —— 去程阶段 2 已注册并另有三家上游实机存档；[回程阶段 A](./2026-10-25-c2m-response-translation.md#c2m-stage-a) 已实现并注册、自动化通过；阶段 3 HTTP 收包与完整客户端实机未完成
 - **最后调研**：2026-10-21（实施前的 M2C 去程最终核对）
-- **实施进展**：[阶段 1](#m2c-stage-1) · [阶段 2](#m2c-stage-2) · [三家实机存档](#m2c-live-2026-10-24) · [角色透传实施](#m2c-role-passthrough-implementation-2026-10-25) · [defer_loading 决策](#m2c-defer-loading-2026-10-26)；当前去程规格见独立请求契约，回程复核见 §12.7
+- **实施进展**：[阶段 1](#m2c-stage-1) · [阶段 2](#m2c-stage-2) · [三家实机存档](#m2c-live-2026-10-24) · [角色透传实施](#m2c-role-passthrough-implementation-2026-10-25) · [defer_loading 实施与语义订正](#m2c-defer-loading-implementation-2026-10-26)；当前去程规格见独立请求契约，回程复核见 §12.7
 - **相关 ADR**：[ADR-0012：M2C 去程的忠实映射与显式损失边界](../../adr/adr-0012-m2c-request-translation.md)、[ADR-0013：旧格式别名兼容](../../adr/adr-0013-m2c-output-format-alias.md)、[ADR-0014：三个顶层服务端配置字段省略](../../adr/adr-0014-m2c-drop-server-fields.md)、[ADR-0016：角色原样透传](../../adr/adr-0016-m2c-role-passthrough.md)、[ADR-0017：工具 defer_loading 省略并告警](../../adr/adr-0017-m2c-defer-loading-drop.md)
 - **分支**：`feat/m2c-request-c2m-response-translation`
 - **前置文档**：
@@ -33,7 +33,7 @@
 | 最终调研证据、纠错与剩余问题 | [本文 §12](#m2c-final-review) |
 | 去程实施步骤、依赖、文件清单 | [本文 §8](#m2c-plan) |
 | 自动化与用户手动验收 | 本文 §10 |
-| 已实现内容与测试结果 | 本文 §11：[阶段 1](#m2c-stage-1)、[阶段 2](#m2c-stage-2)、[三家实机存档](#m2c-live-2026-10-24)、[角色透传实施](#m2c-role-passthrough-implementation-2026-10-25) |
+| 已实现内容与测试结果 | 本文 §11：[阶段 1](#m2c-stage-1)、[阶段 2](#m2c-stage-2)、[三家实机存档](#m2c-live-2026-10-24)、[角色透传实施](#m2c-role-passthrough-implementation-2026-10-25)、[defer_loading 实施与语义订正](#m2c-defer-loading-implementation-2026-10-26) |
 | C2M 回程的专项实施与验证 | [回程 RFC 阶段 A](./2026-10-25-c2m-response-translation.md#c2m-stage-a)；响应字段只在独立 [M2C 链路响应契约](../../reference/contracts/M2C-RESPONSE-CONTRACT.md) 维护 |
 
 不另建去程 RFC、根目录 PLAN 或重复调查副本；2026-10-25 用户授权将回程作为专项 RFC 展开，
@@ -1464,6 +1464,9 @@ user/assistant 角色`）后，调研四个参考项目并明确要求按 new-ap
 
 ### 2026-10-26：工具 `defer_loading` 改为省略并告警（对齐参考项目剥离行为）
 
+> 以下保留先落决策、尚未改代码时的记录。字段语义及参考证据中的过度归纳已在
+> [后续实施订正](#m2c-defer-loading-implementation-2026-10-26) 中明确修正，不作为当前协议事实。
+
 **授权范围**：用户在 Claude CLI 实机请求触发 400（`tools[13].defer_loading`）后，
 明确要求先落文档决策，代码改动等后续指示。决策见 [ADR-0017](../../adr/adr-0017-m2c-defer-loading-drop.md)，
 当前字段行为只维护在 [M2C 请求契约 §5.2](../../reference/contracts/M2C-REQUEST-CONTRACT.md)。
@@ -1486,6 +1489,53 @@ false/null/缺省仍省略；非布尔仍报类型错误。不向 OpenAI Chat �
 抛 `RequestTranslationException`；按 ADR-0017 改为 `warnOmitted` 省略，
 并更新 `AnthropicToolTranslatorTests` 与相关集成覆盖。
 本轮仅落文档决策（ADR/契约/RFC），代码改动等用户指示后进行。
+
+<a id="m2c-defer-loading-implementation-2026-10-26"></a>
+
+#### 后续授权实施：ADR-0017 省略告警已完成（2026-10-26）
+
+**字段语义与证据订正**：实施前核对
+[Anthropic 官方 SDK `BetaToolParam.defer_loading`](https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/beta/beta_tool_param.py)
+（动态 main，2026-10-26）：true 表示工具不进入初始系统提示，只有工具搜索返回
+tool_reference 后才加载。此前解释为「客户端何时初始化工具实现、服务端不消费、无语义损失」
+是错误的。按既定决定保留工具定义、省略标志，会失去延迟发现语义，可能增加初始 token 开销
+并改变模型可选工具集合；不以缓存断点约束证明无损，也不声称原生工具搜索已兼容。
+
+原参考表不能作为「四家同向无条件剥离」的证据：
+`stripResponsesDeferredToolFlags` 只在最终声明不含内建 tool_search 时删除标志；
+CLIProxyAPI 的 `claudeBodyUsesAdvancedToolUse` 是 beta 检测，
+“plain tool declarations no longer carry it” 描述所观察客户端普通声明，而不是证明代理会删除标志。
+Bedrock 的 custom 字段清理与 Anthropic 缓存断点避让属于其它适配路径。
+本次仍按已确认的 ADR-0017 值级处置落地，不重新扩大到其它字段或工具搜索机制；
+Accepted ADR 正文保留历史，当前精确行为与损失边界维护在独立请求契约 §5.2。
+
+**实现落点**：`AnthropicToolTranslator.validateExtensions` 中
+`Boolean.TRUE.equals(deferred)` 分支由抛异常改为 `warnOmitted`。
+沿用目标工具白名单重建，不删源 Map、不删整项工具、不改名或改 schema，
+也不在设置层或规则之后追加特殊清洗。false/null/缺省不为此字段告警，非布尔仍报源路径。
+普通工具选择、显式并行开关、工具因果配对、回程翻译、上游错误和原生 usage 记账不变。
+
+**自动化覆盖**：
+
+| 测试 | 本次覆盖 |
+|---|---|
+| `AnthropicToolTranslatorTests` | true/false/null/缺省的省略与告警差异；保留工具、description、strict 和 schema 约束；tools[13]/[15] 源索引及工具顺序；告警不输出工具名/描述，源数据不变；字符串/数值/数组/对象仍报类型错误，后续工具索引保留；allowed_callers、eager_input_streaming、strict、schema 与服务端工具拒绝不被 true 绕过 |
+| `MessagesToChatRequestTranslatorTests` | 流式/非流式纯译器与 CHAT 装配均保留工具、具名选择、并行设置与有效工具历史；schema、输出 schema 及 tool_use.input 中同名业务键不变；stream_options.include_usage 与模型装配保持原行为 |
+| `MessagesC2mResponseIntegrationTests` | 真实 BeforeSend/AfterSend/Chat 执行器经实际 codec 写入内存 MockClientHttpRequest，两态 tools[13] 保留工具但不带外壳标志，Messages 回程与原生 usage 槽仍正确；字符串 "true" 仍在发送前以 tools[13].defer_loading 失败且无上游调用/usage 落库 |
+
+**验证结果**：编辑器诊断无错误；聚焦 9 类 **426 通过，0 失败/错误，BUILD SUCCESS**
+（2026-10-26 00:28:39，+08:00）；默认 Java 全量 **1992 通过，0 失败/错误，BUILD SUCCESS**
+（2026-10-26 00:31:26，+08:00）。使用已有 `skip.installnodenpm=true` / `skip.npm=true`
+跳过未改前端，默认排除 schema-migration。本次没有改数据库结构或测试发现配置。
+
+**文档影响评估**：同步 `M2C-REQUEST-CONTRACT.md` 的实施状态、外壳/业务键边界和语义订正，
+本 RFC 追加记录，两级索引补实施入口。不修改 Accepted ADR、旧 C2M §10 历史快照。
+架构边界、端点、配置、依赖与数据库不变，无需新增架构/操作指南/迁移文档。
+本次省略告警的实施与文档门禁通过；完整 Tool Search 与真实客户端兼容仍是未验收范围。
+
+**本轮边界**：仅代码、测试和文档改动；内存收包不冒充真实 HTTP 联测。
+未启动、停止或重启运行中的 COSP，未访问 live endpoint，未读取或操作工作区 admin.db/token.txt，
+未修改参考项目，未暂存、提交或推送。请由用户自行重启后复测原 Claude CLI 场景。
 
 ---
 
