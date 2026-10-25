@@ -29,7 +29,7 @@
 | 要查什么 | 唯一维护位置 |
 |---|---|
 | 已确认的取舍与理由 | [ADR-0012](../../adr/adr-0012-m2c-request-translation.md)、[ADR-0013](../../adr/adr-0013-m2c-output-format-alias.md)、[ADR-0014](../../adr/adr-0014-m2c-drop-server-fields.md)；去程值级细化见 §12.7/请求契约 |
-| M2C 逐字段规格 | [请求契约 §10](../../reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)，区分纯转换实现与实机验证 |
+| M2C 逐字段规格 | [M2C 请求契约](../../reference/contracts/M2C-REQUEST-CONTRACT.md)，区分纯转换实现与实机验证 |
 | 最终调研证据、纠错与剩余问题 | [本文 §12](#m2c-final-review) |
 | 去程实施步骤、依赖、文件清单 | [本文 §8](#m2c-plan) |
 | 自动化与用户手动验收 | 本文 §10 |
@@ -247,7 +247,7 @@ static final List<WireProtocol> TRANSLATION_FALLBACK_ORDER =
 门面 `MessagesToChatRequestTranslator implements RequestProtocolTranslator`，
 声明 `(MESSAGES, CHAT)`，带 `@Component`。
 
-> 流式时索取上游 usage 的目标规格见[请求契约 §10](../../reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)。
+> 流式时索取上游 usage 的目标规格见 [M2C 请求契约](../../reference/contracts/M2C-REQUEST-CONTRACT.md)。
 > **前提是入口先补回 `stream`**，不能只在手工 Map 单测中验证注入，见 §12.1。
 
 按项目既有粒度（对齐 `ChatToMessagesRequestTranslator` 下的协作类拆分），门面之下需要：
@@ -304,19 +304,19 @@ static final List<WireProtocol> TRANSLATION_FALLBACK_ORDER =
 
 ## 4. 规格索引与回程设计注意事项
 
-M2C 逐字段规格统一维护于[请求契约 §10](../../reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)，
+M2C 逐字段规格统一维护于 [M2C 请求契约](../../reference/contracts/M2C-REQUEST-CONTRACT.md)，
 不在 RFC 再保留第二套字段表。本节保留研究中的职责说明与回程候选，后者尚未完成专项复核。
 
 ### 4.1 顶层字段搬运
 
 顶层白名单、`stream_options`、显式 null、`output_config` 的 effort/format 分离，
-见请求契约 §10.1、§10.2、§10.7。历史「所有未列字段都可静默丢弃」不适用于
+见 M2C 请求契约 §2、§3、§6。历史「所有未列字段都可静默丢弃」不适用于
 已确认要显式拒绝的文档与执行语义，边界和待确认项见 §12.7。
 
 ### 4.2 工具配对：**方向相反**，不能直接复用
 
 现有 `ToolPairingNormalizer` 输出 Anthropic 结构；M2C 需要输出独立 Chat tool 消息，
-因此不能仅因方法签名相似而复用。新的 `AnthropicToolResultExpander` 按请求契约 §10.4、§10.5
+因此不能仅因方法签名相似而复用。新的 `AnthropicToolResultExpander` 按 M2C 请求契约 §5.1/§5.2
 实现反向配对与媒体延期；历史、空结果与重复 ID 的选择见 ADR-0012。
 
 Chat 也有工具邻接要求，但**没有全局角色交替要求**；原类注释关于 OpenAI 没有邻接约束的说法不能照搬。
@@ -448,7 +448,7 @@ Anthropic 没有 Chat 的 `stream_options` 字段；而按 Chat 常见接口约�
 
 COSP 采用**仅 M2C 翻译器生成该选项**的方案，随后 CHAT 请求体规则仍有最终决定权。
 不在通用装配器中给直连 CHAT 扩大行为；C2R 上游是 RESPONSES，也不会因 CHAT 条件受益。
-必须先修复 §12.1 的入站 `stream` 缺口，精确规格见请求契约 §10.1。
+必须先修复 §12.1 的入站 `stream` 缺口，精确规格见 M2C 请求契约 §2。
 
 #### 4.3.8 全局核对发现的三处细节（本轮补充）
 
@@ -490,7 +490,7 @@ C2M 侧「`stop` 是字符串或数组 → 一律包成 `stop_sequences` 数组�
 | `stop_sequences: ["a","b"]` | `stop: ["a","b"]` | 数组 |
 
 **工程方案统一为数组**，包括单元素数组，避免同一 RFC 两套输出约定。
-不是因为字符串非法，而是无需为相同字段再增加一种输出分支；具体校验见请求契约 §10.1。
+不是因为字符串非法，而是无需为相同字段再增加一种输出分支；具体校验见 M2C 请求契约 §2。
 
 ### 4.4 流式：帧数不对等与终止标记
 
@@ -540,7 +540,7 @@ C2M 回程必须处理两类「形态契约」，缺一个是硬失败而非降�
 #### 4.5.1 已定案（2026-10-20）
 
 用户已确认采用**工具链中回放已有明文、不造缺失内容**的策略，2026-10-21 补齐了
-配对清理后再判断是否仍有工具调用的要求。字段规则见请求契约 §10.4；理由归 ADR-0012。
+配对清理后再判断是否仍有工具调用的要求。字段规则见 M2C 请求契约 §5；理由归 ADR-0012。
 
 #### 4.5.2 这**不涉及**思考链缓存问题 —— 两个机制必须分清
 
@@ -768,7 +768,7 @@ new-api 与 CLIProxyAPI 都做了反查回填：
 | CLIProxyAPI | `relayedToolImages` → 一条 user 消息，首块是提示文字 `"Images returned by the preceding tool call(s):"` |
 
 四家的媒体提示与空结果处理并不相同。用户已区分「已有错误/媒体归属的最小编码」
-与「伪造空结果」：前者允许，真正空结果仍保留空串，精确目标见请求契约 §10.5。
+与「伪造空结果」：前者允许，真正空结果仍保留空串，精确目标见 M2C 请求契约 §5.1。
 
 #### (4) 纯文本时用字符串 content，有图才用 parts 数组
 
@@ -777,7 +777,7 @@ sub2api 的注释直说：
 > strict chat upstreams reject array content
 
 sub2api 会折叠纯文本数组；cc-switch 仅单文本块折叠，CPA 保留 parts 数组，
-所以这不是四家一致的格式。COSP 选择纯文本折叠来减少目标形态，见请求契约 §10.4；
+所以这不是四家一致的格式。COSP 选择纯文本折叠来减少目标形态，见 M2C 请求契约 §5；
 不能把它写成 Chat 官方只接受字符串。
 
 ---
@@ -814,7 +814,7 @@ sub2api 会折叠纯文本数组；cc-switch 仅单文本块折叠，CPA 保留 
 ## 6. 决策记录与确认范围
 
 **取舍的权威记录是 [ADR-0012](../../adr/adr-0012-m2c-request-translation.md)**，
-它只承载已确认的策略；逐字段目标见请求契约 §10，工程建议与待确认问题见 §12.7。
+它只承载已确认的策略；逐字段目标见 M2C 请求契约，工程建议与待确认问题见 §12.7。
 
 2026-10-20 已确定 system 支线、文档搬运、cache_control 丢弃、工具链 thinking 明文回放、
 M2C 索取流式 usage，以及回程渲染与记账隔离；2026-10-21 又确认了四项：
@@ -838,7 +838,7 @@ M2C 去程负责索取上游 usage；C2M 回程按 Anthropic 协议输出 usage�
 
 选择原生 `file`/文本内容搬运，而不是丢弃、OCR 或假造模型输出。
 最终范围含 `source.content` 与工具结果内文档；无法等价处理的 URL 文档、跨服务文件 ID、
-引用定位要求和服务端工具显式报错。具体形态见请求契约 §10.7。
+引用定位要求和服务端工具显式报错。具体形态见 M2C 请求契约 §6。
 
 **必须由用户在完整回程后用 Claude Desktop 实测**：不仅检查 2xx，还要确认模型能回答
 只存在于文档内的细节；至少覆盖两家上游。首版不新增 file 开关；若后续确有适配需求，另作决策。
@@ -1000,7 +1000,7 @@ HTTP 测试方式参考 `ProviderRequestBodyTransformationIntegrationTests`，�
 |---|---|
 | 入口丢 stream，手工译器测试假绿 | 真 JSON 入站与最终出站收包一起测，§12.1 |
 | 新支线未被 Spring 收集，静默跳过 | `containsSame` 真 Bean，不能只测试手工 new，§12.3 |
-| 反向配对误用、空结果被丢 | 请求契约 §10.4 的因果/空值矩阵，保留所有可配对的空应答 |
+| 反向配对误用、空结果被丢 | M2C 请求契约 §5 的因果/空值矩阵，保留所有可配对的空应答 |
 | 媒体被序列化成正文或孤儿图片漂出 | 共用块转换，媒体按有效调用归属，最终序列化 body 断言 |
 | 无法映射文档仍继续回答 | 带字段路径显式失败；客户端实测确认模型确实看到文件 |
 | 兜底模式因丢 null 而退化成覆写 | thinking/effort 各种表态 × 四模式，§10.1 |
@@ -1099,7 +1099,7 @@ HTTP 测试方式参考 `ProviderRequestBodyTransformationIntegrationTests`，�
 
 - 完成 M2C 去程的入口→译器→装配→执行器追踪，以及四参考项目、官方 SDK 的交叉核对。
 - 用户确认四项补充选择，已晋升 ADR-0012；不能等同为批准所有工程推论。
-- 最终证据收入 §12，计划与验收更新为 §8/§10，逐字段目标集中到请求契约 §10。
+- 最终证据收入 §12，计划与验收更新为 §8/§10，逐字段目标集中到 M2C 请求契约。
 - 订正此前关于 stream、file、tool.name、测试必红、usage、日志自动接线与参考项目一致性的误判。
 - 保留回程草案，但明确其复核/接线任务；把「去程单独上线」纠正为开发中间态。
 - 本次只修改 docs 文档，没有实现新译器、支线、测试、探针或配置样例，未运行构建/实机测试。
@@ -1344,7 +1344,7 @@ mimo      down=MESSAGES up=CHAT status=200 p=193 c=28  cached=128
 
 **授权范围**：用户在逐项目调研后明确要求 M2C 对这三个字段直接丢弃。
 决策见 [ADR-0014](../../adr/adr-0014-m2c-drop-server-fields.md)，当前字段行为只维护在
-[请求契约 §10.1](../../reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)。
+[M2C 请求契约 §2](../../reference/contracts/M2C-REQUEST-CONTRACT.md)。
 本记录取代 §12.7 中三字段非空报错的确认，保留阶段 2 与旧实机记录作为历史。
 
 **只读调研证据**（三个参考项目的本地源码；未修改、构建或测试它们）：
@@ -1497,9 +1497,9 @@ Spring 注册与协议调度；使用已有 `skip.installnodenpm` / `skip.npm` �
 | 条目 | 当时确认方案/备选 | 状态与实施门槛 |
 |---|---|---|
 | 末尾普通 assistant prefill | 保留输入，交目标上游处理，不改写角色 | **已确认**；不承诺通用等价续写，不新增末尾 assistant 拒绝条件 |
-| input_examples / allowed_callers / defer_loading / eager_input_streaming | 按字段含义和值区分默认/无操作与不能等价的执行要求 | **已确认**；具体值级规则见请求契约 §10.6，不能把 caller 提示描述成安全权限墙 |
+| input_examples / allowed_callers / defer_loading / eager_input_streaming | 按字段含义和值区分默认/无操作与不能等价的执行要求 | **已确认**；具体值级规则见 M2C 请求契约 §5.2，不能把 caller 提示描述成安全权限墙 |
 | container/mcp_servers/context_management | null、空数组/对象省略；其余值明确报错 | **已确认**；不静默忽略非空服务端执行/隐藏上下文要求 |
-| JSON Schema 输出包装 | 固定 name=`cosp_output`、strict=true，schema 不改；旧字段用同一逻辑转换 | **已确认**；重复格式字段报错，effort-only 不冲突，见 ADR-0013 与请求契约 §10.7 |
+| JSON Schema 输出包装 | 固定 name=`cosp_output`、strict=true，schema 不改；旧字段用同一逻辑转换 | **已确认**；重复格式字段报错，effort-only 不冲突，见 ADR-0013 与 M2C 请求契约 §6.2 |
 | 元数据固定文案与混合内容排序 | 英文短标记，仅编码已有错误、来源、标题/上下文；不添加随机量 | **实现细节已授权**；文案和排列由契约及 golden 测试固定，不再逐常量发起决策 |
 | 缺省/null 的 tool_use.input | 无参兼容映射为空对象；其它非对象值报错 | **已确认**；与合法空 tool_result 区分，不用 String.valueOf 兜底 |
 | 回程未知值、首帧 usage、finish_reason、signature、EOF/取消/错误与日志 | 保留 §3.2/§4 的调研草案 | **后续回程专项**，此次去程计划不代替其定稿 |

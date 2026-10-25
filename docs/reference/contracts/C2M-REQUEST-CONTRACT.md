@@ -10,7 +10,8 @@
 > 自动化回归通过，响应规格独立见 [M2C 链路响应契约](./M2C-RESPONSE-CONTRACT.md)。
 > 这不构成完整客户端兼容或可发布结论。
 > 实际验证范围见 [阶段 2 记录](../../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-stage-2)。
-> **M2C 的单一字段规格在 [§10](#m2c-request-spec)**；主要取舍见
+> **M2C 请求规格已拆分独立成文（2026-10-25）**：见 [M2C-REQUEST-CONTRACT.md](./M2C-REQUEST-CONTRACT.md)，
+> 本文不再维护 `§10` 的 M2C 请求规格副本（历史存档保留）。主要取舍见
 > [ADR-0012](../../adr/adr-0012-m2c-request-translation.md)、[ADR-0013](../../adr/adr-0013-m2c-output-format-alias.md)、
 > [ADR-0014](../../adr/adr-0014-m2c-drop-server-fields.md)，最终调研、计划和剩余边界见
 > [M2C/C2M RFC](../../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-final-review)。
@@ -732,16 +733,16 @@ agent 用工具读图的场景暴露出来才修，已于 2026-09-08 实测通�
 
 <a id="m2c-request-spec"></a>
 
-## 10. M2C 去程字段规格（2026-10-24，纯转换已实现）
+## 10. M2C 去程字段规格（历史存档，2026-10-24 版本）
+
+> **2026-10-25：本节已拆分独立成文，真源为 [M2C-REQUEST-CONTRACT.md](./M2C-REQUEST-CONTRACT.md)**。
+> 以下内容作为历史快照保留，仅供追溯拆分前版本；任何新增/修改请直接改独立契约，不要在本节改动。
 
 **方向：下游 MESSAGES → 上游 CHAT；声明键 `(MESSAGES, CHAT)`。**
-本节的纯结构转换与 CHAT 装配衔接已实现，最终 HTTP 收包与受控联测未完成，回程仍未实现。
-实现和测试进展只在 RFC 维护；本节描述字段行为，不把单测替代外部上游验收。主要策略以
+本节描述 2026-10-24 冻结的字段行为。实现和测试进展只在 RFC 维护。主要策略以
 [ADR-0012](../../adr/adr-0012-m2c-request-translation.md) 为依据；
 旧格式别名见 [ADR-0013](../../adr/adr-0013-m2c-output-format-alias.md)。
 三个顶层服务端配置字段的省略边界见 [ADR-0014](../../adr/adr-0014-m2c-drop-server-fields.md)。
-2026-10-24 已冻结下列去程细项，确认范围见
-[RFC 边界清单](../../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-open-items)；回程不在本次确认范围。
 调研、代码文件清单、实施依赖和验证矩阵只在 RFC 维护。
 
 ### 10.1 顶层字段与流式上下文

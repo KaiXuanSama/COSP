@@ -120,7 +120,7 @@ SPA 路由回退（`SpaRoutingConfig.spaRoutes()`）**不在这个链上** —�
 端点分流后创建的 `ctx.stream` 仍是实际执行与最终装配的权威，`RequestBodyAssembler` 随后再次覆写。
 入口不生成 `stream_options`；M2C 去程译器在流式时独立索取上游 usage，随后 CHAT 规则仍可改写。
 当前两半已注册、自动化通过，客户端实机待验证；字段与验证边界见
-[请求契约 §10](../reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec) 与
+[M2C 请求契约](../reference/contracts/M2C-REQUEST-CONTRACT.md) 与
 [M2C 链路响应契约](../reference/contracts/M2C-RESPONSE-CONTRACT.md)。
 
 三个应用服务**同形**：只做「建 `RequestPipelineContext`（`forEndpoint`）
@@ -254,7 +254,7 @@ Anthropic（Messages*Stage 三步 + RequestBodyRuleEngine）—— 中间步骤�
 CHAT system 支线已经通过真实 Spring Bean 装配和装配层回归验证；
 [(MESSAGES, CHAT) 两半已注册并通过自动化](../working/rfcs/2026-10-25-c2m-response-translation.md#c2m-stage-a)，
 仍不能把自动化通过写成客户端实机兼容已验证。字段行为统一见
-[请求契约 §10.3](../reference/contracts/C2M-REQUEST-CONTRACT.md#103-system-归一化支线)，这里不复制第二份规格。
+[M2C 请求契约 §4](../reference/contracts/M2C-REQUEST-CONTRACT.md)，这里不复制第二份规格。
 
 **每个阶段的位置都有理由，两类位置约束最容易被破坏**：
 

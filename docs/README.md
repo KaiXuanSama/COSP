@@ -46,7 +46,7 @@
 - 功能提案索引：[`working/rfcs/README.md`](./working/rfcs/README.md)
 - M2C 去程：[最终调研](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-final-review) ·
    [实施计划](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-plan) ·
-   [字段规格](./reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec) ·
+   [M2C 请求契约](./reference/contracts/M2C-REQUEST-CONTRACT.md) ·
    [阶段 2 实施记录](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-stage-2) ·
    [三家上游实机存档](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-live-2026-10-24)
 - M2C 链路的 C2M 回程：[响应契约](./reference/contracts/M2C-RESPONSE-CONTRACT.md) ·
@@ -82,7 +82,7 @@
 
 | 文件 | 内容 |
 |---|---|
-| [`contracts/`](./reference/contracts/) | [C2M 请求契约](./reference/contracts/C2M-REQUEST-CONTRACT.md)、[C2M 链路响应契约（M2C 响应）](./reference/contracts/C2M-RESPONSE-CONTRACT.md)、[M2C 链路响应契约（C2M 响应，ADR-0015）](./reference/contracts/M2C-RESPONSE-CONTRACT.md) 与 [M2C 字段规格](./reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)；调研/实施进展不在契约重复，见上方 RFC 入口 |
+| [`contracts/`](./reference/contracts/) | 六份两两成链：[C2M 请求契约](./reference/contracts/C2M-REQUEST-CONTRACT.md)、[C2M 链路响应契约（M2C 响应）](./reference/contracts/C2M-RESPONSE-CONTRACT.md)、[M2C 请求契约](./reference/contracts/M2C-REQUEST-CONTRACT.md)、[M2C 链路响应契约（C2M 响应，ADR-0015）](./reference/contracts/M2C-RESPONSE-CONTRACT.md)、[C2R 请求契约](./reference/contracts/C2R-REQUEST-CONTRACT.md)、[C2R 链路响应契约（R2C 响应）](./reference/contracts/C2R-RESPONSE-CONTRACT.md)；调研/实施进展不在契约重复，见上方 RFC 入口 |
 | [`samples/`](./reference/samples/) | 真实抓包（Codex 请求/响应事件流）与配置样例 |
 | [LIVE_TEST_MATRIX.md](./reference/LIVE_TEST_MATRIX.md) | 实机验证矩阵（测什么、用哪个 mock、看什么） |
 | [MODEL_SUPPORT.md](./reference/MODEL_SUPPORT.md) | 各模型对 Copilot 的适配度 |
