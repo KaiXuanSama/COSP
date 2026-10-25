@@ -1,6 +1,6 @@
 # ADR-0012: M2C 去程采用忠实映射与显式损失边界
 
-- **状态**：Partially superseded by [ADR-0014](./adr-0014-m2c-drop-server-fields.md)（仅顶层 container / mcp_servers / context_management 的处置；其余仍 Accepted）
+- **状态**：Partially superseded by [ADR-0014](./adr-0014-m2c-drop-server-fields.md)（仅顶层 container / mcp_servers / context_management 的处置；其余仍 Accepted）；Partially superseded by [ADR-0016](./adr-0016-m2c-role-passthrough.md)（仅「只接受 user/assistant 角色、未知角色报错」这一条；其余仍 Accepted）
 - **日期**：2026-10-21（归档 2026-10-20 与 2026-10-21 已确认的选择）
 - **取代**：（无；本决策具体化 ADR-0003，不改变已有方向的运行行为）
 - **相关**：[ADR-0003 忠实搬运](./adr-0003-translator-faithful-mapping.md)、

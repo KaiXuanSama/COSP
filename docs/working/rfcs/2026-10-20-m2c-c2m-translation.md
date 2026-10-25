@@ -1379,6 +1379,33 @@ Spring 注册与协议调度；使用已有 `skip.installnodenpm` / `skip.npm` �
 
 ---
 
+<a id="m2c-role-passthrough-2026-10-25"></a>
+
+### 2026-10-25：未知角色改为原样透传（对齐 new-api）
+
+**授权范围**：用户在 Claude CLI 实机请求触发 400（`messages[1].role Messages 仅支持
+user/assistant 角色`）后，调研四个参考项目并明确要求按 new-api 方向调整：**未知角色
+原样透传，本地不拒绝**。决策见 [ADR-0016](../../adr/adr-0016-m2c-role-passthrough.md)，
+当前字段行为只维护在 [M2C 请求契约 §5](../../reference/contracts/M2C-REQUEST-CONTRACT.md)。
+
+**只读调研证据**（四个参考项目本地源码；未修改、构建或测试它们）：
+
+| 项目 | 角色处置 |
+|---|---|
+| new-api | `to_oai_chat_req.go` 原样透传任意 role（`Role: claudeMessage.Role`），不校验、不拒绝 |
+| sub2api | 反向方向未知角色/类型尽量按 user 保留文本（宽容，不报错） |
+| cc-switch | role 读取失败默认回退 `"user"`，透传未知角色 |
+| CLIProxyAPI | switch 无 default，未知角色被静默忽略（丢消息，不报错） |
+
+用户决策对齐 new-api 的透传方向：本地不拦截，兼容性由上游回复。
+
+**待实现**：`AnthropicMessageTranslator.parse` 当前仍对非 `user/assistant` 抛
+`RequestTranslationException`；按 ADR-0016 将角色校验调整为「存在且为字符串」、
+未知角色透传，并更新 `MessagesToChatRequestTranslatorTests` 与错误路径覆盖。
+本轮仅落文档决策（ADR/契约/RFC），代码改动等用户指示后进行。
+
+---
+
 <a id="m2c-final-review"></a>
 
 ## 12. M2C 去程最终调研报告（2026-10-21）

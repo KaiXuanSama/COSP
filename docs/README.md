@@ -63,6 +63,7 @@
 | [ADR-0013](./adr/adr-0013-m2c-output-format-alias.md) | M2C 兼容旧 output_format，重复格式要求显式报错 |
 | [ADR-0014](./adr/adr-0014-m2c-drop-server-fields.md) | M2C 直接省略三个顶层服务端配置字段，限定收窄 ADR-0012 的拒绝边界 |
 | [ADR-0015](./adr/adr-0015-c2m-response-translation.md) | C2M 回程响应翻译采用状态机、交错缓冲与延迟单发 message_delta；落库保持上游原生 usage |
+| [ADR-0016](./adr/adr-0016-m2c-role-passthrough.md) | M2C 请求未知角色原样透传，对齐 new-api，不再本地拒绝 |
 
 ### architecture/ —— 当前架构
 
