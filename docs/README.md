@@ -60,6 +60,7 @@
 | [ADR-0012](./adr/adr-0012-m2c-request-translation.md) | M2C 去程的忠实映射、文档/工具损失边界与既有元数据编码 |
 | [ADR-0013](./adr/adr-0013-m2c-output-format-alias.md) | M2C 兼容旧 output_format，重复格式要求显式报错 |
 | [ADR-0014](./adr/adr-0014-m2c-drop-server-fields.md) | M2C 直接省略三个顶层服务端配置字段，限定收窄 ADR-0012 的拒绝边界 |
+| [ADR-0015](./adr/adr-0015-c2m-response-translation.md) | C2M 回程响应翻译采用状态机、交错缓冲与延迟单发 message_delta；落库保持上游原生 usage |
 
 ### architecture/ —— 当前架构
 
@@ -79,7 +80,7 @@
 
 | 文件 | 内容 |
 |---|---|
-| [`contracts/`](./reference/contracts/) | C2M 请求/响应契约与 [M2C 字段规格](./reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)；调研/实施进展不在契约重复，见上方 RFC 入口 |
+| [`contracts/`](./reference/contracts/) | [C2M 请求契约](./reference/contracts/C2M-REQUEST-CONTRACT.md)、[C2M 链路响应契约（M2C 响应）](./reference/contracts/C2M-RESPONSE-CONTRACT.md)、[M2C 链路响应契约（C2M 响应，ADR-0015）](./reference/contracts/M2C-RESPONSE-CONTRACT.md) 与 [M2C 字段规格](./reference/contracts/C2M-REQUEST-CONTRACT.md#m2c-request-spec)；调研/实施进展不在契约重复，见上方 RFC 入口 |
 | [`samples/`](./reference/samples/) | 真实抓包（Codex 请求/响应事件流）与配置样例 |
 | [LIVE_TEST_MATRIX.md](./reference/LIVE_TEST_MATRIX.md) | 实机验证矩阵（测什么、用哪个 mock、看什么） |
 | [MODEL_SUPPORT.md](./reference/MODEL_SUPPORT.md) | 各模型对 Copilot 的适配度 |
