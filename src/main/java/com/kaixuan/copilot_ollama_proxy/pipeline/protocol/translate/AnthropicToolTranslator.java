@@ -19,8 +19,9 @@ import static com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.Anthr
 /**
  * Anthropic 自定义工具到 Chat function 定义、选择与显式并行开关。
  *
- * <p>协议外壳按白名单重建，schema 深复制但不清洗约束；执行方式和延迟加载不能
- * 伪装为普通函数。提示省略只记录路径，不记录示例或参数。请求契约 §10.6。
+ * <p>协议外壳按白名单重建，schema 深复制但不清洗约束。服务端工具与不可表达的调用方式
+ * 仍拒绝；defer_loading=true 按 ADR-0017 省略并告警，不模拟工具的延迟发现。
+ * 告警只记录路径，不记录示例或参数。字段契约见 docs/reference/contracts/M2C-REQUEST-CONTRACT.md §5.2。
  */
 final class AnthropicToolTranslator {
 
@@ -117,7 +118,7 @@ final class AnthropicToolTranslator {
     private static void validateExtensions(Map<?, ?> tool, String path) {
         Boolean deferred = optionalBoolean(tool, "defer_loading", path);
         if (Boolean.TRUE.equals(deferred)) {
-            throw new RequestTranslationException(path + ".defer_loading", "无法等价保留工具的延迟加载与发现时机");
+            warnOmitted(path + ".defer_loading");
         }
         Object callers = tool.get("allowed_callers");
         if (callers != null) {

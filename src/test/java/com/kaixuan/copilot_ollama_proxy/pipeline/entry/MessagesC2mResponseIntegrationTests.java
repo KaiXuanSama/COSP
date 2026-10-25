@@ -23,6 +23,7 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequest
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.OutboundRequestStageRegistry;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.outbound.chat.ChatOutboundStage;
 import com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.RequestBodyAssembler;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.RequestTranslationException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ResponseTranslationException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
@@ -53,6 +54,7 @@ import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -166,6 +168,83 @@ class MessagesC2mResponseIntegrationTests {
         assertThat(mapper.readTree(output.getFirst().data()).path("type").asText())
                 .isEqualTo(stream ? "message_start" : "message");
         assertThat(output.getLast().usage()).isEqualTo(new UsageTokens(100, 7, 40));
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void deferredToolAtOriginalIndexReachesSerializedChatRequestWithoutFlag(boolean stream) throws Exception {
+        AtomicReference<String> sentBody = new AtomicReference<>();
+        upstreamCapturingBody(index -> stream ? sse(List.of(CONTENT, FINISH, USAGE_EVENT, "[DONE]"))
+                : json("{\"id\":\"chatcmpl_native\",\"model\":\"upstream-returned\",\"choices\":[{\"message\":{\"content\":\"ok\"},"
+                        + "\"finish_reason\":\"stop\"}],\"usage\":" + USAGE_OBJECT + "}"), sentBody);
+        List<Object> tools = new ArrayList<>();
+        List<Object> expectedTools = new ArrayList<>();
+        for (int i = 0; i < 13; i++) {
+            tools.add(Map.of("name", "tool_" + i));
+            expectedTools.add(Map.of("type", "function", "function", Map.of("name", "tool_" + i,
+                    "parameters", Map.of("type", "object", "properties", Map.of()))));
+        }
+        Map<String, Object> schema = Map.of("type", "object", "properties", Map.of("defer_loading",
+                Map.of("type", "boolean")), "required", List.of("defer_loading"), "additionalProperties", false);
+        tools.add(Map.of("name", "lookup", "description", "lookup data", "defer_loading", true,
+                "input_schema", schema, "strict", true));
+        expectedTools.add(Map.of("type", "function", "function", Map.of("name", "lookup",
+                "description", "lookup data", "parameters", schema, "strict", true)));
+        Map<String, Object> source = Map.of("model", REQUESTED_MODEL, "stream", stream, "tools", tools,
+                "tool_choice", Map.of("type", "tool", "name", "lookup", "disable_parallel_tool_use", true),
+                "messages", List.of(Map.of("role", "user", "content", "hi")));
+        JsonNode original = mapper.valueToTree(source);
+
+        Flux<UpstreamEvent> response = stream
+                ? messages.messagesStream(source, REQUESTED_MODEL, HttpHeaders.EMPTY, "req-deferred-stream")
+                : messages.messages(source, REQUESTED_MODEL, HttpHeaders.EMPTY, "req-deferred-single").flux();
+        List<UpstreamEvent> output = response.collectList().block(Duration.ofSeconds(3));
+
+        assertThat(attempts.get()).isEqualTo(1);
+        assertThat(sentBody.get()).isNotNull();
+        JsonNode sent = mapper.readTree(sentBody.get());
+        assertThat(sent.path("tools")).isEqualTo(mapper.valueToTree(expectedTools));
+        assertThat(sent.path("tool_choice")).isEqualTo(mapper.valueToTree(
+                Map.of("type", "function", "function", Map.of("name", "lookup"))));
+        assertThat(sent.path("parallel_tool_calls").asBoolean(true)).isFalse();
+        assertThat(sent.path("stream").asBoolean()).isEqualTo(stream);
+        assertThat(sent.path("model").asText()).isEqualTo("upstream-model");
+        if (stream) {
+            assertThat(sent.path("stream_options").path("include_usage").asBoolean()).isTrue();
+        } else {
+            assertThat(sent.has("stream_options")).isFalse();
+        }
+        JsonNode currentSource = mapper.valueToTree(source);
+        assertThat(currentSource).isEqualTo(original);
+        assertThat(output).isNotEmpty();
+        assertThat(mapper.readTree(output.getFirst().data()).path("type").asText())
+                .isEqualTo(stream ? "message_start" : "message");
+        assertThat(output.getLast().usage()).isEqualTo(new UsageTokens(100, 7, 40));
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void malformedDeferredFlagFailsBeforeAnyUpstreamRequest(boolean stream) {
+        AtomicReference<String> sentBody = new AtomicReference<>();
+        upstreamCapturingBody(index -> json("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}"), sentBody);
+        List<Object> tools = new ArrayList<>();
+        for (int i = 0; i < 13; i++) {
+            tools.add(Map.of("name", "tool_" + i));
+        }
+        tools.add(Map.of("name", "lookup", "defer_loading", "true"));
+        Map<String, Object> source = Map.of("model", REQUESTED_MODEL, "stream", stream, "tools", tools,
+                "messages", List.of(Map.of("role", "user", "content", "hi")));
+
+        Flux<UpstreamEvent> response = stream
+                ? messages.messagesStream(source, REQUESTED_MODEL, HttpHeaders.EMPTY, "req-deferred-invalid-stream")
+                : messages.messages(source, REQUESTED_MODEL, HttpHeaders.EMPTY, "req-deferred-invalid-single").flux();
+        assertThatThrownBy(() -> response.collectList().block(Duration.ofSeconds(3)))
+                .isInstanceOfSatisfying(RequestTranslationException.class,
+                        error -> assertThat(error.fieldPath()).isEqualTo("tools[13].defer_loading"));
+
+        assertThat(attempts.get()).isZero();
+        assertThat(sentBody.get()).isNull();
+        verify(usages, never()).save(any(), anyString(), anyString(), anyBoolean(), any(), any(), any());
     }
 
     @ParameterizedTest

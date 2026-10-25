@@ -10,6 +10,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -117,6 +118,57 @@ class AnthropicToolTranslatorTests {
         assertThat(translator.translateTools(List.of(tool))).hasSize(1);
     }
 
+        @ParameterizedTest
+        @MethodSource("deferredLoadingFlags")
+        @ExtendWith(OutputCaptureExtension.class)
+        void omitsDeferredFlagAndWarnsOnlyForTrueWithoutDroppingTool(Object flag, boolean present, CapturedOutput output) {
+                Map<String, Object> schema = Map.of("type", "object", "properties", Map.of(
+                                "defer_loading", Map.of("type", "boolean"),
+                                "config", Map.of("type", "object", "properties", Map.of("defer_loading", Map.of("type", "boolean")))),
+                                "required", List.of("defer_loading"), "additionalProperties", false);
+                Map<String, Object> tool = new LinkedHashMap<>(Map.of("name", "PRIVATE_TOOL_NAME",
+                                "description", "PRIVATE_TOOL_DESCRIPTION", "input_schema", schema, "strict", true));
+                if (present) {
+                        tool.put("defer_loading", flag);
+                }
+                List<Object> source = List.of(tool);
+                Object snapshot = AnthropicContentBlockTranslator.copyJson(source);
+
+                assertThat(translator.translateTools(source)).isEqualTo(List.of(Map.of("type", "function", "function",
+                                Map.of("name", "PRIVATE_TOOL_NAME", "description", "PRIVATE_TOOL_DESCRIPTION",
+                                                "parameters", schema, "strict", true))));
+                assertThat(source).isEqualTo(snapshot);
+                if (Boolean.TRUE.equals(flag)) {
+                        assertThat(output).containsOnlyOnce("[M2C] 工具提示字段已省略: path=tools[0].defer_loading");
+                } else {
+                        assertThat(output).doesNotContain("path=tools[0].defer_loading");
+                }
+                assertThat(output).doesNotContain("PRIVATE_TOOL_NAME", "PRIVATE_TOOL_DESCRIPTION");
+        }
+
+        @Test
+        @ExtendWith(OutputCaptureExtension.class)
+        void deferredWarningsKeepOriginalIndicesAndDoNotRemoveOrReorderTools(CapturedOutput output) {
+                List<Object> source = new ArrayList<>();
+                List<Object> expected = new ArrayList<>();
+                for (int i = 0; i < 16; i++) {
+                        Map<String, Object> tool = new LinkedHashMap<>(Map.of("name", "tool_" + i));
+                        if (i >= 13) {
+                                tool.put("defer_loading", i != 14);
+                        }
+                        source.add(tool);
+                        expected.add(Map.of("type", "function", "function", Map.of("name", "tool_" + i,
+                                        "parameters", emptySchema())));
+                }
+                Object snapshot = AnthropicContentBlockTranslator.copyJson(source);
+
+                assertThat(translator.translateTools(source)).isEqualTo(expected);
+                assertThat(source).isEqualTo(snapshot);
+                assertThat(output).containsOnlyOnce("path=tools[13].defer_loading")
+                                .containsOnlyOnce("path=tools[15].defer_loading")
+                                .doesNotContain("path=tools[14].defer_loading", "tool_13", "tool_15");
+        }
+
     @Test
     @ExtendWith(OutputCaptureExtension.class)
     void dropsHintsWithPathOnlyWarningsRatherThanLoggingPayload(CapturedOutput output) {
@@ -154,8 +206,25 @@ class AnthropicToolTranslatorTests {
                 Arguments.of(List.of(Map.of("name", "read", "type", "web_search_20250305")), "tools[0].type"),
                 Arguments.of(List.of(Map.of("name", "read", "strict", "true")), "tools[0].strict"),
                 Arguments.of(List.of(Map.of("name", "read", "input_schema", false)), "tools[0].input_schema"),
-                Arguments.of(List.of(Map.of("name", "read", "defer_loading", true)), "tools[0].defer_loading"),
                 Arguments.of(List.of(Map.of("name", "read", "defer_loading", "false")), "tools[0].defer_loading"),
+                Arguments.of(List.of(Map.of("name", "read", "defer_loading", "true")), "tools[0].defer_loading"),
+                Arguments.of(List.of(Map.of("name", "read", "defer_loading", "")), "tools[0].defer_loading"),
+                Arguments.of(List.of(Map.of("name", "read", "defer_loading", 0)), "tools[0].defer_loading"),
+                Arguments.of(List.of(Map.of("name", "read", "defer_loading", 1)), "tools[0].defer_loading"),
+                Arguments.of(List.of(Map.of("name", "read", "defer_loading", List.of())), "tools[0].defer_loading"),
+                Arguments.of(List.of(Map.of("name", "read", "defer_loading", Map.of())), "tools[0].defer_loading"),
+                Arguments.of(List.of(Map.of("name", "first", "defer_loading", true),
+                        Map.of("name", "second", "defer_loading", "true")), "tools[1].defer_loading"),
+                Arguments.of(List.of(Map.of("name", "read", "defer_loading", true,
+                        "allowed_callers", List.of("code_execution_20250825"))), "tools[0].allowed_callers[0]"),
+                Arguments.of(List.of(Map.of("name", "read", "defer_loading", true,
+                        "input_schema", false)), "tools[0].input_schema"),
+                Arguments.of(List.of(Map.of("name", "read", "defer_loading", true,
+                        "strict", "true")), "tools[0].strict"),
+                Arguments.of(List.of(Map.of("name", "read", "defer_loading", true,
+                        "eager_input_streaming", "true")), "tools[0].eager_input_streaming"),
+                Arguments.of(List.of(Map.of("name", "tool_search", "defer_loading", true,
+                        "type", "tool_search_tool_regex_20251119")), "tools[0].type"),
                 Arguments.of(List.of(Map.of("name", "read", "allowed_callers", "direct")), "tools[0].allowed_callers"),
                 Arguments.of(List.of(Map.of("name", "read", "allowed_callers", List.of(12))), "tools[0].allowed_callers[0]"),
                 Arguments.of(List.of(Map.of("name", "read", "allowed_callers", List.of("code_execution_20250825"))),
@@ -175,6 +244,11 @@ class AnthropicToolTranslatorTests {
                         "tool_choice.disable_parallel_tool_use"),
                 Arguments.of(Map.of("disable_parallel_tool_use", false), true, "tool_choice.type"));
     }
+
+        private static Stream<Arguments> deferredLoadingFlags() {
+                return Stream.of(Arguments.of(true, true), Arguments.of(false, true),
+                                Arguments.of(null, true), Arguments.of(null, false));
+        }
 
     private static Map<String, Object> emptySchema() {
         return Map.of("type", "object", "properties", Map.of());

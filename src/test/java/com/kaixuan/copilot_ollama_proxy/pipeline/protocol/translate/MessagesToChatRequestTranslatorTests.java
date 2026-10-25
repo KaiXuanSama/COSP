@@ -70,6 +70,64 @@ class MessagesToChatRequestTranslatorTests {
         assertThat(source).isEqualTo(original);
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void deferredFlagsDoNotChangeToolsChoicesHistoryOrNestedBusinessKeys(boolean stream) throws Exception {
+        Map<String, Object> schema = Map.of("type", "object", "properties", Map.of(
+                "defer_loading", Map.of("type", "boolean"), "nested", Map.of("type", "object", "properties",
+                        Map.of("defer_loading", Map.of("type", "string")))),
+                "required", List.of("defer_loading"), "additionalProperties", false);
+        Map<String, Object> input = Map.of("defer_loading", true, "nested", Map.of("defer_loading", "business-value"));
+        Map<String, Object> source = body("stream", stream, "tools", List.of(
+                Map.of("name", "inline", "defer_loading", false),
+                Map.of("name", "lookup", "type", "custom", "description", "lookup data", "input_schema", schema,
+                        "strict", false, "defer_loading", true, "allowed_callers", List.of("direct"))),
+                "tool_choice", Map.of("type", "tool", "name", "lookup", "disable_parallel_tool_use", true),
+                "output_config", Map.of("format", Map.of("type", "json_schema", "schema", schema)),
+                "messages", List.of(AnthropicMessageTranslatorTests.message("assistant", List.of(
+                        AnthropicMessageTranslatorTests.use("a", "lookup", input))),
+                        AnthropicMessageTranslatorTests.message("user", List.of(
+                                AnthropicMessageTranslatorTests.result("a", "ok", false)))));
+        Object snapshot = AnthropicContentBlockTranslator.copyJson(source);
+        List<Object> expectedTools = List.of(Map.of("type", "function", "function", Map.of("name", "inline",
+                        "parameters", Map.of("type", "object", "properties", Map.of()))),
+                Map.of("type", "function", "function", Map.of("name", "lookup", "description", "lookup data",
+                        "parameters", schema, "strict", false)));
+
+        var translated = translator.translateRequest(source);
+        Map<String, Object> assembled = assemble(source, "passthrough", "high", "");
+
+        for (Map<String, Object> target : List.of(translated.body(), assembled)) {
+            assertThat(target).containsEntry("tools", expectedTools)
+                    .containsEntry("tool_choice", Map.of("type", "function", "function", Map.of("name", "lookup")))
+                    .containsEntry("parallel_tool_calls", false)
+                    .containsEntry("response_format", Map.of("type", "json_schema", "json_schema",
+                            Map.of("name", "cosp_output", "strict", true, "schema", schema)));
+            List<?> history = (List<?>) target.get("messages");
+            assertThat(history).hasSize(2);
+            Map<?, ?> assistant = (Map<?, ?>) history.getFirst();
+            assertThat(assistant.get("role")).isEqualTo("assistant");
+            assertThat(assistant.get("content")).isEqualTo("");
+            List<?> calls = (List<?>) assistant.get("tool_calls");
+            assertThat(calls).hasSize(1);
+            Map<?, ?> call = (Map<?, ?>) calls.getFirst();
+            assertThat(call.get("id")).isEqualTo("a");
+            assertThat(call.get("type")).isEqualTo("function");
+            Map<?, ?> function = (Map<?, ?>) call.get("function");
+            assertThat(function.get("name")).isEqualTo("lookup");
+            assertThat(MAPPER.readTree((String) function.get("arguments"))).isEqualTo(MAPPER.valueToTree(input));
+            assertThat(history.get(1)).isEqualTo(AnthropicMessageTranslatorTests.tool("a", "ok"));
+            if (stream) {
+                assertThat(target).containsEntry("stream_options", Map.of("include_usage", true));
+            } else {
+                assertThat(target).doesNotContainKey("stream_options");
+            }
+        }
+        assertThat(translated.context()).isEqualTo(new TranslationContext(stream, false));
+        assertThat(assembled).containsEntry("model", "model-a").containsEntry("stream", stream);
+        assertThat(source).isEqualTo(snapshot);
+    }
+
     @Nested
     class TopLevelAndUsage {
 
