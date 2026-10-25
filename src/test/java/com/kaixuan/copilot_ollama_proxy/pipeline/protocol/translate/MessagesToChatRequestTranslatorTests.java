@@ -126,13 +126,50 @@ class MessagesToChatRequestTranslatorTests {
 
         @ParameterizedTest
         @ValueSource(strings = {"container", "mcp_servers", "context_management"})
-        void emptyServerRequirementsAreNoOpsButNonEmptyRequirementsAreRejected(String field) {
-            for (Object value : new Object[]{null, List.of(), Map.of()}) {
-                assertThat(translator.translateRequest(body(field, value)).body()).doesNotContainKey(field);
+        void serverFieldsAreDroppedRegardlessOfValueInBothStreamModes(String field) {
+            for (boolean stream : new boolean[]{false, true}) {
+            Map<String, Object> expected = translator.translateRequest(body("stream", stream)).body();
+            for (Object value : new Object[]{null, List.of(), Map.of(), Map.of("id", "x"),
+                List.of(Map.of("name", "x")), "x", "", false, true, 12}) {
+                Map<String, Object> source = body(field, value, "stream", stream);
+                Map<String, Object> original = new LinkedHashMap<>(source);
+
+                assertThat(translator.translateRequest(source).body()).isEqualTo(expected).doesNotContainKey(field);
+                assertThat(source).isEqualTo(original);
             }
-            for (Object value : new Object[]{Map.of("id", "x"), List.of(Map.of("name", "x")), "x", false}) {
-                assertErrorPath(body(field, value), field);
             }
+        }
+
+        @Test
+        void dropsOnlyTopLevelServerFieldsAndPreservesNamesInSchemasAndToolInputs() throws Exception {
+            Map<String, Object> schema = Map.of("type", "object", "properties", Map.of(
+                "container", Map.of("type", "string"), "mcp_servers", Map.of("type", "array"),
+                "context_management", Map.of("type", "object")));
+            Map<String, Object> input = Map.of("container", "business-container", "mcp_servers", List.of("business-server"),
+                "context_management", Map.of("business", true));
+            Map<String, Object> source = body("container", Map.of("id", "server-container"),
+                "mcp_servers", List.of(Map.of("name", "remote")),
+                "context_management", Map.of("edits", List.of(Map.of("type", "clear_thinking_20251015"))),
+                "tools", List.of(Map.of("name", "read", "input_schema", schema)),
+                "output_config", Map.of("format", Map.of("type", "json_schema", "schema", schema)),
+                "messages", List.of(AnthropicMessageTranslatorTests.message("assistant", List.of(
+                        AnthropicMessageTranslatorTests.use("a", "read", input))),
+                    AnthropicMessageTranslatorTests.message("user", List.of(
+                        AnthropicMessageTranslatorTests.result("a", "ok", false)))));
+            Map<String, Object> original = new LinkedHashMap<>(source);
+
+            Map<String, Object> output = translator.translateRequest(source).body();
+
+            assertThat(output).doesNotContainKeys("container", "mcp_servers", "context_management")
+                .containsEntry("tools", List.of(Map.of("type", "function", "function",
+                    Map.of("name", "read", "parameters", schema))))
+                .containsEntry("response_format", Map.of("type", "json_schema", "json_schema",
+                    Map.of("name", "cosp_output", "strict", true, "schema", schema)));
+            Map<?, ?> assistant = (Map<?, ?>) ((List<?>) output.get("messages")).getFirst();
+            Map<?, ?> call = (Map<?, ?>) ((List<?>) assistant.get("tool_calls")).getFirst();
+            Map<?, ?> function = (Map<?, ?>) call.get("function");
+            assertThat(MAPPER.readTree((String) function.get("arguments"))).isEqualTo(MAPPER.valueToTree(input));
+            assertThat(source).isEqualTo(original);
         }
 
         @Test

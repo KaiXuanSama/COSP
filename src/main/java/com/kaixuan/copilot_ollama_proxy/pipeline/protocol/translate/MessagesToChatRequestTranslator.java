@@ -23,16 +23,17 @@ import static com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate.Anthr
  * <p>仅重建协议结构，先于设置层与请求体规则；不补生成参数、不猜模型能力、不做 I/O。
  * system 暂留顶层交 CHAT system 支线，显式 null 保留到设置层以守住 fallback 意见判据。
  * 使用源请求提取 TranslationContext 后再索取上游 usage，两种统计意图不能混为一谈。
+ * 顶层 container / mcp_servers / context_management 按 ADR-0014 在白名单重建时直接省略，
+ * 不校验其值、不模拟服务端能力，也不递归删除 schema/input 中的同名业务键。
  *
  * <p>声明键为 (MESSAGES, CHAT)，与现有响应方向相反的 MessagesToChatResponseTranslator
  * 不是一条链。C2M 回程缺失时仍为半轮开发态，不代表完整 Anthropic 客户端兼容。
- * 字段契约见 docs/reference/contracts/C2M-REQUEST-CONTRACT.md §10；取舍见 ADR-0012/0013。
+ * 字段契约见 docs/reference/contracts/C2M-REQUEST-CONTRACT.md §10；取舍见 ADR-0012/0013/0014。
  */
 @Component
 public class MessagesToChatRequestTranslator implements RequestProtocolTranslator {
 
     private static final List<String> COPY_FIELDS = List.of("model", "stream", "max_tokens", "temperature", "top_p", "system");
-    private static final List<String> SERVER_EXECUTION_FIELDS = List.of("container", "mcp_servers", "context_management");
 
     private final AnthropicMessageTranslator messageTranslator;
     private final AnthropicToolTranslator toolTranslator;
@@ -56,7 +57,6 @@ public class MessagesToChatRequestTranslator implements RequestProtocolTranslato
     public TranslatedRequest translateRequest(Map<String, Object> downstreamBody) {
         Map<String, Object> source = downstreamBody == null ? Map.of() : downstreamBody;
         TranslationContext context = TranslationContext.fromDownstreamBody(source);
-        validateServerExecution(source);
         Map<String, Object> target = new LinkedHashMap<>();
         for (String field : COPY_FIELDS) {
             if (source.containsKey(field)) {
@@ -158,16 +158,5 @@ public class MessagesToChatRequestTranslator implements RequestProtocolTranslato
         responseFormat.put("type", "json_schema");
         responseFormat.put("json_schema", jsonSchema);
         target.put("response_format", responseFormat);
-    }
-
-    private static void validateServerExecution(Map<String, Object> source) {
-        for (String field : SERVER_EXECUTION_FIELDS) {
-            Object value = source.get(field);
-            if (value == null || (value instanceof List<?> list && list.isEmpty())
-                    || (value instanceof Map<?, ?> map && map.isEmpty())) {
-                continue;
-            }
-            throw new RequestTranslationException(field, "无法等价表达服务端执行或隐藏上下文要求");
-        }
     }
 }

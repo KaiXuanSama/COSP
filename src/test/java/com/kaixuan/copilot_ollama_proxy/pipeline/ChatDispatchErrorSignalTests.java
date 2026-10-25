@@ -259,7 +259,7 @@ class ChatDispatchErrorSignalTests {
 
                 @ParameterizedTest
                 @ValueSource(booleans = {true, false})
-                void successfulRequestUsesChatAndPreservesNativeResponseAndUsageSlot(boolean stream) {
+                void successfulRequestDropsServerFieldsAndPreservesNativeChatResponseAndUsageSlot(boolean stream) {
                         UsageTokens usage = new UsageTokens(100, 7, 40);
                         UpstreamEvent nativeEvent = UpstreamEvent.body("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}", usage);
                         if (stream) {
@@ -274,7 +274,9 @@ class ChatDispatchErrorSignalTests {
                                 });
                         }
                         Map<String, Object> request = Map.of("model", "m", "stream", stream, "system", "prompt",
-                                        "messages", List.of(Map.of("role", "user", "content", "hi")));
+                                        "messages", List.of(Map.of("role", "user", "content", "hi")),
+                                        "container", "server-container", "mcp_servers", List.of(Map.of("name", "remote")),
+                                        "context_management", Map.of("edits", List.of(Map.of("type", "clear_thinking_20251015"))));
                         Publisher<UpstreamEvent> response = stream
                                         ? messagesService.messagesStream(request, "m", HttpHeaders.EMPTY, "m2c-stream")
                                         : messagesService.messages(request, "m", HttpHeaders.EMPTY, "m2c-single");
@@ -285,9 +287,13 @@ class ChatDispatchErrorSignalTests {
                         assertThat(output.getFirst().usage()).isSameAs(usage);
                         RequestPipelineContext ctx = capturedExecution.get();
                         assertThat(ctx.bodyProtocol()).isEqualTo(WireProtocol.CHAT);
-                        assertThat(ctx.body()).doesNotContainKey("system").containsEntry("stream", stream);
+                        assertThat(ctx.body()).doesNotContainKeys("system", "container", "mcp_servers", "context_management")
+                                        .containsEntry("stream", stream);
                         assertThat(ctx.body().get("messages")).isEqualTo(List.of(Map.of("role", "system", "content", "prompt"),
                                         Map.of("role", "user", "content", "hi")));
+                        assertThat(request).containsEntry("container", "server-container")
+                                        .containsEntry("mcp_servers", List.of(Map.of("name", "remote")))
+                                        .containsEntry("context_management", Map.of("edits", List.of(Map.of("type", "clear_thinking_20251015"))));
                         assertThat(ctx.hasCompleted(PipelineStep.REQUEST_TRANSLATION)).isTrue();
                         assertThat(ctx.hasCompleted(PipelineStep.RESPONSE_TRANSLATION)).isFalse();
                         assertThat(ctx.shouldApplyEmptyResponseGate()).isFalse();
