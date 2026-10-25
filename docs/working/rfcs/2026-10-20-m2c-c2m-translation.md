@@ -3,8 +3,8 @@
 - **日期**：2026-10-20（立项日）
 - **状态**：**实施中** —— 去程阶段 2 已注册并另有三家上游实机存档；[回程阶段 A](./2026-10-25-c2m-response-translation.md#c2m-stage-a) 已实现并注册、自动化通过；阶段 3 HTTP 收包与完整客户端实机未完成
 - **最后调研**：2026-10-21（实施前的 M2C 去程最终核对）
-- **实施进展**：[阶段 1](#m2c-stage-1) · [阶段 2](#m2c-stage-2) · [三家实机存档](#m2c-live-2026-10-24) · [角色透传实施](#m2c-role-passthrough-implementation-2026-10-25)；当前去程规格见独立请求契约，回程复核见 §12.7
-- **相关 ADR**：[ADR-0012：M2C 去程的忠实映射与显式损失边界](../../adr/adr-0012-m2c-request-translation.md)、[ADR-0013：旧格式别名兼容](../../adr/adr-0013-m2c-output-format-alias.md)、[ADR-0014：三个顶层服务端配置字段省略](../../adr/adr-0014-m2c-drop-server-fields.md)、[ADR-0016：角色原样透传](../../adr/adr-0016-m2c-role-passthrough.md)
+- **实施进展**：[阶段 1](#m2c-stage-1) · [阶段 2](#m2c-stage-2) · [三家实机存档](#m2c-live-2026-10-24) · [角色透传实施](#m2c-role-passthrough-implementation-2026-10-25) · [defer_loading 决策](#m2c-defer-loading-2026-10-26)；当前去程规格见独立请求契约，回程复核见 §12.7
+- **相关 ADR**：[ADR-0012：M2C 去程的忠实映射与显式损失边界](../../adr/adr-0012-m2c-request-translation.md)、[ADR-0013：旧格式别名兼容](../../adr/adr-0013-m2c-output-format-alias.md)、[ADR-0014：三个顶层服务端配置字段省略](../../adr/adr-0014-m2c-drop-server-fields.md)、[ADR-0016：角色原样透传](../../adr/adr-0016-m2c-role-passthrough.md)、[ADR-0017：工具 defer_loading 省略并告警](../../adr/adr-0017-m2c-defer-loading-drop.md)
 - **分支**：`feat/m2c-request-c2m-response-translation`
 - **前置文档**：
   [协议翻译四方向 RFC](./2026-09-03-protocol-translation.md) §A 方向总览、
@@ -28,7 +28,7 @@
 
 | 要查什么 | 唯一维护位置 |
 |---|---|
-| 已确认的取舍与理由 | [ADR-0012](../../adr/adr-0012-m2c-request-translation.md)、[ADR-0013](../../adr/adr-0013-m2c-output-format-alias.md)、[ADR-0014](../../adr/adr-0014-m2c-drop-server-fields.md)、[ADR-0016](../../adr/adr-0016-m2c-role-passthrough.md)；去程值级细化见 §12.7/请求契约 |
+| 已确认的取舍与理由 | [ADR-0012](../../adr/adr-0012-m2c-request-translation.md)、[ADR-0013](../../adr/adr-0013-m2c-output-format-alias.md)、[ADR-0014](../../adr/adr-0014-m2c-drop-server-fields.md)、[ADR-0016](../../adr/adr-0016-m2c-role-passthrough.md)、[ADR-0017](../../adr/adr-0017-m2c-defer-loading-drop.md)；去程值级细化见 §12.7/请求契约 |
 | M2C 逐字段规格 | [M2C 请求契约](../../reference/contracts/M2C-REQUEST-CONTRACT.md)，区分纯转换实现与实机验证 |
 | 最终调研证据、纠错与剩余问题 | [本文 §12](#m2c-final-review) |
 | 去程实施步骤、依赖、文件清单 | [本文 §8](#m2c-plan) |
@@ -1457,6 +1457,35 @@ user/assistant 角色`）后，调研四个参考项目并明确要求按 new-ap
 **本轮边界**：未启动、停止或重启运行中的 COSP，未访问 live endpoint；
 未读取或操作工作区 `admin.db` / `token.txt`，未修改参考项目，未提交或推送。
 新策略尚未用真实 Claude CLI 或三家真实上游复测，由用户自行重启后继续验收。
+
+---
+
+<a id="m2c-defer-loading-2026-10-26"></a>
+
+### 2026-10-26：工具 `defer_loading` 改为省略并告警（对齐参考项目剥离行为）
+
+**授权范围**：用户在 Claude CLI 实机请求触发 400（`tools[13].defer_loading`）后，
+明确要求先落文档决策，代码改动等后续指示。决策见 [ADR-0017](../../adr/adr-0017-m2c-defer-loading-drop.md)，
+当前字段行为只维护在 [M2C 请求契约 §5.2](../../reference/contracts/M2C-REQUEST-CONTRACT.md)。
+
+**字段语义**：`defer_loading` 是 Anthropic advanced tool use（`advanced-tool-use-2025-11-20` beta）
+体系里的客户端运行时修饰符，控制客户端何时加载工具实现（延迟加载），不是服务端消费的数据。
+参考项目均选择**剥离**，不本地拒绝：
+
+| 项目 | 处置 |
+|---|---|
+| sub2api | Claude Code v2.1.69+ 发送 `custom: {defer_loading: true}`；Bedrock 拒绝 Extra inputs，`removeCustomFieldFromTools` 移除 custom；`stripResponsesDeferredToolFlags` 删除 defer_loading；`isDeferredLoadingTool` 识别两种写法并跳过缓存断点注入（Anthropic 不允许 deferred 工具携带 cache_control） |
+| CLIProxyAPI | `claudeBodyUsesAdvancedToolUse` 仅把 defer_loading 视为触发 beta 的信号，普通工具声明不再携带（"plain tool declarations no longer carry it"）；`injectToolsCacheControl` 跳过 deferred 工具 |
+| new-api / cc-switch | 白名单重建，自然丢弃 |
+
+**决策内容**：`defer_loading=true` 由报错改为**省略 + 路径化告警**（同 `eager_input_streaming`）；
+false/null/缺省仍省略；非布尔仍报类型错误。不向 OpenAI Chat 透传（无对等字段），
+不静默无痕省略（保留告警）。`allowed_callers` 等其它工具扩展字段行为不变。
+
+**待实现**：`AnthropicToolTranslator.validateExtensions` 当前仍对 `defer_loading=true`
+抛 `RequestTranslationException`；按 ADR-0017 改为 `warnOmitted` 省略，
+并更新 `AnthropicToolTranslatorTests` 与相关集成覆盖。
+本轮仅落文档决策（ADR/契约/RFC），代码改动等用户指示后进行。
 
 ---
 

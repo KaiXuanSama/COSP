@@ -20,6 +20,7 @@
 - [ADR-0013：旧 output_format 别名](../../adr/adr-0013-m2c-output-format-alias.md)
 - [ADR-0014：三个顶层服务端配置字段省略](../../adr/adr-0014-m2c-drop-server-fields.md)
 - [ADR-0016：角色字符串原样透传，枚举兼容性由上游裁决](../../adr/adr-0016-m2c-role-passthrough.md)
+- [ADR-0017：工具 defer_loading 省略并告警，不再本地拒绝](../../adr/adr-0017-m2c-defer-loading-drop.md)
 
 **相关**：
 - [M2C 链路响应契约](../contracts/M2C-RESPONSE-CONTRACT.md)（回程）
@@ -207,7 +208,7 @@ ID/标题等文本通过 JSON 正确转义，不插入可执行模板。
 |---|---|
 | input_examples | 提示信息省略；非空值告警，不重写为 schema 约束 |
 | eager_input_streaming | 显式布尔省略并告警；null/缺省省略，非布尔报类型错误。它描述参数流形态，不是执行权限 |
-| defer_loading | false/null/缺省省略；true 无法等价保留工具可见性与发现时机，报路径错误；非布尔报类型错误 |
+| defer_loading | false/null/缺省省略；true 按 ADR-0017 省略并告警——它是客户端延迟加载提示，Chat 无对等字段、上游不消费，且 deferred 工具本就不参与提示缓存；非布尔报类型错误 |
 | allowed_callers | null/缺省或仅 direct 的数组省略；其它 caller 无法等价表达调用方式，报对应元素路径错误。空数组省略并告警，不承诺与服务端缺省行为等价；非数组/非字符串元素报类型错误 |
 
 caller 是工具调用方式声明，不是代理可用来证明安全权限的边界。
