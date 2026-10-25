@@ -51,7 +51,7 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService implem
      *
      * <p>参数全部来自 ctx —— 旧签名里的 {@code request} / {@code provider} / {@code headers} /
      * {@code requestId} / {@code model} 本就都是 ctx 字段，故不再重复传递。
-     * OpenAI 直连无落库改写，故 {@code chunkRewriter} 被忽略。
+    * 非流式没有 chunk 日志，无论直连还是跨协议均不使用 {@code chunkRewriter}。
      */
     @Override
     public Mono<UpstreamEvent> invoke(RequestPipelineContext ctx,
@@ -60,12 +60,12 @@ public class GenericOpenAiChatService extends AbstractUpstreamChatService implem
                 ctx.requestId(), ctx);
     }
 
-    /** 主干 send 插槽（流式），理由同 {@link #invoke}。 */
+    /** 主干 send 插槽（流式）：日志重译闭包穿透到执行器，usage 仍按上游原文记账。 */
     @Override
     public Flux<UpstreamEvent> invokeStream(RequestPipelineContext ctx,
                                             Function<List<String>, ChunkLogPayload> chunkRewriter) {
         return super.chatCompletionStream(ctx.body(), ctx.model(), ctx.provider(), ctx.downstreamHeaders(),
-                ctx.requestId(), ctx);
+                ctx.requestId(), ctx, chunkRewriter);
     }
 
     @Override

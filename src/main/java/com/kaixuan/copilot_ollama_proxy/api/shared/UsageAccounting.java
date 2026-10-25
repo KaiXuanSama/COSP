@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 出口消费 {@link UpstreamEvent#usage()} 槽并记入日聚合 —— 三条端点共用一份。
  *
  * <h2>它在分层里的位置</h2>
- * usage 的<strong>解析</strong>由生产者承担（三个执行器 / C2M 翻译器），
+ * usage 的<strong>解析</strong>由三个上游执行器承担，回程翻译器只传递记账槽，
  * 结果挂在事件上；出口只剩「<strong>读槽 + 记账</strong>」这一件事。本类就是那件事。
  *
  * <p>它是 {@code api/shared/} 的第三个成员，与 {@link StreamLifecycle} /
@@ -43,7 +43,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <h2>「取最后一份有数据的」为何与协议无关</h2>
  * 三种协议的累积差异（Chat / Responses 后到覆盖、Anthropic 跨事件<strong>只有正数才覆盖</strong>、
- * C2M 由上游侧算好）已全部被生产者吸收，因此出口只需一条规则。
+ * 回程仍沿用上游指标）已全部被生产者吸收，因此出口只需一条规则。
  * 这条规则写在 {@link UpstreamEvent#usage()} 的说明里，本类只是它的执行者。
  *
  * @see UpstreamEvent#usage()

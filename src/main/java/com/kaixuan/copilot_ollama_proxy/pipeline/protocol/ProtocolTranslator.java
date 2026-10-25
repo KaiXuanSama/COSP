@@ -50,8 +50,9 @@ package com.kaixuan.copilot_ollama_proxy.pipeline.protocol;
  *   <li>C2R 请求：{@code ChatToResponsesRequestTranslator}；R2C 响应：
  *       {@code ResponsesToChatResponseTranslator}，两半已实测。</li>
  *   <li>M2C 请求（下游 Anthropic → 上游 Chat）：{@code MessagesToChatRequestTranslator}，
- *       已注册，纯转换与接线回归覆盖；不是完整客户端兼容结论。</li>
- *   <li>C2M 响应（上游 Chat → 下游 Anthropic）：未实现；(MESSAGES, CHAT) 仍为半轮开发态。</li>
+ *       已注册，纯转换与接线回归覆盖。</li>
+ *   <li>C2M 响应（上游 Chat → 下游 Anthropic）：{@code ChatToMessagesResponseTranslator}，
+ *       非流式/流式与日志重放已注册；自动化回归与三家真实上游通过，客户端实机兼容尚待验证。</li>
  * </ul>
  *
  * <h2>两侧翻译都必须在重试边界之外</h2>
@@ -67,10 +68,8 @@ package com.kaixuan.copilot_ollama_proxy.pipeline.protocol;
  */
 public interface ProtocolTranslator {
 
-    // TODO(待实现) C2M 响应（上游 Chat → 下游 Anthropic）：去程已注册，回程缺失仍不能发布。
-    //  新增 ResponseProtocolTranslator、声明 (MESSAGES, CHAT)，保留上游原生 usage 记账槽，
-    //  并补齐 Chat 执行器的日志 rewriter 参数传递；不把翻译放入 retryWhen 内侧。
-    //  范围与回程专项复核见 docs/working/rfcs/2026-10-20-m2c-c2m-translation.md。
+    // (MESSAGES, CHAT) 两半各自查表；响应报文独立转换，记账槽保持翻译前的 Chat 指标。
+    // 回程契约见 docs/reference/contracts/M2C-RESPONSE-CONTRACT.md；实机验证不由注册状态推导。
 
     /** 本翻译器接受的下游协议。 */
     WireProtocol downstreamProtocol();

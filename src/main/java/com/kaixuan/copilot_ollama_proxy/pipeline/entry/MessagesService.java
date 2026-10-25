@@ -23,7 +23,7 @@ import java.util.Map;
  * 主干在翻译插槽处按 {@code (下游, 上游)} 查表：<strong>去程未命中即报错</strong>
  * （{@code ProtocolTranslationNotSupportedException}，控制器译 400）。
  * M2C 请求译器已声明 (MESSAGES, CHAT)，容器自动接入；本类方法体无需变化。
- * C2M 回程仍未实现，该方向会原样透传 Chat 响应并 WARN，仅用于功能分支受控验证。
+ * 同键 C2M 回程已注册，返回 Messages 形态并保留上游原生 usage 槽；客户端兼容仍需实测。
  * M2R 请求方向仍未实现，不因新增 M2C 而放行；完整状态见 {@code ProtocolTranslator}。
  *
  * <p>翻译器套在上游执行器<strong>外侧</strong>（主干上，因而在 {@code retryWhen} 之外）：
@@ -55,7 +55,7 @@ public class MessagesService {
      *
      * @param request 已含所有透传字段的 Anthropic 请求体
      * @param model 模型名（可能带供应商前缀）
-    * @return 响应事件；回程未接时为上游原生 JSON
+    * @return Messages 响应事件；只有手工缺省回程的开发装配才透传上游原生 JSON
      */
     public Mono<UpstreamEvent> messages(Map<String, Object> request, String model,
                                         HttpHeaders downstreamHeaders, String requestId) {

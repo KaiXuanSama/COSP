@@ -43,7 +43,7 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
  * {@code requestId} / {@code model} <strong>全都已经是 ctx 的字段</strong>，
  * 故不再重复传递（判据同收编 {@code DownstreamLogView} 那次：同一个事实只有一个家）。
  * 剩下的 {@code chunkRewriter} 是<strong>闭包不是状态</strong> ——
- * 它由编排层按回程翻译器构造，只对 Anthropic 路线有意义，因此<strong>留在签名上</strong>、
+ * 它由编排层按回程翻译器构造，供跨协议流式日志使用，因此<strong>留在签名上</strong>、
  * 不进 ctx。
  *
  * <h2>未命中语义是「报错」，与其它插槽不同</h2>

@@ -144,10 +144,12 @@ pipeline/                         ← 主干-支干轴（主干-支干轴的形�
     ├── ProtocolTranslator · TranslatedRequest · TranslationContext
    └── translate/                     请求/响应翻译支线（协作类 + 契约 + 注册表）
         RequestProtocolTranslator · ResponseProtocolTranslator · TranslatorRegistry
-      （已实现 (CHAT,MESSAGES) / (CHAT,RESPONSES) 的去程与回程；
-         (MESSAGES,CHAT) 去程已注册、回程未实现，仍是受控半轮开发态）
+         （已实现 (CHAT,MESSAGES) / (CHAT,RESPONSES) / (MESSAGES,CHAT) 的去程与回程；
+             (MESSAGES,CHAT) 已通过自动化，客户端实机兼容尚待验证）
           MessagesToChatRequestTranslator → AnthropicMessageTranslator / AnthropicContentBlockTranslator /
           AnthropicToolTranslator / AnthropicToolResultExpander（请求内语义轮、因果配对与媒体归属）
+               ChatToMessagesResponseTranslator → ChatToMessagesNonStreamTranslator / ChatToMessagesStreamTranslator /
+               C2MStreamState / ChatToMessagesUsageConverter / AnthropicResponseShapes（回程单块与交错缓冲）
 ```
 
 **system 当前接线**：`RequestBodyAssembler` 按 `bodyProtocol` 查三协议支线，
@@ -155,7 +157,7 @@ CHAT 把顶层中间态落回消息数组（标准 Chat 无该字段即 no-op）
 RESPONSES 维持既有 role 改写。该阶段先于思考设置和请求体规则，未改变主干调用序列。
 具体输入边界见[请求契约 §10.3](../../../../../../../docs/reference/contracts/C2M-REQUEST-CONTRACT.md#103-system-归一化支线)，
 实现与验证范围见 [RFC](../../../../../../../docs/working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-stage-2)。
-M2C 去程已通过纯转换与最小接线回归，最终 HTTP 收包与回程验收尚未完成，不宣称客户端端到端可用。
+M2C 两半已注册并通过自动化，最终 HTTP 收包与客户端实机验收尚未完成，不宣称客户端端到端可用。
 
 > **两个跨层的值类型已上提到顶层 `protocol/`**，因为它们消费方跨三个顶层包，
 > 留在本层会让那些包反向依赖 `pipeline/`：
@@ -277,7 +279,7 @@ M2C 去程已通过纯转换与最小接线回归，最终 HTTP 收包与回程�
           │      │    ContentBlockTranslator / ToolPairingNormalizer
           │      ├─ 分支 C2R（下游 CHAT、上游 RESPONSES，已实现）
           │      │    ChatToResponsesRequestTranslator
-          │      ├─ 分支 M2C（下游 MESSAGES、上游 CHAT，去程已注册、回程未接）
+          │      ├─ 分支 M2C（下游 MESSAGES、上游 CHAT，两半已注册、实机待验）
           │      │    MessagesToChatRequestTranslator → AnthropicMessageTranslator / AnthropicToolTranslator /
           │      │    AnthropicContentBlockTranslator / AnthropicToolResultExpander
           │      └─ 分支 其余方向 → 未实现，抛 ProtocolTranslationNotSupportedException
@@ -384,7 +386,9 @@ M2C 去程已通过纯转换与最小接线回归，最终 HTTP 收包与回程�
                │      M2CStreamState / AnthropicUsageAccumulator / OpenAiResponseShapes / TranslatedChunkLog
                ├─ 分支 R2C（C2R 请求的回程）：ResponsesToChatResponseTranslator
                │    → ResponsesToChatStreamTranslator / ResponsesToChatNonStreamTranslator / R2CStreamState
-               └─ M2C 请求的 C2M 回程未实现：原样 Chat 事件透传 + WARN，usage 槽不改写
+                      └─ 分支 C2M（M2C 请求的回程）：ChatToMessagesResponseTranslator
+                              → ChatToMessagesStreamTranslator / ChatToMessagesNonStreamTranslator / C2MStreamState /
+                                 ChatToMessagesUsageConverter / AnthropicResponseShapes；usage 槽只传递不重算
 
 步骤 16 主干：统一形态出口            UpstreamEvent（Body / Terminal 两态）
 
