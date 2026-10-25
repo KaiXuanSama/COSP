@@ -3,8 +3,8 @@
 - **日期**：2026-10-20（立项日）
 - **状态**：**实施中** —— 去程阶段 2 已注册并另有三家上游实机存档；[回程阶段 A](./2026-10-25-c2m-response-translation.md#c2m-stage-a) 已实现并注册、自动化通过；阶段 3 HTTP 收包与完整客户端实机未完成
 - **最后调研**：2026-10-21（实施前的 M2C 去程最终核对）
-- **实施进展**：[阶段 1](#m2c-stage-1) · [阶段 2](#m2c-stage-2) · [三家实机存档](#m2c-live-2026-10-24)；去程边界已冻结，回程复核见 §12.7
-- **相关 ADR**：[ADR-0012：M2C 去程的忠实映射与显式损失边界](../../adr/adr-0012-m2c-request-translation.md)、[ADR-0013：旧格式别名兼容](../../adr/adr-0013-m2c-output-format-alias.md)、[ADR-0014：三个顶层服务端配置字段省略](../../adr/adr-0014-m2c-drop-server-fields.md)
+- **实施进展**：[阶段 1](#m2c-stage-1) · [阶段 2](#m2c-stage-2) · [三家实机存档](#m2c-live-2026-10-24) · [角色透传实施](#m2c-role-passthrough-implementation-2026-10-25)；当前去程规格见独立请求契约，回程复核见 §12.7
+- **相关 ADR**：[ADR-0012：M2C 去程的忠实映射与显式损失边界](../../adr/adr-0012-m2c-request-translation.md)、[ADR-0013：旧格式别名兼容](../../adr/adr-0013-m2c-output-format-alias.md)、[ADR-0014：三个顶层服务端配置字段省略](../../adr/adr-0014-m2c-drop-server-fields.md)、[ADR-0016：角色原样透传](../../adr/adr-0016-m2c-role-passthrough.md)
 - **分支**：`feat/m2c-request-c2m-response-translation`
 - **前置文档**：
   [协议翻译四方向 RFC](./2026-09-03-protocol-translation.md) §A 方向总览、
@@ -28,12 +28,12 @@
 
 | 要查什么 | 唯一维护位置 |
 |---|---|
-| 已确认的取舍与理由 | [ADR-0012](../../adr/adr-0012-m2c-request-translation.md)、[ADR-0013](../../adr/adr-0013-m2c-output-format-alias.md)、[ADR-0014](../../adr/adr-0014-m2c-drop-server-fields.md)；去程值级细化见 §12.7/请求契约 |
+| 已确认的取舍与理由 | [ADR-0012](../../adr/adr-0012-m2c-request-translation.md)、[ADR-0013](../../adr/adr-0013-m2c-output-format-alias.md)、[ADR-0014](../../adr/adr-0014-m2c-drop-server-fields.md)、[ADR-0016](../../adr/adr-0016-m2c-role-passthrough.md)；去程值级细化见 §12.7/请求契约 |
 | M2C 逐字段规格 | [M2C 请求契约](../../reference/contracts/M2C-REQUEST-CONTRACT.md)，区分纯转换实现与实机验证 |
 | 最终调研证据、纠错与剩余问题 | [本文 §12](#m2c-final-review) |
 | 去程实施步骤、依赖、文件清单 | [本文 §8](#m2c-plan) |
 | 自动化与用户手动验收 | 本文 §10 |
-| 已实现内容与测试结果 | 本文 §11：[阶段 1](#m2c-stage-1)、[阶段 2](#m2c-stage-2)、[三家实机存档](#m2c-live-2026-10-24) |
+| 已实现内容与测试结果 | 本文 §11：[阶段 1](#m2c-stage-1)、[阶段 2](#m2c-stage-2)、[三家实机存档](#m2c-live-2026-10-24)、[角色透传实施](#m2c-role-passthrough-implementation-2026-10-25) |
 | C2M 回程的专项实施与验证 | [回程 RFC 阶段 A](./2026-10-25-c2m-response-translation.md#c2m-stage-a)；响应字段只在独立 [M2C 链路响应契约](../../reference/contracts/M2C-RESPONSE-CONTRACT.md) 维护 |
 
 不另建去程 RFC、根目录 PLAN 或重复调查副本；2026-10-25 用户授权将回程作为专项 RFC 展开，
@@ -1399,10 +1399,64 @@ user/assistant 角色`）后，调研四个参考项目并明确要求按 new-ap
 
 用户决策对齐 new-api 的透传方向：本地不拦截，兼容性由上游回复。
 
+> 下段保留仅落文档决策时的待实现状态；后续用户授权后的完成范围见下方实施记录。
+
 **待实现**：`AnthropicMessageTranslator.parse` 当前仍对非 `user/assistant` 抛
 `RequestTranslationException`；按 ADR-0016 将角色校验调整为「存在且为字符串」、
 未知角色透传，并更新 `MessagesToChatRequestTranslatorTests` 与错误路径覆盖。
 本轮仅落文档决策（ADR/契约/RFC），代码改动等用户指示后进行。
+
+<a id="m2c-role-passthrough-implementation-2026-10-25"></a>
+
+#### 后续授权实施：ADR-0016 角色透传已完成（2026-10-25）
+
+**证据范围补充**：上述表格保留原调研记录。本次实现对齐 new-api 已核实的 M2C
+`Role: claudeMessage.Role` 处置；sub2api / CLIProxyAPI 的原对照包含反方向，
+不作为「四家 M2C 同向共识」证据。Claude CLI 失败请求的实际 role 值未捕获，
+现有报错只证明第二条消息不符合旧枚举，不能据此猜测具体角色或提前宣称客户端兼容。
+
+**实现落点**：
+
+- `AnthropicMessageTranslator.parse` 移除角色枚举拒绝，使用 `textValue` 保留字符串结构校验。
+- `AnthropicToolResultExpander.expand` 普通非 assistant 消息输出改用 `round.role`，
+   消除原先写死 `user` 的二次改写，避免仅修 parser 却仍丢失角色。
+- `MessagesToChatRequestTranslator` 的说明与契约链接同步到本方向独立契约；
+   顶层白名单、系统提示支线、工具因果配对、回程和原生 usage 记账未改。
+- `ChatDispatchErrorSignalTests` 的 M2C 失败 fixture 改用数值 role，继续钉住
+   结构错误通过 defer 发出且不调用上游；反方向 C2M 的角色拒绝用例保持原命题。
+
+**自动化覆盖**：
+
+| 测试 | 本次覆盖 |
+|---|---|
+| `AnthropicMessageTranslatorTests` | system/developer/tool/function/narrator/未来角色、大小写与空白（含空串）原值；字符串/text 数组内容、相邻同角色合并、工具组间扩展角色顺序、源数据不变；缺失/null/非字符串仍保留原索引路径；六类角色受限内容块错置仍拒绝 |
+| `MessagesToChatRequestTranslatorTests` | 流式/非流式纯译器与真实 CHAT 装配均保留 role，模型与 stream 接线不变 |
+| `MessagesC2mResponseIntegrationTests` | 真实 BeforeSend/AfterSend/Chat 执行器经 `ClientRequest.writeTo` 和实际 codec 写入 `MockClientHttpRequest`，验证最终序列化 body 的 system/developer/narrator 不被改写；两态回程仍为 Messages、usage 槽仍为原生 Chat 指标；上游角色 400 状态与错误体保持上游异常，无 usage 落库 |
+| `ChatDispatchErrorSignalTests` | 两态非法 role 结构继续在响应式错误链上失败，三个上游执行器均不调用 |
+
+新增收包断言使用内存请求，不启动 HTTP 服务，不冒充阶段 3 的真实 HTTP 收包验证。
+上游 400 用例的 fixture 自动重试预算为 0；未改变生产既有的 HTTP 400 重试策略。
+
+**验证结果**：
+
+- 编辑器诊断无错误；聚焦 8 类 **373 通过，0 失败/错误，BUILD SUCCESS**
+   （2026-10-25 23:17:25，+08:00）。
+- 默认 Java 全量 **1970 通过，0 失败/错误，BUILD SUCCESS**
+   （2026-10-25 23:21:25，+08:00）。沿用 `skip.installnodenpm=true` / `skip.npm=true`
+   跳过前端，默认排除 `schema-migration`，本次没有改数据库结构。
+- 验证过程中修正 Jackson 泛型返回直接传入 AssertJ 引起的重载歧义，使用显式 `JsonNode`
+   局部变量；同时发现增量测试产物缺失 `EmptyResultsProvider.class`、部分嵌套测试未执行，
+   仅重建 `target/test-classes` 后确认完整发现。此前不完整的 339 项结果不作为最终覆盖证据。
+
+**文档影响评估**：当前字段规格与状态同步到 `M2C-REQUEST-CONTRACT.md`；
+本 RFC 追加实施记录，`docs/README.md` 与 RFC 索引增加入口。ADR-0012 / ADR-0016
+已建立决策链，本次不修改 Accepted 正文；旧 C2M 契约 §10 的历史快照保留。
+架构边界、端点、配置、依赖与数据模型未变，不新增架构/操作指南或迁移文档。
+角色调整的文档门禁通过，无未决决策阻塞；完整客户端实机验收仍属后续工作。
+
+**本轮边界**：未启动、停止或重启运行中的 COSP，未访问 live endpoint；
+未读取或操作工作区 `admin.db` / `token.txt`，未修改参考项目，未提交或推送。
+新策略尚未用真实 Claude CLI 或三家真实上游复测，由用户自行重启后继续验收。
 
 ---
 

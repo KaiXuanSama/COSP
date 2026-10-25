@@ -10,12 +10,16 @@
 > 状态：**M2C 去程已实现并注册（`MessagesToChatRequestTranslator`，声明 `(MESSAGES, CHAT)`），
 > 自动化回归通过，三家真实上游实机存档**（2026-10-24，见
 > [实施记录](../../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-live-2026-10-24)）。
+> **ADR-0016 角色透传已实现并通过自动化回归**（2026-10-25，见
+> [角色透传实施记录](../../working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-role-passthrough-implementation-2026-10-25)）；
+> 该新策略尚未重跑真实 Claude CLI / 上游验证，不能用上述旧实机记录证明扩展角色兼容。
 > 本文档是字段规格与测试矩阵来源；「必须 / 不要」是约束，标注实测日期的段落才是已验证事实。
 
 **决策链**：
 - [ADR-0012：M2C 去程采用忠实映射与显式损失边界](../../adr/adr-0012-m2c-request-translation.md)
 - [ADR-0013：旧 output_format 别名](../../adr/adr-0013-m2c-output-format-alias.md)
 - [ADR-0014：三个顶层服务端配置字段省略](../../adr/adr-0014-m2c-drop-server-fields.md)
+- [ADR-0016：角色字符串原样透传，枚举兼容性由上游裁决](../../adr/adr-0016-m2c-role-passthrough.md)
 
 **相关**：
 - [M2C 链路响应契约](../contracts/M2C-RESPONSE-CONTRACT.md)（回程）
@@ -30,7 +34,7 @@
 
 ```text
 下游 Claude 客户端（POST /v1/messages）
-  → ★ M2C 去程翻译：Messages 请求 → Chat 请求（ChatToMessagesRequestTranslator 白名单重建）
+  → ★ M2C 去程翻译：Messages 请求 → Chat 请求（MessagesToChatRequestTranslator 白名单重建）
   → 协议归一化 / 设置层（思考深度、max_tokens、请求体规则）
   → 以 OpenAI Chat 协议发出
 ```
@@ -109,11 +113,15 @@ Anthropic 回程是否输出 usage 不依赖该 Chat 专用标志。后续 CHAT 
 
 ## 5. 消息、工具调用与因果配对
 
-**消息形态：**角色必须是字符串；**未知角色原样透传**到 Chat 消息的 `role` 字段，
-本地不报错、不丢弃、不擅自改写（ADR-0016，对齐 new-api）。未知角色消息仍按与
-user/assistant 相同的路径继续转换（工具块、文本块、配对逻辑不变），兼容性由上游裁决。
-错置工具块（如 tool_result 出现在 assistant）仍按错误路径拒绝。
-相邻原始同角色消息按 Anthropic 语义归为同一轮，保留源索引用于报错。
+**消息形态：**`role` 必须存在且为字符串；缺失、null 或非字符串仍报源 `messages[i].role` 路径。
+**所有字符串角色原样透传**到 Chat 消息的 `role` 字段，不校验枚举、不 trim、不改大小写，
+不因未识别而报错、丢弃消息或降为 user（ADR-0016，对齐 new-api）。空串与纯空白字符串
+也交上游裁决，不在本地增加非空要求。
+
+普通字符串与 text 块内容继续走既有转换路径。块的位置要求独立保留：
+`tool_use`、`thinking`、`redacted_thinking` 仅允许 assistant，`tool_result`、`image`、`document`
+仅允许 user；扩展角色不会自动获得这些块的使用资格。错置块仍报源 `content[j].type` 路径。
+相邻源消息只有角色字符串完全相同时才合并为同一轮；不跨其它角色合并，保留源索引用于报错。
 这不是对最终 Chat 消息强制交替，也不调用 C2M 的 merge→pair→merge。
 
 字符串正文原样，纯文本块按原序以 LF 拼成字符串；保留非空文本内部空白；含图片/文件才保留 parts。
@@ -276,5 +284,7 @@ Anthropic 侧 `output_config.format` 当前只有 `json_schema` 一种类型，�
   不输出文档/base64、工具参数或 thinking 明文作为新诊断内容。
 - 本地错误沿既有 defer 信号到出口：非流式 400，流式 HTTP200 + event:error；
   不等价于已实现完整的跨协议上游错误体转换。
+- 字符串角色若被上游拒绝，保留其 HTTP 状态与错误体，走既有上游错误出口，
+  不重新归类为本地 `RequestTranslationException`，也不新增角色回退或重试特例。
 - 主干顺序、鉴权设置、路由优先级、重试与空响应预算不在此方向重定义。
 - 去程 + 回程均已注册并实机验证过三家上游，但完整客户端验收前不宣称可生产使用。
