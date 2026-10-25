@@ -1,6 +1,5 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline.protocol.translate;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ResponseTranslationException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.TranslationContext;
