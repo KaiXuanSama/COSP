@@ -67,6 +67,7 @@
 | [ADR-0015](./adr/adr-0015-c2m-response-translation.md) | C2M 回程响应翻译采用状态机、交错缓冲与延迟单发 message_delta；落库保持上游原生 usage |
 | [ADR-0016](./adr/adr-0016-m2c-role-passthrough.md) | M2C 请求未知角色原样透传，对齐 new-api，不再本地拒绝 |
 | [ADR-0017](./adr/adr-0017-m2c-defer-loading-drop.md) | M2C 工具 defer_loading 省略并告警，对齐参考项目剥离行为，不再本地拒绝 |
+| [ADR-0018](./adr/adr-0018-cosp-upstream-response-decompression.md) | COSP 出站响应解压支持 gzip/deflate/zstd/brotli，不再要求供应商删除 Accept-Encoding |
 
 ### architecture/ —— 当前架构
 
