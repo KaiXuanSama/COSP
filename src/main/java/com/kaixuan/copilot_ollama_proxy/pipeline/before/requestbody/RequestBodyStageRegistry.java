@@ -34,8 +34,8 @@ import java.util.Optional;
  * <strong>键相同（都是协议）、值类型不同，因此分表</strong>。
  *
  * <h2>未命中是合法的 —— 「跳过本步」</h2>
- * 查不到实现表示<strong>这种协议没有这个步骤</strong>（如 Chat 不需要抬升 system、
- * Responses 不需要补 max_tokens），主干据此跳过。
+ * 查不到实现表示<strong>这种协议没有这个步骤</strong>（如 Chat/Responses 不补 max_tokens），
+ * 主干据此跳过。system 三协议均有实现，未提供需归一化内容时由支线自行 no-op。
  * 这与「装配坏了」是两件事：装配问题由 Spring 自己的失败呈现，
  * 而结构断言（{@code RequestBodyStageSpringWiringTests}）守住「本应存在的实现确实被收集到」。
  *
@@ -59,7 +59,7 @@ public class RequestBodyStageRegistry {
      * <p>三个 {@code List} 收集容器里全部对应类型的实现。空 List 是合法的
      * （某个步骤一个实现都没有），只是那个步骤的查表恒未命中。
      *
-     * @param systemPromptStages 所有 system 提示词抬升支线实现
+     * @param systemPromptStages 所有 system 提示词归一化支线实现
      * @param maxTokensStages    所有 max_tokens 落定支线实现
      * @param thinkingStages     所有思考注入支线实现
      */
@@ -94,7 +94,7 @@ public class RequestBodyStageRegistry {
     }
 
     /**
-     * 查 system 提示词抬升支线。
+     * 查 system 提示词归一化支线。
      *
      * @param protocol 当前请求体所属的协议
      * @return 命中则为该协议的实现；未命中为空（表示这种协议不需要本步骤）

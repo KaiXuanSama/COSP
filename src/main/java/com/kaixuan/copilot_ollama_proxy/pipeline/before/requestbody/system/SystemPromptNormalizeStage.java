@@ -5,22 +5,21 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import java.util.Map;
 
 /**
- * 把 {@code messages} 里的 system 消息抬到顶层 {@code system} 字段的<strong>支线</strong>。
+ * system 提示词的协议特定归一化<strong>支线</strong>。
  *
  * <h2>它在管道中的位置</h2>
  * 形态：<strong>契约</strong>（支线） · 位置：{@code pipeline/before/requestbody/system/}
- * 步骤「system 抬升」—— system 从 messages 提到顶层
+ * 步骤「system 归一化」—— 按当前请求体形态决定 system 的落点
  * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为什么它是支线而不是主干</h2>
  * 判据是：<strong>协议差异是代码 → 支线；是数据 → 主干</strong>。
- * 「system 可以是顶层字段」是 Anthropic 独有的形态约束，OpenAI 的 Chat 把它作为
- * {@code messages} 里 {@code role:system} 的一条、Responses 用顶层 {@code instructions} ——
- * 三者的表达方式各不相同，且差异落在<strong>代码</strong>上。因此这是协议强关联步骤。
+ * MESSAGES 把 system 抬到顶层，CHAT 把翻译保留的顶层 system 落回 messages，
+ * RESPONSES 按既有约定改写 input 中的 system 角色。表达方式各不相同，
+ * 且差异落在<strong>代码</strong>上，因此共享归一化插槽而不是主干上的协议分支。
  *
- * <p>当前只有 {@link com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.system.MessagesSystemPromptStage}
- * 一个实现；另两条协议查不到实现 → <strong>跳过本步</strong>。
- * 「跳过」比「不存在」更贴合意图：它表达「这一步在别的协议上不需要」。
+ * <p>三种协议各一个实现，经 {@code bodyProtocol} 查表。
+ * {@link ChatSystemPromptStage} 无顶层 system 时完整 no-op，不改变标准 Chat 直连。
  *
  * <h2>为何不需要 model 与 provider</h2>
  * 载荷纯由请求体自身决定（哪些 message 是 system 角色），不依赖任何模型配置。
@@ -33,9 +32,9 @@ public interface SystemPromptNormalizeStage {
     WireProtocol protocol();
 
     /**
-     * 就地把 system 提示词抬到顶层。
+     * 就地归一化 system 的协议形态。
      *
-     * @param body 当前请求体，会被原地修改；没有可抬升内容时保持原样
+     * @param body 当前可变请求体；没有需归一化的内容时保持原样
      */
     void apply(Map<String, Object> body);
 }

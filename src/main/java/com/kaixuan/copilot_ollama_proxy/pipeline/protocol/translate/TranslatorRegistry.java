@@ -13,7 +13,7 @@ import java.util.Optional;
  * 翻译器查表 —— 按 {@link TranslationRoute}「(下游, 上游)」查去程与回程翻译器。
  *
  * <h2>它把「方向差异」收成一张表</h2>
- * 基建早已就位（{@link ProtocolTranslator} 声明了两个查表键、两个实现带 {@code @Component}），
+ * {@link ProtocolTranslator} 声明两个查表键，实现各自带 {@code @Component}；
  * 本类把它们的实现收集成 Map：靠 Spring 集合注入拿到所有
  * {@link RequestProtocolTranslator} / {@link ResponseProtocolTranslator} 实现，
  * 各自按方向建索引。「加一个方向的翻译器 = 加一个 {@code @Component}」——

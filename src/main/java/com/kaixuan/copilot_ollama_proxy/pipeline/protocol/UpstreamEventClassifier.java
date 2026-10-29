@@ -26,7 +26,7 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.after.send.responses.ResponsesS
  * 调用方必须给出<strong>它正在生产哪种协议的帧</strong>：
  * <ul>
  *   <li>上游执行器给出<strong>上游协议</strong>（它发的就是上游的帧）；</li>
- *   <li>C2M 的响应翻译器给出<strong>下游协议</strong>（它发的是翻译后的 Chat 帧）。</li>
+ *   <li>响应翻译器给出<strong>下游协议</strong>（Chat 或 Messages，随声明键确定）。</li>
  * </ul>
  * 这样分类规则不会与帧内容打架 —— 一帧 Anthropic 事件不会被拿去比对 {@code [DONE]}。
  *

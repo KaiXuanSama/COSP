@@ -44,7 +44,16 @@
 - 已知技术债：[`architecture/KNOWN_DEBT.md`](./architecture/KNOWN_DEBT.md)
 - 协议契约：[`reference/contracts/`](./reference/contracts/)
 - 功能提案索引：[`working/rfcs/README.md`](./working/rfcs/README.md)
-
+- M2C 去程：[最终调研](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-final-review) ·
+   [实施计划](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-plan) ·
+   [M2C 请求契约](./reference/contracts/M2C-REQUEST-CONTRACT.md) ·
+   [阶段 2 实施记录](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-stage-2) ·
+   [三家上游实机存档](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-live-2026-10-24) ·
+   [角色透传实施与自动化验证](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-role-passthrough-implementation-2026-10-25) ·
+   [defer_loading 实施与语义订正](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-defer-loading-implementation-2026-10-26)
+- M2C 链路的 C2M 回程：[响应契约](./reference/contracts/M2C-RESPONSE-CONTRACT.md) ·
+  [阶段 A 实施与自动化验证](./working/rfcs/2026-10-25-c2m-response-translation.md#c2m-stage-a) ·
+  [三家真实上游实机存档](./working/rfcs/2026-10-25-c2m-response-translation.md#c2m-live-2026-10-25)；客户端实机尚待验证。
 ## 各目录的索引
 
 ### adr/ —— 架构决策记录
@@ -52,6 +61,13 @@
 | ADR | 主题 |
 |---|---|
 | [ADR-0001](./adr/adr-0001-adopt-docs-governance.md) | 采纳 docs-governance 规范并迁移现有 docs/ |
+| [ADR-0012](./adr/adr-0012-m2c-request-translation.md) | M2C 去程的忠实映射、文档/工具损失边界与既有元数据编码 |
+| [ADR-0013](./adr/adr-0013-m2c-output-format-alias.md) | M2C 兼容旧 output_format，重复格式要求显式报错 |
+| [ADR-0014](./adr/adr-0014-m2c-drop-server-fields.md) | M2C 直接省略三个顶层服务端配置字段，限定收窄 ADR-0012 的拒绝边界 |
+| [ADR-0015](./adr/adr-0015-c2m-response-translation.md) | C2M 回程响应翻译采用状态机、交错缓冲与延迟单发 message_delta；落库保持上游原生 usage |
+| [ADR-0016](./adr/adr-0016-m2c-role-passthrough.md) | M2C 请求未知角色原样透传，对齐 new-api，不再本地拒绝 |
+| [ADR-0017](./adr/adr-0017-m2c-defer-loading-drop.md) | M2C 工具 defer_loading 省略并告警，对齐参考项目剥离行为，不再本地拒绝 |
+| [ADR-0018](./adr/adr-0018-cosp-upstream-response-decompression.md) | COSP 出站响应解压支持 gzip/deflate/zstd/brotli，不再要求供应商删除 Accept-Encoding |
 
 ### architecture/ —— 当前架构
 
@@ -71,7 +87,7 @@
 
 | 文件 | 内容 |
 |---|---|
-| [`contracts/`](./reference/contracts/) | C2M 请求/响应契约（长期有效的字段映射规范） |
+| [`contracts/`](./reference/contracts/) | 六份两两成链：[C2M 请求契约](./reference/contracts/C2M-REQUEST-CONTRACT.md)、[C2M 链路响应契约（M2C 响应）](./reference/contracts/C2M-RESPONSE-CONTRACT.md)、[M2C 请求契约](./reference/contracts/M2C-REQUEST-CONTRACT.md)、[M2C 链路响应契约（C2M 响应，ADR-0015）](./reference/contracts/M2C-RESPONSE-CONTRACT.md)、[C2R 请求契约](./reference/contracts/C2R-REQUEST-CONTRACT.md)、[C2R 链路响应契约（R2C 响应）](./reference/contracts/C2R-RESPONSE-CONTRACT.md)；调研/实施进展不在契约重复，见上方 RFC 入口 |
 | [`samples/`](./reference/samples/) | 真实抓包（Codex 请求/响应事件流）与配置样例 |
 | [LIVE_TEST_MATRIX.md](./reference/LIVE_TEST_MATRIX.md) | 实机验证矩阵（测什么、用哪个 mock、看什么） |
 | [MODEL_SUPPORT.md](./reference/MODEL_SUPPORT.md) | 各模型对 Copilot 的适配度 |

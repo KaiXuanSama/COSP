@@ -5,12 +5,15 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.entry.MessagesService;
 import com.kaixuan.copilot_ollama_proxy.pipeline.entry.ChatCompletionService;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.NoSupportedProtocolException;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.ProtocolTranslationNotSupportedException;
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.TranslationContext;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.runtime.UnresolvedModelRouteException;
 import org.junit.jupiter.api.BeforeEach;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
 import com.kaixuan.copilot_ollama_proxy.testing.UpstreamStreams;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -33,6 +36,7 @@ import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 /**
@@ -67,6 +71,34 @@ class AnthropicControllerTests {
     }
 
     // ==================== 非流式 ====================
+
+    /** DTO 已消费 stream，不能仅依赖 additionalProperties 把它还原给翻译器。 */
+    @SuppressWarnings("unchecked")
+    @ParameterizedTest(name = "非流式标志还原：{0}")
+    @ValueSource(strings = {"false", "null", "omitted"})
+    void nonStreamFlagIsRestoredForApplicationService(String flag) {
+        given(messagesService.messages(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
+                .willReturn(UpstreamStreams.single("{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}"));
+        String streamField = "omitted".equals(flag) ? "" : ",\"stream\":" + flag;
+
+        webTestClient.post().uri("/v1/messages")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"model\":\"claude-x\",\"max_tokens\":100,"
+                        + "\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]" + streamField + "}")
+                .exchange()
+                .expectStatus().isOk()
+                .expectHeader().contentTypeCompatibleWith(MediaType.APPLICATION_JSON)
+                .expectBody().jsonPath("$.id").isEqualTo("msg_1");
+
+        var captor = org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(messagesService).messages(captor.capture(), eq("claude-x"),
+                any(HttpHeaders.class), anyString());
+        verify(messagesService, never()).messagesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString());
+
+        Map<String, Object> forwarded = captor.getValue();
+        assertThat(forwarded).containsEntry("stream", false).doesNotContainKey("stream_options");
+        assertThat(TranslationContext.fromDownstreamBody(forwarded).wasStream()).isFalse();
+    }
 
     /** 非流式返回 {@code application/json} 与上游原始 body。 */
     @Test
@@ -340,7 +372,8 @@ class AnthropicControllerTests {
         assertThat(events.get(1).data()).contains("text_delta");
     }
 
-    /** 流式请求走流式入口，非流式入口不该被调用。 */
+    /** 流式入口与还原 Map 必须同源，翻译发生在装配器覆写 stream 之前。 */
+    @SuppressWarnings("unchecked")
     @Test
     void streamRequestUsesStreamingEntryPoint() {
         given(messagesService.messagesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString()))
@@ -355,9 +388,18 @@ class AnthropicControllerTests {
                 })
                 .getResponseBody()
                 .filter(event -> event.data() != null)
-                .take(1).collectList().block(Duration.ofSeconds(10));
+                .collectList().block(Duration.ofSeconds(10));
 
-        verify(messagesService).messagesStream(anyMap(), anyString(), any(HttpHeaders.class), anyString());
+        var captor = org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(messagesService).messagesStream(captor.capture(), eq("claude-x"),
+                any(HttpHeaders.class), anyString());
+        verify(messagesService, never()).messages(anyMap(), anyString(), any(HttpHeaders.class), anyString());
+
+        Map<String, Object> forwarded = captor.getValue();
+        assertThat(forwarded).containsEntry("stream", true).doesNotContainKey("stream_options");
+        TranslationContext context = TranslationContext.fromDownstreamBody(forwarded);
+        assertThat(context.wasStream()).isTrue();
+        assertThat(context.includeUsage()).isFalse();
     }
 
     /**

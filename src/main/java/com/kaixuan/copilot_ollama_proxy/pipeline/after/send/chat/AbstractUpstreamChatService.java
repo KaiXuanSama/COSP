@@ -10,6 +10,7 @@ import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.WireProtocol;
 import com.kaixuan.copilot_ollama_proxy.application.provider.ProviderRequestHeaderService;
 import com.kaixuan.copilot_ollama_proxy.application.config.RetryPolicyService;
 import com.kaixuan.copilot_ollama_proxy.protocol.usage.UsageTokens;
+import com.kaixuan.copilot_ollama_proxy.protocol.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.control.CallResendLoop;
 import com.kaixuan.copilot_ollama_proxy.control.CallRetryRegistry;
 import com.kaixuan.copilot_ollama_proxy.protocol.lifecycle.CallLifecycleEvent;
@@ -42,6 +43,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import com.kaixuan.copilot_ollama_proxy.pipeline.after.attempt.UpstreamAutoRetry;
 import com.kaixuan.copilot_ollama_proxy.observability.notify.UpstreamCallReporter;
 import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.UpstreamEvent;
@@ -374,8 +376,13 @@ public abstract class AbstractUpstreamChatService {
                 }
                 // reasoning fallback：只有思考链没有正文时，把思考内容作为回复输出，
                 // 否则下游会看到一次「空回复」。与流式同一策略。
-                boolean contentEmpty = !(message.get("content") instanceof String content) || content.isEmpty();
-                if (contentEmpty && reasoning != null && !reasoning.isBlank()) {
+                Object contentValue = message.get("content");
+                boolean contentEmpty = !(contentValue instanceof String content && !content.isEmpty())
+                        && !(contentValue instanceof List<?> parts && !parts.isEmpty());
+                boolean hasToolCalls = (message.get("tool_calls") instanceof List<?> tools && !tools.isEmpty())
+                        || (message.get("function_call") instanceof Map<?, ?> function && !function.isEmpty());
+                // 工具轮已有可执行载荷；文本数组也已有正文，不能被思考兜底覆盖。
+                if (contentEmpty && !hasToolCalls && reasoning != null && !reasoning.isBlank()) {
                     log.warn("模型未输出正文，回退使用思考内容作为回复 (长度: {}) [{}]", reasoning.length(), model);
                     message.put("content", reasoning);
                     changed = true;
@@ -401,11 +408,13 @@ public abstract class AbstractUpstreamChatService {
      * @param openAiRequest 原始 OpenAI 格式请求体
      * @param model 请求中指定的模型名称
      * @param ctx 本次请求的管道上下文，由编排层在组装期填好
+    * @param chunkRewriter 流式日志重译闭包；直连为 null，不参与 usage 解析或重试
      * @return 按顺序发出的 chunk JSON 字符串，最后一个元素为 "[DONE]"
      */
     protected Flux<UpstreamEvent> chatCompletionStream(Map<String, Object> openAiRequest, String model,
                                                        ProviderRuntimeConfiguration provider, HttpHeaders downstreamHeaders,
-                                                       String requestId, RequestPipelineContext ctx) {
+                                            String requestId, RequestPipelineContext ctx,
+                                            Function<List<String>, ChunkLogPayload> chunkRewriter) {
         // stream 取自 ctx—— 它是请求级事实，与「哪条链被调了」同源，不留字面量。
         // 
         boolean stream = ctx.stream();
@@ -469,7 +478,7 @@ public abstract class AbstractUpstreamChatService {
                                         // 失败往返：即时落一条错误记录（retry 上游，每次往返各自记录，无 chunk）。
                                         UpstreamCallRunner.saveStreamLogWithError(apiCallLog, ctx, reqHeaders, requestBody,
                                                 respHeaders, response.statusCode().value(), List.of(),
-                                                respHeaders, response.statusCode().value(), errorBody, attempt.attemptStart(), null);
+                                            respHeaders, response.statusCode().value(), errorBody, attempt.attemptStart(), chunkRewriter);
                                         // 失败往返不写用量行，落库流程到此即完。
                                         publishCallRecorded();
                                         return Flux.error(new WebClientResponseException(
@@ -496,14 +505,14 @@ public abstract class AbstractUpstreamChatService {
                     if (exhausted.isPresent()) {
                         UpstreamCallRunner.saveStreamLog(apiCallLog, ctx, reqHeaders, requestBody,
                                 attempt.respHeaders(), attempt.statusCode(),
-                                exhausted.get(), attempt.attemptStart(), null);
+                            exhausted.get(), attempt.attemptStart(), chunkRewriter);
                         publishCallRecorded();
                         return;
                     }
                     if (UpstreamRetryPolicy.findWebResponseException(e) == null) {
                         int statusCode = attempt.statusCode() == 0 ? -1 : attempt.statusCode();
                         UpstreamCallRunner.saveStreamLog(apiCallLog, ctx, reqHeaders, requestBody,
-                                attempt.respHeaders(), statusCode, attempt.chunksSnapshot(), attempt.attemptStart(), null);
+                                attempt.respHeaders(), statusCode, attempt.chunksSnapshot(), attempt.attemptStart(), chunkRewriter);
                         publishCallRecorded();
                     }
                 },
@@ -564,7 +573,7 @@ public abstract class AbstractUpstreamChatService {
                         statusCode = -1;
                     }
                     Long logId = UpstreamCallRunner.saveStreamLog(apiCallLog, ctx, reqHeaders, requestBody,
-                            attempt.respHeaders(), statusCode, attempt.chunks(), attempt.attemptStart(), null);
+                            attempt.respHeaders(), statusCode, attempt.chunks(), attempt.attemptStart(), chunkRewriter);
                     // 写入时序 A（串联）：仅成功且有 usage 时写用量表；log_id 拿不到则降级为孤儿行。
                     // tokens 复用流内已解析的那份（不再重复解析 usageRaw）。
                     long ttfb = attempt.ttfb();

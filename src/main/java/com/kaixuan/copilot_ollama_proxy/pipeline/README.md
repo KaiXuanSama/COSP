@@ -79,6 +79,8 @@
 ```text
 pipeline/                         ← 主干-支干轴（主干-支干轴的形态）
 ├── RequestPipeline               门面（两行：beforeSend.process → return afterSend.process）
+├── BeforeSend                    发送前编排：routeStep → translateStep → assembleStep → assembleOutboundStep
+├── AfterSend                     发送后编排：选执行器 → send 插槽 → 回程翻译插槽
 ├── RequestPipelineContext        请求级状态 + 本次选中的策略（跨块传递）
 ├── PipelineStep                  可跳过步骤的词汇表（枚举）
 │
@@ -88,14 +90,14 @@ pipeline/                         ← 主干-支干轴（主干-支干轴的形�
 │   └── MessagesService               下游 MESSAGES
 │       ↑ 三者同形：defer 包裹 → ctx.forEndpoint(...) → RequestPipeline.execute(ctx)
 │
-├── before/                       ★ 块 1：发送前（同步 void step(ctx)）
-│   ├── BeforeSend                     编排：routeStep → translateStep → assembleStep → assembleOutboundStep
+├── before/                       ★ 块 1：发送前的协作组件（同步 void step(ctx)）
 │   ├── dispatch/                      ProtocolDispatchManager + Decision + ProviderProtocolSupport
 │   ├── notify/                        ProtocolNotifier（把协议决策写进生命周期事件）
 │   ├── requestbody/               ★ 接入点：请求体装配（含 3 步）
 │   │   ├── RequestBodyAssembler          主干侧编排：协议无关阶段序列 + 查表调三步支线
 │   │   ├── RequestBodyStageRegistry      接入点级查表（键 = bodyProtocol；未命中**跳过**）
-│   │   ├── system/      SystemPromptNormalizeStage + SystemPromptNormalizer + MessagesSystemPromptStage
+│   │   ├── system/      SystemPromptNormalizeStage + SystemPromptNormalizer +
+│   │   │                Chat / Messages / ResponsesSystemPromptStage（三协议各一）
 │   │   ├── maxtokens/   MaxTokensNormalizeStage + MaxTokensNormalizer + MessagesMaxTokensStage
 │   │   └── thinking/    ThinkingInjectStage + AnthropicThinkingNormalizer +
 │   │                    Messages / Chat / ResponsesThinkingStage（三协议各一）
@@ -107,8 +109,7 @@ pipeline/                         ← 主干-支干轴（主干-支干轴的形�
 │       ├── messages/   MessagesOutboundStage  （读 anthropic_base_url；补 anthropic-version）
 │       └── responses/  ResponsesOutboundStage （读 responses_base_url；无协议必需头）
 │
-├── after/                        ★ 块 2：发送后（返回 Flux 的异步状态机）
-│   ├── AfterSend                      编排：选执行器 → send 插槽 → 回程翻译插槽
+├── after/                        ★ 块 2：发送后的协作组件（返回 Flux 的异步状态机）
 │   ├── attempt/                       每轮尝试级控制（协议无关，三线共用）
 │   │   ├── UpstreamRetryPolicy            自动重试①：要不要重试（纯判定）+ 两个异常解包
 │   │   ├── UpstreamAutoRetry              自动重试②：几次、多久（读配置 + 组装 Retry）
@@ -141,10 +142,22 @@ pipeline/                         ← 主干-支干轴（主干-支干轴的形�
     ├── NoSupportedProtocolException · ProtocolTranslationNotSupportedException
     │   RequestTranslationException · ResponseTranslationException   ← 出口做状态码映射要用
     ├── ProtocolTranslator · TranslatedRequest · TranslationContext
-    └── translate/                     请求/响应翻译支线（19 个实现 + 契约 + 注册表）
+   └── translate/                     请求/响应翻译支线（协作类 + 契约 + 注册表）
         RequestProtocolTranslator · ResponseProtocolTranslator · TranslatorRegistry
-        （C2M / M2C / C2R / R2C 四方向双通；R2C 门面聚合非流式/流式/状态机/usage 换算）
+         （已实现 (CHAT,MESSAGES) / (CHAT,RESPONSES) / (MESSAGES,CHAT) 的去程与回程；
+             (MESSAGES,CHAT) 已通过自动化，客户端实机兼容尚待验证）
+          MessagesToChatRequestTranslator → AnthropicMessageTranslator / AnthropicContentBlockTranslator /
+          AnthropicToolTranslator / AnthropicToolResultExpander（请求内语义轮、因果配对与媒体归属）
+               ChatToMessagesResponseTranslator → ChatToMessagesNonStreamTranslator / ChatToMessagesStreamTranslator /
+               C2MStreamState / ChatToMessagesUsageConverter / AnthropicResponseShapes（回程单块与交错缓冲）
 ```
+
+**system 当前接线**：`RequestBodyAssembler` 按 `bodyProtocol` 查三协议支线，
+CHAT 把顶层中间态落回消息数组（标准 Chat 无该字段即 no-op），MESSAGES 抬升到顶层，
+RESPONSES 维持既有 role 改写。该阶段先于思考设置和请求体规则，未改变主干调用序列。
+具体输入边界见[请求契约 §10.3](../../../../../../../docs/reference/contracts/C2M-REQUEST-CONTRACT.md#103-system-归一化支线)，
+实现与验证范围见 [RFC](../../../../../../../docs/working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-stage-2)。
+M2C 两半已注册并通过自动化，最终 HTTP 收包与客户端实机验收尚未完成，不宣称客户端端到端可用。
 
 > **两个跨层的值类型已上提到顶层 `protocol/`**，因为它们消费方跨三个顶层包，
 > 留在本层会让那些包反向依赖 `pipeline/`：
@@ -263,7 +276,12 @@ pipeline/                         ← 主干-支干轴（主干-支干轴的形�
           │    未命中语义：**报错**
           │      ├─ 分支 C2M（下游 CHAT、上游 MESSAGES，已实现）
           │      │    ChatToMessagesRequestTranslator → MessageTranslator / ToolTranslator /
-          │      │    ContentBlockTranslator / ToolPairingNormalizer / StopReasonMapper
+          │      │    ContentBlockTranslator / ToolPairingNormalizer
+          │      ├─ 分支 C2R（下游 CHAT、上游 RESPONSES，已实现）
+          │      │    ChatToResponsesRequestTranslator
+          │      ├─ 分支 M2C（下游 MESSAGES、上游 CHAT，两半已注册、实机待验）
+          │      │    MessagesToChatRequestTranslator → AnthropicMessageTranslator / AnthropicToolTranslator /
+          │      │    AnthropicContentBlockTranslator / AnthropicToolResultExpander
           │      └─ 分支 其余方向 → 未实现，抛 ProtocolTranslationNotSupportedException
           ├─ 回程 ResponseProtocolTranslator（未命中记 null，留给发送后块透传）
           ├─ RequestPipelineContext.applyTranslation(...)   回填翻译后 body + 上游协议
@@ -276,14 +294,14 @@ pipeline/                         ← 主干-支干轴（主干-支干轴的形�
           ① 复制             浅拷贝，不污染调用方
           ② 解析模型名       剥前缀
           ③ 写协议字段       写 model + stream
-          ④ system 抬升      【支线】未命中即跳过（Chat/Responses 没有这一步）
+          ④ system 归一化    【支线】三协议各一实现；CHAT 无顶层 system 时完整 no-op
           ⑤ max_tokens 落定  【支线】同上（只有 Anthropic 有）
           ⑥ 思考注入         【支线】同上（三协议各一实现；Anthropic 内部再分深度/方式）
           ⑦ 请求体规则       RequestBodyRuleEngine.transform（按 bodyProtocol 筛组）
           ⑧ 清 null          **必须最后**
           ├─ 支线：请求体协议特定步骤（RequestBodyStageRegistry，键 = bodyProtocol）
           │    未命中语义：**跳过**（「该协议没这一步」是领域事实）
-          │      system/      SystemPromptNormalizeStage    → MessagesSystemPromptStage
+          │      system/      SystemPromptNormalizeStage    → Chat / Messages / ResponsesSystemPromptStage
           │      maxtokens/   MaxTokensNormalizeStage       → MessagesMaxTokensStage
           │      thinking/    ThinkingInjectStage           → Messages / Chat / ResponsesThinkingStage
           └─ 分支：请求体规则 RequestBodyRuleEngine.transform（按协议筛组）
@@ -363,9 +381,14 @@ pipeline/                         ← 主干-支干轴（主干-支干轴的形�
         未命中语义：**透传 + WARN**（半轮实现态是正常中间态）
         ★ 从 ctx.responseTranslator() 取（发送前块步骤 5 已选好），套在执行器**外侧**、
           因而在 retryWhen **之外** —— 判定与落库看的是上游原生形态
-          └─ 分支 M2C：MessagesToChatResponseTranslator
-               → MessagesToChatStreamTranslator / MessagesToChatNonStreamTranslator /
-                 M2CStreamState / AnthropicUsageAccumulator / OpenAiResponseShapes / TranslatedChunkLog
+               ├─ 分支 M2C（C2M 请求的回程）：MessagesToChatResponseTranslator
+               │    → MessagesToChatStreamTranslator / MessagesToChatNonStreamTranslator /
+               │      M2CStreamState / AnthropicUsageAccumulator / OpenAiResponseShapes / TranslatedChunkLog
+               ├─ 分支 R2C（C2R 请求的回程）：ResponsesToChatResponseTranslator
+               │    → ResponsesToChatStreamTranslator / ResponsesToChatNonStreamTranslator / R2CStreamState
+                      └─ 分支 C2M（M2C 请求的回程）：ChatToMessagesResponseTranslator
+                              → ChatToMessagesStreamTranslator / ChatToMessagesNonStreamTranslator / C2MStreamState /
+                                 ChatToMessagesUsageConverter / AnthropicResponseShapes；usage 槽只传递不重算
 
 步骤 16 主干：统一形态出口            UpstreamEvent（Body / Terminal 两态）
 

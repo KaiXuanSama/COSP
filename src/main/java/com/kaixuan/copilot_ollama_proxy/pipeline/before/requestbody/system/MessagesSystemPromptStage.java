@@ -6,11 +6,11 @@ import org.springframework.stereotype.Component;
 import java.util.Map;
 
 /**
- * {@link SystemPromptNormalizeStage} 的 <strong>MESSAGES</strong> 实现 —— 唯一的实现。
+ * {@link SystemPromptNormalizeStage} 的 <strong>MESSAGES</strong> 实现。
  *
  * <h2>它在管道中的位置</h2>
  * 形态：支线<strong>包装</strong>（MESSAGES） · 位置：{@code pipeline/before/requestbody/system/}
- * 步骤「system 抬升」—— 当前唯一实现
+ * 步骤「system 归一化」—— MESSAGES 侧把 system 消息抬到顶层
  * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为何委托给静态工具而非把逻辑搬进来</h2>

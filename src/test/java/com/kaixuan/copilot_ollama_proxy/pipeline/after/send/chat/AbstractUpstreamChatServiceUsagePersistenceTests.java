@@ -377,7 +377,7 @@ class AbstractUpstreamChatServiceUsagePersistenceTests {
         private Flux<UpstreamEvent> exposeChatCompletionStream(Map<String, Object> request, String model,
                                                                ProviderRuntimeConfiguration provider) {
             return chatCompletionStream(request, model, provider, HttpHeaders.EMPTY, null,
-                    PipelineContexts.direct(request, provider, WireProtocol.CHAT, true));
+                    PipelineContexts.direct(request, provider, WireProtocol.CHAT, true), null);
         }
 
         private Mono<String> exposeChatCompletion(Map<String, Object> request, String model,

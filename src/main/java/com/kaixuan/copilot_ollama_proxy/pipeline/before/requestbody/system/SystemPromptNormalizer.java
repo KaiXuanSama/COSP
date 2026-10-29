@@ -1,28 +1,25 @@
 package com.kaixuan.copilot_ollama_proxy.pipeline.before.requestbody.system;
 
+import com.kaixuan.copilot_ollama_proxy.pipeline.protocol.RequestTranslationException;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * system 提示词抬升的<strong>纯逻辑</strong> —— 被 {@link SystemPromptNormalizeStage} 的
- * MESSAGES 实现与 Anthropic 执行器共同调用。
+ * system 提示词协议归一化的<strong>纯逻辑</strong> —— 三个
+ * {@link SystemPromptNormalizeStage} 实现共用同一个职责边界。
  *
  * <h2>它在管道中的位置</h2>
  * 形态：支线<strong>实现体</strong>（静态工具） · 位置：{@code pipeline/before/requestbody/system/}
- * 步骤「system 抬升」的纯逻辑
+ * 步骤「system 归一化」的纯逻辑
  * <p>完整步骤树见 {@code pipeline/README.md}；<strong>那里有编号，本处刻意不写</strong> ——
  * 编号是全局坐标、会随插入而漂，故类注释只写步骤的<strong>基名</strong>。
  * <h2>为何是静态工具而不是把逻辑放进实现类</h2>
  * 与 {@code UpstreamChunkNormalizer} / {@code ReasoningFallback} 同一取向：
- * 支线化**先让组件长成可查表的形状**，而调用点的切换是下一步的事。
- * 若把逻辑直接搬进实现类，执行器在切换前就得留下一份自己的副本 ——
- * **两份等价逻辑就是「静默分叉」的温床**：改一处忘另一处，两条路径行为不同而无人察觉
- * （本项目最警惕的失效形态）。
- *
- * <p>因此逻辑留在静态工具里、两个调用点都转调它。等支线接线完成，
- * 执行器那份调用自然消失，工具类仍然只此一份。
+ * 支线负责声明协议与接入注册表，纯逻辑只由入参决定。这样可单独验证字段转换，
+ * 不为相同算法在包装类和调用方各维护一份副本。
  *
  * <h2>为何不是实例方法</h2>
  * 全部载荷由入参决定，不依赖任何配置或状态 —— 与另两个工具类一致。
@@ -30,7 +27,122 @@ import java.util.Map;
  */
 public final class SystemPromptNormalizer {
 
+    private static final String BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
+
     private SystemPromptNormalizer() {
+    }
+
+    /**
+     * 将顶层 system 落回 Chat 的消息数组，承接 M2C 的约定中间形态。
+     *
+     * <p>无顶层字段即完整 no-op；只复制将改动的数组和首条 system 消息，
+     * 不能修改调用方的嵌套 Map/List。未知 system 块明确报错而不是丢掉指令。
+     * 已有首条字符串 system 与顶层内容用空行合并，其它历史保持相对顺序。
+     *
+     * <p>校验与文本收集先完成，再更新 body，避免错误时留下部分改写。
+     * 转换后移除顶层 system，所以重复调用幂等。普通 Chat 直连不会被重排。
+     *
+     * @param body 已复制的可变请求体；嵌套内容不要求可变
+     * @throws RequestTranslationException system 内容无法表达或消息列表不是数组
+     */
+    public static void inlineSystemIntoMessages(Map<String, Object> body) {
+        if (!body.containsKey("system")) {
+            return;
+        }
+        String systemText = inlineSystemText(body.get("system"));
+        Object rawMessages = body.get("messages");
+        // 空 system 可以独立移除，但不能掩盖已经出现的 messages 类型错误。
+        if (!(rawMessages instanceof List<?>) && (body.containsKey("messages") || !systemText.isBlank())) {
+            throw new RequestTranslationException("messages", "必须为数组，无法放入 system 提示词");
+        }
+        if (systemText.isBlank()) {
+            body.remove("system");
+            return;
+        }
+
+        List<Object> messages = new ArrayList<>((List<?>) rawMessages);
+        if (!messages.isEmpty() && messages.getFirst() instanceof Map<?, ?> first
+                && "system".equals(first.get("role")) && first.get("content") instanceof String existing) {
+            Map<String, Object> replacement = new LinkedHashMap<>();
+            first.forEach((key, value) -> replacement.put(String.valueOf(key), value));
+            replacement.put("content", existing.isBlank() ? systemText : systemText + "\n\n" + existing);
+            messages.set(0, replacement);
+        } else {
+            Map<String, Object> systemMessage = new LinkedHashMap<>();
+            systemMessage.put("role", "system");
+            systemMessage.put("content", systemText);
+            messages.add(0, systemMessage);
+        }
+        body.put("messages", messages);
+        body.remove("system");
+    }
+
+    /** 顶层只接受字符串或 text 块数组；不调用单 LF 的 stringifyContent 改变拼接约定。 */
+    private static String inlineSystemText(Object system) {
+        if (system == null) {
+            return "";
+        }
+        if (system instanceof String text) {
+            return stripLeadingBillingHeader(text);
+        }
+        if (!(system instanceof List<?> blocks)) {
+            throw new RequestTranslationException("system", "必须为字符串或 text 块数组");
+        }
+        StringBuilder combined = new StringBuilder();
+        boolean leading = true;
+        for (int i = 0; i < blocks.size(); i++) {
+            String path = "system[" + i + "]";
+            if (!(blocks.get(i) instanceof Map<?, ?> block)) {
+                throw new RequestTranslationException(path, "必须为 text 块对象");
+            }
+            if (!"text".equals(block.get("type"))) {
+                throw new RequestTranslationException(path + ".type", "只支持 text 类型的 system 块");
+            }
+            if (!(block.get("text") instanceof String text)) {
+                throw new RequestTranslationException(path + ".text", "必须为字符串");
+            }
+            // 块边界不是正文的新开头；一旦有普通指令，后续同名文本也属于用户内容。
+            String kept = leading ? stripLeadingBillingHeader(text) : text;
+            if (!kept.isBlank()) {
+                if (!combined.isEmpty()) {
+                    combined.append("\n\n");
+                }
+                combined.append(kept);
+                leading = false;
+            }
+        }
+        return combined.toString();
+    }
+
+    /**
+     * 只剥 Claude Code 已知的前导归属行，保留同块后续正文与正文中的同名文本。
+     *
+     * <p>动态 cch 值不是提示词指令，转给 Chat 会扰动稳定前缀；
+     * 但全局正则删除会误删用户引用。最多消费紧随归属行的一个空行，其余空白原样保留。
+     */
+    private static String stripLeadingBillingHeader(String text) {
+        if (!text.startsWith(BILLING_HEADER_PREFIX)) {
+            return text;
+        }
+        int lineEnd = 0;
+        while (lineEnd < text.length() && text.charAt(lineEnd) != '\n' && text.charAt(lineEnd) != '\r') {
+            lineEnd++;
+        }
+        if (lineEnd == text.length()) {
+            return "";
+        }
+        int start = lineEnd + 1;
+        if (text.charAt(lineEnd) == '\r' && start < text.length() && text.charAt(start) == '\n') {
+            start++;
+        }
+        String rest = text.substring(start);
+        if (rest.startsWith("\r\n")) {
+            return rest.substring(2);
+        }
+        if (rest.startsWith("\n") || rest.startsWith("\r")) {
+            return rest.substring(1);
+        }
+        return rest;
     }
 
     /**

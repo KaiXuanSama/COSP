@@ -88,7 +88,7 @@ public class BeforeSend {
     }
 
     /**
-     * 跑完发送前的三步 —— 每步改 ctx，全块返回 {@code void}。
+    * 跑完发送前的四步 —— 每步改 ctx，全块返回 {@code void}。
      *
      * <p>返回 void 是本块的形态本质：发送前的一切都是「就地改状态」，没有需要交出去的产物
      * （产物是 ctx 自己）。这与发送后块必须返回 {@code Flux} 形成对照。
@@ -184,7 +184,7 @@ public class BeforeSend {
      * 步骤 3：请求体装配 —— 把 ctx.body 装配成最终发往上游的形态。
      *
      * <p>协议无关的公共序列（复制 / 解析模型名 / 写 model+stream / bodyRules / 清 null）在主干，
-     * 协议特定三步（system 抬升 / max_tokens / 思考注入）走 {@code RequestBodyStageRegistry} 支线。
+    * 协议特定三步（system 归一化 / max_tokens / 思考注入）走 {@code RequestBodyStageRegistry} 支线。
      * 完整顺序与约束见 {@link RequestBodyAssembler}。放在翻译之后 —— body 此时已是上游形态，
      * 装配据 {@code bodyProtocol} 查表。
      */

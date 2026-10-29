@@ -102,7 +102,7 @@ public sealed interface UpstreamEvent {
      *
      * <p>消费规则因此可以极简：<strong>取最后一份「有数据的」（非 null 且非空）即结算值</strong>。
      * 这条规则<strong>与协议无关</strong> —— 三种协议的累积差异（Chat / Responses 后到覆盖、
-     * Anthropic 跨事件只有正数才覆盖、C2M 由上游侧算好）已被生产者吸收干净。
+    * Anthropic 跨事件只有正数才覆盖）已被上游生产者吸收干净；C2M 回程仅传递不重算。
      * 出口一行协议分支都不剩，这正是「消重复」的判据。
      *
      * <p>「非空」那一档不省略：上游可能给出本服务不认识的 usage 字段名（解析为

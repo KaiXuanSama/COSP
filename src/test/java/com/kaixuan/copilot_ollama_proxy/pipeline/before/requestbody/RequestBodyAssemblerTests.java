@@ -107,6 +107,93 @@ class RequestBodyAssemblerTests {
         assertThat(prepared).containsEntry("model", "m");
     }
 
+    // ==================== CHAT system 归一化 ====================
+
+    @Test
+    void standardChatSystemMessagesAreNotReorderedOrMerged() {
+        List<Object> messages = List.of(
+                Map.of("role", "system", "content", "first"),
+                Map.of("role", "system", "content", "second"),
+                Map.of("role", "developer", "content", "developer"),
+                Map.of("role", "user", "content", "hi"));
+
+        Map<String, Object> prepared = assemble(Map.of("model", "m", "messages", messages),
+                false, "m", providerWithReasoningEffort("None"));
+
+        assertThat(prepared).containsEntry("messages", messages).doesNotContainKey("system");
+        assertThat(prepared.get("messages")).isEqualTo(messages);
+    }
+
+    @Test
+    void translatedBodyUsesChatSystemStageRatherThanDownstreamMessagesStage() {
+        List<Object> messages = List.of(Map.of("role", "user", "content", "hi"));
+        Map<String, Object> request = Map.of("model", "m", "system", "top", "messages", messages);
+        // 只构造翻译后的中间形态，不在阶段 1 装一个尚未实现的 M2C 请求译器。
+        RequestPipelineContext ctx = RequestPipelineContext.of(
+                new LinkedHashMap<>(request), "m", WireProtocol.MESSAGES, WireProtocol.CHAT,
+                providerWithReasoningEffort("None"), HttpHeaders.EMPTY, "req-system", null, true);
+
+        assembler.assemble(ctx);
+
+        assertThat(ctx.bodyProtocol()).isEqualTo(WireProtocol.CHAT);
+        assertThat(ctx.body()).doesNotContainKey("system").containsEntry("stream", true);
+        assertThat(ctx.body().get("messages")).isEqualTo(List.of(
+                Map.of("role", "system", "content", "top"), messages.getFirst()));
+        assertThat(request).containsEntry("system", "top").containsEntry("messages", messages);
+    }
+
+    @Test
+    void nativeMessagesKeepsSystemBillingAndCacheControlWithAllStagesRegistered() {
+        List<Object> system = List.of(
+                Map.of("type", "text", "text", "x-anthropic-billing-header: original;"),
+                Map.of("type", "text", "text", "native prompt", "cache_control",
+                        Map.of("type", "ephemeral", "ttl", "1h")));
+        List<Object> messages = List.of(Map.of("role", "user", "content", "hi"));
+        Map<String, Object> request = Map.of("model", "m", "stream", false,
+                "system", system, "messages", messages, "max_tokens", 100);
+        RequestPipelineContext ctx = RequestPipelineContext.of(new LinkedHashMap<>(request), "m",
+                WireProtocol.MESSAGES, WireProtocol.MESSAGES, providerWithReasoningEffort("None"),
+                HttpHeaders.EMPTY, "req-native", null, true);
+
+        assembler.assemble(ctx);
+
+        assertThat(ctx.body()).containsEntry("system", system).containsEntry("messages", messages)
+                .containsEntry("max_tokens", 100).containsEntry("stream", true);
+        assertThat(request).containsEntry("stream", false).containsEntry("system", system);
+    }
+
+    @Test
+    void chatRulesSeeTheInlinedStringAndKeepFinalDecisionWithoutMutatingInput() {
+        String rules = """
+                {"version":2,"groups":[
+                 {"id":"chat","name":"chat","order":0,"enabled":true,"protocols":["CHAT"],
+                  "templateKeys":["x"],"previewBody":{},"rules":[
+                   {"id":"system-text","order":0,"field":"messages","array":true,"conditional":true,
+                    "conditionMode":"all","conditions":[{"path":"./role","operator":"equals","value":"system"}],
+                    "operations":[{"type":"edit_object","rules":[
+                     {"id":"replace","order":0,"field":"content","array":false,"conditional":false,
+                      "conditionMode":"all","conditions":[],"operations":[
+                       {"type":"regex_replace","pattern":"first","replacement":"configured"}]}]}]}]},
+                 {"id":"messages","name":"messages","order":1,"enabled":true,"protocols":["MESSAGES"],
+                  "templateKeys":["x"],"previewBody":{},"rules":[
+                   {"id":"wrong-protocol","order":0,"field":"system","array":false,"conditional":false,
+                    "conditionMode":"all","conditions":[],"operations":[{"type":"set_value","value":"wrong"}]}]}
+                ]}
+                """;
+        List<Object> blocks = List.of(Map.of("type", "text", "text", "first"),
+                Map.of("type", "text", "text", "second"));
+        List<Object> messages = List.of(Map.of("role", "user", "content", "hi"));
+        Map<String, Object> request = Map.of("model", "m", "system", blocks, "messages", messages);
+
+        Map<String, Object> prepared = assemble(request, false, "m", providerWithRules(rules));
+
+        assertThat(prepared).doesNotContainKey("system");
+        assertThat(prepared.get("messages")).isEqualTo(List.of(
+                Map.of("role", "system", "content", "configured\n\nsecond"), messages.getFirst()));
+        assertThat(request).containsEntry("system", blocks).containsEntry("messages", messages);
+        assertThat(((Map<?, ?>) blocks.getFirst()).get("text")).isEqualTo("first");
+    }
+
     // ==================== 请求体规则（来自 GenericOpenAiChatServiceRequestBodyRulesTests） ====================
 
     /**

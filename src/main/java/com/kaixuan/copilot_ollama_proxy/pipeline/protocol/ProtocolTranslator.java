@@ -47,9 +47,12 @@ package com.kaixuan.copilot_ollama_proxy.pipeline.protocol;
  *       已实测。</li>
  *   <li>M2C 响应（上游 Anthropic → 下游 Chat Completions）：{@code MessagesToChatResponseTranslator}，
  *       已实测（流式 + 非流式 + 多轮工具链）。</li>
- *   <li>M2C 请求（下游 Anthropic → 上游 OpenAI）：未实现，
- *       {@code MessagesService} 抛 {@link ProtocolTranslationNotSupportedException}。</li>
- *   <li>C2M 响应（上游 OpenAI → 下游 Anthropic）：未实现，同上。</li>
+ *   <li>C2R 请求：{@code ChatToResponsesRequestTranslator}；R2C 响应：
+ *       {@code ResponsesToChatResponseTranslator}，两半已实测。</li>
+ *   <li>M2C 请求（下游 Anthropic → 上游 Chat）：{@code MessagesToChatRequestTranslator}，
+ *       已注册，纯转换与接线回归覆盖。</li>
+ *   <li>C2M 响应（上游 Chat → 下游 Anthropic）：{@code ChatToMessagesResponseTranslator}，
+ *       非流式/流式与日志重放已注册；自动化回归与三家真实上游通过，客户端实机兼容尚待验证。</li>
  * </ul>
  *
  * <h2>两侧翻译都必须在重试边界之外</h2>
@@ -65,17 +68,8 @@ package com.kaixuan.copilot_ollama_proxy.pipeline.protocol;
  */
 public interface ProtocolTranslator {
 
-    // TODO(待实现) 剩余两个方向：M2C 请求（下游 Anthropic → 上游 OpenAI）
-    //  与 C2M 响应（上游 OpenAI → 下游 Anthropic）。
-    //  两者是同一条链的两半，缺一半那条路就不可用，因此不拆开计划 ——
-    //  参照已落地那条链的排序原则「让已有的一半变成可用的整体」
-    //  （响应侧契约第 0 节）。
-    //  落地方式：新增两个类分别实现 RequestProtocolTranslator / ResponseProtocolTranslator、
-    //  声明方向 (MESSAGES, CHAT)、带 @Component —— 它们会自动进 TranslatorRegistry 的查表。
-    //  但 MessagesService 目前尚未改用查表（它对这两个方向仍无条件抛
-    //  ProtocolTranslationNotSupportedException），要让这条链可用，需先把 MessagesService
-    //  的翻译分支改成查 TranslatorRegistry（与 ChatCompletionService 同一手法）。
-    //  翻译器仍要套在上游服务外侧。
+    // (MESSAGES, CHAT) 两半各自查表；响应报文独立转换，记账槽保持翻译前的 Chat 指标。
+    // 回程契约见 docs/reference/contracts/M2C-RESPONSE-CONTRACT.md；实机验证不由注册状态推导。
 
     /** 本翻译器接受的下游协议。 */
     WireProtocol downstreamProtocol();
