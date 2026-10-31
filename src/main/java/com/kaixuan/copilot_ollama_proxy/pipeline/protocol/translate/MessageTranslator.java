@@ -241,12 +241,11 @@ final class MessageTranslator {
      * {@code role: tool} 消息的 {@code content} 里，压平之后剩下的只有一段
      * 描述图片位置的文字。表现是「C2M 路线上模型看不见图，而 OpenAI 直连能看见」。
      *
-     * <p>顺带一提，OpenAI 侧那条把「图片 tool 消息」整条改成普通 user 消息的
-     * 请求体规则<strong>不适用于这条线路</strong>，也不该被搬进翻译层：它是针对
-     * 「某些 OpenAI 兼容中转站把 {@code role: tool} 的 content 当纯文本处理」
-     * 这个实现缺陷的兼容妥协。Anthropic 侧不存在该缺陷，正确做法就是照协议
-     * 把图片放进 {@code tool_result}。若某个 Anthropic 中转站确实也认不出，
-     * 那属于「这个上游需要什么」，用仅适用 {@code ANTHROPIC} 的请求体规则表达。
+     * <p><strong>这里产出的块数组只是中间态。</strong>部分 Anthropic 上游拒绝
+     * {@code tool_result} 内的图片，而请求体规则只能删不能移，无法表达修法。
+     * 因此配对归一化之后由 {@link ToolResultMediaLifter} 把媒体移到同一 user 轮次后部，
+     * 最终出站的 {@code tool_result} 只含文本（ADR-0019）。这里仍保留块数组，
+     * 是为了让配对逻辑搬动的始终是完整的结果，媒体不在搬动前就与结果分离。
      *
      * <h2>为何纯文本仍输出字符串</h2>
      * 保持既有形态，使本改动的影响面严格限定在「{@code tool_result} 真的有图」

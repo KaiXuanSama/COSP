@@ -187,7 +187,21 @@ SDK 里该字段是 `Union[str, Iterable[Content]]`，其中 `Content` 含 `Imag
 |---|---|---|
 | 什么都不剩 | — | 整条丢弃（见 5.2） |
 | 只剩文本块 | 字符串 | 既有形态。多个文本块用 `\n` 拼接 |
-| 含非文本块（当前只有图片） | 块数组 | 唯一能装下图片的形态 |
+| 含非文本块（当前只有图片） | 字符串（文本 + `[media moved after tool results]`），媒体移到同一 user 轮次后部 | 见下方「媒体移出 tool_result」（ADR-0019） |
+
+**媒体移出 tool_result（ADR-0019，2026-10-31 起）**：部分 Anthropic 上游拒绝 `tool_result`
+内的图片（`A tool_result may contain only text blocks`），请求体规则又只能删不能移。因此
+配对归一化（§3.5）之后，`ToolResultMediaLifter` 把含媒体的结果改写为：
+
+| 同一 user 消息内的位置 | 内容 |
+|---|---|
+| 前部 | 该轮全部 `tool_result`，顺序不变；含媒体者 content 为「原文本 `\n` 拼接 + `\n[media moved after tool results]`」，无文本时只有提示 |
+| 中部 | 按 `tool_result` 顺序，每个含媒体结果：`[media from tool_use_id=<JSON 字符串>]` 文本块 + 其媒体块（保序） |
+| 后部 | 该轮原有其它块（普通正文等），保序 |
+
+只作用于 C2M 去程；Messages 直连不改写客户端构造的 `tool_result`。纯文本结果、无媒体的消息
+原样返回。移动后的形态（tool_result 只含文本、image 在 user 内容中）对宽松上游同样合法。
+`MessageTranslator` 内产出的块数组只是中间态，保证配对搬动的始终是完整结果。
 
 字符串输入直接短路，不绕一圈拆块再压回。
 
@@ -204,8 +218,10 @@ SDK 里该字段是 `Union[str, Iterable[Content]]`，其中 `Content` 含 `Imag
 的 content 当纯文本处理」这一实现缺陷的兼容妥協。**Anthropic 侧不存在该缺陷（已实测，
 见 3.4.2）**，照协议把图片放进 `tool_result` 就够了 —— 无需为 Anthropic 侧再写一条兼容规则。
 
-若将来遇到某个 Anthropic 中转站确实也认不出，那属于「这个上游需要什么」，用仅适用
-`MESSAGES` 的请求体规则表达（那时规则层能表达，因为报文已是 Anthropic 形态）。
+~~若将来遇到某个 Anthropic 中转站确实也认不出，用仅适用 `MESSAGES` 的请求体规则表达。~~
+**（2026-10-31 订正）** 该判断不成立：规则只有 `edit_object` / `set_value` / `delete` /
+`regex_replace`，能删图片但不能把块移出 `tool_result`。已改由翻译层处理，见上方
+「媒体移出 tool_result」与 ADR-0019。
 
 参考项目在这一点上都不完整，可以对照但不要照抄：one-api 的 `tool_result` 分支整个包在
 `if message.IsStringContent()` 里，多模态 tool 消息会丢掉 `tool_result` 与 `tool_use_id`
@@ -216,6 +232,13 @@ Anthropic 的块数组 `Marshal` 成 JSON 字符串塞进 OpenAI tool 消息，�
 真正的块级翻译 —— 本节要求的正是同一件事的反方向。
 
 #### 3.4.2 实测结论（2026-09-08，Copilot + mimo-v2.5 Anthropic 端点）
+
+> **历史记录**：本节验证的是 ADR-0019 之前「图片留在 `tool_result` 内」的旧形态。
+
+**新形态实机验证（2026-10-31，ADR-0019）**：严格上游（修改前拒绝 `tool_result` 内图片）
+与宽松上游（修改前可用，如 mimo）各实测一次工具识图，均通过。严格上游不再 400，宽松上游
+识图仍正常。新形态的契约描述见 §3.4.1，实施与验证细节见
+[RFC](../../working/rfcs/2026-10-31-c2m-tool-result-media-lift.md)。
 
 下游打 `/v1/chat/completions`、上游走 Anthropic 端点，agent 调 `view_image` 读一张人物
 肖像照，**模型正确识别了图像内容**：思考链里出现帽檐宽度、羽毛装饰、暖色调、背景
@@ -268,6 +291,9 @@ merge → pair → merge
 `tool_result` 块，只能操作消息级 content，不得动块内 content —— 否则带图的工具结果会在
 重新摆位置时被压平。这一条要用单测钉住而非靠推断（在两条 tool_use / tool_result 之间
 插一条正文 user，迫使 pair 真的发生搬动）。
+
+**媒体移动必须在配对之后**（ADR-0019）。配对把 `tool_result` 重新聚到各自的 user 轮次，
+之后再移动才能保证媒体跟随自己的结果；顺序颠倒会让媒体与结果分离到不同消息。
 
 ---
 

@@ -68,6 +68,7 @@
 | [ADR-0016](./adr/adr-0016-m2c-role-passthrough.md) | M2C 请求未知角色原样透传，对齐 new-api，不再本地拒绝 |
 | [ADR-0017](./adr/adr-0017-m2c-defer-loading-drop.md) | M2C 工具 defer_loading 省略并告警，对齐参考项目剥离行为，不再本地拒绝 |
 | [ADR-0018](./adr/adr-0018-cosp-upstream-response-decompression.md) | COSP 出站响应解压支持 gzip/deflate/zstd/brotli，不再要求供应商删除 Accept-Encoding |
+| [ADR-0019](./adr/adr-0019-c2m-tool-result-media-to-user.md) | C2M 工具结果中的媒体移出 tool_result，放到同一 user 轮次的工具结果之后并带来源标记 |
 
 ### architecture/ —— 当前架构
 

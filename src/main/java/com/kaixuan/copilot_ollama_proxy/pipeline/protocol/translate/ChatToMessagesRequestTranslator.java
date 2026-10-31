@@ -84,12 +84,14 @@ public class ChatToMessagesRequestTranslator implements RequestProtocolTranslato
     private final MessageTranslator messageTranslator;
     private final ToolTranslator toolTranslator;
     private final ToolPairingNormalizer toolPairingNormalizer;
+    private final ToolResultMediaLifter toolResultMediaLifter;
 
     public ChatToMessagesRequestTranslator(ObjectMapper objectMapper) {
         ContentBlockTranslator contentBlockTranslator = new ContentBlockTranslator();
         this.messageTranslator = new MessageTranslator(objectMapper, contentBlockTranslator);
         this.toolTranslator = new ToolTranslator();
         this.toolPairingNormalizer = new ToolPairingNormalizer();
+        this.toolResultMediaLifter = new ToolResultMediaLifter(objectMapper);
     }
 
     @Override
@@ -223,7 +225,10 @@ public class ChatToMessagesRequestTranslator implements RequestProtocolTranslato
     }
 
     /**
-     * 消息数组：逐条翻译后修复配对。
+     * 消息数组：逐条翻译后修复配对，再把工具结果中的媒体移到同一 user 轮次后部（ADR-0019）。
+     *
+     * <p>移动必须在配对之后：配对会把 tool_result 重新聚到各自的 user 轮次，
+     * 之前移动的话媒体会和它的结果分离。
      */
     private void translateMessages(Map<String, Object> source, Map<String, Object> target) {
         if (!source.containsKey("messages")) {
@@ -235,7 +240,7 @@ public class ChatToMessagesRequestTranslator implements RequestProtocolTranslato
             target.put("messages", source.get("messages"));
             return;
         }
-        target.put("messages", toolPairingNormalizer.normalize(translated));
+        target.put("messages", toolResultMediaLifter.lift(toolPairingNormalizer.normalize(translated)));
     }
 
     /**

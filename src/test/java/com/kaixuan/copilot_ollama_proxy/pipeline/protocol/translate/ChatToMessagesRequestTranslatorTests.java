@@ -252,15 +252,14 @@ class ChatToMessagesRequestTranslatorTests {
     }
 
     /**
-     * {@code tool_result.content} 的形态选择。
+     * {@code tool_result} 的内容形态（ADR-0019）。
      *
-     * <p>Anthropic 的 {@code tool_result.content} 是 {@code Union[str, Iterable[Content]]}，
-     * 其中 {@code Content} 含 {@code ImageBlockParam} —— 工具结果带图是协议原生支持的形态。
-     * 因此这里必须做块级翻译而非压平取文本：agent 调 {@code view_image} 之类的工具读图时，
-     * 图片只存在于 {@code role: tool} 消息的 {@code content} 里，压平会把它整个丢掉。
+     * <p>工具结果里的图片不再留在 {@code tool_result.content} 内：部分 Anthropic 上游拒绝这种形态，
+     * 而 user 消息里的 image 块所有上游都支持。图片移到同一 user 轮次所有 tool_result 之后，
+     * 由来源标记维持归属。纯文本结果保持字符串，出站字节不变。
      *
-     * <p>纯文本仍输出字符串：那是既有形态，保持不变使改动的影响面严格限定在「真的有图」这一种
-     * 输入上，也与 {@code translateUser} 对字符串 content 刻意不升格同一取向。
+     * <p>块级翻译仍然必要：agent 调 {@code view_image} 之类工具读图时，图片只存在于
+     * {@code role: tool} 消息的 {@code content} 里，压平取文本会把它整个丢掉。
      */
     @Nested
     @DisplayName("tool_result 内容形态")
@@ -270,37 +269,42 @@ class ChatToMessagesRequestTranslatorTests {
         @Test
         @DisplayName("纯文本 content 仍输出字符串")
         void shouldKeepPlainTextAsString() {
-            Map<String, Object> translated = translateToolResultContent(List.of(
+            List<Object> content = translateSingleToolRound(List.of(
                     Map.of("type", "text", "text", "tool output")
             ));
 
-            assertEquals("tool output", translated.get("content"),
-                    "纯文本必须仍是字符串，不升格成块数组");
+            assertEquals(1, content.size(), "纯文本结果不得产生额外块");
+            assertEquals("tool output", block(content, 0).get("content"),
+                    "纯文本必须仍是字符串，不升格成块数组，也不加提示");
         }
 
         /** 字符串 content（最常见形态）同样保持字符串。 */
         @Test
         @DisplayName("字符串 content 原样保留")
         void shouldKeepRawStringContent() {
-            Map<String, Object> translated = translateToolResultContent("plain result");
+            List<Object> content = translateSingleToolRound("plain result");
 
-            assertEquals("plain result", translated.get("content"));
+            assertEquals(1, content.size());
+            assertEquals("plain result", block(content, 0).get("content"));
         }
 
-        /** data URL 图片必须解析成 base64 源，而不是在压平时消失。 */
+        /** data URL 图片解析成 base64 源，移到 tool_result 之后，tool_result 只剩提示。 */
         @Test
-        @DisplayName("data URL 图片必须翻译成 image 块")
-        void shouldTranslateDataUrlImage() {
-            Map<String, Object> translated = translateToolResultContent(List.of(
+        @DisplayName("data URL 图片移出 tool_result 并保留 base64 源")
+        void shouldMoveDataUrlImageAfterToolResult() {
+            List<Object> content = translateSingleToolRound(List.of(
                     Map.of("type", "image_url",
                             "image_url", Map.of("url", "data:image/png;base64,iVBORw0KGgo="))
             ));
 
-            @SuppressWarnings("unchecked")
-            List<Object> blocks = (List<Object>) translated.get("content");
-            assertEquals(1, blocks.size(), "含图片时 content 必须是块数组");
-            @SuppressWarnings("unchecked")
-            Map<String, Object> imageBlock = (Map<String, Object>) blocks.get(0);
+            assertEquals(3, content.size(), "tool_result + 来源标记 + 图片");
+            Map<String, Object> toolResult = block(content, 0);
+            assertEquals("tool_result", toolResult.get("type"));
+            assertEquals(ToolResultMediaLifter.MEDIA_HINT, toolResult.get("content"),
+                    "无文本时 tool_result 只剩移动提示，不得再含图片");
+            assertEquals("[media from tool_use_id=\"call_1\"]", block(content, 1).get("text"));
+
+            Map<String, Object> imageBlock = block(content, 2);
             assertEquals("image", imageBlock.get("type"));
             @SuppressWarnings("unchecked")
             Map<String, Object> source = (Map<String, Object>) imageBlock.get("source");
@@ -313,15 +317,12 @@ class ChatToMessagesRequestTranslatorTests {
         @Test
         @DisplayName("http 图片使用原生 url 源")
         void shouldUseNativeUrlForHttpImage() {
-            Map<String, Object> translated = translateToolResultContent(List.of(
+            List<Object> content = translateSingleToolRound(List.of(
                     Map.of("type", "image_url",
                             "image_url", Map.of("url", "https://example.com/a.png"))
             ));
 
-            @SuppressWarnings("unchecked")
-            List<Object> blocks = (List<Object>) translated.get("content");
-            @SuppressWarnings("unchecked")
-            Map<String, Object> imageBlock = (Map<String, Object>) blocks.get(0);
+            Map<String, Object> imageBlock = block(content, 2);
             assertEquals("image", imageBlock.get("type"));
             @SuppressWarnings("unchecked")
             Map<String, Object> source = (Map<String, Object>) imageBlock.get("source");
@@ -330,40 +331,34 @@ class ChatToMessagesRequestTranslatorTests {
         }
 
         /**
-         * 图文混合必须两者都在，且保持原有顺序。
+         * 图文混合：文本留在 tool_result 并追加提示，图片在其后。
          *
          * <p>这是 Copilot 调 {@code view_image} 的真实形态：一段说明文字 + 一张图。
          */
         @Test
-        @DisplayName("图文混合两者都保留且保序")
-        void shouldKeepBothTextAndImageInOrder() {
-            Map<String, Object> translated = translateToolResultContent(List.of(
+        @DisplayName("图文混合时文本留在 tool_result，图片移到其后")
+        void shouldKeepTextInResultAndMoveImageAfter() {
+            List<Object> content = translateSingleToolRound(List.of(
                     Map.of("type", "text", "text", "here is the image"),
                     Map.of("type", "image_url",
                             "image_url", Map.of("url", "data:image/jpeg;base64,/9j/4AAQ="))
             ));
 
-            @SuppressWarnings("unchecked")
-            List<Object> blocks = (List<Object>) translated.get("content");
-            assertEquals(2, blocks.size());
-            @SuppressWarnings("unchecked")
-            Map<String, Object> textBlock = (Map<String, Object>) blocks.get(0);
-            assertEquals("text", textBlock.get("type"));
-            assertEquals("here is the image", textBlock.get("text"));
-            @SuppressWarnings("unchecked")
-            Map<String, Object> imageBlock = (Map<String, Object>) blocks.get(1);
-            assertEquals("image", imageBlock.get("type"));
+            assertEquals(3, content.size());
+            assertEquals("here is the image\n" + ToolResultMediaLifter.MEDIA_HINT,
+                    block(content, 0).get("content"));
+            assertEquals("text", block(content, 1).get("type"));
+            assertEquals("image", block(content, 2).get("type"));
         }
 
         /**
-         * 配对修复不得破坏块数组形态的 tool_result。
+         * 配对修复与媒体移动的先后不能颠倒。
          *
-         * <p>{@code ToolPairingNormalizer} 的 merge → pair → merge 会搬动整个
-         * {@code tool_result} 块。它操作的是消息级 content，不该动块内 content ——
-         * 这条用测试钉住而非靠推断。
+         * <p>中间插一条正文 user，迫使 pair 重新搬动 tool_result。移动在配对之后，
+         * 因此媒体仍跟在自己的 tool_result 后面，而那条无关正文排在最后。
          */
         @Test
-        @DisplayName("配对修复后图片仍在")
+        @DisplayName("配对修复后图片仍跟随其结果，正文排在最后")
         void shouldSurvivePairingNormalization() {
             Map<String, Object> request = Map.of(
                     "model", "test-model",
@@ -373,7 +368,6 @@ class ChatToMessagesRequestTranslatorTests {
                                             Map.of("id", "call_1", "type", "function",
                                                     "function", Map.of("name", "view_image", "arguments", "{}"))
                                     )),
-                            // 中间插一条正文 user，迫使 pair 重新搬动 tool_result
                             Map.of("role", "user", "content", "unrelated text"),
                             Map.of("role", "tool", "tool_call_id", "call_1", "content", List.of(
                                     Map.of("type", "text", "text", "screenshot"),
@@ -383,24 +377,58 @@ class ChatToMessagesRequestTranslatorTests {
                     )
             );
 
-            TranslatedRequest translated = translator.translateRequest(request);
+            List<Object> content = userContentAt(translator.translateRequest(request), 1);
 
-            @SuppressWarnings("unchecked")
-            List<Object> messages = (List<Object>) translated.body().get("messages");
-            @SuppressWarnings("unchecked")
-            Map<String, Object> userMessage = (Map<String, Object>) messages.get(1);
-            @SuppressWarnings("unchecked")
-            List<Object> content = (List<Object>) userMessage.get("content");
-            @SuppressWarnings("unchecked")
-            Map<String, Object> toolResult = (Map<String, Object>) content.get(0);
-            assertEquals("tool_result", toolResult.get("type"));
+            assertEquals(4, content.size(), "tool_result + 来源标记 + 图片 + 正文");
+            assertEquals("tool_result", block(content, 0).get("type"));
+            assertEquals("screenshot\n" + ToolResultMediaLifter.MEDIA_HINT, block(content, 0).get("content"));
+            assertEquals("[media from tool_use_id=\"call_1\"]", block(content, 1).get("text"));
+            assertEquals("image", block(content, 2).get("type"));
+            assertEquals("unrelated text", block(content, 3).get("text"));
+        }
 
-            @SuppressWarnings("unchecked")
-            List<Object> resultBlocks = (List<Object>) toolResult.get("content");
-            assertEquals(2, resultBlocks.size(), "配对修复后图片块必须仍在");
-            @SuppressWarnings("unchecked")
-            Map<String, Object> imageBlock = (Map<String, Object>) resultBlocks.get(1);
-            assertEquals("image", imageBlock.get("type"));
+        /**
+         * 并行调用：所有 tool_result 在前，媒体按 tool_use 顺序各自带来源标记，纯文本结果不受影响。
+         */
+        @Test
+        @DisplayName("多个工具结果时 tool_result 全部在前，媒体按调用顺序带来源标记")
+        void shouldOrderResultsThenMediaForParallelCalls() {
+            Map<String, Object> request = Map.of(
+                    "model", "test-model",
+                    "messages", List.of(
+                            Map.of("role", "assistant", "content", "",
+                                    "tool_calls", List.of(
+                                            Map.of("id", "call_a", "type", "function",
+                                                    "function", Map.of("name", "view_image", "arguments", "{}")),
+                                            Map.of("id", "call_b", "type", "function",
+                                                    "function", Map.of("name", "read_file", "arguments", "{}")),
+                                            Map.of("id", "call_c", "type", "function",
+                                                    "function", Map.of("name", "view_image", "arguments", "{}"))
+                                    )),
+                            Map.of("role", "tool", "tool_call_id", "call_a", "content", List.of(
+                                    Map.of("type", "image_url", "image_url", Map.of("url", "https://example.com/a.png")))),
+                            Map.of("role", "tool", "tool_call_id", "call_b", "content", "file text"),
+                            Map.of("role", "tool", "tool_call_id", "call_c", "content", List.of(
+                                    Map.of("type", "image_url", "image_url", Map.of("url", "https://example.com/c.png"))))
+                    )
+            );
+
+            List<Object> content = userContentAt(translator.translateRequest(request), 1);
+
+            assertEquals(7, content.size(), "3 个 tool_result + 2 组（标记 + 图片）");
+            assertEquals("call_a", block(content, 0).get("tool_use_id"));
+            assertEquals(ToolResultMediaLifter.MEDIA_HINT, block(content, 0).get("content"));
+            assertEquals("call_b", block(content, 1).get("tool_use_id"));
+            assertEquals("file text", block(content, 1).get("content"), "纯文本结果不加提示");
+            assertEquals("call_c", block(content, 2).get("tool_use_id"));
+            assertEquals("[media from tool_use_id=\"call_a\"]", block(content, 3).get("text"));
+            assertEquals("https://example.com/a.png", sourceUrl(block(content, 4)));
+            assertEquals("[media from tool_use_id=\"call_c\"]", block(content, 5).get("text"));
+            assertEquals("https://example.com/c.png", sourceUrl(block(content, 6)));
+            for (int i = 0; i < 3; i++) {
+                assertInstanceOf(String.class, block(content, i).get("content"),
+                        "所有 tool_result 出站时只含文本");
+            }
         }
 
         /** 认不出的块被丢弃后若一无所剩，整条消息仍按既有语义丢弃。 */
@@ -429,10 +457,8 @@ class ChatToMessagesRequestTranslatorTests {
             assertTrue(messages.isEmpty(), "无实质内容时不得造占位内容");
         }
 
-        /**
-         * 构造单条 tool_result 并取出那个块，避免每个用例重复搭配对结构。
-         */
-        private Map<String, Object> translateToolResultContent(Object content) {
+        /** 构造单个工具调用轮次，返回应答它的那条 user 消息的块列表。 */
+        private List<Object> translateSingleToolRound(Object content) {
             Map<String, Object> request = Map.of(
                     "model", "test-model",
                     "messages", List.of(
@@ -444,18 +470,26 @@ class ChatToMessagesRequestTranslatorTests {
                             Map.of("role", "tool", "tool_call_id", "call_1", "content", content)
                     )
             );
+            return userContentAt(translator.translateRequest(request), 1);
+        }
 
-            TranslatedRequest translated = translator.translateRequest(request);
-
-            @SuppressWarnings("unchecked")
+        @SuppressWarnings("unchecked")
+        private List<Object> userContentAt(TranslatedRequest translated, int index) {
             List<Object> messages = (List<Object>) translated.body().get("messages");
-            @SuppressWarnings("unchecked")
-            Map<String, Object> userMessage = (Map<String, Object>) messages.get(1);
-            @SuppressWarnings("unchecked")
-            List<Object> blocks = (List<Object>) userMessage.get("content");
-            @SuppressWarnings("unchecked")
-            Map<String, Object> toolResult = (Map<String, Object>) blocks.get(0);
-            return toolResult;
+            Map<String, Object> userMessage = (Map<String, Object>) messages.get(index);
+            assertEquals("user", userMessage.get("role"));
+            return (List<Object>) userMessage.get("content");
+        }
+
+        @SuppressWarnings("unchecked")
+        private Map<String, Object> block(List<Object> content, int index) {
+            return (Map<String, Object>) content.get(index);
+        }
+
+        @SuppressWarnings("unchecked")
+        private String sourceUrl(Map<String, Object> imageBlock) {
+            assertEquals("image", imageBlock.get("type"));
+            return (String) ((Map<String, Object>) imageBlock.get("source")).get("url");
         }
     }
 
