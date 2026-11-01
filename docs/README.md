@@ -40,6 +40,7 @@
 ## 常用直达
 
 - 决策历史：[`adr/`](./adr/)
+- 业务模块全貌：[`architecture/business-module-view.md`](./architecture/business-module-view.md)
 - 请求链路全貌：[`architecture/REQUEST_PIPELINE.md`](./architecture/REQUEST_PIPELINE.md)
 - 已知技术债：[`architecture/KNOWN_DEBT.md`](./architecture/KNOWN_DEBT.md)
 - 协议契约：[`reference/contracts/`](./reference/contracts/)
@@ -74,6 +75,7 @@
 
 | 文件 | 内容 |
 |---|---|
+| [business-module-view.md](./architecture/business-module-view.md) | 从产品与业务能力角度建立“运行基础建设层 + 执行层”两层，以及供应商配置、系统配置、日志观测和主干-支干核心逻辑四个模块 |
 | [REQUEST_PIPELINE.md](./architecture/REQUEST_PIPELINE.md) | 下游请求到上游请求的处理层与顺序（改 pipeline 前必读） |
 | [AUTH_HEADER_ASSEMBLY.md](./architecture/AUTH_HEADER_ASSEMBLY.md) | 出站与入站鉴权头的设计（schema.sql / V14 迁移 / 常量三处必须逐字一致） |
 | [PROVIDER_NAMING_CONVENTION.md](./architecture/PROVIDER_NAMING_CONVENTION.md) | 供应商命名与模型名路由前缀规则 |
