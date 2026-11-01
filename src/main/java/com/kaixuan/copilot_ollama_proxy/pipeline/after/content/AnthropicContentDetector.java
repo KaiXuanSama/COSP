@@ -94,8 +94,8 @@ public final class AnthropicContentDetector {
             }
             return switch (type) {
                 // content_block_start 声明 block 类型，其 content_block 可能已带初始内容
-                // （如 tool_use 的 name 已确定）。工具调用在此刻即算实质载荷 ——
-                // 与 OpenAI 侧「tool_calls 含非空元素即算」同口径。
+                // （如 tool_use 的 name 已确定）。工具名非空时即算实质载荷 ——
+                // 与 OpenAI 侧「工具名或参数片段非空」同口径。
                 case "content_block_start" -> blockHasPayload(root.get("content_block"));
                 // content_block_delta 是内容的主要载体。
                 case "content_block_delta" -> deltaHasPayload(root.get("delta"));
@@ -130,14 +130,15 @@ public final class AnthropicContentDetector {
                 yield value != null && !value.isEmpty();
             }
             // 思考链：thinking 与 redacted_thinking 都算。后者内容被服务端加密，
-            // 但它的存在本身就证明模型思考过，不能因为读不到明文就判空。
+            // 读不到明文不能判空；但 data 为空串时它什么也没携带，只是空壳块。
             case TYPE_THINKING -> {
                 String value = text(block, TYPE_THINKING);
                 yield value != null && !value.isBlank();
             }
-            case TYPE_REDACTED_THINKING -> true;
-            // 工具调用：block 存在即算 —— 与 OpenAI 侧「含至少一个非空元素」同口径。
-            case "tool_use" -> true;
+            case TYPE_REDACTED_THINKING -> isNonEmpty(text(block, "data"));
+            // 工具调用：工具名非空，或 input 已带参数，才算。名字为空串的起始块属于
+            // 「有效 chunk 但没内容」—— 单凭类型开闸会把空壳透传给下游，而开闸后不再拦截。
+            case "tool_use" -> isNonEmpty(text(block, "name")) || hasNonEmptyObject(block.get("input"));
             default -> false;
         };
     }
@@ -165,12 +166,22 @@ public final class AnthropicContentDetector {
                 String value = text(delta, TYPE_THINKING);
                 yield value != null && !value.isBlank();
             }
-            // 工具调用参数的增量。哪怕是空片段也算 —— 它属于一个已经开始的 tool_use，
-            // 而那个 block 在 content_block_start 时已被判为实质载荷。
-            case "input_json_delta" -> true;
+            // 工具调用参数的增量：片段非空才算。起始块名字为空时闸门靠这里开；
+            // 空片段不携带参数，只凭 delta 类型开闸会把空壳透传给下游。
+            case "input_json_delta" -> isNonEmpty(text(delta, "partial_json"));
             // signature_delta 是思考链的完整性签名，不是内容本身，不单独算载荷。
             default -> false;
         };
+    }
+
+    /** 空串才是没内容；空格、换行算内容（与正文口径一致）。 */
+    private static boolean isNonEmpty(String value) {
+        return value != null && !value.isEmpty();
+    }
+
+    /** 非空 JSON 对象（如 tool_use 已带参数的 input）；{@code {}} 不算。 */
+    private static boolean hasNonEmptyObject(JsonNode node) {
+        return node != null && node.isObject() && !node.isEmpty();
     }
 
     /** 读取字符串字段；缺失或非字符串返回 null。 */

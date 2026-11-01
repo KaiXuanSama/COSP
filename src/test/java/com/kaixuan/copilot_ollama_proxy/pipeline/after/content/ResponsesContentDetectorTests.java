@@ -502,6 +502,24 @@ class ResponsesContentDetectorTests {
                     "{\"type\":\"response.output_text.delta\",\"delta\":{\"text\":\"x\"}}")).isTrue();
         }
 
+        /**
+         * 对象形 delta 里只有空串：有效事件但没内容，不开闸。
+         *
+         * <p>开闸后闸门不再拦截，若凭「非空对象」开闸，后续空帧会一路透传。
+         */
+        @Test
+        void 对象形态但内容为空串的delta不算贡献() {
+            assertThat(ResponsesContentDetector.eventHasPayload(objectMapper,
+                    "{\"type\":\"response.output_text.delta\",\"delta\":{\"text\":\"\"}}")).isFalse();
+        }
+
+        /** 空格、换行是内容，只有空串才是没内容。 */
+        @Test
+        void 对象形态的空白delta算贡献() {
+            assertThat(ResponsesContentDetector.eventHasPayload(objectMapper,
+                    "{\"type\":\"response.output_text.delta\",\"delta\":{\"text\":\"\\n\"}}")).isTrue();
+        }
+
         /** 空字符串 delta 不算：某些上游会在流首发一个空 delta 做预热。 */
         @Test
         void 空delta不算贡献() {

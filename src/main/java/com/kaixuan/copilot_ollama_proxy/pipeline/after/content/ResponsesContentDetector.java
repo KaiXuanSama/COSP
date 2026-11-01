@@ -113,9 +113,9 @@ public final class ResponsesContentDetector {
      * 的原因，不能当成安全边际。
      *
      * <h2>只有 Responses 需要这张表，另两侧不需要</h2>
-     * Chat 侧看 {@code tool_calls} 数组「含非空元素」、Anthropic 侧 {@code tool_use} 与
-     * {@code input_json_delta} 直接算有载荷 —— 两者都<strong>不依赖具体参数字段名</strong>，
-     * 因为参数嵌在一个可辨认的容器里。Responses 把参数摊在事件顶层的独立字段上，
+     * Chat 侧看 {@code tool_calls[].function} / {@code custom} 容器里的名字或参数、
+     * Anthropic 侧看 {@code tool_use} 的 {@code name} / {@code input} 与
+     * {@code input_json_delta.partial_json} —— 参数嵌在一个可辨认的容器里。Responses 把参数摊在事件顶层的独立字段上，
      * 才需要逐个字段名去认。这是协议形状差异，不是三侧口径分叉。
      */
     private static final String[] FINALIZED_CONTENT_FIELDS = {"text", "refusal", "arguments", "input"};
@@ -270,8 +270,22 @@ public final class ResponsesContentDetector {
         if (delta.isTextual()) {
             return !delta.asText().isEmpty();
         }
-        // 少数上游把 delta 建成对象（如 {"text": "..."}），非空对象即算贡献。
-        return delta.isObject() && !delta.isEmpty();
+        // 少数上游把 delta 建成对象（如 {"text": "..."}）。对象里要真有非空文本才算：
+        // {"text": ""} 是「有效 chunk 但没内容」，单凭非空对象开闸会让后续空帧透传。
+        return delta.isObject() && containsNonEmptyText(delta);
+    }
+
+    /** 节点内（递归）是否有非空字符串。空串才是没内容；空格、换行算内容。 */
+    private static boolean containsNonEmptyText(JsonNode node) {
+        if (node.isTextual()) {
+            return !node.asText().isEmpty();
+        }
+        for (JsonNode child : node) {
+            if (containsNonEmptyText(child)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 载体是否带非空的定稿内容（{@link #FINALIZED_CONTENT_FIELDS} 任一）。 */

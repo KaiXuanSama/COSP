@@ -785,6 +785,77 @@ class AbstractUpstreamChatServiceTests {
     }
 
     /**
+     * 有效 chunk 但没内容：{@code tool_calls} 元素只有 {@code index} / {@code id}、
+     * 名字与参数都是空串时，闸门不能打开。
+     *
+     * <p>开闸后闸门不再拦截。若凭「元素是非空对象」开闸，这一轮会被当成正常响应，
+     * 空壳工具调用透传给下游，也不会触发重试。期望：判空重试，第二轮正常内容放行，
+     * 第一轮的空壳帧不泄漏。
+     */
+    @Test
+    void hollowToolCallChunkKeepsGateClosedAndRetries() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            int attempt = upstreamCallCount.incrementAndGet();
+            Flux<DataBuffer> body = attempt == 1
+                    ? Flux.concat(
+                            Mono.just(sseData(factory, "{\"id\":\"h-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}")),
+                            Mono.just(sseData(factory, "{\"id\":\"h-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0}]},\"finish_reason\":null}]}")),
+                            Mono.just(sseData(factory, "{\"id\":\"h-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}")),
+                            Mono.just(sseData(factory, "[DONE]")))
+                    : Flux.concat(
+                            Mono.just(sseData(factory, "{\"id\":\"ok\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}")),
+                            Mono.just(sseData(factory, "[DONE]")));
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        List<String> received = service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-hollow-tool-1")
+                .collectList().block(Duration.ofSeconds(20));
+
+        assertThat(upstreamCallCount.get()).isEqualTo(2);
+        assertThat(received).isNotNull().anyMatch(chunk -> chunk.contains("hello"));
+        assertThat(received).noneMatch(chunk -> chunk.contains("\"id\":\"h-1\""));
+    }
+
+    /**
+     * 对照：首片只有 {@code id}（名字、参数为空串）时先缓存，后续帧带上名字即开闸，
+     * 缓存的首片随开闸一起放出 —— 不重试、不丢帧。
+     */
+    @Test
+    void toolCallIdOnlyHeadIsHeldAndReleasedWhenNameArrives() {
+        AtomicInteger upstreamCallCount = new AtomicInteger(0);
+        TestOpenAiService service = new TestOpenAiService();
+
+        DefaultDataBufferFactory factory = new DefaultDataBufferFactory();
+        service.setWebClientBuilder(WebClient.builder().exchangeFunction(request -> {
+            upstreamCallCount.incrementAndGet();
+            Flux<DataBuffer> body = Flux.concat(
+                    Mono.just(sseData(factory, "{\"id\":\"s-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_head\",\"type\":\"function\",\"function\":{\"name\":\"\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}")),
+                    Mono.just(sseData(factory, "{\"id\":\"s-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"get_weather\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}")),
+                    Mono.just(sseData(factory, "{\"id\":\"s-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}")),
+                    Mono.just(sseData(factory, "[DONE]")));
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .body(body).build());
+        }));
+
+        List<String> received = service
+                .exposeChatCompletionStream(newRequest(), "model-a", provider(), "req-tool-head-1")
+                .collectList().block(Duration.ofSeconds(20));
+
+        assertThat(upstreamCallCount.get()).isEqualTo(1);
+        assertThat(received).isNotNull()
+                .anyMatch(chunk -> chunk.contains("call_head"))
+                .anyMatch(chunk -> chunk.contains("get_weather"));
+    }
+
+    /**
      * 纯思考链（仅 reasoning 兼容字段）不算空 —— gate 工作在清洗之前，
      * 因此必须认得 {@code thinking} 这类未统一的别名。
      */

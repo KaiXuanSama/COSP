@@ -23,7 +23,8 @@ import java.util.Map;
  * <ul>
  *   <li>正文 —— {@code content} 非空字符串；</li>
  *   <li>思考链 —— {@link #REASONING_KEYS} 任一字段非空白；</li>
- *   <li>工具调用 —— {@code tool_calls} 含至少一个非空元素。</li>
+ *   <li>工具调用 —— {@code tool_calls} 至少一个元素带非空的工具名或参数片段
+ *       （只有 {@code index} / {@code id} 或全是空串的元素不算）。</li>
  * </ul>
  *
  * <h2>为何判原始帧而非清洗后的帧</h2>
@@ -172,17 +173,42 @@ public final class OpenAiContentDetector {
                 return true;
             }
         }
-        // 工具调用：需含至少一个非空元素，空数组 [] 不算。
-        return delta.get("tool_calls") instanceof List<?> toolCalls && hasNonEmptyElement(toolCalls);
+        // 工具调用：至少一个元素带非空的工具名或参数片段。
+        return delta.get("tool_calls") instanceof List<?> toolCalls && hasToolCallContent(toolCalls);
     }
 
-    /** tool_calls 是否含至少一个非空 Map 元素。 */
-    private static boolean hasNonEmptyElement(List<?> toolCalls) {
+    /**
+     * tool_calls 是否含至少一个带内容的元素：工具名非空，或参数片段非空。
+     *
+     * <p>只看「元素是非空 Map」不够：{@code {"index":0}} 或名字、参数都是空串的元素
+     * 也是非空 Map，却不携带任何内容。闸门一旦因它打开就不再拦截，后续空帧会一路透传。
+     * 只带 {@code id} 的首片同样不算 —— 它会被缓存，等名字或参数到达时随开闸一起放出，
+     * 不会丢失。
+     *
+     * <p>工具调用的容器有两种：{@code function}（{@code name} + {@code arguments}）与
+     * {@code custom}（{@code name} + {@code input}）。
+     */
+    private static boolean hasToolCallContent(List<?> toolCalls) {
         for (Object item : toolCalls) {
-            if (item instanceof Map<?, ?> map && !map.isEmpty()) {
+            if (item instanceof Map<?, ?> call
+                    && (callHasContent(call.get("function"), "arguments")
+                    || callHasContent(call.get("custom"), "input"))) {
                 return true;
             }
         }
         return false;
+    }
+
+    /** 工具调用容器的名字或参数非空（空串才是没内容）。参数偶见对象形态，非空对象也算。 */
+    private static boolean callHasContent(Object container, String argumentsKey) {
+        if (!(container instanceof Map<?, ?> map)) {
+            return false;
+        }
+        if (map.get("name") instanceof String name && !name.isEmpty()) {
+            return true;
+        }
+        Object arguments = map.get(argumentsKey);
+        return (arguments instanceof String text && !text.isEmpty())
+                || (arguments instanceof Map<?, ?> object && !object.isEmpty());
     }
 }

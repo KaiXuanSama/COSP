@@ -82,6 +82,38 @@ class AnthropicPayloadAndUsageTests {
                     "{\"id\":\"msg_1\",\"type\":\"message\"}")).isFalse();
         }
 
+        /** 有效 block 但没内容：名字为空串、input 为空对象的 tool_use 不算。 */
+        @Test
+        void 空壳工具调用不算实质载荷() {
+            String body = """
+                    {"id":"msg_1","content":[{"type":"tool_use","id":"t1","name":"","input":{}}]}""";
+
+            assertThat(AnthropicContentDetector.hasMeaningfulPayload(mapper, body)).isFalse();
+        }
+
+        /** 名字为空但 input 已带参数：参数本身就是内容。 */
+        @Test
+        void 无名但带参数的工具调用算实质载荷() {
+            String body = """
+                    {"id":"msg_1","content":[{"type":"tool_use","id":"t1","name":"","input":{"city":"x"}}]}""";
+
+            assertThat(AnthropicContentDetector.hasMeaningfulPayload(mapper, body)).isTrue();
+        }
+
+        @Test
+        void 空data的加密思考链不算实质载荷() {
+            assertThat(AnthropicContentDetector.hasMeaningfulPayload(mapper,
+                    "{\"id\":\"msg_1\",\"content\":[{\"type\":\"redacted_thinking\",\"data\":\"\"}]}"))
+                    .isFalse();
+        }
+
+        /** 空格、换行是内容，只有空串才是没内容。 */
+        @Test
+        void 仅空白正文算实质载荷() {
+            assertThat(AnthropicContentDetector.hasMeaningfulPayload(mapper,
+                    "{\"id\":\"msg_1\",\"content\":[{\"type\":\"text\",\"text\":\"\\n\"}]}")).isTrue();
+        }
+
         /** 空 body 比流式的「0 事件」更极端 —— 连 JSON 骨架都没有。 */
         @Test
         void 空body判空() {
@@ -168,6 +200,45 @@ class AnthropicPayloadAndUsageTests {
         @Test
         void 未知事件类型保守放行() {
             assertThat(AnthropicContentDetector.eventHasPayload(mapper, "{\"type\":\"te")).isTrue();
+        }
+
+        /**
+         * 有效事件但没内容：名字为空串的 tool_use 起始块不开闸。
+         *
+         * <p>开闸后闸门不再拦截，若凭类型开闸，后续空帧会一路透传给下游。
+         */
+        @Test
+        void 空名工具调用block声明不贡献载荷() {
+            assertThat(AnthropicContentDetector.eventHasPayload(mapper,
+                    """
+                    {"type":"content_block_start","index":0,
+                     "content_block":{"type":"tool_use","id":"t1","name":"","input":{}}}"""))
+                    .isFalse();
+        }
+
+        @Test
+        void 空参数片段不贡献载荷() {
+            assertThat(AnthropicContentDetector.eventHasPayload(mapper,
+                    """
+                    {"type":"content_block_delta","index":0,
+                     "delta":{"type":"input_json_delta","partial_json":""}}""")).isFalse();
+        }
+
+        /** 起始块没给名字时，闸门靠第一段非空参数打开。 */
+        @Test
+        void 非空参数片段贡献载荷() {
+            assertThat(AnthropicContentDetector.eventHasPayload(mapper,
+                    """
+                    {"type":"content_block_delta","index":0,
+                     "delta":{"type":"input_json_delta","partial_json":"{\\"city\\":"}}""")).isTrue();
+        }
+
+        @Test
+        void 仅空白正文增量贡献载荷() {
+            assertThat(AnthropicContentDetector.eventHasPayload(mapper,
+                    """
+                    {"type":"content_block_delta","index":0,
+                     "delta":{"type":"text_delta","text":" "}}""")).isTrue();
         }
     }
 
