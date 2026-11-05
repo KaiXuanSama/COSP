@@ -2,6 +2,7 @@ package com.kaixuan.copilot_ollama_proxy.infrastructure.persistence;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kaixuan.copilot_ollama_proxy.application.logging.CallLogFilter;
 import com.kaixuan.copilot_ollama_proxy.observability.record.ApiCallLogService;
 import com.kaixuan.copilot_ollama_proxy.protocol.ChunkLogPayload;
 import com.kaixuan.copilot_ollama_proxy.observability.publisher.LogEventPublisher;
@@ -14,6 +15,8 @@ import org.springframework.stereotype.Repository;
 
 import java.sql.PreparedStatement;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -257,29 +260,98 @@ public class ApiCallLogRepository implements ApiCallLogService {
      * @return 包含分页信息的 Map：items、nextCursor、hasMore、pageSize
      */
     public Map<String, Object> findLogs(Long cursor, int pageSize) {
+        return findLogs(CallLogFilter.NONE, cursor, pageSize);
+    }
+
+    /**
+     * 带检索条件的游标分页查询。条件语义见 {@link CallLogFilter} 与 ADR-0020。
+     *
+     * <p>游标仍是 {@code id < cursor}，与无条件查询相同：检索只多加过滤，不改变排序，
+     * 所以「id 与 created_at 同序」这一既有前提不受影响。服务端不保存条件，
+     * 翻页时调用方必须带上与首屏相同的 filter。
+     *
+     * <p>所有值都走占位符。部分匹配的输入先转义 {@code \ % _}，再包成 {@code %...%}，
+     * 否则用户输入 {@code gpt_5} 时下划线会被当成单字符通配符。
+     *
+     * <p>当前数据量下没有为 status_code、model_name 建索引：本机 2.7 万行实测，
+     * 最坏情况（部分匹配无命中、全表扫）约 140 ms。实测数据见调用日志检索 RFC §1.3。
+     */
+    public Map<String, Object> findLogs(CallLogFilter filter, Long cursor, int pageSize) {
         if (pageSize < 1) pageSize = 10;
         if (pageSize > 100) pageSize = 100;
+        CallLogFilter effective = filter == null ? CallLogFilter.NONE : filter;
 
-        String sql = "SELECT l.id, l.provider_key, l.model_name, l.is_stream, l.downstream_protocol, "
+        StringBuilder sql = new StringBuilder("SELECT l.id, l.provider_key, l.model_name, l.is_stream, l.downstream_protocol, "
                 + "l.upstream_protocol, l.status_code, "
                 + "l.duration_ms, l.payload_trimmed, l.created_at, "
                 + "u.prompt_tokens, u.completion_tokens, u.cached_tokens, u.ttfb_ms "
                 + "FROM api_call_log l LEFT JOIN api_call_usage u ON u.id = ("
                 + "SELECT u2.id FROM api_call_usage u2 WHERE u2.log_id = l.id "
-                + "ORDER BY u2.id DESC LIMIT 1) ";
+                + "ORDER BY u2.id DESC LIMIT 1) ");
 
-        List<Map<String, Object>> items;
-        if (cursor == null) {
-            items = jdbcTemplate.queryForList(
-                    sql + "ORDER BY l.created_at DESC, l.id DESC LIMIT ?",
-                    pageSize);
-        } else {
-            items = jdbcTemplate.queryForList(
-                    sql + "WHERE l.id < ? ORDER BY l.created_at DESC, l.id DESC LIMIT ?",
-                    cursor, pageSize);
+        List<String> conditions = new ArrayList<>();
+        List<Object> args = new ArrayList<>();
+        appendFilterConditions(effective, conditions, args);
+        if (cursor != null) {
+            conditions.add("l.id < ?");
+            args.add(cursor);
+        }
+        if (!conditions.isEmpty()) {
+            sql.append("WHERE ").append(String.join(" AND ", conditions)).append(' ');
+        }
+        sql.append("ORDER BY l.created_at DESC, l.id DESC LIMIT ?");
+        args.add(pageSize);
+
+        List<Map<String, Object>> items = jdbcTemplate.queryForList(sql.toString(), args.toArray());
+        return buildPage(items, pageSize);
+    }
+
+    /** 把检索条件翻译成 WHERE 片段与对应实参，顺序一一对应。 */
+    private static void appendFilterConditions(CallLogFilter filter, List<String> conditions, List<Object> args) {
+        if (filter.from() != null) {
+            conditions.add("l.created_at >= ?");
+            args.add(filter.fromText());
+        }
+        if (filter.to() != null) {
+            conditions.add("l.created_at <= ?");
+            args.add(filter.toText());
         }
 
-        return buildPage(items, pageSize);
+        List<String> statusParts = new ArrayList<>();
+        for (CallLogFilter.StatusClass statusClass : filter.statusClasses()) {
+            statusParts.add("l.status_code BETWEEN ? AND ?");
+            args.add(statusClass.min());
+            args.add(statusClass.max());
+        }
+        if (!filter.statusCodes().isEmpty()) {
+            statusParts.add("l.status_code IN (" + String.join(", ", Collections.nCopies(filter.statusCodes().size(), "?")) + ")");
+            args.addAll(filter.statusCodes());
+        }
+        if (!statusParts.isEmpty()) {
+            conditions.add("(" + String.join(" OR ", statusParts) + ")");
+        }
+
+        appendTextCondition("l.provider_key", filter.provider(), filter.providerMatch(), conditions, args);
+        appendTextCondition("l.model_name", filter.model(), filter.modelMatch(), conditions, args);
+    }
+
+    private static void appendTextCondition(String column, String value, CallLogFilter.MatchMode mode,
+                                            List<String> conditions, List<Object> args) {
+        if (value == null) {
+            return;
+        }
+        if (mode == CallLogFilter.MatchMode.CONTAINS) {
+            conditions.add(column + " LIKE ? ESCAPE '\\'");
+            args.add("%" + escapeLike(value) + "%");
+        } else {
+            conditions.add(column + " = ?");
+            args.add(value);
+        }
+    }
+
+    /** 转义 LIKE 的元字符，转义符本身必须最先处理。 */
+    static String escapeLike(String value) {
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
     }
 
     /**

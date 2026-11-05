@@ -1,5 +1,6 @@
 package com.kaixuan.copilot_ollama_proxy.api;
 
+import com.kaixuan.copilot_ollama_proxy.application.logging.CallLogFilter;
 import com.kaixuan.copilot_ollama_proxy.application.logging.CallLogQueryService;
 import com.kaixuan.copilot_ollama_proxy.infrastructure.web.SseConnectionGate;
 import org.springframework.http.MediaType;
@@ -13,6 +14,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -41,11 +43,32 @@ public class CallLogController {
      *
      * <p>主表为 api_call_log，token 用量以 LEFT JOIN 附属，故失败调用、
      * 上游未返回 usage 的调用仍出现在列表中，用量列为 null（渲染为 —）。
+     *
+     * <p>检索参数全部可选，一个都不传时与引入检索前完全一致（语义见 {@link CallLogFilter}、ADR-0020）：
+     * {@code from} / {@code to} 为 {@code yyyy-MM-ddTHH:mm:ss} 本地时间闭区间；{@code status} 可重复，
+     * 取 {@code 2xx}/{@code 4xx}/{@code 5xx} 或状态码（含 {@code -1}）；{@code provider} / {@code model}
+     * 配合 {@code providerMatch} / {@code modelMatch}（{@code exact} 默认或 {@code contains}）。
+     * 游标语义不变，翻页时要带上与首屏相同的条件。参数非法返回 400 与 {@code { ok: false, message }}。
      */
     @GetMapping("/config/api/logs")
-    public Mono<Map<String, Object>> listLogs(@RequestParam(value = "cursor", required = false) Long cursor,
-                                               @RequestParam(value = "pageSize", defaultValue = "20") int pageSize) {
-        return callLogQueryService.listLogs(cursor, pageSize);
+    public Mono<ResponseEntity<Map<String, Object>>> listLogs(
+            @RequestParam(value = "cursor", required = false) Long cursor,
+            @RequestParam(value = "pageSize", defaultValue = "20") int pageSize,
+            @RequestParam(value = "from", required = false) String from,
+            @RequestParam(value = "to", required = false) String to,
+            @RequestParam(value = "status", required = false) List<String> status,
+            @RequestParam(value = "provider", required = false) String provider,
+            @RequestParam(value = "providerMatch", required = false) String providerMatch,
+            @RequestParam(value = "model", required = false) String model,
+            @RequestParam(value = "modelMatch", required = false) String modelMatch) {
+        CallLogFilter filter;
+        try {
+            filter = CallLogFilter.parse(from, to, status, provider, providerMatch, model, modelMatch);
+        } catch (IllegalArgumentException e) {
+            return Mono.just(ResponseEntity.badRequest()
+                    .body(Map.<String, Object>of("ok", false, "message", e.getMessage())));
+        }
+        return callLogQueryService.listLogs(filter, cursor, pageSize).map(ResponseEntity::ok);
     }
 
     @GetMapping("/config/api/logs/{id}")
