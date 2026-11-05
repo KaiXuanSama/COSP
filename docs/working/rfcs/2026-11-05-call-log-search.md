@@ -1,7 +1,7 @@
 # RFC：调用日志检索
 
 - **日期**：2026-11-05（立项日）
-- **状态**：已定稿，实施中（[阶段 1](#call-log-search-stage-1) 已完成）
+- **状态**：已定稿且实施完毕（[阶段 1](#call-log-search-stage-1)、[阶段 2](#call-log-search-stage-2)、[阶段 3](#call-log-search-stage-3)）
 - **相关 ADR**：[ADR-0020：调用日志检索扩展现有列表端点，检索模式下前端忽略 SSE 信号](../../adr/adr-0020-call-log-search.md)
 - **分支**：`feat/log-search`
 
@@ -292,4 +292,71 @@ ORDER BY l.created_at DESC, l.id DESC LIMIT ?
 - `ApiCallLogRepositorySearchTests`（10 条）：`NONE` 与旧重载结果逐字段相同、时间闭区间、状态 OR、`-1` 不属于任何状态类、全字匹配区分大小写、部分匹配不区分、`_` `%` `\` 转义、多条件 AND、带条件翻页连续。
 - `CallLogControllerSearchTests`（3 条）：无参数传 `NONE`、重复 `status` 参数解析、5 类非法参数返回 400 且不调用服务层。
 - 默认全量 `mvnw.cmd -o surefire:test`：**2039 通过，0 失败 / 错误**。不涉及 schema，未跑迁移测试。
-- 未做：实机 HTTP 验证（留到阶段 3 与前端一起做）。
+- 实机 HTTP（2026-11-05，用户重启后端后，本机 `admin.db`）：无参数仍返回最新记录；`status=429&status=-1`、`provider=step&providerMatch=contains&status=2xx`、`from`/`to` 限定 2026-09-01 一天都只返回符合条件的行；`model=gpt_6&modelMatch=contains` 返回 0 条（库中有 `gpt-6.1-sol`，说明 `_` 已按字面量处理）；`status=3xx`、`from=2026-09-01` 返回 400 与说明。
+
+<a id="call-log-search-stage-2"></a>
+
+### 9.2 阶段 2：前端状态机与 API（2026-11-05）
+
+**改动**
+
+- 新增 `features/call-log/searchFilter.ts`：表单类型 `LogSearchFilter`、查询参数类型 `LogQueryParams`、状态选项常量（状态类 4 个、常见状态码 8 个）、`formatLocalDateTime`（本地时间，不经 `toISOString()`）、`toQueryParams`（无条件时返回 `undefined`）、`isFilterEmpty`。
+- 新增 `features/call-log/searchMode.ts`：`createLogListSession()`，管理模式、当前参数与列表代次。`run(fetch, apply)` 在发起时捕获代次与参数，返回时代次不一致就不调用 `apply`，过期请求的异常也一并丢弃。`invalidate()` 用于手动刷新。
+- `api/index.ts`：`fetchLogs(cursor, pageSize, search?)`；请求配置抽成 `logsRequestConfig`，用 `paramsSerializer: { indexes: null }` 把数组序列化为重复参数。不传 `search` 时请求与改造前相同，`CallLog.vue` 与现有 `UsageLog.vue` 无需改动。
+
+**与计划的偏差**
+
+- 状态机多了 `invalidate()`：计划里只列了进入/退出检索，但手动刷新同样会让旧列表的在途翻页过期。
+- §4.2 的第 4 种竞态（展开行与高亮残留）是页面状态，留到阶段 3 处理；状态机测试里的第 4 种换成了「退出检索时检索翻页仍在途」。
+
+**测试**
+
+- `searchFilter.spec.ts`：本地时间格式、舍去毫秒、空条件、只有匹配方式不算条件、去重与去空白、选项取值均为后端接受的 token。请求串按 `axios.getUri` 的实际序列化结果断言：无检索参数时为 `/logs?pageSize=50`，`status` 序列化为 `status=2xx&status=429&status=-1`。
+- `searchMode.spec.ts`：模式切换与 SSE 信号、代次推进、四种在途请求竞态、手动刷新作废旧翻页、当代失败照常抛出、过期失败被吞掉。
+- 前端全量 `npm run test:run`：**49 个文件 1049 条通过**；`vue-tsc -b` 无错误。未执行 `vite build`，它会清空并覆写 `src/main/resources/static/`，留到阶段 3 页面完成后再做。
+
+<a id="call-log-search-stage-3"></a>
+
+### 9.3 阶段 3：UsageLog 页面接入（2026-11-05）
+
+**改动**
+
+- 新增 `components/calllog/CallLogSearchPanel.vue`：受控组件（`v-model` 回写条件，`search` / `clear` 两个事件）。时间用 `NDatePicker datetimerange`；状态用分组多选；供应商用 `NAutoComplete`，候选来自已配置供应商的 `providerKey`，也允许输入列表外的值；模型用普通输入框。两个文本条件各配一个「全字 / 部分」下拉。面板内按回车即检索。已加入 `components/calllog/index.ts` 导出。
+- 新增 `features/call-log/logTime.ts`：当天 `HH:mm:ss`、当年 `MM-dd HH:mm:ss`、跨年 `yyyy-MM-dd HH:mm:ss`。
+- `views/UsageLog.vue`：
+  - 所有列表拉取（首屏、翻页、SSE 增量）经 `createLogListSession().run` 发起；`initialLoading` 与 `loadingMore` 只由当代请求复位，先发的过期请求不会提前关掉新请求的 loading。
+  - 切换模式或修改条件时清空列表、`freshIds`，收起展开行，复位 `loadingMore`；`detailCache` 保留。
+  - SSE 处理函数和 `syncLatest` 内部都检查 `acceptsLiveSignal()`：后者处理「信号在合并队列里等待期间进入了检索模式」。
+  - 表单为空时点「检索」等同于退出检索，避免出现「列表和实时模式一样却不再更新」的状态。
+  - 检索模式下列表上方显示提示条与「清除条件」，空结果文案为「没有符合条件的消费记录」。
+  - 右上角刷新保持当前模式与条件。
+  - 供应商候选在页面挂载时加载（store 已有数据则不重拉），失败不影响检索。
+
+**与计划的偏差**
+
+- §4.3 的列表时间格式只用在 UsageLog；CallLog 计划废弃，未改。
+
+**测试**
+
+- `logTime.spec.ts`（4 条）。前端全量 **50 个文件 1053 条通过**，`vue-tsc -b` 无错误，`npm run build` 成功（仅有既有的 chunk 体积警告）。
+- 浏览器实测（Vite dev server 代理到用户重启的后端，本机真实流量持续写入）：
+  - 状态选 `429` + `非 HTTP 异常（-1）` 后检索，请求为 `/config/api/logs?status=429&status=-1&pageSize=50`，列表只含「空响应」与 429，跨天行显示 `11-04 15:30:17` 这类带日期的时间；提示条出现。
+  - 检索模式下等待 90 秒，库中新增了日志（最新 `16:00:06`），页面未发出任何列表请求，列表内容不变。
+  - 点「更多」：请求带同样条件与游标（`status=429&status=-1&cursor=38834&pageSize=50`），列表增至 100 行，仍只含两类状态。
+  - 点提示条的「清除条件」：请求为无条件的 `/config/api/logs?pageSize=50`，提示条消失，列表回到最新记录。之后的新日志由 SSE 触发增量同步、插入表顶并高亮。
+- 未做：时间范围与供应商/模型条件的浏览器点选实测（后端已在阶段 1 用 HTTP 验证，前端参数转换有单测）。控制台里的 `Non-function value encountered for default slot` 警告来自 `NCard` 的 scrollbar，`CallLog.vue` 上同样存在，与本次改动无关。
+
+## 10. 文档门禁报告
+
+**变更依据**：`GET /config/api/logs` 新增 7 个可选检索参数与 400 响应（`CallLogController`、`CallLogFilter`、`ApiCallLogRepository`、`CallLogQueryService`）；前端消费记录页新增检索面板与两种模式（`UsageLog.vue`、`CallLogSearchPanel.vue`、`features/call-log/{searchFilter,searchMode,logTime}.ts`、`api/index.ts`）。
+
+- `docs/adr/adr-0020-call-log-search.md`（新建）：端点形式与检索模式下的 SSE 行为。
+- 本 RFC（新建）：调研、计划与三个阶段的实施记录。
+- `docs/README.md`、`docs/working/rfcs/README.md`（修改）：索引。
+- 代码注释：`CallLogController.listLogs`、`ApiCallLogRepository.findLogs`、`UsageLog.vue` 头部已写明检索语义与两种模式。
+
+无需更新：`architecture/`、`reference/contracts/` 不涉及（无 schema、协议翻译、pipeline 变化）；`tools/live-test` 的 `recentLogs` 不带检索参数，行为不变。
+
+阻塞项：无。
+
+**结论**：门禁通过。
