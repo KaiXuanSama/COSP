@@ -1,7 +1,7 @@
 # RFC：调用日志检索
 
 - **日期**：2026-11-05（立项日）
-- **状态**：已定稿，实施待开始
+- **状态**：已定稿，实施中（[阶段 1](#call-log-search-stage-1) 已完成）
 - **相关 ADR**：[ADR-0020：调用日志检索扩展现有列表端点，检索模式下前端忽略 SSE 信号](../../adr/adr-0020-call-log-search.md)
 - **分支**：`feat/log-search`
 
@@ -36,7 +36,8 @@
 
 - `views/CallLog.vue`（调用者视角）与 `views/UsageLog.vue`（消费者视角）**都**调用 `fetchLogs(cursor, pageSize)`，pageSize 均为 50。
 - 两者都订阅 `/logs/stream`，收到信号后经 `createCoalescingSync` 串行拉第一页，把 `id > knownMaxId` 的行插到表顶，再用 `prependWithCursorShift` 砍尾并前移游标。CallLog 逐条播放入场动画（`enterQueue` + `flushEnterQueue`），UsageLog 整批插入。
-- 列表行只显示 `HH:MM:SS`（`formatTime` 丢掉了日期）。跨天检索时用户无法分辨日期，这一点需要随检索一起处理。
+- `CallLog.vue` 计划废弃（2026-11-05 用户确认），前端检索只接入 `UsageLog.vue`。UsageLog 的状态有：`rows`、`nextCursor`、`hasMore`、`knownMaxId`、新行高亮 `freshIds`（1.4 秒后按批清除）、行内展开 `expandedId` 与详情缓存 `detailCache`。
+- 两个视图的列表行都只显示 `HH:MM:SS`（`formatTime` 丢掉了日期）。跨天检索时用户无法分辨日期，这一点需要随检索一起处理。
 - `tools/live-test/lib.js` 的 `recentLogs` 也调用 `/config/api/logs?pageSize=n`，依赖「无参数 = 最新 N 条」的现有语义。
 
 ### 1.3 本机数据实测
@@ -170,12 +171,12 @@ ORDER BY l.created_at DESC, l.id DESC LIMIT ?
 
 切换模式时可能有请求还在路上，这是本次最容易出错的地方：
 
-1. 实时模式下 `syncLatestLogs` 正在拉取，用户点了「检索」。拉取回来后会把无条件的最新行插进检索结果。
+1. 实时模式下 `syncLatest` 正在拉取，用户点了「检索」。拉取回来后会把无条件的最新行插进检索结果。
 2. 实时模式的 `loadMore` 在途，用户切到检索模式，无条件的下一页被追加到检索结果末尾。
 3. 用户连续两次修改条件并检索，先发的请求后返回，覆盖了新结果。
-4. CallLog 的 `enterQueue` 里还有没播完的行，切到检索模式后继续插入。
+4. 切换前展开的行在新列表里可能不存在，`expandedId` 与 `freshIds` 残留。
 
-统一用「列表代次」解决：每次进入实时模式、进入检索模式或修改条件，代次加一，同时清空 `enterQueue`、停止动画。所有拉取在发起时记录代次，返回时代次不一致就丢弃结果。SSE 处理函数在检索模式下直接返回，不进入 `createCoalescingSync`。
+统一用「列表代次」解决：每次进入实时模式、进入检索模式或修改条件，代次加一，同时清空 `freshIds`、收起展开行（与现有 `refresh` 的做法一致）。所有拉取在发起时记录代次，返回时代次不一致就丢弃结果。SSE 处理函数在检索模式下直接返回，不进入 `createCoalescingSync`。
 
 这套状态机抽成 `features/call-log/` 下的纯逻辑模块（例如 `searchMode.ts`），用 Vitest 按受控时序覆盖上述四种竞态，与现有 `sync.ts` 的做法一致。
 
@@ -189,7 +190,7 @@ ORDER BY l.created_at DESC, l.id DESC LIMIT ?
 
 ### 4.4 API 封装
 
-`fetchLogs(cursor, pageSize, filter?)`，`filter` 为空时不发任何检索参数，保证 UsageLog 等未改造的调用方行为不变。`status` 用重复参数形式，需要给 axios 配置 `paramsSerializer`（默认会序列化成 `status[]=`）。条件类型放在 `features/call-log/`，不在 `api/` 复制 DTO。
+`fetchLogs(cursor, pageSize, filter?)`，`filter` 为空时不发任何检索参数，保证 CallLog 等未改造的调用方行为不变。`status` 用重复参数形式，需要给 axios 配置 `paramsSerializer`（默认会序列化成 `status[]=`）。条件类型放在 `features/call-log/`，不在 `api/` 复制 DTO。
 
 ## 5. 测试与验证计划
 
@@ -209,8 +210,8 @@ ORDER BY l.created_at DESC, l.id DESC LIMIT ?
 ## 6. 文档影响
 
 - 本 RFC 进入 `working/rfcs/README.md` 索引；端点与 SSE 行为决策晋升 [ADR-0020](../../adr/adr-0020-call-log-search.md)，进入 `docs/README.md` 的 ADR 表。
-- 实施完成后：`CallLogController.listLogs`、`ApiCallLogRepository.findLogs` 的注释补充检索参数语义；`CallLog.vue` 头部说明两种模式。
-- `UsageLog.vue` 本次不接入检索，其头部注释「数据源与调用者视角同为 `/config/api/logs`」仍然成立，不需要改。
+- 实施完成后：`CallLogController.listLogs`、`ApiCallLogRepository.findLogs` 的注释补充检索参数语义；`UsageLog.vue` 头部注释说明两种模式。
+- `CallLog.vue` 本次不接入检索，继续用无参数的 `fetchLogs`，行为不变。废弃它是另一项工作，不在本 RFC 范围内。
 - 本次不涉及 schema、协议翻译、pipeline，`architecture/` 与 `reference/contracts/` 无需更新。
 
 ## 7. 决策记录
@@ -223,7 +224,7 @@ ORDER BY l.created_at DESC, l.id DESC LIMIT ?
 | Q2 | 「供应商名称」匹配 `provider_key` 还是设置页的 `display_name` | `provider_key`：列表上显示的就是它，无需 JOIN，已删除的供应商也能查 |
 | Q3 | 扩展现有端点还是新增端点 | 扩展现有 `GET /config/api/logs`（§3.1 方案 A） |
 | Q4 | 检索模式下 SSE 连接保持并忽略信号，还是断开 | 保持并忽略（§4.1） |
-| Q5 | 检索功能覆盖哪些页面：只做调用者视角 `CallLog.vue`，还是消费者视角 `UsageLog.vue` 同时接入 | 后端一次做完；前端本次只做 CallLog。状态机模块不依赖 CallLog 的入场动画，UsageLog 以后接入时可直接复用 |
+| Q5 | 检索功能覆盖哪些页面：只做调用者视角 `CallLog.vue`，还是消费者视角 `UsageLog.vue` 同时接入 | 后端一次做完；前端只做 UsageLog。最初推荐先做 CallLog，2026-11-05 用户调整：CallLog 计划废弃，改为 UsageLog |
 | Q6 | 部分匹配是否需要区分大小写 | 不区分（SQLite `LIKE` 默认行为）；全字匹配区分 |
 | Q7 | 检索模式下是否需要提示「检索期间有 N 条新日志」 | 第一版不做，避免引入计数状态；有需要再加 |
 
@@ -231,9 +232,9 @@ ORDER BY l.created_at DESC, l.id DESC LIMIT ?
 
 ## 8. 实施计划
 
-按依赖顺序分三步，每步结束时对应测试必须通过。
+按依赖顺序分三个阶段，每个阶段结束时对应测试必须通过。
 
-### 步骤 1：后端检索
+### 阶段 1：后端检索
 
 1. 新增 `application/logging/CallLogFilter`（record）：字段 `from`、`to`（`LocalDateTime`，可空）、`statusClasses`（`2xx`/`4xx`/`5xx` 集合）、`statusCodes`（整数集合）、`provider`、`providerMatch`、`model`、`modelMatch`。提供 `CallLogFilter.NONE` 与 `isEmpty()`。
 2. 新增解析入口（`CallLogFilter.parse(...)` 或独立的 `CallLogFilterParser`），输入原始查询参数，输出 filter 或抛 `IllegalArgumentException`（带参数名的消息）。校验项见 §3.6。
@@ -242,25 +243,53 @@ ORDER BY l.created_at DESC, l.id DESC LIMIT ?
 5. `CallLogController.listLogs` 接收新参数，`status` 用 `@RequestParam(required = false) List<String>`；返回类型改为 `Mono<ResponseEntity<Map<String, Object>>>`，`IllegalArgumentException` 转 400。
 6. 测试：§5 后端各项。`ApiCallLogRepositoryCursorTests` 中已有用例不改，新用例放新测试类（如 `ApiCallLogRepositorySearchTests`），解析校验放 `CallLogFilterTests`。
 
-### 步骤 2：前端状态机与 API
+### 阶段 2：前端状态机与 API
 
 1. `features/call-log/searchFilter.ts`：检索条件类型、状态选项常量、条件 → 查询参数的转换（含本地时间格式化，不经 `toISOString()`）、「条件是否为空」判断。
 2. `features/call-log/searchMode.ts`：模式与列表代次。对外提供「进入检索」「退出检索」「发起拉取时取代次」「结果返回时判断是否作废」「SSE 信号是否应处理」。不依赖 Vue 与 DOM。
 3. `api/index.ts`：`fetchLogs(cursor, pageSize, params?)`，配置 `paramsSerializer` 让数组序列化为重复参数（`status=2xx&status=429`）。不传 `params` 时请求与现状相同。
 4. Vitest：`searchFilter.spec.ts`（参数转换、本地时间、空条件）、`searchMode.spec.ts`（§4.2 四种竞态、检索模式忽略信号、退出后代次变化）。
 
-### 步骤 3：CallLog 页面接入
+### 阶段 3：UsageLog 页面接入
 
-1. 在 `CallLog.vue` 列表卡片头部加检索入口，面板按 §4.3 实现；检索面板若超过约 100 行模板，拆到 `components/calllog/CallLogSearchPanel.vue`，以受控组件方式回写条件。
-2. `loadFirstPage`、`loadMore`、`refreshLogs`、`syncLatestLogs` 接入代次检查；SSE `log` 处理函数在检索模式下直接返回。
-3. 进入或退出模式时清空 `enterQueue`、`animatingId`，退出时整表重载并重置 `knownMaxId`。
-4. 检索模式下列表顶部显示「检索中，列表不会自动更新」与「清除条件」。检索结果为空时空状态文案改为「没有符合条件的调用记录」。
+1. 在 `UsageLog.vue` 卡片头部加检索入口，面板按 §4.3 实现；检索面板拆到 `components/calllog/CallLogSearchPanel.vue`（UsageLog.vue 已有 900 多行），以受控组件方式回写条件。
+2. `loadFirstPage`、`loadMore`、`refresh`、`syncLatest` 接入代次检查；SSE `log` 处理函数在检索模式下直接返回。
+3. 进入或退出模式时清空 `freshIds`、收起展开行，退出时整表重载并重置 `knownMaxId`。`detailCache` 按 id 缓存，内容不随模式变化，可以保留。
+4. 检索模式下列表顶部显示「检索中，列表不会自动更新」与「清除条件」。检索结果为空时空状态文案改为「没有符合条件的消费记录」。
 5. `formatTime` 改为当天 `HH:mm:ss`、非当天 `MM-dd HH:mm:ss`、非当年 `yyyy-MM-dd HH:mm:ss`。这个函数抽到 `features/call-log/` 并补单测。
 6. 验证：`npm run test:run`、`npm run build`；最后跑一次后端全量（`./mvnw test` 会带前端构建）；按 §5 做实机检查。
 
 ### 完成标准
 
-- 不带检索参数时，`/config/api/logs` 的响应与改造前逐字段一致，UsageLog 与 live-test 行为不变。
+- 不带检索参数时，`/config/api/logs` 的响应与改造前逐字段一致，CallLog 与 live-test 行为不变。
 - 检索模式下持续产生新日志，列表内容和游标都不变化。
 - 在任意时刻切换模式或修改条件，列表里不出现不符合当前条件的行。
 - 实施完成后在本 RFC 追加实施记录，状态改为「已定稿且实施完毕」，并按文档门禁输出报告。
+
+<a id="call-log-search-stage-1"></a>
+
+## 9. 实施记录
+
+### 9.1 阶段 1：后端检索（2026-11-05）
+
+**改动**
+
+- 新增 `application/logging/CallLogFilter.java`：检索条件 record，内含 `MatchMode`（`EXACT` / `CONTAINS`）与 `StatusClass`（`2xx` / `4xx` / `5xx`）；`parse(...)` 负责解析与校验，非法时抛带参数名的 `IllegalArgumentException`。
+- `ApiCallLogRepository`：新增 `findLogs(CallLogFilter, Long, int)`，原 `findLogs(Long, int)` 委托到 `CallLogFilter.NONE`；新增 `escapeLike`。
+- `CallLogQueryService.listLogs` 增加 filter 参数。
+- `CallLogController.listLogs` 接收 7 个检索参数，返回类型改为 `Mono<ResponseEntity<Map<String, Object>>>`，非法参数返回 400 `{ ok: false, message }`。成功响应体不变。
+
+**与计划的偏差**
+
+- 文本长度上限统一为 200，没有按列宽（30 / 100）拒绝。SQLite 不强制 `VARCHAR(n)`，库里可能有超过声明长度的值，按列宽拒绝会让这些行查不到。§3.2 中「超出列宽直接 400」的说法以此为准。
+- 状态精确码限定为 `-1` 或 100~599，其它整数返回 400。单个 `status` 参数内也接受逗号分隔，方便手写 URL。
+- 时间只接受 `yyyy-MM-ddTHH:mm:ss`（`ResolverStyle.STRICT`，拒绝 2 月 30 日等无效日期）。
+- 匹配方式参数大小写不敏感（`Contains` 等价于 `contains`）。
+
+**测试**
+
+- `CallLogFilterTests`（16 条）：空白即未传、时间格式与边界、状态类与精确码、逗号分隔、上限、匹配方式。
+- `ApiCallLogRepositorySearchTests`（10 条）：`NONE` 与旧重载结果逐字段相同、时间闭区间、状态 OR、`-1` 不属于任何状态类、全字匹配区分大小写、部分匹配不区分、`_` `%` `\` 转义、多条件 AND、带条件翻页连续。
+- `CallLogControllerSearchTests`（3 条）：无参数传 `NONE`、重复 `status` 参数解析、5 类非法参数返回 400 且不调用服务层。
+- 默认全量 `mvnw.cmd -o surefire:test`：**2039 通过，0 失败 / 错误**。不涉及 schema，未跑迁移测试。
+- 未做：实机 HTTP 验证（留到阶段 3 与前端一起做）。

@@ -5,7 +5,7 @@
 - **取代**：无
 - **相关**：[RFC：调用日志检索](../working/rfcs/2026-11-05-call-log-search.md)、
   `api/CallLogController.java`、`infrastructure/persistence/ApiCallLogRepository.java`（`findLogs`）、
-  `frontend/src/views/CallLog.vue`
+  `frontend/src/views/UsageLog.vue`
 
 ## 背景
 
@@ -43,7 +43,7 @@
 
 **正面**
 
-- 响应格式、游标、排序只有一份实现，`UsageLog.vue` 与 `recentLogs` 无需改动。
+- 响应格式、游标、排序只有一份实现，不接入检索的 `CallLog.vue` 与 `recentLogs` 无需改动。
 - 检索结果不会被实时流插入不符合条件的行。
 - 不需要 schema 变更或新索引：本机 27,336 行实测最坏情况（部分匹配无命中，全表扫）142 ms。
 
