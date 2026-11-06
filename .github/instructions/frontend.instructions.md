@@ -78,13 +78,14 @@ JSON 值输入统一走 `JsonValueInput.vue`（左侧类型档位 + 右侧按类
 
 ## 自研组件契约
 
-修改热力图、范围滑块、用量柱图或折线图前，先读对应目录 README；改变 Props、事件、类型、动画或
+修改热力图、范围滑块、用量柱图、折线图或叠放预览前，先读对应目录 README；改变 Props、事件、类型、动画或
 barrel 导出时同步更新文档：
 
 - [`components/heatmap/README.md`](../../frontend/src/components/heatmap/README.md)
 - [`components/rangeslider/README.md`](../../frontend/src/components/rangeslider/README.md)
 - [`components/usagechart/README.md`](../../frontend/src/components/usagechart/README.md)
 - [`components/usageline/README.md`](../../frontend/src/components/usageline/README.md)
+- [`components/stacked-diff/README.md`](../../frontend/src/components/stacked-diff/README.md)
 
 ## 手动验证
 

@@ -45,7 +45,9 @@
 - 已知技术债：[`architecture/KNOWN_DEBT.md`](./architecture/KNOWN_DEBT.md)
 - 协议契约：[`reference/contracts/`](./reference/contracts/)
 - 功能提案索引：[`working/rfcs/README.md`](./working/rfcs/README.md)
-- 请求体规则组叠放预览（待实现）：[RFC](./working/rfcs/2026-11-06-request-body-stacked-diff.md)
+- 请求体规则组叠放预览：[RFC](./working/rfcs/2026-11-06-request-body-stacked-diff.md) ·
+   [阶段 1 通用组件](./working/rfcs/2026-11-06-request-body-stacked-diff.md#stacked-diff-stage-1) ·
+   [组件契约与独立示例](../frontend/src/components/stacked-diff/README.md)
 - M2C 去程：[最终调研](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-final-review) ·
    [实施计划](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-plan) ·
    [M2C 请求契约](./reference/contracts/M2C-REQUEST-CONTRACT.md) ·
