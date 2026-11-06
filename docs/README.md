@@ -45,6 +45,7 @@
 - 已知技术债：[`architecture/KNOWN_DEBT.md`](./architecture/KNOWN_DEBT.md)
 - 协议契约：[`reference/contracts/`](./reference/contracts/)
 - 功能提案索引：[`working/rfcs/README.md`](./working/rfcs/README.md)
+- 请求体规则组叠放预览（待实现）：[RFC](./working/rfcs/2026-11-06-request-body-stacked-diff.md)
 - M2C 去程：[最终调研](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-final-review) ·
    [实施计划](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-plan) ·
    [M2C 请求契约](./reference/contracts/M2C-REQUEST-CONTRACT.md) ·
@@ -71,6 +72,7 @@
 | [ADR-0018](./adr/adr-0018-cosp-upstream-response-decompression.md) | COSP 出站响应解压支持 gzip/deflate/zstd/brotli，不再要求供应商删除 Accept-Encoding |
 | [ADR-0019](./adr/adr-0019-c2m-tool-result-media-to-user.md) | C2M 工具结果中的媒体移出 tool_result，放到同一 user 轮次的工具结果之后并带来源标记 |
 | [ADR-0020](./adr/adr-0020-call-log-search.md) | 调用日志检索扩展现有 `/config/api/logs` 端点，检索模式下前端保持 SSE 连接但丢弃信号 |
+| [ADR-0021](./adr/adr-0021-stacked-diff-preview.md) | 叠放 Diff 预览分离通用交互与请求体业务，采用焦点锁与逻辑行对应 |
 
 ### architecture/ —— 当前架构
 
