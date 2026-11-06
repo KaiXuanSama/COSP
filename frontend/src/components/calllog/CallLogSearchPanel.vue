@@ -64,75 +64,83 @@ const hasInput = computed(() => {
 
 <template>
   <div class="search-panel" @keydown.enter="emit('search')">
-    <div class="search-field search-field--time">
-      <span class="search-label">时间</span>
-      <NDatePicker
-        size="small"
-        type="datetimerange"
-        format="yyyy-MM-dd HH:mm:ss"
-        clearable
-        :value="modelValue.timeRange"
-        start-placeholder="开始"
-        end-placeholder="结束"
-        @update:value="(v: [number, number] | null) => patch({ timeRange: v })"
-      />
+    <div class="search-row search-row--primary">
+      <div class="search-field">
+        <span class="search-label">时间</span>
+        <NDatePicker
+          class="search-control"
+          size="small"
+          type="datetimerange"
+          format="yyyy-MM-dd HH:mm:ss"
+          clearable
+          :value="modelValue.timeRange"
+          start-placeholder="开始"
+          end-placeholder="结束"
+          @update:value="(v: [number, number] | null) => patch({ timeRange: v })"
+        />
+      </div>
+
+      <div class="search-field">
+        <span class="search-label">状态</span>
+        <NSelect
+          class="search-control"
+          size="small"
+          multiple
+          clearable
+          max-tag-count="responsive"
+          placeholder="全部"
+          :options="statusOptions"
+          :value="modelValue.statuses"
+          @update:value="(v: string[]) => patch({ statuses: v })"
+        />
+      </div>
     </div>
 
-    <div class="search-field search-field--status">
-      <span class="search-label">状态</span>
-      <NSelect
-        size="small"
-        multiple
-        clearable
-        max-tag-count="responsive"
-        placeholder="全部"
-        :options="statusOptions"
-        :value="modelValue.statuses"
-        @update:value="(v: string[]) => patch({ statuses: v })"
-      />
-    </div>
+    <div class="search-row search-row--secondary">
+      <div class="search-field search-field--text">
+        <span class="search-label">供应商</span>
+        <NAutoComplete
+          class="search-control"
+          size="small"
+          clearable
+          placeholder="供应商标识，如 stepfun"
+          :options="providerOptions"
+          :value="modelValue.provider"
+          :get-show="() => true"
+          @update:value="(v: string | null) => patch({ provider: v ?? '' })"
+        />
+        <NSelect
+          size="small"
+          class="match-select"
+          :options="matchOptions"
+          :value="modelValue.providerMatch"
+          @update:value="(v: MatchMode) => patch({ providerMatch: v })"
+        />
+      </div>
 
-    <div class="search-field search-field--text">
-      <span class="search-label">供应商</span>
-      <NAutoComplete
-        size="small"
-        clearable
-        placeholder="供应商标识，如 stepfun"
-        :options="providerOptions"
-        :value="modelValue.provider"
-        :get-show="() => true"
-        @update:value="(v: string | null) => patch({ provider: v ?? '' })"
-      />
-      <NSelect
-        size="small"
-        class="match-select"
-        :options="matchOptions"
-        :value="modelValue.providerMatch"
-        @update:value="(v: MatchMode) => patch({ providerMatch: v })"
-      />
-    </div>
+      <div class="search-field search-field--text">
+        <span class="search-label">模型</span>
+        <NInput
+          class="search-control"
+          size="small"
+          clearable
+          placeholder="上游模型名，不含 [供应商] 前缀"
+          :value="modelValue.model"
+          @update:value="(v: string) => patch({ model: v })"
+        />
+        <NSelect
+          size="small"
+          class="match-select"
+          :options="matchOptions"
+          :value="modelValue.modelMatch"
+          @update:value="(v: MatchMode) => patch({ modelMatch: v })"
+        />
+      </div>
 
-    <div class="search-field search-field--text">
-      <span class="search-label">模型</span>
-      <NInput
-        size="small"
-        clearable
-        placeholder="上游模型名，不含 [供应商] 前缀"
-        :value="modelValue.model"
-        @update:value="(v: string) => patch({ model: v })"
-      />
-      <NSelect
-        size="small"
-        class="match-select"
-        :options="matchOptions"
-        :value="modelValue.modelMatch"
-        @update:value="(v: MatchMode) => patch({ modelMatch: v })"
-      />
-    </div>
-
-    <div class="search-actions">
-      <NButton size="small" type="primary" :loading="loading" @click="emit('search')">检索</NButton>
-      <NButton size="small" :disabled="!active && !hasInput" @click="emit('clear')">清除条件</NButton>
+      <div class="search-actions">
+        <NButton size="small" type="primary" :loading="loading" @click="emit('search')">检索</NButton>
+        <NButton size="small" :disabled="!active && !hasInput" @click="emit('clear')">清除条件</NButton>
+      </div>
     </div>
   </div>
 </template>
@@ -141,46 +149,74 @@ const hasInput = computed(() => {
 @use '@/styles/variables' as *;
 
 .search-panel {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: $space-sm $space-md;
+  container: log-search / inline-size;
+  display: grid;
+  gap: $space-sm;
   padding-bottom: $space-sm;
   margin-bottom: $space-sm;
   border-bottom: 1px solid $border-light;
 }
 
+.search-row {
+  display: grid;
+  align-items: center;
+  gap: $space-sm $space-md;
+  min-width: 0;
+}
+
+.search-row--primary {
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+}
+
+.search-row--secondary {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) auto;
+}
+
 .search-field {
-  display: flex;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
   align-items: center;
   gap: $space-xs;
-}
-
-.search-field--time {
-  width: 380px;
-}
-
-.search-field--status {
-  width: 260px;
+  min-width: 0;
 }
 
 .search-field--text {
-  width: 300px;
+  grid-template-columns: 36px minmax(0, 1fr) 72px;
 }
 
 .search-label {
-  flex: none;
   font-size: 12px;
   color: $text-muted;
 }
 
+.search-control {
+  width: 100%;
+  min-width: 0;
+}
+
 .match-select {
-  flex: none;
-  width: 72px;
+  min-width: 0;
 }
 
 .search-actions {
   display: flex;
+  justify-content: flex-end;
   gap: $space-sm;
+}
+
+@container log-search (max-width: 720px) {
+  .search-row--secondary {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  }
+
+  .search-actions {
+    grid-column: 1 / -1;
+  }
+}
+
+@container log-search (max-width: 520px) {
+  .search-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 </style>
