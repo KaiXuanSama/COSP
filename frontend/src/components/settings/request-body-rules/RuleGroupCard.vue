@@ -2,8 +2,8 @@
 /**
  * RuleGroupCard — 单个请求体规则组的编辑卡片。
  *
- * 卡片头部是组的元信息（组名、适用线路、启用开关、排序与删除），
- * 中部是**该组专属**的「请求体编辑预览 / 转换后请求体」双栏，下部是该组的规则列表。
+ * 卡片头部是组元信息与样本预设；下方约 2:3 排列叠放预览与该组规则。
+ * 右侧规则自然撑高整组，左侧文本在分配到的高度内滚动，不反向撑高规则区。
  *
  * <h2>为何每组各带一份预览样本</h2>
  * 不同线路协议的请求体形状不同（Anthropic 的 `system` 在顶层、必带 `max_tokens`），
@@ -15,25 +15,20 @@
  * 左栏文本是纯本地编辑状态，只有解析成功才向上提交为 `previewBody`。
  * 因此 JSON 写坏时卡片内显示错误、保存的仍是上一份可用样本，不会阻断整个编辑器的应用。
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { NButton, NInput, NScrollbar, NSelect, NSwitch, useMessage } from 'naive-ui'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { NButton, NInput, NSelect, NSwitch, useMessage, type InputInst } from 'naive-ui'
 import type { FieldRule, RuleGroup } from '@/features/request-body-rules/types'
-import { createPreviewScheduler } from '@/features/request-body-rules/preview'
+import { useRuleGroupPreview } from '@/features/request-body-rules/useRuleGroupPreview'
 import { previewRequestBodyRules } from '@/api'
 import { MIMO_EXAMPLE_RULESET } from '@/features/request-body-rules/defaultRequestBody'
-import {
-  composeRequestBodyTemplate,
-  REQUEST_BODY_TEMPLATE_OPTIONS,
-} from '@/features/request-body-rules/requestBodyTemplates'
-import type { RequestBodyTemplateKey } from '@/features/request-body-rules/requestBodyTemplates'
-import { buildDiffTree } from '@/features/request-body-rules/diff'
+import { REQUEST_BODY_TEMPLATE_OPTIONS } from '@/features/request-body-rules/requestBodyTemplates'
+import { StackedDiff, DiffTextView, TextareaLineNumbers, createTextareaScrollPort, type LineScrollPort, type TextareaScrollPort } from '@/components/stacked-diff'
 import {
   RULE_ENGINE_WIRE_PROTOCOLS,
   WIRE_PROTOCOL_LABELS,
   type WireProtocol,
 } from '@/types/protocol'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
-import DiffJsonNode from './DiffJsonNode.vue'
 
 const props = defineProps<{
   group: RuleGroup
@@ -68,205 +63,43 @@ const PROTOCOL_OPTIONS = RULE_ENGINE_WIRE_PROTOCOLS.map((protocol) => ({
   value: protocol,
 }))
 
-// ==================== 预览输入 ====================
-
-const inputJsonText = ref(JSON.stringify(props.group.previewBody, null, 2))
-const inputError = ref('')
-
 function patch(value: Partial<RuleGroup>) {
   emit('update:group', { ...props.group, ...value })
 }
 
-function templateJson(keys: readonly RequestBodyTemplateKey[]): string {
-  return JSON.stringify(composeRequestBodyTemplate(keys), null, 2)
-}
-
-/** 解析左栏文本；成功时把结果提交为该组的预览样本。 */
-function parseInput() {
-  const trimmed = inputJsonText.value.trim()
-  if (!trimmed) {
-    inputError.value = '输入为空'
-    return
-  }
-  try {
-    const parsed = JSON.parse(trimmed)
-    if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      inputError.value = '请求体必须是 JSON 对象'
-      return
-    }
-    inputError.value = ''
-    patch({ previewBody: parsed as Record<string, unknown> })
-  } catch (error: any) {
-    inputError.value = `JSON 语法错误: ${error.message}`
-  }
-}
-
-watch(inputJsonText, parseInput)
-
-function updateTemplateSelection(keys: RequestBodyTemplateKey[]) {
-  if (keys.includes('custom')) {
-    const structuredKeys = keys.filter((key) => key !== 'custom')
-    const onlyCustom = props.group.templateKeys.length === 1 && props.group.templateKeys[0] === 'custom'
-    if (onlyCustom) {
-      patch({ templateKeys: structuredKeys })
-      inputJsonText.value = templateJson(structuredKeys)
-      return
-    }
-    patch({ templateKeys: ['custom'] })
-    return
-  }
-  patch({ templateKeys: keys })
-  inputJsonText.value = templateJson(keys)
-}
-
-/** 手工编辑左栏即视为自定义样本，模板下拉切到「自定义」。 */
-function updateInputJsonText(value: string) {
-  inputJsonText.value = value
-  patch({ templateKeys: ['custom'] })
-}
-
-// ==================== 转换预览（由后端生产引擎计算） ====================
-
-/**
- * 预览调度器。
- *
- * 预览走后端而非前端自带引擎：那样「预览」与「实际转换」由同一份代码产出，
- * 「看到的和将发生的不一致」在结构上不再可能。代价是预览变成异步 ——
- * 防抖、请求竞态、加载态与失败降级都由 `preview.ts` 的调度器负责。
- */
-const scheduler = createPreviewScheduler((payload) =>
-  previewRequestBodyRules(payload.previewBody, payload.rules).then((response) => response.data),
-)
-
-/** 输入或规则一变就重新取预览；JSON 写坏时不发请求，右栏保留上次结果并标记过期。 */
-watch(
-  () => [props.group.previewBody, props.group.rules] as const,
-  () => {
-    if (inputError.value) return
-    scheduler.schedule({
-      previewBody: props.group.previewBody,
-      rules: props.group.rules as unknown[],
-    })
-  },
-  { deep: true, immediate: true },
-)
-
-onBeforeUnmount(scheduler.dispose)
-
+const {
+  inputJsonText, inputError, scheduler, lineView, outputJsonText, warnings, previewNotice,
+  updateInputJsonText, updateTemplateSelection, formatInput,
+} = useRuleGroupPreview({
+  group: () => props.group,
+  update: value => emit('update:group', value),
+  requester: payload => previewRequestBodyRules(payload.previewBody, payload.rules).then(response => response.data),
+})
 const transformResult = scheduler.result
-
-const outputJsonText = computed(() =>
-  transformResult.value ? JSON.stringify(transformResult.value.output, null, 2) : '',
-)
-
-const diffTree = computed(() => {
-  if (!transformResult.value) return null
-  return buildDiffTree(props.group.previewBody, transformResult.value.output)
-})
-
-const warnings = computed(() => transformResult.value?.warnings ?? [])
-
-/**
- * 右栏的提示文案。
- *
- * 三种「不是正常结果」的情形要分开说：本地 JSON 写坏（用户自己能修）、
- * 请求失败（后端问题，展示的是旧结果）、首次加载中（还没有任何结果可展示）。
- * 混成一句「无法预览」会让用户不知道该改什么。
- */
-const previewNotice = computed(() => {
-  if (inputError.value) return '（请先修正左侧 JSON）'
-  if (scheduler.error.value) return `预览请求失败：${scheduler.error.value}`
-  if (!transformResult.value) return '（正在计算预览…）'
-  return ''
-})
+const resultLines = computed(() => lineView.value.comparison?.resultLines ?? [])
 
 const scopeObject = computed<Record<string, unknown> | null>(() => props.group.previewBody ?? null)
 
 /** protocols 为空数组是显式的「哪条线路都不要」，与「没勾」在语义上不同，值得提示。 */
 const hasNoProtocol = computed(() => props.group.protocols.length === 0)
 
-// ==================== 高度与滚动同步 ====================
-
-const leftInputRef = ref<HTMLElement | null>(null)
-const rightOutputRef = ref<HTMLElement | null>(null)
-const rightOutputHeight = ref('140px')
-let resizeObserver: ResizeObserver | null = null
-let leftTextarea: HTMLTextAreaElement | null = null
-let rightScrollEl: HTMLElement | null = null
-let syncingLeftToRight = false
-let syncingRightToLeft = false
-
-function resolveLeftDom(): HTMLElement | null {
-  const instance = leftInputRef.value as any
-  if (!instance) return null
-  return instance.$el || instance
+const leftInputRef = ref<InputInst | null>(null)
+const sourcePort = shallowRef<TextareaScrollPort | null>(null)
+const resultPort = shallowRef<LineScrollPort | null>(null)
+const previewInputTheme = {
+  color: 'transparent', colorFocus: 'transparent', fontSize: '12px',
+  border: 'none', borderHover: 'none', borderFocus: 'none', boxShadowFocus: 'none',
 }
 
-function getScrollMetrics(el: HTMLElement): { ratio: number; max: number } {
-  const max = el.scrollHeight - el.clientHeight
-  return { ratio: max > 0 ? el.scrollTop / max : 0, max }
-}
-
-function onLeftScroll() {
-  if (syncingRightToLeft || !leftTextarea || !rightScrollEl) return
-  const { ratio } = getScrollMetrics(leftTextarea)
-  const { max } = getScrollMetrics(rightScrollEl)
-  syncingLeftToRight = true
-  rightScrollEl.scrollTop = ratio * max
-  requestAnimationFrame(() => {
-    syncingLeftToRight = false
-  })
-}
-
-function onRightScroll() {
-  if (syncingLeftToRight || !leftTextarea || !rightScrollEl) return
-  const { ratio } = getScrollMetrics(rightScrollEl)
-  syncingRightToLeft = true
-  leftTextarea.scrollTop = ratio * (leftTextarea.scrollHeight - leftTextarea.clientHeight)
-  requestAnimationFrame(() => {
-    syncingRightToLeft = false
-  })
-}
-
-function teardownSync() {
-  resizeObserver?.disconnect()
-  resizeObserver = null
-  leftTextarea?.removeEventListener('scroll', onLeftScroll)
-  rightScrollEl?.removeEventListener('scroll', onRightScroll)
-  leftTextarea = null
-  rightScrollEl = null
-}
-
-/**
- * 绑定「左栏 resize → 右栏跟随」与两栏滚动比例同步。
- *
- * 卡片是 v-for 出来的，每个实例各自绑定自己的 DOM —— 这段逻辑只有一份代码、N 份状态。
- */
-async function setupSync() {
+onMounted(() => {
+  const textarea = leftInputRef.value?.textareaElRef
+  if (textarea) sourcePort.value = createTextareaScrollPort(textarea)
+})
+watch(inputJsonText, async () => {
   await nextTick()
-  const el = resolveLeftDom()
-  if (el && typeof ResizeObserver !== 'undefined') {
-    rightOutputHeight.value = `${el.getBoundingClientRect().height}px`
-    resizeObserver = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        if (entry.contentRect.height > 0) {
-          rightOutputHeight.value = `${entry.contentRect.height}px`
-        }
-      }
-    })
-    resizeObserver.observe(el)
-  }
-  leftTextarea = el?.querySelector('textarea') ?? null
-  const rightRoot = rightOutputRef.value
-  rightScrollEl = rightRoot?.querySelector('.n-scrollbar-container')
-    ?? rightRoot?.querySelector('.n-scrollbar')
-    ?? null
-  leftTextarea?.addEventListener('scroll', onLeftScroll)
-  rightScrollEl?.addEventListener('scroll', onRightScroll)
-}
-
-setupSync()
-onBeforeUnmount(teardownSync)
+  sourcePort.value?.refresh()
+}, { flush: 'post' })
+onBeforeUnmount(() => sourcePort.value?.dispose())
 
 // ==================== 规则操作 ====================
 
@@ -285,19 +118,18 @@ function clearRules() {
 }
 
 function formatJson() {
-  try {
-    inputJsonText.value = JSON.stringify(JSON.parse(inputJsonText.value), null, 2)
-    message.success('已格式化')
-  } catch {
-    message.error('JSON 语法错误，无法格式化')
-  }
+  if (formatInput()) message.success('已格式化')
+  else message.error('请求体不是有效 JSON 对象，无法格式化')
 }
 
-function copyOutput() {
+async function copyOutput() {
   if (!outputJsonText.value) return
-  navigator.clipboard.writeText(outputJsonText.value).then(() => {
+  try {
+    await navigator.clipboard.writeText(outputJsonText.value)
     message.success('已复制转换结果')
-  })
+  } catch {
+    message.error('复制失败，请检查浏览器剪贴板权限')
+  }
 }
 </script>
 
@@ -307,7 +139,7 @@ function copyOutput() {
     <header class="group-header">
       <div class="group-identity">
         <span class="group-order">{{ index + 1 }}</span>
-        <label class="group-field">
+        <label class="group-field group-field--name">
           <span class="group-field-label">规则组名</span>
           <NInput
             :value="group.name"
@@ -317,16 +149,31 @@ function copyOutput() {
             class="group-name-input"
           />
         </label>
-        <label class="group-field">
+        <label class="group-field group-field--protocol">
           <span class="group-field-label">适用协议</span>
           <NSelect
             :value="group.protocols"
             @update:value="patch({ protocols: $event as WireProtocol[] })"
             :options="PROTOCOL_OPTIONS"
             multiple
+            max-tag-count="responsive"
             size="small"
             class="group-protocol-select"
             placeholder="适用协议"
+          />
+        </label>
+        <label class="group-field group-field--template">
+          <span class="group-field-label">预设请求体</span>
+          <NSelect
+            :value="group.templateKeys"
+            @update:value="updateTemplateSelection"
+            :options="REQUEST_BODY_TEMPLATE_OPTIONS"
+            multiple
+            clearable
+            max-tag-count="responsive"
+            size="small"
+            class="group-template-select"
+            placeholder="选择预览内容"
           />
         </label>
       </div>
@@ -369,93 +216,87 @@ function copyOutput() {
       未选择任何适用线路，该组的规则不会在任何请求上执行。
     </div>
 
-    <!-- 该组专属的双栏预览 -->
-    <div class="editor-preview">
-      <div class="preview-panel">
-        <div class="preview-header">
-          <div class="preview-heading">
-            <span class="preview-title">请求体编辑预览</span>
-            <NSelect
-              :value="group.templateKeys"
-              @update:value="updateTemplateSelection"
-              :options="REQUEST_BODY_TEMPLATE_OPTIONS"
-              multiple
-              clearable
-              max-tag-count="responsive"
-              size="small"
-              class="preview-template-select"
-              placeholder="选择显示内容"
-            />
-          </div>
-          <div class="preview-actions">
+    <div class="group-workspace">
+      <div class="group-preview">
+        <StackedDiff
+          class="group-stacked-preview"
+          source-title="请求体编辑区"
+          result-title="转换后请求体"
+          :aria-label="`${group.name || '规则组'}的请求体对比`"
+          :source-scroll-port="sourcePort"
+          :result-scroll-port="resultPort"
+          :line-map="inputError ? null : lineView.lineMap"
+        >
+          <template #source-actions>
             <NButton text size="tiny" @click="formatJson">格式化</NButton>
-          </div>
-        </div>
-        <NInput
-          ref="leftInputRef"
-          :value="inputJsonText"
-          @update:value="updateInputJsonText"
-          type="textarea"
-          :autosize="{ minRows: 3, maxRows: 30 }"
-          :resizable="true"
-          class="preview-input"
-          placeholder="在此编辑或粘贴请求体 JSON"
-        />
-        <div v-if="inputError" class="preview-error">{{ inputError }}</div>
-      </div>
-
-      <div class="preview-arrow">→</div>
-
-      <div class="preview-panel">
-        <div class="preview-header">
-          <div class="preview-heading">
-            <span class="preview-title">转换后请求体</span>
+          </template>
+          <template #source>
+            <div class="preview-source">
+              <TextareaLineNumbers :port="sourcePort" :value="inputJsonText" />
+              <NInput
+                ref="leftInputRef"
+                :value="inputJsonText"
+                @update:value="updateInputJsonText"
+                type="textarea"
+                :resizable="false"
+                :theme-overrides="previewInputTheme"
+                :status="inputError ? 'error' : undefined"
+                aria-label="请求体编辑区"
+                class="preview-input"
+                placeholder="在此编辑或粘贴请求体 JSON"
+              />
+            </div>
+          </template>
+          <template v-if="inputError" #source-notice><span class="preview-error">{{ inputError }}</span></template>
+          <template #result-title>
+            <span>转换后请求体</span>
             <span v-if="scheduler.loading.value" class="preview-badge">计算中…</span>
             <span v-else-if="scheduler.stale.value && transformResult" class="preview-badge preview-badge--stale">
               结果已过期
             </span>
-          </div>
-          <div class="preview-actions">
+          </template>
+          <template #result-actions>
             <NButton text size="tiny" :disabled="!outputJsonText" @click="copyOutput">复制</NButton>
+          </template>
+          <template #result>
+            <DiffTextView
+              v-if="lineView.comparison"
+              :lines="resultLines"
+              aria-label="转换后请求体内容"
+              @port="resultPort = $event"
+            />
+            <pre v-else class="preview-output">{{ outputJsonText || previewNotice }}</pre>
+          </template>
+          <template v-if="previewNotice" #result-notice>
+            <span :class="{ 'preview-error': scheduler.error.value }">{{ previewNotice }}</span>
+          </template>
+        </StackedDiff>
+      </div>
+
+      <div class="group-rules">
+        <div class="rules-section-header">
+          <span class="rules-section-title">该组规则（{{ group.rules.length }} 条）</span>
+          <div class="rules-section-actions">
+            <NButton size="tiny" class="rules-action-button" @click="loadImageToolCompatibilityRules">
+              加载图片工具兼容规则
+            </NButton>
+            <NButton size="tiny" class="rules-action-button" @click="clearRules">清空</NButton>
           </div>
         </div>
-        <div ref="rightOutputRef" class="preview-output-wrapper" :style="{ height: rightOutputHeight }">
-          <NScrollbar class="preview-output-scroll">
-            <div v-if="diffTree" class="preview-output-tree">
-              <DiffJsonNode :node="diffTree" :is-last="true" />
-            </div>
-            <pre v-else class="preview-output">{{ previewNotice }}</pre>
-          </NScrollbar>
+        <div v-if="warnings.length > 0" class="editor-warnings">
+          <div class="warnings-header">执行警告（{{ warnings.length }}）</div>
+          <div v-for="(warning, i) in warnings" :key="i" class="warning-item">
+            <span class="warning-path">{{ warning.fieldPath || '(根)' }}</span>
+            <span class="warning-msg">{{ warning.message }}</span>
+          </div>
         </div>
-        <div v-if="previewNotice && diffTree" class="preview-error">{{ previewNotice }}</div>
+        <RequestBodyRuleList
+          :rules="group.rules"
+          :scope-object="scopeObject"
+          :depth="0"
+          @update:rules="updateRules"
+        />
       </div>
-    </div>
-
-    <div v-if="warnings.length > 0" class="editor-warnings">
-      <div class="warnings-header">执行警告（{{ warnings.length }}）</div>
-      <div v-for="(warning, i) in warnings" :key="i" class="warning-item">
-        <span class="warning-path">{{ warning.fieldPath || '(根)' }}</span>
-        <span class="warning-msg">{{ warning.message }}</span>
-      </div>
-    </div>
-
-    <!-- 该组的规则列表 -->
-    <div class="group-rules">
-      <div class="rules-section-header">
-        <span class="rules-section-title">该组规则（{{ group.rules.length }} 条）</span>
-        <div class="rules-section-actions">
-          <NButton size="tiny" class="rules-action-button" @click="loadImageToolCompatibilityRules">
-            加载图片工具兼容规则
-          </NButton>
-          <NButton size="tiny" class="rules-action-button" @click="clearRules">清空</NButton>
-        </div>
-      </div>
-      <RequestBodyRuleList
-        :rules="group.rules"
-        :scope-object="scopeObject"
-        :depth="0"
-        @update:rules="updateRules"
-      />
     </div>
   </section>
 </template>
@@ -464,6 +305,8 @@ function copyOutput() {
 @use '@/styles/variables' as *;
 
 .group-card {
+  container: rule-group / inline-size;
+  min-width: 0;
   border: 1px solid $border;
   border-radius: $radius;
   padding: $space-sm;
@@ -481,7 +324,7 @@ function copyOutput() {
   justify-content: space-between;
   gap: $space-sm;
   flex-wrap: wrap;
-  margin-bottom: $space-xs;
+  margin-bottom: $space-md;
 }
 
 .group-identity {
@@ -489,7 +332,7 @@ function copyOutput() {
   align-items: center;
   gap: $space-sm;
   min-width: 0;
-  flex: 1;
+  flex: 1 1 760px;
   flex-wrap: wrap;
 }
 
@@ -529,7 +372,8 @@ function copyOutput() {
 }
 
 .group-name-input {
-  max-width: 220px;
+  width: 160px;
+  min-width: 0;
 }
 
 .group-controls {
@@ -539,7 +383,13 @@ function copyOutput() {
 }
 
 .group-protocol-select {
-  width: 230px;
+  width: 210px;
+  min-width: 0;
+}
+
+.group-template-select {
+  width: 220px;
+  min-width: 0;
 }
 
 .group-order-actions {
@@ -591,47 +441,39 @@ function copyOutput() {
   border: 1px solid rgba($warning, 0.2);
 }
 
-.editor-preview {
-  display: flex;
+.group-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
   align-items: stretch;
-  gap: $space-sm;
-  margin-bottom: $space-sm;
+  gap: $space-md;
+  min-height: 380px;
 }
 
-.preview-panel {
-  flex: 1;
+.group-preview {
+  position: relative;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
+  min-height: 380px;
 }
 
-.preview-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 4px;
-}
-
-.preview-heading {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: $space-sm;
-}
-
-.preview-template-select {
-  width: 220px;
-  min-width: 140px;
-}
-
-.preview-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: $text-primary;
+// 预览绝对填充自身网格区域，内容不参与网格高度计算，右侧规则决定最终高度。
+.group-stacked-preview {
+  --stacked-diff-min-height: 0px;
+  --stacked-diff-color: #{$text-body};
+  --stacked-diff-muted: #{$text-muted};
+  --stacked-diff-accent: #{$accent};
+  --stacked-diff-deleted: #{$danger};
+  --stacked-diff-border: #{$border};
+  --stacked-diff-text-font: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  --stacked-diff-text-size: 12px;
+  --stacked-diff-text-line-height: 1.6;
+  --stacked-diff-text-padding: 12px;
+  position: absolute;
+  inset: 0;
 }
 
 /** 预览状态角标：加载中与结果过期共用样式，只差颜色。 */
 .preview-badge {
+  margin-left: 6px;
   font-size: 11px;
   color: $text-muted;
   white-space: nowrap;
@@ -641,47 +483,53 @@ function copyOutput() {
   color: $warning;
 }
 
-.preview-actions {
+.preview-source {
   display: flex;
-  gap: $space-xs;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  line-height: 19.2px;
 }
 
 .preview-input {
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   font-size: 12px;
-  height: 140px;
-  min-height: 100px;
-  max-height: 600px;
-  border: 1px solid $border;
-  border-radius: $radius;
-  resize: vertical;
-  overflow: auto;
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  border-radius: 0;
 }
 
-.preview-input :deep(.n-input),
 .preview-input :deep(.n-input-wrapper),
-.preview-input :deep(.n-input__textarea),
+.preview-input :deep(.n-input__textarea) {
+  height: 100%;
+  min-height: 0;
+}
+
+.preview-input :deep(.n-input-wrapper) {
+  padding: 0;
+}
+
 .preview-input :deep(.n-input__textarea-el) {
+  box-sizing: border-box;
   height: 100%;
+  padding: 12px 12px 12px 0;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
-.preview-output-wrapper {
-  border: 1px solid $border;
-  border-radius: $radius;
-  background: $bg;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-
-.preview-output-scroll {
-  flex: 1;
-  height: 100%;
+.preview-input :deep(.n-input__border),
+.preview-input :deep(.n-input__state-border) {
+  display: none;
 }
 
 .preview-output {
   margin: 0;
-  padding: $space-sm;
+  padding: 12px;
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   font-size: 12px;
   line-height: 1.6;
@@ -690,23 +538,10 @@ function copyOutput() {
   word-break: break-all;
 }
 
-.preview-output-tree {
-  padding: $space-sm;
-  color: $text-muted;
-}
-
 .preview-error {
   color: $danger;
   font-size: 12px;
-  margin-top: 4px;
-}
-
-.preview-arrow {
-  display: flex;
-  align-items: center;
-  font-size: 24px;
-  color: $accent;
-  flex-shrink: 0;
+  overflow-wrap: anywhere;
 }
 
 .editor-warnings {
@@ -729,12 +564,19 @@ function copyOutput() {
   gap: $space-xs;
   font-size: 11px;
   color: $text-muted;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
 }
 
 .warning-path {
   font-family: monospace;
   color: $accent;
   flex-shrink: 0;
+  max-width: 100%;
+}
+
+.group-rules {
+  min-width: 0;
 }
 
 .rules-section-header {
@@ -742,9 +584,12 @@ function copyOutput() {
   align-items: center;
   justify-content: space-between;
   margin-bottom: $space-xs;
+  gap: $space-sm;
+  flex-wrap: wrap;
 }
 
 .rules-section-title {
+  white-space: nowrap;
   font-size: 13px;
   font-weight: 600;
   color: $text-primary;
@@ -753,6 +598,7 @@ function copyOutput() {
 .rules-section-actions {
   display: flex;
   gap: $space-xs;
+  flex-wrap: wrap;
 }
 
 .rules-action-button {
@@ -772,5 +618,32 @@ function copyOutput() {
   --n-text-color-focus: #{$accent} !important;
   --n-border-radius: 6px !important;
   font-size: 11px;
+}
+
+@container rule-group (max-width: 700px) {
+  .group-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .group-preview {
+    height: 380px;
+  }
+}
+
+@container rule-group (max-width: 420px) {
+  .group-field {
+    flex: 1 1 100%;
+  }
+
+  .group-field-label {
+    width: 60px;
+  }
+
+  .group-name-input,
+  .group-protocol-select,
+  .group-template-select {
+    flex: 1;
+    width: 0;
+  }
 }
 </style>

@@ -163,6 +163,7 @@ defineExpose({ displayError })
 @use '@/styles/variables' as *;
 
 .json-value-input {
+  container: json-value / inline-size;
   min-width: 0;
   flex: 1;
 }
@@ -197,5 +198,15 @@ defineExpose({ displayError })
   color: $danger;
   font-size: 11px;
   margin-top: 2px;
+}
+
+@container json-value (max-width: 250px) {
+  .json-value-row {
+    flex-wrap: wrap;
+  }
+
+  .json-value-control {
+    flex-basis: 100%;
+  }
 }
 </style>

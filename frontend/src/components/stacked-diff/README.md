@@ -261,7 +261,10 @@ Props：`lines: readonly DiffDisplayLine[]` 必填；`ariaLabel: string` 默认�
 `resolvePreviewLines(draft, snapshot, stale?)` 仅在草稿与成功输入快照可靠对应时提供联动映射；
 格式变化可重新定位，语义变化、无效输入或旧结果则保留成功结果展示并返回 null 映射与提示。
 成功快照本身无法定位时，规范副本只用来保留结果展示，不能用它恢复真实草稿行映射。
-正式规则组接入属于阶段三，当前独立示例不加载这份业务适配。
+正式规则组已通过 [`useRuleGroupPreview`](../../features/request-body-rules/useRuleGroupPreview.ts)
+接入此适配；独立示例仍不加载业务模块。组卡片复用 Naive UI `NInput`，通过其公开的
+`textareaElRef` 创建源端口；接入层统一两侧字体和透明背景，移除 autosize / 手动 resize，
+让右侧规则的自然高度决定预览高度。接口、数据和两侧滚动协调仍由各自所有者管理。
 
 ## 样式与主题变量
 

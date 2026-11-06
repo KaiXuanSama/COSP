@@ -437,6 +437,8 @@ function updateField(val: string) {
 @use '@/styles/variables' as *;
 
 .rule-item {
+  container: rule-item / inline-size;
+  min-width: 0;
   border: 1px solid rgba($accent, 0.18);
   border-radius: $radius;
   padding: 6px 8px;
@@ -474,10 +476,12 @@ function updateField(val: string) {
 
 .rule-field-select {
   width: 150px;
+  max-width: 100%;
 }
 
 .rule-op-select {
   width: 130px;
+  max-width: 100%;
 }
 
 .rule-conditional-toggle {
@@ -505,6 +509,7 @@ function updateField(val: string) {
   justify-content: center;
   width: 20px;
   height: 20px;
+  flex-shrink: 0;
   padding: 0;
   border: none;
   border-radius: 4px;
@@ -582,16 +587,16 @@ function updateField(val: string) {
 }
 
 .rule-condition-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 90px minmax(0, 1.15fr) 20px;
   align-items: flex-start;
   gap: 4px;
   margin-bottom: 2px;
 }
 
 .cond-path {
-  flex: 1 1 auto;
   width: auto;
-  min-width: 180px;
+  min-width: 0;
 }
 
 .cond-op {
@@ -599,18 +604,10 @@ function updateField(val: string) {
   width: 90px;
 }
 
-/**
- * 比较值区。
- *
- * 比原先的单输入框宽（内含类型档位 + 取值控件），故让它与路径下拉争抢剩余空间。
- * 档位下拉加宽后基准从 260 提到 290，路径的 min-width 相应从 200 降到 180 ——
- * 路径是可搜索下拉且内容通常较长，它损失的可读性由 `title` 悬浮提示兜住，
- * 而档位被截断则完全无从辨认（截断处正好落在「对象/列」）。
- */
+/** 比较值含类型与取值两个控件；窄规则区移到下一行，避免挤压路径和删除入口。 */
 .cond-value {
-  flex: 1 1 290px;
-  min-width: 220px;
-  max-width: 360px;
+  min-width: 0;
+  width: 100%;
 }
 
 /**
@@ -625,10 +622,7 @@ function updateField(val: string) {
 }
 
 .cond-value-placeholder {
-  flex: 0 1 160px;
-  width: 160px;
-  min-width: 110px;
-  max-width: 180px;
+  min-width: 0;
   text-align: center;
   color: $text-muted;
   font-size: 12px;
@@ -655,7 +649,7 @@ function updateField(val: string) {
 
 .rule-nested {
   margin-top: 4px;
-  padding-left: 24px;
+  padding-left: 12px;
 }
 
 .rule-nested-empty {
@@ -663,5 +657,51 @@ function updateField(val: string) {
   color: $text-muted;
   font-style: italic;
   padding: 4px;
+}
+
+@container rule-item (max-width: 560px) {
+  .rule-condition-row {
+    grid-template-columns: minmax(0, 1fr) 90px 20px;
+  }
+
+  .cond-value {
+    grid-column: 1 / 3;
+    grid-row: 2;
+  }
+
+  .cond-value-placeholder {
+    display: none;
+  }
+
+  .rule-condition-row > .rule-icon-btn {
+    grid-column: 3;
+    grid-row: 1;
+  }
+}
+
+@container rule-item (max-width: 340px) {
+  .rule-field-select,
+  .rule-op-select {
+    flex: 1 1 110px;
+    width: 0;
+    min-width: 0;
+  }
+
+  .rule-value-section,
+  .rule-conditions {
+    padding-left: 0;
+  }
+
+  .rule-nested {
+    padding-left: 4px;
+  }
+
+  .rule-condition-row {
+    grid-template-columns: minmax(0, 1fr) 80px 20px;
+  }
+
+  .cond-op {
+    width: 80px;
+  }
 }
 </style>

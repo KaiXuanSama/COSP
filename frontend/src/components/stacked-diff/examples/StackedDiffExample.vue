@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import {
-  StackedDiff, DiffTextView, createTextareaScrollPort,
-  type LayerChange, type StackedSide, type LineScrollPort,
+  StackedDiff, DiffTextView, TextareaLineNumbers, createTextareaScrollPort,
+  type LayerChange, type StackedSide, type LineScrollPort, type TextareaScrollPort,
 } from '../index'
 import { createSample } from './sample'
 
@@ -14,7 +14,7 @@ const hoverSwitch = ref(true)
 const compact = ref(false)
 const lastChange = ref('等待切换')
 const sourceInput = ref<HTMLTextAreaElement | null>(null)
-const sourcePort = shallowRef<LineScrollPort | null>(null)
+const sourcePort = shallowRef<TextareaScrollPort | null>(null)
 const resultPort = shallowRef<LineScrollPort | null>(null)
 const actionMessage = ref('')
 
@@ -81,13 +81,16 @@ async function copyResult() {
             <button class="example-action" type="button" @click="selectText(sourceInput)">全选</button>
           </template>
           <template #source>
-            <textarea
-              ref="sourceInput"
-              v-model="sourceText"
-              class="example-text"
-              aria-label="编辑原始文本"
-              spellcheck="false"
-            />
+            <div class="example-source">
+              <TextareaLineNumbers :port="sourcePort" :value="sourceText" />
+              <textarea
+                ref="sourceInput"
+                v-model="sourceText"
+                class="example-text"
+                aria-label="编辑原始文本"
+                spellcheck="false"
+              />
+            </div>
           </template>
           <template #source-notice>{{ lineMap ? '可编辑 · 输入和选取时暂停悬停切换' : '草稿已修改 · 还原样本后恢复同步滚动' }}</template>
           <template #result-actions>
@@ -240,15 +243,24 @@ async function copyResult() {
   outline-offset: 1px;
 }
 
+.example-source {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  line-height: 22.75px;
+}
+
 .example-text {
   box-sizing: border-box;
   display: block;
   flex: 1 1 0;
-  width: 100%;
+  width: 0;
+  min-width: 0;
   height: 100%;
   min-height: 0;
   margin: 0;
-  padding: 16px;
+  padding: 16px 16px 16px 0;
   resize: none;
   border: 0;
   border-radius: 0;

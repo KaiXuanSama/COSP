@@ -1,6 +1,11 @@
 import { anchorAtScroll, scrollAtAnchor, type LineScrollPort, type MeasuredTextLine } from './lines'
 
-function createPort(element: HTMLElement, measure: () => MeasuredTextLine[], destroy: () => void): LineScrollPort {
+export interface TextareaScrollPort extends LineScrollPort {
+  /** 与同步滚动共用缓存，行号无需再创建一份镜像。 */
+  measureLines(): readonly MeasuredTextLine[]
+}
+
+function createPort(element: HTMLElement, measure: () => MeasuredTextLine[], destroy: () => void): TextareaScrollPort {
   let lines: MeasuredTextLine[] = []
   let dirty = true
   let disposed = false
@@ -27,6 +32,7 @@ function createPort(element: HTMLElement, measure: () => MeasuredTextLine[], des
   }
 
   return {
+    measureLines: measured,
     readAnchor: () => anchorAtScroll(measured(), element.scrollTop),
     writeAnchor(anchor) {
       const target = Math.max(0, Math.min(element.scrollHeight - element.clientHeight, scrollAtAnchor(measured(), anchor)))
@@ -53,7 +59,7 @@ function createPort(element: HTMLElement, measure: () => MeasuredTextLine[], des
 }
 
 /** 保留真实 textarea，不向 value 插入对齐占位。镜像只用于测量软换行后的逻辑行高度。 */
-export function createTextareaScrollPort(textarea: HTMLTextAreaElement): LineScrollPort {
+export function createTextareaScrollPort(textarea: HTMLTextAreaElement): TextareaScrollPort {
   const doc = textarea.ownerDocument
   const mirror = doc.createElement('div')
   mirror.setAttribute('aria-hidden', 'true')
@@ -81,9 +87,10 @@ export function createTextareaScrollPort(textarea: HTMLTextAreaElement): LineScr
       fragment.append(line)
     }
     mirror.replaceChildren(fragment)
+    const origin = mirror.getBoundingClientRect().top
     return [...mirror.children].map((child, index) => {
-      const line = child as HTMLElement
-      return { line: index + 1, top: line.offsetTop, height: line.offsetHeight }
+      const rect = child.getBoundingClientRect()
+      return { line: index + 1, top: rect.top - origin, height: rect.height }
     })
   }, () => mirror.remove())
 }

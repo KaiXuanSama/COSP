@@ -163,20 +163,18 @@ defineExpose({ activeSide, lockedSide, activate })
       type="button"
       tabindex="-1"
       :aria-label="sourceTitle"
-      :title="sourceTitle"
       @pointerenter="hover('source', $event)"
       @click="activate('source')"
-    >{{ sourceTitle }}</button>
+    />
     <button
       v-show="activeSide !== 'result'"
       class="stacked-diff__peek stacked-diff__peek--result"
       type="button"
       tabindex="-1"
       :aria-label="resultTitle"
-      :title="resultTitle"
       @pointerenter="hover('result', $event)"
       @click="activate('result')"
-    >{{ resultTitle }}</button>
+    />
   </div>
 </template>
 
@@ -230,11 +228,6 @@ defineExpose({ activeSide, lockedSide, activate })
   border: 0;
   border-radius: var(--stacked-diff-radius, 14px);
   background: transparent;
-  color: var(--stacked-diff-muted, #71717a);
-  font: inherit;
-  font-size: 12px;
-  letter-spacing: 0.12em;
-  writing-mode: vertical-rl;
   cursor: pointer;
   touch-action: pan-y;
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import type { DiffDisplayLine, LineScrollPort } from './lines'
 import { createDisplayScrollPort } from './scrollPorts'
 
@@ -10,6 +10,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{ (event: 'port', value: LineScrollPort | null): void }>()
 const element = ref<HTMLElement | null>(null)
 const scrollPort = shallowRef<LineScrollPort | null>(null)
+const lineDigits = computed(() => Math.max(2, String(props.lines.reduce((max, line) => Math.max(max, line.lineNumber ?? 0), 1)).length))
 onMounted(() => {
   if (!element.value) return
   scrollPort.value = createDisplayScrollPort(element.value)
@@ -27,7 +28,7 @@ defineExpose({ scrollPort })
 </script>
 
 <template>
-  <div ref="element" class="diff-text-view" role="region" :aria-label="ariaLabel" tabindex="0">
+  <div ref="element" class="diff-text-view" :style="{ '--diff-line-digits': lineDigits }" role="region" :aria-label="ariaLabel" tabindex="0">
     <div
       v-for="line in lines"
       :key="line.id"
@@ -66,14 +67,22 @@ defineExpose({ scrollPort })
   min-height: 1lh;
 }
 .diff-text-view__number {
-  flex: 0 0 3ch;
+  box-sizing: content-box;
+  flex: 0 0 calc(var(--diff-line-digits, 2) * 1ch);
+  min-width: calc(var(--diff-line-digits, 2) * 1ch);
   padding-right: 10px;
   color: var(--stacked-diff-muted, #71717a);
   text-align: right;
   user-select: none;
   font-size: 11px;
+  line-height: inherit;
+  white-space: nowrap;
+  word-break: normal;
+  overflow-wrap: normal;
+  font-variant-numeric: tabular-nums;
 }
 .diff-text-view__text {
+  flex: 1 1 0;
   min-width: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
