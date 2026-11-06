@@ -1,6 +1,6 @@
 # ADR-0021: 叠放 Diff 预览分离通用交互与请求体业务
 
-- **状态**：Accepted
+- **状态**：Partially superseded by [ADR-0022](./adr-0022-stacked-diff-editing-lock.md)（关于前景背景透明度与焦点锁范围，其余结论保留）
 - **日期**：2026-11-06
 - **取代**：无
 - **相关**：[RFC：请求体规则组左右布局与叠放 Diff 预览](../working/rfcs/2026-11-06-request-body-stacked-diff.md)

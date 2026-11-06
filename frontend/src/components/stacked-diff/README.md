@@ -17,20 +17,25 @@
 - 两个内容区需要持续挂载，保留输入光标、选区与滚动位置。
 - 可迁移到其他 Vue 3.5 项目的通用叠放容器。
 
-不适用于必须同时完整看到两侧内容的并排校对。当前实现为阶段一：承载与层级交互已提供，
-行映射、Diff 渲染和滚动协调由后续阶段补充；组件当前不会自动计算差异或同步滚动。
+不适用于必须同时完整看到两侧内容的并排校对。当前已实现容器、按编辑能力过滤的焦点锁、
+逻辑行映射端口与双向滚动协调，并提供 `DiffTextView` 只读行展示。组件不自行解析 JSON 或
+计算业务差异；行对应和展示行由宿主提供，缺少可靠映射时不使用滚动比例猜测。
 
 ## 目录与导入
 
 | 文件 | 职责 |
 |---|---|
 | `LayeredPanel.vue` | 单个内容容器、标题与操作插槽、视觉状态、焦点事件 |
-| `StackedDiff.vue` | 两个容器、稳定的边缘入口、层级及焦点协调 |
+| `StackedDiff.vue` | 两个容器、稳定边缘入口、焦点锁及两侧滚动协调 |
+| `DiffTextView.vue` | 只读行号 / Diff 状态展示，提供结果侧滚动端口 |
 | `layers.ts` | 无 Vue / DOM 的状态模型与迁移 |
 | `useStackedLayers.ts` | 状态的响应式包装与变更通知 |
 | `layers.spec.ts` | 层级、失焦、输入法状态与实例隔离测试 |
+| `lines.ts` / `lines.spec.ts` | 通用行范围、对应模型、双向区间索引与滚动锚点 |
+| `scrollPorts.ts` | 原生 textarea 镜像测量及只读行展示的 DOM 滚动端口 |
+| `useLinkedScroll.ts` / `useLinkedScroll.spec.ts` | 当前前景发起联动、微任务合并、失效守卫与监听清理 |
 | `index.ts` | 组件、类型、状态函数与 composable 导出 |
-| `examples/` | 不依赖 API、Pinia、项目主题的双文本示例 |
+| `examples/` | 不依赖 API、Pinia、项目主题或 JSON 业务适配的双文本与手写映射示例 |
 
 ```ts
 import { StackedDiff, LayeredPanel, type LayerChange } from '@/components/stacked-diff'
@@ -51,9 +56,15 @@ import { StackedDiff, LayeredPanel, type LayerChange } from '@/components/stacke
 | `hoverSwitch` | `boolean` | `true` | 响应鼠标 / 笔悬停；触屏仍使用主动点击 |
 | `ariaLabel` | `string` | `双文本对比` | 整组可访问名称 |
 | `editableSide` | `'source' \| 'result' \| null` | `'source'` | 声明处于编辑状态的侧；仅该侧聚焦锁定，null 表示两侧都不锁 |
+| `sourceScrollPort` | `LineScrollPort \| null` | 未提供 | 原始文本侧滚动端口 |
+| `resultScrollPort` | `LineScrollPort \| null` | 未提供 | 结果侧滚动端口 |
+| `lineMap` | `TextLineMap \| null` | 未提供 | 与当前两侧文本版本对应的行映射；无效或过期时传 null |
+| `syncScroll` | `boolean` | `true` | 两个端口和可靠映射齐备时开启滚动联动 |
 
 宽度填满父容器，高度跟随父容器并受最小高度约束。宿主应提供确定高度，或用外部布局
 分配高度；两侧内容不会反向撑高组件。
+`editableSide` 只决定焦点是否阻止悬停，不代替宿主输入控件的 `readonly` 设置；改变该 Prop
+立即重新判定锁。只读侧聚焦仍会进入前景，但悬停到另一侧时允许切换，不主动调用 blur。
 
 ## Events
 
@@ -113,18 +124,45 @@ Props 为 `title: string` 和 `foreground: boolean`，均必填。默认插槽�
 
 ```vue
 <script setup lang="ts">
-import { ref } from 'vue'
-import { StackedDiff } from '@/components/stacked-diff'
+import { onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import {
+  StackedDiff, DiffTextView, createTextareaScrollPort,
+  type DiffDisplayLine, type LineScrollPort, type TextLineMap,
+} from '@/components/stacked-diff'
 
 const text = ref('原始文本')
-const output = '只读结果'
+const input = ref<HTMLTextAreaElement | null>(null)
+const sourcePort = shallowRef<LineScrollPort | null>(null)
+const resultPort = shallowRef<LineScrollPort | null>(null)
+const lineMap = shallowRef<TextLineMap | null>({
+  sourceLineCount: 1, resultLineCount: 1,
+  pairs: [{ id: 'text', source: { start: 1, end: 1 }, result: { start: 1, end: 1 }, status: 'changed' }],
+})
+const lines: DiffDisplayLine[] = [
+  { id: 'text', text: '只读结果', lineNumber: 1, sourceLineNumber: 1, status: 'changed' },
+]
+onMounted(() => {
+  if (input.value) sourcePort.value = createTextareaScrollPort(input.value)
+})
+onBeforeUnmount(() => sourcePort.value?.dispose())
+
+function edit(value: string) {
+  text.value = value
+  // 旧结果不再对应新草稿；新预览成功后由宿主替换映射。
+  lineMap.value = null
+}
 </script>
 
 <template>
   <div style="height: 420px">
-    <StackedDiff source-title="编辑区" result-title="结果区">
-      <template #source><textarea v-model="text" class="text" /></template>
-      <template #result><textarea :value="output" class="text" readonly /></template>
+    <StackedDiff
+      source-title="编辑区" result-title="结果区"
+      :source-scroll-port="sourcePort" :result-scroll-port="resultPort" :line-map="lineMap"
+    >
+      <template #source>
+        <textarea ref="input" :value="text" class="text" @input="edit(($event.target as HTMLTextAreaElement).value)" />
+      </template>
+      <template #result><DiffTextView :lines="lines" @port="resultPort = $event" /></template>
     </StackedDiff>
   </div>
 </template>
@@ -146,7 +184,84 @@ const output = '只读结果'
 
 本仓库完整独立示例由 `frontend/stacked-diff.html` 加载：在已运行的 Vite dev server 访问
 `/stacked-diff.html`。该入口不进入管理后台路由、不登录、不发 API 请求，默认生产构建入口
-仍是 `index.html`。示例中结果是固定样本，只验证容器交互，不模拟请求体转换。
+仍是 `index.html`。示例用 `sample.ts` 手写双文本与增删行对应，不模拟请求体转换。
+修改草稿后暂停同步，点击「还原」恢复样本映射；支持普通及窄容器下的双向联动。
+
+## 逻辑行与滚动端口
+
+```ts
+interface TextLineRange { start: number; end: number } // 1 起始，包含两端
+interface TextLinePair {
+  id: string
+  source: TextLineRange | null
+  result: TextLineRange | null
+  status: 'same' | 'changed' | 'added' | 'deleted'
+}
+interface TextLineMap {
+  sourceLineCount: number
+  resultLineCount: number
+  pairs: readonly TextLinePair[]
+}
+interface TextLineAnchor { line: number; fraction: number }
+interface LineScrollPort {
+  readAnchor(): TextLineAnchor
+  writeAnchor(anchor: TextLineAnchor): number // 返回写入后实际 scrollTop
+  scrollTop(): number
+  onScroll(listener: () => void): () => void
+  refresh(): void
+  dispose(): void
+}
+```
+
+- `fraction` 是真实逻辑行的行内进度，覆盖其全部软换行高度；视觉变换不改变行号。
+- `compileLineMap(map)` 预编译双向索引。重叠范围（例如紧凑 JSON 的多个字段共用一行）
+  归并为完整对应区间；未匹配行固定到最近的有效边界，等距时取前一个，不使用全篇滚动比例。
+- `lineMap` 是一份版本快照；内容变化后替换映射对象，不在原对象上原地修改。
+  未匹配的一侧用 null，不能伪造行号或把对齐占位插入 textarea.value。
+- `createTextareaScrollPort(textarea)` 保持真实输入控件，离屏镜像仅测量当前字体、缩进、
+  空行与软换行后的布局高度。支持 LF / CRLF、Tab 和紧凑文本，不改输入值或光标。
+- `createDisplayScrollPort(element)` 查找带 `data-line-number` 的展示行，用布局坐标定位；
+  删除痕迹没有结果行号，不冒充真实结果行。浮沉缩放从测量中抵消。
+- 端口缓存布局；input、容器 resize 和字体加载使测量失效，尺寸 / 字体变化也会触发重新联动。
+  `refresh()` 只使测量失效，程序化赋值或自定义展示变化后由宿主调用它。
+- 两个端口由宿主创建并负责 `dispose()`；组合组件只管理订阅，不替宿主销毁端口。
+  原生 textarea 示例在卸载时销毁端口，`DiffTextView` 自动管理自己的端口。
+
+`useLinkedScroll(options)` 同样导出，可用于其他组合结构。`options` 的 `source`、`result`、
+`lineMap`、`activeSide`、`enabled` 均接受值 / Ref / getter。它必须在 Vue effect scope 中调用。
+
+只有当前前景的滚动驱动另一侧，程序设置目标 scrollTop 的事件不会反向反馈。滚动事件用
+微任务合并，而非依赖前台标签的动画帧；微任务执行时再次核对映射、端口、开启状态与前景。
+这只避免已送达事件再等待动画帧；浏览器仍可能延迟后台标签的原生 scroll 事件，不保证
+隐藏页面的程序化滚动立即可见。实际联动验收在可见页面完成。
+缺少端口、映射为 null、关闭同步或离开作用域时解除监听。绑定新映射时根据当前前景校准，
+单纯浮沉换层不会重置两侧 scrollTop。目标行受该容器最大滚动范围约束，视觉位置不要求
+逐像素相等；滚到顶部不会凭空跳过文本 padding。
+
+## `DiffTextView` 只读展示
+
+Props：`lines: readonly DiffDisplayLine[]` 必填；`ariaLabel: string` 默认「差异文本」。
+每行含 `id`、`text`、`lineNumber: number | null`、可选 `sourceLineNumber` 和 `status`。
+新增 / 改写为强调色，删除为红色加删除线；没有真实结果行号时展示「−」。文本用插值渲染，
+不通过 `v-html` 展示不可信内容。
+
+`port(LineScrollPort | null)` 在挂载时上报结果端口，卸载时上报 null 并清理；实例暴露
+`scrollPort`。显示行变化后重新测量，不因改变前后景销毁内容。
+原生文本选取是展示视图内容；“复制结果”操作应由宿主使用真实结果文本，不能直接复制
+带删除痕迹和行号的 DOM。
+
+## COSP JSON 行适配（宿主能力）
+
+[`features/request-body-rules/jsonLines.ts`](../../features/request-body-rules/jsonLines.ts) 使用
+`jsonc-parser` 定位源码范围，并复用现有语义 Diff 的数组锚点与配对；这部分不属于通用
+组件依赖，也不执行请求体规则。严格 JSON 校验先于位置解析；重复字段或过深嵌套暂停映射。
+
+`createJsonLineComparison(sourceText, output)` 返回原样源文本、真实结果文本、Diff 展示行和
+行映射。删除痕迹只取被删节点自身的词法范围，不连带同一紧凑行的相邻字段。
+`resolvePreviewLines(draft, snapshot, stale?)` 仅在草稿与成功输入快照可靠对应时提供联动映射；
+格式变化可重新定位，语义变化、无效输入或旧结果则保留成功结果展示并返回 null 映射与提示。
+成功快照本身无法定位时，规范副本只用来保留结果展示，不能用它恢复真实草稿行映射。
+正式规则组接入属于阶段三，当前独立示例不加载这份业务适配。
 
 ## 样式与主题变量
 
@@ -171,6 +286,11 @@ const output = '只读结果'
 | `--stacked-diff-back-shadow` | `0 2px 8px rgb(40 45 55 / 5%)` | 后景阴影 |
 | `--stacked-diff-duration` | `260ms` | 视觉属性过渡时长 |
 | `--stacked-diff-easing` | `ease` | 过渡曲线 |
+| `--stacked-diff-deleted` | `#b84a4a` | Diff 删除痕迹颜色 |
+| `--stacked-diff-text-padding` | `16px` | `DiffTextView` 内容内边距 |
+| `--stacked-diff-text-font` | `'Cascadia Code', Consolas, monospace` | Diff 字体；两侧可在接入层统一 |
+| `--stacked-diff-text-size` | `13px` | Diff 字号 |
+| `--stacked-diff-text-line-height` | `1.75` | Diff 行高 |
 
 单容器同时使用内部 `--stacked-diff-origin`，组合组件固定为 source 的 `left top` 与 result
 的 `right top`。`prefers-reduced-motion: reduce` 下取消缩放与过渡，保留模糊、层级和焦点保护。
@@ -180,15 +300,18 @@ const output = '只读结果'
 `createStackedLayers(initialSide?)` 创建独立状态；`reduceStackedLayers(state, event)` 返回
 新状态，不修改输入；`lockedLayer(state)` 返回当前锁所属侧。状态只含 `activeSide`、
 `focusedSide`、`composingSide`，不包含文本值或 DOM。
+`reduceStackedLayers` 与 `lockedLayer` 额外接受 `editableSide`，默认 source，null 表示无锁。
+“当前拥有焦点”和“拥有悬停锁”分开，展示侧进入前景并不意味着锁住层级。
 
-`useStackedLayers({ initialSide?, onChange? })` 提供响应式 `activeSide`、`lockedSide`，以及
+`useStackedLayers({ initialSide?, editableSide?, onChange? })` 提供响应式 `activeSide`、`lockedSide`，以及
 `hover`、`activate`、`focus`、`blur`、`compositionStart`、`compositionEnd` 方法，均接收一侧。
-可用于其他渲染结构，DOM 焦点协调由调用方承担。
+`editableSide` 支持值 / Ref / getter，变化后立即重新判锁。可用于其他渲染结构，DOM 焦点
+协调由调用方承担。
 
 ## 交互与设计说明
 
-> **锁定契约（目标行为）**：焦点锁只对 `editableSide` 声明的可编辑侧生效；只读展示侧
-> 聚焦不锁，悬停切换照常。阶段一的实现目前仍按任意聚焦均锁处理，本契约随实现调整对齐。
+> **锁定契约**：焦点锁只对 `editableSide` 声明的可编辑侧生效；只读展示侧聚焦不锁，
+> 悬停切换照常。焦点记录和内容选区保留，不因自动换层主动调用 blur。
 
 - 前景默认 source；离开指针不复位。每组拥有独立状态。
 - 悬停只在固定的露出侧边触发。边缘命中区域不缩放；卡片交叠处不监听 hover，

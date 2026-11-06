@@ -74,6 +74,12 @@ JSON 值输入统一走 `JsonValueInput.vue`（左侧类型档位 + 右侧按类
 
 预览由后端计算，**不要在前端重建引擎** —— 那份 TS 引擎已删除，理由见 AGENTS.md「引擎只有一份实现，预览走接口」。异步取值的防抖、请求竞态、加载态与失败降级都在 `features/request-body-rules/preview.ts` 的 `createPreviewScheduler`，竞态守卫按请求序号而非「是否有在途请求」判断。
 
+叠放预览的 JSON 行适配在 `features/request-body-rules/jsonLines.ts`：严格 JSON 校验后用
+`jsonc-parser` 定位真实草稿行，并复用语义 Diff 的数组配对。不要强制格式化草稿或把展示
+占位写入输入值。滚动映射绑定成功输入快照；新请求排入防抖就让旧响应作废，JSON 无效时
+调用调度器 `invalidate()`，保留旧结果但暂停不可靠映射。通用 `stacked-diff` 只消费行映射
+和滚动端口，不能反向依赖规则引擎、协议或 API。
+
 `WireProtocol` 统一从 `@/types/protocol` 导入（同时提供 `ALL_WIRE_PROTOCOLS`、`WIRE_PROTOCOL_LABELS` 与 `isWireProtocol`），字面量与后端枚举常量名逐字一致，不要在各处重写联合类型。
 
 ## 自研组件契约
