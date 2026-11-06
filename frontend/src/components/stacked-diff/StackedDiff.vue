@@ -3,6 +3,8 @@
 import { ref } from 'vue'
 import LayeredPanel from './LayeredPanel.vue'
 import { useStackedLayers } from './useStackedLayers'
+import { useLinkedScroll } from './useLinkedScroll'
+import type { LineScrollPort, TextLineMap } from './lines'
 import type { LayerChange, StackedSide } from './layers'
 
 const props = withDefaults(defineProps<{
@@ -11,12 +13,19 @@ const props = withDefaults(defineProps<{
   initialSide?: StackedSide
   hoverSwitch?: boolean
   ariaLabel?: string
+  editableSide?: StackedSide | null
+  sourceScrollPort?: LineScrollPort | null
+  resultScrollPort?: LineScrollPort | null
+  lineMap?: TextLineMap | null
+  syncScroll?: boolean
 }>(), {
   sourceTitle: '原始文本',
   resultTitle: '转换后文本',
   initialSide: 'source',
   hoverSwitch: true,
   ariaLabel: '双文本对比',
+  editableSide: 'source',
+  syncScroll: true,
 })
 
 const emit = defineEmits<{
@@ -37,8 +46,19 @@ defineSlots<{
 const root = ref<HTMLElement | null>(null)
 const sourcePanel = ref<InstanceType<typeof LayeredPanel> | null>(null)
 const resultPanel = ref<InstanceType<typeof LayeredPanel> | null>(null)
-const layers = useStackedLayers({ initialSide: props.initialSide, onChange: (value) => emit('change', value) })
+const layers = useStackedLayers({
+  initialSide: props.initialSide,
+  editableSide: () => props.editableSide,
+  onChange: (value) => emit('change', value),
+})
 const { activeSide, lockedSide } = layers
+useLinkedScroll({
+  source: () => props.sourceScrollPort,
+  result: () => props.resultScrollPort,
+  lineMap: () => props.lineMap,
+  activeSide,
+  enabled: () => props.syncScroll,
+})
 
 function activate(side: StackedSide) {
   layers.activate(side)

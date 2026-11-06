@@ -23,8 +23,12 @@ export function createStackedLayers(initialSide: StackedSide = 'source'): Stacke
   return { activeSide: initialSide, focusedSide: null, composingSide: null }
 }
 
-export function lockedLayer(state: StackedLayersState): StackedSide | null {
-  return state.focusedSide ?? state.composingSide
+export function lockedLayer(
+  state: StackedLayersState,
+  editableSide: StackedSide | null = 'source',
+): StackedSide | null {
+  if (editableSide === null) return null
+  return state.focusedSide === editableSide || state.composingSide === editableSide ? editableSide : null
 }
 
 /**
@@ -34,10 +38,11 @@ export function lockedLayer(state: StackedLayersState): StackedSide | null {
 export function reduceStackedLayers(
   state: StackedLayersState,
   event: StackedLayersEvent,
+  editableSide: StackedSide | null = 'source',
 ): StackedLayersState {
   switch (event.type) {
     case 'activate':
-      if (event.reason === 'hover' && lockedLayer(state) !== null) return state
+      if (event.reason === 'hover' && lockedLayer(state, editableSide) !== null) return state
       if (event.side === state.activeSide) return state
       return { ...state, activeSide: event.side }
     case 'focus':

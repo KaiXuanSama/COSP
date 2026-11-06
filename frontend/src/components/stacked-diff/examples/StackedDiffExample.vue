@@ -1,34 +1,27 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { StackedDiff, type LayerChange, type StackedSide } from '../index'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import {
+  StackedDiff, DiffTextView, createTextareaScrollPort,
+  type LayerChange, type StackedSide, type LineScrollPort,
+} from '../index'
+import { createSample } from './sample'
 
-const original = JSON.stringify({
-  title: '一个安静的阅读空间',
-  language: 'zh-CN',
-  layout: 'stacked',
-  theme: { surface: 'paper', accent: 'copper', spacing: 16 },
-  sections: [
-    { title: '开始', description: '在原始文本中编辑，焦点会保护当前内容。' },
-    { title: '对照', description: '移到另一侧露出的边缘，切换前景。' },
-    { title: '继续', description: '切换后仍能回到原来的选区与滚动位置。' },
-    { title: '细节', description: '标题可用键盘聚焦，也可以点击切换。' },
-  ],
-  enabled: true,
-}, null, 2)
-
-const sourceText = ref(original)
-const resultText = JSON.stringify({
-  ...JSON.parse(original),
-  title: '一个清晰的阅读空间',
-  theme: { surface: 'paper', accent: 'copper', spacing: 20 },
-}, null, 2)
+const sample = createSample()
+const sourceText = ref(sample.sourceText)
+const lineMap = computed(() => sourceText.value === sample.sourceText ? sample.lineMap : null)
 const activeSide = ref<StackedSide>('source')
 const hoverSwitch = ref(true)
 const compact = ref(false)
 const lastChange = ref('等待切换')
 const sourceInput = ref<HTMLTextAreaElement | null>(null)
-const resultInput = ref<HTMLTextAreaElement | null>(null)
+const sourcePort = shallowRef<LineScrollPort | null>(null)
+const resultPort = shallowRef<LineScrollPort | null>(null)
 const actionMessage = ref('')
+
+onMounted(() => {
+  if (sourceInput.value) sourcePort.value = createTextareaScrollPort(sourceInput.value)
+})
+onBeforeUnmount(() => sourcePort.value?.dispose())
 
 function changed(change: LayerChange) {
   activeSide.value = change.side
@@ -43,11 +36,10 @@ function selectText(input: HTMLTextAreaElement | null) {
 
 async function copyResult() {
   try {
-    await navigator.clipboard.writeText(resultText)
+    await navigator.clipboard.writeText(sample.resultText)
     actionMessage.value = '已复制只读样本'
   } catch {
-    selectText(resultInput.value)
-    actionMessage.value = '已选中结果，可使用复制快捷键'
+    actionMessage.value = '浏览器未授予剪贴板权限'
   }
 }
 </script>
@@ -78,10 +70,14 @@ async function copyResult() {
           source-title="原始文本"
           result-title="只读结果"
           :hover-switch="hoverSwitch"
+          :line-map="lineMap"
+          :source-scroll-port="sourcePort"
+          :result-scroll-port="resultPort"
           aria-label="独立双文本示例"
           @change="changed"
         >
           <template #source-actions>
+            <button class="example-action" type="button" @click="sourceText = sample.sourceText">还原</button>
             <button class="example-action" type="button" @click="selectText(sourceInput)">全选</button>
           </template>
           <template #source>
@@ -93,29 +89,26 @@ async function copyResult() {
               spellcheck="false"
             />
           </template>
-          <template #source-notice>可编辑 · 输入和选取时暂停悬停切换</template>
+          <template #source-notice>{{ lineMap ? '可编辑 · 输入和选取时暂停悬停切换' : '草稿已修改 · 还原样本后恢复同步滚动' }}</template>
           <template #result-actions>
             <button class="example-action" type="button" @click="copyResult">复制</button>
           </template>
           <template #result>
-            <textarea
-              ref="resultInput"
-              :value="resultText"
-              class="example-text example-text--result"
+            <DiffTextView
+              :lines="sample.resultLines"
               aria-label="只读结果文本"
-              readonly
-              spellcheck="false"
+              @port="resultPort = $event"
             />
           </template>
-          <template #result-notice>只读 · 固定样本用于观察叠放效果</template>
+          <template #result-notice>只读 · 聚焦不锁定，悬停仍可切换</template>
         </StackedDiff>
       </div>
       <p class="example-feedback" aria-live="polite">{{ actionMessage || 'Tab 进入另一侧会将其带到前景；Enter / Space 可激活标题。' }}</p>
     </section>
 
     <footer class="example-footer">
-      <span>阶段一 · 容器与交互</span>
-      <span>示例在本地运行；文本行映射与滚动协调将在阶段二接入。</span>
+      <span>阶段二 · 逻辑行与同步滚动</span>
+      <span>前景滚动带动后景；增删行通过样本映射定位，原始草稿保持原样。</span>
     </footer>
   </main>
 </template>

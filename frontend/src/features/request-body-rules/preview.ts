@@ -19,6 +19,8 @@ import type { TransformWarning } from './types'
 export interface PreviewInput {
   previewBody: Record<string, unknown>
   rules: unknown[]
+  /** 仅用于成功快照的展示定位，不发送到后端 API。 */
+  sourceText?: string
 }
 
 /** 一次预览请求的结果。 */
@@ -40,12 +42,15 @@ export interface PreviewStatus {
   error: Ref<string>
   /** 当前展示的结果是否已不对应最新输入 */
   stale: Ref<boolean>
+  snapshot: Ref<{ input: PreviewInput; result: PreviewResult } | null>
 }
 
 /** 预览调度器。 */
 export interface PreviewScheduler extends PreviewStatus {
   /** 排入一次预览请求；同一防抖窗口内的多次调用只发最后一次 */
   schedule: (input: PreviewInput) => void
+  /** 当前输入无效，不发请求并让既有在途响应作废。 */
+  invalidate: () => void
   /** 取消在途的防抖定时器，组件卸载时调用 */
   dispose: () => void
 }
@@ -67,6 +72,7 @@ export function createPreviewScheduler(
   const loading = ref(false)
   const error = ref('')
   const stale = ref(false)
+  const snapshot = shallowRef<{ input: PreviewInput; result: PreviewResult } | null>(null)
 
   /**
    * 请求序号。
@@ -79,20 +85,23 @@ export function createPreviewScheduler(
 
   function schedule(input: PreviewInput) {
     if (timer !== null) clearTimeout(timer)
+    const seq = ++latestSeq
+    // Vue 代理不能直接 structuredClone；请求载荷为 JSON，克隆防止等待期间被宿主改写。
+    const captured = JSON.parse(JSON.stringify(input)) as PreviewInput
     stale.value = true
     timer = setTimeout(() => {
       timer = null
-      void send(input)
+      void send(captured, seq)
     }, debounceMs)
   }
 
-  async function send(input: PreviewInput) {
-    const seq = ++latestSeq
+  async function send(input: PreviewInput, seq: number) {
     loading.value = true
     try {
       const next = await requester(input)
       if (seq !== latestSeq) return
       result.value = next
+      snapshot.value = { input, result: next }
       error.value = ''
       stale.value = false
     } catch (cause) {
@@ -104,12 +113,17 @@ export function createPreviewScheduler(
     }
   }
 
-  function dispose() {
+  function invalidate() {
     if (timer !== null) clearTimeout(timer)
     timer = null
-    // 让所有在途响应作废，避免卸载后仍写入 ref。
     latestSeq += 1
+    loading.value = false
+    stale.value = true
   }
 
-  return { result, loading, error, stale, schedule, dispose }
+  function dispose() {
+    invalidate()
+  }
+
+  return { result, loading, error, stale, snapshot, schedule, invalidate, dispose }
 }

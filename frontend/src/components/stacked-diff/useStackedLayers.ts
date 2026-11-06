@@ -1,4 +1,4 @@
-import { computed, shallowRef } from 'vue'
+import { computed, shallowRef, toValue, type MaybeRefOrGetter } from 'vue'
 import {
   createStackedLayers,
   lockedLayer,
@@ -10,18 +10,20 @@ import {
 
 export interface UseStackedLayersOptions {
   initialSide?: StackedSide
+  editableSide?: MaybeRefOrGetter<StackedSide | null>
   onChange?: (change: LayerChange) => void
 }
 
 /** 一组容器的一份状态；不访问 DOM、不管理内容或文本值。 */
 export function useStackedLayers(options: UseStackedLayersOptions = {}) {
   const state = shallowRef(createStackedLayers(options.initialSide))
+  const editableSide = () => options.editableSide === undefined ? 'source' : toValue(options.editableSide)
   const activeSide = computed(() => state.value.activeSide)
-  const lockedSide = computed(() => lockedLayer(state.value))
+  const lockedSide = computed(() => lockedLayer(state.value, editableSide()))
 
   function dispatch(event: StackedLayersEvent) {
     const previousSide = state.value.activeSide
-    state.value = reduceStackedLayers(state.value, event)
+    state.value = reduceStackedLayers(state.value, event, editableSide())
     if (state.value.activeSide === previousSide) return
     const reason = event.type === 'activate'
       ? event.reason

@@ -65,7 +65,7 @@ defineExpose({ focusTitle })
         <slot name="actions" :foreground="foreground" />
       </div>
     </header>
-    <!-- 可聚焦的只读内容也获得同一份焦点保护，复制选区时不会被 hover 抢层级。 -->
+    <!-- 只读内容也可键盘进入；是否锁层级由组合组件的 editableSide 决定。 -->
     <div :id="contentId" class="layered-panel__content" tabindex="0" :aria-label="title">
       <slot :foreground="foreground" />
     </div>

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { ref } from 'vue'
 import { createStackedLayers, lockedLayer, reduceStackedLayers } from './layers'
 import { useStackedLayers } from './useStackedLayers'
 
@@ -34,19 +35,19 @@ describe('叠放层级与焦点', () => {
     expect(reduceStackedLayers(state, { type: 'activate', side: 'result', reason: 'hover' }).activeSide).toBe('result')
   })
 
-  it('键盘进入背景侧时激活该侧并转移焦点锁', () => {
+  it('键盘进入只读背景侧时激活该侧但不建立锁', () => {
     const state = reduceStackedLayers(
       reduceStackedLayers(createStackedLayers(), { type: 'focus', side: 'source' }),
       { type: 'focus', side: 'result' },
     )
     expect(state.activeSide).toBe('result')
-    expect(lockedLayer(state)).toBe('result')
+    expect(lockedLayer(state)).toBeNull()
   })
 
   it('晚到的上一侧 blur 不解除新侧焦点锁', () => {
     let state = reduceStackedLayers(createStackedLayers(), { type: 'focus', side: 'result' })
     state = reduceStackedLayers(state, { type: 'blur', side: 'source' })
-    expect(lockedLayer(state)).toBe('result')
+    expect(lockedLayer(state, 'result')).toBe('result')
   })
 
   it('组合输入阻止 hover，组合结束后仍保留当前焦点锁', () => {
@@ -70,7 +71,7 @@ describe('叠放层级与焦点', () => {
     state = reduceStackedLayers(state, { type: 'activate', side: 'result', reason: 'explicit' })
     expect(state.activeSide).toBe('result')
     state = reduceStackedLayers(state, { type: 'focus', side: 'result' })
-    expect(lockedLayer(state)).toBe('result')
+    expect(lockedLayer(state)).toBeNull()
   })
 
   it('焦点转移清理旧组合输入，晚到的 compositionend 不影响新侧', () => {
@@ -79,12 +80,29 @@ describe('叠放层级与焦点', () => {
     state = reduceStackedLayers(state, { type: 'compositionstart', side: 'result' })
     state = reduceStackedLayers(state, { type: 'compositionend', side: 'source' })
     expect(state.composingSide).toBe('result')
-    expect(lockedLayer(state)).toBe('result')
+    expect(lockedLayer(state, 'result')).toBe('result')
   })
 
-  it('只读结果侧获得焦点同样保护选区', () => {
+  it('只读结果侧获得焦点仍允许悬停，焦点记录与选区无需清空', () => {
     const state = reduceStackedLayers(createStackedLayers(), { type: 'focus', side: 'result' })
-    expect(reduceStackedLayers(state, { type: 'activate', side: 'source', reason: 'hover' })).toBe(state)
+    const next = reduceStackedLayers(state, { type: 'activate', side: 'source', reason: 'hover' })
+    expect(next.activeSide).toBe('source')
+    expect(next.focusedSide).toBe('result')
+    expect(lockedLayer(next)).toBeNull()
+  })
+
+  it('声明 result 可编辑时只保护 result', () => {
+    const state = reduceStackedLayers(createStackedLayers(), { type: 'focus', side: 'result' }, 'result')
+    expect(reduceStackedLayers(state, { type: 'activate', side: 'source', reason: 'hover' }, 'result')).toBe(state)
+    const source = reduceStackedLayers(state, { type: 'focus', side: 'source' }, 'result')
+    expect(lockedLayer(source, 'result')).toBeNull()
+  })
+
+  it('editableSide 为 null 时两侧聚焦和组合状态都不产生锁', () => {
+    let state = reduceStackedLayers(createStackedLayers(), { type: 'focus', side: 'source' }, null)
+    state = reduceStackedLayers(state, { type: 'compositionstart', side: 'source' }, null)
+    expect(lockedLayer(state, null)).toBeNull()
+    expect(reduceStackedLayers(state, { type: 'activate', side: 'result', reason: 'hover' }, null).activeSide).toBe('result')
   })
 })
 
@@ -94,11 +112,10 @@ describe('useStackedLayers', () => {
     const layers = useStackedLayers({ onChange })
     layers.hover('result')
     layers.hover('result')
-    layers.focus('result')
-    layers.hover('source')
     expect(onChange.mock.calls).toEqual([[{ side: 'result', previousSide: 'source', reason: 'hover' }]])
     layers.activate('source')
     layers.focus('source')
+    layers.hover('result')
     expect(onChange).toHaveBeenLastCalledWith({ side: 'source', previousSide: 'result', reason: 'explicit' })
   })
 
@@ -115,7 +132,7 @@ describe('useStackedLayers', () => {
 
   it('不同实例独立，组合输入开始按焦点激活回报', () => {
     const onChange = vi.fn()
-    const first = useStackedLayers({ onChange })
+    const first = useStackedLayers({ onChange, editableSide: 'result' })
     const second = useStackedLayers()
     first.compositionStart('result')
     expect(first.activeSide.value).toBe('result')
@@ -123,5 +140,19 @@ describe('useStackedLayers', () => {
     expect(second.activeSide.value).toBe('source')
     expect(second.lockedSide.value).toBeNull()
     expect(onChange).toHaveBeenCalledWith({ side: 'result', previousSide: 'source', reason: 'focus' })
+  })
+
+  it('运行时修改可编辑侧立即更新锁，失去编辑能力后不会残留锁', () => {
+    const editable = ref<'source' | 'result' | null>('source')
+    const layers = useStackedLayers({ editableSide: editable })
+    layers.focus('source')
+    expect(layers.lockedSide.value).toBe('source')
+    editable.value = null
+    expect(layers.lockedSide.value).toBeNull()
+    layers.hover('result')
+    expect(layers.activeSide.value).toBe('result')
+    editable.value = 'result'
+    layers.focus('result')
+    expect(layers.lockedSide.value).toBe('result')
   })
 })
