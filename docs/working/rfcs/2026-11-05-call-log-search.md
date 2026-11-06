@@ -346,6 +346,26 @@ ORDER BY l.created_at DESC, l.id DESC LIMIT ?
   - 点提示条的「清除条件」：请求为无条件的 `/config/api/logs?pageSize=50`，提示条消失，列表回到最新记录。之后的新日志由 SSE 触发增量同步、插入表顶并高亮。
 - 未做：时间范围与供应商/模型条件的浏览器点选实测（后端已在阶段 1 用 HTTP 验证，前端参数转换有单测）。控制台里的 `Non-function value encountered for default slot` 警告来自 `NCard` 的 scrollbar，`CallLog.vue` 上同样存在，与本次改动无关。
 
+### 9.4 检索栏布局与折叠交互（2026-11-06）
+
+**改动**
+
+- `CallLogSearchPanel.vue` 的条件改为两行自适应网格：上行时间与状态，下行供应商、模型与操作按钮；两行填满容器，窄容器依次转为按钮独占一行、字段纵向排列。
+- `UsageLog.vue` 的标题右侧增加搜索图标，放在刷新按钮左边，尺寸与悬停样式保持一致。检索栏默认收起，点击图标展开或收起。
+- 面板开合与检索模式独立：收起保留草稿与已应用的条件，不恢复实时更新；检索模式的提示条和清除入口仍可见。
+- 展开时搜索图标保持淡棕背景；检索生效后图标呈绿色，收起时保留淡绿背景。生效条件面板及提示条使用淡绿色，清除条件后恢复普通状态。
+- 开合动画使用网格高度 `0fr ↔ 1fr`、纵向位移与透明度过渡：展开向下滑入并淡入至完全可见，收起反向滑动并淡出。高度与位移过渡约 280ms，透明度约 240ms；收起后无剩余高度。
+- 搜索与刷新操作使用原生按钮，支持键盘；折叠区用 `aria-hidden` 与 `inert` 防止隐藏控件接收焦点。系统偏好减少动画时关闭开合过渡。
+
+**验证**
+
+- `vue-tsc -b` 通过；现有 `searchMode.spec.ts`、`searchFilter.spec.ts` 共 **21 条通过**。
+- 浏览器检查默认收起、鼠标及 Enter / Space 切换、检索生效配色、收起后保留条件、清除条件恢复实时模式。
+- 采样确认开合期间高度、位移和透明度连续变化；连续切换后能稳定停在最终状态，减少动画偏好下过渡为零。
+- 375、500、680、850、1150、1600px 窗口下检查生效条件布局，控件均在面板内，无横向溢出。
+
+本次只调整前端交互和样式，端点、SSE 与 ADR-0020 的检索语义沿用既有约定，无新增架构决策。
+
 ## 10. 文档门禁报告
 
 **变更依据**：`GET /config/api/logs` 新增 7 个可选检索参数与 400 响应（`CallLogController`、`CallLogFilter`、`ApiCallLogRepository`、`CallLogQueryService`）；前端消费记录页新增检索面板与两种模式（`UsageLog.vue`、`CallLogSearchPanel.vue`、`features/call-log/{searchFilter,searchMode,logTime}.ts`、`api/index.ts`）。

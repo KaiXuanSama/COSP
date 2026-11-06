@@ -63,7 +63,7 @@ const hasInput = computed(() => {
 </script>
 
 <template>
-  <div class="search-panel" @keydown.enter="emit('search')">
+  <div class="search-panel" :class="{ 'search-panel--active': active }" @keydown.enter="emit('search')">
     <div class="search-row search-row--primary">
       <div class="search-field">
         <span class="search-label">时间</span>
@@ -155,6 +155,14 @@ const hasInput = computed(() => {
   padding-bottom: $space-sm;
   margin-bottom: $space-sm;
   border-bottom: 1px solid $border-light;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.search-panel--active {
+  padding: $space-sm;
+  border-bottom-color: rgba($success, 0.2);
+  border-radius: $radius;
+  background: rgba($success, 0.06);
 }
 
 .search-row {

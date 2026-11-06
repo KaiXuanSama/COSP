@@ -69,6 +69,8 @@ let knownMaxId = 0
 const session = createLogListSession()
 /** 模板需要响应式地知道是否在检索模式；session 本身不是响应式的，由这里镜像。 */
 const searching = ref(false)
+/** 面板开合独立于检索模式：收起只节省空间，保留草稿和已应用的条件。 */
+const searchOpen = ref(false)
 /** 表单里正在编辑的条件；点「检索」后才生效。 */
 const searchForm = ref<LogSearchFilter>(createEmptyFilter())
 
@@ -438,25 +440,51 @@ onUnmounted(() => {
   <div class="usage-log-page">
     <n-card title="消费记录" :bordered="true" class="usage-log-card" content-scrollable>
       <template #header-extra>
-        <div class="refresh-btn" :class="{ disabled: initialLoading }" title="刷新" @click="refresh">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-            stroke-linejoin="round">
-            <path d="M21 2v6h-6" />
-            <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
-            <path d="M3 22v-6h6" />
-            <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
-          </svg>
+        <div class="header-actions">
+          <button
+            type="button"
+            class="header-action search-toggle"
+            :class="{ 'is-open': searchOpen, 'is-searching': searching }"
+            :title="searchOpen ? '收起检索条件' : searching ? '展开检索条件（检索已生效）' : '展开检索条件'"
+            :aria-label="searchOpen ? '收起检索条件' : '展开检索条件'"
+            :aria-expanded="searchOpen"
+            aria-controls="usage-log-search"
+            @click="searchOpen = !searchOpen"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round" aria-hidden="true">
+              <circle cx="10.5" cy="10.5" r="6.5" />
+              <path d="m16 16 4.5 4.5" />
+            </svg>
+          </button>
+          <button type="button" class="header-action refresh-btn" :disabled="initialLoading" title="刷新"
+            aria-label="刷新" @click="refresh">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 2v6h-6" />
+              <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+              <path d="M3 22v-6h6" />
+              <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+            </svg>
+          </button>
         </div>
       </template>
 
-      <CallLogSearchPanel
-        v-model="searchForm"
-        :provider-keys="providerKeys"
-        :active="searching"
-        :loading="searching && initialLoading"
-        @search="applySearch"
-        @clear="clearSearch"
-      />
+      <div id="usage-log-search" class="search-collapse" :class="{ 'is-open': searchOpen }"
+        :aria-hidden="!searchOpen" :inert="!searchOpen">
+        <div class="search-collapse-inner">
+          <div class="search-collapse-content">
+            <CallLogSearchPanel
+              v-model="searchForm"
+              :provider-keys="providerKeys"
+              :active="searching"
+              :loading="searching && initialLoading"
+              @search="applySearch"
+              @clear="clearSearch"
+            />
+          </div>
+        </div>
+      </div>
 
       <div v-if="searching" class="search-banner" role="status">
         检索中，列表不会自动更新。点右上角刷新可按当前条件重新加载。
@@ -611,6 +639,33 @@ onUnmounted(() => {
   height: 100%;
 }
 
+/* 高度随内容自然变化；间距留在裁剪层内部，收起后不残留空白。 */
+.search-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+
+  &.is-open {
+    grid-template-rows: 1fr;
+  }
+}
+
+.search-collapse-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.search-collapse-content {
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 0.24s ease, transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.search-collapse.is-open .search-collapse-content {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .search-banner {
   display: flex;
   align-items: center;
@@ -619,13 +674,13 @@ onUnmounted(() => {
   margin-bottom: $space-sm;
   font-size: 12px;
   color: $text-body;
-  background: $accent-light;
-  border-left: 2px solid $accent;
+  background: rgba($success, 0.08);
+  border-left: 2px solid $success;
   border-radius: $radius;
 }
 
 .search-banner-clear {
-  color: $accent;
+  color: $success;
   cursor: pointer;
 
   &:hover {
@@ -1023,23 +1078,40 @@ th.col-num {
   font-size: 13px;
 }
 
-.refresh-btn {
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: $space-xs;
+}
+
+.header-action {
+  appearance: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 28px;
   height: 28px;
+  padding: 0;
+  border: none;
   border-radius: $radius;
+  background: transparent;
   color: $text-muted;
+  font: inherit;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: color 0.2s ease, background-color 0.2s ease;
 
-  &:hover {
+  &:hover,
+  &:focus-visible {
     color: $accent;
     background: $accent-light;
   }
 
-  &.disabled {
+  &:focus-visible {
+    outline: 2px solid $accent-mid;
+    outline-offset: 2px;
+  }
+
+  &:disabled {
     pointer-events: none;
     opacity: 0.5;
   }
@@ -1047,6 +1119,32 @@ th.col-num {
   svg {
     width: 16px;
     height: 16px;
+  }
+}
+
+.search-toggle {
+  &.is-searching {
+    color: $success;
+    background: rgba($success, 0.1);
+  }
+
+  &.is-open {
+    background: $accent-light;
+  }
+
+  &.is-open:not(.is-searching) {
+    color: $accent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search-collapse,
+  .search-collapse-content {
+    transition: none;
+  }
+
+  .search-collapse-content {
+    transform: none;
   }
 }
 </style>
