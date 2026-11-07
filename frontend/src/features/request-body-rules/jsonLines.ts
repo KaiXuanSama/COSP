@@ -2,6 +2,7 @@
 import { getNodeValue, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import type { DiffDisplayLine, TextDiffStatus, TextLineMap, TextLinePair, TextLineRange } from '../../components/stacked-diff/lines'
 import { compileLineMap } from '../../components/stacked-diff/lines'
+import { createVirtualLineComparison, type VirtualLineComparison } from '../../components/stacked-diff/comparison'
 import { alignArrayElements, jsonEquals } from './diff'
 
 interface JsonDocument {
@@ -11,11 +12,10 @@ interface JsonDocument {
   lines: string[]
 }
 
-export interface JsonLineComparison {
+export interface JsonLineComparison extends VirtualLineComparison {
   sourceText: string
   resultText: string
   lineMap: TextLineMap
-  resultLines: readonly DiffDisplayLine[]
 }
 
 function documentFor(text: string): JsonDocument {
@@ -146,16 +146,19 @@ export function createJsonLineComparison(sourceText: string, output: unknown): J
     if (pairs[index]!.result) nextResultLine = pairs[index]!.result!.start
   }
   const owners = new Array<TextLinePair | null>(result.lines.length + 1).fill(null)
+  let previousResultLine = 0
   for (let index = 0; index < pairs.length; index++) {
     const pair = pairs[index]!
     if (pair.result) {
       for (let line = pair.result.start; line <= pair.result.end; line++) {
         owners[line] ??= pair
       }
+      previousResultLine = Math.max(previousResultLine, pair.result.end)
     }
     if (pair.status !== 'deleted' || !pair.source) continue
     const sourceLines = deletedText(source, deletedNodes.get(pair.id)!)
-    const before = nextResultLines[index]!
+    // 空容器首尾共用同一结果行时，删除痕迹放在已展示的容器行后，避免倒置源行顺序。
+    const before = Math.min(result.lines.length + 1, Math.max(previousResultLine + 1, nextResultLines[index]!))
     const block = deleted.get(before) ?? []
     block.push(...sourceLines.map((text, offset): DiffDisplayLine => ({
       id: `${pair.id}:deleted:${offset}`, text, lineNumber: null,
@@ -179,7 +182,7 @@ export function createJsonLineComparison(sourceText: string, output: unknown): J
     })
   }
   return {
-    sourceText, resultText, resultLines, lineMap,
+    sourceText, resultText, lineMap, ...createVirtualLineComparison(sourceText, resultLines),
   }
 }
 

@@ -33,11 +33,13 @@ defineExpose({ scrollPort })
       v-for="line in lines"
       :key="line.id"
       class="diff-text-view__line"
-      :class="`diff-text-view__line--${line.status}`"
+      :class="[`diff-text-view__line--${line.status}`, { 'diff-text-view__line--placeholder': line.placeholder }]"
       :data-line-number="line.lineNumber ?? undefined"
       :data-source-line="line.sourceLineNumber ?? undefined"
+      :data-virtual-line="line.virtualLineNumber"
+      :aria-hidden="line.placeholder || undefined"
     >
-      <span class="diff-text-view__number" aria-hidden="true">{{ line.lineNumber ?? '−' }}</span>
+      <span class="diff-text-view__number" aria-hidden="true">{{ line.lineNumber ?? (line.placeholder ? '' : '−') }}</span>
       <span class="diff-text-view__text">{{ line.text || '\u200b' }}</span>
     </div>
   </div>
@@ -94,6 +96,14 @@ defineExpose({ scrollPort })
 .diff-text-view__line--deleted {
   color: var(--stacked-diff-deleted, #b84a4a);
   text-decoration: line-through;
+}
+.diff-text-view__line--placeholder {
+  text-decoration: none;
+  user-select: none;
+}
+.diff-text-view__line--placeholder .diff-text-view__text {
+  background: repeating-linear-gradient(135deg,
+    transparent 0 4px, color-mix(in srgb, var(--stacked-diff-muted, #71717a) 13%, transparent) 4px 5px);
 }
 .diff-text-view:focus-visible {
   outline: 2px solid var(--stacked-diff-accent, #596b8a);

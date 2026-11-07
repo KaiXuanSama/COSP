@@ -1,10 +1,13 @@
 export { default as LayeredPanel } from './LayeredPanel.vue'
 export { default as StackedDiff } from './StackedDiff.vue'
 export { default as DiffTextView } from './DiffTextView.vue'
+export { default as DiffTextEditor } from './DiffTextEditor.vue'
 export { default as TextareaLineNumbers } from './TextareaLineNumbers.vue'
 export { createTextareaScrollPort, createDisplayScrollPort } from './scrollPorts'
 export type { TextareaScrollPort } from './scrollPorts'
 export { compileLineMap, anchorAtScroll, scrollAtAnchor } from './lines'
+export { createVirtualLineComparison } from './comparison'
+export type { VirtualLineComparison } from './comparison'
 export type {
   TextDiffStatus, TextLineRange, TextLinePair, TextLineMap, TextLineAnchor,
   DiffDisplayLine, LineScrollPort, MeasuredTextLine,

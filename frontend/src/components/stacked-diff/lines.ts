@@ -32,6 +32,10 @@ export interface DiffDisplayLine {
   text: string
   lineNumber: number | null
   sourceLineNumber?: number | null
+  /** 两侧共享的计算行号，包含删除痕迹和展示占位，不作为可见行号。 */
+  virtualLineNumber?: number
+  /** 此侧没有真实文本行；只占展示空间，不属于文档。 */
+  placeholder?: boolean
   status: TextDiffStatus
 }
 

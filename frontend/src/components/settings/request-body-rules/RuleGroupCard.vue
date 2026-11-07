@@ -15,14 +15,14 @@
  * 左栏文本是纯本地编辑状态，只有解析成功才向上提交为 `previewBody`。
  * 因此 JSON 写坏时卡片内显示错误、保存的仍是上一份可用样本，不会阻断整个编辑器的应用。
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { NButton, NInput, NSelect, NSwitch, useMessage, type InputInst } from 'naive-ui'
+import { computed, ref, shallowRef } from 'vue'
+import { NButton, NInput, NSelect, NSwitch, useMessage } from 'naive-ui'
 import type { FieldRule, RuleGroup } from '@/features/request-body-rules/types'
 import { useRuleGroupPreview } from '@/features/request-body-rules/useRuleGroupPreview'
 import { previewRequestBodyRules } from '@/api'
 import { MIMO_EXAMPLE_RULESET } from '@/features/request-body-rules/defaultRequestBody'
 import { REQUEST_BODY_TEMPLATE_OPTIONS } from '@/features/request-body-rules/requestBodyTemplates'
-import { StackedDiff, DiffTextView, TextareaLineNumbers, createTextareaScrollPort, type LineScrollPort, type TextareaScrollPort } from '@/components/stacked-diff'
+import { StackedDiff, DiffTextEditor, DiffTextView, type LineScrollPort } from '@/components/stacked-diff'
 import {
   RULE_ENGINE_WIRE_PROTOCOLS,
   type WireProtocol,
@@ -84,29 +84,16 @@ const {
 })
 const transformResult = scheduler.result
 const resultLines = computed(() => lineView.value.comparison?.resultLines ?? [])
+const sourceLines = computed(() => lineView.value.lineMap ? lineView.value.comparison?.sourceLines ?? null : null)
+const virtualLineMap = computed(() => lineView.value.lineMap ? lineView.value.comparison?.virtualLineMap ?? null : null)
 
 const scopeObject = computed<Record<string, unknown> | null>(() => props.group.previewBody ?? null)
 
 /** protocols 为空数组是显式的「哪条线路都不要」，与「没勾」在语义上不同，值得提示。 */
 const hasNoProtocol = computed(() => props.group.protocols.length === 0)
 
-const leftInputRef = ref<InputInst | null>(null)
-const sourcePort = shallowRef<TextareaScrollPort | null>(null)
+const sourcePort = shallowRef<LineScrollPort | null>(null)
 const resultPort = shallowRef<LineScrollPort | null>(null)
-const previewInputTheme = {
-  color: 'transparent', colorFocus: 'transparent', fontSize: '12px',
-  border: 'none', borderHover: 'none', borderFocus: 'none', boxShadowFocus: 'none',
-}
-
-onMounted(() => {
-  const textarea = leftInputRef.value?.textareaElRef
-  if (textarea) sourcePort.value = createTextareaScrollPort(textarea)
-})
-watch(inputJsonText, async () => {
-  await nextTick()
-  sourcePort.value?.refresh()
-}, { flush: 'post' })
-onBeforeUnmount(() => sourcePort.value?.dispose())
 
 // ==================== 规则操作 ====================
 
@@ -232,27 +219,21 @@ async function copyOutput() {
           :aria-label="`${group.name || '规则组'}的请求体对比`"
           :source-scroll-port="sourcePort"
           :result-scroll-port="resultPort"
-          :line-map="inputError ? null : lineView.lineMap"
+          :line-map="inputError ? null : virtualLineMap"
         >
           <template #source-actions>
             <NButton text size="tiny" @click="formatJson">格式化</NButton>
           </template>
           <template #source>
-            <div class="preview-source">
-              <TextareaLineNumbers :port="sourcePort" :value="inputJsonText" />
-              <NInput
-                ref="leftInputRef"
-                :value="inputJsonText"
-                @update:value="updateInputJsonText"
-                type="textarea"
-                :resizable="false"
-                :theme-overrides="previewInputTheme"
-                :status="inputError ? 'error' : undefined"
-                aria-label="请求体编辑区"
-                class="preview-input"
-                placeholder="在此编辑或粘贴请求体 JSON"
-              />
-            </div>
+            <DiffTextEditor
+              :value="inputJsonText"
+              :lines="sourceLines"
+              :invalid="!!inputError"
+              aria-label="请求体编辑区"
+              placeholder="在此编辑或粘贴请求体 JSON"
+              @update:value="updateInputJsonText"
+              @port="sourcePort = $event"
+            />
           </template>
           <template v-if="inputError" #source-notice><span class="preview-error">{{ inputError }}</span></template>
           <template #result-title>
@@ -495,50 +476,6 @@ async function copyOutput() {
 
 .preview-badge--stale {
   color: $warning;
-}
-
-.preview-source {
-  display: flex;
-  flex: 1 1 0;
-  min-width: 0;
-  min-height: 0;
-  height: 100%;
-  line-height: 19.2px;
-}
-
-.preview-input {
-  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
-  font-size: 12px;
-  flex: 1 1 0;
-  width: 0;
-  min-width: 0;
-  height: 100%;
-  min-height: 0;
-  border-radius: 0;
-}
-
-.preview-input :deep(.n-input-wrapper),
-.preview-input :deep(.n-input__textarea) {
-  height: 100%;
-  min-height: 0;
-}
-
-.preview-input :deep(.n-input-wrapper) {
-  padding: 0;
-}
-
-.preview-input :deep(.n-input__textarea-el) {
-  box-sizing: border-box;
-  height: 100%;
-  padding: 12px 12px 12px 0;
-  font-family: inherit;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.preview-input :deep(.n-input__border),
-.preview-input :deep(.n-input__state-border) {
-  display: none;
 }
 
 .preview-output {

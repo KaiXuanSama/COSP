@@ -1,4 +1,5 @@
 import type { DiffDisplayLine, TextLineMap, TextLinePair } from '../lines'
+import { createVirtualLineComparison } from '../comparison'
 
 /** 手写的双文本样本与行对应；不模拟业务规则，也不加载 COSP 请求体模块。 */
 export function createSample() {
@@ -46,5 +47,6 @@ export function createSample() {
   line('enabled', '  "enabled": true', '  "enabled": true')
   line('close', '}', '}')
   const lineMap: TextLineMap = { sourceLineCount: source.length, resultLineCount: result.length, pairs }
-  return { sourceText: source.join('\n'), resultText: result.join('\n'), resultLines: display, lineMap }
+  const sourceText = source.join('\n')
+  return { sourceText, resultText: result.join('\n'), lineMap, ...createVirtualLineComparison(sourceText, display) }
 }

@@ -95,15 +95,16 @@ export function createTextareaScrollPort(textarea: HTMLTextAreaElement): Textare
   }, () => mirror.remove())
 }
 
-/** 只读展示按真实行号定位；删除痕迹没有结果行号，因此不伪造对应。 */
+/** 存在共享对比行号时按其定位，包含删除痕迹与占位；旧调用仍按真实行号。 */
 export function createDisplayScrollPort(element: HTMLElement): LineScrollPort {
   return createPort(element, () => {
     const rootRect = element.getBoundingClientRect()
     const scale = rootRect.height / element.offsetHeight || 1
-    return [...element.querySelectorAll<HTMLElement>('[data-line-number]')].map((line) => {
+    const virtual = element.querySelector('[data-virtual-line]') !== null
+    return [...element.querySelectorAll<HTMLElement>(virtual ? '[data-virtual-line]' : '[data-line-number]')].map((line) => {
       const rect = line.getBoundingClientRect()
       return {
-        line: Number(line.dataset.lineNumber),
+        line: Number(virtual ? line.dataset.virtualLine : line.dataset.lineNumber),
         top: (rect.top - rootRect.top) / scale + element.scrollTop - element.clientTop,
         height: rect.height / scale,
       }

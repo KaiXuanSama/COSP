@@ -1,37 +1,27 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import {
-  StackedDiff, DiffTextView, TextareaLineNumbers, createTextareaScrollPort,
-  type LayerChange, type StackedSide, type LineScrollPort, type TextareaScrollPort,
+  StackedDiff, DiffTextView, DiffTextEditor,
+  type LayerChange, type StackedSide, type LineScrollPort,
 } from '../index'
 import { createSample } from './sample'
 
 const sample = createSample()
 const sourceText = ref(sample.sourceText)
-const lineMap = computed(() => sourceText.value === sample.sourceText ? sample.lineMap : null)
+const lineMap = computed(() => sourceText.value === sample.sourceText ? sample.virtualLineMap : null)
 const activeSide = ref<StackedSide>('source')
 const hoverSwitch = ref(true)
 const compact = ref(false)
 const lastChange = ref('等待切换')
-const sourceInput = ref<HTMLTextAreaElement | null>(null)
-const sourcePort = shallowRef<TextareaScrollPort | null>(null)
+const sourceInput = ref<InstanceType<typeof DiffTextEditor> | null>(null)
+const sourcePort = shallowRef<LineScrollPort | null>(null)
 const resultPort = shallowRef<LineScrollPort | null>(null)
 const actionMessage = ref('')
-
-onMounted(() => {
-  if (sourceInput.value) sourcePort.value = createTextareaScrollPort(sourceInput.value)
-})
-onBeforeUnmount(() => sourcePort.value?.dispose())
 
 function changed(change: LayerChange) {
   activeSide.value = change.side
   const reasons = { hover: '悬停', focus: '焦点进入', explicit: '主动切换' }
   lastChange.value = reasons[change.reason]
-}
-
-function selectText(input: HTMLTextAreaElement | null) {
-  input?.focus({ preventScroll: true })
-  input?.select()
 }
 
 async function copyResult() {
@@ -78,19 +68,17 @@ async function copyResult() {
         >
           <template #source-actions>
             <button class="example-action" type="button" @click="sourceText = sample.sourceText">还原</button>
-            <button class="example-action" type="button" @click="selectText(sourceInput)">全选</button>
+            <button class="example-action" type="button" @click="sourceInput?.selectAll()">全选</button>
           </template>
           <template #source>
-            <div class="example-source">
-              <TextareaLineNumbers :port="sourcePort" :value="sourceText" />
-              <textarea
-                ref="sourceInput"
-                v-model="sourceText"
-                class="example-text"
-                aria-label="编辑原始文本"
-                spellcheck="false"
-              />
-            </div>
+            <DiffTextEditor
+              ref="sourceInput"
+              :value="sourceText"
+              :lines="lineMap ? sample.sourceLines : null"
+              aria-label="编辑原始文本"
+              @update:value="sourceText = $event"
+              @port="sourcePort = $event"
+            />
           </template>
           <template #source-notice>{{ lineMap ? '可编辑 · 输入和选取时暂停悬停切换' : '草稿已修改 · 还原样本后恢复同步滚动' }}</template>
           <template #result-actions>
@@ -110,8 +98,8 @@ async function copyResult() {
     </section>
 
     <footer class="example-footer">
-      <span>阶段二 · 逻辑行与同步滚动</span>
-      <span>前景滚动带动后景；增删行通过样本映射定位，原始草稿保持原样。</span>
+      <span>共享对比行 · 同步滚动</span>
+      <span>删除痕迹与条纹占位参与对齐；显示行号和原始草稿保持各自原样。</span>
     </footer>
   </main>
 </template>
@@ -241,42 +229,6 @@ async function copyResult() {
 .example-action:focus-visible {
   outline: 2px solid #b57d47;
   outline-offset: 1px;
-}
-
-.example-source {
-  display: flex;
-  flex: 1 1 0;
-  min-width: 0;
-  min-height: 0;
-  line-height: 22.75px;
-}
-
-.example-text {
-  box-sizing: border-box;
-  display: block;
-  flex: 1 1 0;
-  width: 0;
-  min-width: 0;
-  height: 100%;
-  min-height: 0;
-  margin: 0;
-  padding: 16px 16px 16px 0;
-  resize: none;
-  border: 0;
-  border-radius: 0;
-  outline: none;
-  background: transparent;
-  color: inherit;
-  font-family: 'Cascadia Code', Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.75;
-  tab-size: 2;
-  scrollbar-width: thin;
-  scrollbar-color: #ccc0b0 transparent;
-}
-
-.example-text--result {
-  color: #74644f;
 }
 
 .example-feedback {

@@ -108,4 +108,32 @@ describe('JSON 真实草稿与差异行', () => {
     expect(view.notice).toContain('重复字段')
     expect(view.comparison?.resultText).toBe('{\n  "a": 3\n}')
   })
+
+  it('删除与新增生成共享计算行，原文与真实结果的显示号各自连续', () => {
+    const source = JSON.stringify({ keep: 1, drop: { a: 2, b: 3 }, tail: 4 }, null, 2)
+    const view = createJsonLineComparison(source, { keep: 1, tail: 4, added: ['a', 'b'] })
+    expect(view.sourceLines.length).toBe(view.resultLines.length)
+    expect(view.sourceLines.filter(row => !row.placeholder).map(row => row.text).join('\n')).toBe(source)
+    expect(view.resultLines.filter(row => !row.placeholder && row.lineNumber !== null).map(row => row.text).join('\n')).toBe(view.resultText)
+    const deleted = view.resultLines.filter(row => row.status === 'deleted')
+    expect(deleted).toHaveLength(4)
+    for (const row of deleted) {
+      expect(row.lineNumber).toBeNull()
+      expect(view.sourceLines[row.virtualLineNumber! - 1]?.lineNumber).toBe(row.sourceLineNumber)
+    }
+    for (const row of view.resultLines.filter(row => row.status === 'added')) {
+      const left = view.sourceLines[row.virtualLineNumber! - 1]!
+      expect(left.placeholder).toBe(true)
+      expect(left.lineNumber).toBeNull()
+    }
+  })
+
+  it('删空对象仍保持容器和删除行的正向顺序，真实源行不丢失', () => {
+    const source = '{\n  "a": 1,\n  "b": 2\n}'
+    const view = createJsonLineComparison(source, {})
+    expect(view.resultLines[0]?.text).toBe('{}')
+    expect(view.resultLines[0]?.virtualLineNumber).toBe(1)
+    expect(view.resultLines.filter(row => row.status === 'deleted').map(row => row.virtualLineNumber)).toEqual([2, 3])
+    expect(view.sourceLines.filter(row => !row.placeholder).map(row => row.lineNumber)).toEqual([1, 2, 3, 4])
+  })
 })
