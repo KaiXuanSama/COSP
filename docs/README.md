@@ -50,7 +50,7 @@
    [阶段 2 逻辑行与同步滚动](./working/rfcs/2026-11-06-request-body-stacked-diff.md#stacked-diff-stage-2) ·
    [阶段 3 规则组接入](./working/rfcs/2026-11-06-request-body-stacked-diff.md#stacked-diff-stage-3) ·
    [共享虚拟行与条纹占位](./working/rfcs/2026-11-06-request-body-stacked-diff.md#stacked-diff-virtual-rows) ·
-   [组件契约与独立示例](../frontend/src/components/stacked-diff/README.md)
+   [组件契约与接入示例](../frontend/src/components/stacked-diff/README.md)
 - M2C 去程：[最终调研](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-final-review) ·
    [实施计划](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-plan) ·
    [M2C 请求契约](./reference/contracts/M2C-REQUEST-CONTRACT.md) ·

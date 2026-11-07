@@ -1,9 +1,9 @@
 # RFC：请求体规则组左右布局与叠放 Diff 预览
 
 - **日期**：2026-11-06（立项日）
-- **状态**：实施中（[阶段 1](#stacked-diff-stage-1)～[阶段 3](#stacked-diff-stage-3)、[试用反馈](#stacked-diff-ui-feedback)与[共享虚拟行](#stacked-diff-virtual-rows)已完成；阶段 4 部分浏览器验证，系统输入法 / 剪贴板待人工）
+- **状态**：已定稿且实施完毕（用户确认功能完成；独立验证页面已清理，见[收尾记录](#stacked-diff-cleanup)；历史验证范围见 §12.8）
 - **相关 ADR**：[ADR-0021：组件分层](../../adr/adr-0021-stacked-diff-preview.md)、[ADR-0022：试用校准与编辑侧焦点锁](../../adr/adr-0022-stacked-diff-editing-lock.md)、[ADR-0023：JSON 源行定位](../../adr/adr-0023-json-text-line-locations.md)、[ADR-0024：2:3 宽度比例](../../adr/adr-0024-stacked-diff-width-balance.md)、[ADR-0025：共享虚拟行与编辑器占位](../../adr/adr-0025-virtual-diff-rows.md)
-- **分支**：尚未建立独立实现分支；本文档起草于 `feat/log-search`，不代表本功能属于日志检索。
+- **分支**：`feat/log-search`（本功能与日志检索分别实施，在同一分支完成）
 
 ## 背景
 
@@ -543,3 +543,17 @@ API 契约，无新增决策；现有 ADR-0021～0023 继续适用。所有功�
 
 本轮代码与验证全部完成后集中更新组件 README、ADR、前端约定和索引。没有后端 API、
 schema 或项目主链路变更；文档门禁通过，无文档阻塞。阶段 4 的人工环境项目仍保留。
+
+<a id="stacked-diff-cleanup"></a>
+
+### 12.9 功能收尾与独立验证页面清理（2026-11-07）
+
+用户确认本分支功能均已实现，要求移除开发验证组件。删除 `frontend/stacked-diff.html`
+和 `stacked-diff/examples/` 中的 `main.ts`、`StackedDiffExample.vue`、`sample.ts`；
+正式组件、规则组接线和自动化回归测试保留。供应商布局验证仅在隔离浏览器上下文中
+挂载，没有写入其他测试页面文件。
+
+清理后前端诊断与 `vue-tsc -b` 通过，叠放组件的 5 个测试文件 / 40 项测试通过。
+组件 README 和文档索引改为指向正式接入与文内示例，不再提供已删除页面的访问入口。
+本次将功能状态收尾为实施完毕；之前各阶段记录及 §12.8 的验证范围保留，不追加未执行的
+系统输入法或剪贴板实测结论。无 API、配置、依赖或 schema 变化，文档门禁通过。

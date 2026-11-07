@@ -39,7 +39,6 @@
 | `scrollPorts.ts` | 原生 textarea 镜像测量及只读行展示的 DOM 滚动端口 |
 | `useLinkedScroll.ts` / `useLinkedScroll.spec.ts` | 当前前景发起联动、微任务合并、失效守卫与监听清理 |
 | `index.ts` | 组件、类型、状态函数与 composable 导出 |
-| `examples/` | 不依赖 API、Pinia、项目主题或 JSON 业务适配的双文本与手写映射示例 |
 
 ```ts
 import { StackedDiff, LayeredPanel, type LayerChange } from '@/components/stacked-diff'
@@ -164,10 +163,8 @@ const reliable = computed(() => text.value === '原始文本')
 </template>
 ```
 
-本仓库完整独立示例由 `frontend/stacked-diff.html` 加载：在已运行的 Vite dev server 访问
-`/stacked-diff.html`。该入口不进入管理后台路由、不登录、不发 API 请求，默认生产构建入口
-仍是 `index.html`。示例用 `sample.ts` 手写双文本与增删行对应，不模拟请求体转换。
-修改草稿后暂停同步，点击「还原」恢复样本映射；支持普通及窄容器下的双向联动。
+正式业务接入见 [`RuleGroupCard.vue`](../settings/request-body-rules/RuleGroupCard.vue)。
+上面的代码片段可作为其他宿主的最小接入示例；本目录不再附带开发阶段的独立验证页面。
 
 ## 共享虚拟行与真实显示行
 
@@ -286,8 +283,8 @@ Props：`port: TextareaScrollPort | null` 与 `value: string` 均必填。使用
 
 与原有输入组件横向放入一个 flex 容器，行号在左，textarea 在右且允许收缩。输入框左侧
 padding 设为 0，行号组件提供左侧内容留白；宿主容器的绝对行高需与 textarea 一致。
-其他输入控件、字体和背景保持原样。这是原生 textarea 的兼容接法；当前规则组和独立
-示例使用 `DiffTextEditor`，它们的源侧行号由 CodeMirror 管理。
+其他输入控件、字体和背景保持原样。这是原生 textarea 的兼容接法；当前规则组使用
+`DiffTextEditor`，源侧行号由 CodeMirror 管理。
 
 行号只计真实换行，长行软换行的全部高度由该逻辑行占用；滚动、输入、尺寸变化和字体加载
 均沿用输入端口的缓存更新。数字列按总行数扩展，禁止换行；行号层不可选、不可聚焦且
@@ -306,7 +303,7 @@ padding 设为 0，行号组件提供左侧内容留白；宿主容器的绝对�
 格式变化可重新定位，语义变化、无效输入或旧结果则保留成功结果展示并返回 null 映射与提示。
 成功快照本身无法定位时，规范副本只用来保留结果展示，不能用它恢复真实草稿行映射。
 正式规则组已通过 [`useRuleGroupPreview`](../../features/request-body-rules/useRuleGroupPreview.ts)
-接入此适配；独立示例仍不加载业务模块。组卡片使用 `DiffTextEditor`，只在
+接入此适配。组卡片使用 `DiffTextEditor`，只在
 `resolvePreviewLines` 的真实 `lineMap` 可靠时启用源侧共享行与 `virtualLineMap`。
 接入层统一两侧字体和透明背景，让右侧规则的自然高度决定预览高度。
 接口、数据和两侧滚动协调仍由各自所有者管理。
