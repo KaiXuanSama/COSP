@@ -1,6 +1,6 @@
 # ADR-0023: JSON 行对齐保留真实草稿，用词法位置解析与语义 Diff 配对
 
-- **状态**：Accepted
+- **状态**：Partially superseded by [ADR-0025](./adr-0025-virtual-diff-rows.md)（紧凑行仅用区间滚动改为共享虚拟行及展示占位）；真实草稿、词法定位、语义配对与快照守卫保留。
 - **日期**：2026-11-07
 - **取代**：无
 - **相关**：[叠放 Diff RFC](../working/rfcs/2026-11-06-request-body-stacked-diff.md)、[ADR-0021](./adr-0021-stacked-diff-preview.md)
