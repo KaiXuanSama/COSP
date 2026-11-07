@@ -1,4 +1,5 @@
 import axios from 'axios'
+import type { LogQueryParams } from '@/features/call-log/searchFilter'
 
 const TOKEN_KEY = 'cosp_token'
 
@@ -58,8 +59,22 @@ export const auth = {
  * 两个日志视角共用此函数：调用者视角只读元信息列，消费者视角还读 token 用量列。
  * 后端是同一个端点 —— 用量列是元信息列的严格超集，且实测附带它们的代价在噪声内。
  */
-export function fetchLogs(cursor: number | null, pageSize: number) {
-  return http.get('/logs', { params: { cursor, pageSize } })
+export function fetchLogs(cursor: number | null, pageSize: number, search?: LogQueryParams) {
+  return http.get('/logs', logsRequestConfig(cursor, pageSize, search))
+}
+
+/**
+ * 日志列表的请求配置。
+ *
+ * 检索参数（ADR-0020）平铺进查询串；不传 search 时与引入检索前的请求完全相同。
+ * `indexes: null` 让数组序列化成重复参数 `status=2xx&status=429`，
+ * axios 默认的 `status[]=` 形式后端不认。cursor 为 null 时 axios 会省略该参数。
+ */
+export function logsRequestConfig(cursor: number | null, pageSize: number, search?: LogQueryParams) {
+  return {
+    params: { ...search, cursor, pageSize },
+    paramsSerializer: { indexes: null },
+  }
 }
 
 /**

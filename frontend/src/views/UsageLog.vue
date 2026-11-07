@@ -9,16 +9,24 @@
  * 数据源与调用者视角同为 `/config/api/logs` —— 那个端点每行都附带 token 用量，
  * 本视图多读 4 列而已。主表是 api_call_log（V8.5 起它是 api_call_usage 的超集），
  * 用量以 LEFT JOIN 附属，因此失败调用同样在列表中，只是 token 列显示为「—」。
+ *
+ * 列表有两种模式（ADR-0020）：实时模式无条件拉取，SSE 信号触发增量插入；
+ * 检索模式带条件拉取，SSE 连接保持但信号被丢弃，只有手动刷新会重新拉。
+ * 两种模式共用同一个端点与游标；切换时在途请求由 `createLogListSession` 按代次作废。
  */
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { NCard, NEmpty, NSpin } from 'naive-ui'
 import { fetchLogs, fetchLogDetail } from '@/api'
 import { prependWithCursorShift } from '@/features/call-log/pagination'
 import { createCoalescingSync } from '@/features/call-log/sync'
 import { formatCacheHitRate } from '@/features/call-log/cacheHitRate'
 import { ttfbSeverity } from '@/features/call-log/ttfbSeverity'
+import { formatLogTime } from '@/features/call-log/logTime'
+import { createEmptyFilter, toQueryParams, type LogSearchFilter } from '@/features/call-log/searchFilter'
+import { createLogListSession } from '@/features/call-log/searchMode'
 import { createAuthEventSource, type AuthEventSource } from '@/api/authEventSource'
-import { CallLogDetail } from '@/components/calllog'
+import { CallLogDetail, CallLogSearchPanel } from '@/components/calllog'
+import { useProviderStore } from '@/stores/providers'
 import type { DetailItem } from '@/types/calllog'
 import { formatCallTypeLabel, formatCallTypeTitle, type WireProtocol } from '@/types/protocol'
 
@@ -54,6 +62,26 @@ const loadingMore = ref(false)
 
 /** 已知的最大 id 水位线，SSE 增量同步据此去重。 */
 let knownMaxId = 0
+
+// ── 检索 ─────────────────────────────────────────────────
+
+/** 列表模式与代次。所有列表拉取都经它发起，列表换代后返回的旧结果不会落地。 */
+const session = createLogListSession()
+/** 模板需要响应式地知道是否在检索模式；session 本身不是响应式的，由这里镜像。 */
+const searching = ref(false)
+/** 面板开合独立于检索模式：收起只节省空间，保留草稿和已应用的条件。 */
+const searchOpen = ref(false)
+/** 表单里正在编辑的条件；点「检索」后才生效。 */
+const searchForm = ref<LogSearchFilter>(createEmptyFilter())
+
+const providerStore = useProviderStore()
+/** 已配置供应商的 key，作为检索候选。 */
+const providerKeys = computed(() =>
+  Object.values(providerStore.providers)
+    .map((p) => p.providerKey)
+    .filter(Boolean)
+    .sort(),
+)
 /** 新到行的一次性高亮标记，动画播完由 CSS 自然淡出。 */
 const freshIds = ref<Set<number>>(new Set())
 
@@ -158,46 +186,103 @@ function scrollExpandedIntoView(id: number) {
   }, EXPAND_ANIM_DURATION)
 }
 
-/** 加载第一页。 */
+/**
+ * 加载第一页（按当前模式的参数）。
+ *
+ * initialLoading 只由当代请求收尾：连续两次检索时，先发的那次返回不该把后一次的 loading 提前关掉。
+ */
 async function loadFirstPage() {
   initialLoading.value = true
+  const generation = session.generation
   try {
-    const res = await fetchLogs(null, pageSize)
-    rows.value = res.data.items || []
-    nextCursor.value = res.data.nextCursor ?? null
-    hasMore.value = Boolean(res.data.hasMore)
-    knownMaxId = rows.value.length ? rows.value[0].id : 0
+    await session.run(
+      (params) => fetchLogs(null, pageSize, params),
+      (res) => {
+        rows.value = res.data.items || []
+        nextCursor.value = res.data.nextCursor ?? null
+        hasMore.value = Boolean(res.data.hasMore)
+        knownMaxId = rows.value.length ? rows.value[0].id : 0
+      },
+    )
   } catch (e) {
     console.error('加载消费记录失败:', e)
   } finally {
-    initialLoading.value = false
+    if (generation === session.generation) initialLoading.value = false
   }
 }
 
-/** 刷新：整表替换，不走增量高亮。展开态一并收起（原展开行未必还在新的第一页里）。 */
-async function refresh() {
+/**
+ * 清空列表及其附属的页面状态，准备整表重载。
+ *
+ * 展开行与高亮标记都指向旧列表里的 id，新列表未必包含它们，故一并清掉。
+ * detailCache 按 id 缓存且内容不随模式变化，保留它能让切回来时不必重拉详情。
+ * loadingMore 也要复位：旧列表的翻页已被作废，不该让新列表的「更多」按钮等它。
+ */
+function resetList() {
   freshIds.value = new Set()
   expandedId.value = null
-  detailCache.value = new Map()
   rows.value = []
   nextCursor.value = null
   hasMore.value = false
+  loadingMore.value = false
+}
+
+/** 刷新：保持当前模式与条件，整表替换，不走增量高亮。 */
+async function refresh() {
+  session.invalidate()
+  resetList()
+  detailCache.value = new Map()
   await loadFirstPage()
 }
 
-/** 加载更多，追加到表尾。 */
+/**
+ * 按表单条件检索。表单为空时等同于清除条件、回到实时模式，
+ * 不发一个「检索模式但无条件」的请求 —— 那样列表和实时模式一模一样，却不再自动更新。
+ */
+async function applySearch() {
+  const params = toQueryParams(searchForm.value)
+  if (!params) {
+    await exitSearch()
+    return
+  }
+  session.enterSearch(params)
+  searching.value = true
+  resetList()
+  await loadFirstPage()
+}
+
+/** 清空表单并回到实时模式。本就在实时模式时只清表单，不重拉。 */
+async function clearSearch() {
+  searchForm.value = createEmptyFilter()
+  if (session.mode === 'search') await exitSearch()
+}
+
+async function exitSearch() {
+  session.exitSearch()
+  searching.value = false
+  resetList()
+  await loadFirstPage()
+}
+
+/** 加载更多，追加到表尾。沿用当前模式的条件，服务端不保存条件。 */
 async function loadMore() {
   if (!hasMore.value || loadingMore.value) return
   loadingMore.value = true
+  const generation = session.generation
+  const cursor = nextCursor.value
   try {
-    const res = await fetchLogs(nextCursor.value, pageSize)
-    rows.value = [...rows.value, ...(res.data.items || [])]
-    nextCursor.value = res.data.nextCursor ?? null
-    hasMore.value = Boolean(res.data.hasMore)
+    await session.run(
+      (params) => fetchLogs(cursor, pageSize, params),
+      (res) => {
+        rows.value = [...rows.value, ...(res.data.items || [])]
+        nextCursor.value = res.data.nextCursor ?? null
+        hasMore.value = Boolean(res.data.hasMore)
+      },
+    )
   } catch (e) {
     console.error('加载更多消费记录失败:', e)
   } finally {
-    loadingMore.value = false
+    if (generation === session.generation) loadingMore.value = false
   }
 }
 
@@ -211,50 +296,54 @@ async function loadMore() {
  * 包在 {@link createCoalescingSync} 里：保证不并发拉取，且拉取期间到来的信号不被丢掉。
  */
 const syncLatest = createCoalescingSync(async () => {
+  // 信号排队期间可能已进入检索模式，执行前再确认一次。
+  if (!session.acceptsLiveSignal()) return
   try {
-    const res = await fetchLogs(null, pageSize)
-    const latest: UsageLogItem[] = res.data.items || []
-    if (!latest.length) return
-
-    if (!rows.value.length) {
-      rows.value = latest
-      nextCursor.value = res.data.nextCursor ?? null
-      hasMore.value = Boolean(res.data.hasMore)
-      knownMaxId = latest[0].id
-      return
-    }
-
-    const fresh = latest.filter((item) => item.id > knownMaxId)
-    if (!fresh.length) return
-
-    // 头部插入的同时从表尾截掉同样数量，保持表长不随实时流无限增长；
-    // 游标同步前移到新尾行，使被截掉的那批正好是下一页的开头，翻页即可拿回。
-    const shifted = prependWithCursorShift(rows.value, fresh, nextCursor.value, hasMore.value)
-    rows.value = shifted.rows
-    nextCursor.value = shifted.nextCursor
-    hasMore.value = shifted.hasMore
-    knownMaxId = Math.max(knownMaxId, ...fresh.map((item) => item.id))
-
-    const marked = new Set(fresh.map((item) => item.id))
-    freshIds.value = marked
-    setTimeout(() => {
-      // 只清除本批标记：期间可能又来了新的一批，直接清空会打断它们的高亮。
-      const next = new Set(freshIds.value)
-      marked.forEach((id) => next.delete(id))
-      freshIds.value = next
-    }, 1400)
+    await session.run((params) => fetchLogs(null, pageSize, params), (res) => mergeLatest(res.data))
   } catch (e) {
     console.error('同步最新消费记录失败:', e)
   }
 })
 
+/** 把最新一页里超过水位线的行整批插到表顶。只在实时模式、且请求未过期时调用。 */
+function mergeLatest(data: { items?: UsageLogItem[]; nextCursor?: number | null; hasMore?: boolean }) {
+  const latest: UsageLogItem[] = data.items || []
+  if (!latest.length) return
+
+  if (!rows.value.length) {
+    rows.value = latest
+    nextCursor.value = data.nextCursor ?? null
+    hasMore.value = Boolean(data.hasMore)
+    knownMaxId = latest[0].id
+    return
+  }
+
+  const fresh = latest.filter((item) => item.id > knownMaxId)
+  if (!fresh.length) return
+
+  // 头部插入的同时从表尾截掉同样数量，保持表长不随实时流无限增长；
+  // 游标同步前移到新尾行，使被截掉的那批正好是下一页的开头，翻页即可拿回。
+  const shifted = prependWithCursorShift(rows.value, fresh, nextCursor.value, hasMore.value)
+  rows.value = shifted.rows
+  nextCursor.value = shifted.nextCursor
+  hasMore.value = shifted.hasMore
+  knownMaxId = Math.max(knownMaxId, ...fresh.map((item) => item.id))
+
+  const marked = new Set(fresh.map((item) => item.id))
+  freshIds.value = marked
+  setTimeout(() => {
+    // 只清除本批标记：期间可能又来了新的一批，直接清空会打断它们的高亮。
+    const next = new Set(freshIds.value)
+    marked.forEach((id) => next.delete(id))
+    freshIds.value = next
+  }, 1400)
+}
+
 // ── 格式化 ──────────────────────────────────────────────
 
-/** 只显示时分秒，与调用者视角一致。 */
+/** 当天只显示时分秒，跨天补月日、跨年补年份；检索结果常跨天，只看时分秒会分不清日期。 */
 function formatTime(value: string): string {
-  if (!value) return ''
-  const parts = value.split('T')
-  return parts.length > 1 ? parts[1] : value
+  return formatLogTime(value)
 }
 
 function formatDuration(ms: number | null): string {
@@ -321,7 +410,9 @@ function connectStream() {
   streamSource = createAuthEventSource({
     path: LOG_STREAM_PATH,
     handlers: {
+      // 检索模式下连接保持，信号直接丢弃（ADR-0020）：新行是否符合条件只有后端知道。
       log: () => {
+        if (!session.acceptsLiveSignal()) return
         void syncLatest()
       },
     },
@@ -336,6 +427,8 @@ function disconnectStream() {
 onMounted(() => {
   loadFirstPage()
   connectStream()
+  // 供应商候选只是提示，加载失败不影响检索；已由其它页面加载过就不再重拉。
+  if (!Object.keys(providerStore.providers).length) void providerStore.fetchAll()
 })
 
 onUnmounted(() => {
@@ -347,23 +440,64 @@ onUnmounted(() => {
   <div class="usage-log-page">
     <n-card title="消费记录" :bordered="true" class="usage-log-card" content-scrollable>
       <template #header-extra>
-        <div class="refresh-btn" :class="{ disabled: initialLoading }" title="刷新" @click="refresh">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-            stroke-linejoin="round">
-            <path d="M21 2v6h-6" />
-            <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
-            <path d="M3 22v-6h6" />
-            <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
-          </svg>
+        <div class="header-actions">
+          <button
+            type="button"
+            class="header-action search-toggle"
+            :class="{ 'is-open': searchOpen, 'is-searching': searching }"
+            :title="searchOpen ? '收起检索条件' : searching ? '展开检索条件（检索已生效）' : '展开检索条件'"
+            :aria-label="searchOpen ? '收起检索条件' : '展开检索条件'"
+            :aria-expanded="searchOpen"
+            aria-controls="usage-log-search"
+            @click="searchOpen = !searchOpen"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round" aria-hidden="true">
+              <circle cx="10.5" cy="10.5" r="6.5" />
+              <path d="m16 16 4.5 4.5" />
+            </svg>
+          </button>
+          <button type="button" class="header-action refresh-btn" :disabled="initialLoading" title="刷新"
+            aria-label="刷新" @click="refresh">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 2v6h-6" />
+              <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+              <path d="M3 22v-6h6" />
+              <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+            </svg>
+          </button>
         </div>
       </template>
+
+      <div id="usage-log-search" class="search-collapse" :class="{ 'is-open': searchOpen }"
+        :aria-hidden="!searchOpen" :inert="!searchOpen">
+        <div class="search-collapse-inner">
+          <div class="search-collapse-content">
+            <CallLogSearchPanel
+              v-model="searchForm"
+              :provider-keys="providerKeys"
+              :active="searching"
+              :loading="searching && initialLoading"
+              @search="applySearch"
+              @clear="clearSearch"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div v-if="searching" class="search-banner" role="status">
+        检索中，列表不会自动更新。点右上角刷新可按当前条件重新加载。
+        <span class="search-banner-clear" role="button" tabindex="0" @click="clearSearch"
+          @keydown.enter.prevent="clearSearch">清除条件</span>
+      </div>
 
       <div v-if="initialLoading" class="usage-log-state">
         <n-spin size="medium" />
       </div>
 
       <div v-else-if="rows.length === 0" class="usage-log-state">
-        <n-empty description="暂无消费记录" />
+        <n-empty :description="searching ? '没有符合条件的消费记录' : '暂无消费记录'" />
       </div>
 
       <div v-else class="usage-table-wrap">
@@ -503,6 +637,55 @@ onUnmounted(() => {
 
 .usage-log-card {
   height: 100%;
+}
+
+/* 高度随内容自然变化；间距留在裁剪层内部，收起后不残留空白。 */
+.search-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+
+  &.is-open {
+    grid-template-rows: 1fr;
+  }
+}
+
+.search-collapse-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.search-collapse-content {
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 0.24s ease, transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.search-collapse.is-open .search-collapse-content {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.search-banner {
+  display: flex;
+  align-items: center;
+  gap: $space-md;
+  padding: $space-xs $space-sm;
+  margin-bottom: $space-sm;
+  font-size: 12px;
+  color: $text-body;
+  background: rgba($success, 0.08);
+  border-left: 2px solid $success;
+  border-radius: $radius;
+}
+
+.search-banner-clear {
+  color: $success;
+  cursor: pointer;
+
+  &:hover {
+    text-decoration: underline;
+  }
 }
 
 .usage-log-state {
@@ -895,23 +1078,40 @@ th.col-num {
   font-size: 13px;
 }
 
-.refresh-btn {
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: $space-xs;
+}
+
+.header-action {
+  appearance: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 28px;
   height: 28px;
+  padding: 0;
+  border: none;
   border-radius: $radius;
+  background: transparent;
   color: $text-muted;
+  font: inherit;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: color 0.2s ease, background-color 0.2s ease;
 
-  &:hover {
+  &:hover,
+  &:focus-visible {
     color: $accent;
     background: $accent-light;
   }
 
-  &.disabled {
+  &:focus-visible {
+    outline: 2px solid $accent-mid;
+    outline-offset: 2px;
+  }
+
+  &:disabled {
     pointer-events: none;
     opacity: 0.5;
   }
@@ -919,6 +1119,32 @@ th.col-num {
   svg {
     width: 16px;
     height: 16px;
+  }
+}
+
+.search-toggle {
+  &.is-searching {
+    color: $success;
+    background: rgba($success, 0.1);
+  }
+
+  &.is-open {
+    background: $accent-light;
+  }
+
+  &.is-open:not(.is-searching) {
+    color: $accent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search-collapse,
+  .search-collapse-content {
+    transition: none;
+  }
+
+  .search-collapse-content {
+    transform: none;
   }
 }
 </style>

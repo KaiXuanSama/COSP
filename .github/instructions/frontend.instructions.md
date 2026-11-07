@@ -68,23 +68,45 @@ Naive UI 组件的内联 CSS 变量优先级高于 scoped class 里的同名变�
 
 规则集是 V2（`{version:2, groups:[...]}`）：每个规则组自带 `protocols`、`templateKeys`、`previewBody`。读旧数据一律过 `migration.ts` 的 `migrateRuleSet`，**不要直接 `JSON.parse` 后当 V2 用**；`ruleSetJson.ts` 只校验 V2，遇到 V1 会报错而不是默默升级。
 
-编辑器分两层：`RequestBodyRuleEditor.vue` 是**规则组列表容器**（新增/排序/删除组、双视图切换、整体应用），`RuleGroupCard.vue` 是单组卡片（组元信息 + 该组专属双栏预览 + 该组规则列表）。卡片是受控组件，不持有组数据，改动一律 `emit('update:group')` 回写。组数组的增删改序在 `features/request-body-rules/groupOperations.ts`，其中 `order` 必须与数组下标同步 —— 运行时按 `order` 排序执行，只换位置不改 `order` 会让界面顺序与执行顺序分叉，该约束有单测钉住。
+编辑器分两层：`RequestBodyRuleEditor.vue` 是**规则组列表容器**（新增/排序/删除组、双视图切换、整体应用），`RuleGroupCard.vue` 是单组卡片（顶部元信息与样本预设，下方约 2:3 排列叠放预览和规则列表；窄容器纵排）。卡片是受控组件，不持有组数据，改动一律 `emit('update:group')` 回写。组数组的增删改序在 `features/request-body-rules/groupOperations.ts`，其中 `order` 必须与数组下标同步 —— 运行时按 `order` 排序执行，只换位置不改 `order` 会让界面顺序与执行顺序分叉，该约束有单测钉住。
+
+单组真实草稿与预览接线在 `features/request-body-rules/useRuleGroupPreview.ts`。有效样本与
+自定义标记必须一次回写，避免多个 emit 读取旧 props 相互覆盖；无效草稿只保留本地，
+不覆盖上次有效样本。组名、协议或启停变化不应重发预览，只有草稿与规则内容变化才重发。
+左侧使用通用 `DiffTextEditor`（CodeMirror），真实文档与块级条纹装饰分开；高度由 CSS
+网格和右侧规则自然撑开，不能重新引入左侧 autosize / 手动 resize 或滚动比例同步。
+两侧显示真实行号，滚动使用共享 `virtualLineNumber`；删除痕迹和无显示号的新增条纹
+都参与计算，不能退回邻近真实行。失效快照同时移除源侧旧占位并暂停联动；占位不得
+进入草稿、请求、复制结果或撤销步骤。编辑端口用 CodeMirror 的实际布局，不能用固定
+行高定位软换行文本；数字列须禁止换行并按位数留足内容宽。契约见 stacked-diff README。
+
+规则区使用 CSS `zoom` 时，内部 `NSelect` 的 `to` 统一接
+`useRuleSelectMenuTarget()`。组卡片提供同缩放的菜单挂载点，放在最近模态框内、内容滚动区
+之外；不能直接禁用 Teleport，否则菜单会被条件行的横向滚动容器裁切。没有组卡片提供者时
+保持 Naive UI 默认挂载行为。
 
 JSON 值输入统一走 `JsonValueInput.vue`（左侧类型档位 + 右侧按类型切换的控件），映射逻辑在 `features/request-body-rules/jsonValueEditing.ts`。「设置字段值」与「条件 · 等于」共用它 —— 两者面对的都是「用户想表达哪个 JSON 值」，各写一套会让同一语义在两处分叉（条件侧原先用宽松解析，导致「等于 null」只能靠留空试出来、且无法表达「等于字符串 "10"」）。两个不显然的点：档位在值暂时无法表达它时要独立存在（切到「数值」时输入框为空、值写不回，档位会被反推弹回旧类型），以及解析成功后**文本与规范形式不一致时仍保留草稿**（否则 `12.` 被规范化成 `12`，小数点根本打不出来）。
 
 预览由后端计算，**不要在前端重建引擎** —— 那份 TS 引擎已删除，理由见 AGENTS.md「引擎只有一份实现，预览走接口」。异步取值的防抖、请求竞态、加载态与失败降级都在 `features/request-body-rules/preview.ts` 的 `createPreviewScheduler`，竞态守卫按请求序号而非「是否有在途请求」判断。
 
+叠放预览的 JSON 行适配在 `features/request-body-rules/jsonLines.ts`：严格 JSON 校验后用
+`jsonc-parser` 定位真实草稿行，并复用语义 Diff 的数组配对。不要强制格式化草稿或把展示
+占位写入输入值。滚动映射绑定成功输入快照；新请求排入防抖就让旧响应作废，JSON 无效时
+调用调度器 `invalidate()`，保留旧结果但暂停不可靠映射。通用 `stacked-diff` 只消费行映射
+和滚动端口，不能反向依赖规则引擎、协议或 API。
+
 `WireProtocol` 统一从 `@/types/protocol` 导入（同时提供 `ALL_WIRE_PROTOCOLS`、`WIRE_PROTOCOL_LABELS` 与 `isWireProtocol`），字面量与后端枚举常量名逐字一致，不要在各处重写联合类型。
 
 ## 自研组件契约
 
-修改热力图、范围滑块、用量柱图或折线图前，先读对应目录 README；改变 Props、事件、类型、动画或
+修改热力图、范围滑块、用量柱图、折线图或叠放预览前，先读对应目录 README；改变 Props、事件、类型、动画或
 barrel 导出时同步更新文档：
 
 - [`components/heatmap/README.md`](../../frontend/src/components/heatmap/README.md)
 - [`components/rangeslider/README.md`](../../frontend/src/components/rangeslider/README.md)
 - [`components/usagechart/README.md`](../../frontend/src/components/usagechart/README.md)
 - [`components/usageline/README.md`](../../frontend/src/components/usageline/README.md)
+- [`components/stacked-diff/README.md`](../../frontend/src/components/stacked-diff/README.md)
 
 ## 手动验证
 

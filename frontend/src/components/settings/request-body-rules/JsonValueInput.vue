@@ -14,6 +14,7 @@
  */
 import { computed, ref } from 'vue'
 import { NInput, NSelect } from 'naive-ui'
+import { useRuleSelectMenuTarget } from './useRuleSelectMenuTarget'
 import type { JsonValueType } from '@/features/request-body-rules/jsonValueEditing'
 import {
   BOOLEAN_VALUE_OPTIONS,
@@ -123,12 +124,15 @@ function updateType(next: JsonValueType) {
 }
 
 defineExpose({ displayError })
+
+const selectMenuTarget = useRuleSelectMenuTarget()
 </script>
 
 <template>
   <div class="json-value-input">
     <div class="json-value-row">
       <NSelect
+        :to="selectMenuTarget"
         :value="activeType"
         @update:value="updateType($event as JsonValueType)"
         :options="JSON_VALUE_TYPE_OPTIONS"
@@ -138,6 +142,7 @@ defineExpose({ displayError })
       />
       <NSelect
         v-if="usesSelect"
+        :to="selectMenuTarget"
         :value="displayText"
         @update:value="updateText($event)"
         :options="BOOLEAN_VALUE_OPTIONS"
@@ -167,11 +172,16 @@ defineExpose({ displayError })
   flex: 1;
 }
 
-/** 类型档位固定宽度，取值控件占满剩余空间。 */
+/** 类型与取值是一组；保持单行，窄容器横向滚动而非拆开或压扁取值控件。 */
 .json-value-row {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding: 4px;
+  margin: -4px;
 }
 
 /**
@@ -188,8 +198,8 @@ defineExpose({ displayError })
 }
 
 .json-value-control {
-  flex: 1;
-  min-width: 0;
+  flex: 1 0 120px;
+  min-width: 120px;
 }
 
 .json-value-error {
@@ -198,4 +208,5 @@ defineExpose({ displayError })
   font-size: 11px;
   margin-top: 2px;
 }
+
 </style>

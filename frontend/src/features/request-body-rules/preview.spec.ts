@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createPreviewScheduler, type PreviewInput, type PreviewResult } from './preview'
 
 function input(marker: string): PreviewInput {
@@ -25,6 +25,7 @@ function deferredRequester() {
 }
 
 describe('请求体规则预览调度', () => {
+  afterEach(() => vi.useRealTimers())
   it('防抖窗口内只发最后一次请求', async () => {
     vi.useFakeTimers()
     const { calls, requester } = deferredRequester()
@@ -166,5 +167,60 @@ describe('请求体规则预览调度', () => {
 
     expect(scheduler.result.value).toBeNull()
     vi.useRealTimers()
+  })
+
+  it('新请求仍在防抖期间，旧响应也不能成为当前成功快照', async () => {
+    vi.useFakeTimers()
+    const { requester, resolvers } = deferredRequester()
+    const scheduler = createPreviewScheduler(requester, 100)
+    scheduler.schedule(input('old'))
+    await vi.advanceTimersByTimeAsync(100)
+    scheduler.schedule(input('new'))
+    resolvers[0]!(ok('old'))
+    await Promise.resolve()
+    expect(scheduler.snapshot.value).toBeNull()
+    expect(scheduler.stale.value).toBe(true)
+    await vi.advanceTimersByTimeAsync(100)
+    resolvers[1]!(ok('new'))
+    await Promise.resolve()
+    expect(scheduler.snapshot.value?.input.previewBody).toEqual({ marker: 'new' })
+    expect(scheduler.snapshot.value?.result.output).toEqual({ marker: 'new' })
+  })
+
+  it('成功快照保存发起时的输入文本和数据，不受宿主后续修改影响', async () => {
+    vi.useFakeTimers()
+    const { requester, resolvers } = deferredRequester()
+    const scheduler = createPreviewScheduler(requester, 0)
+    const payload = { ...input('first'), sourceText: '{\n "marker": "first"\n}' }
+    scheduler.schedule(payload)
+    payload.previewBody.marker = 'mutated'
+    payload.sourceText = '{}'
+    await vi.advanceTimersByTimeAsync(0)
+    resolvers[0]!(ok('first'))
+    await Promise.resolve()
+    expect(scheduler.snapshot.value?.input.previewBody.marker).toBe('first')
+    expect(scheduler.snapshot.value?.input.sourceText).toContain('first')
+  })
+
+  it('无效输入使排队和在途请求作废，保留已有成功结果并标记过期', async () => {
+    vi.useFakeTimers()
+    const { requester, resolvers, calls } = deferredRequester()
+    const scheduler = createPreviewScheduler(requester, 0)
+    scheduler.schedule(input('good'))
+    await vi.advanceTimersByTimeAsync(0)
+    resolvers[0]!(ok('good'))
+    await Promise.resolve()
+    scheduler.schedule(input('pending'))
+    await vi.advanceTimersByTimeAsync(0)
+    scheduler.invalidate()
+    resolvers[1]!(ok('pending'))
+    await Promise.resolve()
+    expect(scheduler.snapshot.value?.result.output).toEqual({ marker: 'good' })
+    expect(scheduler.loading.value).toBe(false)
+    expect(scheduler.stale.value).toBe(true)
+    scheduler.schedule(input('cancelled'))
+    scheduler.invalidate()
+    await vi.advanceTimersByTimeAsync(100)
+    expect(calls).toHaveLength(2)
   })
 })

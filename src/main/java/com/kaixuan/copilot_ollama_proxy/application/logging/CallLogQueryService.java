@@ -17,7 +17,7 @@ import java.util.Optional;
  *
  * <p>提供两条链路：
  * <ul>
- *   <li>{@link #listLogs(Long, int)} / {@link #findLog(long)} —— HTTP 游标分页与详情查询；</li>
+ *   <li>{@link #listLogs(CallLogFilter, Long, int)} / {@link #findLog(long)} —— HTTP 游标分页与详情查询；</li>
  *   <li>{@link #streamLogEvents()} —— SSE 纯信号推送，通知前端“有新日志”，
  *       前端据此自动拉取最新列表，替代手动点刷新。</li>
  * </ul>
@@ -44,9 +44,11 @@ public class CallLogQueryService {
      * prompt_tokens / completion_tokens / cached_tokens / ttfb_ms。
      * 两者的主表、游标语义与分页格式完全一致，故共用一个端点，
      * 客户端无需为每行再发一次详情请求即可渲染消费者列表。
+     *
+     * <p>{@code filter} 为 {@link CallLogFilter#NONE} 时与引入检索前的查询完全一致。
      */
-    public Mono<Map<String, Object>> listLogs(Long cursor, int pageSize) {
-        return Mono.fromCallable(() -> apiCallLogRepository.findLogs(cursor, pageSize))
+    public Mono<Map<String, Object>> listLogs(CallLogFilter filter, Long cursor, int pageSize) {
+        return Mono.fromCallable(() -> apiCallLogRepository.findLogs(filter, cursor, pageSize))
                 .subscribeOn(Schedulers.boundedElastic());
     }
 

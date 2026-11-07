@@ -16,6 +16,9 @@ import {
 } from '@/features/request-body-rules/pathOptions'
 import JsonValueInput from './JsonValueInput.vue'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
+import { useRuleSelectMenuTarget } from './useRuleSelectMenuTarget'
+
+const selectMenuTarget = useRuleSelectMenuTarget()
 
 const props = defineProps<{
   rule: FieldRule
@@ -244,6 +247,7 @@ function updateField(val: string) {
       <span class="rule-order">{{ rule.order + 1 }}</span>
 
       <NSelect
+        :to="selectMenuTarget"
         :value="rule.field"
         @update:value="updateField"
         :options="fieldOptions"
@@ -256,6 +260,7 @@ function updateField(val: string) {
       />
 
       <NSelect
+        :to="selectMenuTarget"
         :value="currentOperationType"
         @update:value="currentOperationType = $event"
         :options="operationTypeOptions"
@@ -350,43 +355,47 @@ function updateField(val: string) {
         <NButton text size="tiny" :disabled="readonly" @click="addCondition">+ 添加条件</NButton>
       </div>
       <div v-for="(cond, idx) in rule.conditions" :key="idx" class="rule-condition-row">
-        <NSelect
-          :value="cond.path"
-          @update:value="updateCondition(idx, { path: $event })"
-          :options="conditionPathOptions"
-          placeholder="相对路径"
-          filterable
-          tag
-          size="small"
-          class="cond-path"
-          :disabled="readonly"
-        />
-        <NSelect
-          :value="cond.operator"
-          @update:value="updateCondition(idx, { operator: $event as ConditionOperator })"
-          :options="conditionOperatorOptions"
-          size="small"
-          class="cond-op"
-          :disabled="readonly"
-        />
-        <JsonValueInput
-          v-if="cond.operator === 'equals'"
-          :value="cond.value"
-          @update:value="updateConditionValue(idx, $event)"
-          :readonly="readonly"
-          type-class="cond-value-type"
-          class="cond-value"
-        />
-        <NInput
-          v-else-if="cond.operator === 'matches'"
-          :value="typeof cond.value === 'string' ? cond.value : ''"
-          @update:value="updateConditionValue(idx, $event)"
-          placeholder="正则（包含匹配，整串用 ^...$）"
-          size="small"
-          class="cond-value"
-          :disabled="readonly"
-        />
-        <span v-else class="cond-value-placeholder">—</span>
+        <div class="rule-condition-fields">
+          <NSelect
+            :to="selectMenuTarget"
+            :value="cond.path"
+            @update:value="updateCondition(idx, { path: $event })"
+            :options="conditionPathOptions"
+            placeholder="相对路径"
+            filterable
+            tag
+            size="small"
+            class="cond-path"
+            :disabled="readonly"
+          />
+          <NSelect
+            :to="selectMenuTarget"
+            :value="cond.operator"
+            @update:value="updateCondition(idx, { operator: $event as ConditionOperator })"
+            :options="conditionOperatorOptions"
+            size="small"
+            class="cond-op"
+            :disabled="readonly"
+          />
+          <JsonValueInput
+            v-if="cond.operator === 'equals'"
+            :value="cond.value"
+            @update:value="updateConditionValue(idx, $event)"
+            :readonly="readonly"
+            type-class="cond-value-type"
+            class="cond-value"
+          />
+          <NInput
+            v-else-if="cond.operator === 'matches'"
+            :value="typeof cond.value === 'string' ? cond.value : ''"
+            @update:value="updateConditionValue(idx, $event)"
+            placeholder="正则（包含匹配，整串用 ^...$）"
+            size="small"
+            class="cond-value"
+            :disabled="readonly"
+          />
+          <span v-else class="cond-value-placeholder">—</span>
+        </div>
         <button
           class="rule-icon-btn rule-icon-btn--danger"
           :disabled="readonly"
@@ -437,6 +446,8 @@ function updateField(val: string) {
 @use '@/styles/variables' as *;
 
 .rule-item {
+  container: rule-item / inline-size;
+  min-width: 0;
   border: 1px solid rgba($accent, 0.18);
   border-radius: $radius;
   padding: 6px 8px;
@@ -474,10 +485,12 @@ function updateField(val: string) {
 
 .rule-field-select {
   width: 150px;
+  max-width: 100%;
 }
 
 .rule-op-select {
   width: 130px;
+  max-width: 100%;
 }
 
 .rule-conditional-toggle {
@@ -505,6 +518,7 @@ function updateField(val: string) {
   justify-content: center;
   width: 20px;
   height: 20px;
+  flex-shrink: 0;
   padding: 0;
   border: none;
   border-radius: 4px;
@@ -582,16 +596,33 @@ function updateField(val: string) {
 }
 
 .rule-condition-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20px;
   align-items: flex-start;
   gap: 4px;
   margin-bottom: 2px;
 }
 
+/* 删除按钮独立占列，始终可见；只有左侧条件表达式参与横向滚动。 */
+.rule-condition-fields {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 90px minmax(250px, 1.15fr);
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding: 4px;
+  margin: -4px 0 -4px -4px;
+}
+
+.rule-condition-row > .rule-icon-btn {
+  margin-top: 4px;
+}
+
 .cond-path {
-  flex: 1 1 auto;
   width: auto;
-  min-width: 180px;
+  min-width: 0;
 }
 
 .cond-op {
@@ -599,18 +630,10 @@ function updateField(val: string) {
   width: 90px;
 }
 
-/**
- * 比较值区。
- *
- * 比原先的单输入框宽（内含类型档位 + 取值控件），故让它与路径下拉争抢剩余空间。
- * 档位下拉加宽后基准从 260 提到 290，路径的 min-width 相应从 200 降到 180 ——
- * 路径是可搜索下拉且内容通常较长，它损失的可读性由 `title` 悬浮提示兜住，
- * 而档位被截断则完全无从辨认（截断处正好落在「对象/列」）。
- */
+/** 条件是一条逻辑表达式：窄容器保留控件宽度并横向滚动，不把比较值拆到下一排。 */
 .cond-value {
-  flex: 1 1 290px;
-  min-width: 220px;
-  max-width: 360px;
+  min-width: 0;
+  width: 100%;
 }
 
 /**
@@ -625,10 +648,7 @@ function updateField(val: string) {
 }
 
 .cond-value-placeholder {
-  flex: 0 1 160px;
-  width: 160px;
-  min-width: 110px;
-  max-width: 180px;
+  min-width: 0;
   text-align: center;
   color: $text-muted;
   font-size: 12px;
@@ -655,7 +675,7 @@ function updateField(val: string) {
 
 .rule-nested {
   margin-top: 4px;
-  padding-left: 24px;
+  padding-left: 12px;
 }
 
 .rule-nested-empty {
@@ -663,5 +683,23 @@ function updateField(val: string) {
   color: $text-muted;
   font-style: italic;
   padding: 4px;
+}
+
+@container rule-item (max-width: 340px) {
+  .rule-field-select,
+  .rule-op-select {
+    flex: 1 1 110px;
+    width: 0;
+    min-width: 0;
+  }
+
+  .rule-value-section,
+  .rule-conditions {
+    padding-left: 0;
+  }
+
+  .rule-nested {
+    padding-left: 4px;
+  }
 }
 </style>

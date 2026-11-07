@@ -45,6 +45,12 @@
 - 已知技术债：[`architecture/KNOWN_DEBT.md`](./architecture/KNOWN_DEBT.md)
 - 协议契约：[`reference/contracts/`](./reference/contracts/)
 - 功能提案索引：[`working/rfcs/README.md`](./working/rfcs/README.md)
+- 请求体规则组叠放预览：[RFC](./working/rfcs/2026-11-06-request-body-stacked-diff.md) ·
+   [阶段 1 通用组件](./working/rfcs/2026-11-06-request-body-stacked-diff.md#stacked-diff-stage-1) ·
+   [阶段 2 逻辑行与同步滚动](./working/rfcs/2026-11-06-request-body-stacked-diff.md#stacked-diff-stage-2) ·
+   [阶段 3 规则组接入](./working/rfcs/2026-11-06-request-body-stacked-diff.md#stacked-diff-stage-3) ·
+   [共享虚拟行与条纹占位](./working/rfcs/2026-11-06-request-body-stacked-diff.md#stacked-diff-virtual-rows) ·
+   [组件契约与接入示例](../frontend/src/components/stacked-diff/README.md)
 - M2C 去程：[最终调研](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-final-review) ·
    [实施计划](./working/rfcs/2026-10-20-m2c-c2m-translation.md#m2c-plan) ·
    [M2C 请求契约](./reference/contracts/M2C-REQUEST-CONTRACT.md) ·
@@ -70,6 +76,12 @@
 | [ADR-0017](./adr/adr-0017-m2c-defer-loading-drop.md) | M2C 工具 defer_loading 省略并告警，对齐参考项目剥离行为，不再本地拒绝 |
 | [ADR-0018](./adr/adr-0018-cosp-upstream-response-decompression.md) | COSP 出站响应解压支持 gzip/deflate/zstd/brotli，不再要求供应商删除 Accept-Encoding |
 | [ADR-0019](./adr/adr-0019-c2m-tool-result-media-to-user.md) | C2M 工具结果中的媒体移出 tool_result，放到同一 user 轮次的工具结果之后并带来源标记 |
+| [ADR-0020](./adr/adr-0020-call-log-search.md) | 调用日志检索扩展现有 `/config/api/logs` 端点，检索模式下前端保持 SSE 连接但丢弃信号 |
+| [ADR-0021](./adr/adr-0021-stacked-diff-preview.md) | 叠放 Diff 预览分离通用交互与请求体业务，采用焦点锁与逻辑行对应 |
+| [ADR-0022](./adr/adr-0022-stacked-diff-editing-lock.md) | 叠放效果按试用校准，仅宿主声明的可编辑侧建立悬停锁；部分取代 ADR-0021 |
+| [ADR-0023](./adr/adr-0023-json-text-line-locations.md) | JSON 行对齐保留真实草稿，用词法位置解析与既有语义 Diff 配对 |
+| [ADR-0024](./adr/adr-0024-stacked-diff-width-balance.md) | 试用后将叠放预览与规则区宽度由 1:2 调整为 2:3 |
+| [ADR-0025](./adr/adr-0025-virtual-diff-rows.md) | 显示号与计算号分离，共享虚拟行参与滚动，CodeMirror 块装饰提供文档外条纹 |
 
 ### architecture/ —— 当前架构
 

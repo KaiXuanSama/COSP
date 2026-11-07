@@ -24,7 +24,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value)
 }
 
-function jsonEquals(a: unknown, b: unknown): boolean {
+export function jsonEquals(a: unknown, b: unknown): boolean {
   if (a === b) return true
   if (a == null || b == null) return a === b
   if (typeof a !== typeof b) return false
@@ -66,7 +66,7 @@ interface ElementAnchor {
  * 两个下标同时存在表示这两个元素互相对应（相等或被改写）；
  * 只有一侧则表示该元素被删除或新增。
  */
-type AlignedPair =
+export type AlignedPair =
   | ElementAnchor
   | { readonly original: number; readonly current: null }
   | { readonly original: null; readonly current: number }
@@ -350,7 +350,7 @@ function alignRangeByIndex(
  * {@link findEqualAnchors} 与 {@link alignRange} —— 后者在 O(n×m) 循环里用它，
  * 现算会让「无锚点」输入卡到半秒（实测 n=200 从 547ms 降到毫秒级）。
  */
-function alignArrayElements(original: readonly unknown[], current: readonly unknown[]): AlignedPair[] {
+export function alignArrayElements(original: readonly unknown[], current: readonly unknown[]): AlignedPair[] {
   if (original.length > ARRAY_ALIGN_LIMIT || current.length > ARRAY_ALIGN_LIMIT) {
     return alignByIndex(original, current)
   }

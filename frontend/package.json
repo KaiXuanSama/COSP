@@ -14,7 +14,11 @@
     "mock:cosp": "node ../tools/mock-cosp/mock-cosp.js"
   },
   "dependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
     "axios": "^1.16.1",
+    "jsonc-parser": "^3.3.1",
     "marked": "^18.0.5",
     "naive-ui": "^2.44.1",
     "pinia": "^3.0.4",

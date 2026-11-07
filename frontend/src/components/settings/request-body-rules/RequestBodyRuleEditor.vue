@@ -3,7 +3,7 @@
  * RequestBodyRuleEditor — 请求体规则配置二级模态框。
  *
  * 本组件是**规则组列表容器**：新增组、组间排序、整体应用，以及可视化 / JSON 双视图切换。
- * 单组的预览双栏与规则列表都下沉到 `RuleGroupCard.vue`。
+ * 单组的叠放预览与规则列表都下沉到 `RuleGroupCard.vue`。
  *
  * 草稿语义：打开时深拷贝父级规则集，"应用"才提交，"取消"丢弃。
  *
@@ -170,6 +170,7 @@ function handleCancel() {
     @update:show="emit('update:show', $event)"
     preset="card"
     title="请求体映射规则配置"
+    class="request-body-rule-editor"
     :style="{ width: '90vw', maxWidth: '1200px', maxHeight: '90vh', display: 'flex', 'flex-direction': 'column' }"
     content-style="overflow: auto; flex: 1; min-height: 0"
     closable
@@ -281,6 +282,8 @@ function handleCancel() {
   align-items: center;
   justify-content: space-between;
   margin-bottom: $space-sm;
+  gap: $space-sm;
+  flex-wrap: wrap;
 }
 
 .editor-toolbar-heading {
@@ -298,6 +301,7 @@ function handleCancel() {
 .editor-toolbar-actions {
   display: flex;
   gap: $space-xs;
+  flex-wrap: wrap;
 }
 
 .editor-empty {
@@ -390,6 +394,8 @@ function handleCancel() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: $space-sm;
+  flex-wrap: wrap;
 }
 
 .editor-footer-count {
@@ -400,5 +406,11 @@ function handleCancel() {
 .editor-footer-actions {
   display: flex;
   gap: $space-xs;
+}
+
+@media (max-width: 600px) {
+  :global(.request-body-rule-editor.n-card) {
+    --n-padding-left: 12px !important;
+  }
 }
 </style>
