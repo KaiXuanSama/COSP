@@ -25,10 +25,10 @@ import { REQUEST_BODY_TEMPLATE_OPTIONS } from '@/features/request-body-rules/req
 import { StackedDiff, DiffTextView, TextareaLineNumbers, createTextareaScrollPort, type LineScrollPort, type TextareaScrollPort } from '@/components/stacked-diff'
 import {
   RULE_ENGINE_WIRE_PROTOCOLS,
-  WIRE_PROTOCOL_LABELS,
   type WireProtocol,
 } from '@/types/protocol'
 import RequestBodyRuleList from './RequestBodyRuleList.vue'
+import { provideRuleSelectMenuTarget } from './useRuleSelectMenuTarget'
 
 const props = defineProps<{
   group: RuleGroup
@@ -45,6 +45,8 @@ const emit = defineEmits<{
 }>()
 
 const message = useMessage()
+const rulesArea = ref<HTMLElement | null>(null)
+provideRuleSelectMenuTarget(rulesArea)
 
 /**
  * 「适用协议」的可选项。
@@ -58,8 +60,13 @@ const message = useMessage()
  * 放开白名单时它还没接入，那段「选项可选但规则不会执行」是有意的先行：请求体改写
  * 是接一个新中转站时最先需要配置的能力，等端点落地才放开会让用户在上线当天才能开始配。
  */
+const PROTOCOL_SHORT_LABELS: Record<WireProtocol, string> = {
+  CHAT: 'Chat',
+  MESSAGES: 'Mess',
+  RESPONSES: 'Res',
+}
 const PROTOCOL_OPTIONS = RULE_ENGINE_WIRE_PROTOCOLS.map((protocol) => ({
-  label: WIRE_PROTOCOL_LABELS[protocol],
+  label: PROTOCOL_SHORT_LABELS[protocol],
   value: protocol,
 }))
 
@@ -274,28 +281,30 @@ async function copyOutput() {
       </div>
 
       <div class="group-rules">
-        <div class="rules-section-header">
-          <span class="rules-section-title">该组规则（{{ group.rules.length }} 条）</span>
-          <div class="rules-section-actions">
-            <NButton size="tiny" class="rules-action-button" @click="loadImageToolCompatibilityRules">
-              加载图片工具兼容规则
-            </NButton>
-            <NButton size="tiny" class="rules-action-button" @click="clearRules">清空</NButton>
+        <div ref="rulesArea" class="group-rules-zoom">
+          <div class="rules-section-header">
+            <span class="rules-section-title">该组规则（{{ group.rules.length }} 条）</span>
+            <div class="rules-section-actions">
+              <NButton size="tiny" class="rules-action-button" @click="loadImageToolCompatibilityRules">
+                加载图片工具兼容规则
+              </NButton>
+              <NButton size="tiny" class="rules-action-button" @click="clearRules">清空</NButton>
+            </div>
           </div>
-        </div>
-        <div v-if="warnings.length > 0" class="editor-warnings">
-          <div class="warnings-header">执行警告（{{ warnings.length }}）</div>
-          <div v-for="(warning, i) in warnings" :key="i" class="warning-item">
-            <span class="warning-path">{{ warning.fieldPath || '(根)' }}</span>
-            <span class="warning-msg">{{ warning.message }}</span>
+          <div v-if="warnings.length > 0" class="editor-warnings">
+            <div class="warnings-header">执行警告（{{ warnings.length }}）</div>
+            <div v-for="(warning, i) in warnings" :key="i" class="warning-item">
+              <span class="warning-path">{{ warning.fieldPath || '(根)' }}</span>
+              <span class="warning-msg">{{ warning.message }}</span>
+            </div>
           </div>
+          <RequestBodyRuleList
+            :rules="group.rules"
+            :scope-object="scopeObject"
+            :depth="0"
+            @update:rules="updateRules"
+          />
         </div>
-        <RequestBodyRuleList
-          :rules="group.rules"
-          :scope-object="scopeObject"
-          :depth="0"
-          @update:rules="updateRules"
-        />
       </div>
     </div>
   </section>
@@ -332,7 +341,8 @@ async function copyOutput() {
   align-items: center;
   gap: $space-sm;
   min-width: 0;
-  flex: 1 1 760px;
+  /* 按字段真实所需宽度参与换行判断，避免固定 basis 在有空余时也把右侧控件挤下去。 */
+  flex: 1 1 auto;
   flex-wrap: wrap;
 }
 
@@ -374,22 +384,26 @@ async function copyOutput() {
 .group-name-input {
   width: 160px;
   min-width: 0;
+  flex-shrink: 1;
 }
 
 .group-controls {
   display: flex;
   align-items: center;
   gap: $space-sm;
+  flex-shrink: 0;
 }
 
 .group-protocol-select {
-  width: 210px;
+  width: 120px;
   min-width: 0;
+  flex-shrink: 1;
 }
 
 .group-template-select {
-  width: 220px;
+  width: 180px;
   min-width: 0;
+  flex-shrink: 1;
 }
 
 .group-order-actions {
@@ -577,6 +591,15 @@ async function copyOutput() {
 
 .group-rules {
   min-width: 0;
+}
+
+/* 像浏览器缩小显示比例一样整体缩放规则区内容（字体、间距、控件尺寸一起缩小）。
+   放在内部包裹层而非 .group-rules 本身：后者是 grid 子项，直接在它上面 zoom
+   会撑破 grid 轨道导致溢出，内部包裹层缩放不影响轨道分配。
+   数值可通过 --group-rules-zoom 覆盖。 */
+.group-rules-zoom {
+  min-width: 0;
+  zoom: var(--group-rules-zoom, 0.85);
 }
 
 .rules-section-header {
