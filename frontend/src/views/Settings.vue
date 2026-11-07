@@ -904,20 +904,19 @@ async function removeProvider(key: string) {
   }
 }
 
-const enabledProviderKeys = computed(() => {
+const providerNameCollator = new Intl.Collator('zh-CN-u-co-pinyin', { sensitivity: 'base', numeric: true })
+const providerKeysByName = computed(() => {
   const metaKeys = Object.keys(providerMeta.value)
   // provider_config 中可能存在但 meta 中没有的（如数据库残留）
   const storeKeys = Object.keys(providerStore.providers)
-  const allKeys = [...new Set([...metaKeys, ...storeKeys])]
-  return allKeys.filter(k => providerStore.providers[k]?.enabled)
+  return [...new Set([...metaKeys, ...storeKeys])].sort((a, b) =>
+    providerNameCollator.compare(providerMeta.value[a]?.displayName || a, providerMeta.value[b]?.displayName || b)
+    || providerNameCollator.compare(a, b),
+  )
 })
 
-const disabledProviderKeys = computed(() => {
-  const metaKeys = Object.keys(providerMeta.value)
-  const storeKeys = Object.keys(providerStore.providers)
-  const allKeys = [...new Set([...metaKeys, ...storeKeys])]
-  return allKeys.filter(k => !providerStore.providers[k]?.enabled)
-})
+const enabledProviderKeys = computed(() => providerKeysByName.value.filter(k => providerStore.providers[k]?.enabled))
+const disabledProviderKeys = computed(() => providerKeysByName.value.filter(k => !providerStore.providers[k]?.enabled))
 
 async function enableProvider(key: string) {
   await providerStore.toggleProvider(key, true)
@@ -1143,7 +1142,8 @@ function removeModel(index: number) {
     />
 
     <!-- 添加供应商模态框 -->
-    <n-modal v-model:show="showAddModal" preset="card" title="添加供应商" :style="{ maxWidth: '480px' }" closable
+    <n-modal v-model:show="showAddModal" preset="card" title="添加供应商"
+      :style="{ width: '960px', maxWidth: 'calc(100vw - 32px)' }" closable
       :mask-closable="true">
       <div v-if="disabledProviderKeys.length === 0" class="add-modal-empty">
         所有供应商已启用
@@ -1884,7 +1884,7 @@ function removeModel(index: number) {
 
 .add-modal-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: $space-md;
 }
 
@@ -2438,6 +2438,12 @@ function removeModel(index: number) {
   gap: $space-sm;
 }
 
+@media (max-width: 960px) {
+  .add-modal-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 /* ── 移动端抽屉适配 ── */
 @media (max-width: 768px) {
   .edit-drawer {
@@ -2445,11 +2451,11 @@ function removeModel(index: number) {
       overflow-x: hidden;
     }
   }
+}
 
-  /* 添加供应商模态框网格单列 */
+@media (max-width: 480px) {
   .add-modal-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
-
 }
 </style>
